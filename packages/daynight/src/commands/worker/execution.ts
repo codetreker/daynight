@@ -4,6 +4,7 @@ import type { Operation } from "../../api/operation.js";
 import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
+import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
 import type { ManagedAssignment } from "./prompts.js";
@@ -87,16 +88,17 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       && claim.agent === task.agent && claim.agentControlMode === (task.agentControlMode ?? "herdr")
       && current !== null && current.status === "active";
   };
-  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard): Promise<HerdrAgentObservation> => {
+  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard): Promise<{ observation: HerdrAgentObservation; submitted: boolean }> => {
     const identity = key(task);
     const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, beforeSubmit), signal).catch((error: unknown) => {
-      if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
+      if (error instanceof HerdrInputWaitingError) { /* A zero-write wait preserves the previous input baseline. */ }
+      else if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
       else lastInput.set(identity, null);
       throw error;
     });
-    if (receipt.submission === "skipped") return receipt.observation;
+    if (receipt.submission === "skipped") return { observation: receipt.observation, submitted: false };
     lastInput.set(identity, inputState(receipt.observation));
-    return workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
+    return { observation: await workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal), submitted: true };
   };
   const reportObservation = (task: LocalTask, observation: HerdrAgentObservation, started = false): void => {
     const identity = key(task);
@@ -139,15 +141,16 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         if (observed.status === "working") lastInput.delete(identity);
         const pending = pendingInput.get(identity);
         if (pending !== undefined && pending.binding.terminalId === actual.binding.terminalId && pending.binding.paneId === actual.binding.paneId && observed.status !== "blocked" && observed.interactiveReady && !observed.launchPending) {
-          pendingInput.delete(identity);
           try {
-            observed = await submitInput(task, context, observed, pending.prompt, signal);
+            const result = await submitInput(task, context, observed, pending.prompt, signal);
+            observed = result.observation;
+            if (result.submitted) pendingInput.delete(identity);
           } catch (error) {
-            if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") pendingInput.set(identity, pending);
+            if (!(error instanceof HerdrAgentActionError) || error.promptSubmission !== "not-submitted") pendingInput.delete(identity);
             throw error;
           }
         } else if (pending === undefined && (observed.status === "idle" || observed.status === "done") && observed.interactiveReady && !observed.launchPending && lastInput.get(identity) !== inputState(observed)) {
-          observed = await submitInput(task, context, observed, workerPingPrompt(task), signal, continuationGuard(task, context));
+          observed = (await submitInput(task, context, observed, workerPingPrompt(task), signal, continuationGuard(task, context))).observation;
         }
         assertNativeSession(task, observed);
         if (observed.nativeSession !== null) task = deps.store.setSessionId(task, observed.nativeSession.sessionId);
@@ -176,13 +179,14 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
           ...(assignment.sessionId === null ? {} : { resumeSessionId: assignment.sessionId }),
           onPromptSubmitted: (receipt) => { pendingInput.delete(identity); lastInput.set(identity, inputState(receipt.observation)); },
         }, operation), signal);
-        pendingInput.delete(identity);
+        if (!deps.herdr.lifecycle) pendingInput.delete(identity);
       } catch (error) {
         if (pendingInput.has(identity) && error instanceof HerdrAgentActionError && error.action === "agent.prompt" && error.promptSubmission === "unknown") {
           pendingInput.delete(identity);
           lastInput.set(identity, null);
         }
         if (!(error instanceof HerdrAgentActionError) || error.action !== "agent.prompt" || error.promptSubmission !== "not-submitted") throw error;
+        if (deps.herdr.lifecycle && !(error instanceof HerdrInputWaitingError)) throw error;
         observation = await workerOperation((operation) => deps.herdr.tasks.observe(context, binding, operation), signal);
         assertNativeSession(task, observation);
       }

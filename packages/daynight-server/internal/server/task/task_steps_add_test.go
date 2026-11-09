@@ -6,77 +6,74 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
+func stepHTTPString(value string) *string                             { return &value }
+func stepHTTPStatus(value model.TaskStepStatus) *model.TaskStepStatus { return &value }
+
 func TestStepsHTTPAddPlacementCompleteResourceAndExactVersion(t *testing.T) {
-	var logs bytes.Buffer
-	database, handler, task := stepsHTTPFixture(t, &logs)
-	path := taskPath(task) + "/steps"
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=9007199254740993 WHERE id=$1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
+	const version int64 = 9007199254740993
 	title, markdown := "  <同名&> 😀 \uFEFF  ", "  # Markdown-secret\n\"\\\u2028\u2029  "
-	version := int64(9007199254740993)
-	var previous api.StepsResource
-	for index, input := range []map[string]any{
-		{"id": "ABCDEF01", "title": title, "description": markdown},
-		{"id": "00000000", "title": title, "status": "done", "before": "ABCDEF01"},
-		{"id": "12345678", "title": title, "status": "in_progress", "after": "00000000"},
-		{"id": "fedcba98", "title": "\uFEFF", "status": "skipped"},
-	} {
-		input["version"] = version
-		response := projectRequest(handler, "POST", path, jsonBody(t, input))
-		result := decodeResponse[api.StepsResource](t, response, 201)
-		if result.ProjectID != task.ProjectID || result.TaskID != task.ID || result.Version != version+1 || len(result.Steps) != index+1 || response.Header().Get("Location") != path+"/"+strings.ToLower(input["id"].(string)) || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID || response.Body.Bytes()[response.Body.Len()-1] != '\n' {
-			t.Fatalf("complete creation receipt: %d %s", response.Code, response.Body)
-		}
-		if index == 0 && (result.Steps[0].ID != "abcdef01" || result.Steps[0].Description != markdown || result.Steps[0].Status != "todo" || result.Steps[0].CreatedAt != result.Steps[0].UpdatedAt) {
-			t.Fatal(result)
-		}
-		if index == 1 && result.Steps[1] != previous.Steps[0] {
-			t.Fatal("insertion changed existing content time")
-		}
-		if index == 2 && (result.Steps[0].ID != "00000000" || result.Steps[1].ID != "12345678" || result.Steps[2].ID != "abcdef01" || result.Steps[0].Description != "") {
-			t.Fatal(result)
-		}
-		read := projectRequest(handler, "GET", path, "")
-		if !bytes.Equal(response.Body.Bytes(), read.Body.Bytes()) {
-			t.Fatal("POST and public GET use different encoding or content")
-		}
-		version = result.Version
-		previous = result
+	cases := []struct {
+		body  string
+		input taskservice.AddTaskStep
+		id    string
+	}{
+		{jsonBody(t, map[string]any{"version": version, "id": "ABCDEF01", "title": title, "description": markdown}), taskservice.AddTaskStep{Version: version, ID: "ABCDEF01", Title: title, Description: markdown}, "abcdef01"},
+		{jsonBody(t, map[string]any{"version": version, "id": "00000000", "title": title, "status": "done", "before": "ABCDEF01"}), taskservice.AddTaskStep{Version: version, ID: "00000000", Title: title, Status: stepHTTPStatus(model.TaskStepDone), Before: stepHTTPString("ABCDEF01")}, "00000000"},
+		{jsonBody(t, map[string]any{"version": version, "id": "12345678", "title": title, "status": "in_progress", "after": "00000000"}), taskservice.AddTaskStep{Version: version, ID: "12345678", Title: title, Status: stepHTTPStatus(model.TaskStepInProgress), After: stepHTTPString("00000000")}, "12345678"},
+		{jsonBody(t, map[string]any{"version": version, "id": "fedcba98", "title": "\uFEFF", "status": "skipped"}), taskservice.AddTaskStep{Version: version, ID: "fedcba98", Title: "\uFEFF", Status: stepHTTPStatus(model.TaskStepSkipped)}, "fedcba98"},
 	}
-	other := decodeResponse[api.Task](t, projectRequest(handler, "POST", taskCollection(task.ProjectID), `{"title":"other"}`), 201)
-	decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", taskPath(other)+"/steps", `{"version":1,"id":"abcdef01","title":"same"}`), 201)
-	assertProjectError(t, projectRequest(handler, "POST", path, fmt.Sprintf(`{"version":%d,"id":"abcdef01","title":"duplicate","before":"ffffffff"}`, version)), 409, "step_id_conflict")
-	assertProjectError(t, projectRequest(handler, "POST", path, `{"version":9007199254740993,"id":"abcdef01","title":"stale","before":"ffffffff"}`), 409, "version_conflict")
-	assertProjectError(t, projectRequest(handler, "POST", path, fmt.Sprintf(`{"version":%d,"id":"eeeeeeee","title":"missing","after":"ffffffff"}`, version)), 404, "not_found")
-	assertProjectError(t, projectRequest(handler, "POST", path+"/abcdef01", `{}`), 405, "method_not_allowed")
-	for _, sentinel := range []string{title, markdown, "Markdown-secret"} {
-		if strings.Contains(logs.String(), sentinel) {
-			t.Fatal("Step content leaked into logs")
-		}
-	}
-	for _, fact := range []string{`"component":"task_step"`, `"operation":"add"`, `"phase":"prepare"`, `"phase":"persist"`, `"phase":"commit"`, `"tx_outcome":"committed"`, `"response_outcome":"written"`, `"status":201`, `"written_bytes":`} {
-		if !strings.Contains(logs.String(), fact) {
-			t.Fatalf("missing diagnostic fact %s", fact)
-		}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			row := stepHTTPRows()[0]
+			row.ID, row.Title, row.Description = tc.id, tc.input.Title, tc.input.Description
+			row.UpdatedAt = row.CreatedAt
+			row.Status = model.TaskStepTodo
+			if tc.input.Status != nil {
+				row.Status = *tc.input.Status
+			}
+			result := stepHTTPWrite(t, version+1, []api.TaskStep{row}, true)
+			h.Steps.AddFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if !reflect.DeepEqual(input, tc.input) {
+					t.Fatalf("Add input changed: %+v want %+v", input, tc.input)
+				}
+				return result, nil
+			}
+			response := projectRequest(h, "POST", stepHTTPPath(), tc.body)
+			resource := decodeResponse[api.StepsResource](t, response, 201)
+			if resource.ProjectID != testProjectID || resource.TaskID != testTaskID || resource.Version != version+1 || !bytes.Equal(response.Body.Bytes(), result.JSON) || response.Header().Get("Location") != stepHTTPPath()+"/"+tc.id || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != h.principal.UserID || response.Body.Bytes()[response.Body.Len()-1] != '\n' {
+				t.Fatal("complete creation receipt changed")
+			}
+			for _, fact := range []string{`"component":"task_step"`, `"operation":"add"`, `"phase":"prepare"`, `"phase":"persist"`, `"phase":"commit"`, `"tx_outcome":"committed"`, `"response_outcome":"written"`, `"status":201`, `"written_bytes":`} {
+				if !strings.Contains(logs.String(), fact) {
+					t.Fatalf("missing diagnostic fact %s", fact)
+				}
+			}
+			for _, sentinel := range []string{title, markdown, "Markdown-secret"} {
+				if strings.Contains(logs.String(), sentinel) {
+					t.Fatal("Step content leaked into logs")
+				}
+			}
+		})
 	}
 }
 
-func TestStepsHTTPAddStrictInputLeavesCompleteStateUnchanged(t *testing.T) {
-	database, handler, task := stepsHTTPFixture(t, io.Discard)
-	path := taskPath(task) + "/steps"
+func TestStepsHTTPAddStrictProtocolInputDoesNotCallService(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
 	base := `{"version":1,"id":"00000000","title":"x"}`
 	bodies := []string{"", `null`, `[]`, `true`, `"x"`, `{`, `{} `, base + ` {}`, `{"Version":1,"id":"00000000","title":"x"}`,
 		`{"version":1,"id":"00000000","\u0069d":"00000001","title":"x"}`, `{"version":1,"version":1,"id":"00000000","title":"x"}`,
@@ -97,142 +94,114 @@ func TestStepsHTTPAddStrictInputLeavesCompleteStateUnchanged(t *testing.T) {
 	for _, version := range []string{`0`, `-1`, `1.0`, `1e0`, `9223372036854775808`, `"1"`} {
 		bodies = append(bodies, `{"version":`+version+`,"id":"00000000","title":"x"}`)
 	}
-	for _, id := range []string{"", "0", "000000000", "0000000g", task.ID} {
+	for _, id := range []string{"", "0", "000000000", "0000000g", testTaskID} {
 		bodies = append(bodies, jsonBody(t, map[string]any{"version": 1, "id": id, "title": "x"}))
 	}
-	for _, title := range []string{"", " \t\n\u0085\u2000 ", "\x00"} {
-		bodies = append(bodies, jsonBody(t, map[string]any{"version": 1, "id": "00000000", "title": title}))
-	}
-	for _, extra := range []string{`,"status":""`, `,"status":"DONE"`, `,"before":"bad"`, `,"after":"bad"`, `,"before":"00000001","after":"00000002"`, `,"description":"\u0000"`, `,"createdAt":"today"`, `,"updatedAt":"today"`, `,"position":0`, `,"unknown":"x"`} {
+	for _, extra := range []string{`,"createdAt":"today"`, `,"updatedAt":"today"`, `,"position":0`, `,"unknown":"x"`} {
 		bodies = append(bodies, strings.TrimSuffix(base, "}")+extra+"}")
 	}
 	for index, body := range bodies {
 		t.Run(fmt.Sprint(index), func(t *testing.T) {
-			assertProjectError(t, projectRequest(handler, "POST", path, body), 400, "invalid_input")
+			assertProjectError(t, projectRequest(h, "POST", stepHTTPPath(), body), 400, "invalid_input")
 		})
 	}
 	for _, suffix := range []string{"?", "?x=1", "?bad=%xx"} {
-		assertProjectError(t, projectRequest(handler, "POST", path+suffix, base), 400, "invalid_input")
+		assertProjectError(t, projectRequest(h, "POST", stepHTTPPath()+suffix, base), 400, "invalid_input")
 	}
-	request := httptest.NewRequest("POST", path, strings.NewReader(base))
-	authorizeResourceRequest(handler, request)
+	request := httptest.NewRequest("POST", stepHTTPPath(), strings.NewReader(base))
+	authorizeResourceRequest(h, request)
 	request.Header.Set("Content-Type", "text/plain")
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	h.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
 	exact := base + strings.Repeat(" ", httpx.MaxJSONBody-len(base))
-	if len(exact) != httpx.MaxJSONBody {
-		t.Fatalf("request boundary fixture %d", len(exact))
+	assertProjectError(t, projectRequest(h, "POST", stepHTTPPath(), exact+" "), 413, "payload_too_large")
+	assertProjectError(t, projectRequest(h, "POST", stepHTTPPath()+"/abcdef01", `{}`), 405, "method_not_allowed")
+	if h.Steps.TotalCalls() != 0 {
+		t.Fatal("protocol rejection invoked Step service")
 	}
-	assertProjectError(t, projectRequest(handler, "POST", path, exact+" "), 413, "payload_too_large")
-	read := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
-	if read.Version != 1 || len(read.Steps) != 0 {
-		t.Fatal("strict refusal changed parent or steps")
-	}
-	boundaryTask := decodeResponse[api.Task](t, projectRequest(handler, "POST", taskCollection(task.ProjectID), `{"title":"Request boundary"}`), 201)
-	boundary := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", taskPath(boundaryTask)+"/steps", exact), 201)
-	if len(boundary.Steps) != 1 || boundary.Steps[0].Title != "x" || boundary.Steps[0].Description != "" {
-		t.Fatal("exact 1 MiB request lost content")
-	}
-	// Literal replacement characters, valid surrogate pairs and a textual escape
-	// are distinct from invalid JSON Unicode and round-trip without rewriting.
-	body := `{"version":1,"id":"00000000","title":"�\ud83d\ude00\\ud800","description":""}`
-	resource := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", path, body), 201)
-	if resource.Steps[0].Title != "�😀\\ud800" {
-		t.Fatal(resource)
-	}
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=$2 WHERE id=$1`, task.ID, int64(math.MaxInt64)); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, projectRequest(handler, "POST", path, `{"version":9223372036854775807,"id":"12345678","title":"x"}`), 409, "version_exhausted")
 }
 
-type stepCommitCancelTracer struct {
-	cancel    context.CancelFunc
-	persisted bool
-}
-
-func (tracer *stepCommitCancelTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "UPDATE tasks SET version=version+1,updated_at=$3") {
-		tracer.persisted = true
+func TestStepsHTTPAddDomainRefusalsAndUnicodeForwarding(t *testing.T) {
+	invalid := []map[string]any{}
+	for _, title := range []string{"", " \t\n\u0085\u2000 ", "\x00"} {
+		invalid = append(invalid, map[string]any{"version": 1, "id": "00000000", "title": title})
 	}
-	return context.WithValue(ctx, stepTraceKey{}, strings.EqualFold(data.SQL, "commit") && tracer.persisted)
-}
-
-type stepTraceKey struct{}
-
-func (tracer *stepCommitCancelTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(stepTraceKey{}) == true {
-		tracer.cancel()
+	for _, extra := range []map[string]any{{"status": ""}, {"status": "DONE"}, {"before": "bad"}, {"after": "bad"}, {"before": "00000001", "after": "00000002"}, {"description": "\x00"}} {
+		input := map[string]any{"version": 1, "id": "00000000", "title": "x"}
+		for name, value := range extra {
+			input[name] = value
+		}
+		invalid = append(invalid, input)
+	}
+	for index, values := range invalid {
+		t.Run(fmt.Sprint(index), func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			h.Steps.AddFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if input.Version != 1 || input.ID != "00000000" || input.Title != values["title"] {
+					t.Fatal("domain value changed before service")
+				}
+				if value, ok := values["description"]; ok && input.Description != value {
+					t.Fatal("description changed")
+				}
+				if value, ok := values["status"]; ok && (input.Status == nil || string(*input.Status) != value) {
+					t.Fatal("status changed")
+				}
+				if value, ok := values["before"]; ok && (input.Before == nil || *input.Before != value) {
+					t.Fatal("before changed")
+				}
+				if value, ok := values["after"]; ok && (input.After == nil || *input.After != value) {
+					t.Fatal("after changed")
+				}
+				return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, &model.Fault{Code: "invalid_input", Message: "Invalid Step input."}
+			}
+			assertProjectError(t, projectRequest(h, "POST", stepHTTPPath(), jsonBody(t, values)), 400, "invalid_input")
+		})
+	}
+	for _, tc := range []struct {
+		version int64
+		code    string
+		status  int
+	}{{1, "step_id_conflict", 409}, {9007199254740993, "version_conflict", 409}, {1, "not_found", 404}, {9223372036854775807, "version_exhausted", 409}} {
+		t.Run(tc.code, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			h.Steps.AddFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if input.Version != tc.version {
+					t.Fatal("exact version changed")
+				}
+				return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, &model.Fault{Code: tc.code, Message: "Step mutation refused."}
+			}
+			assertProjectError(t, projectRequest(h, "POST", stepHTTPPath(), jsonBody(t, map[string]any{"version": tc.version, "id": "abcdef01", "title": "x"})), tc.status, tc.code)
+		})
+	}
+	for _, body := range []string{`{"version":1,"id":"00000000","title":"�\ud83d\ude00\\ud800","description":""}`, `{"version":1,"id":"00000000","title":"x"}` + strings.Repeat(" ", httpx.MaxJSONBody-len(`{"version":1,"id":"00000000","title":"x"}`))} {
+		t.Run(fmt.Sprint(len(body)), func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			title := "x"
+			if len(body) < httpx.MaxJSONBody {
+				title = "�😀\\ud800"
+			}
+			row := stepHTTPRows()[0]
+			row.ID, row.Title, row.Description = "00000000", title, ""
+			result := stepHTTPWrite(t, 2, []api.TaskStep{row}, true)
+			h.Steps.AddFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if input.Title != title || input.Description != "" || input.Version != 1 {
+					t.Fatal("valid Unicode or exact body boundary changed")
+				}
+				return result, nil
+			}
+			response := projectRequest(h, "POST", stepHTTPPath(), body)
+			if response.Code != 201 || !bytes.Equal(response.Body.Bytes(), result.JSON) {
+				t.Fatal("valid input receipt changed")
+			}
+		})
 	}
 }
 
 func TestStepsHTTPAddCommittedResponseLossAndReadOnlyReconciliation(t *testing.T) {
-	for _, mode := range []string{"short", "failed", "canceled_before_body"} {
-		t.Run(mode, func(t *testing.T) {
-			var logs bytes.Buffer
-			database, handler, task := stepsHTTPFixture(t, &logs)
-			path := taskPath(task) + "/steps"
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if mode == "canceled_before_body" {
-				config := database.Pool.Config().Copy()
-				config.ConnConfig.Tracer = &stepCommitCancelTracer{cancel: cancel}
-				pool, err := pgxpool.NewWithConfig(context.Background(), config)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(pool.Close)
-				handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
-			}
-			request := httptest.NewRequest("POST", path, strings.NewReader(`{"version":1,"id":"ABCDEF01","title":"secret-title","description":"secret-markdown https://secret.invalid token-secret"}`)).WithContext(ctx)
-			authorizeResourceRequest(handler, request)
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("X-Request-ID", "steps-lost")
-			writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder(), short: mode == "short"}
-			handler.ServeHTTP(writer, request)
-			if mode == "canceled_before_body" && writer.calls != 0 || mode != "canceled_before_body" && (writer.calls != 1 || writer.Code != 201) {
-				t.Fatalf("response replay or missing status: %d %d", writer.calls, writer.Code)
-			}
-			logBeforeRead := logs.String()
-			outcome := "failed"
-			if mode == "canceled_before_body" {
-				outcome = mode
-			}
-			if !strings.Contains(logBeforeRead, `"tx_outcome":"committed"`) || !strings.Contains(logBeforeRead, `"response_outcome":"`+outcome+`"`) || !strings.Contains(logBeforeRead, `"written_bytes":0`) {
-				t.Fatalf("commit/response facts missing: %s", logBeforeRead)
-			}
-			request = httptest.NewRequest("GET", path+"/abcdef01", nil)
-			authorizeResourceRequest(handler, request)
-			request.Header.Set("X-Request-ID", "steps-lost.r1")
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			item := decodeResponse[api.StepResource](t, response, 200)
-			if item.Version != 2 || item.Step.ID != "abcdef01" || item.Step.Title != "secret-title" {
-				t.Fatal(item)
-			}
-			request = httptest.NewRequest("GET", path+"/ffffffff", nil)
-			authorizeResourceRequest(handler, request)
-			request.Header.Set("X-Request-ID", "steps-lost.r2")
-			response = httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			if response.Code != 404 {
-				t.Fatal(response.Code)
-			}
-			if !strings.Contains(logs.String(), `"read_kind":"reconcile"`) || !strings.Contains(logs.String(), `"outcome":"found"`) || !strings.Contains(logs.String(), `"outcome":"absent"`) || !strings.Contains(logs.String(), `"version":2`) {
-				t.Fatal("reconciliation current facts missing")
-			}
-			for _, sentinel := range []string{"secret-title", "secret-markdown", "secret.invalid", "token-secret", "private response failure"} {
-				if strings.Contains(logs.String(), sentinel) {
-					t.Fatalf("leaked %s", sentinel)
-				}
-			}
-			var count int
-			var version int64
-			if err := database.Pool.QueryRow(context.Background(), `SELECT version,(SELECT count(*) FROM task_steps WHERE task_id=$1) FROM tasks WHERE id=$1`, task.ID).Scan(&version, &count); err != nil || version != 2 || count != 1 {
-				t.Fatal("read reconciliation replayed a write")
-			}
-		})
-	}
+	stepHTTPResponseLoss(t, "add")
 }

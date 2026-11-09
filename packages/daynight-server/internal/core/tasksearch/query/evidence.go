@@ -9,42 +9,63 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 )
 
+// Text contains the original task fields, including its canonical ID.
+type Text struct{ ID, Title, Description string }
+
+// Hit contains one atom's projected field matches.
+type Hit struct{ ID, Title, Description bool }
+
 // Evidence describes positive hits on branches that satisfy the expression.
 type Evidence struct {
-	Matches          bool
-	Title            bool
-	Description      bool
-	DescriptionTerms []string
+	Matches, ID, ExactID, Title, Description bool
+	DescriptionTerms                         []string
 }
 
 // Evaluate applies an NNF expression to complete, original task text.
-func Evaluate(root *tasksearch.Node, title, description string) Evidence {
-	evidence, _ := EvaluateContext(context.Background(), root, title, description)
+func Evaluate(root *tasksearch.Node, text Text) Evidence {
+	evidence, _ := EvaluateContext(context.Background(), root, text)
 	return evidence
 }
 
 // EvaluateContext observes cancellation during folding and substring scans.
-func EvaluateContext(ctx context.Context, root *tasksearch.Node, title, description string) (Evidence, error) {
+func EvaluateContext(ctx context.Context, root *tasksearch.Node, text Text) (Evidence, error) {
 	needTitle, needDescription := fields(root)
 	var err error
 	if needTitle {
-		title, err = foldASCIIContext(ctx, title)
+		text.Title, err = foldASCIIContext(ctx, text.Title)
 		if err != nil {
 			return Evidence{}, err
 		}
 	}
 	if needDescription {
-		description, err = foldASCIIContext(ctx, description)
+		text.Description, err = foldASCIIContext(ctx, text.Description)
 		if err != nil {
 			return Evidence{}, err
 		}
 	}
-	return evaluate(ctx, root, title, description)
+	return evaluate(ctx, root, text.ID, func(atom tasksearch.Atom) (Hit, error) {
+		hit := Hit{ID: atom.Field.Includes(tasksearch.IDField) && strings.Contains(text.ID, atom.Term)}
+		if atom.Field.Includes(tasksearch.TitleField) {
+			i, err := index(ctx, text.Title, atom.Term)
+			if err != nil {
+				return Hit{}, err
+			}
+			hit.Title = i >= 0
+		}
+		if atom.Field.Includes(tasksearch.DescriptionField) {
+			i, err := index(ctx, text.Description, atom.Term)
+			if err != nil {
+				return Hit{}, err
+			}
+			hit.Description = i >= 0
+		}
+		return hit, nil
+	})
 }
 
 func fields(n *tasksearch.Node) (bool, bool) {
 	if n.Kind == tasksearch.Leaf {
-		return n.Atom.Field != tasksearch.DescriptionField, n.Atom.Field != tasksearch.TitleField
+		return n.Atom.Field.Includes(tasksearch.TitleField), n.Atom.Field.Includes(tasksearch.DescriptionField)
 	}
 	lt, ld := fields(n.Left)
 	rt, rd := fields(n.Right)
@@ -75,88 +96,43 @@ func index(ctx context.Context, text, term string) (int, error) {
 	return -1, nil
 }
 
-func evaluate(ctx context.Context, n *tasksearch.Node, title, description string) (Evidence, error) {
+func evaluate(ctx context.Context, n *tasksearch.Node, taskID string, resolve func(tasksearch.Atom) (Hit, error)) (Evidence, error) {
 	if err := ctx.Err(); err != nil {
 		return Evidence{}, err
 	}
+	if n == nil {
+		return Evidence{}, errors.New("missing search expression")
+	}
 	if n.Kind == tasksearch.Leaf {
-		var titleHit, descriptionHit bool
-		if n.Atom.Field != tasksearch.DescriptionField {
-			i, err := index(ctx, title, n.Atom.Term)
-			if err != nil {
-				return Evidence{}, err
-			}
-			titleHit = i >= 0
+		hit, err := resolve(n.Atom)
+		if err != nil {
+			return Evidence{}, err
 		}
-		if n.Atom.Field != tasksearch.TitleField {
-			i, err := index(ctx, description, n.Atom.Term)
-			if err != nil {
-				return Evidence{}, err
-			}
-			descriptionHit = i >= 0
+		f := n.Atom.Field
+		if !f.Valid() || hit.ID && !f.Includes(tasksearch.IDField) || hit.Title && !f.Includes(tasksearch.TitleField) || hit.Description && !f.Includes(tasksearch.DescriptionField) {
+			return Evidence{}, errors.New("search evidence contains an excluded field")
 		}
-		matched := titleHit || descriptionHit
+		if hit.ID != (f.Includes(tasksearch.IDField) && strings.Contains(taskID, n.Atom.Term)) {
+			return Evidence{}, errors.New("search ID evidence differs from task ID")
+		}
+		matched := hit.ID || hit.Title || hit.Description
 		if n.Negated {
 			return Evidence{Matches: !matched}, nil
 		}
-		e := Evidence{Matches: matched, Title: titleHit, Description: descriptionHit}
-		if descriptionHit {
+		e := Evidence{Matches: matched, ID: hit.ID, ExactID: hit.ID && n.Atom.Term == taskID, Title: hit.Title, Description: hit.Description}
+		if hit.Description {
 			e.DescriptionTerms = []string{n.Atom.Term}
 		}
 		return e, nil
 	}
-	left, err := evaluate(ctx, n.Left, title, description)
+	if n.Kind != tasksearch.And && n.Kind != tasksearch.Or {
+		return Evidence{}, errors.New("invalid search expression")
+	}
+	left, err := evaluate(ctx, n.Left, taskID, resolve)
 	if err != nil {
 		return Evidence{}, err
 	}
-	right, err := evaluate(ctx, n.Right, title, description)
-	if err != nil {
-		return Evidence{}, err
-	}
-	if n.Kind == tasksearch.And && (!left.Matches || !right.Matches) {
-		return Evidence{}, nil
-	}
-	if n.Kind == tasksearch.Or && !left.Matches && !right.Matches {
-		return Evidence{}, nil
-	}
-	e := Evidence{Matches: true}
-	if left.Matches {
-		e.Title, e.Description = left.Title, left.Description
-		e.DescriptionTerms = append(e.DescriptionTerms, left.DescriptionTerms...)
-	}
-	if right.Matches {
-		e.Title = e.Title || right.Title
-		e.Description = e.Description || right.Description
-		e.DescriptionTerms = append(e.DescriptionTerms, right.DescriptionTerms...)
-	}
-	return e, nil
-}
-
-// EvaluateHits applies the same expression semantics to DAO-projected hits.
-func EvaluateHits(ctx context.Context, n *tasksearch.Node, hits map[tasksearch.Atom]Evidence) (Evidence, error) {
-	if err := ctx.Err(); err != nil {
-		return Evidence{}, err
-	}
-	if n.Kind == tasksearch.Leaf {
-		e, ok := hits[n.Atom]
-		if !ok {
-			return Evidence{}, errors.New("search evidence is missing an atom")
-		}
-		matched := e.Title || e.Description
-		if n.Negated {
-			return Evidence{Matches: !matched}, nil
-		}
-		e.Matches = matched
-		if e.Description {
-			e.DescriptionTerms = []string{n.Atom.Term}
-		}
-		return e, nil
-	}
-	left, err := EvaluateHits(ctx, n.Left, hits)
-	if err != nil {
-		return Evidence{}, err
-	}
-	right, err := EvaluateHits(ctx, n.Right, hits)
+	right, err := evaluate(ctx, n.Right, taskID, resolve)
 	if err != nil {
 		return Evidence{}, err
 	}
@@ -164,14 +140,34 @@ func EvaluateHits(ctx context.Context, n *tasksearch.Node, hits map[tasksearch.A
 		return Evidence{}, nil
 	}
 	e := Evidence{Matches: true}
-	if left.Matches {
-		e.Title, e.Description = left.Title, left.Description
-		e.DescriptionTerms = append(e.DescriptionTerms, left.DescriptionTerms...)
+	for _, child := range []Evidence{left, right} {
+		if child.Matches {
+			e.ID = e.ID || child.ID
+			e.ExactID = e.ExactID || child.ExactID
+			e.Title = e.Title || child.Title
+			e.Description = e.Description || child.Description
+			e.DescriptionTerms = append(e.DescriptionTerms, child.DescriptionTerms...)
+		}
 	}
-	if right.Matches {
-		e.Title = e.Title || right.Title
-		e.Description = e.Description || right.Description
-		e.DescriptionTerms = append(e.DescriptionTerms, right.DescriptionTerms...)
+	return e, nil
+}
+
+// EvaluateHits applies the same expression semantics to DAO-projected hits.
+func EvaluateHits(ctx context.Context, n *tasksearch.Node, taskID string, hits map[tasksearch.Atom]Hit) (Evidence, error) {
+	visited := make(map[tasksearch.Atom]struct{})
+	e, err := evaluate(ctx, n, taskID, func(atom tasksearch.Atom) (Hit, error) {
+		hit, ok := hits[atom]
+		if !ok {
+			return Hit{}, errors.New("search evidence is missing an atom")
+		}
+		visited[atom] = struct{}{}
+		return hit, nil
+	})
+	if err != nil {
+		return Evidence{}, err
+	}
+	if len(visited) != len(hits) {
+		return Evidence{}, errors.New("search evidence contains an extra atom")
 	}
 	return e, nil
 }

@@ -21,6 +21,7 @@ jobs:
       cli: ${{ steps.modules.outputs.cli }}
       server: ${{ steps.modules.outputs.server }}
       web: ${{ steps.modules.outputs.web }}
+      e2e: ${{ steps.modules.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,7 +58,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -143,7 +143,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -312,9 +311,40 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Prepare production Web resources for API integration
+        working-directory: .
+        env:
+          COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+          npm_config_devdir: ${{ github.workspace }}/.tmp/node-gyp
+        run: |
+          pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+          pnpm web:build
       - name: Validate Go module tests and coverage
         id: server-validation
         run: bash scripts/check.sh --coverage
+      - name: Validate normal Go API integration flows
+        id: server-integration
+        run: bash scripts/integration.sh
+      - name: Reconcile owned API integration resources
+        if: ${{ always() && steps.server-integration.outcome != 'skipped' }}
+        run: bash scripts/integration.sh --cleanup
+      - name: Upload Go API integration evidence
+        if: ${{ always() && steps.server-integration.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-server-api-integration
+          path: |
+            packages/daynight-server/.tmp/integration-results/**/build.json
+            packages/daynight-server/.tmp/integration-results/**/result.json
+            packages/daynight-server/.tmp/integration-results/**/run.log
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload Go coverage evidence
         if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -406,11 +436,85 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  verify-e2e:
+    name: verify (product E2E)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright-browsers
+      DAYNIGHT_E2E_RUN_POINTER: ${{ github.workspace }}/.tmp/product-e2e-run.json
+      GOCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-mod
+      GOPATH: ${{ github.workspace }}/.tmp/product-e2e-cache/go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 2
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        timeout-minutes: 2
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Prepare product E2E build caches
+        timeout-minutes: 1
+        run: mkdir -p .tmp/product-e2e-cache/go-build .tmp/product-e2e-cache/go-mod .tmp/product-e2e-cache/go
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 3
+        with:
+          go-version: 1.27.2
+          cache: true
+          cache-dependency-path: |
+            packages/daynight-server/go.sum
+            packages/e2e_tests/src/build.ts
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+        timeout-minutes: 3
+      - name: Install the locked product E2E Chromium browser
+        timeout-minutes: 4
+        run: pnpm --filter @codetreker/daynight-e2e exec playwright install --with-deps chromium
+      - name: Verify product E2E types
+        timeout-minutes: 1
+        run: pnpm --filter @codetreker/daynight-e2e typecheck
+      - name: Verify product E2E harness behavior
+        timeout-minutes: 1
+        run: pnpm e2e:test:harness
+      - name: Verify the complete isolated product journey
+        id: product-e2e
+        timeout-minutes: 15
+        run: pnpm e2e:test
+      - name: Reconcile product E2E resources after execution
+        if: ${{ always() && steps.product-e2e.outcome != 'skipped' }}
+        timeout-minutes: 3
+        run: pnpm e2e:cleanup
+      - name: Upload product E2E evidence
+        timeout-minutes: 1
+        if: ${{ always() && steps.product-e2e.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-product-e2e
+          path: |
+            .tmp/product-e2e/*/results/**
+            .tmp/product-e2e/*/logs/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser]
+    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser, verify-e2e]
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 5
     steps:
       - name: Require preceding jobs to succeed or be skipped
         env:
@@ -422,3 +526,8 @@ jobs:
           WEB_QUALITY_RESULT: ${{ needs.verify-web-quality.result }}
           WEB_BROWSER_RESULT: ${{ needs.verify-web-browser.result }}
         run: test "$WEB_QUALITY_RESULT" = success && test "$WEB_BROWSER_RESULT" = success
+      - name: Require selected product E2E to succeed
+        if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+        env:
+          E2E_RESULT: ${{ needs.verify-e2e.result }}
+        run: test "$E2E_RESULT" = success

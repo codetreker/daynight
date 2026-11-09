@@ -1,11 +1,14 @@
 package webhook
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 )
 
 func TestDestinationDocumentValidation(t *testing.T) {
@@ -29,24 +32,52 @@ func TestDestinationDocumentValidation(t *testing.T) {
 }
 
 func TestCatalogRejectsInvalidCredentialAndMissingPolicy(t *testing.T) {
-	f := newFixture(t, true)
-	if _, err := f.svc.Catalog(f.ctx, model.Principal{}); err == nil {
-		t.Fatal("invalid principal accepted")
-	}
-	principal := f.principal(t)
-	if _, err := f.svc.Catalog(f.ctx, principal); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Pool.Exec(f.ctx, `DELETE FROM webhook_policies WHERE version=1`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.svc.Catalog(f.ctx, principal); err == nil {
-		t.Fatal("missing policy accepted")
-	}
-	if _, err := f.db.Pool.Exec(f.ctx, `DELETE FROM sessions WHERE id=$1`, principal.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.svc.Catalog(f.ctx, principal); err == nil || !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("revoked credential: %v", err)
+	for _, kind := range []string{"invalid principal", "revoked credential", "missing policy", "snapshot failure", "success"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newMgmtFixture(t)
+			cause := errors.New("policy unavailable")
+			f.preDAO.PolicyFn = func(_ context.Context, v int64) (wm.Policy, error) {
+				if v != 1 {
+					t.Errorf("catalog policy=%d", v)
+				}
+				return f.policy, nil
+			}
+			principal := f.principal
+			switch kind {
+			case "invalid principal":
+				principal = model.Principal{}
+			case "revoked credential":
+				f.preCredential.CredentialFn = func(context.Context, model.Principal) (store.ThreadCredential, error) {
+					return store.ThreadCredential{}, model.ErrNotFound
+				}
+			case "missing policy":
+				f.preDAO.PolicyFn = func(context.Context, int64) (wm.Policy, error) { return wm.Policy{}, cause }
+			case "snapshot failure":
+				f.db.ReadFn = func(context.Context, func(store.WebhookReadScope) error) error { return cause }
+			}
+			value, err := f.service.Catalog(f.ctx, principal)
+			switch kind {
+			case "invalid principal":
+				if err == nil || len(f.trace.snapshot()) != 0 {
+					t.Fatalf("invalid catalog=%#v %v", value, err)
+				}
+			case "revoked credential":
+				if !errors.Is(err, model.ErrNotFound) {
+					t.Fatalf("revoked cause=%v", err)
+				}
+			case "missing policy", "snapshot failure":
+				if !errors.Is(err, cause) {
+					t.Fatalf("lost catalog cause=%v", err)
+				}
+			case "success":
+				if err != nil {
+					t.Fatal(err)
+				}
+				v := value.(map[string]any)
+				if len(v["items"].([]any)) != 6 || v["limits"].(map[string]any)["policyVersion"] != "1" {
+					t.Fatalf("catalog=%#v", v)
+				}
+			}
+		})
 	}
 }

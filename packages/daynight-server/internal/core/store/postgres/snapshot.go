@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
@@ -53,5 +54,6 @@ func (s *Snapshot) TeamDAO() TeamReader             { return team.NewReader(s.tx
 func (s *Snapshot) ProjectDAO() ProjectReader       { return project.NewReader(s.tx) }
 func (s *Snapshot) TaskDAO() TaskReader             { return task.NewReader(s.tx) }
 func (s *Snapshot) WorkerDAO() WorkerReader         { return worker.NewReader(s.tx) }
+func (s *Snapshot) SessionDAO() SessionReader       { return session.NewReader(s.tx) }
 func (s *Snapshot) BotDAO() BotReader               { return bot.NewReader(s.tx) }
 func (s *Snapshot) AttachmentDAO() AttachmentReader { return attachment.NewReader(s.tx) }

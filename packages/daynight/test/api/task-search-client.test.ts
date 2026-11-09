@@ -162,3 +162,39 @@ describe("task search HTTP contract", () => {
     expect(totalLimit).toHaveBeenCalledTimes(2);
   });
 });
+
+it("accepts each ordered field subsequence and preserves the raw ID expression", async () => {
+  const cases = [[], ["id"], ["title"], ["description"], ["id", "title"], ["id", "description"], ["title", "description"], ["id", "title", "description"]];
+  for (const fields of cases) {
+    const match = { fields, descriptionSnippet: fields.includes("description") ? "摘录😀" : null };
+    const page = { ...first, total: 1, items: [{ ...first.items[0], match }], nextCursor: null };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    const query = '  id:"50E2-4aaf" OR title:cache  ';
+    const result = await api(fetch).searchTasks(projectId, { query });
+    expect(result[0]!.match).toEqual(match);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).query).toBe(query);
+  }
+});
+
+it("rejects malformed ID search evidence", async () => {
+  for (const match of [
+    { fields: ["unknown"], descriptionSnippet: null }, { fields: ["id", "id"], descriptionSnippet: null },
+    { fields: ["title", "id"], descriptionSnippet: null }, { fields: ["description", "id"], descriptionSnippet: "x" },
+    { fields: ["id"], descriptionSnippet: "x" }, { fields: ["description"], descriptionSnippet: "" },
+    { fields: ["description"], descriptionSnippet: "😀".repeat(163) }, { fields: ["id"] },
+    { descriptionSnippet: null }, { fields: ["description"], descriptionSnippet: "\ud800" },
+  ]) {
+    const page = { ...first, total: 1, items: [{ ...first.items[0], match }], nextCursor: null };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    await expect(api(fetch).searchTasks(projectId, { query: "id:abc" })).rejects.toMatchObject({ phase: "protocol" });
+  }
+});
+
+it.each(["id-only", "mixed-fields"])("consumes captured %s evidence without reordering", async (name) => {
+  const page = fixture(name);
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+  const query = `id:${page.items[0].id}`;
+  const result = await api(fetch).searchTasks(page.projectId, { query });
+  expect(result[0]!.match).toEqual(page.items[0].match);
+  expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).query).toBe(query);
+});

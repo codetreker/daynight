@@ -19,7 +19,7 @@ import (
 
 func TestSyncAdmissionMeasuresActualRESTEnvelopeAndNewline(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	response := api.TaskSync{Mode: "snapshot", Epoch: "<&", ObservedAt: now, Tasks: []api.TaskViewRecord{{TitlePreview: "<&中文", Properties: api.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<&","title":"x"}]`)}, DependsOn: []string{}, ExternalDependsOn: []string{}, CreatedAt: now, UpdatedAt: now}}, AssigneeVersions: []api.TaskAssigneeVersion{}}
+	response := api.TaskSync{Mode: "snapshot", Epoch: "<&", ObservedAt: now, Tasks: []api.TaskViewRecord{{TitlePreview: "<&中文", Properties: api.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<&","title":"x"}]`)}, DependsOn: []string{}, ExternalDependsOn: []string{}, CreatedAt: now, UpdatedAt: now}}, AssigneeVersions: []api.TaskAssigneeVersion{}, Sessions: map[string]string{"11111111-1111-4111-8111-111111111111": "working", "22222222-2222-4222-8222-222222222222": "notice", "33333333-3333-4333-8333-333333333333": "warning", "44444444-4444-4444-8444-444444444444": "pending"}}
 	var actual bytes.Buffer
 	if err := json.NewEncoder(&actual).Encode(response); err != nil {
 		t.Fatal(err)
@@ -30,6 +30,15 @@ func TestSyncAdmissionMeasuresActualRESTEnvelopeAndNewline(t *testing.T) {
 	var fault *model.Fault
 	if err := admitSyncResponse(response, int64(actual.Len()-1)); !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
 		t.Fatalf("got %v", err)
+	}
+	withoutSessions := response
+	withoutSessions.Sessions = map[string]string{}
+	var baseline bytes.Buffer
+	if err := json.NewEncoder(&baseline).Encode(withoutSessions); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitSyncResponse(response, int64(baseline.Len())); !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("Session map escaped final response budget: %v", err)
 	}
 	if !strings.HasSuffix(actual.String(), "\n") {
 		t.Fatal("missing encoder newline")

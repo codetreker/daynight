@@ -7,11 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -87,15 +88,15 @@ func (tr *lostBotReceiptTransport) RoundTrip(req *http.Request) (*http.Response,
 }
 
 func TestMCPBotLostReceiptsRemainReconciliable(t *testing.T) {
-	h := projectTestHandler(t, projectTestStore(t), io.Discard)
+	tx := newHTTPTestStore(t)
+	principal := defaultHTTPPrincipal()
 	worker := uuid.NewString()
-	body := workerSnapshotReportBody()
-	host := assistantHostBody()
-	host["observedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
-	body["assistantHost"] = host
-	reportSnapshotHTTP(t, h, worker, body)
-	server := httptest.NewServer(h.Handler)
-	t.Cleanup(server.Close)
+	now := time.Now().UTC()
+	defaults := mcpBotDefaults(principal.UserID, worker, now)
+	modelName := "gpt-5"
+	configuration := model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "copilot", Model: &modelName, Args: []string{"--effort", "high"}}
+	server, _ := newMCPHTTPServer(t, tx, attachmentTestFiles(t))
+	h := &resourceTestHandler{Handler: server.Config.Handler, token: defaultHTTPToken(), principal: principal}
 
 	tr := &lostBotReceiptTransport{token: h.token}
 	client := sdk.NewClient(&sdk.Implementation{Name: "lost-bot-receipt", Version: "1"}, nil)
@@ -136,12 +137,21 @@ func TestMCPBotLostReceiptsRemainReconciliable(t *testing.T) {
 		return doc.Data
 	}
 	id, deletionID := uuid.NewString(), uuid.NewString()
+	expected := mcpBotModel(principal.UserID, worker, id, "Lost receipt", model.BotOverrides{}, configuration, now)
+	mcpBotCreation(t, tx, principal, defaults, expected)
 	callLost("bot_create", map[string]any{"name": "Lost receipt", "requestId": id})
+	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bot", []any{id}, expected, nil))
 	created := show(id)
 	if tr.createCalls.Load() != 1 || tr.completed.Load() != 1 || created["id"] != id || created["version"] != "1" || created["workerId"] != worker {
 		t.Fatalf("create calls=%d completed=%d data=%+v", tr.createCalls.Load(), tr.completed.Load(), created)
 	}
+	deletionModel := expected
+	deletionModel.Version = 2
+	deletionModel.Deletion = &model.BotDeletion{DeletionID: deletionID, RequestedVersion: 1, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+	deletionModel.UpdatedAt = now.Add(time.Second)
+	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, expected, nil), mcpBotCall("LockBotSessions", []any{id}, []store.BotSession{}, nil), mcpBotCall("RevokeBotSessions", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, deletionModel.Deletion}, deletionModel, nil), mcpBotLockCredentialCall(t, principal))
 	callLost("bot_delete", map[string]any{"botId": id, "ifVersion": "1", "requestId": deletionID})
+	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bot", []any{id}, deletionModel, nil))
 	deleted := show(id)
 	deletion, ok := deleted["deletion"].(map[string]any)
 	if tr.createCalls.Load() != 1 || tr.deleteCalls.Load() != 1 || tr.completed.Load() != 2 || deleted["id"] != id || deleted["version"] != "2" || !ok || deletion["deletionId"] != deletionID || deletion["requestedVersion"] != "1" {

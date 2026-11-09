@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { getTask, getTaskSync } from '../src/api/client';
@@ -34,7 +34,7 @@ let overflow: string;
 const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 beforeEach(() => {
   syncFixture.reset();
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(syncFixture.toSync(await graphRequest(projectId, signal), query)));
 });
 
 beforeEach(() => {

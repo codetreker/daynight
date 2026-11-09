@@ -84,6 +84,14 @@ collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后
 
 该恢复机制只覆盖只读探测。默认解析仍使用当前有效报告，目标 Provider 不可用时保留拒绝原因，不自动改选同机其它 Provider；已有 Bot 的持久 ready 不能证明当前可创建。确认状态属于运行中 runner 的原始对象，网页刷新既不升级旧 Worker 代码，也不能补回旧错误缺失的确认句柄。升级及现场验证必须分别核对真实运行版本、Worker 报告和实际创建结果，不能从文档或新 collector 成功推定旧 Worker 已恢复。
 
+### 匹配 Codex 调用的组合清理责任
+
+telemetry 为显式组合创建一个 Codex probe owner，经 Bot host 的 `collect` 包装传给助手 collector；独立助手 collector 使用本地 owner。包装仍在关闭或未应用配置时省略采集，并丢弃跨配置变化的结果。owner 只串行匹配 `codex` executable 名、原始启动目录和选定 PATH 的普通版本与助手完整版本/帮助链，Windows 还比较 PATHEXT。助手使用已验证真实目录执行，匹配保留其原始启动目录来源。不同 executable、搜索输入、目录及其它 Provider 不进入这条等待链；不添加 executable 查找，不推断路径别名的文件身份。
+
+两个 collector 分别捕获 bare Codex 搜索环境。Windows 按 Node 字母序选择第一个大小写不敏感 PATH/PATHEXT 键，删除重复别名后使用唯一大写键；同一捕获环境交给 launcher 和 owner。锁定 `cross-spawn` 的 shebang 搜索与 Node native 环境选择对重复键不同，唯一键使二者使用相同输入。其他环境键、Provider 和显式 executable 保留原环境。
+
+owner 在等待前登记后续调用，join 前一链后检查取消和原始清理责任。匹配链的清理失败保留原错误并立即使普通 Codex 缓存失效；因此即使原 child 在下一轮前可靠关闭，也不能复用失败前成功。普通版本在 owner 内读取缓存，未确认的共享错误映射为本轮不可用并保留原对象。仅原命令可靠确认后才移除共享阻塞，普通失败缓存再按既有恢复规则失效并实际重采。历史清理类别、独立聚合错误、无确认句柄及终止失败的判断继续由原 runner 查询负责；其它 collector 或 Provider 的成功不能提供确认。等待不增加命令、监听或五秒预算，取消后不能启动排队探测。[组合清理决策](../../.agents/notes/implemented/bug-fix/2026-11-04-codex-reporting-probe-ownership.md)记录匹配范围与缓存取舍。
+
 ## 失败与可观察性
 
 reporter 按字段或 report 子系统保存故障签名和重复次数；故障变化时输出 worker_report_failed，恢复时输出 worker_report_recovered。诊断重新构造错误类别与 cause 结构，不传递原错误消息或命令输出。该状态只去重，不承担重试或恢复职责。

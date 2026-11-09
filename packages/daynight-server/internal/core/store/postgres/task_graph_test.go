@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -117,6 +118,47 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	fresh := snapshotTask(t, s, project.ID, b.ID)
+	if !fresh.Ready || len(fresh.BlockedBy) != 0 || fresh.Version != b.Version || fresh.UpdatedAt != b.UpdatedAt || !slices.Equal(fresh.DependsOn, b.DependsOn) {
+		t.Fatalf("fresh derived state changed Task metadata: %#v, before %#v", fresh, b)
+	}
+}
+
+func TestTaskGraphCapacityCountsAndExactProjection(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	for index, test := range []struct{ nodes, edges int }{
+		{1000, 5000}, {1001, 1000}, {101, 5001},
+	} {
+		t.Run(fmt.Sprintf("%d_nodes_%d_edges", test.nodes, test.edges), func(t *testing.T) {
+			project := queryProject(t, database, index+1)
+			root := seedConnectedTaskGraph(t, database, project.ID, test.nodes, test.edges)
+			if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+				size, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, root, testGraphSelection())
+				if err != nil || size != (TaskGraphSize{NodeCount: int64(test.nodes), EdgeCount: int64(test.edges)}) {
+					t.Fatalf("capacity input counts changed: %#v, %v", size, err)
+				}
+				// Business admission uses these counts before requesting a projection.
+				if test.nodes != 1000 || test.edges != 5000 {
+					return nil
+				}
+				tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, root, testGraphSelection(), 160)
+				if err != nil || len(tasks) != 1000 {
+					t.Fatalf("exact capacity projection truncated: %d, %v", len(tasks), err)
+				}
+				edges := 0
+				for _, task := range tasks {
+					edges += len(task.DependsOn)
+				}
+				if edges != 5000 {
+					t.Fatalf("exact capacity edges truncated: %d", edges)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
@@ -171,6 +213,20 @@ func TestTaskGraphRootRequiresLiveProjectScopedTask(t *testing.T) {
 	project, other := queryProject(t, database, 1), queryProject(t, database, 2)
 	root := queryTask(t, database, project.ID, 11, model.TaskTodo)
 	foreign := queryTask(t, database, other.ID, 21, model.TaskTodo)
+	seedTaskGraph(t, database, project.ID, 1001, 5001)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		size, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, root.ID, testGraphSelection())
+		if err != nil || size != (TaskGraphSize{NodeCount: 1}) {
+			t.Fatalf("unrelated project capacity changed the selected graph: %#v, %v", size, err)
+		}
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, root.ID, testGraphSelection(), 160)
+		if err != nil || len(tasks) != 1 || tasks[0].ID != root.ID {
+			t.Fatalf("isolated graph lost its root: %#v, %v", tasks, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { return graphRoot(ctx, snapshot, project.ID, root.ID) }); err != nil {
 		t.Fatalf("live graph root refused: %v", err)
 	}

@@ -3,13 +3,16 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	botpg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/bot"
+	sessionpg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
@@ -42,14 +45,121 @@ func writeBotWithSessionTest(database *Store, ctx context.Context, operation fun
 	return transact(ctx, tx, func(tx pgx.Tx) error { return operation(botpg.NewWriter(tx), tx) })
 }
 
+func runtimeBotState(t *testing.T, database *Store, id string) string {
+	t.Helper()
+	var state string
+	if err := database.Pool.QueryRow(t.Context(), `SELECT jsonb_build_object('bot',to_jsonb(b),
+ 'sessions',(SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY s.id),'[]'::jsonb) FROM task_sessions s WHERE s.bot_id=b.id),
+ 'workerPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(p)),'[]'::jsonb) FROM bot_worker_preferences p WHERE p.user_id=b.owner_user_id),
+ 'configurationPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY p.worker_id),'[]'::jsonb) FROM bot_configuration_preferences p WHERE p.user_id=b.owner_user_id))::text FROM bots b WHERE b.id=$1`, id).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func runtimeBotPAT(t *testing.T, database *Store, bot model.Bot) model.Principal {
+	t.Helper()
+	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: bot.OwnerUserID, TokenHash: deviceStoreHash(uuid.NewString()), Name: "Runtime boundary", CreatedAt: time.Now().UTC()}
+	identityScopeTest(t, database, func(scope IdentityScope) error { return scope.IdentityDAO().InsertPAT(t.Context(), pat) })
+	return model.Principal{Kind: model.PATCredential, UserID: bot.OwnerUserID, CredentialID: pat.ID}
+}
+
+func runtimeSessionCredential(ctx context.Context, _ BotWriteDAO, raw pgx.Tx, principal model.Principal) error {
+	return sessionpg.New(raw).LockCredential(ctx, principal, time.Now().UTC())
+}
+
+func runtimeDefinitionCredential(ctx context.Context, dao BotWriteDAO, _ pgx.Tx, principal model.Principal) error {
+	return dao.Credential(ctx, principal)
+}
+
+func runtimeBotWriteAfterLock(t *testing.T, database *Store, bot model.Bot, principal model.Principal, credential func(context.Context, BotWriteDAO, pgx.Tx, model.Principal) error, expired bool, operation func(context.Context, BotWriteDAO, pgx.Tx) error) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	table := "personal_access_tokens"
+	if principal.Kind == model.SessionCredential {
+		table = "sessions"
+	}
+	var expiry time.Time
+	duration := "1 day"
+	if expired {
+		duration = "1 second"
+	}
+	if err := database.Pool.QueryRow(ctx, `UPDATE `+table+` SET expires_at=clock_timestamp()+$2::interval WHERE id=$1 RETURNING expires_at`, principal.CredentialID, duration).Scan(&expiry); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(context.Background())
+	if _, err := holder.Exec(ctx, `SELECT id FROM bots WHERE id=$1 FOR UPDATE`, bot.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := runtimeBotState(t, database, bot.ID)
+	done, finished := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(finished)
+		done <- writeBotWithSessionTest(database, ctx, func(dao BotWriteDAO, raw pgx.Tx) error {
+			if err := credential(ctx, dao, raw, principal); err != nil {
+				return err
+			}
+			if _, err := dao.Bot(ctx, bot.ID); err != nil {
+				return err
+			}
+			if err := operation(ctx, dao, raw); err != nil {
+				return err
+			}
+			return credential(ctx, dao, raw, principal)
+		})
+	}()
+	defer func() {
+		cancel()
+		_ = holder.Rollback(context.Background())
+		select {
+		case <-finished:
+		case <-time.After(2 * time.Second):
+			t.Error("runtime mutation did not drain after cancellation")
+		}
+	}()
+	waitTransferTeamLock(t, ctx, database, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
+	if expired {
+		for {
+			var reached bool
+			if err := database.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&reached); err != nil {
+				t.Fatal(err)
+			}
+			if reached {
+				break
+			}
+			if err := waitThreadClock(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if expired && runtimeBotState(t, database, bot.ID) != before {
+		t.Fatal("expired credential committed Bot, Session or preference changes")
+	}
+	return err
+}
+
 func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 	database := isolatedStore(t)
 	bot := runtimeStoredBot(t, database)
 	ctx := context.Background()
 	sessionID, executionID := uuid.NewString(), uuid.NewString()
 	role := model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: strings.Repeat("a", 64)}
+	principal := runtimeBotPAT(t, database, bot)
 	failure := errors.New("reject complete registration")
-	bind := func(tx BotWriteDAO, raw pgx.Tx) (model.Bot, error) {
+	bind := func(ctx context.Context, tx BotWriteDAO, raw pgx.Tx) (model.Bot, error) {
 		current, err := tx.Bot(ctx, bot.ID)
 		if err != nil {
 			return model.Bot{}, err
@@ -59,8 +169,11 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 		}
 		return tx.BindBotSession(ctx, bot.ID, current.Version, sessionID, role)
 	}
+	if err := runtimeBotWriteAfterLock(t, database, bot, principal, runtimeSessionCredential, true, func(ctx context.Context, tx BotWriteDAO, raw pgx.Tx) error { _, err := bind(ctx, tx, raw); return err }); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("registration credential expired behind unchanged Bot lock: %v", err)
+	}
 	if err := writeBotWithSessionTest(database, ctx, func(tx BotWriteDAO, raw pgx.Tx) error {
-		if _, err := bind(tx, raw); err != nil {
+		if _, err := bind(ctx, tx, raw); err != nil {
 			return err
 		}
 		return failure
@@ -80,14 +193,24 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeBotWithSessionTest(database, ctx, func(tx BotWriteDAO, raw pgx.Tx) error {
-		current, err := bind(tx, raw)
+	if err := runtimeBotWriteAfterLock(t, database, bot, principal, runtimeSessionCredential, false, func(ctx context.Context, tx BotWriteDAO, raw pgx.Tx) error {
+		current, err := bind(ctx, tx, raw)
 		if err == nil && (current.Version != 2 || current.SessionID == nil || *current.SessionID != sessionID || current.TestExecutionID == nil || *current.TestExecutionID != executionID || !reflect.DeepEqual(current.RoleConfiguration, &role)) {
-			t.Fatalf("invalid committed binding: %+v", current)
+			return fmt.Errorf("invalid committed binding: %+v", current)
 		}
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	beforeReplay := runtimeBotState(t, database, bot.ID)
+	if err := runtimeBotWriteAfterLock(t, database, bot, principal, runtimeSessionCredential, false, func(ctx context.Context, tx BotWriteDAO, _ pgx.Tx) error {
+		current, err := tx.Bot(ctx, bot.ID)
+		if err == nil && (current.SessionID == nil || *current.SessionID != sessionID || current.TestExecutionID == nil || *current.TestExecutionID != executionID || !reflect.DeepEqual(current.RoleConfiguration, &role)) {
+			t.Error("registration read lost committed binding")
+		}
+		return err
+	}); err != nil || runtimeBotState(t, database, bot.ID) != beforeReplay {
+		t.Fatalf("registration replay changed persisted state: %v", err)
 	}
 	for _, version := range []int64{1, 2} {
 		if err := writeBotTest(database, ctx, func(tx BotWriteDAO) error {
@@ -110,14 +233,34 @@ func TestBotStartupRejectsUnboundStaleDeletedAndExhaustedWrites(t *testing.T) {
 		t.Fatalf("unbound Bot became ready: %v", err)
 	}
 	code := "directory_missing"
-	if err := writeBotTest(database, ctx, func(tx BotWriteDAO) error {
+	principal := runtimeBotPAT(t, database, bot)
+	if err := runtimeBotWriteAfterLock(t, database, bot, principal, runtimeSessionCredential, true, func(ctx context.Context, tx BotWriteDAO, _ pgx.Tx) error {
+		_, err := tx.SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "failed", Code: &code})
+		return err
+	}); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("report credential expired behind unchanged Bot lock: %v", err)
+	}
+	if err := runtimeBotWriteAfterLock(t, database, bot, principal, runtimeSessionCredential, false, func(ctx context.Context, tx BotWriteDAO, _ pgx.Tx) error {
 		current, err := tx.SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "failed", Code: &code})
 		if err == nil && (current.Version != 2 || current.StartupResult.State != "failed" || current.StartupResult.Code == nil || *current.StartupResult.Code != code) {
-			t.Fatalf("failure result was lost: %+v", current)
+			return fmt.Errorf("failure result was lost: %+v", current)
 		}
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	beforeReplay := runtimeBotState(t, database, bot.ID)
+	for _, expired := range []bool{true, false} {
+		err := runtimeBotWriteAfterLock(t, database, bot, principal, runtimeSessionCredential, expired, func(ctx context.Context, tx BotWriteDAO, _ pgx.Tx) error {
+			current, err := tx.Bot(ctx, bot.ID)
+			if err == nil && (current.Version != 2 || current.StartupResult.State != "failed" || current.StartupResult.Code == nil || *current.StartupResult.Code != code || current.SessionID != nil || current.RoleConfiguration != nil) {
+				t.Error("report read lost committed preflight result")
+			}
+			return err
+		})
+		if expired && !errors.Is(err, model.ErrNotFound) || !expired && err != nil || runtimeBotState(t, database, bot.ID) != beforeReplay {
+			t.Fatalf("report replay changed state or credential outcome: expired=%t error=%v", expired, err)
+		}
 	}
 	if err := writeBotTest(database, ctx, func(tx BotWriteDAO) error {
 		_, err := tx.SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "pending"})

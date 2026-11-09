@@ -1,21 +1,14 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
-	"context"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
-	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/google/uuid"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func syncAssigneeVersions(t *testing.T, value model.TaskSync) map[string]model.TaskAssigneeVersion {
@@ -39,133 +32,124 @@ func syncAssigneeVersions(t *testing.T, value model.TaskSync) map[string]model.T
 }
 
 func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	member := workerMember(t, database, project.ID)
-	former := workerMember(t, database, project.ID)
-	retained := createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
-	other := servicePrincipal(t, database)
-	sync := taskservice.NewTaskSync(database, 10*time.Second)
-	read := func() (model.TaskSync, map[string]model.TaskAssigneeVersion) {
+	f := newTaskReadFixture(t)
+	epoch := taskReadID(90)
+	member, former, other := taskReadID(20), taskReadID(21), taskReadID(30)
+	row := taskReadView(taskReadID(1), "Assigned task", 1, f.observed)
+	row.AssignedTo = &former
+	initialFacts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, nil, nil), taskReadAssignee(former, true, nil, nil))
+	read := func(task model.TaskViewRecord, facts []model.TaskAssigneeFact) (model.TaskSync, map[string]model.TaskAssigneeVersion) {
 		t.Helper()
-		result, err := sync.Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{})
+		sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+			if lower != nil {
+				t.Fatal("full people snapshot acquired a window")
+			}
+			return []model.TaskViewRecord{task}, nil
+		}, facts, 10*time.Second)
+		result, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return result, syncAssigneeVersions(t, result)
 	}
-	baseline, initial := read()
-	if len(initial) != 3 || !initial[member.UserID].HasProjectAccess || initial[other.UserID].UserID != "" {
+	baseline, initial := read(row, initialFacts)
+	if len(initial) != 3 || !initial[member].HasProjectAccess || initial[other].UserID != "" {
 		t.Fatalf("manifest did not match scoped catalogue: %#v", initial)
 	}
-	catalogue, err := tasks.Assignees(ctx, admin, project.ID, taskservice.TaskAssigneesRequest{})
+	catalogue, err := taskservice.NewTasks(f.store).Assignees(f.ctx, f.principal, f.project.ID, taskservice.TaskAssigneesRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, person := range catalogue.Items {
 		if initial[person.UserID].Version != person.Version {
-			t.Fatal("sync and people GET disagree on the same profile version")
+			t.Fatal("Sync and people GET disagree on profile content")
 		}
 	}
-	var user model.User
-	_, err = database.WriteIdentity(ctx, func(scope store.IdentityScope) error {
-		var err error
-		user, _, err = scope.IdentityDAO().IdentityUser(ctx, member.UserID)
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	fixtureIdentitySession(t, database, user, model.Session{ID: uuid.NewString(), TokenHash: secretutil.Hash(secretutil.Random("dnst_")), CreatedAt: now, ExpiresAt: now.Add(identitycore.SessionLifetime)})
-
-	if _, err := database.Pool.Exec(ctx, `UPDATE project_grants SET role='admin',version=version+1 WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE users SET email='not-exposed@example.test' WHERE id=$1`, member.UserID); err != nil {
-		t.Fatal(err)
-	}
-	retained = updateTask(t, tasks, admin, retained, taskcore.UpdateTask{Title: pointer("Unrelated task edit")})
-	unchanged, stable := read()
+	changedRow := row
+	changedRow.Version++
+	changedRow.TitlePreview = "Unrelated task edit"
+	unchanged, stable := read(changedRow, initialFacts)
 	if !reflect.DeepEqual(stable, initial) || unchanged.Tasks[0].Version == baseline.Tasks[0].Version {
-		t.Fatalf("login, role or task changes invalidated profile content: %#v", stable)
+		t.Fatalf("unrelated task signal changed public profiles: %#v", stable)
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE users SET name='Changed <&> 中文',avatar_url='data:image/png;base64,changed',email='private@example.test' WHERE id=$1`, member.UserID); err != nil {
-		t.Fatal(err)
+	name, avatar := "Changed <&> 中文", "data:image/png;base64,changed"
+	changedFacts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, &name, &avatar), taskReadAssignee(former, true, nil, nil))
+	_, changed := read(changedRow, changedFacts)
+	if changed[member].Version == stable[member].Version || changed[f.principal.UserID] != stable[f.principal.UserID] || changed[former] != stable[former] {
+		t.Fatalf("profile change did not invalidate only its content: %#v", changed)
 	}
-	_, changed := read()
-	if changed[member.UserID].Version == stable[member.UserID].Version || changed[admin.UserID] != stable[admin.UserID] || changed[former.UserID] != stable[former.UserID] {
-		t.Fatalf("profile change did not invalidate only its own content: %#v", changed)
+	lostFacts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, &name, &avatar), taskReadAssignee(former, false, nil, nil))
+	_, lostAccess := read(changedRow, lostFacts)
+	if lostAccess[former].HasProjectAccess || lostAccess[former].Version != initial[former].Version {
+		t.Fatalf("access changed retained profile content: %#v", lostAccess[former])
 	}
-	if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
-		t.Fatal(err)
+	removedFacts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, &name, &avatar))
+	_, removed := read(changedRow, removedFacts)
+	if _, exists := removed[former]; exists {
+		t.Fatal("unqualified person remained in complete manifest")
 	}
-	_, lostAccess := read()
-	if lostAccess[former.UserID].HasProjectAccess || lostAccess[former.UserID].Version != initial[former.UserID].Version {
-		t.Fatalf("access-only change invalidated retained profile content: %#v", lostAccess[former.UserID])
+	_, restored := read(changedRow, changedFacts)
+	if restored[former] != initial[former] {
+		t.Fatal("restored access changed unchanged profile version")
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, retained.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, removed := read()
-	if _, exists := removed[former.UserID]; exists {
-		t.Fatal("deleted-only assignment remained a qualified profile")
-	}
-	if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
-		_, err := tx.ProjectDAO().AddInvitedMember(ctx, former.UserID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	_, restored := read()
-	if restored[former.UserID] != initial[former.UserID] {
-		t.Fatal("access restoration changed an unchanged profile version")
+	if !reflect.DeepEqual(syncAssigneeVersions(t, baseline), initial) {
+		t.Fatal("later scope changed baseline manifest")
 	}
 }
 
 func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
-	tasks, database, project, databaseURL, admin := taskService(t)
-	ctx := context.Background()
-	member := workerMember(t, database, project.ID)
-	unreferenced := workerMember(t, database, project.ID)
-	task := createAssignedTask(t, tasks, admin, project.ID, &member.UserID)
-	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := syncAssigneeVersions(t, baseline)
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "SELECT count(*) FROM tasks") }, end: func() {
-		updateTask(t, tasks, admin, task, taskcore.UpdateTask{Title: pointer("Changed in another transaction")})
-		if _, err := database.Pool.Exec(ctx, `UPDATE users SET name='Fresh profile' WHERE id=$1`, member.UserID); err != nil {
-			t.Fatal(err)
+	f := newTaskReadFixture(t)
+	epoch := taskReadID(90)
+	member, unreferenced := taskReadID(20), taskReadID(21)
+	task := taskReadView(taskReadID(1), "Assigned task", 1, f.observed)
+	task.AssignedTo = &member
+	facts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, nil, nil), taskReadAssignee(unreferenced, true, nil, nil))
+	sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		if lower != nil {
+			t.Fatal("complete delta window changed")
 		}
-		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{member.UserID, unreferenced.UserID}); err != nil {
-			t.Fatal(err)
-		}
-	}})
-	old, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
-	if err != nil || !reflect.DeepEqual(syncAssigneeVersions(t, old), initial) || old.Tasks[0].TitlePreview != task.Title {
-		t.Fatalf("task-sync mixed people and task snapshots: %#v %v", old, err)
+		return []model.TaskViewRecord{task}, nil
+	}, facts, 10*time.Second)
+	old, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: epoch})
+	if err != nil || old.Tasks[0].TitlePreview != task.TitlePreview || f.reads != 1 {
+		t.Fatalf("task/profile scope: %#v %v", old, err)
 	}
-	fresh, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
+	initial := syncAssigneeVersions(t, old)
+	name := "Fresh profile"
+	freshFacts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, false, &name, nil))
+	after := task
+	after.TitlePreview = "Changed in another transaction"
+	after.Version++
+	sync = f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		if lower != nil {
+			t.Fatal("fresh complete delta changed")
+		}
+		return []model.TaskViewRecord{after}, nil
+	}, freshFacts, 10*time.Second)
+	fresh, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: epoch})
 	if err != nil {
 		t.Fatal(err)
 	}
 	versions := syncAssigneeVersions(t, fresh)
-	if versions[member.UserID].Version == initial[member.UserID].Version || versions[member.UserID].HasProjectAccess || versions[unreferenced.UserID].UserID != "" || fresh.Tasks[0].TitlePreview == task.Title {
-		t.Fatalf("fresh snapshot missed people or task changes: %#v", fresh)
+	if versions[member].Version == initial[member].Version || versions[member].HasProjectAccess || versions[unreferenced].UserID != "" || fresh.Tasks[0].TitlePreview == task.TitlePreview || f.reads != 2 {
+		t.Fatalf("fresh scope missed profile or Task fields: %#v", fresh)
+	}
+	if !reflect.DeepEqual(syncAssigneeVersions(t, old), initial) || old.Tasks[0].TitlePreview != task.TitlePreview {
+		t.Fatal("fresh scope changed prior response")
 	}
 }
 
 func TestTaskSyncAssigneeIntegrityFailureReturnsNoSnapshot(t *testing.T) {
-	_, database, project, _, admin := taskService(t)
-	member := workerMember(t, database, project.ID)
-	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, member.UserID); err != nil {
-		t.Fatal(err)
-	}
-	result, err := taskservice.NewTaskSync(database, 10*time.Second).Get(context.Background(), admin, project.ID, taskservice.TaskSyncRequest{})
+	f := newTaskReadFixture(t)
+	sync := f.sync(taskReadID(90), store.TaskGraphSize{}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		if lower != nil {
+			t.Fatal("integrity snapshot became windowed")
+		}
+		return []model.TaskViewRecord{}, nil
+	}, []model.TaskAssigneeFact{{UserID: taskReadID(20), HasProjectAccess: true, Qualified: true}}, 10*time.Second)
+	result, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
 	assertOperational(t, err)
 	if !reflect.DeepEqual(result, model.TaskSync{}) {
-		t.Fatalf("missing qualified profile produced a partial task snapshot: %#v", result)
+		t.Fatalf("missing qualified profile produced partial snapshot: %#v", result)
 	}
 }

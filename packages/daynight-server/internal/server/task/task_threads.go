@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"strconv"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -18,11 +16,11 @@ import (
 )
 
 type taskThreadHandler struct {
-	threads *service.TaskThreads
+	threads ThreadService
 	logger  *slog.Logger
 }
 
-func TaskThreadRoutes(mux *http.ServeMux, threads *service.TaskThreads, auth *authhttp.Authentication, logger *slog.Logger) {
+func TaskThreadRoutes(mux *http.ServeMux, threads ThreadService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskThreadHandler{threads: threads, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/thread/messages"
 	mux.HandleFunc("GET "+path, auth.Require(handler.list))

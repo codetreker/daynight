@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -17,10 +20,8 @@ import (
 )
 
 func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Boundary", RepoURL: "https://example.com/boundary", ExpectedUserID: handler.principal.UserID})), http.StatusCreated)
-	task := decodeResponse[api.Task](t, projectRequest(handler, "POST", "/api/v1/projects/"+project.ID+"/tasks", `{"title":"Boundary"}`), http.StatusCreated)
+	project := api.Project{ID: "c3333333-3333-4333-8333-333333333333"}
+	task := api.Task{ProjectID: project.ID, ID: "d4444444-4444-4444-8444-444444444444"}
 	segments := make([]string, 13)
 	for i := range segments {
 		segments[i] = strings.Repeat("中", 78)
@@ -37,6 +38,9 @@ func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
 	if err != nil || page.NextCursor == nil {
 		t.Fatalf("generate attachment cursor: %v", err)
 	}
+	database := newHTTPTestStore(t)
+	configureTransportAttachments(t, database, project.ID, task.ID, path)
+	handler := projectTestHandler(t, database, io.Discard)
 	addr := startBoundaryRuntime(t, handler)
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
@@ -85,4 +89,146 @@ func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
 	if err != nil || list.StatusCode != http.StatusOK || len(result.Items) != 1 || result.Items[0].Path != "😀" {
 		t.Fatalf("cursor list status=%d page=%+v error=%v", list.StatusCode, result, err)
 	}
+}
+
+// Static DAO results keep the transport path and cursor test independent of
+// persistence; actual upload and download bytes still use the local storage.
+func configureTransportAttachments(t *testing.T, database *httpTestStore, projectID, taskID, path string) {
+	t.Helper()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: path, ContentType: "text/plain", SizeBytes: 16, CreatedAt: at, UpdatedAt: at}
+	second := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "😀", ContentType: "text/plain", SizeBytes: 4, CreatedAt: at, UpdatedAt: at}
+	var ancestors []string
+	segments := strings.Split(path, "/")
+	for end := 1; end < len(segments); end++ {
+		ancestors = append(ancestors, strings.Join(segments[:end], "/"))
+	}
+	conflicts := []store.AttachmentConflictQuery{{Ancestors: ancestors, DescendantPrefix: path + "/"}, {Ancestors: []string{}, DescendantPrefix: "😀/"}}
+	items := []model.Attachment{first, second}
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 4, "access": 4, "presence": 4, "mutation": 2, "lock": 2, "live": 2, "conflict": 2, "put": 2, "read": 1, "list": 1})
+	count := plan.Called
+	var conflictIndex, putIndex atomic.Int32
+	check := func(got, want any) {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("transport attachment DAO arguments: got %#v, want %#v", got, want)
+			panic("transport attachment DAO arguments")
+		}
+	}
+	ids := func(project, task string) { check(project, projectID); check(task, taskID) }
+	access := transportAttachmentProjectReader{access: func(_ context.Context, principal model.Principal, project string) (model.ProjectAccess, error) {
+		count("access")
+		check(principal, defaultHTTPPrincipal())
+		check(project, projectID)
+		return model.ProjectAccess{ProjectID: projectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
+	}}
+	tasks := transportAttachmentTaskReader{presence: func(_ context.Context, project, task string) (store.TaskPresence, error) {
+		count("presence")
+		ids(project, task)
+		return store.TaskPresence{Found: true}, nil
+	}}
+	dao := transportAttachmentDAO{
+		read: func(_ context.Context, project, task, name string) (model.Attachment, error) {
+			count("read")
+			ids(project, task)
+			check(name, path)
+			return first, nil
+		},
+		list: func(_ context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
+			count("list")
+			ids(project, task)
+			check(query, store.AttachmentQuery{After: &path, Limit: 1, MaxPathBytes: attachmentcore.MaxMetadataPageResponseJSONBytes, MaxFieldBytes: attachmentcore.MaxMetadataPageResponseJSONBytes})
+			return store.AttachmentPage{Items: []model.Attachment{second}}, nil
+		},
+		conflict: func(_ context.Context, project, task string, query store.AttachmentConflictQuery) (bool, error) {
+			count("conflict")
+			index := int(conflictIndex.Add(1)) - 1
+			ids(project, task)
+			check(query, conflicts[index])
+			return false, nil
+		},
+		put: func(_ context.Context, item model.Attachment) (model.Attachment, bool, error) {
+			count("put")
+			index := int(putIndex.Add(1)) - 1
+			result := items[index]
+			check(item, model.Attachment{ProjectID: projectID, TaskID: taskID, Path: result.Path, ContentType: result.ContentType, SizeBytes: result.SizeBytes})
+			return result, true, nil
+		},
+	}
+	database.ReadSnapshotCall = func(ctx context.Context, operation func(store.SnapshotScope) error) error {
+		count("snapshot")
+		snapshot := newHTTPTestSnapshot(t)
+		snapshot.Projects, snapshot.Tasks, snapshot.Attachments = access, tasks, dao
+		return operation(snapshot)
+	}
+	database.WriteAttachmentMutationCall = func(ctx context.Context, operation func(store.AttachmentMutationScope) error) (store.Completion, error) {
+		count("mutation")
+		err := operation(transportAttachmentMutation{
+			lock: func(_ context.Context, project, task string) (store.TaskPresence, error) {
+				count("lock")
+				ids(project, task)
+				return store.TaskPresence{Found: true}, nil
+			},
+			live:       func(_ context.Context, project string) error { count("live"); check(project, projectID); return nil },
+			attachment: dao,
+		})
+		if err != nil {
+			t.Errorf("transport attachment mutation callback: %v", err)
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, err
+	}
+
+}
+
+type transportAttachmentProjectReader struct {
+	store.ProjectReader
+	access func(context.Context, model.Principal, string) (model.ProjectAccess, error)
+}
+
+func (d transportAttachmentProjectReader) ProjectAccess(ctx context.Context, principal model.Principal, id string) (model.ProjectAccess, error) {
+	return d.access(ctx, principal, id)
+}
+
+type transportAttachmentTaskReader struct {
+	store.TaskReader
+	presence func(context.Context, string, string) (store.TaskPresence, error)
+}
+
+func (d transportAttachmentTaskReader) TaskPresence(ctx context.Context, project, task string) (store.TaskPresence, error) {
+	return d.presence(ctx, project, task)
+}
+
+type transportAttachmentMutation struct {
+	store.AttachmentMutationScope
+	lock       func(context.Context, string, string) (store.TaskPresence, error)
+	live       func(context.Context, string) error
+	attachment store.AttachmentMutationDAO
+}
+
+func (s transportAttachmentMutation) LockTaskPresence(ctx context.Context, project, task string) (store.TaskPresence, error) {
+	return s.lock(ctx, project, task)
+}
+func (s transportAttachmentMutation) ProjectLive(ctx context.Context, project string) error {
+	return s.live(ctx, project)
+}
+func (s transportAttachmentMutation) AttachmentDAO() store.AttachmentMutationDAO { return s.attachment }
+
+type transportAttachmentDAO struct {
+	store.AttachmentMutationDAO
+	read     func(context.Context, string, string, string) (model.Attachment, error)
+	list     func(context.Context, string, string, store.AttachmentQuery) (store.AttachmentPage, error)
+	conflict func(context.Context, string, string, store.AttachmentConflictQuery) (bool, error)
+	put      func(context.Context, model.Attachment) (model.Attachment, bool, error)
+}
+
+func (d transportAttachmentDAO) Attachment(ctx context.Context, project, task, path string) (model.Attachment, error) {
+	return d.read(ctx, project, task, path)
+}
+func (d transportAttachmentDAO) Attachments(ctx context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
+	return d.list(ctx, project, task, query)
+}
+func (d transportAttachmentDAO) AttachmentPathConflict(ctx context.Context, project, task string, query store.AttachmentConflictQuery) (bool, error) {
+	return d.conflict(ctx, project, task, query)
+}
+func (d transportAttachmentDAO) PutAttachment(ctx context.Context, item model.Attachment) (model.Attachment, bool, error) {
+	return d.put(ctx, item)
 }

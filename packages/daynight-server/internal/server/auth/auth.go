@@ -23,11 +23,9 @@ import (
 )
 
 type Authentication struct {
+	*RequestAuthentication
 	identity     *identityservice.Identity
-	origin       string
-	secure       bool
 	callbackPath string
-	logger       *slog.Logger
 }
 
 func NewAuthentication(identity *identityservice.Identity, settings config.AuthSettings, logger *slog.Logger) (*Authentication, error) {
@@ -35,16 +33,10 @@ func NewAuthentication(identity *identityservice.Identity, settings config.AuthS
 	if err != nil {
 		return nil, err
 	}
-	return &Authentication{identity: identity, origin: settings.PublicOrigin, secure: origin.Scheme == "https", callbackPath: callbackPath, logger: logger}, nil
-}
-
-func (h *Authentication) Origin() string { return h.origin }
-
-func (h *Authentication) SessionCookieName() string {
-	if h.secure {
-		return "__Host-daynight_session"
-	}
-	return "daynight_session"
+	return &Authentication{
+		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
+		identity:              identity, callbackPath: callbackPath,
+	}, nil
 }
 
 func (h *Authentication) scopeCookieName() string {
@@ -65,63 +57,6 @@ func (h *Authentication) bindingCookieName(state string) string {
 
 func (h *Authentication) cookie(name, value string, expires time.Time, maxAge int) *http.Cookie {
 	return &http.Cookie{Name: name, Value: value, Path: "/", Secure: h.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: maxAge}
-}
-
-func Failure() error {
-	return &model.Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
-}
-
-func requestCookie(request *http.Request, name string) (string, bool) {
-	value, count := "", 0
-	for _, cookie := range request.Cookies() {
-		if cookie.Name == name {
-			value, count = cookie.Value, count+1
-		}
-	}
-	return value, count == 1
-}
-
-func (h *Authentication) AuthenticateRequest(request *http.Request) (model.Principal, error) {
-	if values, present := request.Header["Authorization"]; present {
-		if len(values) != 1 {
-			return model.Principal{}, Failure()
-		}
-		parts := strings.Fields(values[0])
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return model.Principal{}, Failure()
-		}
-		return h.identity.Authenticate(request.Context(), model.PATCredential, parts[1])
-	}
-	secret, ok := requestCookie(request, h.SessionCookieName())
-	if !ok {
-		return model.Principal{}, Failure()
-	}
-	principal, err := h.identity.Authenticate(request.Context(), model.SessionCredential, secret)
-	if err != nil {
-		return model.Principal{}, err
-	}
-	if request.Method != "GET" && request.Method != "HEAD" && request.Method != "OPTIONS" {
-		origins := request.Header.Values("Origin")
-		if len(origins) != 1 || origins[0] != h.origin {
-			return model.Principal{}, &model.Fault{Code: "forbidden", Message: "Cookie writes require the exact main-site Origin."}
-		}
-	}
-	return principal, nil
-}
-
-func (h *Authentication) Require(next httpx.AuthenticatedHandler) http.HandlerFunc {
-	return func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		principal, err := h.AuthenticateRequest(request)
-		if err != nil {
-			httpx.CloseUnreadBody(w, request)
-			httpx.WriteError(w, request, h.logger, "auth", "authenticate", err)
-			return
-		}
-		w.Header().Set("Daynight-User-ID", principal.UserID)
-		h.logger.InfoContext(request.Context(), "credential authenticated", "component", "auth", "phase", "authenticate", "user_id", principal.UserID, "credential_id", principal.CredentialID, "request_id", httpx.RequestID(request.Context()))
-		next(w, request, principal)
-	}
 }
 
 func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {

@@ -9,4 +9,4 @@ export const graphFromTaskSync = (sync: TaskSync): TaskGraph => {
 };
 
 export const readProjectGraph = async (projectId: string, signal: AbortSignal): Promise<TaskGraph> =>
-  graphFromTaskSync(await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal));
+  graphFromTaskSync((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal)).sync);

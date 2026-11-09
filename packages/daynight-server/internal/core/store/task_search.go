@@ -29,9 +29,10 @@ type TaskSearchFence struct {
 }
 
 type TaskSearchPosition struct {
-	TitlePriority bool
-	UpdatedAt     time.Time
-	ID            string
+	ExactIDPriority bool
+	TitlePriority   bool
+	UpdatedAt       time.Time
+	ID              string
 }
 
 type TaskSearchQuery struct {
@@ -50,6 +51,7 @@ type TaskSearchRow struct {
 	AssignedTo             *string
 	CancelledAt            *time.Time
 	UpdatedAt              time.Time
+	ExactIDPriority        bool
 	TitlePriority          bool
 	// TitleOversized indicates that the full title cannot fit in a Search page.
 	TitleOversized bool
@@ -58,9 +60,9 @@ type TaskSearchRow struct {
 
 // TaskSearchHit is one atom's bounded evidence and description snippet.
 type TaskSearchHit struct {
-	Atom               tasksearch.Atom
-	Title, Description bool
-	Snippet            *string
+	Atom                   tasksearch.Atom
+	ID, Title, Description bool
+	Snippet                *string
 }
 
 type TaskSearchPage struct {

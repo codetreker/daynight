@@ -5,176 +5,181 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
-
-	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskGetHistoricalOversizeRefusesBeforeSuccess(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Historical")
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET description=$1 WHERE id=$2`, strings.Repeat("<", 100000), task.ID); err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, &logs)
+	task := testTask("Historical")
+	task.Description = strings.Repeat("<", 100000)
+	handler.Tasks.ObserveRESTFunc = func(ctx context.Context, p model.Principal, pid, id string, extended bool) (taskservice.TaskObservation, error) {
+		if pid != testProjectID || id != testTaskID || p != handler.principal || extended {
+			t.Fatalf("observation=%+v %s %s extended=%t", p, pid, id, extended)
+		}
+		return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
 	}
-	response := projectRequest(handler, http.MethodGet, taskPath(task), "")
+	response := projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")
 	assertProjectError(t, response, http.StatusConflict, "resource_limit_exceeded")
 	if response.Header().Get("Daynight-Task-Epoch") != "" {
-		t.Fatalf("success header on refusal: %v", response.Header())
+		t.Fatalf("success epoch on refusal: %v", response.Header())
 	}
 }
 
 func TestTaskPageBudgetContinuesWithLookahead(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	expected := make(map[string]bool)
-	for i := 0; i < 10; i++ {
-		task := createHTTPTask(t, handler, project.ID, fmt.Sprintf("Candidate %d", i))
-		expected[task.ID] = true
+	handler := newHTTPFixture(t, new(bytes.Buffer))
+	tasks := make([]model.Task, 10)
+	for i := range tasks {
+		tasks[i] = testTask(fmt.Sprintf("Candidate %d", i))
+		tasks[i].ID = fmt.Sprintf("00000000-0000-4000-8000-%012d", i+10)
+		tasks[i].Description = strings.Repeat("<", 80000)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET description=$1 WHERE project_id=$2`, strings.Repeat("<", 80000), project.ID); err != nil {
-		t.Fatal(err)
-	}
-	path := "/api/v1/projects/" + project.ID + "/tasks?limit=100"
-	pages := 0
-	for {
-		response := projectRequest(handler, http.MethodGet, path, "")
-		if response.Body.Len() > 4<<20 {
-			t.Fatalf("page too large: %d", response.Body.Len())
+	cursor := "private-page-cursor"
+	calls := 0
+	handler.Tasks.ExpectCalls("List", 2)
+	handler.Tasks.ListFunc = func(ctx context.Context, p model.Principal, pid string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		calls++
+		if pid != testProjectID || p != handler.principal || input.Limit != 100 {
+			t.Fatalf("list input=%+v", input)
 		}
-		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
-		pages++
-		for _, task := range page.Items {
-			if !expected[task.ID] {
-				t.Fatalf("duplicate or foreign task: %s", task.ID)
+		if calls == 1 {
+			if input.Cursor != nil {
+				t.Fatal("unexpected first cursor")
 			}
-			delete(expected, task.ID)
+			return taskservice.TaskPage{Items: tasks[:5], NextCursor: &cursor}, nil
 		}
-		if page.NextCursor == nil {
-			break
+		if input.Cursor == nil || *input.Cursor != cursor {
+			t.Fatalf("continuation=%+v", input)
 		}
-		path = "/api/v1/projects/" + project.ID + "/tasks?limit=100&cursor=" + url.QueryEscape(*page.NextCursor)
-		if pages > 10 {
-			t.Fatal("pagination did not terminate")
-		}
+		return taskservice.TaskPage{Items: tasks[5:]}, nil
 	}
-	if len(expected) != 0 || pages < 2 {
-		t.Fatalf("missing %d tasks after %d pages", len(expected), pages)
+	firstResponse := projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?limit=100", "")
+	first := decodeResponse[api.TaskPage](t, firstResponse, 200)
+	if firstResponse.Body.Len() > 4<<20 || first.NextCursor == nil || *first.NextCursor != cursor || len(first.Items) != 5 {
+		t.Fatalf("first size=%d page=%+v", firstResponse.Body.Len(), first)
+	}
+	nextResponse := projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?limit=100&cursor="+url.QueryEscape(*first.NextCursor), "")
+	next := decodeResponse[api.TaskPage](t, nextResponse, 200)
+	if nextResponse.Body.Len() > 4<<20 || next.NextCursor != nil || len(next.Items) != 5 {
+		t.Fatalf("next size=%d page=%+v", nextResponse.Body.Len(), next)
+	}
+	all := append(first.Items, next.Items...)
+	for i, item := range all {
+		if item.ID != tasks[i].ID || item.Description != tasks[i].Description {
+			t.Fatalf("item %d=%+v", i, item)
+		}
 	}
 }
 
 func TestTaskPageOversizedFirstItemRefusesWithoutPartialPage(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Historical first")
-	createHTTPTask(t, handler, project.ID, "Later")
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET description=$1 WHERE id=$2`, strings.Repeat("x", 4<<20), task.ID); err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, new(bytes.Buffer))
+	handler.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		return taskservice.TaskPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task page exceeds the encoded resource limit."}
 	}
-	response := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/tasks?limit=100", "")
-	assertProjectError(t, response, http.StatusConflict, "resource_limit_exceeded")
+	response := projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?limit=100", "")
+	assertProjectError(t, response, 409, "resource_limit_exceeded")
 	if strings.Contains(response.Body.String(), `"items"`) {
-		t.Fatalf("partial page: %s", response.Body)
+		t.Fatalf("partial page=%s", response.Body)
 	}
 }
 
 func TestTaskSyncOversizedEncodingRefusesWholeResponse(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	raw := `[{"url":"` + strings.Repeat("<", 4<<20) + `","title":""}]`
+	handler := newHTTPFixture(t, &logs)
+	raw := json.RawMessage(`[{"url":"` + strings.Repeat("<", 4<<20) + `","title":""}]`)
+	result := syncModel()
 	for i := 0; i < 3; i++ {
-		task := createHTTPTask(t, handler, project.ID, fmt.Sprintf("Historical %d", i))
-		if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, task.ID, raw); err != nil {
-			t.Fatal(err)
-		}
+		result.Tasks = append(result.Tasks, model.TaskViewRecord{ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+10), TitlePreview: "Historical", Status: model.TaskTodo, Version: 1, CreatedAt: testTime, UpdatedAt: testTime, Properties: model.TaskProperties{"pullRequests": raw}})
 	}
-	response := projectRequest(handler, http.MethodGet, syncPath(project.ID), "")
-	assertProjectError(t, response, http.StatusConflict, "resource_limit_exceeded")
-	if strings.Contains(response.Body.String(), `"tasks"`) {
-		t.Fatalf("partial sync: %s", response.Body)
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		return result, nil
+	}
+	response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+	assertProjectError(t, response, 409, "resource_limit_exceeded")
+	if strings.Contains(response.Body.String(), `"tasks"`) || strings.Contains(logs.String(), "Historical") {
+		t.Fatalf("partial sync or values escaped: body=%s logs=%s", response.Body, &logs)
 	}
 }
 
-func TestTaskBoundedPropertyReadsCompactHistoricalJSON(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Compact property")
-	// Raw storage is larger than the response limit, while whitespace and
-	// Unicode escapes normalize to a small, legal JSON value.
-	raw := strings.Repeat(" \n", 300000) + `[{"url":"` + strings.Repeat(`\u0061`, 100000) + `","title":""}]`
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, task.ID, raw); err != nil {
-		t.Fatal(err)
+func TestTaskHTTPEncodesNormalizedPropertyWithinBudget(t *testing.T) {
+	handler := newHTTPFixture(t, new(bytes.Buffer))
+	task := testTask("Compact property")
+	task.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"` + strings.Repeat("a", 100000) + `","title":""}]`)}
+	handler.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+		return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
 	}
-	response := projectRequest(handler, http.MethodGet, taskPath(task), "")
-	value := decodeResponse[api.Task](t, response, http.StatusOK)
-	if len(value.Properties["pullRequests"]) < 100000 || response.Body.Len() > 512<<10 {
-		t.Fatalf("bad normalized response size: %d", response.Body.Len())
+	response := projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")
+	value := decodeResponse[api.Task](t, response, 200)
+	if len(value.Properties["pullRequests"]) < 100000 || response.Body.Len() > 512<<10 || !bytes.Equal(value.Properties["pullRequests"], task.Properties["pullRequests"]) {
+		t.Fatalf("normalized response size=%d", response.Body.Len())
 	}
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_properties SET value=$2 WHERE task_id=$1 AND name='pullRequests'`, task.ID, `[{"url":"`+strings.Repeat("x", 600000)+`","title":""}]`); err != nil {
-		t.Fatal(err)
+	oversized := newHTTPFixture(t, new(bytes.Buffer))
+	oversized.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+		value := task
+		value.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"` + strings.Repeat("x", 600000) + `","title":""}]`)}
+		return taskservice.TaskObservation{Task: value, Epoch: testEpoch}, nil
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, taskPath(task), ""), http.StatusConflict, "resource_limit_exceeded")
+	assertProjectError(t, projectRequest(oversized, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, ""), 409, "resource_limit_exceeded")
 }
 
-func TestLegacyTaskProjectionOmitsOversizedIncompatibleWorker(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Incompatible worker")
-	worker := map[string]any{
-		"claimId": "11111111-1111-4111-8111-111111111111", "state": "active",
-		"userId": "22222222-2222-4222-8222-222222222222", "workerId": "33333333-3333-4333-8333-333333333333",
-		"machine":  map[string]any{"id": "44444444-4444-4444-8444-444444444444", "name": strings.Repeat("w", 600000)},
-		"platform": "linux", "agent": "claude", "agentControlMode": "web", "worktreeId": "55555555-5555-4555-8555-555555555555",
-		"phase": "executing", "herdr": nil, "nativeSessionId": nil, "claimedAt": "2026-01-01T00:00:00Z",
-	}
+func TestLegacyTaskProjectionOmitsIncompatibleWorker(t *testing.T) {
+	handler := newHTTPFixture(t, new(bytes.Buffer))
+	task := testTask("Incompatible worker")
+	worker := map[string]any{"claimId": "11111111-1111-4111-8111-111111111111", "state": "active", "userId": "22222222-2222-4222-8222-222222222222", "workerId": "33333333-3333-4333-8333-333333333333", "machine": map[string]any{"id": "44444444-4444-8444-8444-444444444444", "name": "Worker"}, "platform": "linux", "agent": "claude", "agentControlMode": "web", "worktreeId": "55555555-5555-4555-8555-555555555555", "phase": "executing", "herdr": nil, "nativeSessionId": nil, "claimedAt": "2026-01-01T00:00:00Z"}
 	raw, err := json.Marshal(worker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, string(raw)); err != nil {
-		t.Fatal(err)
+	task.Properties = model.TaskProperties{"worker": raw}
+	handler.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+		return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
 	}
-	response := projectRequest(handler, http.MethodGet, taskPath(task), "")
-	got := decodeResponse[api.Task](t, response, http.StatusOK)
+	handler.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		return taskservice.TaskPage{Items: []model.Task{task}}, nil
+	}
+	got := decodeResponse[api.Task](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, ""), 200)
 	if _, present := got.Properties["worker"]; present {
 		t.Fatal("legacy result exposed incompatible worker")
 	}
-	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/tasks?limit=100", ""), http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].ID != task.ID {
-		t.Fatalf("legacy task missing: %+v", page)
+	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?limit=100", ""), 200)
+	if len(page.Items) != 1 || page.Items[0].ID != testTaskID {
+		t.Fatalf("legacy page=%+v", page)
 	}
 }
 
 func TestTaskPagePropertyOverflowKeepsPreviousCursor(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	first := createHTTPTask(t, handler, project.ID, "First")
-	second := createHTTPTask(t, handler, project.ID, "Oversized property")
-	raw := `[{"url":"` + strings.Repeat("x", 4<<20) + `","title":""}]`
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, second.ID, raw); err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, new(bytes.Buffer))
+	first := testTask("First")
+	cursor := "preceding-task-cursor"
+	calls := 0
+	handler.Tasks.ExpectCalls("List", 2)
+	handler.Tasks.ListFunc = func(ctx context.Context, p model.Principal, pid string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		calls++
+		if input.Limit != 100 {
+			t.Fatalf("list=%+v", input)
+		}
+		if calls == 1 {
+			if input.Cursor != nil {
+				t.Fatal("unexpected first cursor")
+			}
+			return taskservice.TaskPage{Items: []model.Task{first}, NextCursor: &cursor}, nil
+		}
+		if input.Cursor == nil || *input.Cursor != cursor {
+			t.Fatalf("cursor not preserved: %+v", input)
+		}
+		return taskservice.TaskPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task property exceeds its encoded limit."}
 	}
-	path := "/api/v1/projects/" + project.ID + "/tasks?limit=100"
-	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].ID != first.ID || page.NextCursor == nil {
-		t.Fatalf("missing continuation: %+v", page.NextCursor)
+	path := taskCollection(testProjectID) + "?limit=100"
+	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, path, ""), 200)
+	if len(page.Items) != 1 || page.Items[0].ID != testTaskID || page.NextCursor == nil || *page.NextCursor != cursor {
+		t.Fatalf("first page=%+v", page)
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, path+"&cursor="+url.QueryEscape(*page.NextCursor), ""), http.StatusConflict, "resource_limit_exceeded")
+	assertProjectError(t, projectRequest(handler, http.MethodGet, path+"&cursor="+url.QueryEscape(*page.NextCursor), ""), 409, "resource_limit_exceeded")
 }

@@ -1,60 +1,83 @@
 package session
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
-	"testing"
-
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/jackc/pgx/v5/pgconn"
+	"testing"
 )
 
+type projectAdmissionDAO struct {
+	store.SessionDAO
+	access func(context.Context, string, string) (model.ProjectAccess, error)
+}
+
+func (dao projectAdmissionDAO) ProjectAccess(ctx context.Context, user, project string) (model.ProjectAccess, error) {
+	if dao.access == nil {
+		panic("unexpected ProjectAccess")
+	}
+	return dao.access(ctx, user, project)
+}
 func TestProjectAdmissionRequiresCanonicalProjectAndUser(t *testing.T) {
-	for _, table := range []string{"projects", "users"} {
-		t.Run(table, func(t *testing.T) {
-			f, _ := connectFixture(t)
-			ctx := context.Background()
-			id := f.project
-			if table == "users" {
-				id = f.p.UserID
+	profileFailure := errors.New("canonical user profile missing")
+	for _, test := range []struct {
+		name   string
+		result error
+		code   string
+	}{
+		{name: "projects", result: store.ErrSessionProjectNotFound, code: "not_found"},
+		{name: "users", result: &store.Error{Phase: "query", Cause: profileFailure}},
+		{name: "access removed", result: model.ErrNotFound, code: "forbidden"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			calls := 0
+			dao := projectAdmissionDAO{access: func(actual context.Context, user, project string) (model.ProjectAccess, error) {
+				calls++
+				if actual != ctx || user != "user" || project != "project" || calls != 1 {
+					t.Fatal("canonical access lookup changed its context, identity or count")
+				}
+				return model.ProjectAccess{}, test.result
+			}}
+			op := &Operation{engine: NewEngine(nil)}
+			err := op.CheckProjectAccess(ctx, operationLoadScope{dao: dao}, model.Principal{UserID: "user"}, "project")
+			if calls != 1 {
+				t.Fatal("canonical access lookup was skipped")
 			}
-			// No foreign keys: a surviving grant alone cannot authorize a resource.
-			if _, err := f.db.Pool.Exec(ctx, `DELETE FROM `+table+` WHERE id=$1`, id); err != nil {
-				t.Fatal(err)
-			}
-			_, err := f.s.Current(ctx, f.p, f.project, f.task)
-			if table == "users" {
-				var query *store.Error
-				var refusal *model.Fault
-				if !errors.As(err, &query) || errors.As(err, &refusal) {
-					t.Fatal("missing canonical access profile was hidden as a refusal", err)
+			var refusal *model.Fault
+			if test.code != "" {
+				if !errors.As(err, &refusal) || refusal.Code != test.code {
+					t.Fatal("canonical access result had the wrong refusal", err)
 				}
 			} else {
-				var refusal *model.Fault
-				if !errors.As(err, &refusal) || refusal.Code != "not_found" {
-					t.Fatal("missing Project was not hidden as not found", err)
+				var query *store.Error
+				if !errors.As(err, &query) || !errors.Is(err, test.result) || !errors.Is(err, profileFailure) || errors.As(err, &refusal) {
+					t.Fatal("missing canonical profile was hidden as a refusal", err)
 				}
 			}
 		})
 	}
 }
-
 func TestProjectAdmissionPreservesQueryFailure(t *testing.T) {
-	f, _ := connectFixture(t)
-	ctx := context.Background()
-	if _, err := f.db.Pool.Exec(ctx, `ALTER TABLE project_grants RENAME TO unavailable_project_grants`); err != nil {
-		t.Fatal(err)
-	}
-	_, err := f.s.Current(ctx, f.p, f.project, f.task)
-	var query *store.Error
-	var database *pgconn.PgError
+	ctx := t.Context()
+	cause := errors.New("project access query unavailable")
+	query := &store.Error{Phase: "query", Cause: cause}
+	calls := 0
+	dao := projectAdmissionDAO{access: func(actual context.Context, user, project string) (model.ProjectAccess, error) {
+		calls++
+		if actual != ctx || user != "user" || project != "project" || calls != 1 {
+			t.Fatal("query changed its context, identity or count")
+		}
+		return model.ProjectAccess{}, query
+	}}
+	op := &Operation{engine: NewEngine(nil)}
+	err := op.CheckProjectAccess(ctx, operationLoadScope{dao: dao}, model.Principal{UserID: "user"}, "project")
 	var refusal *model.Fault
-	if !errors.As(err, &query) || !errors.As(err, &database) || database.Code != "42P01" || errors.As(err, &refusal) {
+	if calls != 1 || !errors.Is(err, query) || !errors.Is(err, cause) || errors.As(err, &refusal) {
 		t.Fatal("admission query failure lost its cause or became a refusal", err)
 	}
 }
-
 func assertAdmissionDenied(t *testing.T, err error) {
 	t.Helper()
 	var refusal *model.Fault

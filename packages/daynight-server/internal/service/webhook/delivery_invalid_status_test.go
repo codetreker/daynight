@@ -12,10 +12,13 @@ import (
 func TestOutOfRangeStatusLateObservation(t *testing.T) {
 	now := time.Now()
 	own := store.WebhookAttempt{ID: "a", DeliveryID: "d", LeaseToken: "token", Generation: 1, RecoveredUnknownAt: &now}
-	scope := &lateScope{attempt: own, now: now}
+	scope := &lateScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, attempt: own, now: now}
 	runner := NewRunner(lateDB{scope: scope}, &Service{}, true)
 	done, err := runner.finalizeOnce(context.Background(), own, now, time.Second, httpoutbound.Response{Status: 600}, nil)
-	a := scope.attempt
+	if len(scope.updates) != 1 {
+		t.Fatalf("late update calls=%d", len(scope.updates))
+	}
+	a := scope.updates[0]
 	if err != nil || !done || a.LateHTTPStatus != nil || a.LateOutcome == nil || *a.LateOutcome != "transport_error" || a.LateErrorCode == nil || *a.LateErrorCode != "invalid_http_status" || a.RecoveredUnknownAt == nil {
 		t.Fatalf("late observation=%+v done=%v err=%v", a, done, err)
 	}

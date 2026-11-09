@@ -17,6 +17,18 @@ export function useCompletedTaskSession({ projectId, taskId, claimId, mode, api,
   const [state, setState] = useState<State>(initial);
   const [revision, setRevision] = useState(0);
   const activeRef = useRef(active); activeRef.current = active;
+  const contextRef = useRef({ owner, scope, projectId }); contextRef.current = { owner, scope, projectId };
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== 'hidden');
+  const flight = useRef<{ readonly owner: object; readonly controller: AbortController } | null>(null);
+  useEffect(() => {
+    const sync = () => {
+      const visible = document.visibilityState !== 'hidden';
+      if (!visible) flight.current?.controller.abort();
+      setDocumentVisible(visible);
+    };
+    document.addEventListener('visibilitychange', sync);
+    return () => document.removeEventListener('visibilitychange', sync);
+  }, []);
   const current = state.owner === owner ? state : initial();
   const refresh = () => setRevision(value => value + 1);
   useEffect(() => {
@@ -30,16 +42,19 @@ export function useCompletedTaskSession({ projectId, taskId, claimId, mode, api,
     return () => { scope.signal.removeEventListener('abort', revoke); unsubscribe(); };
   }, [scope, owner, projectId]);
   useEffect(() => {
-    if (!active || claimId === undefined || mode === undefined || scope.isInvalidated || scope.isProjectSuspended(projectId)) return;
-    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
+    if (!active || !documentVisible || document.visibilityState === 'hidden' || flight.current !== null || claimId === undefined || mode === undefined || scope.isInvalidated || scope.isProjectSuspended(projectId)) return;
+    const controller = new AbortController();
+    const reading = { owner, controller }; flight.current = reading;
+    const isCurrent = () => !controller.signal.aborted && contextRef.current.owner === owner && activeRef.current && document.visibilityState !== 'hidden' && !scope.isInvalidated && !scope.isProjectSuspended(projectId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const abort = () => controller.abort(); scope.signal.addEventListener('abort', abort);
     const unsubscribe = scope.subscribe(event => { if (event.projectId === projectId && (event.accessRevoked || event.scopeSuspended)) abort(); });
     setState(old => ({ ...(old.owner === owner ? old : initial()), loading: true, error: null }));
     void (async () => {
-      await scope.ready(controller.signal);
+      do { await scope.ready(controller.signal); if (!isCurrent()) return; } while (authRequestsPaused());
       const result = mode === 'web' ? await nativeApi.current(controller.signal) : await api.current(controller.signal);
-      await scope.ready(controller.signal);
-      if (controller.signal.aborted || !activeRef.current || scope.isInvalidated || scope.isProjectSuspended(projectId) || authRequestsPaused()) return;
+      if (!isCurrent()) return;
+      do { await scope.ready(controller.signal); if (!isCurrent()) return; } while (authRequestsPaused());
       if (result.status !== 'registered') {
         if ('claimId' in result && result.claimId !== null && result.claimId !== claimId) throw new ApiError('protocol');
         setState({ owner, item: null, loading: false, error: null, availability: result.status, preparing: false });
@@ -53,11 +68,16 @@ export function useCompletedTaskSession({ projectId, taskId, claimId, mode, api,
       setState(old => ({ owner, item: old.owner === owner && JSON.stringify(old.item) === JSON.stringify(item) ? old.item : item, loading: false, error: null, availability: null, preparing }));
       if (preparing) timer = setTimeout(refresh, 3000);
     })().catch(error => {
-      if (controller.signal.aborted) return;
+      if (!isCurrent()) return;
       const denied = error instanceof ApiError && (error.kind === 'protocol' || [401, 403, 404, 410].includes(error.status ?? 0));
       setState(old => ({ owner, item: !denied && old.owner === owner ? old.item : null, loading: false, error, availability: null, preparing: false }));
+    }).finally(() => {
+      if (flight.current !== reading) return;
+      flight.current = null;
+      const latest = contextRef.current;
+      if (controller.signal.aborted && activeRef.current && document.visibilityState !== 'hidden' && !latest.scope.isInvalidated && !latest.scope.isProjectSuspended(latest.projectId)) refresh();
     });
     return () => { controller.abort(); clearTimeout(timer); unsubscribe(); scope.signal.removeEventListener('abort', abort); };
-  }, [owner, scope, projectId, taskId, claimId, mode, api, nativeApi, active, revision]);
+  }, [owner, scope, projectId, taskId, claimId, mode, api, nativeApi, active, documentVisible, revision]);
   return { ...current, refresh };
 }

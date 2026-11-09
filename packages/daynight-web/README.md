@@ -38,6 +38,50 @@ and keyboard behavior remain unchanged.
 The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
 
+## Webhook management and delivery diagnostics
+
+Open Webhooks in the authenticated sidebar to visit `/webhooks`. Its catalog is
+validated for the current service and account before private requests are admitted.
+Choose Personal or an explicit Team in the page; this selection is independent
+of the sidebar Team. Configuration, subscriptions and deliveries share one
+list/detail page, with native dialogs for changes, signing-key maintenance and
+original delivery inspection. Explicit Delivery links retain their endpoint and
+owner. Deleted configurations expose retained history as a read-only view. If
+the endpoint configuration is missing but history remains readable, the explicit
+history route uses an ID-only context without invented configuration fields or
+redelivery admission. Established history contexts retain their independently
+authorized reads and interaction through later configuration errors; those errors
+are shown separately and cannot restore withdrawn manager state or erase a
+previous authoritative missing-configuration observation.
+
+Delivery history supports server filtering and pagination, original targets,
+attempts, historical acknowledgements, current failures and late observations.
+Payloads require an explicit independent read and are displayed as text only after
+identity, canonical Base64, length, SHA-256 and UTF-8 verification. A shared resource
+observation prevents old list or detail responses from restoring withdrawn private
+data, including URL-only redaction that still permits full event and payload
+access. Management and readable membership observations remain separate, so a
+continuous admin-to-member change withdraws old manager views and signing secrets
+while preserving authorized history and payload state. A validated missing Attempt history withdraws the selected Delivery and
+its private current projection without changing a confirmed operation receipt.
+Known payload deadlines also apply to delayed responses; metadata retention uses
+authoritative reads.
+
+Changes use the observed configuration version and one fixed operation identity,
+request body and digest. Admission repeatedly validates the same frozen original
+resource target; selecting another eligible Delivery cannot authorize it. Manual
+redelivery adds the observed original generation;
+202 confirms registration, and subsequent reads observe actual sending. Its
+original receipt and current Delivery generation stay distinct. Unknown results
+reconcile the original receipt using GET; reloading keeps minimal operation
+metadata and never resends a missing body. Private URLs, secrets and payloads stay
+in scoped memory. Background verification pauses new admission while preserving
+drafts, focus, open dialogs and loaded pages; confirmed access and expiry changes
+withdraw the corresponding content. Storage cleanup failures remain visible
+without blocking logout or identity invalidation. The
+[Web requirements](../../docs/spec/webhook-web.md) and
+[design](../../docs/design/webhook-web.md) own this behavior.
+
 ## Assistants
 
 Open Assistants in the authenticated sidebar to visit `/bots`; selecting an
@@ -672,7 +716,10 @@ zero task/edge counts; it cannot retain a usable incremental baseline. The share
 details store and guarded transaction interface support intrinsic content reuse,
 bounded LRU and business-version-driven detail reads.
 
-`beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
+`beginSync` reads the epoch, greatest exact accepted summary `updatedAt` and slim
+Task execution bindings in its existing transaction. Its `TaskSyncTicket` keeps
+that immutable request baseline in memory; snapshot observations use only
+returned Tasks, while delta observations overlay returned Tasks on the baseline.
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
 required nullable assignedTo/cancelledAt and complete current properties from the task row's
@@ -893,8 +940,8 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-Project task search submits the original expression to the server, including
-completed Tasks and chain members. Its draft, filters and cursor pages are
+Project task search submits the original expression to the server, matching IDs,
+complete titles and Markdown descriptions, including completed Tasks and chain members. Its draft, filters and cursor pages are
 independent of the ordinary lists. Clearing the search restores the ordinary
 view and its scroll position. Search results open a live Task detail, including
 when project graph synchronization fails. Errors and empty results remain
@@ -953,6 +1000,26 @@ and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入�
 own the complete resource lifecycle and the remaining write architecture.
 
 ## Session display
+
+Task detail current reads require the selected Session tab and a visible document.
+Native readers begin with reading disabled; tab commits and document visibility
+changes update a gate separate from execution ownership and authentication. Hidden
+panels cancel or defer complete current reads and their timers while retaining
+healthy native channels, content, drafts and reading positions. Reopening a healthy
+panel resumes its existing three-second startup/report observation rather than
+reconnecting. Visible discovery, retry, explicit refresh and recovery retain their
+existing behavior.
+
+Each Task current flight retains its slot until transport and admission waiting
+settle, including cancelled requests. Archive-ready final identity checks defer
+until visible and still verify the original execution and archive content.
+Completed current discovery rechecks tab, document and request identity after
+`scope.ready` and every subsequent wait. Herdr keeps its existing hidden-channel
+and lease-release policy; independent Test/Bot authority observation is unchanged.
+The [Task Session requirements](../../docs/spec/task-sessions.md#task-详情的完整-current-读取)
+and [current-read design](../../docs/design/task-session-protocol.md#task-current-的读取可见性)
+own these boundaries.
+
 
 Native timeline Task, Test and readable archived Sessions share the Display menu beside Refresh.
 Conversation is the default and keeps messages, plans, interactions and real
@@ -1095,13 +1162,15 @@ time for provisional recent-completion classification, then switches to the live
 server sample. This provisional time never establishes execution time or sync
 coverage.
 
-`useTaskGraph` captures `receivedMonotonic` immediately after decoding task-sync,
-before IDB application or index work, and pairs it with that response's database
-`observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
+The successful task-sync API reader captures `receivedMonotonic` immediately
+after `response.text()` completes, before JSON decoding, source scanning or
+validation. `getTaskSync` returns local `TaskSyncRead {sync, receivedMonotonic}`;
+`useTaskGraph` carries that receipt through history, IDB and index work and pairs
+it with the response's database `observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
 `TaskExecutionClockProvider` per loaded project advances the server sample with
 `performance.now()` elapsed time and publishes saved threshold changes in the
 same layout effect. Its estimate includes post-receipt render/commit delay but
-does not compensate for network or parsing delay before that receipt; client
+does not compensate for network delay before that receipt; client
 `Date.now()` does not determine duration or warnings.
 
 Only mounted running tasks with a known start subscribe to one visible-page
@@ -1473,12 +1542,34 @@ choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
 
 In-progress Goal children can open their current accessible Session directly.
-Small working, notice and warning text annotations share a bounded current-session
-summary with each visible chain header. Collapsed chains include every ordinary
-member, including the root; external chains do not contribute. The chain status
-control only expands members. Failed, stale or mismatched observations disappear
-without changing task state. The [Session status design](../../docs/design/task-session-status.md)
-owns precedence, visibility, refresh limits and stable annotation geometry.
+Small working, notice and warning text annotations share the complete `sessions`
+map from the existing fifteen-second task-sync. Reliable pending Sessions retain
+the same shortcut without an annotation. Child status controls open that Task's
+Session tab; titles still open Overview, and chain status controls only expand
+members. Collapsed chains and assignee-filtered chains include every ordinary
+member, including the root; external chains do not contribute.
+
+`useTaskGraph` owns one page-local summary store and is its only producer, passing
+it through ProjectPage, ProjectTaskWorkspace and the presentation Provider. List
+visibility and disclosure issue no Current requests. Each state and omission
+requires the response's observed execution binding to match the current accepted
+Task; final cache merging cannot attach an old observation to a newer claim.
+The thirty-second lifetime starts at the API body receipt and survives decoding
+or storage waits. Publication and visibility restoration recheck that deadline;
+ordinary polling waits retain unexpired states, while current failures, auth pause
+and binding/scope loss retract them. The existing auth pause revision captured
+before HTTP must still match after cache waits; resuming admission cannot let a
+pre-pause response republish retracted contributions. This Session gate preserves
+the normal Task graph pipeline and authentication shell. Other cache producers and tabs can invalidate
+old bindings but cannot publish or renew this page's Session observations.
+
+Session state remains in memory and never changes Task properties, business
+versions, timestamps, IndexedDB or BroadcastChannel. Its notifications reach only
+its consumers, without detail invalidation, ordinary Task notifications or extra
+graph work. The [Session status design](../../docs/design/task-session-status.md)
+owns admission, precedence, expiry, visibility and stable annotation geometry;
+the [TaskSync design](../../docs/design/daynight-task-sync.md) owns request and
+cache responsibilities.
 
 The explicit View dependencies / 查看依赖关系 action opens one centered
 dependency-graph dialog at a time without changing any disclosure state.
@@ -2078,12 +2169,30 @@ records these boundaries and their limits.
 Project-settings route-retention and management tests use the same state waiter
 for request dispatch, mocked callbacks and abort signals. Responses, cache
 admission and presentation retain independent checks; a dispatch count does not
-prove that a result was admitted. Settings actions, token creation fields and
-member role controls use their current panel, form or roster. Readiness helpers
+prove that a result was admitted. OAuth revocation tests hold the write and
+current-state read separately, retain the busy dialog and active row while the
+read is pending, and assert no premature success. The read resolves within React
+`act` so the revoked state, dialog teardown and passive heading-focus restoration
+settle before their completion assertions. Settings actions, token creation fields
+and member role controls use their current panel, form or roster. Readiness helpers
 click the same enabled button returned by their semantic query. Global privacy,
 absence and duplicate-control assertions retain document-wide scope. The
 [settings and management observation decision](../../.agents/notes/implemented/testing/2026-11-07-settings-management-test-observations.md)
 records these query and waiting boundaries.
+
+Webhook page tests independently observe request preparation, dispatch and the
+resulting UI. Native SHA-256 preparation is held by explicit promise gates in the
+restrictive cleanup case; each release retains the real digest computation.
+Exact write counts and distinct operation IDs identify sequential mutations.
+Team selection waits for its current named option. Controlled management and
+receipt responses settle within React `act` before authorization, draft, secret,
+original-operation and no-replay assertions. Late-denial tests complete the newer
+Team membership refresh or owner selection before releasing the old response.
+Rotation confirmation waits for dialog removal and an enabled Check operation
+action. Rendered errors, secrets, dialogs and focus use DOM readiness predicates;
+cached owner-role labels, fresh detail controls and list error removal remain
+separate observations. The [Webhook observation decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-observation-boundaries.md)
+records the retained fixtures and the limits of these frontend checks.
 
 Step panel DOM tests retain the full pagination fixtures and resolve visible
 controls by role and accessible name within their current row, form, toolbar,
@@ -2225,7 +2334,11 @@ worktree's `.tmp/playwright-browsers`; set `PLAYWRIGHT_BROWSERS_PATH` to use an
 existing installation. The result under `.tmp/task-search-acceptance/` records
 the source fingerprint, server binary and browser asset hashes and observed
 checks. The runner removes its own server, fixture and database resources.
-This focused result does not replace complete cross-product acceptance.
+This focused result does not replace complete cross-product acceptance. The
+independent [Product E2E framework](../e2e_tests/README.md) builds the complete
+CLI/Web/Server and full UniAuth, starts its own isolated PostgreSQL and tests
+normal cross-client workflows through `pnpm e2e:test`. It is separate from Web
+module quality and browser fixture commands.
 
 ## Dependency declarations
 

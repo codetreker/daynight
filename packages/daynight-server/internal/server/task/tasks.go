@@ -11,8 +11,6 @@ import (
 
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
@@ -26,13 +24,13 @@ import (
 )
 
 type taskHandler struct {
-	tasks  *service.Tasks
-	sync   *service.TaskSync
+	tasks  TaskService
+	sync   SyncOperation
 	window time.Duration
 	logger *slog.Logger
 }
 
-func TaskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *authhttp.Authentication, logger *slog.Logger) {
+func TaskRoutes(mux *http.ServeMux, tasks TaskService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskHandler{tasks: tasks, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", auth.Require(handler.list))

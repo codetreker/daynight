@@ -32,6 +32,13 @@ type Fixture struct {
 	closeOnce sync.Once
 }
 
+// GatewayResources distinguishes a prepared private directory from a started process.
+type GatewayResources struct {
+	Directory string
+	PID       int
+	State     string
+}
+
 func StartGateway(t testing.TB, callbackURL string) *Fixture {
 	t.Helper()
 	return StartGatewayWithOutput(t, callbackURL, io.Discard)
@@ -39,7 +46,7 @@ func StartGateway(t testing.TB, callbackURL string) *Fixture {
 
 func StartGatewayWithOutput(t testing.TB, callbackURL string, output io.Writer) *Fixture {
 	t.Helper()
-	return startGateway(t, callbackURL, output, func() bool { return true })
+	return startGateway(t, callbackURL, output, func() bool { return true }, nil)
 }
 
 // StartGatewayGuarded retains the gateway when its owning service has not stopped.
@@ -48,10 +55,20 @@ func StartGatewayGuarded(t testing.TB, callbackURL string, canStop func() bool) 
 	if canStop == nil {
 		t.Fatal("authentication fixture requires a cleanup guard")
 	}
-	return startGateway(t, callbackURL, io.Discard, canStop)
+	return startGateway(t, callbackURL, io.Discard, canStop, nil)
 }
 
-func startGateway(t testing.TB, callbackURL string, output io.Writer, canStop func() bool) *Fixture {
+// StartGatewayWithResources publishes ownership before Start and the process ID
+// after Start, so cleanup can reconcile an interrupted owning test process.
+func StartGatewayWithResources(t testing.TB, callbackURL string, canStop func() bool, observe func(GatewayResources) error) *Fixture {
+	t.Helper()
+	if canStop == nil || observe == nil {
+		t.Fatal("authentication resource observation requires its cleanup guard and observer")
+	}
+	return startGateway(t, callbackURL, io.Discard, canStop, observe)
+}
+
+func startGateway(t testing.TB, callbackURL string, output io.Writer, canStop func() bool, observe func(GatewayResources) error) *Fixture {
 	t.Helper()
 	binary := os.Getenv("DAYNIGHT_TEST_UNIAUTH_FIXTURE")
 	if binary == "" {
@@ -64,12 +81,22 @@ func startGateway(t testing.TB, callbackURL string, output io.Writer, canStop fu
 	f.command = exec.Command(binary)
 	f.command.Env = append(os.Environ(), "DAYNIGHT_FIXTURE_CALLBACK_URL="+callbackURL, "DAYNIGHT_FIXTURE_DATABASE_PATH="+filepath.Join(directory, "apps.db"), "DAYNIGHT_FIXTURE_READY_FILE="+ready, "DAYNIGHT_FIXTURE_LISTEN_ADDRESS=127.0.0.1:0", "DAYNIGHT_FIXTURE_PUBLIC_URL=")
 	f.command.Stdout, f.command.Stderr = output, output
+	if observe != nil {
+		if err := observe(GatewayResources{Directory: directory, State: "prepared"}); err != nil {
+			t.Fatalf("record authentication directory ownership: %v", err)
+		}
+	}
 	if err := f.command.Start(); err != nil {
 		t.Fatal("start real UniAuth fixture failed")
 	}
 	f.started = true
 	go func() { f.waitError = f.command.Wait(); close(f.exited) }()
 	t.Cleanup(func() { f.Close(t) })
+	if observe != nil {
+		if err := observe(GatewayResources{Directory: directory, PID: f.command.Process.Pid, State: "started"}); err != nil {
+			t.Fatalf("record authentication process ownership: %v", err)
+		}
+	}
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
 	poll := time.NewTicker(10 * time.Millisecond)

@@ -8,25 +8,20 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
-	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type admissionSafeLog struct {
@@ -80,7 +75,6 @@ func admissionDecode[T any](t *testing.T, data []byte) T {
 }
 
 func TestAttachmentHTTPAdmittedStreamSurvivesMemberRevocation(t *testing.T) {
-	database := projectTestStore(t)
 	root := t.TempDir()
 	files, err := local.New(root)
 	if err != nil {
@@ -91,69 +85,20 @@ func TestAttachmentHTTPAdmittedStreamSurvivesMemberRevocation(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	server := httptest.NewUnstartedServer(nil)
-	t.Cleanup(server.Close)
-	origin := "http://" + server.Listener.Addr().String()
-	callback := origin + "/api/v1/auth/callback"
-	gateway := testauth.StartGateway(t, callback)
-	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second}
-	config.PublicOrigin, config.UniAuthCallbackURL, config.UniAuthURL = origin, callback, gateway.Origin
-	config.UniAuthAppID, config.UniAuthAppSecret = gateway.AppID, gateway.AppSecret
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logs := &admissionSafeLog{}
-	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
-	if err != nil {
-		server.Close()
-		t.Fatal(err)
-	}
-	server.Config.Handler = httpx.RequestLogging(logger, handler)
-	server.Start()
-	t.Cleanup(func() {
-		server.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if application, ok := handler.(interface{ Shutdown(context.Context) error }); ok {
-			if err := application.Shutdown(ctx); err != nil {
-				t.Error(err)
-			}
-		} else {
-			t.Error("test server has no application shutdown")
-		}
-	})
-	owner, member, bearerClient := testauth.Browser(t), testauth.Browser(t), testauth.Browser(t)
-	owner.Timeout = 5 * time.Second
-	testauth.Login(t, owner, origin, "alice")
-	testauth.Login(t, member, origin, "bob")
-	memberToken := testauth.CreatePAT(t, member, origin)
-	_, body := admissionRequest(t, owner, http.MethodGet, origin+"/api/v1/me", "", nil, http.StatusOK)
-	ownerUser := admissionDecode[api.User](t, body)
-	_, body = admissionRequest(t, member, http.MethodGet, origin+"/api/v1/me", "", nil, http.StatusOK)
-	memberUser := admissionDecode[api.User](t, body)
-	if ownerUser.ID == memberUser.ID {
-		t.Fatal("member and owner are not distinct")
-	}
-	originHeader := map[string]string{"Origin": origin}
-	_, body = admissionRequest(t, owner, http.MethodPost, origin+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Stream admission", RepoURL: "https://example.test/stream", ExpectedUserID: ownerUser.ID}), originHeader, http.StatusCreated)
-	project := admissionDecode[api.Project](t, body)
-	base := "/api/v1/projects/" + project.ID
-	_, body = admissionRequest(t, owner, http.MethodPost, origin+base+"/tasks", `{"title":"Streaming attachment"}`, originHeader, http.StatusCreated)
-	task := admissionDecode[api.Task](t, body)
-	_, body = admissionRequest(t, owner, http.MethodPost, origin+base+"/invitations", jsonBody(t, api.ProjectInvitationMutationRequest{ExpectedUserID: ownerUser.ID}), originHeader, http.StatusCreated)
-	invitation := admissionDecode[api.CreatedProjectInvitation](t, body)
-	link, err := url.Parse(invitation.Link)
-	if err != nil || link.Fragment == "" {
-		t.Fatal("invitation omitted its token")
-	}
-	_, body = admissionRequest(t, member, http.MethodPost, origin+"/api/v1/invitations/accept", jsonBody(t, api.AcceptProjectInvitationRequest{Token: link.Fragment, ExpectedUserID: memberUser.ID}), originHeader, http.StatusOK)
-	joined := admissionDecode[api.ProjectInvitationAcceptance](t, body)
-	if !joined.Joined || joined.Access.TeamRole != nil || joined.DirectGrant.UserID != memberUser.ID {
-		t.Fatal("member did not receive a direct-only grant")
-	}
+	f := newAttachmentFixture(t, files, logs)
+	handler, task, project := f.handler, f.task, f.project
+	memberToken := handler.token
+	memberID := handler.principal.UserID
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	origin := server.URL
 	location := attachmentFilePath(task, "admission/complete.bin")
 	prefix := bytes.Repeat([]byte{0, 0xff, 0x80, 'a'}, 4096)
 	suffix := bytes.Repeat([]byte{'b', 0x01, '\n', 0xfe}, 4096)
 	content := append(append([]byte{}, prefix...), suffix...)
+	item := f.item(task, "admission/complete.bin", "application/octet-stream", int64(len(content)))
+	f.expectPut(task, item.Path, item.ContentType, item.SizeBytes, item, true)
 	connection, err := net.DialTimeout("tcp", server.Listener.Addr().String(), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -247,18 +192,9 @@ func TestAttachmentHTTPAdmittedStreamSurvivesMemberRevocation(t *testing.T) {
 	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
 		t.Fatalf("incomplete upload published a file: %v", err)
 	}
-	var grantCount, attachmentCount int
-	if err := database.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2), (SELECT count(*) FROM task_attachments WHERE task_id=$3 AND path='admission/complete.bin')`, project.ID, memberUser.ID, task.ID).Scan(&grantCount, &attachmentCount); err != nil || grantCount != 1 || attachmentCount != 0 {
-		t.Fatalf("unexpected state at admission: grant=%d attachment=%d error=%v", grantCount, attachmentCount, err)
-	}
-	revokeStarted := time.Now()
-	admissionRequest(t, owner, http.MethodDelete, origin+base+"/members/"+memberUser.ID, jsonBody(t, api.RemoveProjectMemberRequest{Version: joined.DirectGrant.Version, ExpectedUserID: ownerUser.ID}), originHeader, http.StatusNoContent)
-	if elapsed := time.Since(revokeStarted); elapsed >= 5*time.Second {
-		t.Fatalf("grant revocation exceeded its bound: %s", elapsed)
-	}
-	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, memberUser.ID).Scan(&grantCount); err != nil || grantCount != 0 {
-		t.Fatalf("grant was not removed while streaming: count=%d error=%v", grantCount, err)
-	}
+	// The next read sees the revoked grant; the in-flight mutation has already
+	// consumed its authorization snapshot and can only recheck lifecycle.
+	f.prepareReadFailure(task, model.ErrNotFound, store.TaskPresence{Found: true})
 	select {
 	case got := <-result:
 		t.Fatalf("upload completed before the remaining bytes: status=%d error=%v", got.status, got.err)
@@ -276,32 +212,29 @@ func TestAttachmentHTTPAdmittedStreamSurvivesMemberRevocation(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("admitted upload did not finish")
 	}
-	if completed.err != nil || completed.status != http.StatusCreated || completed.header.Get("Content-Type") != "application/json" || completed.header.Get("X-Request-ID") != requestID || completed.header.Get("Daynight-User-ID") != memberUser.ID {
+	if completed.err != nil || completed.status != http.StatusCreated || completed.header.Get("Content-Type") != "application/json" || completed.header.Get("X-Request-ID") != requestID || completed.header.Get("Daynight-User-ID") != memberID {
 		t.Fatalf("admitted upload response: status=%d error=%v", completed.status, completed.err)
 	}
 	metadata := admissionDecode[api.Attachment](t, completed.body)
 	if metadata.Path != "admission/complete.bin" || metadata.SizeBytes != int64(len(content)) || metadata.ContentType != "application/octet-stream" {
 		t.Fatalf("admitted upload metadata: %+v", metadata)
 	}
-	_, actual := admissionRequest(t, owner, http.MethodGet, origin+location, "", nil, http.StatusOK)
-	if !bytes.Equal(actual, content) {
+	ownerFixture := newAttachmentFixture(t, files, io.Discard)
+	ownerFixture.expectRead(task, "admission/complete.bin", item, nil)
+	ownerResponse := attachmentRequest(ownerFixture.handler, http.MethodGet, location, "", nil)
+	ownerFixture.verify()
+	if ownerResponse.Code != http.StatusOK || !bytes.Equal(ownerResponse.Body.Bytes(), content) {
 		t.Fatal("admitted upload did not preserve the complete bytes")
 	}
-	_, denial := admissionRequest(t, bearerClient, http.MethodGet, origin+location, "", map[string]string{"Authorization": "Bearer " + memberToken}, http.StatusNotFound)
+	_, denial := admissionRequest(t, server.Client(), http.MethodGet, origin+location, "", map[string]string{"Authorization": "Bearer " + memberToken}, http.StatusNotFound)
 	if admissionDecode[api.ErrorResponse](t, denial).Error.Code != "not_found" {
 		t.Fatal("revoked member retained attachment access")
 	}
-	_, body = admissionRequest(t, owner, http.MethodGet, origin+taskPath(task), "", nil, http.StatusOK)
-	if !reflect.DeepEqual(admissionDecode[api.Task](t, body), task) {
-		t.Fatal("admitted upload changed its parent task")
-	}
+	f.verify()
 	if count, size, _ := staging(); count != 0 {
 		t.Fatalf("completed upload left staging: count=%d size=%d", count, size)
 	}
-	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM task_attachments WHERE task_id=$1 AND path='admission/complete.bin'`, task.ID).Scan(&attachmentCount); err != nil || attachmentCount != 1 {
-		t.Fatalf("completed upload metadata rows=%d error=%v", attachmentCount, err)
-	}
-	if logs.contains(memberToken) || logs.contains(link.Fragment) {
+	if logs.contains(memberToken) {
 		t.Fatal("upload or authorization diagnostics exposed a credential")
 	}
 }

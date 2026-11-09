@@ -39,7 +39,7 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示周期 ping 未暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在实际周期输入递交前读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 

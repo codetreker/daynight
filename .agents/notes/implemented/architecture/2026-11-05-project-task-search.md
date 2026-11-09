@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-Finding a Task from remembered title or description text must include the whole
+Finding a Task from its ID or remembered title or description text must include the whole
 project, completed Tasks and real dependency context. Different clients cannot
 safely infer matching, ranking or chain membership from their partial caches.
 Pagination also needs an explicit answer when the project changes between pages.
@@ -12,7 +12,9 @@ Pagination also needs an explicit answer when the project changes between pages.
 ## Decision
 
 The server owns literal expression parsing, positive-match evidence and ordered
-project search. The parser, evidence calculation and PostgreSQL compiler share a
+project search. ID, title and description share expression evaluation; only a
+positive exact full ID match in a successful branch precedes title ranking.
+The parser, evidence calculation and PostgreSQL compiler share a
 pure expression data model; the store contract does not depend on search business
 operations. A read-only repeatable-read snapshot binds admission, the project
 Task fence, matching and dependency context. A cursor binds the query, filters,
@@ -26,6 +28,12 @@ mechanism.
 **Keep the expression model in the query business package.** This makes the
 root DAO contract depend on parsing and evidence operations, reversing the
 shared-model dependency.
+
+**Separate ID lookup and merge.** Cross-field Boolean expressions, positive
+evidence and pagination still require a unified evaluation and ordering.
+
+**Field registration framework.** Three fixed fields do not justify another
+registration and projection mechanism.
 
 **Full-text search.** Tokenization cannot preserve arbitrary substrings, such as
 one Chinese character or a fragment of a code identifier, under the confirmed

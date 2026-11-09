@@ -20,7 +20,22 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	ctx := context.Background()
 	_, other, _ := testAuthRecords(t, s)
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, other.UserID)
-	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+	project, _, err := s.CreateProjectInTeam(ctx, actor, uuid.NewString(), "Team-owned project", "host:repo", &team.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var directGrant model.ProjectGrant
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		member, err := tx.ProjectDAO().AddInvitedMember(ctx, other.UserID)
+		directGrant = member.Grant
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const directVersion int64 = 9007199254740993
+	mustQueryExec(t, s, `UPDATE project_grants SET version=$3 WHERE project_id=$1 AND user_id=$2`, project.ID, other.UserID, directVersion)
+	directGrant.Version = directVersion
+	err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		original, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if err != nil {
 			return err
@@ -71,6 +86,23 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	err = testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error { _, err := tx.Member(ctx, other.UserID); return err })
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("removed membership: %v", err)
+	}
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TeamDAO().Team(ctx, other.UserID, team.ID)
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("self-exit retained Team access: %v", err)
+		}
+		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, other, project.ID)
+		if err != nil || access.Role != model.ProjectMemberRole || access.TeamRole != nil || !reflect.DeepEqual(access.DirectGrant, &directGrant) {
+			t.Fatalf("Team self-exit changed the independent Project grant: %#v %v", access, err)
+		}
+		read, err := snapshot.ProjectDAO().Project(ctx, project.ID)
+		if err == nil && !reflect.DeepEqual(read, project) {
+			t.Fatalf("Team membership removal changed Project metadata: %#v %#v", read, project)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

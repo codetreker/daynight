@@ -4,8 +4,8 @@ import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
 import { canonicalId, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
-import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskStatus, TaskSync } from "./types";
-import { decodeProjectPageJson, decodeTaskGraphJson } from "./project-json";
+import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskStatus, TaskSyncRead } from "./types";
+import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, type TaskSyncJsonRead } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
   controller_offline: "The agent environment is offline. Reconnect it to load history and use controls.",
@@ -217,7 +217,7 @@ export const listProjects = (query: { readonly limit?: number; readonly cursor?:
 export const getTaskSync = async (
   projectId: string, query: { readonly epoch?: string; readonly since?: string },
   expectedUserId: string, signal: AbortSignal, onPrincipalMismatch?: () => void,
-): Promise<TaskSync> => {
+): Promise<TaskSyncRead> => {
   const project = requestId(projectId);
   requestId(expectedUserId);
   const parameters = new URLSearchParams();
@@ -230,7 +230,11 @@ export const getTaskSync = async (
   const suffix = parameters.size === 0 ? "" : `?${parameters}`;
   const response = await request(`/api/v1/projects/${project}/task-sync${suffix}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, expectedUserId, onPrincipalMismatch);
-  return json(response, signal, (value) => parseTaskSync(value, project, expectedUserId), decodeTaskGraphJson);
+  if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); }, decodeTaskGraphJson);
+  return json(response, signal, (body) => {
+    const read = body as TaskSyncJsonRead;
+    return { sync: parseTaskSync(read.value, project, expectedUserId), receivedMonotonic: read.receivedMonotonic };
+  }, decodeTaskSyncJson);
 };
 
 export type TaskResponseAdmission = {

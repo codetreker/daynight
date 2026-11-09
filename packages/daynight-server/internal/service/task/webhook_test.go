@@ -50,40 +50,61 @@ func TestTaskFactsOnlyActualChanges(t *testing.T) {
 
 type stepCaptureScope struct {
 	store.ProjectWriteScope
-	dao store.TaskWriteDAO
+	dao     store.TaskWriteDAO
+	capture store.WebhookCaptureDAO
 }
 
 func (s stepCaptureScope) TaskDAO() store.TaskWriteDAO         { return s.dao }
-func (s stepCaptureScope) CaptureDAO() store.WebhookCaptureDAO { return nil }
+func (s stepCaptureScope) CaptureDAO() store.WebhookCaptureDAO { return s.capture }
 
 type stepCaptureDAO struct {
 	store.TaskWriteDAO
+	t      *testing.T
+	ctx    context.Context
+	taskID string
 	header model.TaskHeader
+	calls  int
 }
 
-func (d stepCaptureDAO) TaskHeader(context.Context, string) (model.TaskHeader, error) {
+func (d *stepCaptureDAO) TaskHeader(ctx context.Context, taskID string) (model.TaskHeader, error) {
+	d.t.Helper()
+	if ctx != d.ctx || taskID != d.taskID || d.calls != 0 {
+		d.t.Fatal("Step capture read a different Task or escaped its source context")
+	}
+	d.calls++
 	return d.header, nil
 }
 
 type recordedCapture struct {
+	t     *testing.T
+	ctx   context.Context
+	dao   store.WebhookCaptureDAO
 	facts []protocol.Fact
 	cause error
 }
 
-func (r *recordedCapture) CaptureBatch(_ context.Context, _ store.WebhookCaptureDAO, f []protocol.Fact) error {
+func (r *recordedCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, f []protocol.Fact) error {
+	r.t.Helper()
+	if ctx != r.ctx || dao != r.dao || len(r.facts) != 0 {
+		r.t.Fatal("Step capture escaped its source context or transaction DAO")
+	}
 	r.facts = append(r.facts, f...)
 	return r.cause
 }
 
 func TestStepCaptureUsesFinalRevisionAndLogicalAction(t *testing.T) {
-	record := &recordedCapture{}
+	ctx := t.Context()
+	taskID := "33333333-3333-4333-8333-333333333333"
+	marker := &sourceCaptureDAO{}
+	dao := &stepCaptureDAO{t: t, ctx: ctx, taskID: taskID, header: model.TaskHeader{Version: 21}}
+	record := &recordedCapture{t: t, ctx: ctx, dao: marker}
 	s := &TaskSteps{capturer: record}
-	scope := stepCaptureScope{dao: stepCaptureDAO{header: model.TaskHeader{Version: 21}}}
+	scope := stepCaptureScope{dao: dao, capture: marker}
 	before := model.TaskStep{Status: model.TaskStepTodo, Title: "before", Description: "before"}
 	after := model.TaskStep{Status: model.TaskStepDone, Title: "after", Description: "after"}
 	now := sampleTimeForTaskTest()
-	err := s.captureStep(context.Background(), scope, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333", "abcdef01", "updated", now, nil, nil, &before, &after)
-	if err != nil || len(record.facts) != 1 {
+	err := s.captureStep(ctx, scope, "22222222-2222-4222-8222-222222222222", taskID, "abcdef01", "updated", now, nil, nil, &before, &after)
+	if err != nil || len(record.facts) != 1 || dao.calls != 1 {
 		t.Fatalf("capture: %v %#v", err, record.facts)
 	}
 	f := record.facts[0]

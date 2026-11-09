@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, TaskSearchField, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -279,6 +279,17 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
   return parsed;
 };
 
+const searchFieldOrder = { id: 0, title: 1, description: 2 } satisfies Readonly<Record<TaskSearchField, number>>;
+const parseTaskSearchMatch = (value: unknown): TaskSearchItem["match"] => {
+  const match = record(value);
+  const fields = array(match.fields, (field): TaskSearchField => field === "id" || field === "title" || field === "description" ? field : malformed());
+  if (fields.some((field, index) => index > 0 && searchFieldOrder[fields[index - 1]!] >= searchFieldOrder[field])) return malformed();
+  const descriptionSnippet = match.descriptionSnippet === null ? null : text(match.descriptionSnippet);
+  if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
+  if (fields.includes("description") !== (descriptionSnippet !== null)) return malformed();
+  return { fields, descriptionSnippet };
+};
+
 export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSearchPage => {
   const data = record(value);
   if (id(data.projectId) !== projectId) return malformed();
@@ -292,14 +303,8 @@ export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSear
     timestamp(item.updatedAt);
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    const rawMatch = record(item.match);
-    const matchFields = array(rawMatch.fields, (field) => field === "title" || field === "description" ? field : malformed());
-    if (matchFields.length > 2 || new Set(matchFields).size !== matchFields.length || matchFields.length === 2 && (matchFields[0] !== "title" || matchFields[1] !== "description")) return malformed();
-    const descriptionSnippet = rawMatch.descriptionSnippet === null ? null : text(rawMatch.descriptionSnippet);
-    if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
-    if (matchFields.includes("description") !== (descriptionSnippet !== null)) return malformed();
     const parsedStatus = status(item.status);
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: { fields: matchFields, descriptionSnippet } };
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);

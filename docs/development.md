@@ -11,6 +11,7 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Product E2E](#product-e2e)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
 - [CI selection](#ci-selection)
@@ -520,22 +521,58 @@ bash scripts/check.sh
 ```
 
 The check builds and vets the Go module using a unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, clears cached Go test results and runs
-module tests and coverage. Production builds use real Web assets. The configured
+prepares the pinned UniAuth fixture, checks the focused Webhook Runner process
+recovery witness with its dedicated test build, clears cached Go test results and
+runs module tests and coverage. Production builds use real Web assets. The configured
 package and function thresholds are 85% and 80%, with no production exclusions;
 the raw statement coverage must be strictly greater than 90%. Critical-block
-failure is disabled; the check enables race locally but not in CI. The
+failure is disabled; race is enabled locally and for main pushes, while PR CI
+disables it explicitly. The
 [server guide](../packages/daynight-server/README.md#race-instrumentation)
-describes the actual check. Tests require the isolated PostgreSQL instance and
-fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
+describes the actual check. The complete module check requires an isolated
+PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
-Business-rule unit tests use domain facts and DAO-interface mocks without a
-PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
-proofs remain integration tests. The
+The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
+tests mock the directly called service/use-case operations while exercising real
+routing, credential middleware, parsing, responses and request lifecycle. Core
+rules use domain facts and required DAO, scope and transaction mocks; service
+tests control lower operations and completion results. These unit selections
+execute without PostgreSQL. Store tests retain actual SQL, locking, transaction,
+persistence and database recheck mechanisms. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns their scope and failure expectations. A selected pure-rule test must run
-without a database URL; the full module check still includes real PostgreSQL.
+owns focused commands and failure expectations. The complete
+`internal/core/session` and `internal/service/webhook` suites execute without a
+database URL. The regular `internal/server/session` unit suite controls directly
+called Session use cases and executes actual routing, credential middleware,
+HTTP, WebSocket and TCP behavior. Its
+[guide](../packages/daynight-server/README.md#session-http-tests) owns the standalone
+command, opaque archive capabilities and call/lifecycle expectations. Producer, service, HTTP/protocol and
+PostgreSQL owners retain distinct proofs. Task HTTP's `!stress` TestMain clears
+the database and UniAuth fixture variables in its test binary even when the
+complete module check supplies them to other packages. It executes the whole
+regular suite with that boundary; stress workloads use their separate fixture.
+The complete module check still includes isolated real PostgreSQL.
+
+The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
+a production Server process and Go HTTP client. Its runner selects
+`TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`. The Session flow
+checks an authenticated Worker claim, registration and grant, Controller
+WebSocket hello/synchronization, current-state readback, browser snapshot and
+exact timeline content delivery through the assembled services and PostgreSQL.
+Build production Web resources
+once, then run `bash scripts/integration.sh` from the Go module. The runner owns
+a fresh PostgreSQL container when `DAYNIGHT_TEST_DATABASE_URL` is unset; an
+explicit URL must identify the invoking test environment's isolated instance.
+It also prepares real authentication, records the source and binary identity,
+and bounds startup, execution and cleanup. `bash scripts/integration.sh --cleanup`
+independently reconciles saved runs after interruption and preserves their
+original failure or unknown command outcome. Safe build/result JSON and streamed
+logs remain in `.tmp/integration-results/<run-id>/`; private ownership receipts,
+credentials, databases and copied binaries are not uploaded. The
+[API integration guide](../packages/daynight-server/README.md#go-api-integration)
+owns exact preparation, evidence fields and cleanup semantics. The suite does
+not run CLI or Web tests.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
@@ -613,6 +650,35 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Product E2E
+
+`packages/e2e_tests` owns the complete-product Linux runner. It compiles the CLI,
+production Web and full Go Server from the current checkout, builds the pinned
+unmodified UniAuth command and Console, and starts a dedicated PostgreSQL
+instance and auth runtime on dedicated networks. The database network is internal;
+a private ingress bridge publishes loopback ports, and the application removes
+its default route before starting services.
+
+```bash
+pnpm --filter @codetreker/daynight-e2e typecheck
+pnpm e2e:test:harness
+pnpm e2e:test
+```
+
+The product entry performs normal browser/CLI login and same-data task workflows.
+Module test jobs do not execute it. The independent `verify-e2e` Linux CI job
+runs the same explicit product entry after framework types and harness checks.
+Installed CLI checks retain packaging and platform responsibilities. Framework self-tests own
+setup, timeout, cancellation and cleanup failures; business fault and concurrency
+matrices remain in their modules.
+
+The [Product E2E guide](../packages/e2e_tests/README.md) owns exact prerequisites,
+optional pinned-source reuse, local OAuth provider behavior, source/artifact
+receipts and resource cleanup. CI reserves a separate always-run recovery step
+before uploading only result and log directories; it does not upload private
+credentials, database data or copied artifacts. Preparation can fetch dependencies; the running
+system does not require an external database, auth deployment or GitHub account.
 
 ## Local stress validation
 
@@ -746,50 +812,60 @@ records the new-artifact identity, OIDC and public-verification choices. The
 ## CI selection
 
 The [`checks` workflow](../.github/workflows/checks.yml) compares the explicit PR
-head with its merge base using the complete Git history and NUL-delimited paths.
+head with its merge base using complete Git history and NUL-delimited paths.
 Deletions and both sides of renames count. The
-[selector](../.github/scripts/ci-modules.mts) assigns each application directory
-to its module; the [root routing table](../README.md#ci-selection) owns that map.
-Mixed changes select their union, and unclassified paths select all modules.
+[selector](../.github/scripts/ci-modules.mts) assigns module tests by directory
+and product E2E by its framework and production build inputs; the
+[root routing table](../README.md#ci-selection) owns the summary map. Mixed
+changes select their union, and unknown paths select all jobs. Selected jobs
+validate the source and tests in their ordinary event checkout. Remote test PRs
+do not replace test files or produce an additional composed checkout commit.
+The [checkout-source decision](../.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
+owns this input boundary; each runner retains its own source/artifact receipts,
+validation commands, coverage and resource-cleanup obligations.
 
-Implementations, fixtures and test tooling follow their containing module,
-including CLI source imported by Web and Session fixtures read by Go tests.
-Root Node workspace manifests, npm configuration and the entire `patches/`
-directory select CLI and Web. These Node inputs do not select Go. A simultaneous
-Go-directory change still selects Go regardless of path order. Documentation
-and repository-instruction exclusions remain effective inside module directories,
-except that bundled CLI source Markdown retains CLI validation. The
-[module routing decision](../.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
-records this policy and the role of complete main-push validation.
+Implementations, fixtures and test tooling select their containing module.
+Production CLI, Web and Go inputs additionally select product E2E; module-only
+tests and fixtures do not. Root Node inputs and dependency patches select CLI,
+Web and product E2E, without inventing a Go-module dependency. Documentation and
+instruction exclusions remain effective inside directories, except for bundled
+CLI source resources. Deployment changes select Web and do not become product
+E2E inputs merely because both environments use Docker.
 
-For a CLI `package.json` modification, a PR containing only a regular-file
-version change and no other semantic change selects no application jobs. The
-routing tests and final gate still run; publication validates the artifact at its
-release commit. Other changes retain normal selection, and malformed manifests
-or Git read failures fail detection. Documentation exclusions do not suppress
-jobs selected by other paths.
+A PR changing only the CLI manifest's regular-file version, with no other
+semantic or mode change, selects no application jobs. Routing tests and the
+final gate still run; publication validates its frozen artifact separately.
+Malformed manifests or Git failures fail detection.
 
-CLI selection runs ordinary and installed phases on Linux, Windows and macOS
-ARM64, a Node compatibility matrix, and the Linux shell-completion job. The
-ordinary Ubuntu job supplies the runtime package. Both native phase matrices
-include macOS, with independent preparation, builds, outcomes and artifacts.
-Their matrix results contribute to the final gate. Go has its own PostgreSQL
-service and uploads the raw coverage profile. Web selection starts two jobs that
-depend only on module detection. `verify-web-quality` runs
-full Web typechecking, the harness, the actual localhost Dockerfile's `web`
-target, Vitest coverage and the source-inventory checker with bounded stages,
-then uploads coverage evidence. The build target verifies production compilation
-and asset publication in the filtered Docker context without running Go tests
-or starting application services. `verify-web-browser` prepares its own locked
-dependencies and Chromium, runs the configured assistant Playwright suite, and
-uploads JUnit results and browser captures. Quality has a 30-minute limit and
-browser validation has a 20-minute limit; neither waits for the other. The final
-gate accepts only successful or skipped preceding jobs and requires both Web jobs to succeed when selected. Stress
-workloads remain local-only.
+CLI selection runs ordinary and installed phases independently on Linux,
+Windows and macOS ARM64, plus Node compatibility and shell checks. The Go job
+prepares production Web resources, runs its PostgreSQL-backed module gate and
+explicit normal API suite, then independently reconciles API resources. Coverage
+and safe API build/result/log evidence use separate artifacts. Web quality owns full
+typechecking, harness, production Docker Web build and coverage; its separate
+browser job owns frontend fixtures. Product E2E waits only for detection and
+prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.
+It rebuilds every runtime product from the checked-out source, even on a
+build-dependency cache hit.
+
+The E2E job has a 40-minute outer limit. Every preparation step is bounded; all
+step maxima total 38 minutes, leaving 2 minutes of job margin. The journey is
+bounded to 15 minutes, followed by an always-run recovery step bounded to
+3 minutes and a bounded evidence upload. Recovery uses the
+saved exact run identity to remove its Docker resources and private files after
+normal completion, failure or runner termination. Original scenario and cleanup
+failures stay observable. Uploads include only `.tmp/product-e2e/*/results/**`
+and `*/logs/**`, with 30-day retention.
+
+Final `checks` wait for every independent job. Failure and cancellation are
+rejected; selected Web and product E2E jobs must equal `success`, so an unexpected
+skip cannot pass their gate. Routine CI excludes stress workloads. The
+[test-writing rules](writing_tests.md) own test boundaries, while the
+[product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
 Workflow concurrency cancels an older PR run for the same ref; main pushes queue
 without cancelling an active run. Documentation-only PRs run routing tests and
-the gate. Every main push selects all modules. npm publication performs its own
+the gate. Every main push selects all modules and product E2E. npm publication performs its own
 CLI validation at the frozen release commit.
 
 To validate routing rules locally without application dependencies, run:

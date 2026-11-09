@@ -110,7 +110,7 @@ REST 页完整编码最多 2 MiB，包含转义、cursor 和末尾换行；字�
 CLI 完整列表只在所有页面读取成功后输出；Web 可以保留已加载页，但不能把失败
 当作文件不存在。文件读写不经过仅接受 JSON 的请求体或响应解析通道。
 
-单次附件 body 从开始读取起有 60 秒实际读取期限；超时连接不可复用，能发送响应时返回 `408 request_timeout`。实际内容超限返回 `413 payload_too_large`。上传活跃 I/O 名额为每实例 `min(4,max(1,floor(P/2)))`、每用户 2、每 Task 1，其中 P 是实例数据库连接池最大连接数；名额满立即返回 `429 resource_busy`。REST 名额保持至提交、响应发送与清理结束；MCP inline、chunk 和 commit 的名额覆盖各次实际 I/O 与结果发送，begin 和空闲 ticket 不占用。MCP 通过工具错误返回对应错误码，不改变其原有协议封装。
+单次附件 body 从开始读取起有 60 秒实际读取期限；超时连接不可复用，能发送响应时返回 `408 request_timeout`。实际内容超限且已确认未发布、未提交及清理成功时返回 `413 payload_too_large`；原生 HTTP/1 chunked 正文缺少终止 chunk 或 trailer、关闭正文因本地读取期限取消请求 context 时，仍在可写连接上有界尝试发送该拒绝及 requestId。未读连接不可复用；已完整消费的固定长度正文保留 keepalive。普通取消、发布或事务结果未知以及清理失败不得被超限错误覆盖，也不得重放业务操作。上传活跃 I/O 名额为每实例 `min(4,max(1,floor(P/2)))`、每用户 2、每 Task 1，其中 P 是实例数据库连接池最大连接数；名额满立即返回 `429 resource_busy`。REST 名额保持至提交、响应发送与清理结束；MCP inline、chunk 和 commit 的名额覆盖各次实际 I/O 与结果发送，begin 和空闲 ticket 不占用。MCP 通过工具错误返回对应错误码，不改变其原有协议封装。
 
 参数错误返回 `400 invalid_input`，资源缺失返回 `404 not_found`，文件与目录占位
 冲突返回 `409 path_conflict`，存储或

@@ -44,7 +44,7 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 		}
 	}
 	last := page.Items[2]
-	page, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 3, After: &store.TaskSearchPosition{ID: last.ID, UpdatedAt: last.UpdatedAt, TitlePriority: last.TitlePriority}})
+	page, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 3, After: &store.TaskSearchPosition{ID: last.ID, UpdatedAt: last.UpdatedAt, ExactIDPriority: last.ExactIDPriority, TitlePriority: last.TitlePriority}})
 	mustOK(t, e)
 	if page.Total != 4 || len(page.Items) != 1 || page.Items[0].ID != b.ID || page.Items[0].TitlePriority || page.HasMore {
 		t.Fatalf("continuation: %+v", page)

@@ -15,4 +15,5 @@ type TaskSync struct {
 	ObservedAt       time.Time             `json:"observedAt"`
 	Tasks            []TaskViewRecord      `json:"tasks"`
 	AssigneeVersions []TaskAssigneeVersion `json:"assigneeVersions"`
+	Sessions         map[string]string     `json:"sessions"`
 }

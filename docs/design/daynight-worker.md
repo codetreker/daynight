@@ -275,9 +275,9 @@ Linux/Windows legacy 路径中，NULL 是新 claim 首次启动的正常状态�
 
 暂停使用可写布尔 task property paused。缺席与 false 在周期 ping 决策中均表示未暂停，但存储与通用读取保留两者差别；存在的错误类型必须暴露。该值不复制为 SQLite 状态，也不改变 worker.phase、task 状态或新 claim 资格。Web backend 当前没有周期 continuation ping，解除该属性不发送 Web 原生输入或启动/恢复指令；Web 操作者的暂停展示与解除入口由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
-Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作、结构化就绪及可见文本的已知阻塞检查之后、agent.prompt mutation 之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
+Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作、结构化就绪及可见文本的已知阻塞检查之后、实际输入之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。Legacy 使用 agent.prompt；macOS 还在持久仲裁和每帧边界按用途重新核验。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
 
-暂停返回明确的未递交结果与当前观察，不作为输入失败或已提交回执，也不更新上次输入基线。解除暂停后，仍然 idle/done 的同一观察可成为新的正常 ping 决策。Legacy 的首次及待递交 assignment、恢复和 cleanup 输入不使用这个周期门禁。macOS durable adapter 在所有自动输入的最终递交边界核对 paused、原 claim、进程身份和 admission；暂停保留观察、原运行停止与人工 attach。取舍由[暂停周期输入决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)拥有。
+暂停在确定零写入时返回明确的未递交等待与当前观察，不作为输入失败或已提交回执，也不更新上次输入基线。解除暂停后，仍然 idle/done 的同一观察可成为新的正常 ping 决策。Legacy 的首次及待递交 assignment、恢复和 cleanup 输入不使用这个周期门禁。macOS durable adapter 在首次及延后 assignment、continuation、恢复后的实际自动输入和 cleanup 提示的最终递交边界按用途核对 paused、原 claim、进程身份和 admission。首次及延后输入的零写入等待保留原 pending assignment 和身份；只有实际传输完成才触发提交回执并更新基线。人工 lease 或 suspended 使自动输入不可用时同样按等待处理，不消耗 Coordinator 失败预算；真实身份、读取和传输故障仍暴露。暂停保留观察、原运行停止和人工交互；部分写入后的 unknown 不因解除暂停而重放。取舍由[暂停输入决策](../../.agents/notes/implemented/bug-fix/2026-11-09-herdr-pause-input-waiting.md)和[暂停周期输入决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)拥有。
 
 macOS 由 durable adapter 分离 launch 和 input：先保存 preparation 与 launch_requested，启动后持久保存原 shell/native agent 的出生证明，再开放 active admission。首次输入保存 pending/dispatching/transport_completed 或 unknown；重启遇到未确认提交时阻断重放。Session 注册、同代重连、停止证明与采集段通过独立事务边界恢复，详情由 [Herdr 生命周期设计](herdr-worker-lifecycle.md)拥有。
 

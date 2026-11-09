@@ -3,7 +3,7 @@ import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { performance as nodePerformance } from "node:perf_hooks";
 import * as cacheProjection from "../src/features/task-cache/projection";
 import { TestTaskCacheBoundary } from "./helpers/taskCache";
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { act, renderHook as renderHookWithoutSession, waitFor as waitForWithRealTimers, type RenderHookOptions } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskDetail, TaskGraph } from "../src/api/types";
@@ -57,7 +57,7 @@ beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    return taskSyncReadFixture(syncFixture.toSync(value, query, replacementEpochs.get(value)));
   });
 });
 
@@ -780,7 +780,7 @@ it('publishes the matching claim through sync, removes it on later updates, and 
   const claim = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
   let properties: TaskDetail['properties'] = {};
   const fixture = createGraphSyncFixture({ propertiesForTask: (_task, project) => project === projectId ? properties : {} });
-  vi.mocked(getTaskSync).mockImplementation(async (id, query) => fixture.toSync(graph(id), query));
+  vi.mocked(getTaskSync).mockImplementation(async (id, query) => taskSyncReadFixture(fixture.toSync(graph(id), query)));
   const { result, rerender } = renderHook(({ id }) => useTaskGraph(id), { initialProps: { id: projectId } });
   await waitFor(() => expect(result.current.snapshot?.workerMachines.size).toBe(0));
   expect(getTaskSync).toHaveBeenCalledTimes(1); expect(detailRequest).not.toHaveBeenCalled();
@@ -795,7 +795,7 @@ it('publishes the matching claim through sync, removes it on later updates, and 
   await waitFor(() => expect(result.current.snapshot?.workerMachines.has(taskId)).toBe(false));
   expect(getTaskSync).toHaveBeenCalledTimes(4); expect(detailRequest).not.toHaveBeenCalled();
   const old = deferred<ReturnType<typeof fixture.toSync>>();
-  vi.mocked(getTaskSync).mockReturnValueOnce(old.promise);
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await old.promise));
   act(() => result.current.refresh());
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(5));
   rerender({ id: otherProject });

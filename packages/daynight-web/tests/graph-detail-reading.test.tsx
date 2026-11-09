@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
+import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,7 +32,7 @@ const attachment: Attachment = {
 let root: HTMLDivElement;
 
 beforeEach(() => {
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n, propertiesForTask: (task) => task.id === detail.id ? detail.properties : {} }));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n, propertiesForTask: (task) => task.id === detail.id ? detail.properties : {} })));
 });
 
 beforeEach(() => {

@@ -15,48 +15,54 @@ import (
 	"testing"
 	"time"
 
-	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func syncPath(projectID string) string { return "/api/v1/projects/" + projectID + "/task-sync" }
 
+func syncModel() model.TaskSync {
+	stamp := testTime.Add(time.Hour)
+	return model.TaskSync{Mode: "snapshot", Epoch: testEpoch, Project: testProject(), ActorAccess: model.ProjectAccess{Role: model.ProjectAdmin}, ObservedAt: stamp,
+		Tasks: []model.TaskViewRecord{}, AssigneeVersions: []model.TaskAssigneeVersion{}, Sessions: map[string]model.SessionListState{}}
+}
+
 func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	a := createHTTPTask(t, handler, project.ID, "private-root-title")
-	a = setHTTPTask(t, handler, a, "in_progress")
-	a = setHTTPTask(t, handler, a, "done")
-	b := createHTTPTask(t, handler, project.ID, strings.Repeat("😀", 161), a.ID)
-	b = updateHTTPTask(t, handler, b, map[string]any{"description": "private-description-secret", "requiredPlatform": "linux", "allowAgents": true, "externalDependsOn": []string{a.ID}})
-	other := taskProject(t, handler)
-	createHTTPTask(t, handler, other.ID, "private-foreign-title")
-	if _, err := database.Pool.Exec(context.Background(), "UPDATE tasks SET version=9007199254740993 WHERE id=$1", b.ID); err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, &logs)
+	stamp := testTime.Add(time.Hour)
+	platform := model.TaskPlatform("linux")
+	result := syncModel()
+	result.Tasks = []model.TaskViewRecord{
+		{ID: testTaskID, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "55555555-5555-4555-8555-555555555555", TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 	}
-	response := projectRequest(handler, http.MethodGet, syncPath(strings.ToUpper(project.ID)), "")
-	result := decodeResponse[api.TaskSync](t, response, http.StatusOK)
-	if result.Mode != "snapshot" || result.Epoch == "" || result.Project != project || result.ObservedAt.IsZero() || len(result.Tasks) != 2 || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Request-ID") != "project-test" {
-		t.Fatalf("sync envelope: %#v headers %#v", result, response.Header())
-	}
-	for index, original := range []api.Task{a, b} {
-		got := result.Tasks[index]
-		version := strconv.FormatInt(original.Version, 10)
-		if index == 1 {
-			version = "9007199254740993"
+	calls := 0
+	handler.ExpectCalls("Sync", 4)
+	expected := taskservice.TaskSyncRequest{}
+	handler.Sync = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		calls++
+		if principal != handler.principal || projectID != testProjectID || !reflect.DeepEqual(input, expected) || ctx.Err() != nil {
+			t.Fatalf("sync arguments: principal=%+v project=%q input=%+v", principal, projectID, input)
 		}
-		if got.ID != original.ID || got.Status != original.Status || got.Version != version || got.CreatedAt != original.CreatedAt || got.UpdatedAt != original.UpdatedAt ||
-			!reflect.DeepEqual(got.StartedAt, original.StartedAt) || !reflect.DeepEqual(got.CompletedAt, original.CompletedAt) || !reflect.DeepEqual(got.CancelledAt, original.CancelledAt) || !reflect.DeepEqual(got.RequiredPlatform, original.RequiredPlatform) || got.AllowAgents != original.AllowAgents ||
-			!slices.Equal(got.DependsOn, original.DependsOn) || !slices.Equal(got.ExternalDependsOn, original.ExternalDependsOn) || got.DependsOn == nil || got.ExternalDependsOn == nil || got.Properties == nil || !reflect.DeepEqual(got.Properties, original.Properties) {
-			t.Fatalf("intrinsic task %d: %#v want %#v", index, got, original)
+		return result, nil
+	}
+	response := projectRequest(handler, http.MethodGet, syncPath(strings.ToUpper(testProjectID)), "")
+	got := decodeResponse[api.TaskSync](t, response, http.StatusOK)
+	if got.Mode != result.Mode || got.Epoch != result.Epoch || got.ObservedAt != result.ObservedAt || got.Project.ID != result.Project.ID || got.Project.Name != result.Project.Name || got.Project.RepoURL != result.Project.RepoURL || got.Project.CreatedAt != result.Project.CreatedAt || got.Project.UpdatedAt != result.Project.UpdatedAt || len(got.Tasks) != len(result.Tasks) || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Request-ID") != "project-test" {
+		t.Fatalf("sync response=%+v headers=%+v", got, response.Header())
+	}
+	for i, value := range result.Tasks {
+		item := got.Tasks[i]
+		if item.ID != value.ID || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
+			t.Fatalf("intrinsic projection %d=%+v want=%+v", i, item, value)
 		}
 	}
-	if result.Tasks[0].RequiredPlatform != nil || result.Tasks[1].TitlePreview != strings.Repeat("😀", 160) || !result.Tasks[1].TitleTruncated {
-		t.Fatalf("nullable platform/preview: %#v", result.Tasks)
+	if got.Tasks[1].Version != "9007199254740993" || got.Tasks[1].TitlePreview != strings.Repeat("😀", 160) || !got.Tasks[1].TitleTruncated || got.Tasks[0].RequiredPlatform != nil {
+		t.Fatalf("exact projection: %+v", got.Tasks)
 	}
 	var raw struct {
 		Tasks []map[string]json.RawMessage `json:"tasks"`
@@ -64,48 +70,51 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, task := range raw.Tasks {
-		if len(task) != 16 {
-			t.Fatalf("unexpected summary fields: %#v", task)
+	for _, item := range raw.Tasks {
+		if len(item) != 16 {
+			t.Fatalf("unexpected summary fields: %+v", item)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {
-			if _, exists := task[field]; exists {
+			if _, exists := item[field]; exists {
 				t.Fatalf("summary exposes %s", field)
 			}
 		}
 	}
-	for _, input := range []string{"?epoch=" + result.Epoch, "?epoch=00000000-0000-4000-8000-000000000099&since=9999-12-31T23:59:59.999999999Z"} {
-		got := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID)+input, ""), http.StatusOK)
-		if len(got.Tasks) != 2 {
-			t.Fatalf("baseline incomplete: %#v", got)
+	expected = taskservice.TaskSyncRequest{Epoch: result.Epoch}
+	decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?epoch="+result.Epoch, ""), http.StatusOK)
+	future := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	expected = taskservice.TaskSyncRequest{Epoch: "00000000-0000-4000-8000-000000000099", Since: &future}
+	baseline := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?epoch="+expected.Epoch+"&since="+url.QueryEscape(future.Format(time.RFC3339Nano)), ""), http.StatusOK)
+	if baseline.Mode != "snapshot" || len(baseline.Tasks) != 2 {
+		t.Fatalf("unknown-epoch baseline projection=%+v", baseline)
+	}
+	since := stamp.Add(11 * time.Second)
+	expected = taskservice.TaskSyncRequest{Epoch: testEpoch, Since: &since}
+	result.Mode, result.Tasks = "delta", []model.TaskViewRecord{}
+	delta := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?epoch="+testEpoch+"&since="+url.QueryEscape(since.Format(time.RFC3339Nano)), ""), http.StatusOK)
+	if delta.Mode != "delta" || delta.Tasks == nil || len(delta.Tasks) != 0 || calls != 4 {
+		t.Fatalf("delta=%+v calls=%d", delta, calls)
+	}
+	for _, fragment := range []string{`"component":"task_sync"`, `"phase":"get"`, `"returned_tasks":2`, `"window":10000000000`, `"since":`} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("missing %s: %s", fragment, &logs)
 		}
 	}
-	query := "?epoch=" + result.Epoch + "&since=" + url.QueryEscape(b.UpdatedAt.Add(11*time.Second).Format(time.RFC3339Nano))
-	delta := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID)+query, ""), http.StatusOK)
-	if delta.Mode != "delta" || delta.Tasks == nil || len(delta.Tasks) != 0 {
-		t.Fatalf("window ignored: %#v", delta)
-	}
-	if strings.Contains(logs.String(), "private-") || strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"component":"task_sync"`) || !strings.Contains(logs.String(), `"phase":"get"`) || !strings.Contains(logs.String(), `"returned_tasks":2`) || !strings.Contains(logs.String(), `"window":10000000000`) || !strings.Contains(logs.String(), `"since":`) {
-		t.Fatalf("sync logs unsafe or incomplete: %s", &logs)
+	if strings.Contains(logs.String(), "private-") || strings.Contains(logs.String(), "😀") {
+		t.Fatalf("sync values leaked: %s", &logs)
 	}
 }
 
 func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	base := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-	if base.Tasks == nil || len(base.Tasks) != 0 {
-		t.Fatalf("empty tasks: %#v", base)
-	}
+	handler := newHTTPFixture(t, &logs)
 	for _, query := range []string{
 		"epoch=", "since=", "since=2026-10-24T00:00:00Z", "epoch=invalid-private-secret", "epoch=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
-		"epoch=" + base.Epoch + "&epoch=" + base.Epoch, "epoch=" + base.Epoch + "&since=2026-10-24T00:00:00Z&since=2026-10-24T00:00:00Z",
+		"epoch=" + testEpoch + "&epoch=" + testEpoch, "epoch=" + testEpoch + "&since=2026-10-24T00:00:00Z&since=2026-10-24T00:00:00Z",
 		"status=todo", "limit=50", "cursor=secret", "overlap=1s", "unknown=secret", "%xx", "x=%xx", ";", "=",
 	} {
 		t.Run(query, func(t *testing.T) {
-			response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?"+query, "")
+			response := projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?"+query, "")
 			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 			if response.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("validation cacheable")
@@ -113,29 +122,43 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 		})
 	}
 	for _, stamp := range []string{"2026-10-24", "2026-10-24T00:00:00+00:00", "2026-10-24t00:00:00Z", "2026-10-24T00:00:00z", "2026-10-24T0:00:00Z", "2026-10-24T00:00:00.Z", "2026-10-24T00:00:00,1Z", "2026-10-24T00:00:00.1234567890Z", "2026-02-30T00:00:00Z", "2026-10-24T24:00:00Z", "2026-10-24T00:00:60Z"} {
-		response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?epoch="+base.Epoch+"&since="+url.QueryEscape(stamp), "")
-		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-	}
-	for _, stamp := range []string{"2026-10-24T00:00:00Z", "2026-10-24T00:00:00.1Z", "2026-10-24T00:00:00.123456789Z"} {
-		decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?epoch="+base.Epoch+"&since="+stamp, ""), http.StatusOK)
+		assertProjectError(t, projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?epoch="+testEpoch+"&since="+url.QueryEscape(stamp), ""), http.StatusBadRequest, "invalid_input")
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodGet, syncPath("invalid"), ""), http.StatusBadRequest, "invalid_input")
-	assertProjectError(t, projectRequest(handler, http.MethodGet, syncPath("00000000-0000-4000-8000-000000000099"), ""), http.StatusNotFound, "not_found")
-	request := httptest.NewRequest(http.MethodGet, syncPath(project.ID), nil)
+	request := httptest.NewRequest(http.MethodGet, syncPath(testProjectID), nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
 	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-		response := projectRequest(handler, method, syncPath(project.ID), "private-body-secret")
+		response := projectRequest(handler, method, syncPath(testProjectID), "private-body-secret")
 		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
 		if response.Header().Get("Allow") != "GET, HEAD" {
-			t.Fatalf("allow: %#v", response.Header())
+			t.Fatalf("allow=%v", response.Header())
 		}
 	}
+	if handler.TotalCalls() != 0 {
+		t.Fatalf("protocol rejection reached sync: %d calls", handler.TotalCalls())
+	}
+	calls := 0
+	handler.ExpectCalls("Sync", 6)
+	handler.Sync = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		calls++
+		if principal != handler.principal || projectID != testProjectID {
+			t.Fatalf("sync identity=%+v project=%s", principal, projectID)
+		}
+		return syncModel(), nil
+	}
+	empty := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID), ""), http.StatusOK)
+	if empty.Tasks == nil || len(empty.Tasks) != 0 || empty.Sessions == nil || len(empty.Sessions) != 0 {
+		t.Fatalf("empty=%+v", empty)
+	}
+	for _, stamp := range []string{"2026-10-24T00:00:00Z", "2026-10-24T00:00:00.1Z", "2026-10-24T00:00:00.123456789Z"} {
+		decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?epoch="+testEpoch+"&since="+stamp, ""), http.StatusOK)
+	}
 	server := httptest.NewServer(handler)
-	defer server.Close()
-	request, err := http.NewRequest(http.MethodHead, server.URL+syncPath(project.ID), nil)
+	t.Cleanup(server.Close)
+	request, err := http.NewRequest(http.MethodHead, server.URL+syncPath(testProjectID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,37 +169,48 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 	}
 	body, readErr := io.ReadAll(head.Body)
 	head.Body.Close()
-	if readErr != nil || len(body) != 0 || head.StatusCode != http.StatusOK || head.Header.Get("Cache-Control") != "no-store" {
-		t.Fatalf("HEAD: %#v %s %v", head, body, readErr)
+	if readErr != nil || len(body) != 0 || head.StatusCode != http.StatusOK || head.Header.Get("Cache-Control") != "no-store" || calls != 5 {
+		t.Fatalf("HEAD=%+v body=%q err=%v calls=%d", head, body, readErr, calls)
 	}
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		return model.TaskSync{}, &model.Fault{Code: "not_found", Message: "Project not found."}
+	}
+	assertProjectError(t, projectRequest(handler, http.MethodGet, syncPath("00000000-0000-4000-8000-000000000099"), ""), http.StatusNotFound, "not_found")
 	if strings.Contains(logs.String(), "secret") {
-		t.Fatalf("validation input logged: %s", &logs)
+		t.Fatalf("validation input leaked: %s", &logs)
 	}
 }
 
 func TestTaskSyncHTTPFullLimitAndDatabaseError(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	baseline := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO tasks(id,project_id,title) SELECT md5($1::text || ':' || n)::uuid,$1::uuid,'private-limit-title' FROM generate_series(1,1001) n`, project.ID); err != nil {
-		t.Fatal(err)
-	}
-	response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?epoch="+baseline.Epoch+"&since=9999-12-31T23:59:59Z", "")
-	value := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
-	limits := value.Error.Details
-	if value.Error.Code != "graph_limit_exceeded" || limits == nil || limits.NodeCount == nil || *limits.NodeCount != 1001 ||
-		limits.EdgeCount == nil || *limits.EdgeCount != 0 || limits.MaxNodes == nil || *limits.MaxNodes != 1000 ||
-		limits.MaxEdges == nil || *limits.MaxEdges != 5000 || strings.Contains(response.Body.String(), `"tasks"`) {
-		t.Fatalf("capacity: %s", response.Body)
-	}
-	if _, err := database.Pool.Exec(context.Background(), "DROP TABLE tasks"); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusInternalServerError, "internal_error")
-	if strings.Contains(logs.String(), "private") {
-		t.Fatalf("database diagnostics leaked: %s", &logs)
+	for _, tc := range []struct {
+		name   string
+		cause  error
+		status int
+		code   string
+	}{
+		{"capacity", &model.Fault{Code: "graph_limit_exceeded", Message: "Graph limit exceeded.", GraphLimit: &model.GraphLimitDetails{NodeCount: 1001, EdgeCount: 0, MaxNodes: 1000, MaxEdges: 5000}}, 409, "graph_limit_exceeded"},
+		{"database", &store.Error{Phase: "query", DatabaseFailure: true, Cause: io.ErrUnexpectedEOF}, 500, "internal_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler := newHTTPFixture(t, &logs)
+			calls := 0
+			handler.Sync = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+				calls++
+				return model.TaskSync{}, tc.cause
+			}
+			response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+			value := decodeResponse[api.ErrorResponse](t, response, tc.status)
+			if value.Error.Code != tc.code || strings.Contains(response.Body.String(), `"tasks"`) || calls != 1 {
+				t.Fatalf("failure=%s calls=%d", response.Body, calls)
+			}
+			if tc.name == "capacity" {
+				limits := value.Error.Details
+				if limits == nil || limits.NodeCount == nil || *limits.NodeCount != 1001 || limits.EdgeCount == nil || *limits.EdgeCount != 0 || limits.MaxNodes == nil || *limits.MaxNodes != 1000 || limits.MaxEdges == nil || *limits.MaxEdges != 5000 {
+					t.Fatalf("capacity=%s", response.Body)
+				}
+			}
+		})
 	}
 }
 

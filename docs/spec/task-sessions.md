@@ -107,6 +107,16 @@ Session View 使用同一选择规则呈现当前状态：终态先采用归档�
 
 未连接、未同步、明确启动失败或恢复受阻时不请求 live 历史，保留已经读到的内容。即使连接快照尚未变化，同一历史身份的 controller_offline 也停止自动重试；更新后的连接快照或用户刷新允许重新核对。Worker 报告通过独立 current 读取更新，健康 WebSocket 不因此重连。有效报告和连接恢复后恢复尾页与分页；归档使用独立只读接口，不进入 live 历史恢复循环。
 
+## Task 详情的完整 Current 读取
+
+只有 Task 详情的 Session tab 被选中且文档可见时，该详情才允许发起完整 `sessions/current`。Overview、尚未选择或已隐藏的 Session tab 和隐藏文档不预取完整当前会话；native、Herdr、直接详情及完成任务入口遵守同一读取可见性要求。
+
+可见 tab 内的首次发现、显式刷新、未注册发现、启动和恢复观察、重连及归档最终身份核验保持原有功能与节奏。native 的现有 3 秒 current 观察不因隐藏前保留的健康连接而取消；重新可见后继续观察，而非无条件重启连接。Worker 报告、完整 current 响应、目录、实时传输及操作规则保持各自职责。
+
+隐藏仅取消或延后完整 current 及其定时读取，不代表失去执行所有权。native 健康 channel、已显示内容、草稿和阅读位置保留，现有身份暂停及 60 秒 suspension 仍生效；Herdr 保持隐藏时的 channel 和 control lease 释放政策。取消的 current 在实际 settle 前仍占用读取名额，快速隐藏和重开不得产生重叠请求或发布取消后的旧结果。恢复需重新核对当前执行、请求、身份与读取可见性。
+
+归档 ready 后的最终 current 核验可延后到可见，但不得跳过原执行身份和正文验证。完成任务的发现先等待现有身份准入，随后在发 HTTP 前及每次等待结束后复验 tab、文档、原请求和任务绑定。独立 Test/Bot 的现有 authority observation 不受 Task tab 门禁改变。
+
 ## Session 显示模式
 
 Task、Test 和可读取的只读归档共用 Session View 顶部的 Display（显示）菜单，与 Session 全屏和刷新按钮并列。菜单只有 Standard（标准）与 Conversation（对话）两个单选项，checked 表示当前选择；新 Session 或没有有效保存偏好的 Session 默认 Conversation。显示模式是阅读偏好，不改变历史、执行状态、操作权限或 Provider 行为。

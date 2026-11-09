@@ -107,9 +107,36 @@ describe("application authorizations", () => {
     expect(screen.getByRole("button", { name: "撤销授权" })).not.toBeDisabled(); expect(transport.list).toHaveBeenCalledTimes(1);
   });
   it("shows a confirmed revocation only after reading current state", async () => {
-    const transport = fixture(); transport.list.mockResolvedValueOnce([grant]).mockResolvedValueOnce([{ ...grant, status: "revoked", revokedAt: "2026-10-26T10:00:00Z" }]);
-    render(panel(transport)); await screen.findByText("App"); open(); fireEvent.click(screen.getByRole("button", { name: "撤销授权" }));
-    await screen.findByText(/应用授权已撤销/); expect(transport.revoke).toHaveBeenCalledTimes(1);
+    const response = deferred<boolean>();
+    const read = deferred<readonly OwnerGrant[]>();
+    const transport = fixture();
+    transport.revoke.mockReturnValueOnce(response.promise);
+    transport.list.mockResolvedValueOnce([grant]).mockReturnValueOnce(read.promise);
+    render(panel(transport));
+    await screen.findByText("App");
+    open();
+    const dialog = screen.getByRole("dialog", { name: "撤销应用授权？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "撤销授权" }));
+    expect(transport.revoke).toHaveBeenCalledTimes(1);
+    expect(transport.list).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/应用授权已撤销/)).toBeNull();
+
+    await act(async () => response.resolve(true));
+    expect(transport.list).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("有效")).toBeInTheDocument();
+    expect(screen.queryByText(/应用授权已撤销/)).toBeNull();
+    expect(screen.queryByText("已撤销")).toBeNull();
+
+    // The read's React updates and passive focus restoration must both settle.
+    await act(async () => read.resolve([{ ...grant, status: "revoked", revokedAt: "2026-10-26T10:00:00Z" }]));
+    expect(screen.getByText(/应用授权已撤销/)).toBeInTheDocument();
+    expect(screen.getByText("已撤销")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByRole("heading", { name: "应用授权" })).toHaveFocus();
+    expect(transport.revoke).toHaveBeenCalledTimes(1);
+    expect(transport.list).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.getItem(`daynight.oauthGrantRecovery.${user.id}`)).toBeNull();
   });
 });

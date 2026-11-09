@@ -16,7 +16,7 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
 		if err != nil {
 			return err
@@ -51,7 +51,7 @@ func (s *Service) terminal(ctx context.Context, principal model.Principal, proje
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
 		if err != nil {
 			return err

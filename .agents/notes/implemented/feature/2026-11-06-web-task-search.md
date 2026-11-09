@@ -5,7 +5,7 @@ Status: implemented
 ## Problem
 
 The project list contains partial summaries and groups Tasks into ordinary
-chains. A person searching complete titles and descriptions needs actual
+chains. A person searching IDs, complete titles and descriptions needs actual
 matching Tasks, including historical completions and members absent from a
 currently available graph, without losing the ordinary browsing position.
 

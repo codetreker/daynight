@@ -1,4 +1,5 @@
 import type { Operation } from "../../../api/operation.js";
+import type { CodexProbeOwner } from "../codex-probe-owner.js";
 import type { WorkerEvent } from "../execution.js";
 import { workerSqliteMigrationEvent } from "../diagnostics.js";
 import type { WorkerPaths } from "../paths.js";
@@ -47,10 +48,10 @@ export const createWorkerBotHost = (options: {
     return {
       run: runtime.run,
       shutdown: runtime.shutdown,
-      collect: async (operation: Operation): Promise<AssistantHostSample | undefined> => {
+      collect: async (operation: Operation, codexProbes?: CodexProbeOwner): Promise<AssistantHostSample | undefined> => {
         const current = options.configuration();
         if (closed || current === null) return undefined;
-        const sample = await collector.collect(operation);
+        const sample = await collector.collect(operation, codexProbes);
         // A probe which crossed a configuration transition cannot advertise stale defaults.
         return JSON.stringify(current) === JSON.stringify(options.configuration()) ? sample : undefined;
       },
