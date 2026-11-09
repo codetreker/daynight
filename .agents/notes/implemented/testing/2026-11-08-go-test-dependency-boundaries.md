@@ -98,9 +98,11 @@ a normal-flow suite cannot replace them.
 
 Task HTTP tests obtain controlled feedback without repeating a business or
 PostgreSQL implementation. Business rules, exact storage changes and normal
-full-application collaboration retain different owners. Other domain and process
-fixtures still carry their own existing scopes; adoption of the common policy
-does not claim that every historical suite has been migrated.
+full-application collaboration retain different owners. The [MCP ownership decision](2026-11-09-mcp-use-case-test-ownership.md) applies
+the same direct operation boundary to MCP protocol tests and preserves their
+lower admission, transfer and physical proofs in their actual owners. Other
+domain and process fixtures still carry their own existing scopes; adoption of
+the common policy does not claim that every historical suite has been migrated.
 
 The real socket timeout and exact encoded boundaries remain meaningful costs.
 Performance comparisons must include receiving store/API suites and complete

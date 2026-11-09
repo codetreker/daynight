@@ -13,18 +13,27 @@ import (
 )
 
 type mcpTaskResponseKey struct{}
-type mcpTaskResponse struct {
-	requestID string
-	rpcID     any
-	modern    bool
-	batch     bool
-	full      bool
+
+// MCPTaskResponse describes the wire envelope that must fit before a Task write commits.
+type MCPTaskResponse struct {
+	RequestID string
+	RPCID     any
+	Modern    bool
+	Batch     bool
+	Full      bool
 }
 
 // WithMCPTaskResponse supplies the request ID used by the MCP success envelope.
 // The write admission uses the same encoder and outcome as the tool response.
 func WithMCPTaskResponse(ctx context.Context, requestID string, rpcID any, modern, batch, full bool) context.Context {
-	return context.WithValue(ctx, mcpTaskResponseKey{}, mcpTaskResponse{requestID: requestID, rpcID: rpcID, modern: modern, batch: batch, full: full})
+	return context.WithValue(ctx, mcpTaskResponseKey{}, MCPTaskResponse{RequestID: requestID, RPCID: rpcID, Modern: modern, Batch: batch, Full: full})
+}
+
+// MCPTaskResponseFromContext returns the response envelope supplied by the MCP adapter.
+// A false result leaves admission independent of MCP framing.
+func MCPTaskResponseFromContext(ctx context.Context) (MCPTaskResponse, bool) {
+	response, ok := ctx.Value(mcpTaskResponseKey{}).(MCPTaskResponse)
+	return response, ok
 }
 
 // admitTaskResponse runs after the DAO has produced final timestamps and version
@@ -36,7 +45,7 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 			return taskResponseError(err)
 		}
 	}
-	if response, ok := ctx.Value(mcpTaskResponseKey{}).(mcpTaskResponse); ok {
+	if response, ok := MCPTaskResponseFromContext(ctx); ok {
 		outcome := "unchanged"
 		if changed {
 			outcome = "changed"
@@ -44,11 +53,11 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 		// Single responses leave HTML characters in the outer ID unescaped;
 		// legacy JSON batches may escape them when re-encoding RawMessages.
 		var difference int64
-		if id, ok := response.rpcID.(string); ok && !response.batch {
+		if id, ok := response.RPCID.(string); ok && !response.Batch {
 			difference = int64(5 * (strings.Count(id, "<") + strings.Count(id, ">") + strings.Count(id, "&")))
 		}
 		budget := int64(taskcore.MaxTaskResponseJSONBytes) + difference
-		if _, err := taskprotocol.EncodeMCPResponse(io.Discard, task, response.requestID, outcome, response.rpcID, response.modern, response.full, budget); err != nil {
+		if _, err := taskprotocol.EncodeMCPResponse(io.Discard, task, response.RequestID, outcome, response.RPCID, response.Modern, response.Full, budget); err != nil {
 			return taskResponseError(err)
 		}
 	}

@@ -3,66 +3,69 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type memberBudgetDB struct {
-	store.TeamWriter
-	items []model.TeamMemberProfile
-}
-type memberBudgetScope struct {
-	store.SnapshotScope
-	items []model.TeamMemberProfile
-}
-type memberBudgetReader struct {
-	store.TeamReader
-	items []model.TeamMemberProfile
-}
-
-func (db *memberBudgetDB) ReadSnapshot(_ context.Context, f func(store.SnapshotScope) error) error {
-	return f(memberBudgetScope{items: db.items})
-}
-func (sc memberBudgetScope) TeamDAO() store.TeamReader                      { return memberBudgetReader{items: sc.items} }
-func (memberBudgetReader) TeamAccess(context.Context, string, string) error { return nil }
-func (r memberBudgetReader) TeamMembersPage(_ context.Context, _ string, page store.Page) (store.TeamMemberPage, error) {
-	out := store.TeamMemberPage{Items: []model.TeamMemberProfile{}}
-	for _, item := range r.items {
-		if page.After != nil && !item.Membership.CreatedAt.After(page.After.CreatedAt) {
-			continue
-		}
-		if len(out.Items) == page.Limit {
-			out.HasMore = true
-			break
-		}
-		out.Items = append(out.Items, item)
-	}
-	return out, nil
-}
-
 func TestTeamMemberMCPPageFitsMaximumProfileAndContinues(t *testing.T) {
-	f := newEntryFixture(t)
-	f.entry.auth = validTeamAuth{}
-	db := &memberBudgetDB{}
+	mocks := newTeamToolMocks(t)
+	f := registerTeamToolMocks(t, mocks)
+	var items []model.TeamMemberProfile
 	avatar := strings.Repeat("<", 512<<10)
 	for i, id := range []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"} {
 		stamp := time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC)
-		db.items = append(db.items, model.TeamMemberProfile{Membership: model.TeamMember{TeamID: unknownTeam, UserID: id, Role: model.ProjectMemberRole, Version: 1, CreatedAt: stamp, UpdatedAt: stamp}, Profile: model.ProjectParticipantProfile{AvatarURL: &avatar}})
+		items = append(items, model.TeamMemberProfile{Membership: model.TeamMember{TeamID: unknownTeam, UserID: id, Role: model.ProjectMemberRole, Version: 1, CreatedAt: stamp, UpdatedAt: stamp}, Profile: model.ProjectParticipantProfile{AvatarURL: &avatar}})
 	}
-	if err := RegisterTeamTools(f.entry, teamservice.NewTeams(db), projectservice.NewProjects(&failedTeamReadDB{}), identity.New(nil, nil, "")); err != nil {
-		t.Fatal(err)
+	next := "member-page-1"
+	call := 0
+	mocks.expect("Teams.MembersAdmitted", "Teams.MembersAdmitted", "Teams.MembersAdmitted")
+	mocks.teams.MembersAdmittedFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest, measure func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error) {
+		index := call
+		call++
+		expected := model.PageRequest{Limit: 10}
+		if index == 1 {
+			expected.Cursor = &next
+		}
+		if id != unknownTeam || !reflect.DeepEqual(request, expected) {
+			t.Errorf("member request %s %+v; want %+v", id, request, expected)
+		}
+		if index == 2 {
+			oversized := items[0]
+			tooLarge := strings.Repeat("<", 800000)
+			oversized.Profile.AvatarURL = &tooLarge
+			err := measure([]model.TeamMemberProfile{oversized}, nil)
+			var violation *limit.Violation
+			if !errors.As(err, &violation) {
+				t.Errorf("oversized member envelope = %v", err)
+			}
+			return coreteam.MemberPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Team member exceeds the encoded page limit.", Cause: err}
+		}
+		var cursor *string
+		if index == 0 {
+			cursor = &next
+		}
+		if err := measure(items[index:index+1], cursor); err != nil {
+			t.Errorf("single maximum profile: %v", err)
+		}
+		if index == 0 {
+			var violation *limit.Violation
+			if err := measure(items, nil); !errors.As(err, &violation) {
+				t.Errorf("combined profile envelope = %v", err)
+			}
+		}
+		return coreteam.MemberPage{Items: items[index : index+1], NextCursor: cursor}, nil
 	}
 	client := f.client(t, "2025-11-25", "alice")
 	var cursor string
-	for i := range db.items {
+	for i := range items {
 		args := map[string]any{"team": unknownTeam, "limit": 10}
 		if cursor != "" {
 			args["cursor"] = cursor
@@ -86,7 +89,7 @@ func TestTeamMemberMCPPageFitsMaximumProfileAndContinues(t *testing.T) {
 		if err := json.Unmarshal(raw, &env); err != nil {
 			t.Fatal(err)
 		}
-		if len(env.Data.Items) != 1 || env.Data.Items[0].UserID != db.items[i].Membership.UserID {
+		if len(env.Data.Items) != 1 || env.Data.Items[0].UserID != items[i].Membership.UserID {
 			t.Fatalf("page %d lost member", i)
 		}
 		cursor = ""
@@ -97,8 +100,6 @@ func TestTeamMemberMCPPageFitsMaximumProfileAndContinues(t *testing.T) {
 	if cursor != "" {
 		t.Fatal("last page has cursor")
 	}
-	tooLarge := strings.Repeat("<", 800000)
-	db.items[0].Profile.AvatarURL = &tooLarge
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "team_member_list", Arguments: map[string]any{"team": unknownTeam, "limit": 10}})
 	if err != nil || !result.IsError {
 		t.Fatalf("oversized: %v", err)

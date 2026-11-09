@@ -552,7 +552,12 @@ PostgreSQL owners retain distinct proofs. Task HTTP's `!stress` TestMain clears
 the database and UniAuth fixture variables in its test binary even when the
 complete module check supplies them to other packages. It executes the whole
 regular suite with that boundary; stress workloads use their separate fixture.
-The complete module check still includes isolated real PostgreSQL.
+The complete module check still includes isolated real PostgreSQL. The
+`internal/server/mcp` suite also clears infrastructure variables and controls
+direct service/use-case operations, retaining actual HTTP/SDK framing, schemas,
+byte boundaries and request lifecycle. Its [protocol test guide](../packages/daynight-server/README.md#mcp-protocol-tests)
+owns the standalone command and lower admission, transfer and persistence proof
+boundaries.
 
 The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
 a production Server process and Go HTTP client. Its runner selects

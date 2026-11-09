@@ -7,22 +7,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	"io"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 //go:embed team_tools.json
 var teamToolsJSON []byte
+
+type teamOperations interface {
+	Create(context.Context, model.Principal, coreteam.CreateTeam) (model.Team, error)
+	ListAdmitted(context.Context, model.Principal, model.PageRequest, func([]model.Team, *string) error) (coreteam.TeamPage, error)
+	GetBounded(context.Context, model.Principal, string, int) (model.Team, error)
+	RenameBounded(context.Context, model.Principal, string, coreteam.ChangeTeam, int) (model.Team, error)
+	DeleteBounded(context.Context, model.Principal, string, coreteam.ChangeTeam, int) error
+	MembersAdmitted(context.Context, model.Principal, string, model.PageRequest, func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error)
+	Member(context.Context, model.Principal, string, string) (model.TeamMember, error)
+	SetMemberRoleBounded(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember, int) (coreteam.TeamMemberResult, error)
+	RemoveMemberBounded(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember, int) (coreteam.TeamMemberResult, error)
+}
+
+type teamProjectOperations interface {
+	ListAdmitted(context.Context, model.Principal, coreproject.ProjectListRequest, func([]model.Project, *string) error) (coreproject.ProjectPage, error)
+}
 
 type teamArguments struct {
 	Team         string            `json:"team"`
@@ -103,7 +117,7 @@ func checkTeamBody(value any) error {
 }
 
 // RegisterTeamTools exposes the Team use cases through the common MCP wrapper.
-func RegisterTeamTools(e *Entry, teams *teamservice.Teams, projects *projectservice.Projects, identities *identity.Identity) error {
+func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver) error {
 	if e == nil || teams == nil || projects == nil || identities == nil {
 		return fmt.Errorf("Team tool dependencies are required")
 	}
@@ -143,7 +157,7 @@ func RegisterTeamTools(e *Entry, teams *teamservice.Teams, projects *projectserv
 	return nil
 }
 
-func teamTool(ctx context.Context, actor RequestActor, name string, a teamArguments, teams *teamservice.Teams, projects *projectservice.Projects, identities *identity.Identity) (ToolResult, error) {
+func teamTool(ctx context.Context, actor RequestActor, name string, a teamArguments, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver) (ToolResult, error) {
 	p := actor.Principal
 	if name == "team_create" {
 		if err := checkTeamBody(api.CreateTeamRequest{Name: a.Name, ExpectedUserID: p.UserID}); err != nil {
