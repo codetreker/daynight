@@ -13,9 +13,16 @@ combined selection.
 
 ## Decision
 
-The task lists share status and assignee conditions within a project visit.
-Status defaults to all and can select `todo`, `in_progress`, `done` or `cancelled`; all
-history remains available. A standalone task must itself satisfy both
+The task lists share status and assignee conditions. The last assignee selection
+is stored in origin-local browser preferences scoped to the authenticated user
+and project, and restored before the first matching and pagination. All, me,
+unassigned and a specific user are valid selections; me resolves to the current
+user, and choosing all saves the unrestricted selection. Invalid stored values
+fall back to all. Storage failures leave the current session usable and show a
+localized preference error without claiming an unsuccessful save. Overview
+navigation persists an assignee condition it changes to reveal its target.
+Status remains in memory for the project visit, defaults to all, and can select
+`todo`, `in_progress`, `done` or `cancelled`; all history remains available. A standalone task must itself satisfy both
 conditions. A chain remains visible when one ordinary-component member satisfies
 both; its actual representative and all ordinary members remain visible even
 when they do not match. External prerequisites supply graph context but are not
@@ -31,7 +38,8 @@ The full index continues to own chain progress, readiness, dependencies,
 statistics and graph context. The [recent browsing decision](../../archived/feature/2026-10-27-recent-task-pages.md)
 retains the seven-local-day Overview projection and pagination rationale, but
 its former task-list window and independent Show all preferences are replaced.
-The [assignee foundation](../../archived/architecture/2026-11-03-task-assignment-foundation.md)
+The [assignee preference decision](2026-11-09-project-assignee-filter-preference.md)
+records persistence and its trade-offs. The [assignee foundation](../../archived/architecture/2026-11-03-task-assignment-foundation.md)
 records the rationale for the existing identity and profile semantics. The [task view](../../archived/feature/2026-10-22-project-task-views.md),
 [Goal list](../../archived/feature/2026-10-26-goal-task-lists.md), [project sections](../../archived/feature/2026-10-25-project-overview-task-sections.md),
 [chain status](../../archived/bug-fix/2026-10-22-task-chain-status.md), [Overview progress](../../archived/feature/2026-10-26-project-overview-progress.md),
@@ -65,3 +73,5 @@ browsing can produce larger filtered sequences, but top-level pagination still
 bounds the displayed page. A single expanded chain remains unbounded by page
 size. Filters do not change synchronization, task data or access permissions,
 and the Overview's recent window and project totals remain independent.
+Assignee preferences do not synchronize across browsers; account and project
+isolation prevent one user or project from inheriting another selection.
