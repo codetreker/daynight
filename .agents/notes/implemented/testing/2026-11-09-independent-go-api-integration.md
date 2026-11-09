@@ -14,10 +14,13 @@ when they do not belong to the Go module's test directory.
 ## Decision
 
 `verify-api-integration` is an independent Linux job that waits only for change
-detection. It prepares its own Go, Node.js, pnpm, production Web assets and
-PostgreSQL service, then invokes `scripts/integration.sh`. The existing runner
-retains source and binary receipts, its local/main race policy, bounded
-execution, process ownership and failure semantics. An always-run step
+detection. It prepares its own Go, Node.js, pnpm and PostgreSQL service, runs the
+six existing `integration-runtime.test.mts` process and cleanup tests as a
+required, bounded step, then prepares production Web assets and invokes
+`scripts/integration.sh`. These runtime tests depend on Linux `/proc` process
+identities; their standalone command needs no database or production Web build.
+The existing runner retains source and binary receipts, its local/main race
+policy, bounded execution, process ownership and failure semantics. An always-run step
 reconciles API resources. Artifacts include only the safe build/result JSON and
 log files described by the [server guide](../../../../packages/daynight-server/README.md#go-api-integration).
 
@@ -30,10 +33,11 @@ validation jobs. The final gate requires actual success for selected API
 integration, so an unexpected skip cannot replace execution.
 
 The Go module job retains its directory selection, isolated PostgreSQL,
-build/vet, race policy and numerical coverage gates. `scripts/check.sh` includes
-the six existing `integration-runtime.test.mts` process and cleanup tests in its
-Node.js tool-test invocation. The standalone command runs the same tests without
-API business flows, a database or production Web preparation.
+build/vet, race policy and numerical coverage gates. Its portable
+`scripts/check.sh` entry retains the ordinary coverage and check-tool unit
+tests. Linux API runtime cases run through the platform that supplies their
+process-observation mechanism and remain mandatory when API validation is
+selected.
 
 This scheduling complements the
 [module routing decision](2026-11-06-module-validation-routing.md) and preserves
@@ -50,6 +54,12 @@ in the module coverage job.
 missing API build validation for changed Web resources, build configuration or
 Node dependencies used by the production binary.
 
+**Run the Linux runtime cases through the ordinary Go check.** That entry also
+supports native macOS validation. The runtime cases read Linux `/proc` process
+identity and lifecycle information, so including them there makes a valid native
+macOS check fail before Go validation. The independent Linux job supplies their
+required mechanism without weakening or skipping the cases.
+
 ## Consequences
 
 Module coverage and assembled API validation produce separate results and can
@@ -58,7 +68,8 @@ a separate production build and PostgreSQL service while keeping failures
 attributable to the suite that executes them. Build dependencies may be cached;
 the tested production Server still comes from the current checkout.
 
-Runtime-tool failure proofs enter ordinary CI without expanding API business
-scenarios or changing the existing cases. Product E2E, CLI and frontend browser
-tests retain their own commands and jobs. Independent scheduling does not alter
+Runtime-tool failure proofs enter the independent Linux API job before its
+production preparation, without expanding API business scenarios or changing
+the existing cases. Native Go validation retains its portable tool-test entry.
+Product E2E, CLI and frontend browser tests retain their own commands and jobs. Independent scheduling does not alter
 coverage thresholds or establish a measured reduction in complete CI duration.

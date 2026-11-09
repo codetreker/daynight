@@ -411,7 +411,9 @@ test("Go module coverage and API integration prepare independent runners", () =>
     assert.match(stage, /^        image: postgres:18\.6-bookworm@sha256:/m);
     assert.doesNotMatch(stage, /download-artifact|continue-on-error|pnpm (?:web:test|test|e2e:test)|vitest|playwright/);
   }
-  assert.doesNotMatch(server, /pnpm|integration\.sh|server-integration|integration-results/);
+  assert.doesNotMatch(server, /pnpm|integration\.sh|integration-runtime\.test\.mts|server-integration|integration-results/);
+  const moduleCheck = readFileSync(new URL("../../packages/daynight-server/scripts/check.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(moduleCheck, /integration-runtime\.test\.mts/);
   const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
   assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
   const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
@@ -433,6 +435,26 @@ test("API integration builds production Web resources and runs its explicit suit
   assert.ok(steps.indexOf(preparation) < steps.indexOf(integration));
 });
 
+test("Linux API integration runs its runtime tools once before production preparation", () => {
+  const command = "node --test scripts/integration-runtime.test.mts";
+  const tools = stepsOf(apiIntegration).filter((entry) => entry.includes(`run: ${command}\n`));
+  assert.equal(tools.length, 1);
+  assert.equal(workflow.split(`run: ${command}\n`).length - 1, 1);
+  const runtimeTools = tools[0]!;
+  assert.match(apiIntegration, /^    runs-on: ubuntu-latest$/m);
+  assert.match(runtimeTools, /^      - name: Validate API integration runtime tools$/m);
+  assert.match(runtimeTools, /^        timeout-minutes: 1$/m);
+  assert.match(runtimeTools, /^        run: node --test scripts\/integration-runtime\.test\.mts$/m);
+  assert.doesNotMatch(runtimeTools, /if:|continue-on-error/);
+  const steps = stepsOf(apiIntegration);
+  const nodeSetup = steps.find((entry) => entry.includes("uses: actions/setup-node@"))!;
+  const preparation = steps.find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"))!;
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  assert.ok(steps.indexOf(nodeSetup) < steps.indexOf(runtimeTools));
+  assert.ok(steps.indexOf(runtimeTools) < steps.indexOf(preparation));
+  assert.ok(steps.indexOf(runtimeTools) < steps.indexOf(integration));
+});
+
 test("API integration budgets every step and reserves independent cleanup time", () => {
   const jobMinutes = Number(apiIntegration.match(/^    timeout-minutes: (\d+)$/m)![1]);
   const stepMinutes = stepsOf(apiIntegration).map((step) => {
@@ -440,6 +462,7 @@ test("API integration budgets every step and reserves independent cleanup time",
     assert.ok(match, `API integration step lacks a positive timeout: ${step.split("\n")[0]}`);
     return Number(match[1]);
   });
+  assert.deepEqual(stepMinutes, [1, 1, 2, 1, 1, 1, 7, 20, 3, 1]);
   assert.ok(stepMinutes.reduce((total, minutes) => total + minutes, 0) <= jobMinutes - 2);
 });
 

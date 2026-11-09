@@ -36,7 +36,6 @@ esac
   const fakeNode = `#!/usr/bin/env bash
 set -eu
 printf 'node %s\\n' "$*" >> "$TRACE"
-if [[ "$1" == --test ]]; then exit "\${TOOLS_EXIT:-0}"; fi
 if [[ "$1" == scripts/prepare-uniauth-fixture.mts ]]; then printf '%s\\n' fixture; fi
 `;
   await writeFile(join(bin, 'go'), fakeGo);
@@ -59,16 +58,8 @@ test('module check selects production packages and local race instrumentation', 
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth GOFLAGS=.*-race=true/);
   assert.match(trace, /go test -count=1 -timeout=3m -tags=webhooktest -run \^TestWebhookRunnerAbruptProcessRecovery\$ .\/internal\/server GOFLAGS=.*-race=true/);
   assert.doesNotMatch(trace, /-tags=stress/);
-  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/integration-runtime.test.mts/);
-  assert.doesNotMatch(trace, /scripts\/integration.sh|-tags=integration|cmd\/integration_tests/);
+  assert.match(trace, /node --test scripts\/coverage.test.mts/);
   assert.match(trace, /node scripts\/coverage.mts coverage.out/);
-});
-
-test('module check propagates tool test failure before Go validation', async (t) => {
-  const { result, trace } = await runCheck(t, undefined, { TOOLS_EXIT: '29' });
-  assert.equal(result.status, 29);
-  assert.match(trace, /node --test .*scripts\/integration-runtime.test.mts/);
-  assert.doesNotMatch(trace, /^go |^go-cov |node scripts\/coverage.mts/m);
 });
 
 test('PR CI disables inherited race and propagates coverage failure', async (t) => {

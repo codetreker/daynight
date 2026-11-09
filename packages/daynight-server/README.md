@@ -970,8 +970,10 @@ The final gate requires actual success whenever API integration is selected.
 The [API integration decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
 records this scheduling and resource ownership.
 
-The runner's six process and cleanup unit tests run in the Go module job through
-`scripts/check.sh`. Run the same tests independently from this module with:
+The runner's six process and cleanup unit tests require Linux `/proc` process
+identities. The independent Linux API job runs them as a required, bounded step
+before production Web preparation and API flows. Run the same tests on Linux
+from this module without PostgreSQL or a production Web build:
 
 ```bash
 node --test scripts/integration-runtime.test.mts
@@ -979,8 +981,9 @@ node --test scripts/integration-runtime.test.mts
 
 They verify actual process exit and signal escalation, PID reuse protection,
 owned-child cleanup, retained command and cleanup failures, interrupted runs and
-directory removal recovery. They need no PostgreSQL or production Web build and
-retain their separate responsibility from the API normal-flow suite.
+directory removal recovery. The portable `scripts/check.sh` entry retains its
+ordinary tool tests; these Linux runtime cases retain their separate
+responsibility from the API normal-flow suite.
 
 ### TaskSync lock and time windows
 

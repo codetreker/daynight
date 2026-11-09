@@ -34,7 +34,7 @@ fi
 # The final flag overrides inherited GOFLAGS for every instrumented check.
 unit_go_flags="$unit_go_flags -race=$race"
 
-node --test scripts/coverage.test.mts scripts/check.test.mts scripts/integration-runtime.test.mts
+node --test scripts/coverage.test.mts scripts/check.test.mts
 GOFLAGS="$unit_go_flags" go build -o .tmp/daynight-server-unit ./cmd/daynight-server
 GOFLAGS="$unit_go_flags" go vet ./...
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"

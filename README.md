@@ -426,10 +426,10 @@ records its separate scheduling and build inputs, and the
 records the complete product runtime.
 
 CLI has ordinary and installed phases on Linux, Windows and macOS ARM64, a Node
-runtime matrix and shell-completion checks. Go module validation owns coverage
-and its runtime-tool unit tests. Go API integration owns an independent Linux job
-that prepares production Web resources and runs the real Server with its own
-database and auth. Web owns independent quality and frontend browser jobs.
+runtime matrix and shell-completion checks. Go module validation owns its
+ordinary tools and coverage. Go API integration owns an independent Linux job
+that checks its Linux runtime tools, prepares production Web resources and runs
+the real Server with its own database and auth. Web owns independent quality and frontend browser jobs.
 Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
 cancellations and explicitly require selected API, Web and product E2E jobs to

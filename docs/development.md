@@ -523,9 +523,8 @@ bash scripts/check.sh
 The check builds and vets the Go module using a unit-test Web resource overlay,
 prepares the pinned UniAuth fixture, checks the focused Webhook Runner process
 recovery witness with its dedicated test build, clears cached Go test results and
-runs module tests and coverage. Its Node.js tool tests include the API runner's
-process identity, termination and cleanup cases. Production builds use real Web
-assets. The configured package and function thresholds are 85% and 80%, with no production exclusions;
+runs module tests and coverage. Its ordinary Node.js tool tests remain portable;
+production builds use real Web assets. The configured package and function thresholds are 85% and 80%, with no production exclusions;
 the raw statement coverage must be strictly greater than 90%. Critical-block
 failure is disabled; race is enabled locally and for main pushes, while PR CI
 disables it explicitly. The
@@ -576,8 +575,10 @@ owns exact preparation, evidence fields and cleanup semantics. An independent
 API integration CI job prepares these resources and runs the suite without
 waiting for module coverage. The suite does not run CLI or Web tests.
 
-The API runner's existing failure and cleanup cases are part of the tool tests
-executed by `scripts/check.sh`. Run them independently from the Go module with:
+The API runner's six process and cleanup unit tests require Linux `/proc`
+process identities. The independent Linux API job runs them as a required,
+bounded step before production Web preparation and API flows. Run them directly
+on Linux from the Go module without a database or production Web build:
 
 ```bash
 node --test scripts/integration-runtime.test.mts
@@ -585,7 +586,8 @@ node --test scripts/integration-runtime.test.mts
 
 These tool tests own process termination and escalation, PID identity, targeted
 cleanup, original command failures and recoverable directory cleanup. Their
-failure cases remain separate from the normal API flows.
+failure cases remain separate from the normal API flows and the portable
+`scripts/check.sh` entry.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
@@ -857,10 +859,10 @@ Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
 Windows and macOS ARM64, plus Node compatibility and shell checks. The Go module
-job runs its PostgreSQL-backed module gate, including runtime-tool unit tests,
-and uploads coverage. The independent `verify-api-integration` job waits only
-for detection, prepares its own Node.js, pnpm, Go, production Web resources and
-PostgreSQL service, then runs the explicit normal API suite. Its always-run
+job runs its PostgreSQL-backed module gate and uploads coverage. The independent
+Linux `verify-api-integration` job waits only for detection, prepares its own
+Node.js, pnpm, Go and PostgreSQL service, and runs its required Linux runtime-tool
+unit tests before production Web preparation and the explicit normal API suite. Its always-run
 reconciliation step retains original command and cleanup failures; it uploads
 only safe API build/result/log evidence. The
 [API integration decision](../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
