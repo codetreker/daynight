@@ -14,23 +14,31 @@ type AuthSettings struct {
 	AllowHTTPTestOrigin bool
 }
 
-func ValidateAuthSettings(config AuthSettings, callbackURL string) (*url.URL, string, error) {
+func ValidatePublicOrigin(config AuthSettings) (*url.URL, error) {
 	origin, err := url.Parse(config.PublicOrigin)
 	if err != nil || !utf8.ValidString(config.PublicOrigin) || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" || origin.Path != "" || origin.Opaque != "" || config.PublicOrigin != origin.Scheme+"://"+origin.Host {
-		return nil, "", &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "must be an exact origin without a path, query, or user information"}
+		return nil, &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "must be an exact origin without a path, query, or user information"}
 	}
 	hostname, port := origin.Hostname(), origin.Port()
 	if hostname == "" || hostname != strings.ToLower(hostname) || strings.HasSuffix(origin.Host, ":") {
-		return nil, "", &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "requires a nonempty canonical lower-case host"}
+		return nil, &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "requires a nonempty canonical lower-case host"}
 	}
 	if port != "" {
 		number, parseErr := strconv.Atoi(port)
 		if parseErr != nil || number < 1 || number > 65535 || strconv.Itoa(number) != port || origin.Scheme == "https" && number == 443 || origin.Scheme == "http" && number == 80 {
-			return nil, "", &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "requires a canonical port from 1 to 65535 with the scheme-default port omitted"}
+			return nil, &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "requires a canonical port from 1 to 65535 with the scheme-default port omitted"}
 		}
 	}
 	if origin.Scheme != "https" && (origin.Scheme != "http" || !config.AllowHTTPTestOrigin) {
-		return nil, "", &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "requires HTTPS or explicit HTTP test-origin configuration"}
+		return nil, &ConfigurationError{Field: "DAYNIGHT_PUBLIC_ORIGIN", Rule: "requires HTTPS or explicit HTTP test-origin configuration"}
+	}
+	return origin, nil
+}
+
+func ValidateAuthSettings(config AuthSettings, callbackURL string) (*url.URL, string, error) {
+	origin, err := ValidatePublicOrigin(config)
+	if err != nil {
+		return nil, "", err
 	}
 	callback, err := url.Parse(callbackURL)
 	if err != nil || len(callbackURL) > 2048 || !utf8.ValidString(callbackURL) || callback.User != nil || callback.Opaque != "" || callback.Scheme+"://"+callback.Host != config.PublicOrigin || callback.RawQuery != "" || callback.ForceQuery || strings.Contains(callbackURL, "#") {
