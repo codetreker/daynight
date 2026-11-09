@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -106,6 +109,27 @@ func processAPIEnvironment(t *testing.T) map[string]string {
 	return values
 }
 
+func TestRunRejectsArgumentsBeforeConfiguration(t *testing.T) {
+	for _, args := range [][]string{{"unknown-secret"}, {"migrate-attachment-layout"}, {"migrate-attachment-layout", "plan"}, {"migrate-attachment-layout", "apply", "--operation-id", "secret-operation"}, {"migrate-attachment-layout", "resume", "--operation-id", "secret-operation"}} {
+		var output bytes.Buffer
+		reads := 0
+		code := run(context.Background(), args, func(string) string { reads++; return "" }, &output)
+		var event struct {
+			Component  string `json:"component"`
+			Phase      string `json:"phase"`
+			Diagnostic string `json:"diagnostic"`
+		}
+		if code != 1 || reads != 0 || json.Unmarshal(output.Bytes(), &event) != nil || event.Component != "configuration" || event.Phase != "arguments" || event.Diagnostic != "command-line arguments are not supported" {
+			t.Fatalf("arguments were not rejected before configuration: code=%d reads=%d output=%q", code, reads, &output)
+		}
+		for _, argument := range args {
+			if strings.Contains(output.String(), argument) {
+				t.Fatalf("argument appeared in diagnostics: %q", &output)
+			}
+		}
+	}
+}
+
 func TestRunStartupFailures(t *testing.T) {
 	for _, override := range []map[string]string{
 		{"DAYNIGHT_DATABASE_URL": ""},
@@ -118,7 +142,7 @@ func TestRunStartupFailures(t *testing.T) {
 			values[key] = value
 		}
 		var output bytes.Buffer
-		if code := run(context.Background(), nil, func(key string) string { return values[key] }, io.Discard, &output); code != 1 {
+		if code := run(context.Background(), nil, func(key string) string { return values[key] }, &output); code != 1 {
 			t.Fatalf("startup failure returned %d", code)
 		}
 		if strings.Contains(output.String(), "top-secret") || !strings.Contains(output.String(), `"phase":"`) {
@@ -126,7 +150,7 @@ func TestRunStartupFailures(t *testing.T) {
 		}
 	}
 	var output bytes.Buffer
-	if code := run(context.Background(), nil, func(string) string { return "" }, io.Discard, &output); code != 1 || !strings.Contains(output.String(), "DAYNIGHT_DATABASE_URL is required") {
+	if code := run(context.Background(), nil, func(string) string { return "" }, &output); code != 1 || !strings.Contains(output.String(), "DAYNIGHT_DATABASE_URL is required") {
 		t.Fatalf("configuration error is not actionable: %s", &output)
 	}
 	values := testEnvironment(t)
@@ -136,9 +160,52 @@ func TestRunStartupFailures(t *testing.T) {
 	}
 	defer listener.Close()
 	values["DAYNIGHT_LISTEN_ADDR"] = listener.Addr().String()
-	if code := run(context.Background(), nil, func(key string) string { return values[key] }, io.Discard, &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
+	if code := run(context.Background(), nil, func(key string) string { return values[key] }, &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
 		t.Fatalf("occupied listener was not diagnosed: %s", &output)
 	}
+	t.Run("worker startup failure", func(t *testing.T) {
+		values := processAPIEnvironment(t)
+		cfg, err := config.LoadConfig(func(key string) string { return values[key] })
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := &persistenceProcessLog{}
+		logger := slog.New(slog.NewJSONHandler(output, nil))
+		startup, cancelStartup := context.WithTimeout(t.Context(), cfg.StartupTimeout)
+		defer cancelStartup()
+		app, err := service.OpenAppWithLogger(startup, cfg, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancel()
+			if err := app.Close(cleanup); err != nil {
+				t.Error(err)
+			}
+		})
+		// A second Start produces a deterministic worker startup failure after
+		// the serving lifecycle has acquired its real listener.
+		if err := app.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if code := serveApp(t.Context(), startup, cancelStartup, cfg, app, logger); code != 1 {
+			t.Fatalf("worker startup failure returned %d", code)
+		}
+		if !strings.Contains(output.String(), `"phase":"startup"`) || strings.Contains(output.String(), `"phase":"listening"`) {
+			t.Fatalf("worker startup failure diagnostics: %s", output.String())
+		}
+		if err := app.Ready(t.Context()); err == nil {
+			t.Fatal("worker startup failure retained database resources")
+		}
+		listener, err := net.Listen("tcp", cfg.ListenAddress)
+		if err != nil {
+			t.Fatalf("worker startup failure retained listener: %v", err)
+		}
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 type stoppingWriter struct {
@@ -177,7 +244,7 @@ func TestRunStopsAfterStartup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	output := &stoppingWriter{stop: cancel}
-	code := run(ctx, nil, func(key string) string { return values[key] }, io.Discard, output)
+	code := run(ctx, nil, func(key string) string { return values[key] }, output)
 	logs, address := output.snapshot()
 	if code != 0 || !strings.Contains(logs, `"phase":"stopped"`) {
 		t.Fatalf("clean shutdown returned %d: %s", code, logs)

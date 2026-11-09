@@ -19,16 +19,17 @@ import (
 var exit = os.Exit
 
 func main() {
-	exit(run(context.Background(), os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.Getenv, os.Stderr))
 }
 
-func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	if len(args) != 0 {
+		httpx.LogFailure(logger, ctx, "configuration", "arguments", &config.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"})
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if len(args) != 0 {
-		return runAttachmentMigration(ctx, args, getenv, stdout, logger)
-	}
 	cfg, err := config.LoadConfig(getenv)
 	if err != nil {
 		httpx.LogFailure(logger, ctx, "configuration", "load", err)
@@ -41,6 +42,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		httpx.LogFailure(logger, ctx, "server", "startup", err)
 		return 1
 	}
+	return serveApp(ctx, startup, cancelStartup, cfg, app, logger)
+}
+
+func serveApp(ctx, startup context.Context, cancelStartup context.CancelFunc, cfg config.Config, app *service.App, logger *slog.Logger) int {
 	handler, err := server.New(app, cfg, logger)
 	if err == nil {
 		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
@@ -70,5 +75,4 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	err = errors.Join(err, app.Close(cleanup))
 	httpx.LogFailure(logger, ctx, "server", "startup", err)
 	return 1
-
 }
