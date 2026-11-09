@@ -82,6 +82,17 @@ describe("webhook API boundaries", () => {
     const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
     await expect(api.webhookRequest({ userId, path: "/me/webhooks", method: "GET", parse: (value) => value })).rejects.toMatchObject({ requestId });
   });
+  it.each(["forbidden", "webhook_project_ineligible"])("preserves a verified %s refusal without exposing diagnostics or replaying", async code => {
+    const operation = createOperation(); operations.push(operation);
+    const requestId = "project-eligibility-refusal", privateMessage = "https://example.test/hooks?token=synthetic-private";
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { code, message: privateMessage, requestId } }), { status: 403, headers: { "content-type": "application/json", "Daynight-User-ID": userId, "X-Request-ID": requestId } }));
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
+    let error: unknown;
+    try { await api.webhookRequest({ userId, path: `/me/webhooks/${endpointId}`, method: "PATCH", body: {}, parse: value => value }); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ status: 403, code, requestId, confirmedRefusal: true });
+    expect(inspect(error, { depth: 20, showHidden: true })).not.toContain(privateMessage);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it("rejects a changed principal even on an unauthorized response", async () => {
     const operation = createOperation(); operations.push(operation);
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { code: "unauthenticated", message: "denied", requestId: operationId } }), { status: 401, headers: { "content-type": "application/json", "Daynight-User-ID": operationId } }));
