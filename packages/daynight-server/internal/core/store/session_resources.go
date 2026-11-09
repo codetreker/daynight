@@ -10,7 +10,9 @@ import (
 // SessionResourceRecord binds one immutable descriptor to its durable blob.
 // MigrationID preserves the original conversion identity until verified readback.
 type SessionResourceRecord struct {
-	GCPending                     bool
+	GCPending bool
+	// HasInlineContent reports legacy column presence without loading its bytes.
+	HasInlineContent              bool
 	SessionID                     string
 	Resource                      sp.Resource
 	BlobID, BlobPath, MigrationID string
@@ -101,11 +103,25 @@ type SessionIntentDAO interface {
 }
 
 type SessionMediaRequest struct {
+	Expected                     *SessionMediaState
 	SessionID, RequestID, Action string
 	Fence                        sp.ControllerFence
 	Body, Result                 []byte
 	Error                        *sp.ImageError
 	Complete                     bool
+}
+
+// SessionMediaState is the exact observed precondition for an intentional
+// representation rewrite. It is never persisted as part of the receipt.
+type SessionMediaState struct {
+	Fence        sp.ControllerFence
+	Body, Result []byte
+	Error        *sp.ImageError
+	Complete     bool
+}
+
+type SessionUploadMediaDAO interface {
+	SessionUploadMediaRequests(context.Context, string, string, string) ([]SessionMediaRequest, error)
 }
 type SessionMediaDAO interface {
 	SessionMediaRequest(context.Context, string, string) (SessionMediaRequest, error)

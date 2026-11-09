@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
@@ -10,6 +10,7 @@ import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import { parseSessionArchive } from "../../../src/session/archive.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -49,6 +50,79 @@ const entries = (manifest:string):unknown => {const id=JSON.parse(manifest).time
 const inspect = <T>(file: string, action: (db: Database.Database) => T): T => {
   const db = new Database(file); try { return action(db); } finally { db.close(); }
 };
+
+const committedLegacySource = async (upgraded = false) => {
+  const f = await fixture(5), bytes = Buffer.from("original unreferenced legacy artifact"), resourceId = randomUUID();
+  const resource = { resourceId, status: "available", name: "original.txt", mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+  inspect(f.journalPath, db => db.prepare("INSERT INTO resources VALUES(?,?,?)").run(resourceId, JSON.stringify(resource), bytes));
+  const source = JSON.stringify(parseSessionArchive({ schemaVersion: 1, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, executionGeneration: f.ticket.executionGeneration, controllerId: f.ticket.controllerId, controllerInstanceId: f.ticket.controllerInstanceId, provider: f.ticket.provider, nativeSessionId: f.snapshot.nativeSessionId, entries: [{ ...f.entry, entrySeq: "1" }], resources: [{ resource, data: bytes.toString("base64") }] }));
+  const current = { state: "ready", schemaVersion: 3, completeness: "complete", sha256: "2".repeat(64), byteLength: "96", errorCode: null, migration: { migrationId: randomUUID(), sourceSha256: createHash("sha256").update(source).digest("hex"), sourceByteLength: String(Buffer.byteLength(source)) } };
+  if (upgraded) openControllerLifecycleStore(f.journalPath, f.ticket).close();
+  return { ...f, current };
+};
+
+test.each([false, true])("reconciles a committed legacy completion without a local receipt (journal already upgraded: %s)", async upgraded => {
+  const f = await committedLegacySource(upgraded), receiptPath = `${f.journalPath}.archive-receipt-1.json`, intentPath = `${f.journalPath}.archive-intent-1.json`;
+  const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+    expect(init?.method).toBe("GET"); return Response.json({ archive: f.current });
+  });
+  expect(await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).toEqual(f.current);
+  expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(f.current);
+  await expect(stat(intentPath)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(request).toHaveBeenCalledOnce();
+  expect(inspect(f.journalPath, db => JSON.parse((db.prepare("SELECT value FROM operations").get() as { value: string }).value))).toEqual(f.operation);
+  await rm(`${f.journalPath}.pending-content`, { recursive: true });
+  expect(await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).toEqual(f.current);
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+test("a committed legacy completion without a local receipt preserves its original undrained source and existing intent", async () => {
+  const f = await committedLegacySource(true), intentPath = `${f.journalPath}.archive-intent-1.json`, intent = "An earlier unconfirmed competing intent";
+  inspect(f.journalPath, db => db.exec("UPDATE execution SET last_acknowledged=0,source_floor=last_sequence; DELETE FROM outbox"));
+  await writeFile(intentPath, intent);
+  const before = inspect(f.journalPath, db => db.prepare("SELECT snapshot,last_sequence,last_acknowledged,source_floor FROM execution").get());
+  const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => { expect(init?.method).toBe("GET"); return Response.json({ archive: f.current }); });
+  expect(await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).toEqual(f.current);
+  expect(inspect(f.journalPath, db => db.prepare("SELECT snapshot,last_sequence,last_acknowledged,source_floor FROM execution").get())).toEqual(before);
+  expect(await readFile(intentPath, "utf8")).toBe(intent);
+  expect(request).toHaveBeenCalledOnce();
+});
+
+test.each(["source-hash", "source-length", "missing-relation", "unknown"] as const)("does not claim a legacy completion without a local receipt when %s is unproven", async variant => {
+  const f = await committedLegacySource(), { migration, ...withoutRelation } = f.current;
+  const current = variant === "missing-relation" ? withoutRelation : { ...f.current, migration: { ...migration, ...(variant === "source-hash" ? { sourceSha256: "3".repeat(64) } : variant === "source-length" ? { sourceByteLength: String(Number(migration.sourceByteLength) + 1) } : {}) } };
+  const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+    expect(init?.method).toBe("GET"); if (variant === "unknown") throw new Error("Archive status outcome is unknown"); return Response.json({ archive: current });
+  });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow(variant === "unknown" ? "outcome is unknown" : "Server archive");
+  expect(request).toHaveBeenCalledOnce();
+  await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(`${f.journalPath}.archive-intent-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("a legacy completion without a local receipt rechecks the original stopped generation after status", async () => {
+  const f = await committedLegacySource();
+  const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+    expect(init?.method).toBe("GET");
+    inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...f.snapshot, nativeSessionId: "changed-after-status" })));
+    return Response.json({ archive: f.current });
+  });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("stopped controller evidence changed");
+  await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(`${f.journalPath}.archive-intent-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("a legacy completion without a local receipt rejects resource bytes changed during the status request", async () => {
+  const f = await committedLegacySource(true), directory = `${f.journalPath}.pending-content/blobs`;
+  const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+    expect(init?.method).toBe("GET");
+    const file = path.join(directory, (await readdir(directory))[0]!); await writeFile(file, Buffer.alloc((await stat(file)).size));
+    return Response.json({ archive: f.current });
+  });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("legacy resource content changed");
+  await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(`${f.journalPath}.archive-intent-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 test.each([2, 3, 4, 5] as const)("uploads a stopped v%i journal without acquiring its writer lease or changing execution identity", async version => {
   const f = await fixture(version), bodies: string[] = [];

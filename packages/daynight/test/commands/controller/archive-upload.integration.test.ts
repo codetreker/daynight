@@ -53,6 +53,29 @@ test("uploads a schema3 manifest and separately hashed timeline without a native
  await rm(`${f.journalPath}.pending-content`,{recursive:true});
  const count=calls.length;await uploadStoppedControllerArchive(options);expect(calls.slice(count)).toEqual([expect.stringContaining("GET ")]);
 });
+test("a committed schema3 archive with a lost local receipt recovers through its unchanged durable intent", async () => {
+  const f = await fixture(), bodies: string[] = [], calls: { method: string; path: string }[] = [];
+  const receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough, onRequest: (method, path) => calls.push({ method, path }) });
+  const options = { ...f, serverToken: "test", request: receiver.request };
+  const committed = await uploadStoppedControllerArchive(options);
+  const receiptPath = `${f.journalPath}.archive-receipt-${f.ticket.executionGeneration}.json`;
+  const intentPath = `${f.journalPath}.archive-intent-${f.ticket.executionGeneration}.json`;
+  const intentBytes = await readFile(intentPath, "utf8"), intent = JSON.parse(intentBytes);
+  const fileIds = [...receiver.files.keys()].sort(), manifest = bodies[0]!;
+  expect(fileIds).toEqual([intent.history.fileId, intent.timeline.fileId].sort());
+  expect(JSON.parse(manifest).timeline.fileId).toBe(intent.timeline.fileId);
+  expect(committed.sha256).toBe(createHash("sha256").update(manifest).digest("hex"));
+  await unlink(receiptPath);
+  await expect(stat(receiptPath)).rejects.toMatchObject({ code: "ENOENT" });
+  const count = calls.length;
+  expect(await uploadStoppedControllerArchive(options)).toEqual(committed);
+  expect(calls[count]).toEqual({ method: "GET", path: expect.stringMatching(/\/archive$/) });
+  expect(calls.slice(count).some(call => call.method === "PUT")).toBe(false);
+  expect(await readFile(intentPath, "utf8")).toBe(intentBytes);
+  expect([...receiver.files.keys()].sort()).toEqual(fileIds);
+  expect(bodies).toEqual([manifest]);
+  expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(committed);
+});
 test("an unknown stopped-source response retries the original durable batch before preparing an archive",async()=>{
  const f=await fixture(),bodies:string[]=[],batches:string[]=[];let fail=true;
  const receiver=archiveTestReceiver({bodies,sourceThrough:f.sourceThrough});
@@ -63,8 +86,8 @@ test("an unknown stopped-source response retries the original durable batch befo
 });
 test("a stopped source floor ahead of acknowledgement cannot fabricate a complete tail",async()=>{
  const f=await fixture(),db=new Database(f.journalPath);try{db.exec("UPDATE execution SET source_floor=last_sequence")}finally{db.close()}
- const request=vi.fn<typeof fetch>();
- await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request})).rejects.toThrow("complete unacknowledged event tail");expect(request).not.toHaveBeenCalled();
+ const request=vi.fn<typeof fetch>().mockResolvedValue(Response.json({archive:emptyStatus}));
+ await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request})).rejects.toThrow("complete unacknowledged event tail");expect(request).toHaveBeenCalledOnce();expect(request.mock.calls[0]?.[1]?.method).toBe("GET");
 });
 test("a resumed archive rejects an expanded local intent instead of changing its file identities",async()=>{
  const f=await fixture(),bodies:string[]=[];let fail=true;

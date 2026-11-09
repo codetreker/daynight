@@ -35,6 +35,9 @@ requires its original actor and matching complete receipt. Operation, unknown,
 native-resume and temporary archive pins retain bytes without granting access.
 The authorized transaction checks references before I/O and again before
 returning the bytes, so releasing a private reference cannot publish a late read.
+Timeline reads likewise reauthorize ordinary historical access after file I/O and
+decoding, retaining the original archive, ledger, file and delete-epoch identity.
+A read lease protects physical storage rather than continued caller access.
 Both checks use ordinary historical Session access rather than current-claim
 browser admission. Published originals remain readable after a Task starts a new
 claim, without transferring any authority over its new execution. Project and
@@ -48,13 +51,27 @@ cannot revive it; existing exact reader and writer locks remain held through
 physical cleanup and the final database confirmation. Its row and quota remain
 until those barriers finish. A cleanup error or unknown commit therefore leaves
 the original identity available for reconciliation rather than returning space
-that might still be occupied. Fixed upload expiry follows the same mechanism;
+that might still be occupied. Cleanup sweeps the exact typed upload namespace,
+not only paths with committed chunk rows: durable file publication can precede
+a failed or uncertain chunk-row commit. A shared upload payload gate joins late
+read-response writers before the durable sweep and final accounting decision.
+Fixed upload expiry follows the same mechanism;
 stopped archive preparation and sealing reconcile abandoned uploads without the
 original client. Occupied operation, unknown, message, record and native-resume
 references survive expiry. Historical upload queries retain the original actor
 check without requiring the Task's current claim. Original operation queries
 also use historical access, preserving unknown receipts without dispatching or
 rewriting their original hashes and fences.
+
+Media request rows retain bounded non-byte metadata and original request,
+fence, chunk length and digest. Raw write bodies and read-response chunks live
+only in the existing metered shared staging or committed blob storage. Short
+transactions reserve their original identities and leases; file I/O and bounded
+wire reconstruction happen outside those transactions, followed by revalidation.
+The HTTP caller and Controller relay can therefore run on different instances.
+A process-local mailbox cannot replace the shared durable source. Existing
+payload-bearing rows are normalized through an exact expected-state write;
+conflicts and unknown commits retain the original reconciliation identity.
 
 New media tables keep identity and concurrency uniqueness in PostgreSQL while
 protocol, state, expiry and rate policy belong to core. Account token buckets
@@ -91,8 +108,16 @@ Legacy schema1 conversion belongs only at the data boundary. Its recoverable
 migration preserves the original files and identities until the new closure has
 been durably committed and read back. New writes do not generate a schema1 copy.
 Existing resources are reused only after descriptor and storage-identity checks
-at preparation and commit. Inline conversion compares the original row and
-clears its old bytes atomically; an external original keeps its existing blob.
+at migration preparation and commit. Sealing checks unavailable descriptors,
+inline-content presence, blob fields and GC state. An exact stopped reset removes preparation
+references while retaining its unavailable resource rows; resealing reuses an
+identical row rather than inserting the same identity again. Inline conversion
+compares the original row and clears its old bytes atomically; an external
+original keeps its existing blob. A Controller without a local legacy receipt
+first observes the committed archive. Its retained complete schema1 source,
+including unreferenced resources and original bytes, must match the persisted
+migration source hash and length before it can record the migrated receipt.
+It does not create competing random file identities for that committed source.
 The deleted-Task owner's status reconciliation can perform this conversion
 under private finalization access, while public content readers retain the
 ordinary deletion refusal.
@@ -140,6 +165,12 @@ the conservative reservation is retained rather than assuming immediate savings.
 **Store only local paths, or collect originals when a Session ends.** Sources may
 change or disappear and a Controller may stop before that point. Upload and
 capture success therefore include service persistence before archive sealing.
+
+**Keep raw media chunks in completed database requests.** This makes relay
+replay convenient but retains originals after upload release outside resource
+accounting. Bounded metadata plus the already reserved shared files preserves
+cross-instance replay without a permanent database copy. A transient mailbox
+alone cannot carry that durable responsibility across relay instances.
 
 **Release uncertain input or writer resources on TTL.** A timeout proves neither
 native rejection nor physical process exit. References and actual cancellation

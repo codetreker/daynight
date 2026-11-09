@@ -794,8 +794,15 @@ func (op *ArchiveOperation) SealArchive(ctx context.Context) (out sp.ArchivePrep
 				ref.BlobID = &id
 			}
 			if descriptor.Status != "available" {
-				if e = media.InsertSessionResource(ctx, store.SessionResourceRecord{SessionID: op.id, Resource: descriptor}); e != nil {
+				saved, e := media.SavedSessionResource(ctx, op.id, descriptor.ResourceID)
+				if errors.Is(e, model.ErrNotFound) {
+					if e = media.InsertSessionResource(ctx, store.SessionResourceRecord{SessionID: op.id, Resource: descriptor}); e != nil {
+						return e
+					}
+				} else if e != nil {
 					return e
+				} else if !jsonEqual(encode(saved.Resource), encode(descriptor)) || saved.BlobID != "" || saved.BlobPath != "" || saved.HasInlineContent || saved.GCPending {
+					return archiveConflict()
 				}
 			}
 			refs = append(refs, ref)
@@ -993,12 +1000,17 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		}
 	}()
 	var file store.ArchiveBundleFile
+	var bundle store.ArchiveBundle
 	var ledger archiveLedger
+	var status sp.ArchiveStatus
+	var archivePath string
+	var deleteEpoch int64
 	err = s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) error {
 		if r.Owner != op.owner {
 			return conflict()
 		}
-		status, _, e := archiveStatus(ctx, tx, id)
+		var e error
+		status, archivePath, e = archiveStatus(ctx, tx, id)
 		if e != nil {
 			return e
 		}
@@ -1009,7 +1021,7 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		if e != nil {
 			return e
 		}
-		bundle, e := dao.SessionArchiveBundle(ctx, id)
+		bundle, e = dao.SessionArchiveBundle(ctx, id)
 		if e != nil {
 			return e
 		}
@@ -1037,7 +1049,8 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		if usage.Deleting {
 			return conflict()
 		}
-		return acquireImageResourceLease(ctx, media, store.SessionResourceLease{SessionID: id, ID: leaseID, Kind: "read", OwnerID: r.Owner, DeleteEpoch: usage.DeleteEpoch})
+		deleteEpoch = usage.DeleteEpoch
+		return acquireImageResourceLease(ctx, media, store.SessionResourceLease{SessionID: id, ID: leaseID, Kind: "read", OwnerID: r.Owner, DeleteEpoch: deleteEpoch})
 	})
 	if err != nil {
 		return nil, err
@@ -1052,6 +1065,53 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		return nil, err
 	}
 	if err = verifyArchiveLedger(ledger, timeline); err != nil {
+		return nil, err
+	}
+	// File I/O is outside the authorization transaction. Recheck the ordinary
+	// historical scope and the original archive before publishing retained bytes.
+	err = s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) error {
+		if r.Owner != op.owner {
+			return conflict()
+		}
+		currentStatus, currentPath, e := archiveStatus(ctx, tx, id)
+		if e != nil {
+			return e
+		}
+		if currentPath != archivePath || !jsonEqual(encode(currentStatus), encode(status)) {
+			return archiveConflict()
+		}
+		dao, e := archiveDAO(tx)
+		if e != nil {
+			return e
+		}
+		currentBundle, e := dao.SessionArchiveBundle(ctx, id)
+		if e != nil {
+			return e
+		}
+		if !jsonEqual(encode(currentBundle), encode(bundle)) {
+			return archiveConflict()
+		}
+		currentFile, e := dao.SessionArchiveFile(ctx, id, fileID)
+		if e != nil {
+			return e
+		}
+		if !jsonEqual(encode(currentFile), encode(file)) {
+			return archiveConflict()
+		}
+		media, e := archiveMediaDAO(tx)
+		if e != nil {
+			return e
+		}
+		usage, e := media.SessionResourceUsage(ctx, id)
+		if e != nil {
+			return e
+		}
+		if usage.Deleting || usage.DeleteEpoch != deleteEpoch {
+			return conflict()
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &RetainedArchive{Data: data, operation: op, closeFn: cleanup}, nil

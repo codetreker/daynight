@@ -124,6 +124,12 @@ func (s imageBoundaryStorage) Delete(ctx context.Context, b, p string) error {
 	}
 	return s.Storage.Delete(ctx, b, p)
 }
+func (s imageBoundaryStorage) DeleteSessionUpload(ctx context.Context, n sessionresource.Namespace, uploadID string) error {
+	if s.point == "delete" {
+		return s.cause
+	}
+	return s.Storage.(filestorage.UploadStorage).DeleteSessionUpload(ctx, n, uploadID)
+}
 func (s imageBoundaryStorage) AcquireGate(ctx context.Context, d filestorage.GateDomain, k string) (io.Closer, error) {
 	if s.point == "gate" {
 		return nil, s.cause

@@ -490,7 +490,10 @@ func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[strin
 		}
 		return save(ctx, tx, r)
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMediaOffers(ctx, f, out)
 }
 func (s *Execution) begin(ctx context.Context, tx *operationTx, r *record, t task, id string) (map[string]any, error) {
 	o, err := loadOperation(ctx, tx, r.Snapshot.SessionID, id)

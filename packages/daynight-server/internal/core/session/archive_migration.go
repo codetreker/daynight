@@ -110,6 +110,9 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 			if !jsonEqual(encode(existing.Resource), encode(record.Resource)) || existing.GCPending || (existing.BlobID == "") != (existing.BlobPath == "") {
 				return archiveConflict()
 			}
+			if existing.Resource.Status != "available" && existing.HasInlineContent {
+				return archiveConflict()
+			}
 			originals[record.Resource.ResourceID] = existing
 			if existing.Resource.Status == "available" && existing.BlobID != "" {
 				path, e := BlobAddress(op.project, op.owner, op.id, existing.BlobID)

@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -251,18 +252,37 @@ func (d *imageRuleDAO) SessionMediaRequest(_ context.Context, _, id string) (sto
 }
 func (d *imageRuleDAO) SaveSessionMediaRequest(_ context.Context, row store.SessionMediaRequest) error {
 	if old, ok := d.media[row.RequestID]; ok {
-		if old.Action != row.Action || old.Fence.Fence != row.Fence.Fence || !jsonEqual(old.Body, row.Body) {
-			return conflict()
-		}
-		if old.Complete && (!row.Complete || !jsonEqual(old.Result, row.Result)) {
-			return conflict()
+		if row.Expected != nil {
+			expected := row.Expected
+			if old.Action != row.Action || old.Fence != expected.Fence || !jsonEqual(old.Body, expected.Body) || !(old.Result == nil && expected.Result == nil || jsonEqual(old.Result, expected.Result)) || !jsonEqual(encode(old.Error), encode(expected.Error)) || old.Complete != expected.Complete {
+				return conflict()
+			}
+		} else {
+			if old.Action != row.Action || old.Fence.Fence != row.Fence.Fence || !jsonEqual(old.Body, row.Body) {
+				return conflict()
+			}
+			if old.Complete && (!row.Complete || !jsonEqual(old.Result, row.Result)) {
+				return conflict()
+			}
 		}
 	}
+	row.Expected = nil
 	if !row.Complete && d.respond != nil {
 		row = d.respond(row)
 	}
 	d.media[row.RequestID] = row
 	return nil
+}
+func (d *imageRuleDAO) SessionUploadMediaRequests(_ context.Context, s, id, resource string) ([]store.SessionMediaRequest, error) {
+	out := []store.SessionMediaRequest{}
+	for _, row := range d.media {
+		var body map[string]string
+		_ = json.Unmarshal(row.Body, &body)
+		if row.SessionID == s && (body["uploadId"] == id || body["attemptId"] == id || body["preparationId"] == id || body["resourceId"] == resource) {
+			out = append(out, row)
+		}
+	}
+	return out, nil
 }
 func (d *imageRuleDAO) PendingSessionMediaRequests(context.Context, string) ([]store.SessionMediaRequest, error) {
 	out := []store.SessionMediaRequest{}
@@ -301,6 +321,9 @@ type imageRuleStorage struct {
 
 func (s *imageRuleStorage) ResourceSpace(context.Context) (int64, int64, error) {
 	return s.free, s.total, nil
+}
+func (s *imageRuleStorage) DeleteSessionUpload(ctx context.Context, n sessionresource.Namespace, uploadID string) error {
+	return s.Storage.(filestorage.UploadStorage).DeleteSessionUpload(ctx, n, uploadID)
 }
 func (s *imageRuleStorage) Put(ctx context.Context, bucket, path string, r io.Reader) (filestorage.FileInfo, error) {
 	if s.beforePut != nil {
@@ -751,7 +774,7 @@ func TestImageMediaReconnectAndResponseKeepOriginalRequest(t *testing.T) {
 	if e != nil || len(offers) != 1 || offers[0]["requestId"] != id || f.d.media[id].Fence.ConnectionEpoch != "2" {
 		t.Fatal("reconnect replaced or dropped request", offers, e)
 	}
-	old := sp.ControllerMessage{ControllerFence: row.Fence, RequestID: id, Action: row.Action, MediaResult: json.RawMessage(`{"data":"same"}`)}
+	old := sp.ControllerMessage{ControllerFence: row.Fence, RequestID: id, Action: row.Action, MediaResult: json.RawMessage(`{"original":"receipt"}`)}
 	if _, e = f.s.acceptMediaResponse(t.Context(), tx, f.r, old); e == nil {
 		t.Fatal("old epoch completed rebound request")
 	}

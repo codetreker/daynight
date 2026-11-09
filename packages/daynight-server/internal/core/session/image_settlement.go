@@ -65,6 +65,7 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 	var chunks []store.SessionUploadChunk
 	var leases []store.SessionResourceLease
 	var path string
+	var namespace sessionresource.Namespace
 	terminal := false
 	if err := access(ctx, func(tx *operationTx, r *record) error {
 		dao, e := resourceDAO(tx)
@@ -72,6 +73,10 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 			return e
 		}
 		upload, e = dao.SessionUpload(ctx, id, uploadID)
+		if e != nil {
+			return e
+		}
+		namespace, e = sessionresource.NewNamespace(project, r.Owner, id)
 		if e != nil {
 			return e
 		}
@@ -145,10 +150,30 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 			}
 		}
 	}
+	payloadGate, err := s.files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-upload-payload/"+id+"/"+uploadID)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, payloadGate.Close()) }()
+	// All earlier read-response publishers exited before this sweep. Their exact
+	// shared chunk paths consume the same reservation as ordinary upload chunks.
+	if err = access(ctx, func(tx *operationTx, _ *record) error { return settleUploadMedia(ctx, tx, id, uploadID, upload.BlobID) }); err != nil {
+		return err
+	}
 	for _, chunk := range chunks {
 		if err := s.files.Delete(ctx, sessionresource.Bucket, chunk.Path); err != nil {
 			return err
 		}
+	}
+	// The upload gate is held by every caller, and terminal settlement has
+	// joined the exact prior lease owners above. A file can outlive a failed
+	// chunk-row transaction, so row-by-row deletion alone cannot return quota.
+	sweeper, ok := s.files.(filestorage.UploadStorage)
+	if !ok {
+		return fault("component_unsupported", "Complete upload reclamation requires a storage upgrade.")
+	}
+	if err := sweeper.DeleteSessionUpload(ctx, namespace, uploadID); err != nil {
+		return err
 	}
 	if terminal {
 		if err := s.files.Delete(ctx, sessionresource.Bucket, path); err != nil {

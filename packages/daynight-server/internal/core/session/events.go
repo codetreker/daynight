@@ -23,9 +23,22 @@ func (s *Execution) SourceSeq(ctx context.Context, f sp.ControllerFence) (int64,
 	err := s.controller(ctx, f, func(_ *operationTx, r *record, _ task) error { n = r.SourceSeq; return nil })
 	return n, err
 }
-func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (map[string]any, error) {
+func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[string]any, result error) {
+	prepared, check, finish, err := s.prepareReadMediaResponse(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	if finish != nil {
+		defer func() { result = errors.Join(result, finish()) }()
+	}
+	m = prepared
 	var out map[string]any
-	err := s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, t task) error {
+	err = s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, t task) error {
+		if check != nil {
+			if err := check(tx, r); err != nil {
+				return err
+			}
+		}
 		var err error
 		switch m.Type {
 		case "sync_state":

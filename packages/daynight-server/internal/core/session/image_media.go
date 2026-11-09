@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"time"
@@ -57,6 +58,15 @@ func (s *Execution) controllerMedia(ctx context.Context, p model.Principal, proj
 	return s.controllerMediaWithAccess(ctx, id, requestID, action, body, access)
 }
 func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID, action string, body any, access imageStorageAccess) (json.RawMessage, error) {
+	wire := encode(body)
+	if len(wire) > mediaRequestBodyBytes {
+		return nil, fault("quota_exceeded", "The controller media body exceeds its storage budget.")
+	}
+	identity, _, err := compactMediaPayload(wire, action == "write")
+	if err != nil {
+		return nil, err
+	}
+	var completedRow store.SessionMediaRequest
 	var out json.RawMessage
 	var remote *sp.ImageError
 	complete := false
@@ -77,10 +87,14 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				if e := onlineContent(r, s.now()); e != nil {
 					return e
 				}
-				row = store.SessionMediaRequest{SessionID: id, RequestID: requestID, Action: action, Fence: r.Snapshot.ControllerFence, Body: encode(body)}
+				row = store.SessionMediaRequest{SessionID: id, RequestID: requestID, Action: action, Fence: r.Snapshot.ControllerFence, Body: identity}
 				return saveMediaRequest(ctx, d, row)
 			}
-			if row.Action != action || row.Fence.Fence != r.Snapshot.Fence || !jsonEqual(row.Body, encode(body)) {
+			row, e = normalizeMediaRequest(ctx, d, row)
+			if e != nil {
+				return e
+			}
+			if row.Action != action || row.Fence.Fence != r.Snapshot.Fence || !jsonEqual(row.Body, identity) {
 				return fault("resource_conflict", "Media request identity changed.")
 			}
 			if !row.Complete {
@@ -95,6 +109,7 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				}
 			}
 			out, remote, complete = row.Result, row.Error, row.Complete
+			completedRow = row
 			return nil
 		})
 	}
@@ -120,6 +135,64 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 	if remote != nil {
 		return nil, fault(remote.Code, remote.Message)
 	}
+	if mediaRead(action) {
+		payload, rawData, err := compactMediaPayload(out, true)
+		if err != nil {
+			return nil, err
+		}
+		_, has, err := mediaPayloadIdentity(payload)
+		if err != nil {
+			return nil, err
+		}
+		if has {
+			var original []byte
+			if rawData {
+				var v struct {
+					Data string `json:"data"`
+				}
+				_ = json.Unmarshal(out, &v)
+				original, _ = base64.StdEncoding.Strict().DecodeString(v.Data)
+			}
+			raw, check, finish, err := s.mediaFileIO(ctx, access, completedRow, payload, original)
+			if err != nil {
+				return nil, err
+			}
+			err = access(ctx, func(tx *operationTx, r *record) error {
+				if err := check(tx, r); err != nil {
+					return err
+				}
+				if !rawData {
+					return nil
+				}
+				d, e := mediaDAO(tx)
+				if e != nil {
+					return e
+				}
+				row, e := d.SessionMediaRequest(ctx, id, requestID)
+				if e != nil {
+					return e
+				}
+				compact, _, e := compactMediaPayload(row.Result, true)
+				if e != nil {
+					return e
+				}
+				if !jsonEqual(compact, payload) {
+					return conflict()
+				}
+				row.Expected = mediaExpected(row)
+				row.Result = payload
+				return saveMediaRequest(ctx, d, row)
+			})
+			err = errors.Join(err, finish())
+			if err != nil {
+				return nil, err
+			}
+			if rawData {
+				return out, nil
+			}
+			return raw, nil
+		}
+	}
 	return out, nil
 }
 func (s *Execution) mediaOffers(ctx context.Context, tx *operationTx, r *record) ([]map[string]any, error) {
@@ -136,6 +209,10 @@ func (s *Execution) mediaOffers(ctx context.Context, tx *operationTx, r *record)
 	}
 	out := []map[string]any{}
 	for _, row := range rows {
+		row, e = normalizeMediaRequest(ctx, d, row)
+		if e != nil {
+			return nil, e
+		}
 		if row.Fence.Fence != r.Snapshot.Fence {
 			continue
 		}
@@ -182,16 +259,39 @@ func (s *Execution) acceptMediaResponse(ctx context.Context, tx *operationTx, r 
 	if row.Fence != m.ControllerFence || row.Action != m.Action {
 		return nil, conflict()
 	}
+	row, e = normalizeMediaRequest(ctx, d, row)
+	if e != nil {
+		return nil, e
+	}
 	// Controller rate admission rejects before executing media work. Keep the
 	// original request pending so a later offer can use the same durable identity.
 	if m.MediaError != nil && m.MediaError.Code == "rate_limited" {
 		return nil, nil
+	}
+	if row.Complete && mediaRead(row.Action) && row.Error == nil {
+		compact, changed, err := compactMediaPayload(row.Result, true)
+		if err != nil {
+			return nil, err
+		}
+		if !jsonEqual(compact, m.MediaResult) || m.MediaError != nil {
+			return nil, conflict()
+		}
+		if changed {
+			row.Expected = mediaExpected(row)
+		}
 	}
 	row.Complete = true
 	row.Error = m.MediaError
 	row.Result = nil
 	if m.MediaError == nil {
 		row.Result = m.MediaResult
+		_, hasRaw, err := compactMediaPayload(row.Result, mediaRead(row.Action))
+		if err != nil {
+			return nil, err
+		}
+		if hasRaw {
+			return nil, fault("resource_conflict", "Media bytes must be durable before receipt completion.")
+		}
 	}
 	if e = saveMediaRequest(ctx, d, row); e != nil {
 		return nil, e

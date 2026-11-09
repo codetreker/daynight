@@ -335,7 +335,7 @@ PUT `{base}/archive/content` 为原始manifest JSON（application/json、≤4 Mi
 
 complete 表示所有适用条目 imageProjectionError=null、Markdown/reasoning 图片绑定完整有效、没有 ImageUnavailablePart 且所有 ImagePart 原件已提交；partial至少有一个从未成功采集的明确失败项，成功项仍可读。known available 的blob丢失/摘要不符、缺descriptor、未决commit、timeline gap、文件损坏以及非 null imageProjectionError/null reasoning bindings 均不能转换 partial 凑 ready。图片解析错误使出现集合未知，服务在 manifest 发布前再次拒绝未解决错误，不能由完整文字/source 序号或空图片数组推定无图。尚未发布时设failed或保持可协调pending，错误定位实际对象。ready后发现存储损坏是读取完整性失败；不改写已封存manifest/completeness，UI明确“归档图片读取失败”，不沿原ready宣称当前原件都健康。只能从已验证的同摘要备份修复物理对象，不能重新抓源。
 
-PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manifest的ready即核对原结果；pending表示继续原工作；查询失败继续保留原文件及pin。不得无条件POST failed覆盖可能成功的结果，不换recordId、fileId或摘要逃避冲突。独立archive retry继续沿原停机证据，不能启动Provider；新generation不得冒用旧写资格。
+PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manifest的ready即核对原结果；pending表示继续原工作；查询失败继续保留原文件及pin。Controller 在创建新文件 intent 前观察当前归档；若旧 schema1 已提交并被迁移为 schema3，即使本地 receipt 未落盘，也只在保留的完整旧源序列化结果与服务持久 migration source SHA/长度精确一致、停止身份及源内容重核通过后保存当前 receipt。完整旧源包含未引用的旧资源和原 bytes，不能只重建当前引用闭包来冒领旧提交。关系缺失、来源不匹配或状态未知均不创建竞争 fileId。不得无条件POST failed覆盖可能成功的结果，不换recordId、fileId或摘要逃避冲突。独立archive retry继续沿原停机证据，不能启动Provider；新generation不得冒用旧写资格。
 
 ## 读取、权限与删除
 
@@ -347,7 +347,7 @@ PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manife
 
 所有status/manifest/timeline/图片块/下载复用原Session resolver、真实项目访问（含Team继承）、Test owner/parent credential、Bot→Session屏障；actor不能由body自报。IO前检查，数据交付和提交前重核。只读浏览器无prepare/file/manifest写权限；仅原stopped Controller owner PAT与精确身份可归档。现有deleted Task允许原owner完成归档的finalize例外不向浏览器开放，也不授予新的图片源读取或已删除记录恢复；Bot删除屏障保持更严格的拒绝，不绕过load。
 
-原件读取在 IO 前与结果交付前各执行一次普通 historical archive scope 授权，继承当前项目成员访问、Test parent credential、Bot 与删除屏障；原历史 claim 无须等于任务当前 claim。该读取路径不使用 finalize 例外，deleted Task 的内容继续拒绝。原 owner PAT 查询 legacy schema1 状态时，内部迁移可沿 owner finalize 权限完成原回执的升级对账，各阶段重新授权，仅返回状态和迁移源身份；它不返回归档 bytes，也不开放普通 manifest、timeline 或原件读取。
+timeline 与原件读取在 IO 前及结果交付前各执行一次普通 historical archive scope 授权，继承当前项目成员访问、Test parent credential、Bot 与删除屏障；原历史 claim 无须等于任务当前 claim。timeline 文件读回及解码后，交付前同时核对原归档状态、manifest/文件身份、ledger 和 delete epoch；read lease 只保留物理对象，不代替当前访问权。该读取路径不使用 finalize 例外，deleted Task 的内容继续拒绝。原 owner PAT 查询 legacy schema1 状态时，内部迁移可沿 owner finalize 权限完成原回执的升级对账，各阶段重新授权，仅返回状态和迁移源身份；它不返回归档 bytes，也不开放普通 manifest、timeline 或原件读取。
 
 预览模块缓存key至少含origin/account/owner/recordId/resourceId/hash；权限无变化不重新挂图，实际账户切换、访问拒绝、Session/record删除、Bot `resource_conflict`屏障立即abort在途读取、丢弃旧结果、撤销Blob URL并关闭敏感预览/下载。每次重新使用缓存先经过当前scope授权；页面后台恢复和身份重验失败保持拒绝。已经下载到用户磁盘的bytes无法召回，不以此承诺可撤销文件。纯文字阅读位置、已展开工具和稳定图片组件由现有scope生命周期保留。
 
@@ -365,7 +365,7 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 
 旧 schema1 在读取/迁移边界使用同一转换库：校验原文件及每个真实Base64资源，将原bytes外置到统一资源库，保留session/resource/entry/operation身份、hash和unknown状态。缺失bytes保持明确unavailable，不伪造available。迁移记录使用原migration/prepare身份，按 prepared→files_durable→committed→verified 推进；新闭包fsync、DB提交和读回完成前保留原文件、旧journal及marker，重启先观察原状态，不能删旧后重建。schema2只交Herdr decoder，不借给原生媒体。
 
-已有同 resourceId 的资源须在迁移准备和提交时核对完整描述符及原存储、迁移身份。已外置的 available 原件保持原 blobId/path，先核验原对象，再复用同一行；已存在的 unavailable 行保持原身份。旧 inline available 行只在原件已外置耐久、原描述符与迁移身份仍匹配且 blobId/path 均为空时原子转换，并清除数据库 content，不保留长期双份原件。只有尚不存在的资源可 INSERT；描述符、外置对象或并发转换身份变化均拒绝，不能覆盖已有资源消除冲突。
+已有同 resourceId 的资源须在迁移准备和提交时核对完整描述符及原存储、迁移身份。Store 用 `HasInlineContent` 只报告旧 content 列是否非 NULL（空 bytea 也算存在），不加载原字节或判断资源状态；unavailable 的冲突拒绝由 core 拥有。seal 同时核对 unavailable 描述符、inline 内容存在性、blob 字段及 GC 状态：exact stopped reset 只撤本次 archive 引用，可以保留原 unavailable 资源行及完整历史；再次 seal 复用完全匹配且没有 blob/GC 冲突的原行，只有缺失时才 INSERT，不能用重置后重复插入或覆盖描述符消除冲突。已外置的 available 原件保持原 blobId/path，先核验原对象，再复用同一行；已存在的 unavailable 行保持原身份。旧 inline available 行只在原件已外置耐久、原描述符与迁移身份仍匹配且 blobId/path 均为空时原子转换，并清除数据库 content，不保留长期双份原件。只有尚不存在的资源可 INSERT；描述符、外置对象或并发转换身份变化均拒绝，不能覆盖已有资源消除冲突。
 
 新写入仅生成schema3的manifest、timeline及统一资源引用，不生成schema1文字兼容副本或长期双投影。旧客户端/Worker缺所需revision时明确升级；旧文字和原operation查询保留。Controller journal迁移需原writer已经停止，保留完整旧intent/hash/未决身份，转换只发生在入口边界。
 

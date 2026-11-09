@@ -17,7 +17,7 @@ var _ store.SessionIntentDAO = (*DAO)(nil)
 func (tx *DAO) SavedSessionResource(ctx context.Context, s, id string) (store.SessionResourceRecord, error) {
 	r := store.SessionResourceRecord{SessionID: s}
 	var raw []byte
-	err := tx.tx.QueryRow(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),COALESCE(migration_id::text,''),gc_pending FROM session_resources WHERE session_id=$1 AND resource_id=$2`, s, id).Scan(&raw, &r.BlobID, &r.BlobPath, &r.MigrationID, &r.GCPending)
+	err := tx.tx.QueryRow(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),COALESCE(migration_id::text,''),gc_pending,content IS NOT NULL FROM session_resources WHERE session_id=$1 AND resource_id=$2`, s, id).Scan(&raw, &r.BlobID, &r.BlobPath, &r.MigrationID, &r.GCPending, &r.HasInlineContent)
 	if err != nil {
 		return r, mediaQueryError("read saved session resource", err)
 	}
@@ -361,6 +361,31 @@ func (tx *DAO) SaveSessionMediaRequest(ctx context.Context, r store.SessionMedia
 			return e
 		}
 	}
+	if r.Expected != nil {
+		observed := r.Expected
+		expectedFence, err := json.Marshal(observed.Fence)
+		if err != nil {
+			return err
+		}
+		var expectedResult, expectedError any
+		if observed.Result != nil {
+			expectedResult = observed.Result
+		}
+		if observed.Error != nil {
+			expectedError, err = json.Marshal(observed.Error)
+			if err != nil {
+				return err
+			}
+		}
+		tag, err := tx.tx.Exec(ctx, `UPDATE session_media_requests SET fence=$4,body=$5,result=$6,error=$7,complete=$8 WHERE session_id=$1 AND request_id=$2 AND action=$3 AND fence=$9 AND body=$10 AND result IS NOT DISTINCT FROM $11::jsonb AND error IS NOT DISTINCT FROM $12::jsonb AND complete=$13`, r.SessionID, r.RequestID, r.Action, fence, r.Body, result, errorBody, r.Complete, expectedFence, observed.Body, expectedResult, expectedError, observed.Complete)
+		if err != nil {
+			return mediaQueryError("rewrite media request", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return &model.Fault{Code: "resource_conflict", Message: "The observed media request changed before its representation rewrite."}
+		}
+		return nil
+	}
 	tag, e := tx.tx.Exec(ctx, `INSERT INTO session_media_requests(session_id,request_id,action,fence,body,result,error,complete) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(session_id,request_id) DO UPDATE SET fence=EXCLUDED.fence,result=EXCLUDED.result,error=EXCLUDED.error,complete=EXCLUDED.complete WHERE session_media_requests.action=EXCLUDED.action AND (session_media_requests.fence-'connectionEpoch')=(EXCLUDED.fence-'connectionEpoch') AND session_media_requests.body=EXCLUDED.body AND (NOT session_media_requests.complete OR session_media_requests.result IS NOT DISTINCT FROM EXCLUDED.result AND session_media_requests.error IS NOT DISTINCT FROM EXCLUDED.error)`, r.SessionID, r.RequestID, r.Action, fence, r.Body, result, errorBody, r.Complete)
 	if e != nil {
 		return mediaQueryError("save media request", e)
@@ -396,6 +421,38 @@ func (tx *DAO) PendingSessionMediaRequests(ctx context.Context, s string) ([]sto
 			return nil, e
 		}
 		out = append(out, r)
+	}
+	return out, nil
+}
+
+// SessionUploadMediaRequests selects exact identities; representation policy
+// and safe settlement remain with the Session core.
+func (tx *DAO) SessionUploadMediaRequests(ctx context.Context, s, uploadID, resourceID string) ([]store.SessionMediaRequest, error) {
+	rows, err := tx.tx.Query(ctx, `SELECT request_id::text FROM session_media_requests WHERE session_id=$1 AND (body->>'uploadId'=$2 OR body->>'attemptId'=$2 OR body->>'preparationId'=$2 OR body->>'resourceId'=$3) ORDER BY request_id`, s, uploadID, resourceID)
+	if err != nil {
+		return nil, mediaQueryError("list upload media", err)
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.SessionMediaRequest, 0, len(ids))
+	for _, id := range ids {
+		row, err := tx.SessionMediaRequest(ctx, s, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
 	}
 	return out, nil
 }

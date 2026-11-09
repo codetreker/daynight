@@ -202,6 +202,9 @@ type stoppingReclaimStorage struct {
 	started, canceled, release chan struct{}
 }
 
+func (s stoppingReclaimStorage) DeleteSessionUpload(ctx context.Context, n sessionresource.Namespace, id string) error {
+	return s.Storage.(filestorage.UploadStorage).DeleteSessionUpload(ctx, n, id)
+}
 func (s stoppingReclaimStorage) Delete(ctx context.Context, _, _ string) error {
 	close(s.started)
 	<-ctx.Done()
@@ -419,6 +422,9 @@ type reclaimGateAuditStorage struct {
 	audit func()
 }
 
+func (s reclaimGateAuditStorage) DeleteSessionUpload(ctx context.Context, n sessionresource.Namespace, id string) error {
+	return s.Storage.(filestorage.UploadStorage).DeleteSessionUpload(ctx, n, id)
+}
 func (s reclaimGateAuditStorage) Delete(ctx context.Context, bucket, path string) error {
 	s.audit()
 	return s.Storage.Delete(ctx, bucket, path)

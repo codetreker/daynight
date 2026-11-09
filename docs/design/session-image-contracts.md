@@ -206,6 +206,12 @@ validated状态仅证明Controller完整字节及解码验证，validated非null
 
 同一 uploadId 与 spec 的准备/块重复可以安全返回现存状态；网络未知时客户端先查询，禁止盲目新建或重传整个图。这里的可协调准备不授予 SessionCommand 自动重放权限。
 
+服务媒体请求的持久账本保留原 requestId/action/fence、完整非字节元数据、块长度/摘要及完成结果，不长期保存 write body 或 read/read_prepared/read_capture result 中的 Base64 原件。私有账本用 `$data` 保存块身份，该字段不进入 wire；原 data 从同 Session、同 upload/attempt 的已计量共享暂存块或已提交 blob 恢复。原件不存在或摘要不符时拒绝，不能从变化的外部来源重建。
+
+Poll 构造持久 offer、Controller read response 的服务落盘及等待者读回都使用短事务取得原请求、scope、fence、delete epoch 和 durable lease，结束事务后持精确文件 gate 执行有界 I/O，再以短事务复核这些原事实。read response 的原 bytes 先写入受原 upload reservation 保护的精确 chunk namespace，再持久保存不含 bytes 的结果；已经完成的原件只核验既有 blob，不晚到重建 staging。offer 的 write body 和等待者读取结果在事务外从同一共享文件恢复并核块摘要，因此 HTTP caller 和 Controller relay instance 无须是同一进程。进程内等待状态不是 durable replay bytes 的所有者。
+
+旧账本中的完整 body/result 在 core 计算无 bytes 的等价元数据，并由 DAO 按读到的原 fence/body/result/error/complete 做精确 Expected CAS；冲突或 unknown 保留原身份与占用，不覆盖较新的结果。取消只结束该次 I/O 并等待执行单元退出；准备、unknown 和未完成清理继续保留其 reservation。
+
 ## 图片发送与 NativeProvider 入口
 
 ```ts
@@ -465,7 +471,7 @@ source ACK 的保留策略由 core 拥有：先核原 identity/hash，再按当�
 
 发送授权在一个事务校验完整有序输入、全部 complete/upload 身份、目标、能力、20MiB/8张、统一 timeline 的精确元数据预算，持久 intent 并取得全部 pin。任何一图失败整条拒绝。DELETE 先提交使 released，迟到验证不能复活；complete 先提交而无其他有效引用时仍可释放；发送先取得 pin 则 upload_in_use。DELETE 保留原 uploadId、BlobID、spec 和固定 expiry 的 tombstone。仅取消浏览器等待不是 DELETE。
 
-零引用回收在授权的 Session 锁内将资源标记为 `gc_pending`。标记保留原 descriptor、blob 路径和资源行，暂不返还 committed 配额；它拒绝新增该资源的引用和 lease，也拒绝可能使用任意 Session 原件的无 resourceId lease。其他仍有合法引用、尚未进入 GC 的资源可正常交接 message/archive pin。清理持有原 upload 的 `PrivateGate`，对已有相关 reader/writer 取得其原 lease 的 exact gate，证明执行单元退出后才撤销 durable lease；活跃 owner 返回 busy。原件及 staging 物理删除并完成文件存储屏障后，最终事务复核原身份、零引用和无相关 lease，再删除资源行并确认 staging 已释放，此后才返配额。任何物理失败、事务失败或 unknown 结果保留可观察状态和未确认额度，通过同一 tombstone 重入；receipt 已变 released 或 expired 不证明磁盘空间已释放。
+零引用回收在授权的 Session 锁内将资源标记为 `gc_pending`。标记保留原 descriptor、blob 路径和资源行，暂不返还 committed 配额；它拒绝新增该资源的引用和 lease，也拒绝可能使用任意 Session 原件的无 resourceId lease。其他仍有合法引用、尚未进入 GC 的资源可正常交接 message/archive pin。清理持有原 upload 的 `PrivateGate`，对已有相关 reader/writer 取得其原 lease 的 exact gate，证明执行单元退出后才撤销 durable lease；活跃 owner 返回 busy。原件及 staging 物理删除并完成文件存储屏障后，最终事务复核原身份、零引用和无相关 lease，再删除资源行并确认 staging 已释放，此后才返配额。staging 回收按 typed Session namespace 与原 uploadId 完整清扫 uploads 子目录，不仅枚举已提交 chunk 行：文件发布后、chunk 行提交前崩溃或事务失败留下的孤儿也必须删除。清扫与 read response 落盘共享该 upload 的精确 payload gate，先证明全部原 writer 已退出，持锁至目录耐久删除及最终状态确认，防止清扫后迟到重建。旧媒体账本内的原件副本也须先按原值完成元数据化，不能仅删文件便返还配额。任何物理失败、事务失败或 unknown 结果保留可观察状态和未确认额度，通过同一 tombstone 重入；receipt 已变 released 或 expired 不证明磁盘空间已释放。
 
 24h 从首次创建固定，精确重传、读取、重连不续期，每次事务和有界清理扫描均检查。未占用 receiving/verifying/complete 可到期；sending/unknown/消息/记录引用不随 TTL 释放。failed/expired/released 保存最小 tombstone 到所属保留期结束，相同 uploadId 不复活；Session 最多10000上传身份，超限 policy_restricted，不能删 tombstone 腾身份。
 
