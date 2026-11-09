@@ -48,26 +48,6 @@ func (f *fakeStepReads) ListPage(_ context.Context, _ model.Principal, _, _ stri
 	}
 	return result, nil
 }
-func (f *fakeStepReads) ListPageAdmitted(ctx context.Context, principal model.Principal, project, task string, after int64, limit int, version *int64, summary bool, admit func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error)) (taskservice.StepsPage, error) {
-	page, err := f.ListPage(ctx, principal, project, task, after, limit, version, summary)
-	if err != nil {
-		return page, err
-	}
-	accepted := make([]store.TaskStepProjection, 0, len(page.Items))
-	for i, item := range page.Items {
-		ok, err := admit(page.Header, item, i < len(page.Items)-1 || page.HasMore)
-		if err != nil {
-			return taskservice.StepsPage{}, err
-		}
-		if !ok {
-			page.HasMore = true
-			break
-		}
-		accepted = append(accepted, item)
-	}
-	page.Items = accepted
-	return page, nil
-}
 func (f *fakeStepReads) GetSummary(_ context.Context, _ model.Principal, _, _, id string) (taskservice.StepSummary, error) {
 	for _, item := range f.items {
 		if item.Step.ID == id {
@@ -77,11 +57,11 @@ func (f *fakeStepReads) GetSummary(_ context.Context, _ model.Principal, _, _, i
 	}
 	return taskservice.StepSummary{}, tasksteps.NotFound(f.version, model.ErrNotFound)
 }
-func (f *fakeStepReads) GetBounded(_ context.Context, _ model.Principal, _, _, id string) (taskservice.StepDocument, error) {
+func (f *fakeStepReads) Get(_ context.Context, _ model.Principal, _, _, id string) (taskservice.StepDocument, error) {
 	for _, item := range f.items {
 		if item.Step.ID == id {
-			resource, err := taskcodec.Item(f.header(), item.Step)
-			return taskservice.StepDocument{Resource: resource}, err
+			resource := taskcodec.ProjectItem(f.header(), item.Step)
+			return taskservice.StepDocument{Resource: resource}, nil
 		}
 	}
 	return taskservice.StepDocument{}, tasksteps.NotFound(f.version, model.ErrNotFound)
@@ -181,148 +161,6 @@ func TestStepReadDiscoveryAndVersionedTraversal(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestStepReadPageByteBudgetAndOversizedItem(t *testing.T) {
-	fixture := newEntryFixture(t)
-	ops := sampleStepReads(12, strings.Repeat("\x01", 512))
-	if err := RegisterStepReadTools(fixture.entry, ops); err != nil {
-		t.Fatal(err)
-	}
-	client := fixture.client(t, "2026-07-28", "alice")
-	args := readArgs()
-	first := readCall(t, client, "task_step_list", args)
-	if first.IsError {
-		t.Fatalf("first: %+v", structured(t, first))
-	}
-	data := object(t, structured(t, first)["data"])
-	items := data["items"].([]any)
-	if len(items) == 0 || len(items) >= len(ops.items) {
-		t.Fatalf("expected byte truncation: %d", len(items))
-	}
-	encoded, err := json.Marshal(structured(t, first))
-	if err != nil || len(encoded) > 16<<10 {
-		t.Fatalf("summary envelope exceeds budget: %d, %v", len(encoded), err)
-	}
-	cursor := data["nextCursor"].(string)
-	args["cursor"] = cursor
-	second := readCall(t, client, "task_step_list", args)
-	if second.IsError {
-		t.Fatalf("second: %+v", structured(t, second))
-	}
-	next := object(t, structured(t, second)["data"])["items"].([]any)
-	if object(t, next[0])["id"] != fmt.Sprintf("%08x", len(items)) {
-		t.Fatalf("cursor skipped item: %+v", next[0])
-	}
-	ops.items[0].Step.Description = strings.Repeat("x", 17000)
-	args = readArgs()
-	args["view"] = "full"
-	fullPage := readCall(t, client, "task_step_list", args)
-	if fullPage.IsError || len(object(t, structured(t, fullPage)["data"])["items"].([]any)) != len(ops.items) {
-		t.Fatalf("full page should not use the summary budget: %+v", structured(t, fullPage))
-	}
-	show := readArgs()
-	show["stepId"], show["view"] = "00000000", "full"
-	full := readCall(t, client, "task_step_show", show)
-	if full.IsError || object(t, object(t, structured(t, full)["data"])["step"])["description"] != ops.items[0].Step.Description {
-		t.Fatalf("full item read: %+v", structured(t, full))
-	}
-}
-
-func TestStepFullBudgetsAndCursorContinuity(t *testing.T) {
-	for _, version := range []string{"2026-07-28", "2025-11-25"} {
-		t.Run(version, func(t *testing.T) {
-			fixture := newEntryFixture(t)
-			ops := sampleStepReads(13, strings.Repeat("\x01", 1024))
-			for i := range ops.items {
-				ops.items[i].Step.Description = strings.Repeat("\x01", 65536)
-			}
-			if err := RegisterStepReadTools(fixture.entry, ops); err != nil {
-				t.Fatal(err)
-			}
-			client := fixture.client(t, version, "alice")
-			args := readArgs()
-			args["view"] = "full"
-			var ids []string
-			for {
-				result := readCall(t, client, "task_step_list", args)
-				if result.IsError {
-					t.Fatalf("page: %+v", structured(t, result))
-				}
-				encoded, err := json.Marshal(structured(t, result))
-				if err != nil || len(encoded) > 4<<20 {
-					t.Fatalf("page size %d: %v", len(encoded), err)
-				}
-				data := object(t, structured(t, result)["data"])
-				for _, item := range data["items"].([]any) {
-					ids = append(ids, object(t, item)["id"].(string))
-				}
-				if data["nextCursor"] == nil {
-					break
-				}
-				args["cursor"] = data["nextCursor"]
-			}
-			if len(ids) != len(ops.items) {
-				t.Fatalf("missing items: %v", ids)
-			}
-			for i, id := range ids {
-				if id != fmt.Sprintf("%08x", i) {
-					t.Fatalf("wrong order: %v", ids)
-				}
-			}
-			show := readArgs()
-			show["stepId"], show["view"] = "00000000", "full"
-			result := readCall(t, client, "task_step_show", show)
-			if result.IsError {
-				t.Fatalf("legal maximum show: %+v", structured(t, result))
-			}
-			ops.items[0].Step.Description = strings.Repeat("\x01", 100000)
-			result = readCall(t, client, "task_step_show", show)
-			failure := object(t, structured(t, result)["error"])
-			if !result.IsError || failure["code"] != "resource_limit_exceeded" {
-				t.Fatalf("oversized show: %+v", failure)
-			}
-			ops.items[1].Oversized = true
-			first := readCall(t, client, "task_step_list", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "view": "full"})
-			if first.IsError {
-				t.Fatalf("prefix before oversized candidate: %+v", structured(t, first))
-			}
-			firstData := object(t, structured(t, first)["data"])
-			if len(firstData["items"].([]any)) != 1 || firstData["nextCursor"] == nil {
-				t.Fatalf("prefix lost candidate: %+v", firstData)
-			}
-			next := readCall(t, client, "task_step_list", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "view": "full", "cursor": firstData["nextCursor"]})
-			if !next.IsError || object(t, structured(t, next)["error"])["code"] != "resource_limit_exceeded" {
-				t.Fatalf("oversized next item: %+v", structured(t, next))
-			}
-			ops.items[0].Oversized = true
-			result = readCall(t, client, "task_step_list", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "view": "full"})
-			failure = object(t, structured(t, result)["error"])
-			if !result.IsError || failure["code"] != "resource_limit_exceeded" {
-				t.Fatalf("oversized first item: %+v", failure)
-			}
-		})
-	}
-}
-
-func TestStepFullShowRejectsInvalidOversizedTitle(t *testing.T) {
-	client, project, _, _, database, entry, _ := taskResourceClient(t)
-	if err := RegisterStepReadTools(entry, taskservice.NewTaskSteps(database)); err != nil {
-		t.Fatal(err)
-	}
-	parent := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Parent"})
-	taskID := parent["id"].(string)
-	_, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,'00000000',0,$2,repeat('x',4194304),'todo',clock_timestamp(),clock_timestamp())`, taskID, "\u0085")
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := map[string]any{"projectId": project, "taskId": taskID, "stepId": "00000000", "view": "full"}
-	taskError(t, client, "task_step_show", args, "internal_error")
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_steps SET title='valid' WHERE task_id=$1`, taskID); err != nil {
-		t.Fatal(err)
-	}
-	taskError(t, client, "task_step_show", args, "resource_limit_exceeded")
 }
 
 func TestStepReadAdmissionFollowsMaterialization(t *testing.T) {

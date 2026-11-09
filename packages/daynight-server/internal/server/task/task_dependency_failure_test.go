@@ -3,61 +3,57 @@ package task_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func TestTaskAndSyncHTTPRecoverAfterDependencyTableFailure(t *testing.T) {
-	database := projectTestStore(t)
+func TestTaskAndSyncHTTPRecoverAfterDependencyFailure(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	predecessor := createHTTPTask(t, handler, project.ID, "Prerequisite")
-	task := createHTTPTask(t, handler, project.ID, "Dependent", predecessor.ID)
-	syncURL := syncPath(project.ID)
-	baseline := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncURL, ""), http.StatusOK)
-	if len(baseline.Tasks) != 2 {
-		t.Fatalf("baseline sync: %+v", baseline)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := database.Pool.Exec(ctx, `ALTER TABLE task_dependencies RENAME TO private_missing_dependencies`); err != nil {
-		t.Fatal(err)
-	}
-	renamed := true
-	t.Cleanup(func() {
-		if renamed {
-			cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
-			defer done()
-			if _, err := database.Pool.Exec(cleanup, `ALTER TABLE private_missing_dependencies RENAME TO task_dependencies`); err != nil {
-				t.Error(err)
-			}
+	handler := newHTTPFixture(t, &logs)
+	handler.Tasks.ExpectCalls("Observe", 2)
+	handler.ExpectCalls("Sync", 2)
+	failure := &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("task_dependencies private_missing_dependencies")}
+	task := testTask("Dependent")
+	sync := syncModel()
+	sync.Tasks = []model.TaskViewRecord{{ID: task.ID, TitlePreview: task.Title, Version: task.Version, Properties: task.Properties, Status: task.Status, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}}
+	taskCalls, syncCalls := 0, 0
+	handler.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
+		taskCalls++
+		if taskCalls == 1 {
+			return taskservice.TaskObservation{}, failure
 		}
-	})
-	for _, path := range []string{taskPath(task), syncURL} {
+		return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
+	}
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		syncCalls++
+		if syncCalls == 1 {
+			return model.TaskSync{}, failure
+		}
+		return sync, nil
+	}
+	for _, path := range []string{taskCollection(testProjectID) + "/" + testTaskID, syncPath(testProjectID)} {
 		response := projectRequest(handler, http.MethodGet, path, "")
-		failure := decodeResponse[api.ErrorResponse](t, response, http.StatusInternalServerError)
-		if failure.Error.Code != "internal_error" || failure.Error.RequestID == "" || failure.Error.RequestID != response.Header().Get("X-Request-ID") || strings.Contains(response.Body.String(), "task_dependencies") || strings.Contains(response.Body.String(), "private_missing_dependencies") {
-			t.Fatalf("unsafe or uncorrelated dependency failure: %s", response.Body)
+		value := decodeResponse[api.ErrorResponse](t, response, 500)
+		if value.Error.Code != "internal_error" || value.Error.RequestID == "" || value.Error.RequestID != response.Header().Get("X-Request-ID") || strings.Contains(response.Body.String(), "task_dependencies") || strings.Contains(response.Body.String(), "private_missing_dependencies") {
+			t.Fatalf("failure=%s", response.Body)
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, `ALTER TABLE private_missing_dependencies RENAME TO task_dependencies`); err != nil {
-		t.Fatal(err)
+	recovered := decodeResponse[api.Task](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, ""), 200)
+	if recovered.ID != task.ID || recovered.Title != task.Title || recovered.Version != task.Version {
+		t.Fatalf("recovered=%+v", recovered)
 	}
-	renamed = false
-	if read := readHTTPTask(t, handler, task); !reflect.DeepEqual(read, task) {
-		t.Fatalf("task changed after recovery: %+v", read)
+	result := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID), ""), 200)
+	if result.Epoch != testEpoch || result.Mode != "snapshot" || len(result.Tasks) != 1 || result.Tasks[0].ID != task.ID {
+		t.Fatalf("sync recovered=%+v", result)
 	}
-	recovered := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncURL, ""), http.StatusOK)
-	if recovered.Epoch != baseline.Epoch || recovered.Mode != baseline.Mode || recovered.Project != baseline.Project || !reflect.DeepEqual(recovered.Tasks, baseline.Tasks) {
-		t.Fatal("sync did not recover its prior task projection")
-	}
-	if strings.Contains(logs.String(), "private_missing_dependencies") || strings.Contains(logs.String(), "task_dependencies") {
-		t.Fatal("dependency table details leaked into logs")
+	if strings.Contains(logs.String(), "task_dependencies") || strings.Contains(logs.String(), "private_missing_dependencies") {
+		t.Fatalf("database names leaked: %s", &logs)
 	}
 }

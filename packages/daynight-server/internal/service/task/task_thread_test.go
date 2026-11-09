@@ -49,7 +49,7 @@ func listThread(t *testing.T, threads *taskservice.TaskThreads, principal model.
 		t.Fatal(err)
 	}
 	var resource api.ThreadPage
-	if err := json.Unmarshal(result.JSON, &resource); err != nil || len(resource.Items) != len(result.Page.Items) || len(result.JSON) > taskcodec.PageLimit {
+	if err := json.Unmarshal(result.JSON, &resource); err != nil || len(resource.Items) != len(result.Page.Items) {
 		t.Fatalf("page document: %#v, %v", resource, err)
 	}
 	return result
@@ -555,7 +555,7 @@ func TestThreadIDPaginationTraversesSameMillisecondInBothDirections(t *testing.T
 	postThread(t, reply.service, principal, other, taskservice.CreateThreadMessage{Body: "local reply", ReplyTo: &otherMessage.ID})
 }
 
-func TestThreadPageByteLimitKeepsCompleteBodiesAndActualSides(t *testing.T) {
+func TestThreadCountPageKeepsCompleteBodiesAndActualSides(t *testing.T) {
 	_, target, principal := taskMockModels()
 	at := time.Date(2026, 11, 3, 0, 0, 0, 123000000, time.UTC)
 	want := threadMessages(target, principal, 7, at, "")
@@ -566,28 +566,28 @@ func TestThreadPageByteLimitKeepsCompleteBodiesAndActualSides(t *testing.T) {
 	for i := range want {
 		want[i].Body = strings.Repeat("x", taskcodec.MessageLimit-len(base))
 	}
-	assertThreadByteTraversal(t, target, principal, want, false, 3)
+	assertThreadCountTraversal(t, target, principal, want, false, len(want))
 }
 
-func assertThreadByteTraversal(t *testing.T, target model.Task, principal model.Principal, want []model.ThreadMessage, details bool, pageCount int) {
+func assertThreadCountTraversal(t *testing.T, target model.Task, principal model.Principal, want []model.ThreadMessage, details bool, pageCount int) {
 	t.Helper()
 	for _, reverse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("details=%t/reverse=%t", details, reverse), func(t *testing.T) {
 			var traversed []model.ThreadMessage
 			for offset := 0; offset < len(want); {
 				start, end := offset, min(offset+pageCount, len(want))
-				request := taskservice.ThreadListRequest{Count: 100, Details: details, FromBeginning: !reverse && offset == 0}
+				request := taskservice.ThreadListRequest{Count: pageCount, Details: details, FromBeginning: !reverse && offset == 0}
 				var anchor *model.ThreadMessage
 				var candidates []model.ThreadMessage
 				if reverse {
 					end, start = len(want)-offset, max(len(want)-offset-pageCount, 0)
-					candidates = threadCandidates(want[:end], true)
+					candidates = threadCandidates(want[max(end-pageCount-1, 0):end], true)
 					if offset > 0 {
 						anchor = &want[end]
 						request.BeforeID = &anchor.ID
 					}
 				} else {
-					candidates = want[start:]
+					candidates = want[start:min(start+pageCount+1, len(want))]
 					if offset > 0 {
 						anchor = &want[start-1]
 						request.AfterID = &anchor.ID
@@ -605,13 +605,13 @@ func assertThreadByteTraversal(t *testing.T, target model.Task, principal model.
 				offset += end - start
 			}
 			if !reflect.DeepEqual(traversed, want) {
-				t.Fatal("byte traversal omitted, duplicated or changed messages")
+				t.Fatal("count traversal omitted, duplicated or changed messages")
 			}
 		})
 	}
 }
 
-func TestThreadSameMillisecondBytePagesTraverseBothResourceForms(t *testing.T) {
+func TestThreadSameMillisecondCountPagesTraverseBothResourceForms(t *testing.T) {
 	_, target, principal := taskMockModels()
 	at := time.Date(2026, 11, 3, 0, 0, 0, 120000000, time.UTC)
 	want := threadMessages(target, principal, 7, at, "")
@@ -633,8 +633,8 @@ func TestThreadSameMillisecondBytePagesTraverseBothResourceForms(t *testing.T) {
 			t.Fatalf("complete detailed resource: %d, %v", len(encoded), err)
 		}
 	}
-	assertThreadByteTraversal(t, target, principal, want, false, 4)
-	assertThreadByteTraversal(t, target, principal, want, true, 3)
+	assertThreadCountTraversal(t, target, principal, want, false, 4)
+	assertThreadCountTraversal(t, target, principal, want, true, 3)
 }
 
 func TestThreadLocalPostDoesNotHideUnreadMessagesAndEmptyInitialization(t *testing.T) {

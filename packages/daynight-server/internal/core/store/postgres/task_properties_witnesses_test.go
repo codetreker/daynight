@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,11 +46,7 @@ func taskPropertyTracedStore(t *testing.T, database *Store, action taskPropertyQ
 	return &Store{Pool: pool}
 }
 
-func taskPropertyWriteValues(task model.Task) TaskWrite {
-	return TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status,
-		AllowAgents: task.AllowAgents, RequiredPlatform: task.RequiredPlatform, AssignedTo: task.AssignedTo,
-		Properties: task.Properties, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn}
-}
+func taskPropertyWriteValues(task model.Task) TaskWrite { return testutil.TaskWrite(task) }
 
 func taskPropertyFacts(t *testing.T, database *Store) map[string]string {
 	t.Helper()
@@ -206,43 +202,6 @@ func TestTaskPropertyWritesPreserveWorkerAndRollback(t *testing.T) {
 		if !reflect.DeepEqual(taskPropertyFacts(t, database), before) {
 			t.Fatal("failed property set/remove persisted task or execution state")
 		}
-	}
-}
-
-func TestIllegalStoredPropertiesRemainInputErrorsAndPreserveTask(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	target := queryTask(t, database, project.ID, 2, model.TaskTodo)
-	for _, value := range []struct{ name, raw string }{{"pullRequests", "{"}, {"pullRequests", `["private-stored-value"]`}, {"pullRequests", "null"}, {"paused", "null"}, {"worker", "null"}, {"unknown", "[]"}} {
-		t.Run(value.name+"/"+value.raw, func(t *testing.T) {
-			putTaskPropertyFixture(t, database, target.ID, value.name, []byte(value.raw))
-			before := taskPropertyFacts(t, database)
-			for _, read := range []func(SnapshotScope) error{
-				func(scope SnapshotScope) error {
-					_, err := scope.TaskDAO().Task(context.Background(), project.ID, target.ID)
-					return err
-				},
-				func(scope SnapshotScope) error {
-					_, err := scope.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}})
-					return err
-				},
-			} {
-				err := database.ReadSnapshot(context.Background(), read)
-				var cause *taskproperties.ValidationError
-				if !errors.As(err, &cause) || strings.Contains(err.Error(), "private-stored-value") {
-					t.Fatalf("stored property validation lost category or exposed private value: %v", err)
-				}
-			}
-			err := writeProjectForTest(database, context.Background(), project.ID, func(scope ProjectWriteScope) error {
-				_, err := scope.TaskDAO().Task(context.Background(), target.ID)
-				return err
-			})
-			var cause *taskproperties.ValidationError
-			if !errors.As(err, &cause) || !reflect.DeepEqual(taskPropertyFacts(t, database), before) {
-				t.Fatalf("invalid stored property changed the task or lost its cause: %v", err)
-			}
-			mustQueryExec(t, database, `DELETE FROM task_properties WHERE task_id=$1 AND name=$2`, target.ID, value.name)
-		})
 	}
 }
 

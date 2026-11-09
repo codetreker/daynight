@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, TaskSearchField, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -279,6 +279,17 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
   return parsed;
 };
 
+const searchFieldOrder = { id: 0, title: 1, description: 2 } satisfies Readonly<Record<TaskSearchField, number>>;
+const parseTaskSearchMatch = (value: unknown): TaskSearchItem["match"] => {
+  const match = record(value);
+  const fields = array(match.fields, (field): TaskSearchField => field === "id" || field === "title" || field === "description" ? field : malformed());
+  if (fields.some((field, index) => index > 0 && searchFieldOrder[fields[index - 1]!] >= searchFieldOrder[field])) return malformed();
+  const descriptionSnippet = match.descriptionSnippet === null ? null : text(match.descriptionSnippet);
+  if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
+  if (fields.includes("description") !== (descriptionSnippet !== null)) return malformed();
+  return { fields, descriptionSnippet };
+};
+
 export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSearchPage => {
   const data = record(value);
   if (id(data.projectId) !== projectId) return malformed();
@@ -292,14 +303,8 @@ export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSear
     timestamp(item.updatedAt);
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    const rawMatch = record(item.match);
-    const matchFields = array(rawMatch.fields, (field) => field === "title" || field === "description" ? field : malformed());
-    if (matchFields.length > 2 || new Set(matchFields).size !== matchFields.length || matchFields.length === 2 && (matchFields[0] !== "title" || matchFields[1] !== "description")) return malformed();
-    const descriptionSnippet = rawMatch.descriptionSnippet === null ? null : text(rawMatch.descriptionSnippet);
-    if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
-    if (matchFields.includes("description") !== (descriptionSnippet !== null)) return malformed();
     const parsedStatus = status(item.status);
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: { fields: matchFields, descriptionSnippet } };
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -355,7 +360,7 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
   const data = record(value);
   const parsed = { observedAt: timestamp(data.observedAt), project: parseProject(data.project, projectId), summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
   const byId = new Map(parsed.tasks.map((task) => [task.id, task]));
-  if (parsed.tasks.length > 1000 || byId.size !== parsed.tasks.length || parsed.tasks.reduce((sum, task) => sum + task.dependsOn.length, 0) > 5000) return malformed();
+  if (byId.size !== parsed.tasks.length) return malformed();
   const members = graphChainMembers(byId, taskId);
   const selected = new Set(members);
   for (const member of members) {
@@ -378,17 +383,6 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
     }
   }
   for (const key of Object.keys(expected) as (keyof TaskGraphSummary)[]) if (expected[key] !== parsed.summary[key]) return malformed();
-  const visited = new Set<string>();
-  const active = new Set<string>();
-  const visit = (taskId: string): void => {
-    if (active.has(taskId)) return malformed();
-    if (visited.has(taskId)) return;
-    active.add(taskId);
-    for (const dependency of byId.get(taskId)!.dependsOn) if (byId.has(dependency)) visit(dependency);
-    active.delete(taskId);
-    visited.add(taskId);
-  };
-  for (const task of parsed.tasks) visit(task.id);
   return parsed;
 };
 
@@ -403,7 +397,6 @@ export const parseServerError = (value: unknown): ServerError => {
     const raw = record(data.details);
     if (raw.writeOutcome !== undefined) { fields(raw, ["writeOutcome"]); if (raw.writeOutcome !== "not_committed") return malformed(); }
     if (code === "invalid_search_expression") fields(raw, ["reason", "position", "length"]);
-    if (code === "search_context_limit_exceeded") fields(raw, ["nodeCount", "edgeCount", "maxNodes", "maxEdges"]);
     details = {
       ...(raw.writeOutcome === undefined ? {} : { writeOutcome: "not_committed" as const }),
       ...(raw.reason === undefined ? {} : { reason: text(raw.reason, true) }),
@@ -412,15 +405,9 @@ export const parseServerError = (value: unknown): ServerError => {
       ...(raw.taskIds === undefined ? {} : { taskIds: ids(raw.taskIds) }),
       ...(raw.encodedBytes === undefined ? {} : { encodedBytes: count(raw.encodedBytes) }),
       ...(raw.maxEncodedBytes === undefined ? {} : { maxEncodedBytes: count(raw.maxEncodedBytes) }),
-      ...(raw.nodeCount === undefined ? {} : { nodeCount: count(raw.nodeCount) }),
-      ...(raw.edgeCount === undefined ? {} : { edgeCount: count(raw.edgeCount) }),
-      ...(raw.maxNodes === undefined ? {} : { maxNodes: count(raw.maxNodes) }),
-      ...(raw.maxEdges === undefined ? {} : { maxEdges: count(raw.maxEdges) }),
     };
   }
   if (code === "invalid_search_expression" && (details?.reason === undefined || !["empty_phrase", "empty_query", "expected_operand", "field_group_not_supported", "invalid_escape", "missing_field_value", "nesting_too_deep", "query_too_large", "too_many_terms", "unclosed_group", "unclosed_quote", "unexpected_closing_group", "unexpected_token", "unknown_field"].includes(details.reason) || details.position === undefined || details.position < 1 || details.length === undefined)) return malformed();
-  if (code === "search_context_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 20000 || details.maxEdges !== 100000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
-  if (code === "graph_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 1000 || details.maxEdges !== 5000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
   if (code === "steps_limit_exceeded" && (details?.encodedBytes === undefined || details.maxEncodedBytes !== 67_108_864 || details.encodedBytes <= details.maxEncodedBytes)) return malformed();
   return { code, message, requestId, ...(details === undefined ? {} : { details }) };
 };

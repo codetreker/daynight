@@ -131,7 +131,7 @@ describe("Step status", () => {
     view.setLocale("zh-CN"); expect(screen.getByRole("alert")).toHaveTextContent("先前请求的结果仍未知");
   });
   it("shows bounded capacity facts without exposing server diagnostics", () => {
-    read.mutation = { operation: { action: "stepStatus", stepId: "00000000" }, phase: "refused", error: new ApiError("server", 409, "steps_limit_exceeded", "request-2", undefined, undefined, "private-server-sentinel", { encodedBytes: 101, maxEncodedBytes: 100 }), reconciling: false, reconciliationError: null };
+    read.mutation = { operation: { action: "stepStatus", stepId: "00000000" }, phase: "refused", error: new ApiError("server", 409, "steps_limit_exceeded", "request-2", undefined, "private-server-sentinel", { encodedBytes: 101, maxEncodedBytes: 100 }), reconciling: false, reconciliationError: null };
     renderWithLocale(panel(), { locale: "en" });
     expect(screen.getByRole("alert")).toHaveTextContent("Encoded size: 101 bytes; limit: 100 bytes.");
     expect(screen.queryByText("private-server-sentinel")).toBeNull();
@@ -214,7 +214,7 @@ describe("adding a Step", () => {
     read.mutation = { ...read.mutation, reconciliationError: new ApiError("network") }; view.rerender(panel());
     expect(screen.getByRole("alert")).toHaveTextContent("could not be checked");
     expect(title()).toBeDisabled(); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    setAddMutation(stepId, "refused", "request-add", new ApiError("server", 409, "steps_limit_exceeded", "request-add", undefined, undefined, undefined, { encodedBytes: 101, maxEncodedBytes: 100 }));
+    setAddMutation(stepId, "refused", "request-add", new ApiError("server", 409, "steps_limit_exceeded", "request-add", undefined, undefined, { encodedBytes: 101, maxEncodedBytes: 100 }));
     read.canAdd = true; view.rerender(panel());
     expect(title()).toBeEnabled(); expect(title()).toHaveValue("  Review 第 2 轮  ");
     expect(description()).toHaveValue("**Result**\n[next](file.md)");

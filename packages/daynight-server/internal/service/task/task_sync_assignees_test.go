@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
@@ -40,7 +39,7 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 	initialFacts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, nil, nil), taskReadAssignee(former, true, nil, nil))
 	read := func(task model.TaskViewRecord, facts []model.TaskAssigneeFact) (model.TaskSync, map[string]model.TaskAssigneeVersion) {
 		t.Helper()
-		sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 			if lower != nil {
 				t.Fatal("full people snapshot acquired a window")
 			}
@@ -104,7 +103,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 	task := taskReadView(taskReadID(1), "Assigned task", 1, f.observed)
 	task.AssignedTo = &member
 	facts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(member, true, nil, nil), taskReadAssignee(unreferenced, true, nil, nil))
-	sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+	sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 		if lower != nil {
 			t.Fatal("complete delta window changed")
 		}
@@ -120,7 +119,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 	after := task
 	after.TitlePreview = "Changed in another transaction"
 	after.Version++
-	sync = f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+	sync = f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 		if lower != nil {
 			t.Fatal("fresh complete delta changed")
 		}
@@ -141,7 +140,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 
 func TestTaskSyncAssigneeIntegrityFailureReturnsNoSnapshot(t *testing.T) {
 	f := newTaskReadFixture(t)
-	sync := f.sync(taskReadID(90), store.TaskGraphSize{}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+	sync := f.sync(taskReadID(90), func(lower *time.Time) ([]model.TaskViewRecord, error) {
 		if lower != nil {
 			t.Fatal("integrity snapshot became windowed")
 		}

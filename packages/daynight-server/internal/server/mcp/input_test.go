@@ -308,6 +308,13 @@ func TestInputAdmissionOnSocketAndCancellation(t *testing.T) {
 
 func TestInputSocketTimeoutReleasesSlot(t *testing.T) {
 	e := inputEntry(t)
+	if transport.JSONBodyReadTimeout != 15*time.Second {
+		t.Fatalf("production JSON body read timeout: %s", transport.JSONBodyReadTimeout)
+	}
+	if e.bodyReadTimeout != transport.JSONBodyReadTimeout {
+		t.Fatalf("default body read timeout: %s", e.bodyReadTimeout)
+	}
+	e.bodyReadTimeout = 200 * time.Millisecond
 	served := make(chan struct{}, 1)
 	server := httptest.NewServer(httpx.RequestLogging(slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.ServeHTTP(w, r)
@@ -319,7 +326,7 @@ func TestInputSocketTimeoutReleasesSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(transport.JSONBodyReadTimeout + 5*time.Second))
+	_ = c.SetDeadline(time.Now().Add(e.bodyReadTimeout + 5*time.Second))
 	_, err = io.WriteString(c, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer alice\r\nContent-Type: application/json\r\nX-Request-ID: mcp-timeout\r\nContent-Length: 100\r\n\r\n{")
 	if err != nil {
 		t.Fatal(err)

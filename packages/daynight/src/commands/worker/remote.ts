@@ -33,7 +33,7 @@ export type WorkerRemote = {
   project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void): Promise<WorkerInventory>;
-  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal): AsyncGenerator<Task>;
+  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean): AsyncGenerator<Task>;
   claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal): Promise<Task>;
   update(task: Task, input: Omit<UpdateWorkerClaimInput, "version" | "claimId">, signal: AbortSignal): Promise<Task>;
 };
@@ -155,8 +155,8 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       signal.throwIfAborted();
       return { tasks: result, coveredProjectIds, unavailableProjectIds };
     },
-    candidates: async function* (projectId, platform, signal) {
-      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me" }, signal)) {
+    candidates: async function* (projectId, platform, signal, platformSpecific) {
+      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }) }, signal)) {
         if (readWorkerClaim(task.properties)?.state === "released") continue;
         if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;

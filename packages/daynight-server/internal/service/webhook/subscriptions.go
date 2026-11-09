@@ -128,7 +128,7 @@ func (s *Service) planSubscriptions(ctx context.Context, sc store.WebhookWriteSc
 			return err
 		}
 		if value.Status != "eligible" {
-			return fault("forbidden", "Project is not eligible for this webhook.")
+			return fault("webhook_project_ineligible", "Project is not eligible for this webhook.")
 		}
 		eligible[projectID] = true
 		return nil

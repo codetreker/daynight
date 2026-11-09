@@ -3,75 +3,54 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"strings"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"reflect"
 	"testing"
 	"time"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type listTeamsDB struct {
-	store.TeamWriter
-	store.SnapshotReader
-	items []model.Team
-}
-type listTeamsScope struct {
-	store.SnapshotScope
-	items []model.Team
-}
-type listTeamsReader struct {
-	store.TeamReader
-	items []model.Team
-}
-
-func (d *listTeamsDB) ReadSnapshot(_ context.Context, f func(store.SnapshotScope) error) error {
-	return f(listTeamsScope{items: d.items})
-}
-func (s listTeamsScope) TeamDAO() store.TeamReader { return listTeamsReader{items: s.items} }
-func (r listTeamsReader) TeamsBounded(_ context.Context, _ string, page store.Page, _ int) (store.TeamPage, error) {
-	result := store.TeamPage{Items: []model.Team{}}
-	for _, item := range r.items {
-		if page.After != nil && !item.CreatedAt.After(page.After.CreatedAt) {
-			continue
-		}
-		if len(result.Items) == page.Limit {
-			result.HasMore = true
-			break
-		}
-		result.Items = append(result.Items, item)
+func TestTeamListMCPPagination(t *testing.T) {
+	mocks := newTeamToolMocks(t)
+	f := registerTeamToolMocks(t, mocks)
+	items := make([]model.Team, 3)
+	for i, name := range []string{"First", "Second", "Third"} {
+		item := testUnknownTeam()
+		item.ID = []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}[i]
+		item.Name = &name
+		item.CreatedAt = time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC)
+		items[i] = item
 	}
-	return result, nil
-}
-
-func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
-	f := newEntryFixture(t)
-	f.entry.auth = validTeamAuth{}
-	db := &listTeamsDB{}
-	for i, name := range []string{strings.Repeat("<", 500000), strings.Repeat("<", 500000), strings.Repeat("<", 800000)} {
-		team := testUnknownTeam()
-		team.ID = []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}[i]
-		team.Name = &name
-		team.CreatedAt = time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC)
-		db.items = append(db.items, team)
-	}
-	if err := RegisterTeamTools(f.entry, teamservice.NewTeams(db), projectservice.NewProjects(&failedTeamReadDB{}), identity.New(nil, nil, "")); err != nil {
-		t.Fatal(err)
-	}
-	c := f.client(t, "2025-11-25", "alice")
-	var cursor string
-	for i := 0; i < 2; i++ {
-		args := map[string]any{"limit": 10}
-		if cursor != "" {
-			args["cursor"] = cursor
+	next := "team-page-2"
+	mocks.expect("Teams.List", "Teams.List")
+	calls := 0
+	mocks.teams.ListFunc = func(_ context.Context, _ model.Principal, request model.PageRequest) (coreteam.TeamPage, error) {
+		offset := calls * 2
+		calls++
+		expected := model.PageRequest{Limit: 2}
+		if offset > 0 {
+			expected.Cursor = &next
 		}
-		result, err := c.CallTool(context.Background(), &sdk.CallToolParams{Name: "team_list", Arguments: args})
+		if !reflect.DeepEqual(request, expected) {
+			t.Errorf("request=%+v want=%+v", request, expected)
+		}
+		page := coreteam.TeamPage{Items: items[offset:min(offset+2, len(items))]}
+		if offset == 0 {
+			page.NextCursor = &next
+		}
+		return page, nil
+	}
+	client := f.client(t, "2025-11-25", "alice")
+	var cursor *string
+	for offset := 0; offset < len(items); offset += 2 {
+		args := map[string]any{"limit": 2}
+		if cursor != nil {
+			args["cursor"] = *cursor
+		}
+		result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "team_list", Arguments: args})
 		if err != nil || result.IsError {
-			t.Fatalf("page %d: %#v %v", i, result, err)
+			t.Fatalf("page %d: %#v %v", offset, result, err)
 		}
 		raw, _ := json.Marshal(result.StructuredContent)
 		var env struct {
@@ -79,32 +58,23 @@ func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
 				Items []struct {
 					ID string `json:"id"`
 				} `json:"items"`
-				NextCursor string `json:"nextCursor"`
+				NextCursor *string `json:"nextCursor"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(raw, &env); err != nil {
 			t.Fatal(err)
 		}
-		if len(env.Data.Items) != 1 || env.Data.Items[0].ID != db.items[i].ID || env.Data.NextCursor == "" {
-			t.Fatalf("page %d: %s", i, raw)
+		if len(env.Data.Items) != min(2, len(items)-offset) {
+			t.Fatalf("page %d count: %s", offset, raw)
+		}
+		for i, item := range env.Data.Items {
+			if item.ID != items[offset+i].ID {
+				t.Fatalf("page %d item %d: %s", offset, i, raw)
+			}
 		}
 		cursor = env.Data.NextCursor
-	}
-	result, err := c.CallTool(context.Background(), &sdk.CallToolParams{Name: "team_list", Arguments: map[string]any{"limit": 10, "cursor": cursor}})
-	if err != nil || !result.IsError {
-		t.Fatalf("oversized: %#v %v", result, err)
-	}
-	raw, _ := json.Marshal(result.StructuredContent)
-	var env struct {
-		Error struct {
-			Code string         `json:"code"`
-			Refs map[string]any `json:"refs"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		t.Fatal(err)
-	}
-	if env.Error.Code != "resource_limit_exceeded" {
-		t.Fatalf("oversized: %s", raw)
+		if (cursor != nil) != (offset+2 < len(items)) {
+			t.Fatalf("page %d cursor: %s", offset, raw)
+		}
 	}
 }

@@ -148,7 +148,8 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key, readAuthorizationKey = directories.getAuthorization(owner).readKey;
     const outcome = await controller.submit(input);
     // A receipt read requires owner access; a rejected management request only
-    // disproves administrator authority, not the member's redacted reads.
+    // disproves administrator authority for forbidden, not Project eligibility
+    // refusals or the member's redacted reads.
     if (submittedKind !== "delivery.redeliver" || outcome.phase !== "rejected") observeDenial(outcome.error, requestedOwner, outcome.phase === "rejected" ? authorizationKey : readAuthorizationKey, outcome.phase === "rejected");
     if (submittedKind !== "delivery.redeliver") observeDenial(outcome.result?.currentError, requestedOwner, authorizationKey, true);
     if (submittedKind === "delivery.redeliver" && submittedEndpointId !== null && outcome.phase === "rejected") {

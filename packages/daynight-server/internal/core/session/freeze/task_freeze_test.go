@@ -93,13 +93,13 @@ func TestFreezePreservesOnlyActiveWebClaim(t *testing.T) {
 	}
 }
 
-func TestFreezeRejectsCorruptWorkerBeforeWriting(t *testing.T) {
+func TestFreezePropagatesWorkerDecodeFailureBeforeWriting(t *testing.T) {
 	dao := &freezeDAO{}
 	props := model.TaskProperties{"worker": []byte(`{"claimId":1}`)}
 	if err := FreezeTaskSessions(context.Background(), dao, "task", model.TaskInProgress, props); err == nil {
-		t.Fatal("corrupt worker accepted")
+		t.Fatal("worker decoding error was hidden")
 	}
 	if len(dao.calls) != 0 {
-		t.Fatalf("session writes after corrupt worker: %v", dao.calls)
+		t.Fatalf("session writes after worker decoding error: %v", dao.calls)
 	}
 }

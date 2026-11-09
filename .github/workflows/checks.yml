@@ -325,6 +325,75 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  verify-server-startup-shutdown:
+    name: verify (Go server startup & shutdown)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.server == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      GOCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-cache
+      GOMODCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-mod
+      GOPATH: ${{ github.workspace }}/packages/daynight-server/.tmp/go
+      GOBIN: ${{ github.workspace }}/packages/daynight-server/.tmp/bin
+      TMPDIR: ${{ github.workspace }}/packages/daynight-server/.tmp/tmp
+      XDG_CONFIG_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/config
+      XDG_CACHE_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/cache
+      GOENV: "off"
+      GOTOOLCHAIN: go1.27.2
+      DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
+    services:
+      postgres:
+        image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+        env:
+          POSTGRES_USER: daynight
+          POSTGRES_PASSWORD: daynight-test
+          POSTGRES_DB: daynight
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U daynight -d daynight"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: packages/daynight-server
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 1
+        with:
+          persist-credentials: false
+      - name: Prepare module-local tool directories
+        timeout-minutes: 1
+        run: mkdir -p .tmp/go-cache .tmp/go-mod .tmp/go .tmp/bin .tmp/tmp .tmp/config .tmp/cache
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 2
+        with:
+          go-version: 1.27.2
+          cache: true
+          cache-dependency-path: packages/daynight-server/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 1
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate Go server startup and shutdown
+        timeout-minutes: 8
+        id: startup-shutdown
+        run: bash scripts/startup-shutdown.sh
+      - name: Upload Go startup and shutdown coverage
+        timeout-minutes: 1
+        if: ${{ always() && steps.startup-shutdown.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-server-startup-shutdown
+          path: packages/daynight-server/startup-shutdown-coverage.out
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   verify-api-integration:
     name: verify (Go API integration)
     needs: detect-changes
@@ -576,7 +645,7 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-api-integration, verify-web-quality, verify-web-browser, verify-e2e]
+    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-web-browser, verify-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -584,6 +653,12 @@ jobs:
         env:
           JOB_RESULTS: ${{ toJSON(needs.*.result) }}
         run: jq --exit-status 'all(.[]; . == "success" or . == "skipped")' <<< "$JOB_RESULTS"
+      - name: Require selected Go server jobs to succeed
+        if: ${{ needs.detect-changes.outputs.server == 'true' }}
+        env:
+          SERVER_RESULT: ${{ needs.verify-server.result }}
+          STARTUP_SHUTDOWN_RESULT: ${{ needs.verify-server-startup-shutdown.result }}
+        run: test "$SERVER_RESULT" = success && test "$STARTUP_SHUTDOWN_RESULT" = success
       - name: Require selected Go API integration to succeed
         if: ${{ needs.detect-changes.outputs.api == 'true' }}
         env:

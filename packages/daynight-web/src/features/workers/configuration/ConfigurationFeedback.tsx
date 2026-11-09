@@ -35,7 +35,7 @@ export const ConfigurationFeedback = ({ resource, kind, projectId, expected, cha
   const state = changed ? 'unsaved' : actualState;
   const value = item?.appliedValue;
   const rendered = value === undefined || value === null ? m.unavailableValue : typeof value === 'number' ? String(value)
-    : value === true ? m.state.applied : `${value.agent === 'claude' ? 'Claude Code' : value.agent === 'copilot' ? 'Copilot' : 'Codex'} / ${value.model === null ? m.defaultModel : value.model} / ${JSON.stringify(value.args)}`;
+    : typeof value === 'boolean' ? kind === 'preferPlatformSpecificTasks' ? value ? m.enabled : m.disabled : m.state.applied : `${value.agent === 'claude' ? 'Claude Code' : value.agent === 'copilot' ? 'Copilot' : 'Codex'} / ${value.model === null ? m.defaultModel : value.model} / ${JSON.stringify(value.args)}`;
   const previousFailure = item?.lastFailure ?? (actualState === 'pending' ? item?.error : null);
   return <div id={id} className="application-feedback">
     {label && <span className="configuration-result-label">{m.kind[kind]}</span>}

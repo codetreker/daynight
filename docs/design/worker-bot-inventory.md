@@ -12,7 +12,7 @@
 
 ## 权威读取与对账
 
-`bots/remote.ts` 使用绑定服务及正常 PAT，读取 `/api/v1/me/workers/{workerId}/bots` 的所有分页和 `/api/v1/me/bots/{botId}` 单项。解析器保留 int64 十进制字符串，校验 owner/Worker、冻结配置、Session 成对身份和删除投影。HTTP 失败与格式失败直接传播，只有单项 404 返回缺失。游标重复拒绝，避免无限分页。
+`bots/remote.ts` 使用绑定服务及正常 PAT，读取 `/api/v1/me/workers/{workerId}/bots` 的所有分页和 `/api/v1/me/bots/{botId}` 单项。解析器保留 int64 十进制字符串，校验 owner/Worker、冻结配置、Session 成对身份和删除投影。每页保持 `limit=100`，全部页面共享一个 `Operation`。现有 `inventoryBytes=64*1024*1024` 同时用于 `responseBytes` 和 `totalBytes`，单项读取也使用该操作配置；因此一个按条数返回的页面可以占用现有累计预算，翻页不会增加累计额度。总操作 5 分钟、单请求 30 秒及原有取消、认证和重定向规则继续适用。HTTP、格式和预算失败直接传播，只有单项 404 返回缺失。游标重复拒绝，避免无限分页。客户端传输计量独立于服务端普通条数分页，不增加服务端读取字节准入。
 
 `createBotInventory({owner,store,remote,now}).reconcile(signal)` 核对 remote 与本地 owner；一次实例只允许一个对账。完整清单读取后收集重复 ID 与本地缺失 ID，全部完成权威单项读取后才逐项持久观察。任一读取失败不修改库存。单项 404 在结果的 `missing` 中报告，不删除旧记录；成功观察在 `observed` 中报告。写入按单 Bot 事务执行，写入失败保留已提交观察并暴露错误，不宣称整轮原子更新。
 

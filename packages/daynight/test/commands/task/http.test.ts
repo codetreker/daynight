@@ -371,21 +371,21 @@ describe("task commands over HTTP", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
-  it("renders complete graph data and exposes graph limit refusal details", async () => {
-    let limit = false;
+  it("renders complete graph data and exposes generic read failures", async () => {
+    let failed = false;
     const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [
       { id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
       { id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
     ] };
     const f = await fixture((_request, response) => {
-      if (limit) respond(response, { error: { code: "graph_limit_exceeded", message: "Graph is too large", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } } }, 422);
+      if (failed) respond(response, { error: { code: "internal_error", message: "Read failed", requestId: "graph-read" } }, 500);
       else respond(response, graph);
     });
     await f.run(["graph", taskId, "--json"]);
     expect(f.context.stdout).toHaveBeenCalledOnce();
     expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(graph);
-    f.context.stdout.mockClear(); limit = true;
-    await expect(f.run(["graph", taskId])).rejects.toMatchObject({ code: "graph_limit_exceeded", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } });
+    f.context.stdout.mockClear(); failed = true;
+    await expect(f.run(["graph", taskId])).rejects.toMatchObject({ code: "internal_error", requestId: "graph-read" });
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 

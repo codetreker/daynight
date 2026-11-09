@@ -2,7 +2,7 @@ import { ApiError } from "../../api/client";
 import { GraphDataError } from "../task-graph/model";
 import { TaskCacheError } from "./database";
 
-const apiCodes = new Set(["network", "protocol", "principal_mismatch", "not_found", "unauthenticated", "forbidden", "version_conflict", "invitation_unavailable", "graph_limit_exceeded", "invalid_input"]);
+const apiCodes = new Set(["network", "protocol", "principal_mismatch", "not_found", "unauthenticated", "forbidden", "version_conflict", "invitation_unavailable", "invalid_input"]);
 const domNames = new Set(["AbortError", "ConstraintError", "DataError", "InvalidAccessError", "InvalidStateError", "NotFoundError", "QuotaExceededError", "ReadOnlyError", "SecurityError", "TransactionInactiveError", "UnknownError", "VersionError"]);
 type SafeCause = {
   readonly name: string;

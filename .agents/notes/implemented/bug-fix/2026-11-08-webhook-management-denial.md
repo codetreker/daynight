@@ -20,6 +20,9 @@ editor, clears secrets and refreshes the authoritative Team directory. An
 unchanged administrator directory cannot restore the disproved authority; a new
 membership identity or version can restore it.
 
+Project eligibility refusal uses a separate machine code and preserves owner
+authority, as defined by the [eligibility refusal decision](2026-11-08-webhook-project-eligibility-refusal.md).
+
 Configuration and receipt read denial continue using the owner-denial observation.
 Original confirmed receipts remain independent, and unknown operations retain
 GET-only reconciliation. Malformed error responses remain ordinary recoverable

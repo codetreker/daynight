@@ -11,52 +11,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := context.Background()
-	mustQueryExec(t, database, `CREATE SEQUENCE thread_uuid_calls;
- CREATE FUNCTION thread_test_uuid() RETURNS uuid LANGUAGE SQL VOLATILE AS $$ SELECT '00000000-0000-4000-8000-000000000001'::uuid FROM nextval('thread_uuid_calls') $$;
- ALTER TABLE task_thread_messages ALTER COLUMN message_id SET DEFAULT thread_test_uuid()`)
-	var message model.ThreadMessage
-	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
-		if _, err := tx.ThreadDAO().LockHead(ctx, queryID(1)); err != nil {
-			return err
-		}
-		var stamp time.Time
-		if err := tx.(*ThreadTx).tx.QueryRow(ctx, `SELECT date_trunc('milliseconds',clock_timestamp())+interval '30 milliseconds'`).Scan(&stamp); err != nil {
-			return err
-		}
-		head := &model.ThreadPosition{CreatedAt: stamp.UTC(), ID: "ffffffff-ffff-4fff-8fff-ffffffffffff"}
-		if err := tx.ThreadDAO().AdvanceHead(ctx, queryID(1), *head); err != nil {
-			return err
-		}
-		var err error
-		message, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "one UUID"})
-		if err != nil {
-			return err
-		}
-		id := message.ID
-		if err := tx.ThreadDAO().PrepareTimestamp(ctx, &message, head); err != nil {
-			return err
-		}
-		if message.ID != id || !message.CreatedAt.After(head.CreatedAt) {
-			t.Fatalf("UUID regenerated or timestamp fabricated: %#v head=%#v", message, head)
-		}
-		return tx.ThreadDAO().AdvanceHead(ctx, queryID(1), message.Position())
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var calls int
-	if err := database.Pool.QueryRow(ctx, `SELECT last_value FROM thread_uuid_calls`).Scan(&calls); err != nil || calls != 1 || message.ID != queryID(1) {
-		t.Fatalf("UUID generation count=%d id=%s %v", calls, message.ID, err)
-	}
-	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
-		return tx.ThreadDAO().AdvanceHead(ctx, queryID(1), message.Position())
-	}); err == nil {
-		t.Fatal("head accepted non-forward update")
-	}
-}
-
 func TestThreadClockExhaustionDoesNotPublishInsertedCandidate(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()

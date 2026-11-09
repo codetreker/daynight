@@ -45,15 +45,12 @@ export type WorkspaceMessages = {
     readonly loading: string;
     readonly loadingDetail: string;
     readonly notFound: string;
-    readonly graphLimit: string;
     readonly incomplete: string;
     readonly loadingFailed: string;
     readonly networkError: string;
     readonly protocolError: string;
     readonly notFoundDetail: string;
-    readonly graphLimitDetail: string;
     readonly readError: string;
-    readonly graphLimitCounts: (args: { readonly nodes: number; readonly edges: number; readonly maxNodes: number; readonly maxEdges: number }) => string;
     readonly refreshFailed: string;
     readonly showingSnapshot: string;
     readonly retryRefresh: string;
@@ -82,7 +79,7 @@ export type WorkspaceMessages = {
     readonly applied: (args: { readonly query: string }) => string; readonly empty: string; readonly loading: string;
     readonly failed: string; readonly stale: string; readonly syntax: (args: { readonly position: number; readonly reason: string }) => string;
     readonly reasons: Readonly<Record<string, string>>; readonly open: (args: { readonly title: string }) => string;
-    readonly titleMatch: string; readonly descriptionMatch: string; readonly negativeMatch: string; readonly updated: (args: { readonly date: string }) => string;
+    readonly idMatch: string; readonly titleMatch: string; readonly descriptionMatch: string; readonly negativeMatch: string; readonly updated: (args: { readonly date: string }) => string;
   };
   readonly overview: {
     readonly heading: string;

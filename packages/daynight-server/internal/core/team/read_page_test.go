@@ -14,11 +14,10 @@ import (
 	"github.com/google/uuid"
 )
 
-type boundedReader struct {
+type pageReader struct {
 	store.TeamReader
 	team                      model.Team
 	teamErr                   error
-	oversized                 bool
 	teams                     store.TeamPage
 	pageErr                   error
 	members                   store.TeamMemberPage
@@ -28,54 +27,51 @@ type boundedReader struct {
 	calls                     []string
 	actorID, teamID, memberID string
 	page                      store.Page
-	limit                     int
 }
 
-func (r *boundedReader) TeamBounded(_ context.Context, actor, id string, limit int) (model.Team, bool, error) {
+func (r *pageReader) Team(_ context.Context, actor, id string) (model.Team, error) {
 	r.calls = append(r.calls, "team")
-	r.actorID, r.teamID, r.limit = actor, id, limit
-	return r.team, r.oversized, r.teamErr
+	r.actorID, r.teamID = actor, id
+	return r.team, r.teamErr
 }
-func (r *boundedReader) TeamsBounded(_ context.Context, actor string, page store.Page, limit int) (store.TeamPage, error) {
+func (r *pageReader) Teams(_ context.Context, actor string, page store.Page) (store.TeamPage, error) {
 	r.calls = append(r.calls, "teams")
-	r.actorID, r.page, r.limit = actor, page, limit
+	r.actorID, r.page = actor, page
 	return r.teams, r.pageErr
 }
-func (r *boundedReader) TeamAccess(_ context.Context, actor, id string) error {
+func (r *pageReader) TeamAccess(_ context.Context, actor, id string) error {
 	r.calls = append(r.calls, "access")
 	r.actorID, r.teamID = actor, id
 	return r.accessErr
 }
-func (r *boundedReader) TeamMembersPage(_ context.Context, id string, page store.Page) (store.TeamMemberPage, error) {
+func (r *pageReader) TeamMembersPage(_ context.Context, id string, page store.Page) (store.TeamMemberPage, error) {
 	r.calls = append(r.calls, "members")
 	r.teamID, r.page = id, page
 	return r.members, r.pageErr
 }
-func (r *boundedReader) InvitationTeamMember(_ context.Context, id, userID string) (model.TeamMember, error) {
+func (r *pageReader) InvitationTeamMember(_ context.Context, id, userID string) (model.TeamMember, error) {
 	r.calls = append(r.calls, "member")
 	r.teamID, r.memberID = id, userID
 	return r.member, r.memberErr
 }
 
-func TestGetBoundedPreservesActorAndBudget(t *testing.T) {
+func TestGetPreservesActorAndReadErrors(t *testing.T) {
 	p := principal()
 	team := namedTeam(p)
 	failure := errors.New("read failed")
 	for _, tc := range []struct {
-		name      string
-		err       error
-		oversized bool
-		code      string
+		name string
+		err  error
+		code string
 	}{
 		{name: "found"},
 		{name: "not found", err: model.ErrNotFound, code: "not_found"},
 		{name: "read failure", err: failure},
-		{name: "oversized", oversized: true, code: "payload_too_large"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &boundedReader{team: team, teamErr: tc.err, oversized: tc.oversized}
-			got, err := GetBounded(t.Context(), r, p, team.ID, 128)
-			if r.actorID != p.UserID || r.teamID != team.ID || r.limit != 128 {
+			r := &pageReader{team: team, teamErr: tc.err}
+			got, err := Get(t.Context(), r, p, team.ID)
+			if r.actorID != p.UserID || r.teamID != team.ID {
 				t.Fatalf("wrong bounded lookup: %#v", r)
 			}
 			if tc.code != "" {
@@ -97,29 +93,29 @@ func TestGetBoundedPreservesActorAndBudget(t *testing.T) {
 	}
 }
 
-func TestListBoundedPagesBindCursorToActorAndPosition(t *testing.T) {
+func TestListPagesBindCursorToActorAndPosition(t *testing.T) {
 	p := principal()
 	first := namedTeam(p)
 	second := namedTeam(p)
-	r := &boundedReader{teams: store.TeamPage{Items: []model.Team{first}, HasMore: true}}
-	page, err := ListBounded(t.Context(), r, p, model.PageRequest{Limit: 1}, 256)
-	if err != nil || !reflect.DeepEqual(page.Items, r.teams.Items) || page.NextCursor == nil || r.actorID != p.UserID || r.page.Limit != 1 || r.limit != 256 {
+	r := &pageReader{teams: store.TeamPage{Items: []model.Team{first}, HasMore: true}}
+	page, err := List(t.Context(), r, p, model.PageRequest{Limit: 1})
+	if err != nil || !reflect.DeepEqual(page.Items, r.teams.Items) || page.NextCursor == nil || r.actorID != p.UserID || r.page.Limit != 1 {
 		t.Fatalf("first page=%#v, reader=%#v, err=%v", page, r, err)
 	}
 	r.teams = store.TeamPage{Items: []model.Team{second}}
-	last, err := ListBounded(t.Context(), r, p, model.PageRequest{Limit: 1, Cursor: page.NextCursor}, 256)
+	last, err := List(t.Context(), r, p, model.PageRequest{Limit: 1, Cursor: page.NextCursor})
 	if err != nil || !reflect.DeepEqual(last.Items, r.teams.Items) || last.NextCursor != nil || r.page.After == nil || r.page.After.ID != first.ID || !r.page.After.CreatedAt.Equal(first.CreatedAt) {
 		t.Fatalf("last page=%#v, position=%#v, err=%v", last, r.page.After, err)
 	}
 	before := len(r.calls)
-	_, err = ListBounded(t.Context(), r, principal(), model.PageRequest{Limit: 1, Cursor: page.NextCursor}, 256)
+	_, err = List(t.Context(), r, principal(), model.PageRequest{Limit: 1, Cursor: page.NextCursor})
 	faultCode(t, err, "invalid_input")
 	if len(r.calls) != before {
 		t.Fatal("cursor for another actor reached DAO")
 	}
 }
 
-func TestListBoundedRejectsInvalidPagesAndReadFailures(t *testing.T) {
+func TestListRejectsInvalidPagesAndReadFailures(t *testing.T) {
 	p := principal()
 	failure := errors.New("list failed")
 	for _, tc := range []struct {
@@ -131,12 +127,11 @@ func TestListBoundedRejectsInvalidPagesAndReadFailures(t *testing.T) {
 	}{
 		{name: "invalid limit", request: model.PageRequest{Limit: 0}, code: "invalid_input"},
 		{name: "read failure", request: model.PageRequest{Limit: 1}, err: failure},
-		{name: "oversized team", request: model.PageRequest{Limit: 1}, page: store.TeamPage{OversizedTeamID: uuid.NewString()}, code: "payload_too_large"},
 		{name: "empty", request: model.PageRequest{Limit: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &boundedReader{teams: tc.page, pageErr: tc.err}
-			page, err := ListBounded(t.Context(), r, p, tc.request, 128)
+			r := &pageReader{teams: tc.page, pageErr: tc.err}
+			page, err := List(t.Context(), r, p, tc.request)
 			if tc.code != "" {
 				faultCode(t, err, tc.code)
 			} else if err != tc.err {
@@ -152,8 +147,8 @@ func TestListBoundedRejectsInvalidPagesAndReadFailures(t *testing.T) {
 	}
 	bad := namedTeam(p)
 	bad.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
-	r := &boundedReader{teams: store.TeamPage{Items: []model.Team{bad}, HasMore: true}}
-	_, err := ListBounded(t.Context(), r, p, model.PageRequest{Limit: 1}, 128)
+	r := &pageReader{teams: store.TeamPage{Items: []model.Team{bad}, HasMore: true}}
+	_, err := List(t.Context(), r, p, model.PageRequest{Limit: 1})
 	if err == nil || !strings.Contains(err.Error(), "encode Team cursor") {
 		t.Fatalf("cursor encoding failure=%v", err)
 	}
@@ -163,7 +158,7 @@ func TestMembersPageUsesScopedCursorAndAccessBeforePageRead(t *testing.T) {
 	p := principal()
 	id := uuid.NewString()
 	member := model.TeamMemberProfile{Membership: model.TeamMember{TeamID: id, UserID: uuid.NewString(), Role: model.ProjectAdmin, Version: 2, CreatedAt: time.Now().UTC()}}
-	r := &boundedReader{members: store.TeamMemberPage{Items: []model.TeamMemberProfile{member}, HasMore: true}}
+	r := &pageReader{members: store.TeamMemberPage{Items: []model.TeamMemberProfile{member}, HasMore: true}}
 	page, err := MembersPage(t.Context(), r, p, id, model.PageRequest{Limit: 1})
 	if err != nil || !reflect.DeepEqual(page.Items, r.members.Items) || page.NextCursor == nil || !reflect.DeepEqual(r.calls, []string{"access", "members"}) || r.actorID != p.UserID || r.teamID != id {
 		t.Fatalf("first members page=%#v, reader=%#v, err=%v", page, r, err)
@@ -190,7 +185,7 @@ func TestMembersPageUsesScopedCursorAndAccessBeforePageRead(t *testing.T) {
 	}
 }
 
-func TestMembersPageRejectsAccessFailuresAndOversizedProfiles(t *testing.T) {
+func TestMembersPageRejectsAccessAndReadFailures(t *testing.T) {
 	p := principal()
 	id := uuid.NewString()
 	failure := errors.New("read failed")
@@ -198,7 +193,6 @@ func TestMembersPageRejectsAccessFailuresAndOversizedProfiles(t *testing.T) {
 		name               string
 		request            model.PageRequest
 		accessErr, pageErr error
-		oversized          string
 		code               string
 		calls              []string
 	}{
@@ -206,10 +200,9 @@ func TestMembersPageRejectsAccessFailuresAndOversizedProfiles(t *testing.T) {
 		{name: "missing Team", request: model.PageRequest{Limit: 1}, accessErr: model.ErrNotFound, code: "not_found", calls: []string{"access"}},
 		{name: "access error", request: model.PageRequest{Limit: 1}, accessErr: failure, calls: []string{"access"}},
 		{name: "page error", request: model.PageRequest{Limit: 1}, pageErr: failure, calls: []string{"access", "members"}},
-		{name: "oversized", request: model.PageRequest{Limit: 1}, oversized: uuid.NewString(), code: "payload_too_large", calls: []string{"access", "members"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &boundedReader{accessErr: tc.accessErr, pageErr: tc.pageErr, members: store.TeamMemberPage{OversizedUserID: tc.oversized}}
+			r := &pageReader{accessErr: tc.accessErr, pageErr: tc.pageErr}
 			page, err := MembersPage(t.Context(), r, p, id, tc.request)
 			if tc.code != "" {
 				faultCode(t, err, tc.code)
@@ -225,7 +218,7 @@ func TestMembersPageRejectsAccessFailuresAndOversizedProfiles(t *testing.T) {
 		})
 	}
 	bad := model.TeamMemberProfile{Membership: model.TeamMember{UserID: uuid.NewString(), CreatedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}
-	r := &boundedReader{members: store.TeamMemberPage{Items: []model.TeamMemberProfile{bad}, HasMore: true}}
+	r := &pageReader{members: store.TeamMemberPage{Items: []model.TeamMemberProfile{bad}, HasMore: true}}
 	_, err := MembersPage(t.Context(), r, p, id, model.PageRequest{Limit: 1})
 	if err == nil || !strings.Contains(err.Error(), "encode Team member cursor") {
 		t.Fatalf("cursor encoding error=%v", err)
@@ -250,7 +243,7 @@ func TestMemberRequiresTeamAccessAndPreservesMemberResult(t *testing.T) {
 		{name: "member failure", memberErr: failure, calls: []string{"access", "member"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &boundedReader{member: member, accessErr: tc.accessErr, memberErr: tc.memberErr}
+			r := &pageReader{member: member, accessErr: tc.accessErr, memberErr: tc.memberErr}
 			got, err := Member(t.Context(), r, p, id, userID)
 			if !reflect.DeepEqual(r.calls, tc.calls) || r.actorID != p.UserID || r.teamID != id {
 				t.Fatalf("lookup routing: %#v", r)

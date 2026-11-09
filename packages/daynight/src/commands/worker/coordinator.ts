@@ -20,7 +20,7 @@ import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./reso
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
-import { HerdrInputBlockedError } from "./herdr/agents.js";
+import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
 import { isUnavailableProject } from "./remote.js";
@@ -39,16 +39,18 @@ export type WorkerCoordinatorOptions = {
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
   readyProjectIds?: readonly string[]; targetProjectIds?: readonly string[];
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
+  preferPlatformSpecificTasks: boolean;
   prepareProject?: (projectId: string, signal: AbortSignal) => Promise<void>;
   configurationComplete?: () => boolean;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
   onInventory?: (inventory: WorkerTaskInventory | null) => void; onClaim?: (reference: WorkerTaskReference) => void;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
 };
-export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "readyProjectIds" | "targetProjectIds">;
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds">;
 
 const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
   maxConcurrent: value.maxConcurrent,
+  preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
   ...(value.targetProjectIds === undefined ? {} : { targetProjectIds: Object.freeze([...value.targetProjectIds]) }),
   globalConfiguration: value.globalConfiguration === null ? null : Object.freeze({ ...value.globalConfiguration, args: Object.freeze([...value.globalConfiguration.args]) }),
@@ -90,6 +92,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const snapshotWarnings = new Map<string, Set<string>>();
   let unmappedWarnings = new Set<string>();
   let nextRepository = 0;
+  let nextPlatformRepository = 0;
   let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
@@ -245,7 +248,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const signal = AbortSignal.any([normalSignal, controller.signal]);
     const job = serialize(identity, () => !terminal && !canAdvanceProject(identity.projectId) ? Promise.resolve() : action(signal)).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
-      if (!terminal && error instanceof HerdrInputBlockedError) {
+      if (!terminal && error instanceof HerdrInputWaitingError) {
         if (inputWaiting.get(identityKey) !== error.message) {
           inputWaiting.set(identityKey, error.message);
           const task = options.store.getTask(identity);
@@ -805,65 +808,73 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (warning !== "") options.emit({ kind: "cleanup-capacity-blocked", message: `Worker capacity is full; failed cleanup retains ${blocked.length} slot(s). ${blocked.map(identity => { const state = cleanupFailure(identity)!; return `${identity}: ${state.stage}, next retry ${new Date(state.nextAttemptAt).toISOString()}, ${state.lastError}`; }).join("; ")}. Correct the reported resource or archive failure; retries are automatic. No slot is released until cleanup is confirmed.` });
     }
     if (!allMappingsObserved() || capacity(resources) >= configuration.maxConcurrent || configuration.repositories.length === 0) return;
-    const candidates = new Map<number, AsyncGenerator<Task>>();
-    const exhausted = new Set<number>();
-    try {
-      while (allMappingsObserved() && capacity(resources) < configuration.maxConcurrent && exhausted.size < configuration.repositories.length) {
-        const index = nextRepository % configuration.repositories.length;
-        nextRepository = (nextRepository + 1) % configuration.repositories.length;
-        if (exhausted.has(index)) continue;
-        const repository = configuration.repositories[index]!;
-        if (!coveredProjects.has(repository.project.projectId) || !prepared.has(repository.project.projectId) || !resources.scannedProjects.has(repository.project.projectId)) { exhausted.add(index); continue; }
-        let page = candidates.get(index);
-        if (page === undefined) {
-          page = options.remote.candidates(repository.project.projectId, options.platform, normalSignal);
-          candidates.set(index, page);
+    const acquisitionConfiguration = configuration;
+    const tiers = acquisitionConfiguration.preferPlatformSpecificTasks ? [true, false] : [undefined];
+    for (const platformSpecific of tiers) {
+      const candidates = new Map<number, AsyncGenerator<Task>>();
+      const exhausted = new Set<number>();
+      try {
+        while (configuration === acquisitionConfiguration && allMappingsObserved() && capacity(resources) < configuration.maxConcurrent && exhausted.size < configuration.repositories.length) {
+          const index = (platformSpecific === true ? nextPlatformRepository : nextRepository) % configuration.repositories.length;
+          if (platformSpecific === true) nextPlatformRepository = (index + 1) % configuration.repositories.length;
+          else nextRepository = (index + 1) % configuration.repositories.length;
+          if (exhausted.has(index)) continue;
+          const repository = configuration.repositories[index]!;
+          if (!coveredProjects.has(repository.project.projectId) || !prepared.has(repository.project.projectId) || !resources.scannedProjects.has(repository.project.projectId)) { exhausted.add(index); continue; }
+          let page = candidates.get(index);
+          if (page === undefined) {
+            page = platformSpecific === undefined
+              ? options.remote.candidates(repository.project.projectId, options.platform, normalSignal)
+              : options.remote.candidates(repository.project.projectId, options.platform, normalSignal, platformSpecific);
+            candidates.set(index, page);
+          }
+          let next: IteratorResult<Task>;
+          try { next = await page.next(); }
+          catch (error) {
+            if (!isUnavailableProject(error)) throw error;
+            invalidateProject(repository.project.projectId);
+            coveredProjects.delete(repository.project.projectId);
+            unavailable.add(repository.project.projectId);
+            exhausted.add(index);
+            continue;
+          }
+          if (configuration !== acquisitionConfiguration) return;
+          if (next.done) { exhausted.add(index); continue; }
+          const candidate = next.value;
+          if (!coveredProjects.has(candidate.projectId)) { exhausted.add(index); continue; }
+          const claimConfiguration = configuration;
+          const currentRepository = claimConfiguration.repositories.find(value => value.project.projectId === candidate.projectId);
+          if (currentRepository === undefined || !selected(candidate.projectId) || claimConfiguration.targetProjectIds !== undefined && !claimConfiguration.targetProjectIds.includes(candidate.projectId)) continue;
+          try {
+            assertCanAcquire({ projectId: candidate.projectId, taskId: candidate.id });
+            if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
+          }
+          catch (error) {
+            options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: ${error instanceof Error ? error.message : "retained resource admission failed"}`, error });
+            continue;
+          }
+          requireImplementedWorkerBackend(currentRepository.configuration);
+          if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
+          if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
+          const claimId = randomUUID();
+          try {
+            const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
+            const owner = remoteOwner(granted);
+            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: currentRepository.configuration });
+            registerClaim(granted);
+            options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
+            if (allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
+            return;
+          } catch (error) {
+            if (isWorkerCancellation(error, normalSignal)) throw error;
+            if (isUnavailableProject(error)) options.onInventory?.(null);
+            options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
+            return;
+          }
         }
-        let next: IteratorResult<Task>;
-        try { next = await page.next(); }
-        catch (error) {
-          if (!isUnavailableProject(error)) throw error;
-          invalidateProject(repository.project.projectId);
-          coveredProjects.delete(repository.project.projectId);
-          unavailable.add(repository.project.projectId);
-          exhausted.add(index);
-          continue;
-        }
-        if (next.done) { exhausted.add(index); continue; }
-        const candidate = next.value;
-        if (!coveredProjects.has(candidate.projectId)) { exhausted.add(index); continue; }
-        const claimConfiguration = configuration;
-        const currentRepository = claimConfiguration.repositories.find(value => value.project.projectId === candidate.projectId);
-        if (currentRepository === undefined || !selected(candidate.projectId) || claimConfiguration.targetProjectIds !== undefined && !claimConfiguration.targetProjectIds.includes(candidate.projectId)) continue;
-        try {
-          assertCanAcquire({ projectId: candidate.projectId, taskId: candidate.id });
-          if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
-        }
-        catch (error) {
-          options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: ${error instanceof Error ? error.message : "retained resource admission failed"}`, error });
-          continue;
-        }
-        requireImplementedWorkerBackend(currentRepository.configuration);
-        if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
-        if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
-        const claimId = randomUUID();
-        try {
-          const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
-          const owner = remoteOwner(granted);
-          const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: currentRepository.configuration });
-          registerClaim(granted);
-          options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
-          if (allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
-          return;
-        } catch (error) {
-          if (isWorkerCancellation(error, normalSignal)) throw error;
-          if (isUnavailableProject(error)) options.onInventory?.(null);
-          options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
-          return;
-        }
+      } finally {
+        await Promise.all([...candidates.values()].map((page) => page.return(undefined)));
       }
-    } finally {
-      await Promise.all([...candidates.values()].map((page) => page.return(undefined)));
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {

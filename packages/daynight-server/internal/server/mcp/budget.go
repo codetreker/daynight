@@ -22,8 +22,7 @@ var (
 )
 
 // Budget reserves separate slots for bounded operations and operations that
-// can materialize a large resource. A large slot reserves the 512 MiB working
-// budget for one 128 MiB encoded response at the planned fourfold allowance.
+// can materialize a large resource. Only one large operation runs at a time.
 // Content slots isolate potentially long file operations from control requests.
 type Budget struct {
 	control chan struct{}

@@ -130,7 +130,7 @@ projectID, taskID, input) 沿用同一项目锁，在取锁后检查当前准入
 版本、目标状态与依赖。admin 和 member 都可执行这些资源操作；管理员角色额外
 管理成员、邀请与项目提醒设置。Worker 的 claim owner 操作路径和领取时的任务
 负责人要求保持各自原有规则。创建默认 todo，通用元数据更新不接收 status，没有
-旧状态写入旁路。任务版本、int64、图容量和现有分页合同保持。
+旧状态写入旁路。任务版本、int64、完整图范围和现有按条数分页合同保持。
 
 ### Team 元数据与生命周期事务
 
@@ -150,7 +150,7 @@ Unicode `White_Space`，并对名称同时执行 256 code points 和 1024 UTF-8 
 Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与当前主体真实成员关系，列表 SQL 在 `(created_at,id)` 排序、游标和 LIMIT 之前
 过滤当前成员资格。HTTP Team cursor 使用 kind `teams`、version 1，绑定认证 userId 与页位置；
 不按名称解析身份，不返回全量 count。缺失或不可见 Team 同为 not_found，外部 Project grant
-不会授予 Team 元数据访问权。
+不会授予 Team 元数据访问权。列表一次取得请求条数加一项 lookahead，读取直接消费写入入口生成的规范存储字段；不重复结构、字段或容量检查，不引入读取 measurement callback 或字节裁页。REST 成员和邀请目录保持完整，MCP 页使用相应普通批量入口。[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录职责取舍。
 
 已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
 Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
@@ -183,7 +183,11 @@ ownership 的写入必须先锁定并重读该 Team，和删除共享其存在�
 
 ## 认证响应归属
 
-`Authentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
+`RequestAuthentication` 拥有请求凭据的 HTTP 适配：Bearer 解析、会话 Cookie 选择、Cookie 写入的精确 Origin 校验、`AuthenticateRequest` 和 `Require`。它接收 `AuthenticateCredential` 操作，调用时传递原 request context、凭据种类和 secret，并保留 principal 或原错误。`ValidatePublicOrigin` 校验该 middleware 的公开 Origin 与 HTTP 测试配置。
+
+完整 `Authentication` 组合这个 middleware，并保留 concrete Identity、登录、账户、PAT 和 device 路由；其构造继续校验完整认证配置和 callback。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
+
+`RequestAuthentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
 从准入 principal 写入 `Daynight-User-ID`。因此 GET、空写结果及下游资源错误共用
 一个归属边界，认证失败不泄露未准入身份，也不回显调用方提供的值。会话/PAT 选择、
 Origin 检查、角色和业务授权仍由原入口执行；该头只是响应证明。跨窗口 Cookie
@@ -685,7 +689,8 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 验证按 AU-V1–AU-V12 映射：服务模块验证真实 PostgreSQL 并发、SDK 与受控 UniAuth，
 CLI 和 Web 分别验证客户端协议、错误、状态隔离及恢复。Web 模块浏览器入口使用受控
 响应，不能代替真实服务或安装 CLI 的授权证据。Go 服务的 `TestAttachmentGrantRevocationWithFreshProcess`
-在 `cmd/daynight-server` 中新构建并运行服务，使用真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
+由独立 startup/shutdown 入口以 `startupshutdown` tag 执行，在
+`cmd/daynight-server` 中新构建并运行服务，使用真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
 上传正文未完成时成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对
 字节与清理。[附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 记录服务与 Web 的验证边界。真实服务与客户端的正常连接须由独立产品组合验证证明；

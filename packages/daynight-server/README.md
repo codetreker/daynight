@@ -31,7 +31,14 @@ account-owned definitions and defaults without requiring a Project. Worker Bot
 registration, grants, startup reports and deletion receipts use the bound
 Worker's normal PAT; Controller relay credentials do not authorize those writes.
 The [assistant contract](../../docs/spec/assistant.md) defines exact endpoints,
-version strings, idempotency, observed availability and failure responses.
+version strings, idempotency, observed availability and failure responses. Bot
+lists authorize once within their read snapshot and use one `limit+1` query
+through `List` or `ListWorker`. The DAO uses ordinary Go JSON decoding; fields,
+normalization and existing capacity checks belong to write ingress. Bot pages
+continue by item count without domain read-byte admission or candidate callbacks.
+Normal decoding and output errors propagate. Successful MCP reads have no
+output-schema or byte admission; input checks, deadlines and resource permits
+remain independent.
 
 A name-only create resolves a fresh compatible Worker report and freezes its
 configuration. Older Workers without `assistantHost` remain unsupported, even
@@ -83,7 +90,11 @@ lifecycle. The client HTTP foundation targets this service's API.
 The [candidate input limits](../../docs/spec/daynight-api-input-limits.md) and
 [measurement design](../../docs/design/daynight-api-input-limits.md) describe
 pure domain admission, protocol measurement, and the active HTTP input limits.
-Domain online admission is owned by each respective implementation.
+Bounded RawMessage output uses capped spans while retaining validation,
+escaping and writer-budget semantics; the
+[Raw JSON batching decision](../../.agents/notes/implemented/testing/2026-11-08-bounded-raw-json-batching.md)
+owns that shared encoding mechanism. Domain online admission is owned by each
+respective implementation.
 
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
@@ -182,7 +193,7 @@ require receipts bound to the tested source.
 The [project Task search requirements](../../docs/spec/daynight-task-search.md)
 and [design](../../docs/design/daynight-task-search.md) define the read-only
 `POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
-titles and Markdown descriptions using literal expressions, returns ranked
+IDs, complete titles and Markdown descriptions using literal expressions, returns ranked
 pages with real ordinary-dependency context, and rejects continuation when the
 project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
@@ -195,7 +206,9 @@ watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
-individually bounded complete-property reads share one repeatable-read snapshot.
+one bulk `task_id = ANY(...)` property query share one repeatable-read snapshot.
+Selected canonical property text is loaded directly into RawMessage maps; reads
+do not repeat normalization, field validation or capacity admission.
 Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
 complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
@@ -221,18 +234,19 @@ mismatched fence retains the existing disconnected warning; reliable initializin
 or synchronizing Sessions use pending, while unreliable bindings contribute no
 key. Persisted heartbeat and drain deadlines retain their existing rules.
 This read does not advance Session lifecycle or replace content authorization.
-Query, validation, Engine admission and transaction faults fail the whole sync;
-the complete encoded response, including the map, retains its 64 MiB limit.
+Query, natural decoding, Engine admission, encoding and transaction faults fail
+the whole sync. The complete response, including the map, has no domain read-byte
+or graph-size admission.
 The [Session projection decision](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)
 records the narrow read and lock ownership. It introduces no PostgreSQL migration.
 
 Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
-replacement; ordinary property changes preserve the epoch. Invalid stored
-properties fail the complete request with 400 invalid_input. Database and
-transaction-completion faults remain 500 internal_error and take precedence over
-a saved property validation refusal. A stored project epoch invalidates caches after supported
+replacement; ordinary property changes preserve the epoch. Write ingress owns
+property normalization, fields and existing capacity rules. Reads trust the
+stored canonical representation; natural decoding, encoding, database and
+transaction-completion errors retain their causes. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its schema-9 upgrade explicitly rebuilds incompatible task caches for required
 cancelledAt while preserving separate profiles and compatible Session history.
@@ -245,8 +259,8 @@ in the live manifest. Ordinary task epoch replacement can retain matching profil
 content while all publication remains generation-fenced. Missing properties, assignedTo or Project ownership in old records cannot
 receive defaults. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
-increase transport, parsing and summary storage costs: node/edge limits and the
-detail-cache byte budget do not bound total summary bytes. Network, decoding and
+increase transport, parsing and summary storage costs. The detail-cache byte
+budget does not bound total summary bytes. Network, decoding and
 quota failures retain the previous valid cache without partial publication or
 watermark advancement.
 The [task deletion requirements](../../docs/spec/daynight-task-deletion.md) and
@@ -346,7 +360,7 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 
 | Path | Responsibility |
 |---|---|
-| `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
+| `cmd/daynight-server/` | Environment, process signals, dependency assembly and exit status; command tests use the explicit `startupshutdown` tag |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/service/webui/` | Embedded production HTML/assets and resource reads |
 | `internal/server/webui/` | Static routes and HTTP response policy |
@@ -402,16 +416,32 @@ writers remain stopped, with its corresponding loss of later writes.
 ## MCP HTTP entry
 
 The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
-`2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
-ending in `/mcp` and an `Authorization: Bearer <PAT>` header. The entry also
-accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
-scope. Standard clients can discover the OAuth authorization server from the
-unauthenticated challenge and authorize through the existing browser account.
-Each request validates its own credential; browser cookies are not accepted. Requests carrying
-an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The [OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
-[architecture](../../docs/design/daynight-mcp-oauth.md) describe the browser
-journey and protocol composition.
+`2026-07-28` and `2025-11-25`. Open the URL normally, or fetch it with `curl`, to
+read its public Markdown installation manual. The manual uses the configured
+`DAYNIGHT_PUBLIC_ORIGIN` and includes Codex, Claude Code and generic remote HTTP
+configuration, browser authorization and connection verification. A normal HEAD
+returns the same headers without a body. Reading the manual does not authenticate
+or invoke business operations.
+
+Configure a client with the service's HTTPS URL ending in `/mcp`. Standard clients
+discover OAuth from the unauthenticated protocol challenge and request the
+`daynight:mcp` scope through the existing browser account. The account holder
+completes sign-in and consent; adding configuration alone does not authenticate
+the connection. Clients without OAuth can send an `Authorization: Bearer <PAT>`
+header. Each MCP protocol request validates its own credential; browser cookies
+are not accepted. GET and HEAD requests explicitly listing `text/event-stream`
+or carrying MCP protocol, session, method, name or resume headers retain the
+protocol path: unauthenticated requests receive the OAuth challenge, and
+this stateless entry returns `405` with `Allow: POST` after authentication.
+Wildcard Accept values keep the manual readable by browsers and command-line
+fetches. POST always uses the authenticated protocol path.
+
+Host checks, the Origin allowlist, shutdown admission and `Cache-Control: no-store`
+apply to both documentation and protocol requests. An Origin must match
+`DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin. The
+[OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
+[architecture](../../docs/design/daynight-mcp-oauth.md) describe discovery,
+the browser journey and protocol composition.
 The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
@@ -422,8 +452,9 @@ bounded reads and inline or resumable upload. The [attachment design](../../docs
 owns upload admission and transfer behavior. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
 explicit reads default to 8 KiB, and binary content requires base64 selection.
-Inspect and open results are limited to 16 KiB; exceptionally oversized MIME or
-paths are rejected explicitly. Close and expiry reclaim only the private snapshot.
+Inspect and open return complete metadata through ordinary reads without
+stored-field or result-byte admission. Requested paths and content ranges retain
+their input and I/O security rules. Close and expiry reclaim only the private snapshot.
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
@@ -438,14 +469,18 @@ deciding whether to send again. Bot creation resolves omitted settings from
 available Worker defaults and does not imply startup readiness. Bot deletion
 requires an explicit version and reports the separate Worker and server cleanup
 states. Team and membership versions are decimal strings, and list results use
-scoped cursors. An item in a Team, Team member or scoped Project list that
-exceeds its response budget produces an explicit error; complete MCP retrieval
-and continuation past that item are not yet available.
+scoped cursors. Team, member, scoped Project, invitation and attachment pages
+use ordinary candidate batches and item-count continuation. Reads preserve full
+items without field-budget admission or repeated prefix encoding.
 
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
 view to a snapshot fence; `list_changed` requires restarting traversal when
-project task versions change. Graphs retain their node and edge limits.
+project task versions change. Task list pages use item-count continuation, and
+Task graph summary and full views return the complete selected graph. They do
+not apply domain read-byte or graph-size admission. Successful MCP reads use
+ordinary encoding without output-schema or result-byte admission; input,
+concurrency and deadline rules remain.
 
 `task_ready` returns the first matching ready Tasks ordered by creation time and
 UUID. Its `limit` defaults to 5 and accepts 1 through 20; permission and platform
@@ -454,7 +489,8 @@ pagination. The result contains `items` and `projection`, with no `nextCursor` o
 `next` continuation. It does not calculate a response byte budget or shorten the
 batch based on encoded size. The default `summary` contains marked title previews
 and selection fields; `view: full` returns complete Tasks, including descriptions
-and properties. The shared MCP response limit and resource admission still apply.
+and properties. MCP input, deadline and resource-permit rules still apply;
+successful read results have no schema or byte admission.
 To traverse all ready tasks, use `task_list` with `ready: true`; its full list
 projection omits descriptions. Read current complete Tasks separately through
 `task_show` with `view: full`. These separate reads do not share the list's fence.
@@ -644,11 +680,16 @@ the recovered value and stack are not printed by the HTTP server.
 
 ## Validate
 
-Install the root workspace dependencies with `pnpm install --frozen-lockfile`
-before validation. The complete module check includes PostgreSQL integration
-tests and requires `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated database.
-Database-independent service and rule suites run separately without that URL. For a disposable local instance, use the
-same PostgreSQL **18.6-bookworm** image as CI:
+Complete server validation runs both the module and startup/shutdown checks.
+Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
+Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
+PostgreSQL instance; the module check owns SQL and other module mechanisms, and
+the startup/shutdown check owns command lifecycle mechanisms.
+Database-independent suites have focused commands below.
+The regular Session HTTP selection uses Go dependencies and local transport
+fixtures without database, gateway, CLI or Web preparation. For a disposable
+instance for the complete check, use the same PostgreSQL **18.6-bookworm** image
+as CI:
 
 ```bash
 docker run --detach --name daynight-server-tests \
@@ -663,27 +704,91 @@ Set the reported loopback port in the test URL, then run:
 ```bash
 export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
 bash scripts/check.sh
+bash scripts/startup-shutdown.sh
 docker rm --force --volumes daynight-server-tests
 ```
 
-The check builds and vets the Go module using its unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, checks controlled Webhook Runner process
-recovery with its dedicated test transport build, and runs module tests and
-coverage. The
-optional `--coverage` argument selects the same check. A production build uses
-the real Web assets described under [Build and run](#build-and-run).
+The module check builds and vets the Go module using its unit-test Web resource
+overlay, prepares the pinned UniAuth fixture, and runs module tests and coverage.
+Its optional `--coverage` argument selects the same check. The independent
+startup/shutdown check runs the command tests with `-tags=startupshutdown` and
+the controlled Webhook Runner abrupt-recovery witness with its dedicated test
+transport build. Production builds use the real Web assets described under
+[Build and run](#build-and-run).
+
+### Startup and shutdown tests
+
+`bash scripts/startup-shutdown.sh` owns command configuration and exit status,
+startup and readiness, graceful shutdown and deadlines, concurrent migrations,
+migration failure recovery, persistence across restart, and attachment
+revocation during an admitted upload. The command tests stay in
+`cmd/daynight-server` so they exercise the private `main` and `run` entries, but
+the explicit `startupshutdown` build tag keeps them out of ordinary module test
+discovery. The entry also runs `TestWebhookRunnerAbruptProcessRecovery` with
+`webhooktest`, preserving its controlled process-exit and lost-acknowledgement
+proofs. Stress workloads retain their separate local command.
+
+Normal Project/Task API creation, state progression and readback belong to
+[Go API integration](#go-api-integration). Protocol refusals stay in mocked HTTP
+tests; listener-origin binding and cancellation stay in the command lifecycle
+tests. Real authentication, SQL, locks and subprocesses remain where they are
+necessary to prove the owned mechanism.
+
+The lifecycle runner uses Node.js for command deadlines on Linux and macOS;
+GNU `timeout` is not required. Expiry and interruption fail validation after
+TERM and bounded KILL escalation, including descendants left by an exited
+command leader. Ordinary exit codes and streamed output are preserved.
+
+The independent `verify-server-startup-shutdown` CI job follows the server's
+directory selection, uses its own PostgreSQL service and does not wait for
+module validation. The final gate requires actual success for both selected Go
+jobs. Their separate [coverage partitions](#coverage) retain all production code
+and the same numerical thresholds.
 
 ### Business rules and DAO mocks
 
-Non-Store unit tests must construct domain facts directly and use narrow mocks
-of `core/store` DAO, scope and transaction interfaces when they need stored data
-or completion results. Check arguments, expected calls, results and error chains;
-unconfigured or additional access must fail immediately. Pure functions need no
-storage mock. These tests must execute without `DAYNIGHT_TEST_DATABASE_URL`.
-PostgreSQL tests in the Store layer own real database mechanisms; API integration
-tests own representative normal flows through the assembled Server. The
-[test-writing rules](../../docs/writing_tests.md) define these dependencies and
-ownership boundaries.
+The [test-writing rules](../../docs/writing_tests.md) define the dependency
+boundary of each test. Core rules construct domain facts and use narrow
+`core/store` DAO mocks when they need query or storage results. Service tests
+control lower operations and DAO, scope or transaction results while exercising
+their own orchestration and lifecycle. Store tests own physical database
+mechanisms; API integration tests own representative normal assembled flows. Check arguments, expected calls, results
+and error chains; unconfigured access must fail immediately. Pure functions need
+no storage mock. Unit selections must execute without
+`DAYNIGHT_TEST_DATABASE_URL`; fixed model data does not require PostgreSQL.
+
+The regular `internal/server/task` suite uses direct Task, Step and Thread
+service mocks plus Search and Sync operations. It exercises production routing,
+HTTP parsing, credential middleware, DTO conversion, error mapping and the
+server-owned encoder or response writer. Configured mock calls are required;
+extra or unconfigured calls fail. Project/Task facts and principals are synthetic
+inputs, without an in-memory business state machine or full-application startup.
+The package's `!stress` TestMain clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE` before every regular suite execution, including
+the complete module coverage check. The other package binaries still receive
+their required infrastructure; an accidental Task HTTP fixture dependency fails
+rather than borrowing it. The separate stress suite excludes this TestMain.
+`RequestAuthentication` supplies the real Bearer, cookie and Origin policy with a
+controlled credential operation; account and login routes retain the complete
+`Authentication` adapter. From this module, run:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json ./internal/server/task
+```
+
+A mock committed or unknown result describes the supplied service outcome;
+actual SQL, locks, snapshot consistency, commit acknowledgement and persistence
+belong to store tests with isolated PostgreSQL. The real 15-second Step socket
+read-timeout proof remains in the regular HTTP suite. Capacity workloads retain
+their full fixture only behind the separate `stress` build tag.
+
+Project settings and encoded-budget validation, Attachment input validation and
+invalid login scopes use input-only fixtures. Existing fixture-based domain
+tests outside the Task HTTP suite remain part of the module check. Command
+process tests use the startup/shutdown entry. Their mechanism and ownership are
+determined by the test-writing rules.
 
 The complete `internal/service/webhook` suite uses narrow transaction and DAO
 mocks. The mocks return explicitly configured facts and projections, record
@@ -703,12 +808,12 @@ env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 ./internal/service/webh
 Capture source facts and producer invocation belong to their Task, Step, Thread
 and Worker owners. PostgreSQL tests retain the real operation fences, actor
 reads, multi-record rollback, source/capture atomicity, lease and retention locks,
-commit acknowledgement loss and fresh-process readback. The module check also
-runs `TestWebhookRunnerAbruptProcessRecovery` with `-tags=webhooktest`: committed
-claim/admission exit, real TLS response before finalization, and discarded
+commit acknowledgement loss and fresh-process readback. The startup/shutdown
+check also runs `TestWebhookRunnerAbruptProcessRecovery` with
+`-tags=webhooktest`: committed claim/admission exit, real TLS response before finalization, and discarded
 finalize COMMIT acknowledgement followed by an enabled Runner restart. This
-focused process witness runs in ordinary validation; production-duration timeout
-and capacity stress cases remain separate. HTTP and protocol tests
+focused process witness runs in the independent lifecycle job;
+production-duration timeout and capacity stress cases remain separate. HTTP and protocol tests
 own response mappings, request digests, headers, projections and authentication.
 The [Webhook test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-service-dao-mocks.md)
 records the proof split; the earlier
@@ -779,6 +884,42 @@ queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
 
+### Attachment service and store tests
+
+The complete `internal/service/attachment` suite uses synthetic principals,
+Project and Task facts with strict expectations on the existing snapshot,
+attachment mutation and DAO interfaces. Each operation has an explicit call
+plan; unconfigured, extra or unconsumed calls fail. Query results are configured
+independently of captured writes. Callback execution and transaction completion
+remain separate, including `committed`, `not_committed` and `unknown` outcomes.
+The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE`, including during complete module validation.
+
+Run the complete suite without database or authentication fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m ./internal/service/attachment
+```
+
+Service tests retain admission and call order, exact canonical addresses,
+metadata and byte propagation, error chains, completion facts, cancellation,
+upload leases and transfer cleanup. Real temporary files and permits remain
+where the assertion concerns their use and lifetime. The content reader still
+crosses the actual 5 MiB boundary; test-local fixtures do not reduce production
+limits or timing defaults.
+
+PostgreSQL attachment DAO tests own SQL mapping, upsert identity, pagination,
+literal wildcard prefixes, legacy metadata and affected-row failures. Root
+PostgreSQL scope tests own actual Task and Project deletion barriers, concurrent
+grant removal, transaction completion and readback after file publication or
+backend loss. Local storage tests own sibling namespace byte isolation and
+pruning, native case behavior, target gates, old readers and transfer publication.
+The [Attachment service ownership decision](../../.agents/notes/implemented/testing/2026-11-09-attachment-service-test-ownership.md)
+records the proof allocation. Measurements include these receiving packages;
+a shorter service-package time alone does not establish a faster complete job.
+
 ### Attachment HTTP tests
 
 The `internal/server/attachment` suite assembles the real HTTP, authentication
@@ -803,9 +944,14 @@ the handler duration to the existing 60-second attachment deadline.
 
 The real 5 MiB content boundary, fixed-length and chunked requests, path guards,
 preview/download headers and error responses remain HTTP or native-resource
-assertions. Existing store metadata tests retain actual SQL, transaction and
-unchanged-state readback; native attachment lifecycle and process tests retain
-admission/publication barriers and exact metadata and bytes across restart. The
+assertions. The consumed-body metadata failure case uses direct `PutRetained`
+and `List` callbacks, controlled credential middleware and an actual TCP
+connection to verify the following keepalive request. Existing store metadata
+tests retain actual SQL, transaction and
+unchanged-state readback. Root PostgreSQL scope tests retain physical admission
+and deletion barriers; service tests verify the corresponding calls and resource
+lifetime with controlled lower results. Process tests retain exact metadata and
+bytes across restart. The
 [Attachment HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-08-attachment-http-test-ownership.md)
 records this correction of existing tests and their retained proof boundaries.
 
@@ -824,19 +970,115 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task
 ```
 
-Existing PostgreSQL witnesses live in `internal/core/store/postgres` and use
-direct DAO and transaction scopes for physical query, locking, snapshot,
-partial-write rollback, Session and capture atomicity, and process-exit
-readback. Their test environment owns an isolated PostgreSQL instance and its
-cleanup. Store tests do not reproduce complete service flows. API integration
-and product E2E retain their normal-flow scope under the
-[test-writing rules](../../docs/writing_tests.md).
+PostgreSQL witnesses follow their implementation owners under
+`internal/core/store/postgres/`. Domain subpackages test direct DAO queries,
+mapping, constraints and locks. The root package tests its connection,
+migration, scope, transaction completion, shared snapshot and cross-DAO
+atomicity mechanisms, including partial-write rollback and process-exit
+readback. Pure database-independent contract tests live in `internal/core/store`;
+independent business rules use core or service mocks. The test environment owns
+an isolated PostgreSQL instance and its cleanup. Store tests do not reproduce
+complete service flows. API integration and product E2E retain their normal-flow
+scope under the [test-writing rules](../../docs/writing_tests.md).
 
 Step service tests retain the real 64 MiB codec boundary: 170 escaped descriptions
 fit, 171 exceed the collection limit, and both Add and Update refuse before any
-write. Graph and Sync split physical dataset/query proof from service count
-admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
+write. Graph and Sync tests separate physical dataset/query proof from service
+coordination without stored-size admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
 records this correction of existing tests and the earlier fixture decisions.
+
+### Go API integration
+
+On Linux with Docker, prepare the production Web build from the repository root
+and run the API suite from this module:
+
+```bash
+pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+pnpm web:build
+cd packages/daynight-server
+env -u DAYNIGHT_TEST_DATABASE_URL bash scripts/integration.sh
+```
+
+When the URL is unset, the runner owns a fresh PostgreSQL 18.6 container. An
+explicit `DAYNIGHT_TEST_DATABASE_URL` must refer to the invoking test
+environment's isolated instance, such as its fresh CI service or local validation
+container. It must not select a development, shared or production database.
+
+`scripts/integration.sh` builds the production `cmd/daynight-server` from the
+current source and checks its source fingerprint before and after the build.
+The suite verifies the binary hash, Go toolchain and race mode against that
+receipt. Local validation and main pushes use race instrumentation; PR and other
+CI events use the same non-race policy as the module check. Unit resource
+overlays are not used for this production binary.
+
+The explicit `integration` build tag keeps these flows outside ordinary unit
+test discovery. The runner explicitly selects `TestServerAPINormalFlows` and
+`TestServerAPISessionNormalFlow`; each test owns its real Server process,
+UniAuth gateway, login, PAT and isolated resources. Task groups run sequentially
+with separate projects: lifecycle, search pagination and dependency graph,
+property and Sync readback, Step operations, Thread replies, Attachment bytes,
+and Worker claim/Agent discussion.
+
+The Session flow creates an owner-bound Web Worker claim, registers a Session,
+mints its Controller grant and performs WebSocket hello and synchronization.
+HTTP current-state readback and the browser snapshot must retain the same
+identity, generation and native Session ID. A Controller timeline event must
+arrive through the browser WebSocket with exact content and source identity.
+Go HTTP and WebSocket clients exercise the actual service and persistence
+assembly. The suite does not run CLI, browser or Web tests and contains no
+business boundary or fault matrices.
+
+Startup, build and test execution have deadlines. Owned process cleanup stops
+the Server before releasing its schema and storage and confirms authentication
+process termination. The shell EXIT handler uses `integration-runtime.mts` to
+reconcile owned process identities and the run's resources, including its local
+database container. Failed termination or cleanup remains a failure and retains
+the affected run directory; successful cleanup cannot erase a test failure.
+
+After interruption, run the independent reconciliation command from this module:
+
+```bash
+bash scripts/integration.sh --cleanup
+```
+
+Local reconciliation skips runs with a live runner. In CI it selects only the
+current workflow run, job and attempt, then drains that run's owned children and
+resources. It preserves the original command outcome and reports cleanup
+failures. CI invokes it in an always-run step after API validation.
+
+Safe evidence is retained under `.tmp/integration-results/<run-id>/`: `build.json`
+binds source/fingerprint, binary hash, toolchain and race mode; `result.json`
+records phase, command/test exit codes, run status and cleanup status. Successful
+reconciliation of an unobserved command retains its null exit and interrupted
+status. `run.log` contains streaming test output and bounded service diagnostics.
+The independent `verify-api-integration` CI job prepares production Web resources
+and its own PostgreSQL service, runs this suite and reconciles its resources,
+then uploads only these JSON and log files as `daynight-server-api-integration`.
+It waits only for change detection; Go module coverage runs in a separate job.
+Private ownership/resource receipts, configuration, credentials, database files
+and copied build artifacts stay outside the evidence directory.
+
+The job is selected for server inputs and the production Web build inputs used
+by the Server: Web source, resources and build configuration, root Node
+configuration and dependency patches. CLI-only changes keep their own checks.
+The final gate requires actual success whenever API integration is selected.
+The [API integration decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
+records this scheduling and resource ownership.
+
+The runner's six process and cleanup unit tests require Linux `/proc` process
+identities. The independent Linux API job runs them as a required, bounded step
+before production Web preparation and API flows. Run the same tests on Linux
+from this module without PostgreSQL or a production Web build:
+
+```bash
+node --test scripts/integration-runtime.test.mts
+```
+
+They verify actual process exit and signal escalation, PID reuse protection,
+owned-child cleanup, retained command and cleanup failures, interrupted runs and
+directory removal recovery. The portable `scripts/check.sh` entry retains its
+ordinary tool tests; these Linux runtime cases retain their separate
+responsibility from the API normal-flow suite.
 
 ### TaskSync lock and time windows
 
@@ -856,36 +1098,119 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Domain packages own their HTTP tests. Attachment protocol fixtures assemble real
-adapters with controlled authentication and DAO facts; their
-[test guide](#attachment-http-tests) identifies the native transport and storage
-boundaries. Existing tests that require complete application composition still
-use the production application with real PostgreSQL and UniAuth fixtures. The
-root `internal/server` package retains tests that need internal composition
-access, shared startup/channel fixtures and runtime shutdown ordering. Shared
-scenarios run once in their domain owner; internal-only assertions remain in the
-root package. The
-[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
-records the distinction and preservation requirements.
+Root `internal/server` unit tests assemble actual modules, routes and HTTP
+authentication over strict DAO/scope callbacks. Fixed domain records, query
+results, proposed writes, call counts and transaction completion are explicit
+test inputs. Callback writes do not determine future reads or simulate committed
+state. The complete ordinary root selection executes with
+`DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
+SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
+pinned auth fixture as described in [validation](#validate).
 
-The Session browser ping regression uses production Session routes with real
-business services and authentication in a focused route fixture. Its test-local
-interval allows actual Ping/Pong and subsequent event delivery to complete
-promptly. Other integration scenarios retain the full application. Route
-cleanup drains the relay and stops its engine before the outer fixture releases
-its borrowed Store and files. The
-[Session test completion decision](../../.agents/notes/implemented/testing/2026-11-07-session-protocol-test-completion.md)
-records this fixture's responsibility.
+Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
+remain real where they are the mechanism being verified. Root HTTP control and
+WebSocket traffic share one actual application and Engine. Startup, channel,
+serialization and shutdown cases retain their private composition observations
+and capacity boundaries. Store tests own actual SQL, database-clock expiry after
+locks, transaction outcomes and committed readback; process tests own complete
+entry-point drain and restart persistence. The
+[root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
+records these fixtures and the distinction between logical and physical evidence.
 
-The domain Session fixtures share application shutdown cleanup and mutable
-error expectations. Tests that deliberately revoke authority may declare the
-exact clean domain fault caused by that transition. Project deletion channel
-tests declare `not_found` after successful deletion because socket closure can
-precede the server's disconnect cleanup. Every joined cause must match the
-selected fault without an underlying cause; database errors, timeouts and other
-faults still fail cleanup. Production shutdown error handling remains unchanged.
-The [shutdown expectation decision](../../.agents/notes/implemented/testing/2026-11-07-session-deletion-shutdown-expectations.md)
-records the timing and error-preservation rationale.
+Domain packages own their HTTP adapters. Task and Session HTTP unit tests
+control directly called service/use-case results while retaining actual
+credential middleware, HTTP encoding, response loss and socket/resource
+handling. Their [Task](#business-rules-and-dao-mocks) and
+[Session](#session-http-tests) guides identify those boundaries. Attachment
+fixtures retain their own [protocol and native-resource scope](#attachment-http-tests).
+Normal assembled API flows run separately in `cmd/integration_tests`, including
+`TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`.
+
+Shared scenario bodies have one owner; distinct internal composition assertions
+remain in the root package. The
+[scenario consolidation](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+preserves the original rationale. The
+[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
+owns responsibility boundaries; the
+[Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
+records the direct Session binding and retained proofs.
+
+### MCP protocol tests
+
+`internal/server/mcp` tests use controlled direct service/use-case operations
+while executing the actual Entry, HTTP transport, SDK, schemas and tool response
+encoding. Principals and domain results are explicit facts; operations verify
+arguments, context, authority and calls. Unconfigured calls fail independently
+of the tool's error response. No Task state or database persistence is simulated.
+The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
+
+Run from this module with the unit resource overlay:
+
+```bash
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/server/mcp
+```
+
+The suite retains real MCP framing and SDK parsing, schema registration errors,
+exact RPC ID and Task write-response boundaries, HTML escaping, compiled-input
+limits, request cancellation, shutdown and input/content admission. The native
+stalled-body test asserts the 15-second production default and uses a
+200-millisecond instance duration through the same logical and socket deadline.
+Global definition mutation tests remain isolated from concurrent registration.
+
+Service tests own write-response admission, ordinary Team/member batch-page
+selection and scoped cursors, transfer receipts and deleted-project refusal.
+Read pages do not use envelope-size callbacks, prefix trimming or byte refusal. Core and Store retain their rules and
+actual SQL, transactions, rollback, persistence and authorization rechecks.
+Protocol mocks supply completion facts; they do not prove physical completion.
+The [MCP ownership decision](../../.agents/notes/implemented/testing/2026-11-09-mcp-use-case-test-ownership.md)
+records the proof split and alternatives. Normal assembled flows retain the
+separate API integration entry.
+
+### Session HTTP tests
+
+The regular `internal/server/session` suite executes actual routes and
+`RequestAuthentication` with controlled credential results and direct typed
+Session use-case callbacks. The private `serviceCalls` binding projects existing
+production service methods; test-only aliases supply the same calls without
+starting the service, engine, DAO or gateway. Tests supply valid principals,
+snapshots, events and returned bytes and verify context, canonical addresses,
+fences, inputs, outputs and call counts.
+
+Configured calls are required, and unknown, extra or missing calls fail.
+Foreground operations have finite expected counts; repeated channel polling is
+scenario-declared. Callback barriers and cancellation observe each operation's
+lifetime without a global goroutine order. Supplied replies remain independent
+of captured requests. A mock result does not implement lower business rules,
+query behavior or transaction persistence.
+
+Run the regular suite from this module without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE go test -race -count=1 -timeout=5m ./internal/server/session
+```
+
+HTTP parsing, WebSocket Ping/Pong and event delivery, generation changes,
+revocation/deletion closure, pending upgrade drain and TCP body behavior retain
+their actual transport. Archive callbacks exchange an opaque preflight
+reservation, an upload operation or content bytes with a separate closeable
+lease. Identity and exactly-once closing are checked. Actual body reading,
+backpressure and the existing 16 MiB upload/readback remain socket observations;
+archive eligibility, integrity and storage rules retain their core owners.
+Production intervals and the 120-second archive policy keep separate default
+checks; opt-in full-duration archive probes remain under [Coverage](#coverage).
+
+Service tests control lower work and transaction completion before the finisher.
+Core tests retain preflight-before-residency and terminal initial-delivery rules;
+Store tests retain failed-disconnect rollback, physical connection return and
+zero legacy content rows after native ledger writes. Fixture shutdown drains
+actual routes and validates callback/lease completion. Normal shutdown permits
+post-drain HTTP `429` checks; cleanup cancels remaining request lifetimes.
+Intentional clean refusals use an exact cause matcher, so every joined cause
+must match and unexpected errors or unfinished drain still fail. The
+[Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
+records the proof allocation and alternatives.
 
 ### Schema snapshot maintenance
 
@@ -909,8 +1234,15 @@ migration change requires refreshing and verifying the snapshot.
 
 The PostgreSQL root test package shares only its management connection pool,
 closing it after all schema cleanups. Operational pools and schema namespaces
-remain fixture-owned. Selected error matrices reuse restored or read-only
-fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
+remain fixture-owned. `internal/core/store/postgres/testdata/testutil` shares
+fixture creation and database observation through existing store contracts and
+explicit pools. Backend-opening factories remain in consuming test packages;
+external DAO tests pass `postgres.Open` to the shared factory helper. The shared
+helpers do not import the root implementation. Same-owner tests share
+these helpers and retain their independent transaction and cleanup conditions.
+The [ownership decision](../../.agents/notes/implemented/testing/2026-11-09-postgres-test-ownership.md)
+records directory and consolidation choices. Selected error matrices reuse
+restored or read-only fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
 records their isolation and expiry guarantees.
 
 Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:
@@ -929,23 +1261,22 @@ Routine validation needs only the configured PostgreSQL service; it does not
 invoke `pg_dump`. The [snapshot decision](../../.agents/notes/implemented/testing/2026-11-06-postgres-schema-snapshot.md)
 records the equivalence and maintenance requirements.
 
-### Task Graph boundary fixtures
+### Task Graph query validation
 
-Graph boundary regressions retain the 1000-node backbone and 5000 dependency
-references, plus independent node and edge overflow cases. Connected store
-fixtures and the HTTP limit fixture run `ANALYZE tasks, task_dependencies` after
-all links are loaded and before graph queries. These private tables can be queried
-before autovacuum collects statistics; explicit collection gives the planner the
-loaded graph's cardinality without changing its rows or snapshot assertions.
-Preparation failures fail the test. Graph and Sync store seeds generate their
-ordered edge prefix directly while preserving its original topology. Service
-DAO mocks retain independent node/edge limit admission before projection. The
+Store tests use real ordinary graphs to verify complete component selection,
+one-level external context, original dependency arrays, snapshots and
+cancellation. Graph and Sync reads do not query or admit stored node/edge
+capacity. Service DAO mocks retain authorization, projection and error chains.
+CLI and Web tests accept complete graph or sync responses beyond the former
+1000-node and 5000-edge thresholds. The
 [fixture preparation decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
-owns the rationale and proof boundary.
+preserves the original statistics and topology rationale; current read
+responsibilities follow the
+[batch-read decision](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md).
 
 ### Race instrumentation
 
-The coverage check enables race instrumentation locally and on main CI. PR CI
+Both coverage entries enable race instrumentation locally and on main CI. PR CI
 runs without race and overrides an inherited `GOFLAGS=-race`.
 The separate
 `bash scripts/stress.sh` entry uses `-race` for local-only stress tests.
@@ -956,43 +1287,70 @@ build and verifies it in the binary; other process tests may differ. The explici
 
 ### Coverage
 
-`scripts/check.sh` builds the executable, runs `go vet`, clears cached Go test
-results and invokes `go-cov` v0.1.4 with the checked-in configuration. Its
-package and function thresholds are 85% and 80%; production packages, files and
-functions are not excluded. `critical_blocks.fail` is false, so the check does
-not analyze or fail on critical blocks. The raw `coverage.out` profile passes
-an exact statement comparison strictly greater than 90%; exactly 90% fails.
-The comparator reads the profile incrementally, deduplicating coverage blocks
-without loading the entire profile into one string.
-The check selects all listed production packages for `-coverpkg`, so a module
-test also attributes its calls to other production packages. Tests and their
-database state require the isolated PostgreSQL instance; preparation failures
-fail validation. The check limits package concurrency to two: schema-isolated
-fixtures still share the database-wide migration advisory lock.
+`scripts/check.sh` and `scripts/startup-shutdown.sh` invoke `go-cov` v0.1.4 with
+one checked-in configuration. Package and function thresholds remain 85% and
+80%. `critical_blocks.fail` is false, so critical-block analysis is disabled.
+Each raw profile passes an exact statement comparison strictly greater than
+90%; exactly 90% fails. The comparator reads rows incrementally and deduplicates
+coverage blocks without loading the complete profile into one string.
+
+Production packages have disjoint coverage owners:
+
+| Entry | Tests and production coverage | Profile |
+|---|---|---|
+| `scripts/check.sh` | Ordinary module tests and every production package except `cmd/daynight-server` | `coverage.out` |
+| `scripts/startup-shutdown.sh` | Tagged command tests; the command package's production statements | `startup-shutdown-coverage.out` |
+
+Every production package belongs to one partition; no production files or
+functions are exempt. Requiring both partitions to exceed 90% also requires
+their combined statement coverage to exceed 90%. The module entry selects all
+of its production packages for `-coverpkg`, preserving cross-package coverage
+within that partition. The lifecycle entry measures the command package from
+its own directory and vets its tagged tests. Neither entry relies on coverage
+of its production code from the other job.
+
+`scripts/validation-env.sh` supplies the common race policy and an absolute-path
+unit-test Web resource overlay. The absolute replacement paths remain valid
+when the command coverage run changes directory and its fresh-process test
+builds a child from the module root. Production builds retain real Web assets.
+Tests and their database state require the isolated PostgreSQL instance;
+preparation failures fail validation. Package concurrency stays limited to two:
+schema-isolated fixtures still share the database-wide migration advisory lock.
+Both entries clear cached test results before their coverage runs.
 
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
-module's `.tmp/`. The `verify-server` CI job uses its own PostgreSQL service,
-runs the same check and uploads `coverage.out` as `daynight-server-acceptance`.
-Inspect the result for the tested revision; a local result does not establish a
-hosted result.
+module's `.tmp/`. The `verify-server` and `verify-server-startup-shutdown` jobs
+use independent PostgreSQL services and upload their profiles separately.
+Selected jobs must both actually succeed. Inspect results for the tested
+revision; a local result does not establish a hosted result. The
+[lifecycle decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-startup-shutdown.md)
+records the partition and scheduling rationale.
 
 Ordinary discovery excludes stress-tagged files. With an isolated database,
-`bash scripts/stress.sh` runs the explicit stress-tagged workloads with race
-detection and refuses a nonempty `CI` environment.
+`bash scripts/stress.sh` runs its explicit stress workloads with race detection
+and refuses a nonempty `CI` environment. Direct command-package stress runs also
+need `startupshutdown` alongside their existing `stress` and, where required,
+`webhooktest` tags.
+The server runtime two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
+`TestWebhookTwoInstanceTakeoverAndFencingStress`) is selected explicitly by the
+stress entry point. It uses a private deterministic capture
+stream and verifies its first-slot admission before testing second-slot recovery
+and late-result fencing; see the [fixture timing decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-takeover-fixture.md).
 
 Authentication integration prepares the pinned UniAuth gateway with
 `scripts/prepare-uniauth-fixture.mts`. The fixture runs on loopback with
 controlled external provider responses and owns its temporary resources. For
 focused integration tests, source `scripts/env.sh`, set
 `DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
-output of that preparation script. The full check performs preparation itself.
-The real archive upload and response socket deadlines can be checked separately
-with `DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`; each test waits for the production 120-second deadline.
+output of that preparation script. Both coverage entries perform their required
+preparation themselves. The real archive upload and response socket deadlines
+can be checked separately with
+`DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`;
+each test waits for the production 120-second deadline.
 The shared fixture cleanup waits for process exit and reports forced termination;
 an unconfirmed service, database-session or gateway exit retains dependent owned
 resources. `scripts/check.sh` explicitly tests `testdata/testauth`, which `./...`
-does not discover.
-The real wire-loss test in
+does not discover. The real wire-loss test in
 [`auth_transport_acceptance_test.go`](internal/server/auth_transport_acceptance_test.go)
 checks the SDK-side connection and subsequent login recovery; controlled-provider
 evidence does not establish a live human login.
@@ -1215,8 +1573,10 @@ is returned as `HasMore`; HTTP cursor encoding belongs to the API layer.
 `Store.WriteWorker` is an independent `READ COMMITTED` transaction for account-owned
 Worker observations. It updates only the matching Worker row, atomically preserving
 server report time, telemetry and normalized task observations. It does not acquire
-a project lock or mutate task ownership. Snapshot reads batch-filter saved task
-references by current project membership and undeleted-task visibility. The
+a project lock or mutate task ownership. Summary reads select only canonical
+list fields and count visible saved task references through UUID joins. Detail
+reads batch-filter those references by current project membership and
+undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
 
@@ -1281,6 +1641,12 @@ query parameters. List uses `limit` (default 50, maximum 100) and `cursor`. The
 recent window includes exactly 72 hours; 120 seconds without a report is offline
 when consumers compare the returned server clock with `lastReportedAt`. GET does
 not refresh liveness. Unknown, other-account and expired detail reads return 404.
+One summary query returns `limit+1` rows; the cursor follows the last returned
+item when lookahead exists. The list does not fetch full telemetry or task
+payloads. Write ingress owns structure, field, normalization and existing
+capacity checks; snapshot reads consume saved canonical data without repeating
+those checks or applying a domain response-byte budget. Normal scan, decode and
+output errors propagate.
 
 Reports use closed Probe states, explicit unknown inventory and a full task
 reference array. A known empty array is distinct from inventory that has never
@@ -1606,8 +1972,8 @@ The assignee filter is explicit and does not change automatic worker eligibility
 ## Task-chain graph
 
 `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` requires one task UUID.
-The service reads the project, validates the live target, counts the selected
-graph and reads its compact nodes in one read-only repeatable-read transaction.
+The service reads the project, checks target visibility and reads the complete
+selected compact graph in one read-only repeatable-read transaction.
 Missing, empty, repeated or malformed `taskId`, unsupported query parameters and
 invalid URL encoding return 400 `invalid_input`. Responses use
 `Cache-Control: no-store`; there is no project-wide fallback or pagination.
@@ -1645,12 +2011,10 @@ those references rather than interpret the projection as a dependency closure.
 has been read. It shares the clock authority of task execution timestamps without
 changing stored metadata. Its changing value is not graph-content identity.
 
-Selected graphs above 1,000 nodes or 5,000 original dependency edges return 409
-`graph_limit_exceeded` with exact `nodeCount`, `edgeCount`, `maxNodes` and
-`maxEdges` in `error.details`. Counts include context rows and all their original
-outgoing dependencies, including references beyond the projection. Unrelated
-project tasks and edges do not consume these limits. Refusal returns no partial
-graph. Missing projects or tasks return 404; an authorized deleted target returns
+Selected graphs retain all context rows and their original outgoing
+dependencies, including references beyond the projection. Reads do not repeat
+stored node/edge capacity checks or add an aggregate Project write quota.
+Natural query, decode and encoding failures return no partial graph. Missing projects or tasks return 404; an authorized deleted target returns
 410 `task_deleted`. Project authorization precedes target lookup. Operational or
 transaction-completion failures take precedence over domain refusals.
 
@@ -1779,9 +2143,13 @@ with `encodedBytes` and `maxEncodedBytes` details before any data mutation; a
 status string-length increase uses the same check. Shrinking a description
 follows the same full-resource/version rules. Other write refusals are
 `409 version_conflict`, `409 step_id_conflict` for Add and `409 version_exhausted`
-for actual changes. Invalid stored rows, non-dense order, read over-capacity,
-database failures and failed transaction cleanup are internal errors; the service
-never substitutes a partial or empty result.
+for actual changes. Reads use pure `ProjectCollection`/`ProjectItem` projection
+and ordinary JSON encoding without stored-field or collection-capacity checks.
+MCP Step pages use one `limit+1` query and an explicitly compared parent version;
+summary and full views retain the same item-count cursor. The shared MCP entry
+does not admit successful read output by schema or bytes. Invalid write candidates, natural decoding
+or encoding errors, database failures and failed transaction cleanup retain
+their causes; the service never substitutes a partial or empty result.
 
 The shared transaction owner preserves operation, commit and cleanup failures
 and their original causes. Confirmed Commit remains `committed` after response
@@ -1840,8 +2208,8 @@ go test -tags=stress ./internal/server/task -run '^TestStressStepsHTTP(ExactCapa
 ```
 
 The read case seeds legitimate bounded individual records, observes complete
-64 MiB HTTP bytes at the maximum int64 version, checks the same content at a
-one-digit version, and refuses an illegally seeded over-capacity collection.
+64 MiB HTTP bytes at the maximum int64 version and checks the same content at a
+one-digit version. Reading does not repeat write-candidate capacity admission.
 The add case checks an exact successful candidate and subsequent complete GET,
 then a one-byte over-limit candidate with no data writes. The change case checks
 an exact PATCH and GET, one-byte over-limit refusal before target UPDATE/touch,
@@ -1899,9 +2267,10 @@ ordinary users expose that object. The database generates message_id once; its
 primary key is (task_id,message_id), with no single-column uniqueness guarantee.
 Reply and pagination IDs are always resolved within the selected task.
 
-The shared codec admits both default/detailed message encodings at <= 65,536
-bytes and complete pages at <= 262,144 bytes. HTTP writes exactly those escaped
-JSON bytes without an added LF. Full bodies and names are never truncated.
+The write codec admits both default/detailed message encodings at <= 65,536
+bytes before commit. Reads select count-based pages and encode canonical fields
+normally without message or page-byte admission. HTTP writes those escaped JSON
+bytes without an added LF. Full bodies and names are never truncated.
 Service operations have a 10-second ceiling with shorter parent deadlines taking
 precedence; actual-clock advancement has a 100 ms sub-budget, and rollback uses
 an independent 5-second cleanup context. These bounds do not claim a whole-handler
@@ -1911,8 +2280,8 @@ POST success follows confirmed commit. A failed cleanup remains 500 even with a
 nested business refusal. Unknown COMMIT returns 503 message_outcome_unknown;
 clients keep drafts and must not automatically repeat POST. A post-commit
 response failure is logged once at response phase without another append.
-Clock-budget exhaustion returns 503 clock_not_advanced; encoded oversize is 413
-payload_too_large. Missing local messages are 404 message_not_found. Invalid or
+Clock-budget exhaustion returns 503 clock_not_advanced; an oversized message
+write is 413 payload_too_large. Missing local messages are 404 message_not_found. Invalid or
 expired credentials are 401, missing project membership or source-owner mismatch
 is 403, invalid/stale claim is 409, and deleted tasks are 410. Existing PAT/Cookie,
 Origin, no-store and Daynight-User-ID behavior applies.
@@ -2086,9 +2455,11 @@ fail, and refusals leave fields, versions and timestamps intact.
 Version conflicts, wrong predecessor states, dependency cycles and unmet
 dependencies return 409 with `version_conflict`, `invalid_transition`,
 `dependency_cycle` or `dependency_unsatisfied`.
-Relevant sorted IDs appear in `error.details.taskIds`. Malformed stored property values return 400 invalid_input with a preserved
-validation cause; database and other operational failures remain 500. No path
-returns partial properties or silently repairs invalid values. Cancelled
+Relevant sorted IDs appear in `error.details.taskIds`. Write input validation
+returns 400 invalid_input with its cause. Stored properties are read as canonical
+RawMessages without normalization or capacity checks; natural decoding, encoding,
+database and other operational failures retain their original causes. No path
+returns partial properties or silently repairs values. Cancelled
 requests write neither response body nor creation
 Location. Parsed project/task IDs and the request ID correlate safe logs; known
 refusals use their domain `error_code` and cause instead of an internal label.
@@ -2137,13 +2508,13 @@ focused run can prepare the fixture and use the module's test-resource overlay:
 ```bash
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export GOFLAGS='-overlay=scripts/unit-overlay.json'
-go test -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
+go test -tags=startupshutdown -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
 # Explicit race evidence for both the test and its freshly built child:
-go test -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
+go test -tags=startupshutdown -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
 ```
 
 A focused or dirty/overlay run is evidence only for its actual source, flags,
-binary and environment; it does not replace the complete clean module check or
+binary and environment; it does not replace both clean coverage checks or
 hosted CI. The earlier `cmd/e2e_tests` built-process and installed-CLI scenarios
 were removed. Their recorded results and the
 [historical acceptance decisions](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)

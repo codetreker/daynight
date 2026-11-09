@@ -17,7 +17,6 @@ const parseTaskSessions = (value: unknown): Readonly<Record<string, TaskListSess
   const data = record(value);
   if (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) return malformed();
   const entries = Object.entries(data);
-  if (entries.length > 1000) return malformed();
   const sessions: Record<string, TaskListSessionState> = {};
   for (const [taskId, state] of entries) {
     if (id(taskId) !== taskId || state !== "working" && state !== "notice" && state !== "warning" && state !== "pending") return malformed();
@@ -68,8 +67,7 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
   };
   if (new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
     result.project.id !== projectId || result.actorAccess.ownership.teamId !== result.project.ownership.teamId ||
-    result.actorAccess.ownership.version !== result.project.ownership.version || result.tasks.length > 1000 ||
-    new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length ||
-    result.tasks.reduce((count, task) => count + task.dependsOn.length, 0) > 5000) return malformed();
+    result.actorAccess.ownership.version !== result.project.ownership.version ||
+    new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length) return malformed();
   return result;
 };

@@ -369,6 +369,77 @@ func TestRunnerConstructionAndPermanentFailureLifecycle(t *testing.T) {
 	if err := runner.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
+	passes := make(chan struct{}, 4)
+	maintenanceDB := deliveryTransactionScript{t: t, write: func(ctx context.Context, callback func(store.WebhookDeliveryScope) error) (store.Completion, error) {
+		if err := ctx.Err(); err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		now := time.Unix(100, 0).UTC()
+		var calls []string
+		scope := &deliveryScopeScript{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t},
+			observedAt: func(context.Context) (time.Time, error) {
+				calls = append(calls, "clock")
+				return now, nil
+			},
+			lockExpired: func(_ context.Context, limit int, at time.Time) ([]store.WebhookDelivery, error) {
+				calls = append(calls, "recover")
+				if limit != 1 || at != now {
+					t.Errorf("maintenance recovery arguments: limit=%d at=%v", limit, at)
+				}
+				return nil, nil
+			},
+			lockDueExpiry: func(_ context.Context, limit int, at time.Time) ([]store.WebhookDelivery, error) {
+				calls = append(calls, "expire")
+				if limit != 1 || at != now {
+					t.Errorf("maintenance expiry arguments: limit=%d at=%v", limit, at)
+				}
+				return nil, nil
+			},
+		}
+		if err := callback(scope); err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		if fmt.Sprint(calls) != "[clock recover expire]" {
+			t.Errorf("maintenance pass calls: %v", calls)
+		}
+		select {
+		case passes <- struct{}{}:
+		default:
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}}
+	maintenance := NewRunner(maintenanceDB, &Service{}, false)
+	maintenance.client = deliverySenderScript{t: t}
+	maintenance.maintenancePollInterval = 5 * time.Millisecond
+	if err := maintenance.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stop, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := maintenance.Stop(stop); err != nil {
+			t.Error(err)
+		}
+	})
+	observed, cancelObserved := context.WithTimeout(t.Context(), time.Second)
+	defer cancelObserved()
+	for range 2 {
+		select {
+		case <-passes:
+		case err := <-maintenance.Failures():
+			t.Fatalf("disabled maintenance failed: %v", err)
+		case <-observed.Done():
+			t.Fatal("disabled runner did not complete two maintenance passes")
+		}
+	}
+	if err := maintenance.Stop(observed); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-maintenance.Failures():
+		t.Fatalf("disabled runner used an unconfigured operation: %v", err)
+	default:
+	}
 	for _, broken := range []func(*Runner){func(r *Runner) { r.DB = nil }, func(r *Runner) { r.service = nil }, func(r *Runner) { r.client = nil }} {
 		r := NewRunner(db, &Service{}, true)
 		broken(r)

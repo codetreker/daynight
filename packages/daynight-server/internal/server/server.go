@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -81,10 +82,12 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)
-	taskhttp.TaskSearchRoutes(mux, app.TaskSearch, auth, logger)
+	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+		return tasksearch.Search(ctx, app.TaskSearch, principal, projectID, input)
+	}, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
-	taskhttp.TaskSyncRoutes(mux, app.TaskSync, auth, logger, config.TaskSyncOverlap)
+	taskhttp.TaskSyncRoutes(mux, app.TaskSync.Get, auth, logger, config.TaskSyncOverlap)
 	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
 	if app.Webhooks != nil {
 		webhookhttp.NewRoutes(app.Webhooks, auth, logger).RegisterRoutes(mux)

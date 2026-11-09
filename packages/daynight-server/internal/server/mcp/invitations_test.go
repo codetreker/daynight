@@ -9,7 +9,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -186,7 +185,7 @@ func TestInvitationToolsAdaptServices(t *testing.T) {
 	}
 }
 
-func TestInvitationPageBudgetAndCursor(t *testing.T) {
+func TestInvitationPagePreservesCountAndCursor(t *testing.T) {
 	fixture := newEntryFixture(t)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	team := &invitationTestTeams{}
@@ -200,26 +199,16 @@ func TestInvitationPageBudgetAndCursor(t *testing.T) {
 	out := invitationCall(t, client, "team_invitation_list", map[string]any{"team": invitationTestTeamID, "limit": 100}, false)
 	page := object(t, out["data"])
 	items := page["items"].([]any)
-	if len(items) == 0 || len(items) >= 100 || team.request.Limit != 100 {
-		t.Fatalf("expected bounded page, got %d", len(items))
+	if len(items) != 100 || team.request.Limit != 100 {
+		t.Fatalf("expected count page, got %d", len(items))
 	}
-	cursor, ok := page["nextCursor"].(string)
-	if !ok {
-		t.Fatal("missing trimmed page cursor")
-	}
-	decoded, err := query.ListPage(model.PageRequest{Limit: 100, Cursor: &cursor}, query.ListScope{Kind: "team_invitations", UserID: "alice", ProjectID: invitationTestTeamID})
-	if err != nil || decoded.After == nil || decoded.After.ID != object(t, items[len(items)-1])["id"] {
-		t.Fatal("cursor does not point to last returned item")
+	if page["nextCursor"] != nil {
+		t.Fatal("complete page has a cursor")
 	}
 	team.page.Items = nil
 	invitationCall(t, client, "team_invitation_list", map[string]any{"team": invitationTestTeamID}, false)
 	if team.request.Limit != 50 {
 		t.Fatal("default page limit was not applied")
-	}
-	team.page.Items = []model.TeamInvitation{{ID: invitationTestProjectID, TeamID: invitationTestTeamID, CreatedBy: strings.Repeat("x", 17000), CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}
-	out = invitationCall(t, client, "team_invitation_list", map[string]any{"team": invitationTestTeamID}, true)
-	if object(t, out["error"])["code"] != "resource_limit_exceeded" {
-		t.Fatal("oversized item was not rejected")
 	}
 	adapter := invitationAdapter{teams: team}
 	actor := RequestActor{Principal: model.Principal{UserID: "alice"}}

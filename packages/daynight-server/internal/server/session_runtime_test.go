@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,20 +13,26 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestSessionShutdownPersistsControllerDisconnectBeforeStoppingEngine(t *testing.T) {
+func TestSessionShutdownDisconnectsControllerBeforeStoppingEngine(t *testing.T) {
 	f := sessionHTTPSetup(t)
-	_, snapshot := f.controller(t, uuid.NewString())
+	f.controller(t, uuid.NewString())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var connected bool
-	if err := f.db.Pool.QueryRow(ctx, `SELECT connection_expires_at IS NOT NULL FROM task_sessions WHERE id=$1`, snapshot.SessionID).Scan(&connected); err != nil || !connected {
-		t.Fatalf("controller connection was not persisted: connected=%v error=%v", connected, err)
+	f.mu.Lock()
+	connected := f.writes.instance != "" && f.writes.connectionExpiry != nil
+	before := f.writes.disconnected
+	f.mu.Unlock()
+	if !connected {
+		t.Fatal("controller connection DAO was not called")
 	}
 	if err := f.application.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.Pool.QueryRow(ctx, `SELECT connection_expires_at IS NOT NULL FROM task_sessions WHERE id=$1`, snapshot.SessionID).Scan(&connected); err != nil || connected {
-		t.Fatalf("shutdown did not persist controller disconnect: connected=%v error=%v", connected, err)
+	f.mu.Lock()
+	after := f.writes.disconnected
+	f.mu.Unlock()
+	if after != before+1 {
+		t.Fatalf("shutdown disconnect calls=%d, want%d", after-before, 1)
 	}
 	if err := f.application.engine.Stop(ctx); err != nil {
 		t.Fatal(err)
@@ -75,7 +82,7 @@ func TestSessionRuntimeShutsRelayBeforeDependencies(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := dependencies.Store.Pool.Acquire(context.Background()); err == nil {
+			if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
 				t.Fatal("completed shutdown retained database")
 			}
 		})

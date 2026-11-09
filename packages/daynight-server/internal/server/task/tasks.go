@@ -2,8 +2,6 @@ package task
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -11,11 +9,8 @@ import (
 
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
@@ -26,13 +21,13 @@ import (
 )
 
 type taskHandler struct {
-	tasks  *service.Tasks
-	sync   *service.TaskSync
+	tasks  TaskService
+	sync   SyncOperation
 	window time.Duration
 	logger *slog.Logger
 }
 
-func TaskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *authhttp.Authentication, logger *slog.Logger) {
+func TaskRoutes(mux *http.ServeMux, tasks TaskService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskHandler{tasks: tasks, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", auth.Require(handler.list))
@@ -203,7 +198,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId", "assignedTo")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "workerId", "assignedTo")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -232,6 +227,13 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		}
 		allowAgents := value[0] == "true"
 		result.AllowAgents = &allowAgents
+	}
+	if value, exists := values["platformSpecific"]; exists {
+		if value[0] != "true" && value[0] != "false" {
+			return service.TaskListRequest{}, httpx.InvalidInput("platformSpecific must be true or false")
+		}
+		platformSpecific := value[0] == "true"
+		result.PlatformSpecific = &platformSpecific
 	}
 	if value, exists := values["compatiblePlatform"]; exists {
 		platform := model.TaskPlatform(value[0])
@@ -284,7 +286,6 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 		httpx.WriteError(w, request, logger, "task", "list", err)
 		return
 	}
-	input.ExtendedWorker = extendedWorkerProtocol(request)
 	page, err := h.listWorkerCompatibleTasks(request, principal, projectID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "list", err)
@@ -318,13 +319,9 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 		httpx.WriteError(w, request, logger, "task", "get", err)
 		return
 	}
-	observation, err := h.tasks.ObserveREST(request.Context(), principal, projectID, id, extendedWorkerProtocol(request))
+	observation, err := h.tasks.Observe(request.Context(), principal, projectID, id)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "get", err)
-		return
-	}
-	if _, err := taskprotocol.EncodeREST(io.Discard, observation.Task, extendedWorkerProtocol(request), taskcore.MaxTaskResponseJSONBytes); err != nil {
-		httpx.WriteError(w, request, logger, "task", "response", taskReadResponseError(err))
 		return
 	}
 	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", httpx.RequestID(request.Context()))
@@ -335,14 +332,6 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 	}
 	w.Header().Set("Daynight-Task-Epoch", observation.Epoch)
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
-}
-
-func taskReadResponseError(err error) error {
-	var violation *limit.Violation
-	if errors.As(err, &violation) || errors.Is(err, taskprotocol.ErrLegacyWorkerIndeterminate) {
-		return &model.Fault{Code: "resource_limit_exceeded", Message: "Task response exceeds the encoded resource limit.", Cause: err}
-	}
-	return err
 }
 
 func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal model.Principal) {

@@ -28,6 +28,7 @@ export type WorkerConfiguration = ExecutionConfiguration & {
   repositoryRoot: string;
   maxConcurrent: number;
   pollIntervalMs: number;
+  preferPlatformSpecificTasks: boolean;
   repositories: readonly WorkerRepositoryConfiguration[];
 };
 
@@ -40,6 +41,7 @@ export const workerConfigurationDefaults = Object.freeze({
   repositoryRoot: defaultRepositoryRoot,
   maxConcurrent: 1,
   pollIntervalMs: 60_000,
+  preferPlatformSpecificTasks: false,
   recoveryLimit: 3,
   agent: "copilot" as const,
 });
@@ -63,6 +65,12 @@ const number = (value: Record<string, unknown>, field: keyof Pick<WorkerConfigur
     throw new TypeError(`worker.${field} must be an integer between ${minimum} and ${maximum}.`);
   }
   return result;
+};
+
+const platformPreference = (worker: Record<string, unknown>): boolean => {
+  if (!Object.hasOwn(worker, "preferPlatformSpecificTasks")) return workerConfigurationDefaults.preferPlatformSpecificTasks;
+  if (typeof worker.preferPlatformSpecificTasks !== "boolean") throw new TypeError("worker.preferPlatformSpecificTasks must be a boolean.");
+  return worker.preferPlatformSpecificTasks;
 };
 
 const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration, local?: WorkerLocalNativeOverrides): ExecutionConfiguration => {
@@ -136,7 +144,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     }
     return { ...agentConfiguration(repository, field, effective, local), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
+  return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), repositories };
 };
 
 const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -153,45 +152,5 @@ func TestTestSessionMigrationEnforcesScopeBindings(t *testing.T) {
 		if _, err := db.Pool.Exec(ctx, sql); err == nil {
 			t.Fatal("invalid scope binding inserted")
 		}
-	}
-}
-
-func TestDrainTaskSessionsPreservesActiveClaim(t *testing.T) {
-	ctx := context.Background()
-	s := isolatedStore(t)
-	project := queryProject(t, s, 1)
-	task := queryTask(t, s, project.ID, 2, model.TaskInProgress)
-	activeClaim, staleClaim := uuid.NewString(), uuid.NewString()
-	activeSession, staleSession := uuid.NewString(), uuid.NewString()
-	for _, item := range []struct{ session, claim string }{{activeSession, activeClaim}, {staleSession, staleClaim}} {
-		raw, _ := json.Marshal(map[string]any{"lifecycle": "active", "lastTimelineSeq": "3"})
-		mustQueryExec(t, s, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,'{}',$7)`, item.session, project.ID, task.ID, item.claim, uuid.NewString(), uuid.NewString(), raw)
-	}
-	var before time.Time
-	if err := s.Pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
-		return tx.SessionDAO().DrainTaskSessions(ctx, task.ID, TaskSessionDrain{
-			ActiveClaim: &activeClaim, SourceLifecycle: "active", GraceSeconds: 60, TimelineField: "lastTimelineSeq", LifecycleField: "lifecycle",
-			RemoveFields: []string{"controls"}, SnapshotValues: map[string]any{"lifecycle": "draining"},
-		})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var after time.Time
-	if err := s.Pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	var active, stale string
-	var deadline time.Time
-	if err := s.Pool.QueryRow(ctx, `SELECT snapshot->>'lifecycle' FROM task_sessions WHERE id=$1`, activeSession).Scan(&active); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Pool.QueryRow(ctx, `SELECT snapshot->>'lifecycle', draining_until FROM task_sessions WHERE id=$1`, staleSession).Scan(&stale, &deadline); err != nil {
-		t.Fatal(err)
-	}
-	if active != "active" || stale != "draining" || deadline.Before(before.Add(time.Minute)) || deadline.After(after.Add(time.Minute)) {
-		t.Fatalf("active=%s stale=%s before=%v deadline=%v after=%v", active, stale, before, deadline, after)
 	}
 }

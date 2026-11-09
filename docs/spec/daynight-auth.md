@@ -181,7 +181,7 @@ Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-U
 两个 version 均为无损正 int64 JSON number，时间为 UTC。membership 只表示当前主体的实际成员行，
 不包含其他成员或个人资料。列表在排序与取页前按认证主体的成员资格筛选，按 `(createdAt,id)`
 稳定分页；cursor 绑定该主体，跨账号续页、未知或重复参数、显式空参数及畸形 cursor 明确拒绝。
-空页的 items 为 `[]`，末页 nextCursor 为 null，不增加搜索或总数。
+空页的 items 为 `[]`，末页 nextCursor 为 null，不增加搜索或总数。页面按请求条数和一项 lookahead 生成，不按响应字节裁页；读取保存的 Team 与成员字段不重复结构或容量校验。
 
 任意登录用户可创建普通 Team；Team 与创建者的真实 admin 行原子提交。普通名称必须是合法
 Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原始文字及首尾空白完整保存，
@@ -195,7 +195,7 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 `409 personal_team_immutable`。
 
 改名先比较元数据 version，过期请求即使 name 恰与当前原文相同也返回 `409 version_conflict`。
-精确版本下的相同原文是 no-op，保留版本和全部时间；这也适用于限额生效前保存的超长名称。真实名称改变使元数据版本加一。
+精确版本下的相同原文是 no-op，保留版本和全部时间；名称容量只在真实改名时检查。真实名称改变使元数据版本加一。
 元数据版本达到最大正 int64 时仍接受同值 no-op，真实改名返回 `409 version_exhausted`。
 删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
 活跃 Project 的 ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
@@ -206,7 +206,7 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 
 Team 成员目录仅对本 Team 的当前成员开放，包含每位成员的可空姓名、邮箱、头像、角色、
 真实成员版本和时间；只有 Project 单独授权不能读取目录。目录读取失败或用户资料缺失时整个
-请求失败，不返回部分目录。普通 Team admin 可修改已有成员角色或移除成员；普通成员可自行
+请求失败，不返回部分目录。REST 目录保持完整 `{items}`，不新增分页或累计配额；MCP 成员页复用当前权限及普通批量查询，按条数和 cursor 连续读取。普通 Team admin 可修改已有成员角色或移除成员；普通成员可自行
 退出，但不能管理他人。加入只能通过邀请接受，不提供按 UUID、姓名或邮箱加人。Personal Team
 成员关系固定，角色修改和退出均返回 `409 personal_team_immutable`。
 
@@ -314,7 +314,7 @@ accept 返回真实 directGrant、有效 access、joined 和 consumed，成功�
 元数据。发起者离任不撤销邀请。无效、到期、已消费、撤销及目标删除均返回
 `404 invitation_unavailable`。
 
-`GET/POST /api/v1/teams/{teamId}/invitations` 分别返回 `{items}` 和一次创建结果；
+`GET/POST /api/v1/teams/{teamId}/invitations` 分别返回完整 `{items}` 和一次创建结果；目录不追加读取结构、字段或字节准入。MCP 邀请页按现有请求条数、创建位置与 cursor 读取一批完整元数据，不缩短编码前缀或使用可选准入 fallback。
 `DELETE /api/v1/teams/{teamId}/invitations/{inviteId}` 返回
 `{teamId,invitationId,changed}`，重复撤销为明确 no-op。元数据包含 `id`、`teamId`、
 `createdBy`、`createdAt`、`expiresAt`、可空 `consumedBy`、`consumedAt`、`revokedAt`；

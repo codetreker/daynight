@@ -80,15 +80,18 @@ func (m historyEligibilityMock) Revoke(context.Context, string, int64) error {
 }
 
 type historyReaderMock struct {
-	t          *testing.T
-	endpoint   func(context.Context, Owner, string) (wm.Endpoint, error)
-	policy     func(context.Context, int64) (wm.Policy, error)
-	deliveries func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error)
-	delivery   func(context.Context, Owner, string, string) (store.WebhookDelivery, error)
-	sources    func(context.Context, store.WebhookDelivery, string) (store.WebhookHistorySources, error)
-	disclosure func(context.Context, Owner, string, string, time.Time) (string, error)
-	attempts   func(context.Context, string) ([]store.WebhookAttempt, error)
-	latest     func(context.Context, string) (*store.WebhookAttempt, error)
+	batch         func(context.Context, Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error)
+	matches       func(context.Context, []string) ([]store.WebhookHistoryMatch, error)
+	batchAttempts func(context.Context, []string) ([]store.WebhookAttempt, error)
+	t             *testing.T
+	endpoint      func(context.Context, Owner, string) (wm.Endpoint, error)
+	policy        func(context.Context, int64) (wm.Policy, error)
+	deliveries    func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error)
+	delivery      func(context.Context, Owner, string, string) (store.WebhookDelivery, error)
+	sources       func(context.Context, store.WebhookDelivery, string) (store.WebhookHistorySources, error)
+	disclosure    func(context.Context, Owner, string, string, time.Time) (string, error)
+	attempts      func(context.Context, string) ([]store.WebhookAttempt, error)
+	latest        func(context.Context, string) (*store.WebhookAttempt, error)
 }
 
 func (m *historyReaderMock) Endpoint(c context.Context, o Owner, id string) (wm.Endpoint, error) {
@@ -116,6 +119,15 @@ func (m *historyReaderMock) Bindings(context.Context, string) ([]wm.Binding, err
 func (m *historyReaderMock) Operation(context.Context, Owner, string) (wm.Operation, error) {
 	retentionRequire(m.t, "history.Operation", func() {}, false)
 	panic("unreachable")
+}
+func (m *historyReaderMock) HistoryBatch(c context.Context, o Owner, e, actor string, at time.Time, id string, n int) (store.WebhookHistoryBatch, error) {
+	return retentionRequire(m.t, "HistoryBatch", m.batch, m.batch != nil)(c, o, e, actor, at, id, n)
+}
+func (m *historyReaderMock) HistoryMatches(c context.Context, ids []string) ([]store.WebhookHistoryMatch, error) {
+	return retentionRequire(m.t, "HistoryMatches", m.matches, m.matches != nil)(c, ids)
+}
+func (m *historyReaderMock) HistoryBatchAttempts(c context.Context, ids []string) ([]store.WebhookAttempt, error) {
+	return retentionRequire(m.t, "HistoryBatchAttempts", m.batchAttempts, m.batchAttempts != nil)(c, ids)
 }
 func (m *historyReaderMock) HistoryDeliveries(c context.Context, o Owner, e string, a time.Time, id string, n int) ([]store.WebhookDelivery, error) {
 	return retentionRequire(m.t, "HistoryDeliveries", m.deliveries, m.deliveries != nil)(c, o, e, a, id, n)
@@ -190,6 +202,17 @@ func newHistoryScenario(t *testing.T) *historyScenario {
 		t.Fatal(err)
 	}
 	f.reader = &historyReaderMock{t: t}
+	f.reader.matches = func(_ context.Context, ids []string) ([]store.WebhookHistoryMatch, error) {
+		var matches []store.WebhookHistoryMatch
+		for _, id := range ids {
+			for _, match := range f.src.Matches {
+				matches = append(matches, store.WebhookHistoryMatch{DeliveryID: id, WebhookAdmissionMatch: match})
+			}
+		}
+		return matches, nil
+	}
+	f.reader.batchAttempts = func(context.Context, []string) ([]store.WebhookAttempt, error) { return nil, nil }
+
 	f.reader.endpoint = func(_ context.Context, o Owner, id string) (wm.Endpoint, error) {
 		if o != f.owner || id != f.d.EndpointID {
 			t.Errorf("endpoint arguments %v %s", o, id)
@@ -268,4 +291,19 @@ func historyAssertNoProjection(t *testing.T, value any) {
 	if !ok || projection != nil {
 		t.Fatalf("failed history read returned a projection: %#v (%T)", value, value)
 	}
+}
+
+func historyBatchRows(f *historyScenario, deliveries []store.WebhookDelivery) store.WebhookHistoryBatch {
+	name, team := "project", "team"
+	batch := store.WebhookHistoryBatch{ObservedAt: retentionTestNow, Items: []store.WebhookHistoryItem{}}
+	for _, d := range deliveries {
+		src := f.src
+		src.Event.ID, src.Event.OccurredAt = d.EventID, d.OccurredAt
+		src.Matches = nil
+		revision := f.endpoint.DestinationRevision
+		batch.Items = append(batch.Items, store.WebhookHistoryItem{Delivery: d, Sources: src, EventPresent: true,
+			Eligibility:     wm.EligibilityFacts{ProjectLive: true, ProjectName: &name, TeamID: &team, TeamPresent: true, OwnerAccess: true, ActorAccess: true},
+			EndpointPresent: true, EndpointRevision: &revision})
+	}
+	return batch
 }

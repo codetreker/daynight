@@ -1,3 +1,5 @@
+//go:build startupshutdown
+
 package main
 
 import (

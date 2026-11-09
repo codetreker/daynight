@@ -2,7 +2,7 @@ package tasksearch
 
 import (
 	"context"
-	"fmt"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -17,9 +17,6 @@ func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, 
 	for i, node := range graph.Nodes {
 		if i%256 == 0 && ctx.Err() != nil {
 			return nil, ctx.Err()
-		}
-		if _, ok := index[node.ID]; ok {
-			return nil, fmt.Errorf("duplicate search context node")
 		}
 		index[node.ID] = i
 		parent[i] = i
@@ -37,11 +34,8 @@ func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, 
 		if i%256 == 0 && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		a, okA := index[edge.TaskID]
-		b, okB := index[edge.DependsOnID]
-		if !okA || !okB {
-			return nil, fmt.Errorf("search context edge has missing endpoint")
-		}
+		a := index[edge.TaskID]
+		b := index[edge.DependsOnID]
 		indegree[a]++
 		ra, rb := find(a), find(b)
 		if ra != rb {
@@ -71,19 +65,13 @@ func componentRepresentatives(ctx context.Context, graph store.TaskSearchGraph, 
 		if i%256 == 0 && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		i, ok := index[id]
-		if !ok {
-			return nil, fmt.Errorf("search context missing matching task")
-		}
+		i := index[id]
 		root := find(i)
 		if sizes[root] == 1 {
 			result[id] = ""
 			continue
 		}
-		rep, ok := representatives[root]
-		if !ok {
-			return nil, fmt.Errorf("search context has no root")
-		}
+		rep := representatives[root]
 		result[id] = graph.Nodes[rep].ID
 	}
 	return result, nil

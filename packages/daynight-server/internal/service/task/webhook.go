@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
@@ -29,12 +28,8 @@ func pausedProperty(properties model.TaskProperties) (bool, error) {
 	if !exists {
 		return false, nil
 	}
-	normalized, err := taskproperty.NormalizeValue("paused", raw)
-	if err != nil {
-		return false, err
-	}
 	var result bool
-	if err = json.Unmarshal(normalized, &result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return false, err
 	}
 	return result, nil

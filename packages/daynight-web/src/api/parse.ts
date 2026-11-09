@@ -1,7 +1,6 @@
 import type {
   Attachment,
   AttachmentPage,
-  GraphLimitDetails,
   GraphTask,
   Project,
   ProjectPage,
@@ -133,7 +132,6 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
 export type ServerError = {
   readonly code: string;
   readonly requestId: string;
-  readonly graphLimit?: GraphLimitDetails;
   readonly serverMessage?: string;
   readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
   readonly writeOutcome?: "not_committed";
@@ -153,19 +151,7 @@ export const parseServerError = (value: unknown, includeSteps = false): ServerEr
     const details = record(data.details);
     return withOutcome({ code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } });
   }
-  if (includeSteps && code !== "graph_limit_exceeded") return withOutcome({ code, requestId, serverMessage: message });
-  if (code !== "graph_limit_exceeded") return withOutcome({ code, requestId });
-  const details = record(data.details);
-  return withOutcome({
-    code,
-    requestId,
-    graphLimit: {
-      nodeCount: count(details.nodeCount),
-      edgeCount: count(details.edgeCount),
-      maxNodes: count(details.maxNodes),
-      maxEdges: count(details.maxEdges),
-    },
-  });
+  return withOutcome({ code, requestId, ...(includeSteps ? { serverMessage: message } : {}) });
 };
 
 export const isAttachmentPath = (value: string): boolean =>

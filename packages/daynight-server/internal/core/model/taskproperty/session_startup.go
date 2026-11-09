@@ -20,8 +20,8 @@ func SessionStartup(properties model.TaskProperties) (*sp.StartupReport, error) 
 	if !exists {
 		return nil, nil
 	}
-	value, err := sp.DecodeStartupReport(raw)
-	if err != nil {
+	var value sp.StartupReport
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, err
 	}
 	return &value, nil

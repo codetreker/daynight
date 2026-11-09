@@ -113,10 +113,7 @@ func (tx *DAO) sessionTaskProperties(ctx context.Context, id string, task store.
 		if err := rows.Scan(&name, &value); err != nil {
 			return store.SessionTask{}, pginternal.QueryError("read session task properties", err)
 		}
-		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value))
-		if err != nil {
-			return store.SessionTask{}, err
-		}
+		properties[name] = json.RawMessage(value)
 	}
 	if err := rows.Err(); err != nil {
 		return store.SessionTask{}, pginternal.QueryError("read session task properties", err)

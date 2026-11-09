@@ -69,7 +69,7 @@ const refusal = async (response: Response, correlationId: string): Promise<Proje
       response.status === 404 && parsed.code === "not_found" ||
       response.status === 409 && parsed.code === "active_worker_claims";
     const notCommitted = response.status === 500 && parsed.code === "internal_error" && parsed.writeOutcome === "not_committed";
-    return known || notCommitted ? new ProjectDeletionRefusal("server", response.status, parsed.code, parsed.requestId, undefined, undefined, undefined, undefined, parsed.writeOutcome) : null;
+    return known || notCommitted ? new ProjectDeletionRefusal("server", response.status, parsed.code, parsed.requestId, undefined, undefined, undefined, parsed.writeOutcome) : null;
   } catch { return null; }
 };
 

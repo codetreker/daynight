@@ -5,17 +5,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"testing"
-
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 )
 
 type resourceTestHandler struct {
@@ -24,40 +20,27 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func resourceTestServer(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func resourceTestServer(t *testing.T, database store.Transactions, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+	return resourceTestServerForPrincipal(t, database, files, output, defaultHTTPPrincipal())
+}
+
+func resourceTestServerForPrincipal(t *testing.T, database store.Transactions, files filestorage.Storage, output io.Writer, principal model.Principal) *resourceTestHandler {
 	t.Helper()
-	server := httptest.NewUnstartedServer(nil)
-	t.Cleanup(server.Close)
-	origin := "http://" + server.Listener.Addr().String()
-	callback := origin + "/api/v1/auth/callback"
-	gateway := testauth.StartGateway(t, callback)
-	config := configuredTestConfig()
-	config.PublicOrigin = origin
-	config.UniAuthCallbackURL = callback
-	config.UniAuthURL = gateway.Origin
-	config.UniAuthAppID = gateway.AppID
-	config.UniAuthAppSecret = gateway.AppSecret
-	config.AllowHTTPTestOrigin = true
-	config.AllowLoopbackHTTP = true
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: database, Ready: database.Ready, Files: files}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Config.Handler = httpx.RequestLogging(logger, handler)
-	server.Start()
-	browser := testauth.Browser(t)
-	testauth.Login(t, browser, origin, "alice")
-	token := testauth.CreatePAT(t, browser, origin)
-	client, err := service.NewIdentityClient(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	principal, err := identityservice.New(database, client, callback).Authenticate(context.Background(), model.PATCredential, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &resourceTestHandler{Handler: server.Config.Handler, token: token, principal: principal}
+	application := handler.(Handler)
+	t.Cleanup(func() {
+		application.BeginShutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := application.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return &resourceTestHandler{Handler: httpx.RequestLogging(logger, handler), token: httpTestToken(principal.Kind), principal: principal}
 }
 
 func authorizeResourceRequest(handler http.Handler, request *http.Request) {

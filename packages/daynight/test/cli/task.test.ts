@@ -914,7 +914,7 @@ describe("compiled task commands", () => {
       let mode: "pages" | "graph" | "write" = "pages";
       const { requests } = await f.serve((request, response) => {
         if (mode === "write") response.socket!.destroy();
-        else if (mode === "graph") refuse(response, "graph_limit_exceeded", "task-graph-limit", 409, { nodeCount: 1001, edgeCount: 0, maxNodes: 1000, maxEdges: 5000 });
+        else if (mode === "graph") refuse(response, "internal_error", "task-graph-read", 500);
         else if (request.query.has("cursor")) refuse(response, "internal_error", "task-later-page", 500);
         else respond(response, { items: [task()], nextCursor: "later page" });
       });
@@ -925,7 +925,7 @@ describe("compiled task commands", () => {
       mode = "graph";
       const failedGraph = await f.invoke(["graph", taskId, "--json", ...explicit]);
       expect(failedGraph.code).toBe(1); expect(failedGraph.stdout).toBe("");
-      for (const value of ["graph_limit_exceeded", "task-graph-limit", "1001", "1000", "5000"]) expect(failedGraph.stderr).toContain(value);
+      for (const value of ["internal_error", "task-graph-read"]) expect(failedGraph.stderr).toContain(value);
       mode = "write";
       const uncertain = await f.invoke(["create", "--title", "Uncertain", ...explicit]);
       expect(uncertain.code).toBe(1); expect(uncertain.stdout).toBe("");

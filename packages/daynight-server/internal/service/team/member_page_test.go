@@ -3,7 +3,6 @@ package team_test
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -73,55 +72,4 @@ func TestMemberPageBoundariesAndAccess(t *testing.T) {
 	teamFault(t, err, "not_found")
 	_, err = teams.Member(ctx, actor, team.ID, "invalid")
 	teamFault(t, err, "invalid_input")
-}
-
-func TestMemberPageRejectsOversizedProfilesWithoutSkipping(t *testing.T) {
-	_, db, _, actor := projectService(t)
-	teams := teamservice.NewTeams(db)
-	ctx := context.Background()
-	team := newTestTeam(t, teams, actor, "Paged")
-	other := servicePrincipal(t, db)
-	last := servicePrincipal(t, db)
-	for _, user := range []string{other.UserID, last.UserID} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, user); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i, user := range []string{actor.UserID, other.UserID, last.UserID} {
-		if _, err := db.Pool.Exec(ctx, `UPDATE team_members SET created_at='2026-01-01T00:00:00Z'::timestamptz + $3 * interval '1 second' WHERE team_id=$1 AND user_id=$2`, team.ID, user, i); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// A legal maximum avatar must be readable by the real bounded projection.
-	if _, err := db.Pool.Exec(ctx, `UPDATE users SET avatar_url=repeat('a',524288) WHERE id=$1`, other.UserID); err != nil {
-		t.Fatal(err)
-	}
-	legal, err := teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10})
-	if err != nil || len(legal.Items) != 3 || legal.Items[1].Profile.AvatarURL == nil || len(*legal.Items[1].Profile.AvatarURL) != 524288 {
-		t.Fatalf("maximum avatar: %v", err)
-	}
-	// Neither column exceeds the limit alone; the sum counts UTF-8 bytes.
-	if _, err := db.Pool.Exec(ctx, `UPDATE users SET name=repeat('界',3000), email=repeat('x',4194304), avatar_url=NULL WHERE id=$1`, other.UserID); err != nil {
-		t.Fatal(err)
-	}
-	page, err := teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10})
-	if err != nil || len(page.Items) != 1 || page.Items[0].Membership.UserID != actor.UserID || page.NextCursor == nil {
-		t.Fatalf("expected prefix before oversized item: %#v %v", page, err)
-	}
-	_, err = teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10, Cursor: page.NextCursor})
-	teamFault(t, err, "payload_too_large")
-	if !strings.Contains(err.Error(), team.ID) || !strings.Contains(err.Error(), other.UserID) {
-		t.Fatalf("missing oversized item identifiers: %v", err)
-	}
-	full, err := teams.Members(ctx, actor, team.ID)
-	if err != nil || len(full) != 3 || full[1].Profile.Name == nil || len(*full[1].Profile.Name) != 9000 {
-		t.Fatalf("full REST directory changed: %#v %v", full, err)
-	}
-	// A large profile beyond the requested page is still detected on the next page.
-	page, err = teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 1})
-	if err != nil || len(page.Items) != 1 || page.NextCursor == nil {
-		t.Fatalf("one-item page: %#v %v", page, err)
-	}
-	_, err = teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 1, Cursor: page.NextCursor})
-	teamFault(t, err, "payload_too_large")
 }

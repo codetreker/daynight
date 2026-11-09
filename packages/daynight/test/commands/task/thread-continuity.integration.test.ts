@@ -5,7 +5,6 @@ import { runCli } from "../../../src/cli/application.js";
 import type { CliContext } from "../../../src/cli/context.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
 import type { TaskCommandDependencies } from "../../../src/commands/task/command.js";
-import { THREAD_OUTPUT_BYTES } from "../../../src/commands/task/thread-rendering.js";
 
 const projectId = "aaaaaaaa-1111-4111-8111-111111111111";
 const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
@@ -62,21 +61,36 @@ it("uses explicit boundaries for successive forward and backward reads without d
   expect(f.context.stderr).not.toHaveBeenCalled();
 });
 
-it("retrieves messages omitted by the rendered byte budget using the first displayed boundary", async () => {
-  const large = [message(1, "\u007f".repeat(30_000)), message(2, "\u007f".repeat(30_000)), message(3, "\u007f".repeat(30_000))];
-  const f = await fixture((request, response) => {
-    const before = request.url.searchParams.get("beforeId");
-    json(response, before === id(2) ? { items: [large[0]], hasMoreBefore: false, hasMoreAfter: true } : { items: large, hasMoreBefore: false, hasMoreAfter: false });
+it("prints a complete four-message count page above 256 KiB and continues from its last ID", async () => {
+  const large = Array.from({ length: 4 }, (_, index) => {
+    const item = message(index + 1, "");
+    return { ...item, body: "a".repeat(65_536 - Buffer.byteLength(JSON.stringify(item), "utf8")) };
   });
-  expect(await f.run(["read", taskId, "--count", "100"])).toBe(0);
-  expect(ids(f.chunks[0]!)).toEqual([id(2), id(3)]);
-  expect(f.chunks[0]!.byteLength).toBeLessThanOrEqual(THREAD_OUTPUT_BYTES);
-  expect(f.chunks[0]!.toString("utf8")).toMatch(/^\.\.\. Has more messages before/);
-  expect(await f.run(["read", taskId, "--before-id", id(2), "--count", "100"])).toBe(0);
-  expect(ids(f.chunks[1]!)).toEqual([id(1)]);
-  expect(f.chunks[1]!.byteLength).toBeLessThanOrEqual(THREAD_OUTPUT_BYTES);
-  expect(f.requests).toHaveLength(2); expect(f.requests[1]!.url.searchParams.get("beforeId")).toBe(id(2));
+  const f = await fixture((request, response) => {
+    const after = request.url.searchParams.get("afterId");
+    json(response, after === id(4) ? { items: [message(5)], hasMoreBefore: true, hasMoreAfter: false } : { items: large, hasMoreBefore: false, hasMoreAfter: true });
+  });
+  expect(await f.run(["read", taskId, "--count", "4"])).toBe(0);
+  expect(ids(f.chunks[0]!)).toEqual(large.map(item => item.id));
+  expect(f.chunks[0]!.byteLength).toBeGreaterThan(262_144);
+  expect(f.chunks[0]!.toString("utf8")).toMatch(/Has more messages after\.\.\.\n$/);
+  expect(await f.run(["read", taskId, "--after-id", id(4), "--count", "4"])).toBe(0);
+  expect(ids(f.chunks[1]!)).toEqual([id(5)]);
+  expect(f.requests).toHaveLength(2); expect(f.requests[1]!.url.searchParams.get("afterId")).toBe(id(4));
   expect(f.context.stderr).not.toHaveBeenCalled();
+});
+
+it("rejects a malformed message in a large count page without emitting its valid prefix", async () => {
+  const items = Array.from({ length: 4 }, (_, index) => {
+    const item = message(index + 1, "");
+    return { ...item, body: "a".repeat(65_536 - Buffer.byteLength(JSON.stringify(item), "utf8")) };
+  });
+  const f = await fixture((_request, response) => json(response, { items: [...items.slice(0, 3), { ...items[3]!, createdAt: "invalid" }], hasMoreBefore: false, hasMoreAfter: false }));
+  expect(await f.run(["read", taskId, "--count", "4"])).toBe(1);
+  expect(f.requests).toHaveLength(1);
+  expect(f.chunks).toHaveLength(0);
+  expect(f.context.stdout).not.toHaveBeenCalled();
+  expect(f.context.stderr).toHaveBeenCalled();
 });
 
 it("keeps the same Agent message in default and detailed reads while exposing execution only in details", async () => {

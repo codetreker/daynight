@@ -67,7 +67,7 @@ macOS Herdr 将本地原运行停止证明和封段作为执行槽释放目标�
 
 本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort 与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影首次候选。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
 
-首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
+首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
 云端尚无目标且首次候选中有明确不可用的 Project 时，runtime 保留完整本地选择，在进程内分别验证和准备可用项目；不把局部集合提交为云配置。所有项目重新可访问并完成验证后，才提交完整首次候选。身份、协议和网络错误保持原分类；已有云目标始终是配置权威。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 标记属于其他 Project 时保留责任，不按新 ID 重绑。
 
@@ -95,15 +95,15 @@ Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 以受限权限保存，校验 schemaVersion 和 service origin/userId/workerId，保存最近目标、逐项成功值、状态、当前错误、待确认失败及观测 CAS。每次启动保留 native 成功历史供观察，全局 native 与各 projectNative 先验证云端当前目标，成功后直接发布新元组。新目标尚在验证时，不发布未在本运行时验证的历史元组，避免恢复任务抢先使用旧 model/args。仅当当前目标验证失败，才按当前本地 mode 重新验证历史成功值；历史值同样失败时保持 unavailable。当前运行时已经验证的成功值在后续目标应用期间继续可用。目标成功、历史恢复与失败结果提交均重新核对目标版本，取消或被替代的结果不能授予执行资格。单一提交队列拥有 receive、应用完成和 acknowledge 的合并。队列执行到头部时，从最新发布状态计算转换，重新校验目标版本和失败确认身份，再 replaceFileAtomically；成功后发布同一个不可变引用。原子 rename 只保证文件完整性，不能防止旧快照覆盖较新目标。损坏、身份不符和持久化失败沿原错误传播，不发布伪成功。
+configuration.json 使用 schemaVersion=2，以受限权限保存并校验 service origin/userId/workerId，保存最近目标、逐项成功值、状态、当前错误、待确认失败及观测 CAS。版本 1 缓存在严格解析当前结构前显式迁移：目标补入 preferPlatformSpecificTasks:false，并为已初始化目标增加同名 pending/null 应用项；移除、重试、失败身份及观测版本全部保留，原子持久化成功后才继续运行。当前版本缺少必需字段仍是格式错误。每次启动保留 native 成功历史供观察，全局 native 与各 projectNative 先验证云端当前目标，成功后直接发布新元组。新目标尚在验证时，不发布未在本运行时验证的历史元组，避免恢复任务抢先使用旧 model/args。仅当当前目标验证失败，才按当前本地 mode 重新验证历史成功值；历史值同样失败时保持 unavailable。当前运行时已经验证的成功值在后续目标应用期间继续可用。目标成功、历史恢复与失败结果提交均重新核对目标版本，取消或被替代的结果不能授予执行资格。单一提交队列拥有 receive、应用完成和 acknowledge 的合并。队列执行到头部时，从最新发布状态计算转换，重新校验目标版本和失败确认身份，再 replaceFileAtomically；成功后发布同一个不可变引用。原子 rename 只保证文件完整性，不能防止旧快照覆盖较新目标。损坏、身份不符和持久化失败沿原错误传播，不发布伪成功。
 
-native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用按当前本地 mode 校验参数，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个标量、完整全局 native 元组和项目项。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。旧结果在队列内再次检查是否适用。已经开始的项目移除保留原版本工作，直到适配结果确认，后续重新选中不能抹掉它。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
+native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用按当前本地 mode 校验参数，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个数值标量、preferPlatformSpecificTasks 布尔标量、完整全局 native 元组和项目项。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。旧结果在队列内再次检查是否适用。已经开始的项目移除保留原版本工作，直到适配结果确认，后续重新选中不能抹掉它。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
 
 reporter 在发送前捕获不可变配置快照，通过独立报告扩展交换目标与观测；确认绑定该份快照。被接纳后只清除其中相同身份的待报告失败，飞行期间的新失败保留；当前错误已经恢复时仍可报告 lastFailure。CAS 拒绝更新比较版本但不确认失败。错误只含闭合 code/category/phase 与时刻，原生命令、参数、输出和凭据不进入配置诊断。心跳不等待应用 job，退出时取消并 join 配置应用与报告，由 runtime 统一持有生命周期。
 
 ### 实际配置消费
 
-同一个 coordinator 接收不可变的有效配置视图，后续容量判断、恢复上限和 native 选择读取成功值。等值视图保留身份，避免无配置变化的报告确认使在途领取失效；实际视图变化仍阻止使用旧配置提交领取。降低 maxConcurrent 不抢占已有执行；pollIntervalMs 在每轮完成后的下一次等待读取当前成功值。健康原生进程不因参数更新重启；Herdr 与 Web 的新 claim 都保留已冻结原生配置；coordinator 不用当前默认替换 model/args，recoveryLimit 仍沿用原有实时策略。旧已有 Session 的未知配置不回填伪造快照，恢复时省略模型和 effort 覆盖。
+同一个 coordinator 接收不可变的有效配置视图，后续容量判断、恢复上限、平台优先策略和 native 选择读取成功值。preferPlatformSpecificTasks 的 false 是有效成功值，只有 null 表示尚无实际结果；新领取等待该配置可用。等值视图保留身份，避免无配置变化的报告确认使在途领取失效；实际视图变化仍阻止使用旧配置提交领取。降低 maxConcurrent 不抢占已有执行；pollIntervalMs 在每轮完成后的下一次等待读取当前成功值。健康原生进程不因参数更新重启；Herdr 与 Web 的新 claim 都保留已冻结原生配置；coordinator 不用当前默认替换 model/args，recoveryLimit 仍沿用原有实时策略。旧已有 Session 的未知配置不回填伪造快照，恢复时省略模型和 effort 覆盖。
 
 项目目标、就绪集合与 projects 持久映射分开。只有已选且准备就绪的项目可以自动推进 active、pending 和新领取；在途领取完成后再次检查有效集合。移除先从有效集合排除并取消该项目 job，再由 stopProject 等待收尾，按 claim 串行使用 Herdr 或 Web 的直接停止能力。停止保留任务状态、认领、工作区及会话历史；映射继续服务归属清单、资源发现及人工处置。停止未确认时保留容量，已确认停止后仅保留工作区不永久占槽。重启时保留但未选的映射也进入配置模块的项目移除责任；结果、错误和重试沿用同一提交与报告入口。本次运行在登记成功后记住已登记的映射，容量不足重试时从未登记项目继续；重启后重新观察所有映射，不能用前一运行的登记代替停止证据。重新选择不能抹掉已开始的停止，后续恢复沿用任务系统原有规则。
 
@@ -163,9 +163,9 @@ Worker 状态库以原索引结构作为版本 5 基线，版本 6 增加 cleanu
 → 可取消的轮询等待
 ```
 
-自有清单只使用 workerId 归属条件，不混入 assignedTo、ready、allowAgents 或候选平台筛选。新候选单独组合 assignedTo=me、ready=true、allowAgents=true 和实际平台条件，在服务端排序和分页前过滤并绑定游标；每页保持相同选择。负责人不匹配的直接 claim 在项目写事务内拒绝，既有 claim 的恢复和显式人工 resume 仍按原执行权限处理。分页、认证或项目读取失败不产生可用于该项目缺席清理的集合。404 标记不可用项目，不阻断其他成功覆盖的项目；显式旧 ID 不按仓库地址重绑。完整性只对成功查询的项目成立；Herdr 中未映射的项目资源报告错误并保留，恢复项目配置后再纳入对账。Herdr/Git 读取失败保持错误，不解释为空资源。
+自有清单只使用 workerId 归属条件，不混入 assignedTo、ready、allowAgents 或候选平台筛选。新候选单独组合 assignedTo=me、ready=true、allowAgents=true 和实际平台条件，在服务端排序和分页前过滤并绑定游标；每页保持相同选择。默认候选省略 platformSpecific；开启 preferPlatformSpecificTasks 后，候选分成 platformSpecific=true 和 false 两个独立流，分别与 compatiblePlatform=实际平台组合。每流继续使用 createdAt、id keyset，游标 scope 区分省略、true 和 false，不能跨类别续页。负责人不匹配的直接 claim 在项目写事务内拒绝，既有 claim 的恢复和显式人工 resume 仍按原执行权限处理。分页、认证或项目读取失败不产生可用于该项目缺席清理的集合。404 标记不可用项目，不阻断其他成功覆盖的项目；显式旧 ID 不按仓库地址重绑。完整性只对成功查询的项目成立；Herdr 中未映射的项目资源报告错误并保留，恢复项目配置后再纳入对账。Herdr/Git 读取失败保持错误，不解释为空资源。
 
-每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。容量按 claim 去重计算 active 行、实际归属资源、已确认的 ending 收尾责任和适配器尚待确认的停止责任的并集。即使某个孤立执行没有本机行，关闭 pane 后尚未完成 Git 删除或进程停止确认，其名额和同 task 启动屏障仍保留至清理完成。macOS Herdr 的原运行停止、封段及 ledger 同步确认后释放执行槽，但保留 worktree 仍维持同 task 屏障；已排队恢复的 job 继续计入容量。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，项目内按稳定 task_id 顺序选择，每分配一个名额就从下一项目继续，直到没有可启动项或容量已满。新领取在所有配置项目中每轮合计最多一个：跳过空项目，保持服务端 ready 顺序，确认授予并登记 pending 后立即结束本轮领取；即使旧 claim 资源使该任务暂不能 active，也不再寻找第二个新任务。项目游标保留到下一轮，从下一项目继续。候选生成器在本轮结束时统一关闭，后续新领取沿用 runtime 在完整调度轮结束后的 pollIntervalMs 等待。[领取节奏决策](../../.agents/notes/archived/feature/2026-11-04-worker-single-acquisition.md)记录其吞吐代价。
+每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。容量按 claim 去重计算 active 行、实际归属资源、已确认的 ending 收尾责任和适配器尚待确认的停止责任的并集。即使某个孤立执行没有本机行，关闭 pane 后尚未完成 Git 删除或进程停止确认，其名额和同 task 启动屏障仍保留至清理完成。macOS Herdr 的原运行停止、封段及 ledger 同步确认后释放执行槽，但保留 worktree 仍维持同 task 屏障；已排队恢复的 job 继续计入容量。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，项目内按稳定 task_id 顺序选择，每分配一个名额就从下一项目继续，直到没有可启动项或容量已满。新领取在所有配置项目中每轮合计最多一个。preferPlatformSpecificTasks=false 时按原项目轮转读取兼容候选；为 true 时先轮转全部可领取项目的当前平台专用候选，耗尽该类别后才轮转不限平台候选。专用候选使用独立的项目游标；不限平台候选与关闭优先模式时的混合候选沿用常规项目游标。各游标跨轮保留，在各自类别内从下一项目继续，专用候选的扫描、跳过和成功领取均不推进常规游标。项目内保留服务端 createdAt、id 顺序，不能从一个项目取得不限平台候选后忽略其他项目的专用任务。空项目和被原资源准入屏障拒绝的候选可以跳过；确认授予并登记 pending 后立即结束本轮领取，即使任务暂不能 active。真实配置变化使旧候选流失效。所有类别的候选生成器在退出时关闭，后续新领取沿用 runtime 在完整调度轮结束后的 pollIntervalMs 等待。[领取节奏决策](../../.agents/notes/archived/feature/2026-11-04-worker-single-acquisition.md)记录其吞吐代价。
 
 仍属于自己的本机 active 已占名额，先为这些任务排队，在各自串行操作内读取当前 Herdr 并恢复；全局 Git 发现中其他工作区的文件系统错误不阻塞它们。新的 pending 启动和新 claim 分配要求目标项目的完整清单和资源发现；本机保留资源、未知资源及未确认停止责任仍参与全局容量计算。不可用 ID 自身不占执行槽；若仓库确实不存在则可确认没有该仓库的 worktree，其他本地扫描失败保留容量不确定性并阻止新准入。
 
@@ -275,9 +275,9 @@ Linux/Windows legacy 路径中，NULL 是新 claim 首次启动的正常状态�
 
 暂停使用可写布尔 task property paused。缺席与 false 在周期 ping 决策中均表示未暂停，但存储与通用读取保留两者差别；存在的错误类型必须暴露。该值不复制为 SQLite 状态，也不改变 worker.phase、task 状态或新 claim 资格。Web backend 当前没有周期 continuation ping，解除该属性不发送 Web 原生输入或启动/恢复指令；Web 操作者的暂停展示与解除入口由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
-Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作、结构化就绪及可见文本的已知阻塞检查之后、agent.prompt mutation 之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
+Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作、结构化就绪及可见文本的已知阻塞检查之后、实际输入之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。Legacy 使用 agent.prompt；macOS 还在持久仲裁和每帧边界按用途重新核验。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
 
-暂停返回明确的未递交结果与当前观察，不作为输入失败或已提交回执，也不更新上次输入基线。解除暂停后，仍然 idle/done 的同一观察可成为新的正常 ping 决策。Legacy 的首次及待递交 assignment、恢复和 cleanup 输入不使用这个周期门禁。macOS durable adapter 在所有自动输入的最终递交边界核对 paused、原 claim、进程身份和 admission；暂停保留观察、原运行停止与人工 attach。取舍由[暂停周期输入决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)拥有。
+暂停在确定零写入时返回明确的未递交等待与当前观察，不作为输入失败或已提交回执，也不更新上次输入基线。解除暂停后，仍然 idle/done 的同一观察可成为新的正常 ping 决策。Legacy 的首次及待递交 assignment、恢复和 cleanup 输入不使用这个周期门禁。macOS durable adapter 在首次及延后 assignment、continuation、恢复后的实际自动输入和 cleanup 提示的最终递交边界按用途核对 paused、原 claim、进程身份和 admission。首次及延后输入的零写入等待保留原 pending assignment 和身份；只有实际传输完成才触发提交回执并更新基线。人工 lease 或 suspended 使自动输入不可用时同样按等待处理，不消耗 Coordinator 失败预算；真实身份、读取和传输故障仍暴露。暂停保留观察、原运行停止和人工交互；部分写入后的 unknown 不因解除暂停而重放。取舍由[暂停输入决策](../../.agents/notes/implemented/bug-fix/2026-11-09-herdr-pause-input-waiting.md)和[暂停周期输入决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)拥有。
 
 macOS 由 durable adapter 分离 launch 和 input：先保存 preparation 与 launch_requested，启动后持久保存原 shell/native agent 的出生证明，再开放 active admission。首次输入保存 pending/dispatching/transport_completed 或 unknown；重启遇到未确认提交时阻断重放。Session 注册、同代重连、停止证明与采集段通过独立事务边界恢复，详情由 [Herdr 生命周期设计](herdr-worker-lifecycle.md)拥有。
 

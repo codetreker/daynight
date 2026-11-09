@@ -24,11 +24,10 @@ import (
 
 const MaxChunkBytes = 512 << 10
 const DefaultBytes = 8 << 10
-const MaxContentTypeBytes = attachmentcore.MaxContentTypeBytes
 const MaxPathBytes = 4096
 
 type Opener interface {
-	OpenBounded(context.Context, model.Principal, string, string, string, int) (model.Attachment, filestorage.Object, error)
+	Open(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
 type Input struct {
@@ -311,9 +310,9 @@ func (s *Service) existingOpen(ctx context.Context, a mcptransfer.Actor, binding
 }
 
 // source rechecks the credential and authority even when opening fails, so a
-// revoked caller cannot learn whether a path or oversized metadata exists.
+// revoked caller cannot learn whether the attachment exists.
 func (s *Service) source(ctx context.Context, a mcptransfer.Actor, in Input) (model.Attachment, filestorage.Object, error) {
-	metadata, obj, openErr := s.attachments.OpenBounded(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path, MaxContentTypeBytes)
+	metadata, obj, openErr := s.attachments.Open(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path)
 	if unsafeCompletion(openErr) {
 		if obj.Body != nil {
 			openErr = errors.Join(openErr, obj.Body.Close())

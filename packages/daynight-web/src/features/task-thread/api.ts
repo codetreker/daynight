@@ -1,6 +1,6 @@
 import { ApiError, assertResponsePrincipal, request } from '../../api/client';
 import { parseServerError } from '../../api/parse';
-import { assertPostThreadInput, assertThreadQuery, assertThreadScope, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES, type PostThreadInput, type ThreadMessage, type ThreadPage, type ThreadPosition, type ThreadQuery, type ThreadScope } from './contract';
+import { assertPostThreadInput, assertThreadQuery, assertThreadScope, parseThreadMessage, parseThreadPage, type PostThreadInput, type ThreadMessage, type ThreadPage, type ThreadPosition, type ThreadQuery, type ThreadScope } from './contract';
 import { decodeThreadError, readThreadJsonSource, rejectThreadResponse, THREAD_ERROR_BYTES } from './json';
 
 export const THREAD_REQUEST_TIMEOUT_MS = 15_000;
@@ -25,10 +25,10 @@ const serverError = async (response: Response, signal: AbortSignal, admission: T
   try {
     error = parseServerError(decodeThreadError(source));
   } catch (cause) {
-    throw new ApiError('protocol', response.status, 'protocol', null, undefined, cause);
+    throw new ApiError('protocol', response.status, 'protocol', null, cause);
   }
   admission.assertCurrent();
-  throw new ApiError('server', response.status, error.code, error.requestId, error.graphLimit);
+  throw new ApiError('server', response.status, error.code, error.requestId);
 };
 const resource = (scope: ThreadScope): string => {
   assertThreadScope(scope);
@@ -66,7 +66,7 @@ export const getThreadPage = async (scope: ThreadScope, query: ThreadQuery, sign
     assertPrincipal(response, scope, admission);
     if (!response.ok) return await serverError(response, timer.signal, admission);
     if (response.status !== 200) return await rejectThreadResponse(response);
-    const source = await readThreadJsonSource(response, timer.signal, THREAD_PAGE_BYTES);
+    const source = await readThreadJsonSource(response, timer.signal);
     const page = parseThreadPage(source, query, admission.boundary);
     admission.assertCurrent();
     return page;
@@ -91,7 +91,7 @@ export const postThreadMessage = async (scope: ThreadScope, input: PostThreadInp
     assertPrincipal(response, scope, admission);
     if (!response.ok) return await serverError(response, timer.signal, admission);
     if (response.status !== 201) return await rejectThreadResponse(response);
-    const source = await readThreadJsonSource(response, timer.signal, THREAD_MESSAGE_BYTES);
+    const source = await readThreadJsonSource(response, timer.signal);
     const message = parseThreadMessage(source);
     if (message.author.userId !== scope.userId || message.author.Agent || message.body !== input.body || message.replyTo !== input.replyTo) throw new ApiError('protocol', response.status);
     timer.clear();

@@ -105,16 +105,35 @@ describe("Bot inventory remote", () => {
     await expect(remote.read(id(3), signal())).rejects.toThrow();
   });
 
-  it("limits response bytes and refuses redirects before following another endpoint", async () => {
+  it("reads a 100-Bot page within the aggregate budget and follows its cursor", async () => {
+    const directory = "/" + "x".repeat(3070) + "&";
+    const args = Array.from({ length: 64 }, () => ["--add-dir", directory]).flat();
+    const items = Array.from({ length: 100 }, (_, index) => ({ ...bot(index + 3), resolvedConfiguration: { ...bot().resolvedConfiguration, provider: "claude", args } }));
+    const first = JSON.stringify({ items, nextCursor: "cleanup" }).replaceAll("&", "\\u0026") + "\n";
+    expect(Buffer.byteLength(first)).toBeGreaterThan(16 * 1024 * 1024);
+    expect(Buffer.byteLength(first)).toBeLessThan(64 * 1024 * 1024);
+    const deletion = { id: id(103), workerId, version: "4", deletion: { deletionId: id(104), requestedVersion: "3", workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "completed", code: null } } };
+    const requests: string[] = [];
+    const remote = await listen((request, response) => {
+      requests.push(request.url!);
+      response.end(requests.length === 1 ? first : JSON.stringify({ items: [deletion], nextCursor: null }));
+    });
+    const result = await remote.list(signal());
+    expect(result).toHaveLength(101);
+    expect(result.slice(0, 100).map(item => item.id)).toEqual(items.map(item => item.id));
+    expect(result[0]).toEqual(items[0]);
+    expect(result[100]).toEqual(deletion);
+    expect(requests).toEqual([`/api/v1/me/workers/${workerId}/bots?limit=100`, `/api/v1/me/workers/${workerId}/bots?limit=100&cursor=cleanup`]);
+  });
+
+  it("refuses redirects before following another endpoint", async () => {
     let requests = 0;
     const remote = await listen((_request, response) => {
       requests++;
-      if (requests === 1) response.end(JSON.stringify("x".repeat(16 * 1024 * 1024)));
-      else { response.statusCode = 302; response.setHeader("Location", "/another"); response.end("{}"); }
+      response.statusCode = 302; response.setHeader("Location", "/another"); response.end("{}");
     });
-    await expect(remote.list(signal())).rejects.toThrow(/byte limit/);
     await expect(remote.list(signal())).rejects.toThrow();
-    expect(requests).toBe(2);
+    expect(requests).toBe(1);
   });
 
   it("rejects cancellation before any request and refuses malformed JSON", async () => {

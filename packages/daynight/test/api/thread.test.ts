@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "../../src/api/thread.js";
+import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "../../src/api/thread.js";
 import { ProtocolError } from "../../src/api/validation.js";
 import type { ThreadMessage, ThreadReadQuery } from "../../src/api/types.js";
 
@@ -93,50 +93,17 @@ describe("Thread page semantics", () => {
   });
 });
 
-describe("Thread raw resource byte admission", () => {
-  const sizedMessage = (bytes: number) => {
-    const value = { ...message, body: "<>&\u2028\u2029".repeat(1_000) };
-    const padding = bytes - new TextEncoder().encode(goJson(value)).byteLength;
-    return goJson({ ...value, body: value.body + "a".repeat(padding) });
-  };
-
-  it("uses the complete original Go-escaped item at the exact 64 KiB boundary", () => {
-    const source = sizedMessage(THREAD_MESSAGE_BYTES);
-    expect(new TextEncoder().encode(source).byteLength).toBe(THREAD_MESSAGE_BYTES);
-    expect(new TextEncoder().encode(JSON.stringify(JSON.parse(source))).byteLength).toBeLessThan(THREAD_MESSAGE_BYTES);
-    expect(parseThreadMessage(decodeThreadJsonSource(source, "message"), false).body).toBe(JSON.parse(source).body);
-    const sourcePage = `{"items":[${source}],"hasMoreBefore":false,"hasMoreAfter":false}`;
-    expect(parseThreadPage(decodeThreadJsonSource(sourcePage, "page"), query).items).toHaveLength(1);
-  });
-
-  it("rejects a 64 KiB plus one item even when the page itself fits", () => {
-    const source = sizedMessage(THREAD_MESSAGE_BYTES + 1);
-    expect(() => decodeThreadJsonSource(source, "message")).toThrow(ProtocolError);
-    const sourcePage = `{"items":[${source}],"hasMoreBefore":false,"hasMoreAfter":false}`;
-    expect(new TextEncoder().encode(sourcePage).byteLength).toBeLessThan(THREAD_PAGE_BYTES);
-    expect(() => decodeThreadJsonSource(sourcePage, "page")).toThrow(ProtocolError);
-  });
-
-  it("includes Agent details in each raw item's 64 KiB admission", () => {
-    const details = { ...message, body: "", author: { ...message.author, Agent: true, execution: { claimId, workerId, provider: "claude" } } };
-    const source = goJson({ ...details, body: "a".repeat(THREAD_MESSAGE_BYTES - goJson(details).length) });
-    const sourcePage = (item: string) => `{"items":[${item}],"hasMoreBefore":false,"hasMoreAfter":false}`;
-    expect(parseThreadPage(decodeThreadJsonSource(sourcePage(source), "page"), { ...query, details: true }).items[0]?.author.execution).toEqual(details.author.execution);
-    const oversized = source.replace('"body":"', '"body":"a');
-    expect(() => decodeThreadJsonSource(sourcePage(oversized), "page")).toThrow(ProtocolError);
-  });
-
-  it("counts UTF-8 rather than UTF-16 source units", () => {
-    const source = goJson({ ...message, body: "😀".repeat(17_000) });
-    expect(source.length).toBeLessThan(THREAD_MESSAGE_BYTES);
-    expect(() => decodeThreadJsonSource(source, "message")).toThrow(ProtocolError);
-  });
-
-  it("checks the complete page byte boundary independently", () => {
-    const compact = goJson(page([]));
-    const exact = compact + " ".repeat(THREAD_PAGE_BYTES - compact.length);
-    expect(decodeThreadJsonSource(exact, "page")).toEqual(page([]));
-    expect(() => decodeThreadJsonSource(exact + " ", "page")).toThrow(ProtocolError);
+describe("Thread JSON decoding", () => {
+  it.each([false, true])("preserves four complete 64 KiB messages in a count-selected page (details=%s)", (details) => {
+    const items = Array.from({ length: 4 }, (_, index) => {
+      const item = { ...message, id: `10000000-0000-4000-8000-${(index + 1).toString().padStart(12, "0")}`, body: "<>&".repeat(1_000),
+        ...(details ? { author: { ...message.author, Agent: true, execution: { claimId, workerId, provider: "codex" } } } : {}) };
+      return { ...item, body: item.body + "a".repeat(THREAD_MESSAGE_BYTES - Buffer.byteLength(goJson(item), "utf8")) };
+    });
+    for (const item of items) expect(Buffer.byteLength(goJson(item), "utf8")).toBe(THREAD_MESSAGE_BYTES);
+    const source = goJson({ ...page(items), hasMoreAfter: true });
+    expect(Buffer.byteLength(source, "utf8")).toBeGreaterThan(262_144);
+    expect(parseThreadPage(decodeThreadJsonSource(source), { count: 4, details })).toEqual({ ...page(items), hasMoreAfter: true });
   });
 
   it.each([
@@ -145,6 +112,6 @@ describe("Thread raw resource byte admission", () => {
     '{"error":{"code":"clock_not_advanced","code":"message_outcome_unknown","message":"failed","requestId":"r1"}}',
     '{"error":{"code":"forbidden","message":"failed","requestId":"r1","details":{"taskIds":[],"taskIds":[]}}}',
   ])("rejects duplicate source fields including errors %#", (source) => {
-    expect(() => decodeThreadJsonSource(source, source.includes('"error"') ? "error" : "page")).toThrow(SyntaxError);
+    expect(() => decodeThreadJsonSource(source)).toThrow(SyntaxError);
   });
 });

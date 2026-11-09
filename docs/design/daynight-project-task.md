@@ -187,8 +187,10 @@ SIGBREAK 触发同一取消源。结束时先等待 `closeStdoutBytes` 关闭并
 辅助进程，再移除自身监听器并 dispose 操作，保留其他消费者的监听器。真实 CLI
 上下文始终提供该关闭函数，注入上下文可省略它。命令和清理失败均保留原因。
 
-每个 JSON 响应最多读取 128 MiB，单命令累计 JSON 响应体最多读取 256 MiB；MiB 为
-1,048,576 字节。按解码 HTTP 内容编码后的响应体字节流计数，包含 JSON 成功与错误响应，
+默认每个 JSON 响应最多读取 128 MiB，单命令累计 JSON 响应体最多读取 256 MiB；MiB 为
+1,048,576 字节。`bot list` 通过现有 `operationLimits` 选项将单响应上限设为默认累计预算
+256 MiB，累计上限保持 256 MiB；该例外由[助手设计](assistant.md#cli-管理与远端观测)拥有，
+其他命令保留默认值。按解码 HTTP 内容编码后的响应体字节流计数，包含 JSON 成功与错误响应，
 在 JSON 解析前累计；不能只相信 `Content-Length`。超过任一上限立即取消读取并
 报告响应或累计预算超限，不解析已截断 JSON。这些常量与总期限共同限制持续推进
 cursor 的扫描及累计 JSON 内存；预算不增加公开配置字段，也不改变 server 限制。
@@ -479,7 +481,7 @@ Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响�
 小写短 ID 与集合唯一性、四状态、有效原值文本及 UTC 微秒时间字符串；JSON 源文本
 的重复 key 在投影前拒绝。时间保留原字符串，不经 Date 重写；数组不排序或删项。
 当前资源解析失败、字段或 scope 不匹配均为协议错误，不返回空态或部分结果。
-Steps 正文的有效单响应上限是配置预算与 64 MiB 资源上限的较小值，边界采用包含式
+客户端 Steps 正文的有效单响应上限是配置预算与既有 64 MiB 传输安全上限的较小值，边界采用包含式
 检查；exchange 继续累计操作字节，更严格配置和共享默认期限/预算均保持。
 
 `addTaskStep` 接受实际 Add 输入和 `{requestId, previous?}`。原值文本、四状态、
@@ -699,7 +701,7 @@ ready 空结果为 `[]`，不输出分页 envelope 或 cursor。仅序列化 API
 保留。写操作输出已确认的资源结果；任何失败均不打印成功文案。
 
 stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可用的服务
-`error.code`、`message`、`requestId`。相关 `taskIds` 或图数量与上限应可读地展示。
+`error.code`、`message`、`requestId`。相关 `taskIds` 应可读地展示；自然读取、解码及传输预算错误保留明确失败。
 保留服务 request ID 使 CLI 失败可与现有 server 请求日志关联；无服务响应的网络
 失败明确标为本地请求失败。默认不记录完整配置、请求体、环境或凭据。
 

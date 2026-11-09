@@ -13,7 +13,7 @@ import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, re
 import { resourcePath } from "./resource-path.js";
 import { isTaskStatus } from "../task/status.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
-import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
+import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "./thread.js";
 import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
@@ -550,6 +550,7 @@ export const createApiClient = (options: {
     if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
+    if (filters.platformSpecific !== undefined && typeof filters.platformSpecific !== "boolean") throw new Error("Platform-specific filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
     let workerId: string | undefined;
     if (filters.workerId !== undefined) {
@@ -559,7 +560,7 @@ export const createApiClient = (options: {
       workerId = parsed;
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
-    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -570,6 +571,7 @@ export const createApiClient = (options: {
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
       || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
+      || (filters.platformSpecific !== undefined && (task.requiredPlatform !== null) !== filters.platformSpecific)
       || (filters.workerId !== undefined && (worker === undefined || worker.state !== "active" || worker.workerId !== canonicalId(filters.workerId)))
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
@@ -669,7 +671,7 @@ export const createApiClient = (options: {
       } catch (error) {
         if (!(error instanceof ApiError)) throw new ApiError(context, "protocol", { cause: safeInvitationCause(error) });
         const code = error.code;
-        const allowed = ["invalid_input", "invalid_cursor", "invalid_operation_time", "unauthenticated", "forbidden", "permission_denied", "not_found", "identity_mismatch", "version_conflict", "operation_conflict", "version_exhausted", "destination_unsupported", "generation_conflict", "delivery_busy", "target_changed", "delivery_stopped", "operation_expired", "payload_expired", "content_too_large", "webhooks_unavailable", "dependency_unavailable", "write_outcome_unknown", "internal_error"];
+        const allowed = ["invalid_input", "invalid_cursor", "invalid_operation_time", "unauthenticated", "forbidden", "permission_denied", "webhook_project_ineligible", "not_found", "identity_mismatch", "version_conflict", "operation_conflict", "version_exhausted", "destination_unsupported", "generation_conflict", "delivery_busy", "target_changed", "delivery_stopped", "operation_expired", "payload_expired", "content_too_large", "webhooks_unavailable", "dependency_unavailable", "write_outcome_unknown", "internal_error"];
         const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
         throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
       }
@@ -842,8 +844,8 @@ export const createApiClient = (options: {
       const normalized = { count: query.count, details: query.details, ...(query.beforeId === undefined ? {} : { beforeId: resourceId(query.beforeId) }), ...(query.afterId === undefined ? {} : { afterId: resourceId(query.afterId) }) };
       const params = new URLSearchParams({ count: String(normalized.count), details: String(normalized.details), ...(normalized.beforeId === undefined ? {} : { beforeId: normalized.beforeId }), ...(normalized.afterId === undefined ? {} : { afterId: normalized.afterId }) });
       return exchange({ operation: "task.thread.read", projectId: project, taskId: task }, `${resourcePath("projects", project, "tasks", task, "thread", "messages")}?${params}`, "GET", {
-        kind: "json", requirePrincipal: true, responseBytes: THREAD_PAGE_BYTES,
-        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "page" : "error"),
+        kind: "json", requirePrincipal: true,
+        decodeJsonSource: decodeThreadJsonSource,
         parse: (value) => parseThreadPage(value, normalized),
       }, [200], undefined, true);
     },
@@ -852,8 +854,8 @@ export const createApiClient = (options: {
       if (!isNonemptyText(input.body) || Buffer.byteLength(input.body, "utf8") > THREAD_MESSAGE_BYTES) throw new Error("Thread body must be nonempty text of at most 65536 UTF-8 bytes.");
       const normalized = { body: input.body, ...(input.replyTo === undefined ? {} : { replyTo: resourceId(input.replyTo) }), ...(input.claimId === undefined ? {} : { claimId: resourceId(input.claimId) }) };
       return exchange({ operation: "task.thread.post", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "thread", "messages"), "POST", {
-        kind: "json", requirePrincipal: true, responseBytes: THREAD_MESSAGE_BYTES,
-        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "message" : "error"),
+        kind: "json", requirePrincipal: true,
+        decodeJsonSource: decodeThreadJsonSource,
         parse: (value, response) => {
           const message = parseThreadMessage(value, false);
           if (message.author.userId !== response.principalId || message.body !== normalized.body || message.replyTo !== normalized.replyTo || message.author.Agent !== (normalized.claimId !== undefined)) throw new ProtocolError("Thread message does not match the submitted content or authenticated author.");
@@ -1208,16 +1210,16 @@ export const createApiClient = (options: {
                 if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get("total") ?? "")) throw new ProtocolError("Search total must be an integer.");
               } else {
                 const error = parseServerError(value);
-                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_context_limit_exceeded: 400, search_timeout: 504 };
+                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
                 if (expectedStatus[error.code] !== undefined && expectedStatus[error.code] !== metadata.status) throw new ProtocolError("Search error status is invalid.");
                 // Search-specific refusals originate after authentication. Generic
                 // authentication failures can precede the principal header.
                 if (expectedStatus[error.code] !== undefined && metadata.principalId === undefined) throw new ProtocolError("Search error principal is missing.");
-                if (error.code === "invalid_search_expression" || error.code === "search_context_limit_exceeded") {
+                if (error.code === "invalid_search_expression") {
                   const errorSources = jsonObjectSources(sources.get("error") ?? "");
                   const detailsSources = jsonObjectSources(errorSources.get("details") ?? "");
-                  const integerFields = error.code === "invalid_search_expression" ? ["position", "length"] : ["nodeCount", "edgeCount", "maxNodes", "maxEdges"];
-                  const allowedFields = error.code === "invalid_search_expression" ? ["reason", ...integerFields] : integerFields;
+                  const integerFields = ["position", "length"];
+                  const allowedFields = ["reason", ...integerFields];
                   if (detailsSources.size !== allowedFields.length || [...detailsSources.keys()].some((field) => !allowedFields.includes(field))) throw new ProtocolError("Search error details contain unexpected fields.");
                   if (integerFields.some((field) => !/^(?:0|[1-9][0-9]*)$/.test(detailsSources.get(field) ?? ""))) throw new ProtocolError("Search error details must use integers.");
                 }

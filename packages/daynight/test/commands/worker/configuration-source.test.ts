@@ -22,7 +22,7 @@ const time = "2026-11-04T00:00:00Z";
 const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
 const user = { id: uuid(1), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(2), kind: "personal", name: null } };
 const native = { agent: "codex" as const, model: "global", args: ["--search"] };
-const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, native, projects: [] };
+const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: [] };
 const connection = { serverUrl: "https://service.example", serverToken: token };
 const directories: string[] = [];
 const fixture = async (data: Record<string, unknown> = {}) => {
@@ -105,6 +105,18 @@ describe("Worker cloud configuration sources", () => {
     expect(seed).toMatchObject({ maxConcurrent: 4, native: { args: ["--model", "controlled-by-worker"] }, projects: [] });
     expect(resolve).not.toHaveBeenCalled();
     expect(() => resolveCloudNative(seed.native, "herdr", seed.recoveryLimit)).toThrow();
+  });
+
+  it("imports the optional platform preference with a false default and strict explicit booleans", async () => {
+    const f = await fixture();
+    const resolve = vi.fn(async () => ({ id: project.id }));
+    for (const preference of [true, false]) {
+      const seed = await parseWorkerCloudBootstrap(stringify({ worker: { preferPlatformSpecificTasks: preference } }), f.paths, resolve, new AbortController().signal);
+      expect(seed.preferPlatformSpecificTasks).toBe(preference);
+    }
+    expect((await parseWorkerCloudBootstrap(f.source, f.paths, resolve, new AbortController().signal)).preferPlatformSpecificTasks).toBe(false);
+    await expect(parseWorkerCloudBootstrap(stringify({ worker: { preferPlatformSpecificTasks: "true" } }), f.paths, resolve, new AbortController().signal)).rejects.toThrow();
+    expect(resolve).not.toHaveBeenCalled();
   });
 
   it("does not replace invalid explicit first-import values with defaults", async () => {

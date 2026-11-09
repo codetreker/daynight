@@ -11,7 +11,7 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
-// MCPList visits bounded projections in one authorized snapshot. Returning false
+// MCPList visits the requested page in one authorized snapshot. Returning false
 // stops before the current item; the caller retains its last accepted cursor.
 func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectID string, request taskcore.MCPListRequest, visit func(store.TaskPriorityItem, string, bool) bool) error {
 	if err := model.RequirePrincipal(principal); err != nil {

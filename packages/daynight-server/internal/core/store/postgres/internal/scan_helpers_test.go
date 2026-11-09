@@ -91,7 +91,7 @@ func taskProjection(at time.Time, status model.TaskStatus) projectionRow {
 		[]string{"dependency"}, []string{"external"}, []string{"blocked"}, true}}
 }
 
-func TestScanTaskPreservesProjectionAndRejectsInvalidStatus(t *testing.T) {
+func TestScanTaskPreservesProjectionAndScanFailures(t *testing.T) {
 	at := projectionTime()
 	platform, assignee, utc := model.TaskPlatform("linux"), "assignee", at.UTC()
 	for _, status := range []model.TaskStatus{model.TaskDone, model.TaskCancelled} {
@@ -110,9 +110,6 @@ func TestScanTaskPreservesProjectionAndRejectsInvalidStatus(t *testing.T) {
 		if !reflect.DeepEqual(task, want) {
 			t.Fatalf("task = %#v, want %#v", task, want)
 		}
-	}
-	if _, err := ScanTask(taskProjection(at, "invalid")); err == nil {
-		t.Fatal("invalid stored status accepted")
 	}
 	cause := errors.New("task scan failed")
 	if _, err := ScanTask(projectionRow{err: cause}); !errors.Is(err, cause) {

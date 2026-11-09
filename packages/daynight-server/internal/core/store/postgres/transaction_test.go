@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/jackc/pgx/v5"
@@ -272,4 +273,84 @@ func TestTransactCancellationBeforeCommitIsConfirmedRollback(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.Canceled) {
 		t.Fatalf("precommit cancellation: %#v %v", failure, err)
 	}
+}
+
+type classificationTx struct {
+	pgx.Tx
+	commit, rollback error
+}
+
+func (tx classificationTx) Commit(context.Context) error   { return tx.commit }
+func (tx classificationTx) Rollback(context.Context) error { return tx.rollback }
+
+func TestTransactionFailureClassification(t *testing.T) {
+	fault := &model.Fault{Code: "not_found", Message: "not found"}
+	driver := &pgconn.PgError{Code: "23505", Message: "private"}
+	cleanup := errors.New("cleanup")
+	for _, tc := range []struct {
+		name      string
+		tx        classificationTx
+		operation error
+		failure   bool
+		state     string
+		outcome   TransactionOutcome
+	}{
+		{"domain refusal", classificationTx{}, fault, false, "", TransactionNotCommitted},
+		{"driver and refusal", classificationTx{}, errors.Join(fault, driver), true, "23505", TransactionNotCommitted},
+		{"failed cleanup", classificationTx{rollback: cleanup}, fault, true, "", TransactionUnknown},
+		{"unknown commit", classificationTx{commit: driver, rollback: pgx.ErrTxClosed}, nil, true, "23505", TransactionUnknown},
+		{"committed with cleanup failure", classificationTx{rollback: cleanup}, nil, true, "", TransactionCommitted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := transact(context.Background(), tc.tx, func(pgx.Tx) error { return tc.operation })
+			failed, state := DatabaseErrorFacts(err)
+			var transaction *TransactionError
+			if failed != tc.failure || state != tc.state || !errors.As(err, &transaction) || transaction.Outcome != tc.outcome {
+				t.Fatalf("facts=(%v,%q), transaction=%+v, error=%v", failed, state, transaction, err)
+			}
+			if tc.operation != nil && !errors.Is(err, tc.operation) || tc.tx.commit != nil && !errors.Is(err, tc.tx.commit) || tc.tx.rollback == cleanup && !errors.Is(err, cleanup) {
+				t.Fatalf("transaction lost cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestThreadCompletionFailuresPreserveFaultAndCause(t *testing.T) {
+	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
+	cleanup := errors.New("cleanup")
+	completion, err := writeThread(context.Background(), classificationTx{rollback: cleanup}, func(ThreadScope) error { return fault })
+	var stage *ThreadTransactionError
+	failed, _ := DatabaseErrorFacts(err)
+	if !errors.As(err, &stage) || !stage.RollbackFailed || completion.Outcome != TransactionUnknown || !failed || !errors.Is(err, fault) || !errors.Is(err, cleanup) {
+		t.Fatalf("rollback: completion=%+v stage=%+v err=%v", completion, stage, err)
+	}
+	commit := &pgconn.PgError{Code: "08006", Message: "private"}
+	completion, err = writeThread(context.Background(), classificationTx{commit: commit, rollback: pgx.ErrTxClosed}, func(ThreadScope) error { return nil })
+	failed, state := DatabaseErrorFacts(err)
+	if !errors.As(err, &stage) || !stage.OutcomeUnknown || completion.Outcome != TransactionUnknown || !failed || state != "08006" || !errors.Is(err, commit) {
+		t.Fatalf("commit: completion=%+v stage=%+v state=%q err=%v", completion, stage, state, err)
+	}
+}
+func TestReadOnlySnapshotCleansConnectionAfterQueryDeadline(t *testing.T) {
+	pool := emptyPool(t)
+	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stop()
+	observer := cancellationObserver(t, bounded, pool)
+	ready, err := pool.Acquire(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready.Release()
+	ctx, cancel := context.WithTimeout(bounded, 250*time.Millisecond)
+	defer cancel()
+	err = ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { return interruptObservedQuery(t, ctx, nil, observer, tx) })
+	observer.Release()
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) {
+		t.Fatalf("deadline cleanup lost its outcome or cause: %#v %v", failure, err)
+	}
+	if failed, state := DatabaseErrorFacts(err); failed {
+		t.Fatalf("confirmed deadline cleanup became a database failure: %q %v", state, err)
+	}
+	assertMigrationPoolReusable(t, pool)
 }

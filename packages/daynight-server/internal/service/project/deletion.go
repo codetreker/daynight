@@ -2,7 +2,6 @@ package project
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -16,17 +15,6 @@ import (
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
-
-const deletionPreviewBudget = 1 << 20
-
-func deletionTextBytes(values ...string) int {
-	total := 0
-	for _, value := range values {
-		encoded, _ := json.Marshal(value)
-		total += len(encoded)
-	}
-	return total
-}
 
 type DeletionClaim struct {
 	TaskID, Title, MachineName string
@@ -90,14 +78,6 @@ func (s *Projects) DeletionPreview(ctx context.Context, p model.Principal, id st
 				return err
 			}
 			out.Project, out.OwnerTeam = project, access.OwnerTeam
-			ownerName := ""
-			if access.OwnerTeam.Name != nil {
-				ownerName = *access.OwnerTeam.Name
-			}
-			used := 4096 + deletionTextBytes(project.Name, project.RepoURL, ownerName)
-			if used > deletionPreviewBudget {
-				return &model.Fault{Code: "payload_too_large", Message: "Project deletion preview exceeds the response budget."}
-			}
 			if out.ObservedAt, err = snapshot.ObservedAt(ctx); err != nil {
 				return err
 			}
@@ -114,15 +94,6 @@ func (s *Projects) DeletionPreview(ctx context.Context, p model.Principal, id st
 					more = true
 					return nil
 				}
-				size := 512 + deletionTextBytes(f.Title, f.Worker.Machine.Name)
-				if used+size > deletionPreviewBudget {
-					if len(out.ActiveClaims) == 0 {
-						return &model.Fault{Code: "payload_too_large", Message: "A Worker claim exceeds the preview response budget."}
-					}
-					more = true
-					return nil
-				}
-				used += size
 				connectivity := "unknown"
 				if f.LastSeenAt != nil {
 					connectivity = "offline"

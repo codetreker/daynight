@@ -45,7 +45,8 @@ an internal deadline and caller cancellation.
 Task, Step, Thread and Worker producers own Fact construction and Capturer
 invocation. PostgreSQL tests own real source/capture and multi-record atomicity,
 operation fences, actor and credential reads, lease and retention locking,
-acknowledgement loss and fresh-process durability. The server check selects the
+acknowledgement loss and fresh-process durability. The independent
+[startup/shutdown check](2026-11-09-independent-go-startup-shutdown.md) selects the
 `webhooktest` Runner witness explicitly for abrupt committed claim/admission,
 post-TLS pre-finalize exit and discarded finalize acknowledgement followed by an
 enabled restart. This preserves its ordinary CI signal without enabling the

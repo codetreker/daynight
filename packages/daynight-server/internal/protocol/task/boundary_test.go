@@ -155,10 +155,7 @@ func TestMaximumWorkerFieldsFitCompleteBudgets(t *testing.T) {
 	if err != nil || n > workercore.MaxWorkerJSONBytes {
 		t.Fatalf("worker size=%d error=%v", n, err)
 	}
-	n, err = workerprotocol.EncodeDetail(io.Discard, snap, now, workercore.MaxPageResponseJSONBytes)
-	if err != nil || n > workercore.MaxPageResponseJSONBytes {
-		t.Fatalf("worker response size=%d error=%v", n, err)
-	}
+
 	config := model.WorkerConfiguration{MaxConcurrent: workercore.MaxConcurrent, PollIntervalMs: workercore.MaxPollIntervalMs, RecoveryLimit: workercore.MaxRecoveryLimit, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: &nativeModel, Args: args}, Projects: []model.WorkerProjectConfiguration{}}
 	config, err = workercore.NormalizeConfiguration(config)
 	if err != nil {

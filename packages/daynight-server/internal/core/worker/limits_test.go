@@ -165,6 +165,16 @@ func TestObservationLimits(t *testing.T) {
 	}
 	value.Items = append(value.Items, model.WorkerConfigurationItem{})
 	checkViolation(t, AdmitObservation(value), "observation.items", MaxObservationItems+1, MaxObservationItems, "items")
+	for _, raw := range []string{`false`, `true`, `null`} {
+		observation := model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{{Key: model.WorkerConfigurationItemKey{Kind: "preferPlatformSpecificTasks"}, AppliedValue: json.RawMessage(raw)}}}
+		if err := AdmitObservation(observation); err != nil {
+			t.Fatalf("boolean preference rejected: %s %v", raw, err)
+		}
+	}
+	invalidPreference := model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{{Key: model.WorkerConfigurationItemKey{Kind: "preferPlatformSpecificTasks"}, AppliedValue: json.RawMessage(`1`)}}}
+	if err := AdmitObservation(invalidPreference); err == nil {
+		t.Fatal("non-boolean preference accepted")
+	}
 	for _, tc := range []struct {
 		kind, valid, invalid string
 		actual, max          int64

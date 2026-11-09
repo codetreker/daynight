@@ -46,20 +46,20 @@ callback 失败且 rollback 确认时保留原错误；rollback 失败合并原�
 
 ThreadResponseFault 先识别这些局部结果，再交给普通 HTTP 错误映射；不改变全局 ErrorKind 的取消、数据库和网络优先级。时钟预算与未知提交可向客户端返回 503，同时保留原安全 cause。响应写失败只记录 response 阶段，不追加第二份错误 JSON、不重新调用 Post。
 
-## 同快照分页与预算
+## 同快照条数分页
 
 List 使用现有只读 Repeatable Read，在同一快照重验 credential、RequireProjectRead 和 TaskPresence。Thread 的缺失项目成员明确映射 forbidden，不改变普通 Task 的存在性隐藏策略。带边界时通过 `(task_id,message_id)` 查出创建时间；候选查询使用内部 `(created_at,message_id)` 比较。
 
-最新/before 页按降序选最近项，after/fromBeginning 按升序。候选最多 count+1 条，查询结束并关闭 rows 后才查询两侧 EXISTS；不存在同一连接的并行活跃 rows。按 false/false 最长 envelope、消息实际编码与逗号线性计算上界，达到数量或 256 KiB 前停止；降序页最后反转展示。最终再次完整编码并检查预算，首尾两侧标记来自真实返回边界。空页两个标记均 false。
+最新/before 页按降序选最近项，after/fromBeginning 按升序。候选最多 count+1 条，按条数选择后关闭 rows，再查询两侧 EXISTS；不存在同一连接的并行活跃 rows。降序页最后反转展示，首尾两侧标记来自真实返回边界，空页两个标记均 false。消息与页面使用纯字段投影及普通 JSON 编码，不重复结构、消息容量或响应字节准入；自然编码、取消与查询错误保留原链路。
 
 同毫秒 UUID 排序和严格提交前进保证后续新增不会落到已发布增量边界之前。客户端仅用消息 Id 查询，服务器回查时间，不增加 token 或另一种消息身份。连续读取位置属于消费者独立状态，POST 回执不能跳过其他人的未读消息。
 
 ## 验证与可观测性
 
-分层测试使用现有随机 schema 和真实 PostgreSQL/认证 handler。store 测试检验迁移与索引、复合身份、快照和锁、数据库 UUID 的一次生成、时钟/清理与 commit 应答丢失；service 测试检验准入、来源、名称快照、期限、分页、容量和 Task 不变量；server 测试检验严格 HTTP、身份/Origin、错误优先级及实际响应字节。
+分层测试按 [测试编写规则](../writing_tests.md) 隔离被测职责之外的依赖。store 使用隔离真实 PostgreSQL，检验迁移与索引、复合身份、快照和锁、数据库 UUID 的一次生成、时钟/清理与 commit 应答丢失。service 通过可控 DAO、scope 和 transaction 结果验证准入、来源、名称快照、期限、条数分页、写入容量和 Task 不变量。server 使用直接 Thread service mock、真实路由与 credential middleware，检验严格 HTTP、身份/Origin、错误优先级，以及 service Document 字节的发送、短写和取消。Document 的自然编码与消息写入准入由 service/协议所有者验证。正常发帖、回复和读回由显式 API 集成入口验证完整组装链路。
 
 时钟循环以私有逐调用 sampler/wait seam 确定性复现回拨、恢复及预算；生产 SQL 另以锁后采样集成证明。commit 测试在真实底层提交后注入返回错误，新连接确认持久记录，服务仍分类未知；它不模拟所有网络故障。锁观察按本测试 schema/连接定位，过期证明直接观察数据库消息与 head，而非只看过期主体读失败。
 
 HTTP 日志使用既有 requestId，追加 project_id、task_id、message_id 和经过验证的有限执行来源。component=task_thread；失败保留 phase、安全 cause/code，未知提交记录 thread_error_code=message_outcome_unknown 与 write_outcome=unknown。正文、名称、token、DSN、SQL 和原始上游错误不进入日志。
 
-[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本；[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)拥有消息读取容量与页面准入的撤销。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。

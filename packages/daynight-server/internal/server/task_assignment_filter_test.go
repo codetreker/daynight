@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -11,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -18,29 +19,47 @@ func taskAssignmentFilterQuery(selector string) string {
 	return "?limit=1&status=todo&ready=true&allowAgents=true&compatiblePlatform=linux&assignedTo=" + url.QueryEscape(selector)
 }
 
-func collectAssignmentHTTPPages(t *testing.T, handler *resourceTestHandler, collection, query string, expected *string) ([]string, *string) {
+func taskAssignmentHTTPQuery(target *string) store.TaskQuery {
+	status, ready, allowed, platform := model.TaskTodo, true, true, model.PlatformLinux
+	assigned := model.TaskAssignmentFilter{Mode: model.TaskAssignmentUnassigned}
+	if target != nil {
+		assigned = model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: *target}
+	}
+	return store.TaskQuery{AssignedTo: assigned, Page: store.Page{Limit: 1}, Status: &status, Ready: &ready, AllowAgents: &allowed, CompatiblePlatform: &platform}
+}
+
+func collectAssignmentHTTPPages(t *testing.T, f *taskHTTPFixture, collection, query string, expected *string, rows []model.Task) ([]string, *string) {
 	t.Helper()
 	var ids []string
 	var firstCursor *string
 	cursor := ""
-	for {
+	for index, row := range rows {
+		selected := taskAssignmentHTTPQuery(expected)
+		if index != 0 {
+			selected.Page.After = &store.Position{CreatedAt: rows[index-1].CreatedAt, ID: rows[index-1].ID}
+		}
+		f.expectList([]store.TaskQuery{selected}, []store.TaskPage{{Items: []model.Task{row}, HasMore: index+1 < len(rows)}})
 		path := collection + query
 		if cursor != "" {
 			path += "&cursor=" + url.QueryEscape(cursor)
 		}
-		response := projectRequest(handler, http.MethodGet, path, "")
-		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
-		if len(page.Items) > 1 {
-			t.Fatalf("task page exceeded requested limit: %#v", page)
+		page := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, path, ""), http.StatusOK)
+		if len(page.Items) != 1 || page.Items[0].ID != row.ID {
+			t.Fatalf("Task page identity/count: %#v", page)
 		}
-		for _, task := range page.Items {
-			if expected == nil && task.AssignedTo != nil || expected != nil && (task.AssignedTo == nil || *task.AssignedTo != *expected) {
-				t.Fatalf("task did not match assignedTo filter: %#v", task)
+		item := page.Items[0]
+		if expected == nil && item.AssignedTo != nil || expected != nil && (item.AssignedTo == nil || *item.AssignedTo != *expected) {
+			t.Fatalf("Task filter projection: %#v", item)
+		}
+		ids = append(ids, item.ID)
+		if index+1 == len(rows) {
+			if page.NextCursor != nil {
+				t.Fatalf("final page has cursor: %#v", page)
 			}
-			ids = append(ids, task.ID)
+			break
 		}
 		if page.NextCursor == nil {
-			break
+			t.Fatal("bounded page omitted continuation")
 		}
 		if firstCursor == nil {
 			value := *page.NextCursor
@@ -52,48 +71,20 @@ func collectAssignmentHTTPPages(t *testing.T, handler *resourceTestHandler, coll
 }
 
 func TestTaskHTTPAssignedToFilteringPrecedesLimitAndBindsCursor(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	other := assignmentHTTPMember(t, database, project.ID)
-	otherHandler := assigneeHTTPIdentity(t, database, handler, other)
-	var matching []string
-	var unassigned []string
-	for _, seed := range []struct {
-		target   *string
-		allowed  bool
-		platform any
-		state    string
-	}{
-		{nil, true, "linux", "todo"},
-		{assignmentHTTPPointer(other), true, "linux", "todo"},
-		{assignmentHTTPPointer(handler.principal.UserID), true, "windows", "todo"},
-		{assignmentHTTPPointer(handler.principal.UserID), true, "linux", "todo"},
-		{assignmentHTTPPointer(handler.principal.UserID), true, nil, "todo"},
-		{assignmentHTTPPointer(handler.principal.UserID), false, "linux", "todo"},
-		{assignmentHTTPPointer(handler.principal.UserID), true, "linux", "in_progress"},
-		{assignmentHTTPPointer(handler.principal.UserID), true, "linux", "done"},
-	} {
-		task := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Assignment filter candidate", "assignedTo": seed.target, "requiredPlatform": seed.platform})), http.StatusCreated)
-		task = updateHTTPTask(t, handler, task, map[string]any{"allowAgents": seed.allowed})
-		if seed.state != "todo" {
-			task = setHTTPTask(t, handler, task, seed.state)
-		}
-		if seed.target == nil {
-			unassigned = append(unassigned, task.ID)
-		}
-		if seed.target != nil && *seed.target == handler.principal.UserID && seed.allowed && (seed.platform == nil || seed.platform == "linux") && seed.state == "todo" {
-			matching = append(matching, task.ID)
-		}
-	}
-	foreignProject := taskProject(t, handler)
-	foreign := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(foreignProject.ID), jsonBody(t, map[string]any{"title": "Foreign matching candidate", "assignedTo": handler.principal.UserID})), http.StatusCreated)
-	updateHTTPTask(t, handler, foreign, map[string]any{"allowAgents": true})
-	collection := taskCollection(project.ID)
-	query := taskAssignmentFilterQuery("me")
-	ids, cursor := collectAssignmentHTTPPages(t, handler, collection, query, assignmentHTTPPointer(handler.principal.UserID))
-	if !slices.Equal(ids, matching) || cursor == nil {
-		t.Fatalf("assignment filtered after bounded page: got %v want %v cursor %v", ids, matching, cursor)
+	f := newTaskHTTPFixture(t)
+	otherID := "c6666666-6666-4666-8666-666666666666"
+	otherPrincipal := f.principal
+	otherPrincipal.UserID = otherID
+	other := newTaskHTTPFixtureForPrincipal(t, otherPrincipal)
+	first, second, unassigned := f.target, f.target, f.target
+	first.ID, second.ID, unassigned.ID = "d1111111-1111-4111-8111-111111111111", "d2222222-2222-4222-8222-222222222222", "d3333333-3333-4333-8333-333333333333"
+	first.AllowAgents, second.AllowAgents, unassigned.AllowAgents = true, true, true
+	first.RequiredPlatform = assignmentPlatformPointer(model.PlatformLinux)
+	second.RequiredPlatform, unassigned.AssignedTo = nil, nil
+	collection, query := taskCollection(f.project.ID), taskAssignmentFilterQuery("me")
+	ids, cursor := collectAssignmentHTTPPages(t, f, collection, query, &f.principal.UserID, []model.Task{first, second})
+	if !slices.Equal(ids, []string{first.ID, second.ID}) || cursor == nil {
+		t.Fatalf("bounded assignment pages: %v %v", ids, cursor)
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(*cursor)
 	if err != nil {
@@ -101,60 +92,65 @@ func TestTaskHTTPAssignedToFilteringPrecedesLimitAndBindsCursor(t *testing.T) {
 	}
 	var cursorFields map[string]any
 	if err := json.Unmarshal(decoded, &cursorFields); err != nil || cursorFields["version"] != float64(2) {
-		t.Fatalf("task cursor was not upgraded: %s %v", decoded, err)
+		t.Fatalf("Task cursor version: %s %v", decoded, err)
 	}
-	for _, selector := range []string{"unassigned", other} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, collection+taskAssignmentFilterQuery(selector)+"&cursor="+url.QueryEscape(*cursor), ""), http.StatusBadRequest, "invalid_input")
+	for _, selector := range []string{"unassigned", otherID} {
+		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+taskAssignmentFilterQuery(selector)+"&cursor="+url.QueryEscape(*cursor), ""), http.StatusBadRequest, "invalid_input")
 	}
 	withoutAssignment := "?limit=1&status=todo&ready=true&allowAgents=true&compatiblePlatform=linux&cursor=" + url.QueryEscape(*cursor)
-	assertProjectError(t, projectRequest(handler, http.MethodGet, collection+withoutAssignment, ""), http.StatusBadRequest, "invalid_input")
-	assertProjectError(t, projectRequest(otherHandler, http.MethodGet, collection+query+"&cursor="+url.QueryEscape(*cursor), ""), http.StatusBadRequest, "invalid_input")
-	sameScope := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, collection+taskAssignmentFilterQuery(strings.ToUpper(handler.principal.UserID))+"&cursor="+url.QueryEscape(*cursor), ""), http.StatusOK)
-	if len(sameScope.Items) != 1 || sameScope.Items[0].ID != matching[1] {
-		t.Fatalf("me and explicit canonical identity have different scope: %#v", sameScope)
+	assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+withoutAssignment, ""), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(other.handler, http.MethodGet, collection+query+"&cursor="+url.QueryEscape(*cursor), ""), http.StatusBadRequest, "invalid_input")
+	sameQuery := taskAssignmentHTTPQuery(&f.principal.UserID)
+	sameQuery.Page.After = &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}
+	f.expectList([]store.TaskQuery{sameQuery}, []store.TaskPage{{Items: []model.Task{second}}})
+	same := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, collection+taskAssignmentFilterQuery(strings.ToUpper(f.principal.UserID))+"&cursor="+url.QueryEscape(*cursor), ""), http.StatusOK)
+	if len(same.Items) != 1 || same.Items[0].ID != second.ID {
+		t.Fatalf("me/explicit canonical cursor scope: %#v", same)
 	}
 	cursorFields["version"] = float64(1)
 	old, err := json.Marshal(cursorFields)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldCursor := base64.RawURLEncoding.EncodeToString(old)
-	assertProjectError(t, projectRequest(handler, http.MethodGet, collection+query+"&cursor="+url.QueryEscape(oldCursor), ""), http.StatusBadRequest, "invalid_input")
-	unassignedIDs, _ := collectAssignmentHTTPPages(t, handler, collection, taskAssignmentFilterQuery("unassigned"), nil)
-	if !slices.Equal(unassignedIDs, unassigned) {
-		t.Fatalf("unassigned filter: got %v want %v", unassignedIDs, unassigned)
+	assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+query+"&cursor="+url.QueryEscape(base64.RawURLEncoding.EncodeToString(old)), ""), http.StatusBadRequest, "invalid_input")
+	ids, _ = collectAssignmentHTTPPages(t, f, collection, taskAssignmentFilterQuery("unassigned"), nil, []model.Task{unassigned})
+	if !slices.Equal(ids, []string{unassigned.ID}) {
+		t.Fatalf("unassigned filter: %v", ids)
 	}
 }
 
 func TestTaskHTTPAssignedToStrictFiltersAndFormerTarget(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	former := assignmentHTTPMember(t, database, project.ID)
-	task := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Former assignment query", "assignedTo": former})), http.StatusCreated)
-	if _, err := database.Pool.Exec(t.Context(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former); err != nil {
-		t.Fatal(err)
+	f := newTaskHTTPFixture(t)
+	former := "c7777777-7777-4777-8777-777777777777"
+	target := f.target
+	target.AssignedTo = &former
+	collection := taskCollection(f.project.ID)
+	for _, query := range []string{"assignedTo=", "assignedTo=null", "assignedTo=all", "assignedTo=invalid", "assignedTo=Me", "assignedTo=Unassigned", "assignedTo=true", "assignedTo=%xx", "assignedTo=%ff", "assignedTo=%00", "assignedTo=me&assignedTo=me", "assignedTo=me&assignedTo=unassigned", "AssignedTo=me", "assignedTo[]=me", "assignedTo=%20" + former, "assignedTo=" + former + "%20"} {
+		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
-	collection := taskCollection(project.ID)
-	for _, query := range []string{
-		"assignedTo=", "assignedTo=null", "assignedTo=all", "assignedTo=invalid", "assignedTo=Me", "assignedTo=Unassigned", "assignedTo=true", "assignedTo=%xx", "assignedTo=%ff", "assignedTo=%00", "assignedTo=me&assignedTo=me", "assignedTo=me&assignedTo=unassigned", "AssignedTo=me", "assignedTo[]=me", "assignedTo=%20" + former, "assignedTo=" + former + "%20",
-	} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
-	}
-	response := projectRequest(handler, http.MethodGet, collection+"?assignedTo="+strings.ToUpper(former), "")
+	selected := store.TaskQuery{AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: former}, Page: store.Page{Limit: 50}}
+	f.expectList([]store.TaskQuery{selected}, []store.TaskPage{{Items: []model.Task{target}}})
+	response := projectRequest(f.handler, http.MethodGet, collection+"?assignedTo="+strings.ToUpper(former), "")
 	page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].ID != task.ID || page.Items[0].AssignedTo == nil || *page.Items[0].AssignedTo != former {
-		t.Fatalf("former target filter was qualified as a new assignment: %#v", page)
+	if len(page.Items) != 1 || page.Items[0].ID != target.ID || page.Items[0].AssignedTo == nil || *page.Items[0].AssignedTo != former {
+		t.Fatalf("former target projection: %#v", page)
 	}
-	if response.Header().Get("Daynight-User-ID") != handler.principal.UserID || response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("filter response lost admitted identity or no-store")
+	if response.Header().Get("Daynight-User-ID") != f.principal.UserID || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("filter lost admitted identity/cache policy")
 	}
-	unknown := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, collection+"?assignedTo="+uuid.NewString(), ""), http.StatusOK)
-	if unknown.Items == nil || len(unknown.Items) != 0 || unknown.NextCursor != nil {
-		t.Fatalf("unknown valid filter is not an empty page: %#v", unknown)
+	unknown := uuid.NewString()
+	selected.AssignedTo.UserID = unknown
+	f.expectList([]store.TaskQuery{selected}, []store.TaskPage{{Items: []model.Task{}}})
+	empty := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, collection+"?assignedTo="+unknown, ""), http.StatusOK)
+	if empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
+		t.Fatalf("unknown valid target empty page: %#v", empty)
 	}
-	all := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, collection, ""), http.StatusOK)
-	if len(all.Items) != 1 || all.Items[0].ID != task.ID {
-		t.Fatal("omitted assignment selector changed default list scope")
+	selected.AssignedTo = model.TaskAssignmentFilter{}
+	f.expectList([]store.TaskQuery{selected}, []store.TaskPage{{Items: []model.Task{target}}})
+	all := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, collection, ""), http.StatusOK)
+	if len(all.Items) != 1 || all.Items[0].ID != target.ID {
+		t.Fatal("omitted selector changed default scope")
 	}
 }
+
+func assignmentPlatformPointer(value model.TaskPlatform) *model.TaskPlatform { return &value }

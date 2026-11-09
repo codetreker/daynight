@@ -3,10 +3,12 @@ package attachment_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type countedReader struct {
@@ -114,6 +117,124 @@ func TestAttachmentHTTPUploadByteLimit(t *testing.T) {
 	f.expectRead(task, "new.bin", model.Attachment{}, model.ErrNotFound)
 	assertProjectError(t, attachmentRequest(handler, http.MethodGet, attachmentFilePath(task, "new.bin"), "", nil), http.StatusNotFound, "not_found")
 	f.verify()
+}
+
+func TestAttachmentHTTPOverflowWithMissingChunkFraming(t *testing.T) {
+	for _, chunked := range []bool{false, true} {
+		t.Run(map[bool]string{false: "content length", true: "chunked"}[chunked], func(t *testing.T) {
+			root := t.TempDir()
+			files, err := local.New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := files.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			logs := &admissionSafeLog{}
+			f := newAttachmentFixture(t, files, logs)
+			handler, task := f.handler, f.task
+			location := attachmentFilePath(task, "overflow.bin")
+			f.expectAdmission(task, "overflow.bin")
+			type observation struct {
+				native        bool
+				before, after error
+			}
+			finished := make(chan observation, 1)
+			logger := slog.New(slog.NewJSONHandler(logs, nil))
+			routes := attachmenthttp.PathGuard(f.mux, logger)
+			// Observe the actual native body without replacing it: Close must
+			// consume the missing framing on net/http's own socket reader.
+			handler.Handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				native, before := httpx.NativeHTTP1RequestBody(r), r.Context().Err()
+				routes.ServeHTTP(w, r)
+				if r.Header.Get("X-Request-ID") != "attachment-overflow-framing" {
+					return
+				}
+				finished <- observation{native: native, before: before, after: r.Context().Err()}
+			}))
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+			conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), 5*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			const requestID = "attachment-overflow-framing"
+			framing := fmt.Sprintf("Content-Length: %d\r\n\r\n", attachmentcore.MaxFileBytes+1)
+			if chunked {
+				framing = fmt.Sprintf("Transfer-Encoding: chunked\r\n\r\n%x\r\n", attachmentcore.MaxFileBytes+1)
+			}
+			if _, err := fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/octet-stream\r\nX-Request-ID: %s\r\n%s", location, handler.token, requestID, framing); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.Copy(conn, strings.NewReader(strings.Repeat("x", int(attachmentcore.MaxFileBytes)+1))); err != nil {
+				t.Fatal(err)
+			}
+			// Withhold the chunk delimiter and terminal framing. Once the
+			// overflow is read, the server may already close the socket.
+			var observed observation
+			select {
+			case observed = <-finished:
+			case <-time.After(10 * time.Second):
+				t.Fatal("overflow handler did not finish")
+			}
+			f.verify()
+			if !observed.native || observed.before != nil || chunked && !errors.Is(observed.after, context.Canceled) || !chunked && observed.after != nil {
+				t.Fatalf("native overflow lifecycle: %+v", observed)
+			}
+			reader := bufio.NewReader(conn)
+			response, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, readErr := io.ReadAll(response.Body)
+			closeErr := response.Body.Close()
+			if readErr != nil || closeErr != nil || response.StatusCode != http.StatusRequestEntityTooLarge || response.Close != chunked || !bytes.Contains(body, []byte(`"code":"payload_too_large"`)) || !bytes.Contains(body, []byte(`"requestId":"`+requestID+`"`)) || response.Header.Get("X-Request-ID") != requestID {
+				t.Fatalf("overflow response: status=%d close=%v body=%s read=%v close=%v", response.StatusCode, response.Close, body, readErr, closeErr)
+			}
+			if chunked {
+				if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) {
+					t.Fatalf("overflow connection remained reusable: %v", err)
+				}
+			}
+			if count, size, _ := stagingFiles(t, root); count != 0 {
+				t.Fatalf("overflow left staging: count=%d size=%d", count, size)
+			}
+			if _, err := os.Stat(filepath.Join(root, "task-attachments", task.ProjectID, task.ID[:2], task.ID, "overflow.bin")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("overflow published content: %v", err)
+			}
+			f.expectRead(task, "overflow.bin", model.Attachment{}, model.ErrNotFound)
+			if chunked {
+				assertProjectError(t, attachmentRequest(handler, http.MethodGet, location, "", nil), http.StatusNotFound, "not_found")
+			} else {
+				if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", location, handler.token); err != nil {
+					t.Fatal(err)
+				}
+				next, err := http.ReadResponse(reader, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, readErr := io.ReadAll(next.Body)
+				closeErr := next.Body.Close()
+				if next.StatusCode != http.StatusNotFound || readErr != nil || closeErr != nil || !bytes.Contains(data, []byte(`"code":"not_found"`)) {
+					t.Fatalf("complete overflow damaged keepalive: status=%d read=%v close=%v", next.StatusCode, readErr, closeErr)
+				}
+			}
+			f.verify()
+			item := f.item(task, "overflow.bin", "text/plain", 5)
+			f.expectPut(task, item.Path, item.ContentType, item.SizeBytes, item, true)
+			decodeResponse[api.Attachment](t, attachmentRequest(handler, http.MethodPut, location, "text/plain", []byte("after")), http.StatusCreated)
+			f.verify()
+			if !logs.contains(`"error_code":"payload_too_large"`) || !logs.contains(`"request_id":"`+requestID+`"`) || logs.contains(handler.token) || logs.contains(root) {
+				t.Fatal("overflow diagnostics lost identity or exposed private data")
+			}
+		})
+	}
 }
 
 type observedBodyClose struct {

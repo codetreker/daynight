@@ -53,7 +53,9 @@ export const createBotRemote = (options: { owner: BotOwner; serverToken: string 
       return value;
     } finally { if (response.body !== null && !response.body.locked) await response.body.cancel(); }
   };
-  const operation = (signal: AbortSignal): Operation => createOperation({ signal, limits: { responseBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 } });
+  // A count-based page can contain the complete inventory within its existing budget.
+  const inventoryBytes = 64 * 1024 * 1024;
+  const operation = (signal: AbortSignal): Operation => createOperation({ signal, limits: { responseBytes: inventoryBytes, totalBytes: inventoryBytes } });
   return {
     owner,
     list: async signal => {

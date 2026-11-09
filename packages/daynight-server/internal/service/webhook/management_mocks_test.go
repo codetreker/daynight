@@ -45,6 +45,9 @@ func (m mgmtMockBase) need(method string, configured bool) {
 }
 
 type mgmtWebhookDAO struct {
+	HistoryBatchFn         func(context.Context, wm.Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error)
+	HistoryMatchesFn       func(context.Context, []string) ([]store.WebhookHistoryMatch, error)
+	HistoryBatchAttemptsFn func(context.Context, []string) ([]store.WebhookAttempt, error)
 	mgmtMockBase
 	EndpointFn          func(context.Context, wm.Owner, string) (wm.Endpoint, error)
 	EndpointsFn         func(context.Context, wm.Owner) ([]wm.Endpoint, error)
@@ -129,6 +132,18 @@ func (m *mgmtWebhookDAO) PutOperation(p0 context.Context, p1 wm.Operation) error
 	m.need("PutOperation", m.PutOperationFn != nil)
 	return m.PutOperationFn(p0, p1)
 }
+func (m *mgmtWebhookDAO) HistoryBatch(c context.Context, o wm.Owner, e, actor string, at time.Time, id string, n int) (store.WebhookHistoryBatch, error) {
+	m.need("HistoryBatch", m.HistoryBatchFn != nil)
+	return m.HistoryBatchFn(c, o, e, actor, at, id, n)
+}
+func (m *mgmtWebhookDAO) HistoryMatches(c context.Context, ids []string) ([]store.WebhookHistoryMatch, error) {
+	m.need("HistoryMatches", m.HistoryMatchesFn != nil)
+	return m.HistoryMatchesFn(c, ids)
+}
+func (m *mgmtWebhookDAO) HistoryBatchAttempts(c context.Context, ids []string) ([]store.WebhookAttempt, error) {
+	m.need("HistoryBatchAttempts", m.HistoryBatchAttemptsFn != nil)
+	return m.HistoryBatchAttemptsFn(c, ids)
+}
 func (m *mgmtWebhookDAO) HistoryDeliveries(p0 context.Context, p1 wm.Owner, p2 string, p3 time.Time, p4 string, p5 int) ([]store.WebhookDelivery, error) {
 	m.need("HistoryDeliveries", m.HistoryDeliveriesFn != nil)
 	return m.HistoryDeliveriesFn(p0, p1, p2, p3, p4, p5)
@@ -157,8 +172,6 @@ func (m *mgmtWebhookDAO) LatestAttempt(p0 context.Context, p1 string) (*store.We
 type mgmtTeamDAO struct {
 	mgmtMockBase
 	TeamFn                 func(context.Context, string, string) (model.Team, error)
-	TeamBoundedFn          func(context.Context, string, string, int) (model.Team, bool, error)
-	TeamsBoundedFn         func(context.Context, string, store.Page, int) (store.TeamPage, error)
 	TeamAccessFn           func(context.Context, string, string) error
 	TeamsFn                func(context.Context, string, store.Page) (store.TeamPage, error)
 	TeamMembersFn          func(context.Context, string) ([]model.TeamMemberProfile, error)
@@ -173,14 +186,6 @@ type mgmtTeamDAO struct {
 func (m *mgmtTeamDAO) Team(p0 context.Context, p1 string, p2 string) (model.Team, error) {
 	m.need("Team", m.TeamFn != nil)
 	return m.TeamFn(p0, p1, p2)
-}
-func (m *mgmtTeamDAO) TeamBounded(p0 context.Context, p1 string, p2 string, p3 int) (model.Team, bool, error) {
-	m.need("TeamBounded", m.TeamBoundedFn != nil)
-	return m.TeamBoundedFn(p0, p1, p2, p3)
-}
-func (m *mgmtTeamDAO) TeamsBounded(p0 context.Context, p1 string, p2 store.Page, p3 int) (store.TeamPage, error) {
-	m.need("TeamsBounded", m.TeamsBoundedFn != nil)
-	return m.TeamsBoundedFn(p0, p1, p2, p3)
 }
 func (m *mgmtTeamDAO) TeamAccess(p0 context.Context, p1 string, p2 string) error {
 	m.need("TeamAccess", m.TeamAccessFn != nil)

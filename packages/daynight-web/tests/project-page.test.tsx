@@ -123,14 +123,18 @@ beforeEach(() => {
 describe("project dashboard", () => {
   it("keeps search available without a graph and opens a hit with direct observation", async () => {
     graphRequest.mockRejectedValue(new ApiError("network"));
-    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["description"], descriptionSnippet: "匹配描述" } }] });
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    const input = searchForm().getByRole("textbox", { name: "搜索任务标题和描述" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.click(searchForm().getByRole("button", { name: "搜索语法" }));
+    expect(screen.getByText(/id:、title: 和 description:/)).toBeTruthy();
     fireEvent.change(input, { target: { value: "历史" } });
     expect(searchTasks).not.toHaveBeenCalled();
     fireEvent.submit(input.closest("form")!);
     const result = await waitFor(() => searchResults().getByRole("button", { name: "打开任务：完整的历史任务" }));
     expect(screen.getByText("原任务链", { exact: false })).toBeTruthy();
+    expect(result).toHaveTextContent("ID 命中 · 描述命中 · 匹配描述");
+    expect(result).toHaveTextContent(X);
     fireEvent.click(result);
     expect(screen.getByTestId("selected-task")).toHaveTextContent(X);
     expect(screen.getByTestId("observation-kind")).toHaveTextContent("direct");
@@ -143,7 +147,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("另一任务链");
-    const input = searchForm().getByRole("textbox", { name: "搜索任务标题和描述" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
     await screen.findByText("未找到匹配任务");
     fireEvent.change(input, { target: { value: "未提交" } });
@@ -158,7 +162,7 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValue(graph());
     vi.mocked(searchTasks).mockRejectedValue(new TaskSearchError(400, "invalid_search_expression", "search-request", { reason: "unexpected_closing_group", position: 4, length: 1 }));
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    const input = searchForm().getByRole("textbox", { name: "搜索任务标题和描述" }) as HTMLInputElement;
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
     expect(await screen.findByText("搜索语法第 4 个字符：多余的右括号。")).toBeTruthy();
     expect(input).toHaveFocus();
@@ -173,7 +177,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
-    const input = searchForm().getByRole("textbox", { name: "搜索任务标题和描述" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "页" } }); fireEvent.submit(input.closest("form")!);
     await waitFor(() => searchResults().getByRole("button", { name: "打开任务：第一页" }));
     const next = within(document.querySelector<HTMLElement>(".task-search-results .list-pagination")!).getByRole("button", { name: "下一页" }); next.focus(); fireEvent.click(next);
@@ -188,7 +192,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
-    const input = searchForm().getByRole("textbox", { name: "搜索任务标题和描述" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
     await screen.findByText("未找到匹配任务");
     fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -215,7 +219,7 @@ describe("project dashboard", () => {
     });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
-    const input = searchForm().getByRole("textbox", { name: "搜索任务标题和描述" }) as HTMLInputElement;
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
     await screen.findByText("搜索语法第 4 个字符：多余的右括号。");
     input.setSelectionRange(0, 0); const help = searchForm().getByRole("button", { name: "搜索语法" }); help.focus();
@@ -435,14 +439,13 @@ describe("project dashboard", () => {
     await screen.findByRole("heading", { name: "核心项目" });
   });
 
-  it("explains graph limits using actual counts and rejects malformed graph snapshots", async () => {
-    graphRequest.mockRejectedValueOnce(new ApiError("server", 409, "graph_limit_exceeded", "large-graph", { nodeCount: 1001, edgeCount: 5100, maxNodes: 1000, maxEdges: 5000 }))
+  it("shows generic read failures and rejects malformed graph snapshots", async () => {
+    graphRequest.mockRejectedValueOnce(new ApiError("server", 500, "internal_error", "graph-read-failed"))
       .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [X] } : task) });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const alert = await screen.findByRole("alert");
-    expect(within(alert).getByRole("heading", { name: "任务图超过展示上限" })).toBeTruthy();
-    expect(alert.textContent).toContain("当前 1,001 个任务、5,100 条依赖；支持最多 1,000 个任务、5,000 条依赖。");
-    expect(alert.textContent).toContain("large-graph");
+    expect(within(alert).getByRole("heading", { name: "项目加载失败" })).toBeTruthy();
+    expect(alert.textContent).toContain("graph-read-failed");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "任务图数据不完整" });
     expect(screen.queryByText("任务总数")).toBeNull();

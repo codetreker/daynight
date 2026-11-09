@@ -13,7 +13,7 @@ const authOperation = async <T>(signal: AbortSignal, operation: () => Promise<T>
     signal.throwIfAborted();
     if (!(error instanceof ApiError) || isAbortError(error)) throw error;
     // Auth responses can contain one-time secrets; retain only sanitized public error metadata.
-    throw new ApiError(error.kind, error.status, error.code, error.requestId, error.graphLimit);
+    throw new ApiError(error.kind, error.status, error.code, error.requestId);
   }
 };
 

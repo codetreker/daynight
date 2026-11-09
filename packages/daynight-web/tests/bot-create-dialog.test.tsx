@@ -121,7 +121,7 @@ it('allows explicitly replacing an unavailable default provider', async () => {
   expect(vi.mocked(api.createBot).mock.calls[0]![0]).toMatchObject({ overrides: { workerId: wid(1), cwd: '/ordinary', provider: 'claude' } });
 });
 it('shows a confirmed rejection and allows a corrected fresh request', async () => {
-  vi.mocked(api.createBot).mockRejectedValueOnce(new ApiError('server', 409, 'conflict', null, undefined, undefined, 'Directory is unavailable.'));
+  vi.mocked(api.createBot).mockRejectedValueOnce(new ApiError('server', 409, 'conflict', null, undefined, 'Directory is unavailable.'));
   mount(); await flush(); advanced(); name();
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/unavailable' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });

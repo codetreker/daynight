@@ -182,7 +182,7 @@ func TestSubscriptionEnrollmentRejectsRevokedEligibilityAfterSourceLock(t *testi
 	f.respondMutation(m, endpoint, "applied", []wm.SigningKey{{EndpointID: endpoint.ID, ID: endpoint.ActiveKeyID, Slot: "current", Secret: make([]byte, 32), CreatedAt: f.now}})
 	f.recordWrites()
 	result, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
-	mgmtWantFault(t, err, "forbidden")
+	mgmtWantFault(t, err, "webhook_project_ineligible")
 	if result.Body != nil || result.Replay {
 		t.Fatalf("revoked enrollment returned a result: %#v", result)
 	}
@@ -287,7 +287,7 @@ func TestSubscriptionConfirmationPreservesEpochAndExpansionPolicy(t *testing.T) 
 				_, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
 				code := "webhooks_unavailable"
 				if kind == "revoked" {
-					code = "forbidden"
+					code = "webhook_project_ineligible"
 				}
 				mgmtWantFault(t, err, code)
 				f.noEffects()
@@ -368,6 +368,7 @@ func TestSubscriptionPlanningUsesLockedVersionAndEligibleScope(t *testing.T) {
 					return nil
 				}
 			case "project revoked":
+				code = "webhook_project_ineligible"
 				m.Subscriptions = append(m.Subscriptions, core.SubscriptionInput{ProjectID: sub.ProjectID, EventTypes: []string{"task.created"}})
 				f.eligibility.ReadEligibilityFn = func(context.Context, wm.Owner, string, string) (store.WebhookEligibility, error) {
 					return store.WebhookEligibility{Status: "access_revoked"}, nil

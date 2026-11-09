@@ -14,6 +14,8 @@ import (
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	attachmentprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -23,30 +25,43 @@ import (
 )
 
 type attachmentHandler struct {
-	attachments     *attachmentservice.Attachments
+	attachments     attachmentOperations
 	logger          *slog.Logger
 	bodyReadTimeout time.Duration
 }
 
+type attachmentOperations struct {
+	List        func(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
+	PutRetained func(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
+	Delete      func(context.Context, model.Principal, string, string, string) error
+	Open        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
+}
+
 func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := newAttachmentHandler(attachments, logger)
-	handler.registerRoutes(mux, auth)
+	handler.registerRoutes(mux, auth.Require)
 }
 
 func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
-	return &attachmentHandler{attachments: attachments, logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout}
+	return &attachmentHandler{
+		attachments: attachmentOperations{
+			List: attachments.List, PutRetained: attachments.PutRetained,
+			Delete: attachments.Delete, Open: attachments.Open,
+		},
+		logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout,
+	}
 }
 
-func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, auth *authhttp.Authentication) {
+func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
 	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
-	mux.HandleFunc("GET "+base+"/attachments", auth.Require(handler.list))
-	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", auth.Require(handler.put))
-	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", auth.Require(handler.download))
-	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", auth.Require(handler.delete))
-	mux.HandleFunc("GET "+base+"/preview/{path...}", auth.Require(handler.preview))
-	mux.HandleFunc(base+"/attachments", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
-	mux.HandleFunc(base+"/preview/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+	mux.HandleFunc("GET "+base+"/attachments", require(handler.list))
+	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", require(handler.put))
+	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", require(handler.download))
+	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", require(handler.delete))
+	mux.HandleFunc("GET "+base+"/preview/{path...}", require(handler.preview))
+	mux.HandleFunc(base+"/attachments", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments/files/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
+	mux.HandleFunc(base+"/preview/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
 }
 
 func attachmentResponse(attachment model.Attachment) api.Attachment {
@@ -73,7 +88,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
-	page, err := h.attachments.ListREST(request.Context(), principal, projectID, taskID, input)
+	page, err := h.attachments.List(request.Context(), principal, projectID, taskID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return

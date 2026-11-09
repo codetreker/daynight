@@ -176,32 +176,25 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	}
 }
 
-func TestTeamHTTPPageEncodedBudgetAndCursor(t *testing.T) {
+func TestTeamHTTPPageCountAndCursor(t *testing.T) {
 	h := teamTestHandler(t)
 	actor := h.principal.UserID
-	var ids []string
-	for _, name := range []string{"Large one", "Large two"} {
+	var teams []api.Team
+	for _, suffix := range []string{"one", "two"} {
+		name := strings.Repeat("<", 250) + suffix
 		team := decodeResponse[api.Team](t, projectRequest(h, "POST", "/api/v1/teams", jsonBody(t, api.CreateTeamRequest{Name: name, ExpectedUserID: actor})), 201)
-		ids = append(ids, team.ID)
-		if _, err := h.database.Pool.Exec(context.Background(), `UPDATE teams SET name=repeat('<',500000) WHERE id=$1`, team.ID); err != nil {
-			t.Fatal(err)
-		}
+		teams = append(teams, team)
 	}
-	first := projectRequest(h, "GET", "/api/v1/teams?limit=100", "")
-	page := decodeResponse[api.TeamPage](t, first, 200)
-	if first.Body.Len() > 4<<20 || page.NextCursor == nil || page.Items[len(page.Items)-1].ID != ids[0] {
-		t.Fatalf("first page: %d %#v", first.Body.Len(), page.NextCursor)
+	complete := decodeResponse[api.TeamPage](t, projectRequest(h, "GET", "/api/v1/teams?limit=100", ""), 200)
+	if len(complete.Items) != 3 || !reflect.DeepEqual(complete.Items[1:], teams) || complete.NextCursor != nil {
+		t.Fatalf("complete page: %+v", complete)
 	}
-	next := decodeResponse[api.TeamPage](t, projectRequest(h, "GET", "/api/v1/teams?limit=100&cursor="+*page.NextCursor, ""), 200)
-	if len(next.Items) != 1 || next.Items[0].ID != ids[1] || next.NextCursor != nil {
-		t.Fatal("continuation skipped Team")
+	first := decodeResponse[api.TeamPage](t, projectRequest(h, "GET", "/api/v1/teams?limit=2", ""), 200)
+	if len(first.Items) != 2 || !reflect.DeepEqual(first.Items[1], teams[0]) || first.NextCursor == nil {
+		t.Fatalf("first page: %+v", first)
 	}
-	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE teams SET name=repeat('<',800000) WHERE id=$1`, ids[1]); err != nil {
-		t.Fatal(err)
+	next := decodeResponse[api.TeamPage](t, projectRequest(h, "GET", "/api/v1/teams?limit=2&cursor="+*first.NextCursor, ""), 200)
+	if len(next.Items) != 1 || !reflect.DeepEqual(next.Items[0], teams[1]) || next.NextCursor != nil {
+		t.Fatalf("continuation: %+v", next)
 	}
-	assertProjectError(t, projectRequest(h, "GET", "/api/v1/teams?limit=100&cursor="+*page.NextCursor, ""), 409, "resource_limit_exceeded")
-	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE teams SET name=repeat('x',5000000) WHERE id=$1`, ids[1]); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, projectRequest(h, "GET", "/api/v1/teams?limit=100&cursor="+*page.NextCursor, ""), 409, "resource_limit_exceeded")
 }

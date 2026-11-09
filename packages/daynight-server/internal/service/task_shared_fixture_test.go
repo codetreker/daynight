@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -103,7 +102,7 @@ func listThread(t *testing.T, threads *taskservice.TaskThreads, principal model.
 		t.Fatal(err)
 	}
 	var resource api.ThreadPage
-	if err := json.Unmarshal(result.JSON, &resource); err != nil || len(resource.Items) != len(result.Page.Items) || len(result.JSON) > taskcodec.PageLimit {
+	if err := json.Unmarshal(result.JSON, &resource); err != nil || len(resource.Items) != len(result.Page.Items) {
 		t.Fatalf("page document: %#v, %v", resource, err)
 	}
 	return result

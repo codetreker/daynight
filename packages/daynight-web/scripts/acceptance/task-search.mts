@@ -87,9 +87,9 @@ const done = (label: string) => { checks.push(label); console.log(`PASS ${label}
 const goTasks = async (id: string, target: Page = page) => {
   await target.goto(`${base}/projects/${id}`);
   await target.getByRole('tab', { name: 'Task list' }).click();
-  await expect(target.getByRole('textbox', { name: 'Search task titles and descriptions' })).toBeVisible();
+  await expect(target.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' })).toBeVisible();
 };
-const submit = async (query: string) => { const input = page.getByRole('textbox', { name: 'Search task titles and descriptions' }); await input.fill(query); await input.press('Enter'); };
+const submit = async (query: string) => { const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' }); await input.fill(query); await input.press('Enter'); };
 try {
   await goTasks(project.id);
   await submit('quartz');
@@ -117,7 +117,7 @@ try {
   await page.getByRole('button', { name: 'Assignee: Everyone' }).click();
   await page.getByRole('option', { name: 'Assigned to me' }).click();
   await expect(resultButtons).toHaveCount(1);
-  await page.getByRole('textbox', { name: 'Search task titles and descriptions' }).fill('unsubmitted');
+  await page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' }).fill('unsubmitted');
   await expect(page.getByText('Results for: quartz')).toBeVisible();
   await expect(resultButtons).toHaveCount(1);
   await page.getByRole('combobox', { name: 'Status' }).selectOption('');
@@ -148,7 +148,7 @@ try {
   await expect(page.getByText('No matching tasks', { exact: false })).toBeVisible();
   await submit('😀 AND (');
   await expect(page.getByRole('alert')).toBeVisible();
-  await expect.poll(() => page.getByRole('textbox', { name: 'Search task titles and descriptions' }).evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([7, 8]);
+  await expect.poll(() => page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' }).evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([7, 8]);
   done('zero results and server syntax error remain distinct');
 
   let fail = true;
@@ -160,12 +160,22 @@ try {
   await page.unroute(`**${endpoint}/search`);
   done('network failure and retry against the real backend');
 
-  await page.setViewportSize({ width: 320, height: 700 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'narrow layout must not overflow');
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 700 });
+    await submit(`id:${longTitle.id}`);
+    const idResult = page.getByRole('button', { name: `Open task: ${longTitle.title}` });
+    await expect(idResult).toContainText(longTitle.id);
+    await expect(idResult).toContainText('ID match');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `layout at ${width}px must not overflow`);
+    await idResult.click();
+    await expect(page.getByRole('dialog')).toContainText(longTitle.title);
+    await page.keyboard.press('Escape');
+    await expect(idResult).toBeFocused();
+  }
   await page.screenshot({ path: path.join(output, 'narrow.png'), fullPage: true });
   await page.getByRole('button', { name: 'Clear search' }).click();
-  await expect(page.getByRole('textbox', { name: 'Search task titles and descriptions' })).toBeVisible();
-  done('narrow viewport and clearing to ordinary view');
+  await expect(page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' })).toBeVisible();
+  done('ID match and long title at 390/320px, full detail and clearing to ordinary view');
 
   await goTasks(emptyProject.id);
   await submit('quartz');
@@ -177,8 +187,8 @@ try {
   const graphPage = await isolatedContext.newPage();
   await graphPage.route(`**/api/v1/projects/${project.id}/task-sync**`, route => route.abort('failed'));
   await goTasks(project.id, graphPage);
-  await graphPage.getByRole('textbox', { name: 'Search task titles and descriptions' }).fill('unique-description-quartz');
-  await graphPage.getByRole('textbox', { name: 'Search task titles and descriptions' }).press('Enter');
+  await graphPage.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' }).fill('unique-description-quartz');
+  await graphPage.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' }).press('Enter');
   await graphPage.getByRole('button', { name: 'Open task: Description-only match' }).click();
   await expect(graphPage.getByRole('dialog')).toContainText('unique-description-quartz');
   await isolatedContext.close();
