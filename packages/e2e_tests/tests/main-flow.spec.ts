@@ -88,5 +88,12 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(observed).toMatchObject({ id: task.id, title: name, description: "Shared E2E content" });
   await cli(["task", "set-status", task.id, "done", "--project", projectId!, "--if-version", String(observed.version)]);
   await page.reload();
+  await page.getByRole("tab", { name: "Task list" }).click();
+  const refreshedSearch = page.getByRole("textbox", { name: "Search task IDs, titles and descriptions" });
+  await refreshedSearch.fill(`id:${task.id}`);
+  await refreshedSearch.press("Enter");
+  const refreshedHit = page.getByRole("button", { name: `Open task: ${name}` });
+  await expect(refreshedHit).toContainText(task.id);
+  await refreshedHit.click();
   await expect(page.getByRole("button", { name: "Done", exact: true })).toBeVisible();
 });
