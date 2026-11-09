@@ -93,6 +93,13 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var consumedBy string
+	var acceptedMemberships int
+	if err := s.Pool.QueryRow(ctx, `SELECT consumed_by::text,
+		(SELECT count(*) FROM team_members WHERE team_id=$2 AND user_id=$3)
+		FROM team_invitations WHERE id=$1`, invitation.ID, team.ID, member.UserID).Scan(&consumedBy, &acceptedMemberships); err != nil || consumedBy != member.UserID || acceptedMemberships != 1 {
+		t.Fatalf("committed Team invitation actor and unique membership: %q %d %v", consumedBy, acceptedMemberships, err)
+	}
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		memberRow, err := snapshot.TeamDAO().InvitationTeamMember(ctx, team.ID, member.UserID)
 		if err != nil || memberRow.Role != model.ProjectMemberRole {

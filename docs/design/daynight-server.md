@@ -303,7 +303,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 
 Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHeaderBytes` 设置为 64 KiB 减去初始读取的 4096-byte slop。该预算适用于 HTTP/1；未来 HTTP/2 的解压头字段需独立定义。`httpx` 沿 `ResponseWriter.Unwrap` 使用 `ResponseController`，在实际读取开始时设置 socket deadline。成功读到 EOF 后清除期限；请求入口跟踪底层 body 的实际 EOF，使已消费正文的业务错误保留连接与正常取消语义。取消或未消费正文时关闭连接并阻止自动 drain。流式读取使用 `DeadlineBody`，供附件和归档入口在授权后的实际读取处应用各自期限。
 
-确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
+确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
 MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读并交给 SDK。名额持续到 HTTP 与 SDK handler 均不再持有输入，与 Control 和 Large 工具预算独立。失败、取消、初始化和关闭均释放名额。详细额度及适用状态见[输入规范](../spec/daynight-api-input-limits.md)。
 
@@ -514,53 +514,72 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 
 ## 验证设计
 
-测试放在所属 Go package 中。领域纯函数可直接测试，store 与 service 使用真实
-PostgreSQL 实例及隔离数据库或 schema，验证 SQL、锁和事务行为。数据库环境缺失
-应使要求数据库的验证明确失败，不以跳过测试获得通过。当前 `go-cov` 未设置
-`-coverpkg`，各 package 的测试不计入其他 package 的生产代码覆盖率；store/service
-的数据库测试按职责位于对应模块。
+[测试编写规则](../writing_tests.md)定义依赖和场景归属，并按被测职责选择隔离边界。
+core 使用合成领域输入及所需 DAO mock；service 控制被编排的下层操作及所需 DAO、
+scope、transaction 结果；server HTTP 适配单元测试 mock 直接调用的 service 或业务
+用例，保留实际路由、协议认证、编解码与请求生命周期，不连接 PostgreSQL。
+Mock 明确检查方法、参数、调用次数与错误，独立提供返回值及完成结果；拟写不代表
+持久化，后续给定读取也不模拟提交或回滚。并发工作使用所属操作的 barrier，未配置的
+后台访问必须使测试失败并完成取消与 drain。Task 与 Session HTTP 单元测试采用直接
+用例边界；Session 的私有类型化回调、不透明归档能力及实际 socket 证明由
+[Session HTTP 用例决策](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)维护。
 
-覆盖范围包括正常资源操作、非法字段和地址、同 project 限制、自身及重复依赖、环、
-完整依赖替换、四态转换与取消不可恢复、同状态+0/实际改变+1、PATCH status 拒绝、版本冲突、语义空更新、
-原子起止时间、未知历史、锁等待后的实际开始、普通编辑保持计时、数据库图时间样本、失败回滚，以及一致的
-`dependsOn`/`blockedBy`/`ready`。并发测试使用协调屏障观察真实锁等待，证明并发
-反向依赖、同版本状态及依赖更新/状态竞争、重开与后继开始/完成竞争最终仍保持不变量，同时证明不同 project 可以并行。
+根 server 单元测试组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
+Session Engine、文件和 runtime 生命周期按实际机制运行；HTTP control 与 WebSocket
+共享同一 application 和 Engine。UniAuth 浏览器绑定、一次性结果及 SDK 断流测试保留隔离的
+真实 gateway、代理与 socket。其他认证输入通过明确 credential 与 Identity DAO 事实提供，
+不为取得固定 Project/Task/Worker 模型重复完整登录与数据库准备。
 
-HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛选和 cursor 范围。
-Go 模块须使用实际构建的服务及固定的真实 UniAuth gateway 夹具取得会话/PAT，
-通过 HTTP 创建 project/task，并在重启后读取已提交资源，证明跨重启持久化。凭据只保存在权限为 0600 的私有夹具元数据中，日志与产物只记录非秘密身份。
-当前 Go 模块检查不执行独立跨产品进程验收。
-关键数据库验证采用以下可观察场景：
+Store 层在测试环境拥有的隔离 PostgreSQL 实例验证 SQL、映射、约束、快照、锁、提交、
+回滚与迁移。真实数据库缺失应明确失败，不以跳过取得通过。Store 测试直接验证所属 DAO
+机制，正常 Go API 集成和产品 E2E 不承担边界、错误与竞态矩阵。完整进程的组装、drain
+和重启持久化由实际 process 所属测试证明；CLI/Web 与 Go 模块测试保持独立入口。
 
-- 回滚：在已更新 task 元数据并写入至少一条依赖后，通过测试数据库中的受控失败
-  使后续写入出错，断言 task、全部依赖、版本和更新时间均恢复为提交前状态。仅在
-  写入前拒绝非法输入不能替代这项证据。
-- 一致读取：用同步屏障交错一次 GET/列表读取与另一连接的已提交更新，断言响应只
-  对应完整的提交前或提交后状态，不能混合状态、依赖及派生字段。
-- 取消：令真实请求等待 project 行锁或数据库查询后取消请求，验证等待终止、没有
-  迟到写入，事务及连接可回收，后续请求仍能取得锁。运行时取消测试使用独立观察
-  连接，在 `pg_stat_activity` 中匹配唯一标记 SQL、当前数据库和非观察连接 PID，
-  并确认 `active`、`Timeout/PgSleep`，再触发客户端取消或 drain；保留原有错误类型、
-  关闭期限和连接健康断言。
-- 迁移：验证空数据库、重复启动，以及两个实例竞争同一锁并跨越多个迁移的行为；
-  在部分迁移失败时核对版本和数据，确认锁及专用连接均已清理。
+正常资源操作、非法字段和地址、同 Project 限制、自身及重复依赖、环、完整依赖替换、
+四态转换、取消不可恢复、同状态 +0/实际改变 +1、PATCH status 拒绝、版本冲突、语义空
+更新、原子起止时间、未知历史、锁等待后的实际开始、普通编辑保持计时及一致的
+`dependsOn`/`blockedBy`/`ready`，分别由对应规则、协议和 Store 所属测试验证。
+真实锁测试通过协调屏障证明反向依赖、同版本状态、依赖更新/状态竞争、重开与后继
+开始/完成竞争仍保持不变量，并验证不同 Project 可以并行。
 
-生命周期测试还覆盖连接失败、有界关闭和日志脱敏。测试不以模拟 store 替代数据库
-行为；最终交付必须给出需求 V1–V10 的全部验收证据。
+HTTP 测试保留路由、DTO、错误映射、Project 范围、分页筛选、cursor、日志、no-write
+及 native 内容和容量边界。真实进程通过 HTTP 创建和读回资源，在重启后核对完整已提交
+数据；凭据只保存在权限为 0600 的私有夹具元数据中，日志与产物只记录非秘密身份。
+静态 response DTO 不能替代跨重启持久化或实际 SQL 的前后比较。
 
-当前 `bash scripts/check.sh` 要求隔离的 `DAYNIGHT_TEST_DATABASE_URL`，使用
-单测资源 overlay 构建和 vet，准备固定 UniAuth fixture，清除 Go 测试缓存后调用
-`go-cov` v0.1.4 运行模块测试。配置不排除生产 package、文件或函数，并通过 `-coverpkg` 统计跨包调用；
-package 和 function 门槛分别为 85% 和 80%。原始 `coverage.out`
-另按语句数精确检查 `covered * 10 > total * 9`，恰好 90% 失败。
+关键数据库验证保留以下可观察机制：
+
+- 回滚：更新 Task 元数据和至少一条依赖后，通过受控数据库失败使后续写入出错，
+  读回 Task、完整依赖、版本和更新时间与提交前相同。写前非法输入拒绝不能替代该证明。
+- 一致读取：用同步屏障交错同一快照的读取与另一连接的提交，结果对应完整提交前或后
+  状态，不能混合字段、依赖及派生数据。
+- 取消：实际 SQL 或行锁等待后取消，验证终止、无迟到写入、事务和连接回收及后续
+  可用。独立观察连接在 `pg_stat_activity` 匹配当前数据库、唯一 SQL 标记和非观察 PID，
+  确认 `active`、`Timeout/PgSleep` 后再取消，join 关闭并核对原查询不再 active。
+  Runtime 单元测试独立验证请求 context、准入、transport drain 和依赖关闭顺序。
+- 凭证与 fence：在实际 unchanged lock 后观察数据库时钟过期或已提交的权限/版本变化，
+  重检后拒绝并读回完整原状态。Mock 的前后事实只证明逻辑重检，不证明数据库锁和时间。
+- 迁移：空数据库、重复启动及实例争用同一锁时跨多个迁移的行为；部分失败保留版本、
+  数据、锁和专用连接的实际清理证据。
+
+生命周期验证保留连接失败、有界关闭、取消、错误链和日志脱敏。数据库与文件、
+网络不共享自动事务，必须分别核对实际提交与副作用的所有权。最终交付仍需提供需求
+V1–V10 的全部验收证据，覆盖率不能替代并发、回滚、进程或调用方行为证明。
+
+`bash scripts/check.sh` 使用隔离 `DAYNIGHT_TEST_DATABASE_URL`、单测资源 overlay、
+固定 UniAuth fixture，运行 build、vet 与 go-cov 的当前门禁：package 85%、function 80%，
+total 门槛 90%；实际总语句比较严格大于 90%。
+原始覆盖率保留 atomic 与全部生产 package 的 coverpkg，语句门禁精确要求
+`covered * 10 > total * 9`，恰好 90% 失败。诊断 mutation 与计时 overlay 必须确认实际
+进入执行代码；诊断 instrumentation 与正常验收分别记录，不修改质量门禁。
 
 需求 V8 要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口。
 入口按事件选择 race；当前 `.go-cov.toml` 的 `critical_blocks.fail = false`
-不分析关键代码块，因此该部分要求仍未满足。配置、实际入口及本地
-stress 命令由[服务端验证说明](../../packages/daynight-server/README.md#validate)维护。
-覆盖率不替代并发、回滚、实际进程或调用方行为证据。
+不分析关键代码块，因此该部分要求仍未满足。配置、实际入口及独立本地 stress 命令由
+[服务端验证说明](../../packages/daynight-server/README.md#validate)维护。
 
-PR 按[仓库 CI 路由](../../README.md#ci-selection)选择受影响模块，main push
-执行全部应用检查。Go job 使用独立 PostgreSQL 服务并归档原始覆盖率 profile；
-最终 `checks` 接受前置 job 的 `success` 或 `skipped`，失败、取消及其他结果
-使汇总失败。实际运行结果属于被测源码与环境，不能以本地结果推断托管结果。
+PR 按[仓库 CI 路由](../../README.md#ci-selection)选择模块，main push 执行全部应用检查。
+Go job 使用独立 PostgreSQL 服务并归档原始覆盖率；最终 `checks` 接受前置 job 的
+`success` 或按路由允许的 `skipped`，失败、取消及其他结果使汇总失败。包耗时、组合命令、
+完整门禁与 hosted job 时间分别记录，保持源码、toolchain、cache、instrumentation 和资源
+预算可核对。性能比较包括承接原有物理证明的所有者，不能用本地包提速推断托管收益。

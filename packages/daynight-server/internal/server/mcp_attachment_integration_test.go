@@ -3,75 +3,50 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
+	"errors"
+	"io/fs"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestMCPAttachmentProductionLifecycle(t *testing.T) {
-	database := projectTestStore(t)
-	production := httptest.NewUnstartedServer(nil)
-	origin := "http://" + production.Listener.Addr().String()
-	callback := origin + "/api/v1/auth/callback"
-	gateway := testauth.StartGateway(t, callback)
-	config := configuredTestConfig()
-	config.PublicOrigin, config.UniAuthCallbackURL, config.UniAuthURL = origin, callback, gateway.Origin
-	config.UniAuthAppID, config.UniAuthAppSecret = gateway.AppID, gateway.AppSecret
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	database := newHTTPTestStore(t)
+	principal := defaultHTTPPrincipal()
+	bobPrincipal := model.Principal{UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444", Kind: model.PATCredential}
+	tokens := []string{defaultHTTPToken(), "dnpat_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}
+	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principal, tokens[1]: bobPrincipal})
 	files := attachmentTestFiles(t)
-	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
-	if err != nil {
-		t.Fatal(err)
+	production, _ := newMCPHTTPServer(t, database, files)
+	origin := production.URL
+	alice, bob := mcpPATClient(t, origin, tokens[0]), mcpPATClient(t, origin, tokens[1])
+	projectID := "e5555555-5555-4555-8555-555555555555"
+	parentID := "f6666666-6666-4666-8666-666666666666"
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	item := func(path, contentType string, size int64) model.Attachment {
+		return model.Attachment{ProjectID: projectID, TaskID: parentID, Path: path, ContentType: contentType, SizeBytes: size, CreatedAt: at, UpdatedAt: at}
 	}
-	app := handler.(*sessionApplication)
-	production.Config.Handler = httpx.RequestLogging(logger, app)
-	production.Start()
-	t.Cleanup(func() {
-		production.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	identityClient, err := service.NewIdentityClient(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := identityservice.New(database, identityClient, callback)
-	var principal model.Principal
-	var tokens []string
-	for _, user := range []string{"alice", "bob"} {
-		browser := testauth.Browser(t)
-		testauth.Login(t, browser, origin, user)
-		token := testauth.CreatePAT(t, browser, origin)
-		p, err := identity.Authenticate(t.Context(), model.PATCredential, token)
+	seed := func(path, content string) {
+		t.Helper()
+		address, err := attachmentcore.NewAddress(projectID, parentID, path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if user == "alice" {
-			principal = p
+		if _, err = files.Put(t.Context(), attachmentcore.Bucket, address.StoragePath, strings.NewReader(content)); err != nil {
+			t.Fatal(err)
 		}
-		tokens = append(tokens, token)
 	}
-	alice, bob := mcpPATClient(t, origin, tokens[0]), mcpPATClient(t, origin, tokens[1])
+	for _, path := range []string{"a", "b", "c"} {
+		seed(path, "body-"+path)
+	}
 	call := func(client *sdk.ClientSession, name string, args map[string]any, failure bool) map[string]any {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -98,73 +73,71 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 		}
 		return out
 	}
-	project := call(alice, "project_create", map[string]any{"name": "MCP attachments", "repoUrl": "https://example.com/attachments", "team": "personal", "confirm": true}, false)
-	projectID := obj(obj(project["data"])["project"])["id"].(string)
-	tasks := taskservice.NewTasks(database)
-	parent, err := tasks.Create(t.Context(), principal, projectID, taskcore.CreateTask{Title: "Attachments"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	attachments := attachmentservice.NewAttachments(database, database, files)
-	for _, path := range []string{"a", "b", "c"} {
-		if _, _, err := attachments.Put(t.Context(), principal, projectID, parent.ID, path, "text/plain", strings.NewReader("body-"+path)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	args := map[string]any{"projectId": projectID, "taskId": parent.ID, "limit": 2}
+
+	args := map[string]any{"projectId": projectID, "taskId": parentID, "limit": 2}
+	mcpAttachmentDenyRead(t, database, bobPrincipal, projectID)
 	denied := call(bob, "task_attachment_list", args, true)
 	if obj(denied["error"])["code"] != "not_found" {
 		t.Fatalf("denied: %+v", denied)
 	}
+	a, b, c := item("a", "text/plain", 6), item("b", "text/plain", 6), item("c", "text/plain", 6)
+	mcpAttachmentPage(t, database, principal, projectID, parentID, "", 2, 2048, 8192, store.AttachmentPage{Items: []model.Attachment{a, b}, HasMore: true})
 	first := obj(call(alice, "task_attachment_list", args, false)["data"])
 	items := first["items"].([]any)
 	if len(items) != 2 || obj(items[0])["path"] != "a" || obj(items[1])["path"] != "b" {
 		t.Fatalf("page: %+v", first)
 	}
 	args["cursor"] = first["nextCursor"]
+	mcpAttachmentPage(t, database, principal, projectID, parentID, "b", 2, 2048, 8192, store.AttachmentPage{Items: []model.Attachment{c}})
 	tail := obj(call(alice, "task_attachment_list", args, false)["data"])
 	if len(tail["items"].([]any)) != 1 || obj(tail["items"].([]any)[0])["path"] != "c" || tail["nextCursor"] != nil {
 		t.Fatalf("tail: %+v", tail)
 	}
-	remove := map[string]any{"projectId": projectID, "taskId": parent.ID, "path": "b"}
+	remove := map[string]any{"projectId": projectID, "taskId": parentID, "path": "b"}
+	mcpAttachmentDenyMutation(t, database, bobPrincipal, projectID, parentID)
 	if obj(call(bob, "task_attachment_remove", remove, true)["error"])["code"] != "not_found" {
 		t.Fatal("unauthorized remove")
 	}
+	removeCalls := newHTTPCallPlan(t, map[string]int{"metadata": 1, "delete": 1})
+	mcpAttachmentMutation(t, database, principal, projectID, parentID, &mcpAttachmentDAO{t: t, AttachmentCall: func(ctx context.Context, pid, tid, path string) (model.Attachment, error) {
+		removeCalls.Called("metadata")
+		mcpAttachmentCheck(t, []string{pid, tid, path}, []string{projectID, parentID, "b"})
+		return b, nil
+	}, DeleteCall: func(ctx context.Context, pid, tid, path string) error {
+		removeCalls.Called("delete")
+		mcpAttachmentCheck(t, []string{pid, tid, path}, []string{projectID, parentID, "b"})
+		return nil
+	}}, true)
 	if obj(call(alice, "task_attachment_remove", remove, false)["data"])["removed"] != true {
 		t.Fatal("missing remove receipt")
 	}
-	if _, _, err := attachments.Open(t.Context(), principal, projectID, parent.ID, "b"); err == nil {
-		t.Fatal("deleted attachment still opens")
+	address, err := attachmentcore.NewAddress(projectID, parentID, "b")
+	if err != nil {
+		t.Fatal(err)
 	}
-	after, err := tasks.Get(t.Context(), principal, projectID, parent.ID)
-	if err != nil || after.Version != parent.Version || !after.UpdatedAt.Equal(parent.UpdatedAt) {
-		t.Fatalf("attachment modified task: %+v %v", after, err)
+	if opened, err := files.Open(t.Context(), attachmentcore.Bucket, address.StoragePath); err == nil {
+		opened.Body.Close()
+		t.Fatal("deleted attachment bytes still open")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
 	}
-	// Historical metadata can exceed the current write limit.
-	putLegacy := func(path, contentType string) {
-		t.Helper()
-		address, err := attachmentcore.NewAddress(projectID, parent.ID, path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := files.Put(t.Context(), attachmentcore.Bucket, address.StoragePath, strings.NewReader("x")); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := database.PutAttachment(t.Context(), model.Attachment{ProjectID: projectID, TaskID: parent.ID, Path: path, ContentType: contentType, SizeBytes: 1}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	putLegacy("giant", "text/plain; x="+strings.Repeat("a", 100000))
-	page := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "limit": 2}, false)["data"])
-	oversized := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": page["nextCursor"]}, true)["error"])
+	giant := item("giant", "text/plain; x="+strings.Repeat("a", 100000), 1)
+	seed("giant", "x")
+	mcpAttachmentPage(t, database, principal, projectID, parentID, "", 2, 2048, 8192, store.AttachmentPage{Items: []model.Attachment{a, c}, HasMore: true})
+	page := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parentID, "limit": 2}, false)["data"])
+	omittedGiant := giant
+	omittedGiant.ContentType = ""
+	mcpAttachmentPage(t, database, principal, projectID, parentID, "c", 50, 2048, 8192, store.AttachmentPage{Items: []model.Attachment{omittedGiant}, Oversized: []bool{true}})
+	oversized := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parentID, "cursor": page["nextCursor"]}, true)["error"])
 	refs := obj(oversized["refs"])
-	if oversized["code"] != "resource_conflict" || refs["path"] != "giant" || refs["projectId"] != projectID || refs["taskId"] != parent.ID || refs["restListPath"] == nil || refs["nextCursor"] == nil {
+	if oversized["code"] != "resource_conflict" || refs["path"] != "giant" || refs["projectId"] != projectID || refs["taskId"] != parentID || refs["restListPath"] == nil || refs["nextCursor"] == nil {
 		t.Fatalf("oversized metadata: %+v", oversized)
 	}
 	message := oversized["message"].(string)
 	if !strings.Contains(message, "PAT or browser session") || !strings.Contains(message, "MCP OAuth access tokens cannot authenticate REST") {
 		t.Fatalf("REST credential guidance: %s", message)
 	}
+	restRows := []model.Attachment{a, c, giant}
 	found := false
 	var restCursor *string
 	pages := 0
@@ -178,6 +151,11 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+tokens[0])
+		previous := ""
+		if pages > 0 {
+			previous = restRows[pages-1].Path
+		}
+		mcpAttachmentPage(t, database, principal, projectID, parentID, previous, 1, 2<<20, 2<<20, store.AttachmentPage{Items: []model.Attachment{restRows[pages]}, HasMore: pages < len(restRows)-1})
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatal(err)
@@ -215,13 +193,50 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	if !found || pages < 2 {
 		t.Fatal("REST recovery did not return the attachment")
 	}
+
 	boundaryPath := strings.Repeat(strings.Repeat("😀", 50)+"/", 20) + "😀😀😀😀"
 	boundedContentType := "text/plain; x=" + strings.Repeat("a", 4000)
-	putLegacy(boundaryPath, boundedContentType)
-	boundaryPage := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": refs["nextCursor"]}, false)["data"])
+	seed(boundaryPath, "x")
+	boundary := item(boundaryPath, boundedContentType, 1)
+	omittedBoundary := boundary
+	omittedBoundary.Path = ""
+	calls := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 2, "presence": 2, "page": 2})
+	snapshot := newHTTPTestSnapshot(t)
+	snapshot.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+		calls.Called("access")
+		mcpAttachmentCheck(t, actor, principal)
+		mcpAttachmentCheck(t, id, projectID)
+		return model.ProjectAccess{ProjectID: projectID, UserID: principal.UserID, Role: model.ProjectAdmin}, nil
+	}}
+	snapshot.Tasks = &mcpAttachmentTaskReader{t: t, PresenceCall: func(ctx context.Context, pid, tid string) (store.TaskPresence, error) {
+		calls.Called("presence")
+		mcpAttachmentCheck(t, []string{pid, tid}, []string{projectID, parentID})
+		return store.TaskPresence{Found: true}, nil
+	}}
+	pageNumber := 0
+	snapshot.Attachments = &mcpAttachmentDAO{t: t, AttachmentsCall: func(ctx context.Context, pid, tid string, q store.AttachmentQuery) (store.AttachmentPage, error) {
+		calls.Called("page")
+		mcpAttachmentCheck(t, []string{pid, tid}, []string{projectID, parentID})
+		pageNumber++
+		after := "giant"
+		want := store.AttachmentQuery{After: &after, Limit: 50, MaxPathBytes: 2048, MaxFieldBytes: 8192}
+		if pageNumber == 2 {
+			want.Limit = 1
+			want.MaxPathBytes = 4 << 20
+		}
+		mcpAttachmentCheck(t, q, want)
+		if pageNumber == 1 {
+			return store.AttachmentPage{Items: []model.Attachment{omittedBoundary}, Oversized: []bool{true}}, nil
+		}
+		return store.AttachmentPage{Items: []model.Attachment{boundary}}, nil
+	}}
+	database.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+		calls.Called("snapshot")
+		return op(snapshot)
+	}
+	boundaryPage := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parentID, "cursor": refs["nextCursor"]}, false)["data"])
 	boundaryItems := boundaryPage["items"].([]any)
 	if len(boundaryItems) != 1 || obj(boundaryItems[0])["path"] != boundaryPath || obj(boundaryItems[0])["contentType"] != boundedContentType {
 		t.Fatalf("boundary page: %+v", boundaryPage)
 	}
-
 }

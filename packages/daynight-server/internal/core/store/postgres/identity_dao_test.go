@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -65,6 +66,24 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 		if err != nil || got.ID != login.ID || got.ReturnPath != login.ReturnPath {
 			t.Fatalf("consumed login: %#v %v", got, err)
 		}
+		return nil
+	})
+	var logins, users, sessions int
+	if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM login_transactions),(SELECT count(*) FROM users),(SELECT count(*) FROM sessions)`).Scan(&logins, &users, &sessions); err != nil || logins != 0 || users != 1 || sessions != 1 {
+		t.Fatalf("consumption changed identity rows: logins=%d users=%d sessions=%d error=%v", logins, users, sessions, err)
+	}
+	completion, err := s.WriteIdentity(ctx, func(scope IdentityScope) error {
+		_, err := scope.IdentityDAO().ConsumeLogin(ctx, login.StateHash, login.BrowserBindingHash, now)
+		return err
+	})
+	if !errors.Is(err, model.ErrNotFound) || completion.Outcome != TransactionNotCommitted {
+		t.Fatalf("committed login replay: completion=%+v error=%v", completion, err)
+	}
+	if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM login_transactions),(SELECT count(*) FROM users),(SELECT count(*) FROM sessions)`).Scan(&logins, &users, &sessions); err != nil || logins != 0 || users != 1 || sessions != 1 {
+		t.Fatalf("login replay changed identity rows: logins=%d users=%d sessions=%d error=%v", logins, users, sessions, err)
+	}
+	identityScopeTest(t, s, func(scope IdentityScope) error {
+		dao := scope.IdentityDAO()
 		account, facts, err := dao.IdentityUser(ctx, user.ID)
 		if err != nil || account.ID != user.ID || facts.ID != user.PersonalTeam.ID {
 			t.Fatalf("account: %#v %#v %v", account, facts, err)
@@ -88,6 +107,47 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 		}
 		return nil
 	})
+	email, name, avatar, verified := "shared@example.test", "Alice", "https://example.test/alice.png", true
+	var bob model.User
+	identityScopeTest(t, s, func(scope IdentityScope) error {
+		dao := scope.IdentityDAO()
+		updated, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: user.UniAuthID, Email: &email, EmailVerified: &verified, Name: &name, AvatarURL: &avatar}, now.Add(time.Minute))
+		if err != nil {
+			return err
+		}
+		if updated.ID != user.ID || updated.UniAuthID != user.UniAuthID || !updated.CreatedAt.Equal(user.CreatedAt) || !updated.UpdatedAt.Equal(now.Add(time.Minute)) || updated.Email == nil || *updated.Email != email || updated.Name == nil || *updated.Name != name || updated.AvatarURL == nil || *updated.AvatarURL != avatar || updated.EmailVerified == nil || !*updated.EmailVerified {
+			t.Fatalf("same-provider profile lost identity or fields: %+v", updated)
+		}
+		bob, err = dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "github:" + uuid.NewString(), Email: &email, Name: &name}, now)
+		if err == nil && bob.ID == user.ID {
+			t.Fatal("same email merged distinct provider identities")
+		}
+		return err
+	})
+	updatedEmail, updatedName, updatedAvatar, updatedVerified := "refreshed@example.test", "Alice Updated", "https://example.test/alice-updated.png", false
+	identityScopeTest(t, s, func(scope IdentityScope) error {
+		_, err := scope.IdentityDAO().UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: user.UniAuthID, Email: &updatedEmail, EmailVerified: &updatedVerified, Name: &updatedName, AvatarURL: &updatedAvatar}, now.Add(2*time.Minute))
+		return err
+	})
+	if actual, _, err := testIdentityUser(s, ctx, user.ID); err != nil || actual.ID != user.ID || actual.UniAuthID != user.UniAuthID || !actual.CreatedAt.Equal(user.CreatedAt) || !actual.UpdatedAt.Equal(now.Add(2*time.Minute)) || actual.Email == nil || *actual.Email != updatedEmail || actual.EmailVerified == nil || *actual.EmailVerified || actual.Name == nil || *actual.Name != updatedName || actual.AvatarURL == nil || *actual.AvatarURL != updatedAvatar {
+		t.Fatalf("updated false-verified profile was not persisted: %+v %v", actual, err)
+	}
+	identityScopeTest(t, s, func(scope IdentityScope) error {
+		cleared, err := scope.IdentityDAO().UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: user.UniAuthID}, now.Add(3*time.Minute))
+		if err != nil {
+			return err
+		}
+		if cleared.ID != user.ID || !cleared.CreatedAt.Equal(user.CreatedAt) || cleared.Email != nil || cleared.EmailVerified != nil || cleared.Name != nil || cleared.AvatarURL != nil {
+			t.Fatalf("profile clear changed identity or retained nullable fields: %+v", cleared)
+		}
+		return nil
+	})
+	if actual, _, err := testIdentityUser(s, ctx, user.ID); err != nil || actual.ID != user.ID || actual.Email != nil || actual.EmailVerified != nil || actual.Name != nil || actual.AvatarURL != nil || !actual.UpdatedAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("cleared profile was not persisted: %+v %v", actual, err)
+	}
+	if actual, _, err := testIdentityUser(s, ctx, bob.ID); err != nil || !reflect.DeepEqual(actual, bob) {
+		t.Fatalf("other account changed after profile update: %+v %v", actual, err)
+	}
 	for _, op := range []func(IdentityScope) error{
 		func(sc IdentityScope) error {
 			_, err := sc.IdentityDAO().ConsumeLogin(ctx, login.StateHash, login.BrowserBindingHash, now)

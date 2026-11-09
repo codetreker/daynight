@@ -89,7 +89,7 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	db := &postgres.Store{Pool: pool}
-	handler := projectTestHandler(t, db, io.Discard)
+	handler := projectDatabaseTestHandler(t, db, io.Discard)
 	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Stress Steps", RepoURL: "https://example.com/stress-steps", ExpectedUserID: handler.principal.UserID})), 201)
 	task := createHTTPTask(t, handler, project.ID, "Parent")
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 0, time.UTC)

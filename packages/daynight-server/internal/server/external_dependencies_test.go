@@ -1,91 +1,134 @@
 package server
 
 import (
-	"context"
-	"io"
 	"net/http"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	done := createHTTPTask(t, handler, project.ID, "Completed prerequisite")
-	done = setHTTPTask(t, handler, setHTTPTask(t, handler, done, "in_progress"), "done")
-	pending := createHTTPTask(t, handler, project.ID, "Unfinished prerequisite")
-	target := createHTTPTask(t, handler, project.ID, "External dependencies", pending.ID, done.ID)
-	target = updateHTTPTask(t, handler, target, map[string]any{"allowAgents": true})
+	f := newExternalHTTPFixture(t)
+	done := externalHTTPRecord(f.project.ID, externalHTTPID('a'), "Completed prerequisite")
+	done.Status, done.Ready = model.TaskDone, false
+	started, completed := done.CreatedAt.Add(time.Second), done.CreatedAt.Add(2*time.Second)
+	done.StartedAt, done.CompletedAt = &started, &completed
+	pending := externalHTTPRecord(f.project.ID, externalHTTPID('b'), "Unfinished prerequisite")
+	current := externalHTTPRecord(f.project.ID, "", "External dependencies")
+	current.Description = "initial description"
+	current.DependsOn, current.BlockedBy, current.Ready = []string{done.ID, pending.ID}, []string{pending.ID}, false
+	values := externalHTTPWrite(current)
+	f.mutation(nil, &values, &current, []model.Task{done, pending}, true)
+	target := createHTTPTask(t, f.handler, f.project.ID, current.Title, pending.ID, done.ID)
+	externalHTTPCheck(t, target, externalHTTPAPI(current))
 	if target.ExternalDependsOn == nil || len(target.ExternalDependsOn) != 0 {
 		t.Fatalf("new HTTP dependency is not normal: %#v", target)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_dependencies SET external=true WHERE project_id=$1 AND task_id=$2`, project.ID, target.ID); err != nil {
-		t.Fatal(err)
-	}
-	target = readHTTPTask(t, handler, target)
+	enabled := externalHTTPChanged(current)
+	enabled.AllowAgents = true
+	target = f.update(current, enabled, map[string]any{"allowAgents": true}, []model.Task{done, pending}, true)
+	current = enabled
 	expected := []string{done.ID, pending.ID}
-	slices.Sort(expected)
+	current.ExternalDependsOn = slices.Clone(expected)
+	f.read(current)
+	target = readHTTPTask(t, f.handler, target)
 	if !slices.Equal(target.ExternalDependsOn, expected) || !slices.Equal(target.BlockedBy, []string{pending.ID}) || target.Ready {
 		t.Fatalf("HTTP full read lost external scheduling semantics: %#v", target)
 	}
 	for _, allowed := range []bool{false, true} {
 		before := target
-		target = updateHTTPTask(t, handler, target, map[string]any{"allowAgents": allowed})
+		after := externalHTTPChanged(current)
+		after.AllowAgents = allowed
+		target = f.update(current, after, map[string]any{"allowAgents": allowed}, []model.Task{done, pending}, true)
+		current = after
 		preserved := target
 		preserved.AllowAgents, preserved.Version, preserved.UpdatedAt = before.AllowAgents, before.Version, before.UpdatedAt
 		if target.AllowAgents != allowed || target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) {
 			t.Fatalf("permission update changed classified task: before=%#v after=%#v", before, target)
 		}
-		if actual := readHTTPTask(t, handler, target); !reflect.DeepEqual(actual, target) {
-			t.Fatal("permission update lost classified task on readback")
+		f.read(current)
+		if actual := readHTTPTask(t, f.handler, target); !reflect.DeepEqual(actual, target) {
+			t.Fatal("permission read projection lost classified task")
 		}
 	}
 	before := target
 	references := []api.PullRequestProperty{{URL: "https://example.test/pr", Title: "Evidence"}}
-	target = updateHTTPTask(t, handler, target, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, references)}})
+	after := externalHTTPChanged(current)
+	after.Properties = model.TaskProperties{"pullRequests": rawProperty(t, references)}
+	target = f.update(current, after, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, references)}}, []model.Task{done, pending}, true)
+	current = after
 	preserved := target
 	preserved.Properties, preserved.Version, preserved.UpdatedAt = before.Properties, before.Version, before.UpdatedAt
 	if target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !slices.Equal(apiPullRequests(t, target.Properties), references) || !reflect.DeepEqual(preserved, before) {
 		t.Fatalf("property update changed classified task: before=%#v after=%#v", before, target)
 	}
-	if actual := readHTTPTask(t, handler, target); !reflect.DeepEqual(actual, target) {
-		t.Fatal("property update lost classified task on readback")
+	f.read(current)
+	if actual := readHTTPTask(t, f.handler, target); !reflect.DeepEqual(actual, target) {
+		t.Fatal("property read projection lost classified task")
 	}
 	for _, value := range []any{nil, false, []string{target.ID}, []string{done.ID, strings.ToUpper(done.ID)}} {
-		assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Invalid external subset", "dependsOn": []string{done.ID}, "externalDependsOn": value})), http.StatusBadRequest, "invalid_input")
-		assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(target), jsonBody(t, map[string]any{"version": target.Version, "externalDependsOn": value})), http.StatusBadRequest, "invalid_input")
+		f.noStorage()
+		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Invalid external subset", "dependsOn": []string{done.ID}, "externalDependsOn": value})), http.StatusBadRequest, "invalid_input")
+		_, semantic := value.([]string)
+		f.rejectedPatch(current, jsonBody(t, map[string]any{"version": target.Version, "externalDependsOn": value}), semantic, "invalid_input")
 	}
-	if after := readHTTPTask(t, handler, target); !reflect.DeepEqual(after, target) {
-		t.Fatal("invalid external subset changed task or classification")
+	f.read(current)
+	if after := readHTTPTask(t, f.handler, target); !reflect.DeepEqual(after, target) {
+		t.Fatal("invalid external subset changed task projection")
 	}
-	target = updateHTTPTask(t, handler, target, map[string]any{"title": "Preserved classification"})
+	renamed := externalHTTPChanged(current)
+	renamed.Title = "Preserved classification"
+	target = f.update(current, renamed, map[string]any{"title": "Preserved classification"}, []model.Task{done, pending}, true)
+	current = renamed
 	if !slices.Equal(target.ExternalDependsOn, expected) {
-		t.Fatal("HTTP mutation response lost stored classification")
+		t.Fatal("HTTP mutation response lost supplied classification")
 	}
-	for _, action := range []string{"todo"} {
-		target = setHTTPTask(t, handler, target, action)
-		if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, expected) {
-			t.Fatalf("%s response lost stored classification", action)
-		}
+	target = f.status(current, current)
+	if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, expected) {
+		t.Fatal("todo response lost classification")
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"})), http.StatusConflict, "dependency_unsatisfied")
-	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID), ""), http.StatusOK)
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, target.ID), ""), http.StatusOK)
+	f.mutation(&current, nil, nil, nil, false)
+	assertProjectError(t, projectRequest(f.handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"})), http.StatusConflict, "dependency_unsatisfied")
+	f.page([]model.Task{done, pending, current}, nil, nil)
+	page := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), ""), http.StatusOK)
+	f.graph(current.ID, []model.Task{done, pending, current})
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(f.handler, http.MethodGet, graphPath(f.project.ID, current.ID), ""), http.StatusOK)
 	if len(page.Items) != 3 || !reflect.DeepEqual(page.Items[2], target) || len(graph.Tasks) != 3 || !slices.Equal(graph.Tasks[2].ExternalDependsOn, expected) || graph.ObservedAt.IsZero() {
 		t.Fatalf("HTTP list/graph lost classification or observation: %#v %#v", page, graph)
 	}
-	pending = setHTTPTask(t, handler, setHTTPTask(t, handler, pending, "in_progress"), "done")
-	ready := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"?status=todo&ready=true", ""), http.StatusOK)
-	if len(ready.Items) != 1 || ready.Items[0].ID != target.ID || !slices.Equal(ready.Items[0].ExternalDependsOn, expected) {
-		t.Fatalf("HTTP ready projection lost classification: %#v", ready)
+	pendingStarted := externalHTTPChanged(pending)
+	pendingStarted.Status, pendingStarted.Ready = model.TaskInProgress, false
+	pendingStartedAt := pendingStarted.UpdatedAt
+	pendingStarted.StartedAt = &pendingStartedAt
+	f.status(pending, pendingStarted)
+	pendingDone := externalHTTPChanged(pendingStarted)
+	pendingDone.Status = model.TaskDone
+	pendingDoneAt := pendingDone.UpdatedAt
+	pendingDone.CompletedAt = &pendingDoneAt
+	f.status(pendingStarted, pendingDone)
+	readyRow := current
+	readyRow.BlockedBy, readyRow.Ready = []string{}, true
+	status, ready := model.TaskTodo, true
+	f.page([]model.Task{readyRow}, &status, &ready)
+	readyPage := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID)+"?status=todo&ready=true", ""), http.StatusOK)
+	if len(readyPage.Items) != 1 || readyPage.Items[0].ID != target.ID || !slices.Equal(readyPage.Items[0].ExternalDependsOn, expected) {
+		t.Fatalf("HTTP ready projection lost classification: %#v", readyPage)
 	}
-	target = setHTTPTask(t, handler, ready.Items[0], "in_progress")
-	target = setHTTPTask(t, handler, target, "done")
+	startedRow := externalHTTPChanged(readyRow)
+	startedRow.Status, startedRow.Ready = model.TaskInProgress, false
+	targetStartedAt := startedRow.UpdatedAt
+	startedRow.StartedAt = &targetStartedAt
+	target = f.status(readyRow, startedRow)
+	completedRow := externalHTTPChanged(startedRow)
+	completedRow.Status = model.TaskDone
+	targetCompletedAt := completedRow.UpdatedAt
+	completedRow.CompletedAt = &targetCompletedAt
+	target = f.status(startedRow, completedRow)
 	if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, expected) || target.StartedAt == nil || target.CompletedAt == nil {
 		t.Fatalf("HTTP execution response lost classification or timing: %#v", target)
 	}

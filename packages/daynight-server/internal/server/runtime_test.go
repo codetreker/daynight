@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,27 +23,14 @@ import (
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 func testConfig(t *testing.T) configpkg.Config {
 	t.Helper()
-	url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if url == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
-	}
 	config := configuredTestConfig()
-	config.DatabaseURL = url
 	config.StorageRoot = testStorageRoot(t)
 	return config
 }
@@ -78,37 +67,29 @@ func await[T any](t *testing.T, channel <-chan T) T {
 	}
 }
 
-func awaitSleepingQuery(t *testing.T, databaseURL, query string) {
+func runtimeWaitOperation(t *testing.T, database *runtimeTestStore, entered chan<- struct{}, result chan<- error) http.Handler {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	observer, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "observed": 1})
+	database.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
+		plan.Called("snapshot")
+		scope := newHTTPTestSnapshot(t)
+		scope.ObservedAtCall = func(inner context.Context) (time.Time, error) {
+			plan.Called("observed")
+			if inner != ctx {
+				unexpectedHTTPCall(t, "runtime snapshot context")
+			}
+			close(entered)
+			<-inner.Done()
+			return time.Time{}, inner.Err()
+		}
+		return fn(scope)
 	}
-	defer func() {
-		closeContext, closeCancel := context.WithTimeout(context.Background(), time.Second)
-		defer closeCancel()
-		if err := observer.Close(closeContext); err != nil {
-			t.Error(err)
-		}
-	}()
-	for {
-		var sleeping bool
-		if err := observer.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE datname=current_database() AND pid<>pg_backend_pid() AND query=$1
-			AND state='active' AND wait_event_type='Timeout' AND wait_event='PgSleep')`, query).Scan(&sleeping); err != nil {
-			t.Fatal(err)
-		}
-		if sleeping {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("database query did not enter pg_sleep")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	return http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		result <- database.ReadSnapshot(request.Context(), func(scope store.SnapshotScope) error {
+			_, err := scope.ObservedAt(request.Context())
+			return err
+		})
+	})
 }
 
 func cleanupCancellationRequest(t *testing.T, cancelRequest, stopRuntime context.CancelFunc, clientDone, runtimeDone <-chan struct{}) {
@@ -184,8 +165,8 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 	if err := await(t, result); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dependencies.Store.Pool.Acquire(context.Background()); err == nil {
-		t.Fatal("database pool remained open")
+	if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("application dependency remained open: %v", err)
 	}
 	if object, err := dependencies.Files.Open(context.Background(), "runtime", "active.txt"); err == nil {
 		object.Body.Close()
@@ -198,22 +179,13 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 	listener.Close()
 }
 
-func TestForcedDrainCancelsDatabaseWork(t *testing.T) {
+func TestForcedDrainCancelsAdmittedSnapshot(t *testing.T) {
 	config := testConfig(t)
 	config.ShutdownTimeout = 30 * time.Millisecond
-	query := "select pg_sleep(10) /* " + uuid.NewString() + " */"
+	entered := make(chan struct{})
 	queryResult := make(chan error, 1)
 	runtime, _ := startRuntimeTest(t, config, func(dependencies *runtimeTestResources) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			connection, err := dependencies.Store.Pool.Acquire(r.Context())
-			if err != nil {
-				queryResult <- err
-				return
-			}
-			defer connection.Release()
-			_, err = connection.Exec(r.Context(), query)
-			queryResult <- err
-		})
+		return runtimeWaitOperation(t, dependencies.Store, entered, queryResult)
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	requestContext, cancelRequest := context.WithCancel(context.Background())
@@ -236,7 +208,7 @@ func TestForcedDrainCancelsDatabaseWork(t *testing.T) {
 			response.Body.Close()
 		}
 	}()
-	awaitSleepingQuery(t, config.DatabaseURL, query)
+	await(t, entered)
 	start := time.Now()
 	cancel()
 	if err := await(t, result); !errors.Is(err, context.DeadlineExceeded) {
@@ -246,77 +218,80 @@ func TestForcedDrainCancelsDatabaseWork(t *testing.T) {
 		t.Fatal("shutdown exceeded bound")
 	}
 	if err := await(t, queryResult); !errors.Is(err, context.Canceled) {
-		t.Fatalf("request did not cancel query: %v", err)
+		t.Fatalf("request did not cancel snapshot: %v", err)
 	}
 	await(t, clientDone)
 }
 
-func TestRuntimeDrainTaskWritePersistenceAndCancellation(t *testing.T) {
+type runtimeTaskDAO struct {
+	store.TaskWriteDAO
+	t        *testing.T
+	expected store.TaskWrite
+	returned model.Task
+	calls    atomic.Int32
+}
+
+func (dao *runtimeTaskDAO) UpdateTask(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
+	if ctx.Err() != nil || id != dao.returned.ID || !reflect.DeepEqual(values, dao.expected) || dao.calls.Add(1) != 1 {
+		unexpectedHTTPCall(dao.t, "runtime task write")
+	}
+	return dao.returned, nil
+}
+
+type runtimeProjectScope struct {
+	store.ProjectWriteScope
+	tasks store.TaskWriteDAO
+}
+
+func (scope runtimeProjectScope) TaskDAO() store.TaskWriteDAO { return scope.tasks }
+
+func TestRuntimeDrainCompletesOrCancelsAdmittedTaskWrite(t *testing.T) {
 	for _, forced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graceful", true: "deadline"}[forced], func(t *testing.T) {
 			config := testConfig(t)
-			config.DatabaseURL = testsupport.ServiceDatabaseURL(t)
 			config.ShutdownTimeout = 5 * time.Second
 			if forced {
 				config.ShutdownTimeout = 250 * time.Millisecond
 			}
-			var principal model.Principal
-			var task model.Task
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseWrite()
+			projectID, taskID := "b7740e45-48ed-4a87-ab82-b5136f21d25f", "e9f44f7e-f1ec-480c-bef2-9b1dc3848b76"
+			values := store.TaskWrite{Title: "Drained write", Status: model.TaskTodo, DependsOn: []string{}, ExternalDependsOn: []string{}, Properties: map[string]json.RawMessage{}}
+			row := model.Task{ID: taskID, ProjectID: projectID, Title: "Drained write", Status: model.TaskTodo, Version: 2}
+			dao := &runtimeTaskDAO{t: t, expected: values, returned: row}
+			var transactions atomic.Int32
 			writeResult := make(chan error, 1)
 			runtime, _ := startRuntimeTest(t, config, func(dependencies *runtimeTestResources) http.Handler {
-				principal = testsupport.ServicePrincipal(t, dependencies.Store)
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				project, err := projectservice.NewProjects(dependencies.Store).Create(ctx, principal, projectcore.CreateProject{ExpectedUserID: principal.UserID, Name: "Drain project", RepoURL: "host:repo"})
-				if err != nil {
-					t.Fatal(err)
+				dependencies.Store.WriteProjectCall = func(ctx context.Context, id string, callback func(store.ProjectWriteScope) error) (store.Completion, error) {
+					if id != projectID || transactions.Add(1) != 1 {
+						unexpectedHTTPCall(t, "runtime project write")
+					}
+					close(entered)
+					select {
+					case <-ctx.Done():
+						return store.Completion{Outcome: store.TransactionNotCommitted}, ctx.Err()
+					case <-release:
+					}
+					if err := callback(runtimeProjectScope{tasks: dao}); err != nil {
+						return store.Completion{Outcome: store.TransactionNotCommitted}, err
+					}
+					return store.Completion{Outcome: store.TransactionCommitted}, nil
 				}
-				tasks := taskservice.NewTasks(dependencies.Store)
-				task, err = tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Before drain"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					title := "Drained write"
-					_, err := tasks.Update(r.Context(), principal, task.ProjectID, task.ID, taskcore.UpdateTask{Version: task.Version, Title: &title})
+				return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					completion, err := dependencies.Store.WriteProject(request.Context(), projectID, func(scope store.ProjectWriteScope) error {
+						_, err := scope.TaskDAO().UpdateTask(request.Context(), taskID, values)
+						return err
+					})
 					writeResult <- err
-					if err != nil {
+					if err != nil || completion.Outcome != store.TransactionCommitted {
 						http.Error(w, "write failed", http.StatusServiceUnavailable)
 						return
 					}
 					_, _ = io.WriteString(w, "committed")
 				})
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			observer, err := pgx.Connect(ctx, config.DatabaseURL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
-				defer stop()
-				if err := observer.Close(cleanup); err != nil {
-					t.Error(err)
-				}
-			})
-			lock, err := observer.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			locked := true
-			t.Cleanup(func() {
-				if locked {
-					cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
-					defer stop()
-					if err := lock.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-						t.Error(err)
-					}
-				}
-			})
-			if _, err := lock.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, task.ProjectID); err != nil {
-				t.Fatal(err)
-			}
 			runContext, stopRuntime := context.WithCancel(context.Background())
 			requestContext, stopRequest := context.WithCancel(context.Background())
 			clientDone, runtimeDone := make(chan struct{}), make(chan struct{})
@@ -328,46 +303,25 @@ func TestRuntimeDrainTaskWritePersistenceAndCancellation(t *testing.T) {
 				body   string
 				err    error
 			}
-			clientResultChannel := make(chan clientResult, 1)
+			response := make(chan clientResult, 1)
 			client := &http.Client{Timeout: 10 * time.Second}
 			defer client.CloseIdleConnections()
 			go func() {
 				defer close(clientDone)
 				request, err := http.NewRequestWithContext(requestContext, http.MethodPut, "http://"+runtime.Address(), nil)
 				if err != nil {
-					clientResultChannel <- clientResult{err: err}
+					response <- clientResult{err: err}
 					return
 				}
-				response, err := client.Do(request)
+				result, err := client.Do(request)
 				if err != nil {
-					clientResultChannel <- clientResult{err: err}
+					response <- clientResult{err: err}
 					return
 				}
-				body, err := io.ReadAll(response.Body)
-				closeErr := response.Body.Close()
-				clientResultChannel <- clientResult{status: response.StatusCode, body: string(body), err: errors.Join(err, closeErr)}
+				body, err := io.ReadAll(result.Body)
+				response <- clientResult{status: result.StatusCode, body: string(body), err: errors.Join(err, result.Body.Close())}
 			}()
-			ticker := time.NewTicker(10 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				if _, err := lock.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
-					t.Fatal(err)
-				}
-				var waiting bool
-				if err := lock.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND wait_event_type='Lock' AND query LIKE 'SELECT id::text FROM projects WHERE id = % FOR UPDATE')`).Scan(&waiting); err != nil {
-					t.Fatal(err)
-				}
-				if waiting {
-					break
-				}
-				select {
-				case result := <-clientResultChannel:
-					t.Fatalf("request ended before the project lock barrier: %+v", result)
-				case <-ctx.Done():
-					t.Fatal("request did not wait for the project lock")
-				case <-ticker.C:
-				}
-			}
+			await(t, entered)
 			stopRuntime()
 			if forced {
 				if err := await(t, writeResult); !errors.Is(err, context.Canceled) {
@@ -376,10 +330,14 @@ func TestRuntimeDrainTaskWritePersistenceAndCancellation(t *testing.T) {
 				if err := await(t, runtimeResult); !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("deadline drain: %v", err)
 				}
-				if result := await(t, clientResultChannel); result.err == nil && result.status < 500 {
+				if result := await(t, response); result.err == nil && result.status < 500 {
 					t.Fatalf("expired drain reported a successful write: %+v", result)
 				}
 			} else {
+				deadline := time.NewTimer(5 * time.Second)
+				defer deadline.Stop()
+				ticker := time.NewTicker(time.Millisecond)
+				defer ticker.Stop()
 				for {
 					runtime.admission.Lock()
 					closing := runtime.closing
@@ -388,61 +346,42 @@ func TestRuntimeDrainTaskWritePersistenceAndCancellation(t *testing.T) {
 						break
 					}
 					select {
-					case <-ctx.Done():
+					case <-deadline.C:
 						t.Fatal("runtime did not begin graceful drain")
 					case <-ticker.C:
 					}
 				}
 				select {
 				case err := <-writeResult:
-					t.Fatalf("write finished before lock release: %v", err)
+					t.Fatalf("write finished before release: %v", err)
 				default:
 				}
 			}
-			if err := lock.Rollback(ctx); err != nil {
-				t.Fatal(err)
-			}
-			locked = false
+			releaseWrite()
 			if !forced {
 				if err := await(t, writeResult); err != nil {
 					t.Fatalf("drained write failed: %v", err)
 				}
-				if result := await(t, clientResultChannel); result.err != nil || result.status != http.StatusOK || result.body != "committed" {
+				if result := await(t, response); result.err != nil || result.status != http.StatusOK || result.body != "committed" {
 					t.Fatalf("drained HTTP response: %+v", result)
 				}
 				if err := await(t, runtimeResult); err != nil {
 					t.Fatalf("graceful drain: %v", err)
 				}
 			}
-			reopened, err := postgres.Open(ctx, config.DatabaseURL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer reopened.Close()
-			read, err := taskservice.NewTasks(reopened).Get(ctx, principal, task.ProjectID, task.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if forced {
-				if !reflect.DeepEqual(read, task) {
-					t.Fatalf("canceled write persisted after releasing lock: %+v", read)
-				}
-			} else if read.Title != "Drained write" || read.Version != task.Version+1 {
-				t.Fatalf("drained write did not persist across reopen: %+v", read)
+			if transactions.Load() != 1 || dao.calls.Load() != map[bool]int32{false: 1, true: 0}[forced] {
+				t.Fatalf("unexpected transaction/write calls: %d/%d", transactions.Load(), dao.calls.Load())
 			}
 		})
 	}
 }
 
-func TestClientCancellationReachesDatabase(t *testing.T) {
+func TestClientCancellationReachesAdmittedSnapshot(t *testing.T) {
 	config := testConfig(t)
-	query := "select pg_sleep(10) /* " + uuid.NewString() + " */"
+	entered := make(chan struct{})
 	queryResult := make(chan error, 1)
 	runtime, dependencies := startRuntimeTest(t, config, func(dependencies *runtimeTestResources) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, err := dependencies.Store.Pool.Exec(r.Context(), query)
-			queryResult <- err
-		})
+		return runtimeWaitOperation(t, dependencies.Store, entered, queryResult)
 	})
 	root, stop := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -467,13 +406,13 @@ func TestClientCancellationReachesDatabase(t *testing.T) {
 		}
 		response <- err
 	}()
-	awaitSleepingQuery(t, config.DatabaseURL, query)
+	await(t, entered)
 	cancel()
 	if err := await(t, response); !errors.Is(err, context.Canceled) {
 		t.Fatalf("client cancellation failed: %v", err)
 	}
 	if err := await(t, queryResult); !errors.Is(err, context.Canceled) {
-		t.Fatalf("query cancellation failed: %v", err)
+		t.Fatalf("snapshot cancellation failed: %v", err)
 	}
 	if err := dependencies.Store.Ready(context.Background()); err != nil {
 		t.Fatal(err)
@@ -499,14 +438,42 @@ func TestServeFailureAndAlreadyClosed(t *testing.T) {
 		if !closed && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("unexpected serve failure: %v", err)
 		}
-		if _, err := dependencies.Store.Pool.Acquire(context.Background()); err == nil {
-			t.Fatal("failed server leaked pool")
+		if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("failed server retained application dependency: %v", err)
 		}
 	}
 }
 
+type runtimeTestStore struct {
+	*httpTestStore
+	closed atomic.Bool
+}
+
+func (database *runtimeTestStore) Ready(ctx context.Context) error {
+	if database.closed.Load() {
+		return os.ErrClosed
+	}
+	return ctx.Err()
+}
+
+func (database *runtimeTestStore) Close() { database.closed.Store(true) }
+
+func (database *runtimeTestStore) ReadSnapshot(ctx context.Context, callback func(store.SnapshotScope) error) error {
+	if err := database.Ready(ctx); err != nil {
+		return err
+	}
+	return database.httpTestStore.ReadSnapshot(ctx, callback)
+}
+
+func (database *runtimeTestStore) WriteProject(ctx context.Context, id string, callback func(store.ProjectWriteScope) error) (store.Completion, error) {
+	if err := database.Ready(ctx); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return database.httpTestStore.WriteProject(ctx, id, callback)
+}
+
 type runtimeTestResources struct {
-	Store *postgres.Store
+	Store *runtimeTestStore
 	Files *local.Storage
 }
 
@@ -516,13 +483,9 @@ func startRuntimeTest(t *testing.T, config configpkg.Config, handler func(*runti
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := postgres.Open(context.Background(), config.DatabaseURL)
-	if err != nil {
-		_ = files.Close()
-		t.Fatal(err)
-	}
-	resources := &runtimeTestResources{Store: store, Files: files}
-	closeApp := func(context.Context) error { store.Close(); return files.Close() }
+	database := &runtimeTestStore{httpTestStore: newHTTPTestStore(t)}
+	resources := &runtimeTestResources{Store: database, Files: files}
+	closeApp := func(context.Context) error { database.Close(); return files.Close() }
 	runtime, err := Start(context.Background(), config.ListenAddress, config.StartupTimeout, config.ShutdownTimeout, testLogger(), handler(resources), nil, nil, nil, closeApp)
 	if err != nil {
 		_ = closeApp(context.Background())
@@ -531,7 +494,9 @@ func startRuntimeTest(t *testing.T, config configpkg.Config, handler func(*runti
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = runtime.Close(ctx)
+		if err := runtime.Close(ctx); err != nil && !database.closed.Load() {
+			t.Errorf("runtime cleanup retained its dependencies: %v", err)
+		}
 	})
 	return runtime, resources
 }

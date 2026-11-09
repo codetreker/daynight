@@ -967,23 +967,42 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Domain packages own their HTTP protocol regressions. Task and Session HTTP unit
-tests control directly called service/use-case results while retaining actual
-routing, credential middleware, HTTP and socket behavior. Their
-[Task](#business-rules-and-dao-mocks) and [Session](#session-http-tests) guides
-identify those boundaries. Attachment fixtures retain their own
-[protocol and native-resource scope](#attachment-http-tests). Normal assembled
-API flows run separately in `cmd/integration_tests`.
+Root `internal/server` unit tests assemble actual modules, routes and HTTP
+authentication over strict DAO/scope callbacks. Fixed domain records, query
+results, proposed writes, call counts and transaction completion are explicit
+test inputs. Callback writes do not determine future reads or simulate committed
+state. The complete ordinary root selection executes with
+`DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
+SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
+pinned auth fixture as described in [validation](#validate).
 
-The root `internal/server` package retains private composition, shared
-startup/channel and runtime shutdown-ordering tests. Shared scenarios have one
-owner; different preparation, protocol and mechanism proofs remain separate.
-The [HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
-preserves the original consolidation rationale. The
+Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
+remain real where they are the mechanism being verified. Root HTTP control and
+WebSocket traffic share one actual application and Engine. Startup, channel,
+serialization and shutdown cases retain their private composition observations
+and capacity boundaries. Store tests own actual SQL, database-clock expiry after
+locks, transaction outcomes and committed readback; process tests own complete
+entry-point drain and restart persistence. The
+[root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
+records these fixtures and the distinction between logical and physical evidence.
+
+Domain packages own their HTTP adapters. Task and Session HTTP unit tests
+control directly called service/use-case results while retaining actual
+credential middleware, HTTP encoding, response loss and socket/resource
+handling. Their [Task](#business-rules-and-dao-mocks) and
+[Session](#session-http-tests) guides identify those boundaries. Attachment
+fixtures retain their own [protocol and native-resource scope](#attachment-http-tests).
+Normal assembled API flows run separately in `cmd/integration_tests`, including
+`TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`.
+
+Shared scenario bodies have one owner; distinct internal composition assertions
+remain in the root package. The
+[scenario consolidation](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+preserves the original rationale. The
 [Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
-owns the common responsibility rule; the
+owns responsibility boundaries; the
 [Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
-records the Session collaborator boundary and retained proofs.
+records the direct Session binding and retained proofs.
 
 ### Session HTTP tests
 

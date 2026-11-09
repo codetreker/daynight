@@ -29,7 +29,7 @@ func startBoundaryRuntime(t *testing.T, handler http.Handler) string {
 	go func() { done <- rt.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		if err := <-done; err != nil {
+		if err := await(t, done); err != nil {
 			t.Errorf("runtime: %v", err)
 		}
 	})
@@ -121,7 +121,7 @@ func TestBodyDeadlineAndKeepAliveSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-entered
+	await(t, entered)
 	reader := bufio.NewReader(conn)
 	response, err := http.ReadResponse(reader, nil)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestBodyDeadlineAndKeepAliveSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-entered
+	await(t, entered)
 	first, err := http.ReadResponse(reader2, nil)
 	if err != nil {
 		t.Fatal(err)

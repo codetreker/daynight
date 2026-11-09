@@ -42,9 +42,16 @@ func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 			if rollback && result != nil || !rollback && !errors.Is(result, model.ErrNotFound) {
 				t.Fatalf("create: %v", result)
 			}
-			var count int
-			if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM project_ownership WHERE project_id=$1`, projectID).Scan(&count); err != nil || count != map[bool]int{false: 0, true: 1}[rollback] {
-				t.Fatalf("ownership count %d: %v", count, err)
+			var projects, ownerships, grants int
+			if err := s.Pool.QueryRow(ctx, `SELECT
+				(SELECT count(*) FROM projects WHERE id=$1),
+				(SELECT count(*) FROM project_ownership WHERE project_id=$1),
+				(SELECT count(*) FROM project_grants WHERE project_id=$1)`, projectID).Scan(&projects, &ownerships, &grants); err != nil {
+				t.Fatal(err)
+			}
+			want := map[bool]int{false: 0, true: 1}[rollback]
+			if projects != want || ownerships != want || grants != want {
+				t.Fatalf("Team deletion/creation left inconsistent Project resources: projects=%d ownerships=%d grants=%d want=%d", projects, ownerships, grants, want)
 			}
 		})
 	}

@@ -138,6 +138,13 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var consumedBy string
+	var acceptedGrants int
+	if err := s.Pool.QueryRow(ctx, `SELECT consumed_by::text,
+		(SELECT count(*) FROM project_grants WHERE project_id=$2 AND user_id=$3)
+		FROM project_invitations WHERE id=$1`, invitation.ID, project.ID, member.UserID).Scan(&consumedBy, &acceptedGrants); err != nil || consumedBy != member.UserID || acceptedGrants != 1 {
+		t.Fatalf("committed invitation actor and unique grant: %q %d %v", consumedBy, acceptedGrants, err)
+	}
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, member, project.ID)
 		if err != nil || (access.ProjectID != project.ID || access.UserID != member.UserID || access.Role != model.ProjectMemberRole || !reflect.DeepEqual(access.DirectGrant, &invited.Grant)) {

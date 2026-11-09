@@ -3,16 +3,22 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -37,15 +43,15 @@ func startupRequest(f *sessionHTTPFixture, method, path, body string) *httptest.
 	return response
 }
 
-func TestStartupReportBeforeHelloPersistsAndNegotiatesCurrent(t *testing.T) {
+func TestStartupReportBeforeHelloNegotiatesCurrent(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	report := startupBody(f)
-	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{
-		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report,
-	})), http.StatusOK)
+	updated := sendStartup(t, f, report)
 	if updated.Properties["sessionStartup"] == nil {
-		t.Fatal("startup report was not persisted")
+		t.Fatal("startup response omitted its report")
 	}
+	value := startupReportValue(t, report)
+	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(updated), &value), f.record)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	var expected map[string]any
 	if err := json.Unmarshal([]byte(jsonBody(t, report)), &expected); err != nil {
@@ -54,6 +60,7 @@ func TestStartupReportBeforeHelloPersistsAndNegotiatesCurrent(t *testing.T) {
 	if !reflect.DeepEqual(current["startupReport"], expected) {
 		t.Fatalf("current lost startup evidence: %#v", current)
 	}
+	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(updated), &value), f.record)
 	legacy := decodeResponse[map[string]any](t, projectRequest(f.handler, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if _, exists := legacy["startupReport"]; exists || len(legacy) != 2 {
 		t.Fatal("legacy current response changed shape")
@@ -68,18 +75,32 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "phase": "waiting",
 		"nativeSessionId": nil, "herdr": nil, "startupReport": report,
 	})
+	currentTask := startupTaskModel(f.task)
+	value := startupReportValue(t, report)
+	expectedTask := startupReportedTask(t, currentTask, value)
+	expectedTask = startupReplaceWorker(t, expectedTask, func(worker *api.WorkerClaim) {
+		worker.Phase = "waiting"
+		worker.NativeSessionID = nil
+		worker.Herdr = nil
+	})
+	startupExpectWrite(t, f, currentTask, &value, true, &expectedTask, nil, f.handler.principal, nil)
 	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusOK)
+	if !reflect.DeepEqual(updated, startupTaskDocument(t, expectedTask)) {
+		t.Fatal("worker startup response changed unrelated Task fields")
+	}
 	worker := apiWorker(t, updated.Properties)
 	if worker.ClaimID != f.snapshot.ClaimID || worker.UserID != f.handler.principal.UserID || worker.Phase != "waiting" || worker.NativeSessionID != nil || worker.Herdr != nil {
 		t.Fatalf("worker update lost its identity or waiting state: %+v", worker)
 	}
 
+	startupExpectTaskRead(t, f, expectedTask)
 	read := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodGet, taskPath(f.task), ""), http.StatusOK)
 	readWorker := apiWorker(t, read.Properties)
 	if read.Version != updated.Version || !reflect.DeepEqual(readWorker, worker) || !reflect.DeepEqual(read.Properties["sessionStartup"], updated.Properties["sessionStartup"]) {
-		t.Fatal("worker and startup report did not survive task readback")
+		t.Fatal("Task read response changed the supplied worker or startup report")
 	}
 
+	startupExpectCurrent(t, f, startupSessionTask(t, expectedTask, &value), f.record)
 	response := startupRequest(f, http.MethodGet, f.base+"/current", "")
 	current := decodeResponse[struct {
 		Status        string          `json:"status"`
@@ -108,12 +129,29 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 
 func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any) api.Task {
 	t.Helper()
-	f.task = decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report})), http.StatusOK)
+	current := startupTaskModel(f.task)
+	value := startupReportValue(t, report)
+	previous, err := taskproperty.SessionStartup(current.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := current
+	var returned *model.Task
+	if !reflect.DeepEqual(previous, &value) {
+		expected = startupReportedTask(t, current, value)
+		returned = &expected
+	}
+	startupExpectWrite(t, f, current, &value, true, returned, nil, f.handler.principal, nil)
+	f.task = decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": current.Version, "claimId": f.snapshot.ClaimID, "startupReport": report})), http.StatusOK)
+	if !reflect.DeepEqual(f.task, startupTaskDocument(t, expected)) {
+		t.Fatal("startup response changed expected Task fields")
+	}
 	return f.task
 }
 
 func TestStartupReportOrderingIdentityAndMissingEvidence(t *testing.T) {
 	f := sessionHTTPSetup(t)
+	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), nil), f.record)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if value, exists := current["startupReport"]; !exists || value != nil {
 		t.Fatal("missing evidence is not explicit null")
@@ -138,11 +176,19 @@ func TestStartupReportOrderingIdentityAndMissingEvidence(t *testing.T) {
 		} else {
 			bad[field] = uuid.NewString()
 		}
+		badValue := startupReportValue(t, bad)
+		var matchedReport *sp.StartupReport = &badValue
+		if field == "claimId" {
+			matchedReport = nil
+		}
+		startupExpectWrite(t, f, startupTaskModel(f.task), matchedReport, field == "revision", nil, nil, f.handler.principal, nil)
 		response := startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": bad}))
 		assertProjectError(t, response, http.StatusConflict, "claim_conflict")
 	}
 	bad := startupBody(f)
 	bad["revision"] = "2"
+	badValue := startupReportValue(t, bad)
+	startupExpectWrite(t, f, startupTaskModel(f.task), &badValue, true, nil, nil, f.handler.principal, nil)
 	assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": bad})), http.StatusConflict, "claim_conflict")
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(f.task), jsonBody(t, map[string]any{"version": f.task.Version, "properties": map[string]any{"sessionStartup": report}})), http.StatusBadRequest, "invalid_input")
 }
@@ -154,17 +200,27 @@ func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	previous := "1"
 	nextInstance := uuid.NewString()
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: nextInstance, ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
-	decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, grant)), http.StatusOK)
+	f.store.WriteSessionCall = f.store.run
+	f.mintGrant(t, grant)
+	nextRecord := f.record
+	nextRecord.Snapshot.ExecutionGeneration = "2"
+	nextRecord.Snapshot.Identity.ControllerInstanceID = nextInstance
+	old := startupReportValue(t, report)
+	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), &old), nextRecord)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("new generation displays previous startup evidence")
 	}
 	report["revision"] = "999"
+	old = startupReportValue(t, report)
+	startupExpectWrite(t, f, startupTaskModel(f.task), &old, false, nil, nil, f.handler.principal, nil)
 	assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report})), http.StatusConflict, "claim_conflict")
 	report["revision"] = "1"
 	report["executionGeneration"] = "2"
 	report["controllerInstanceId"] = nextInstance
 	sendStartup(t, f, report)
+	currentReport := startupReportValue(t, report)
+	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), &currentReport), nextRecord)
 	current = decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] == nil {
 		t.Fatal("current generation evidence not readable")
@@ -177,10 +233,21 @@ func TestStartupReportCannotWriteAfterCredentialRevocationOrCompletion(t *testin
 			f := sessionHTTPSetup(t)
 			report := startupBody(f)
 			if terminal {
-				f.task = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPut, taskPath(f.task)+"/status", jsonBody(t, map[string]any{"version": f.task.Version, "status": "done", "claimId": f.snapshot.ClaimID})), http.StatusOK)
+				current := startupTaskModel(f.task)
+				current.Status = model.TaskDone
+				current = startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "completed" })
+				startupExpectWrite(t, f, current, nil, false, nil, nil, f.handler.principal, nil)
 			} else {
-				if _, err := f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
-					t.Fatal(err)
+				f.store.WriteIdentityCall = func(ctx context.Context, work func(store.IdentityScope) error) (store.Completion, error) {
+					dao := &startupRevokedCredential{httpAuthenticationDAO: httpAuthenticationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: f.handler.principal, hash: secret.Hash(f.handler.token)}}
+					err := work(httpAuthenticationScope{t: t, dao: dao})
+					if dao.calls != 1 {
+						t.Errorf("revoked credential calls=%d, want1", dao.calls)
+					}
+					if err != nil {
+						return store.Completion{Outcome: store.TransactionNotCommitted}, err
+					}
+					return store.Completion{Outcome: store.TransactionCommitted}, nil
 				}
 			}
 			response := startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report}))
@@ -196,33 +263,51 @@ func TestStartupReportCannotWriteAfterCredentialRevocationOrCompletion(t *testin
 func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	sendStartup(t, f, startupBody(f))
+	current := startupTaskModel(f.task)
+	released := startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "released" })
+	released.Status, released.Version, released.UpdatedAt = model.TaskTodo, current.Version+1, current.UpdatedAt.Add(time.Second)
+	released.Ready = true
+	startupExpectWrite(t, f, current, nil, false, &released, nil, f.handler.principal, nil)
 	f.task = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskPath(f.task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
-	body := workerClaimBody(f.task.Version)
-	body["agentControlMode"] = "web"
+	if !reflect.DeepEqual(f.task, startupTaskDocument(t, released)) {
+		t.Fatal("release changed unrelated Task state")
+	}
+	now := released.UpdatedAt.Add(time.Second)
+	claimID, workerID, worktreeID, machineID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	body := map[string]any{"version": released.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Startup worker"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": worktreeID}
+	claimed := released
+	claimed.Properties = taskproperty.Clone(released.Properties)
+	delete(claimed.Properties, "sessionStartup")
+	claimed.Properties["worker"] = rawProperty(t, api.WorkerClaim{ClaimID: claimID, State: "active", UserID: f.handler.principal.UserID, WorkerID: workerID, Machine: api.WorkerMachine{ID: machineID, Name: "Startup worker"}, Platform: "linux", Agent: "codex", AgentControlMode: "web", WorktreeID: worktreeID, Phase: "preparing", ClaimedAt: now})
+	claimed.Status, claimed.Version, claimed.UpdatedAt = model.TaskInProgress, released.Version+1, now
+	claimed.Ready = false
+	startupExpectWrite(t, f, released, nil, false, &claimed, &now, f.handler.principal, nil)
 	next := claimHTTPWorker(t, f.handler, f.task, body)
-	if next.Properties["sessionStartup"] != nil {
-		t.Fatal("new claim retains old startup evidence")
+	if next.Properties["sessionStartup"] != nil || !reflect.DeepEqual(next, startupTaskDocument(t, claimed)) {
+		t.Fatal("new claim retains old startup evidence or changes unrelated Task fields")
 	}
 }
 
 func TestStartupReportRejectsAnotherMemberAndForeignWorkerBinding(t *testing.T) {
 	f := sessionHTTPSetup(t)
-	other := assignmentHTTPMember(t, f.db, f.task.ProjectID)
-	caller := assigneeHTTPIdentity(t, f.db, f.handler, other)
+	current := startupTaskModel(f.task)
+	other := f.handler.principal
+	other.UserID, other.CredentialID = uuid.NewString(), uuid.NewString()
+	otherStore := newHTTPTestStoreForPrincipal(t, other)
+	originalStore := f.store.httpTestStore
+	f.store.httpTestStore = otherStore
+	startupExpectWrite(t, f, current, nil, false, nil, nil, other, nil)
+	caller := resourceTestServerForPrincipal(t, f.store, attachmentTestFiles(t), io.Discard, other)
+	extendedWorkerTestHandler(caller)
 	body := jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": startupBody(f)})
 	assertProjectError(t, projectRequest(caller, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusForbidden, "forbidden")
+	f.store.httpTestStore = originalStore
 	for _, field := range []string{"workerId", "worktreeId"} {
-		var old string
-		if err := f.db.Pool.QueryRow(context.Background(), `SELECT snapshot->'identity'->>$2 FROM task_sessions WHERE id=$1`, f.snapshot.SessionID, field).Scan(&old); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.db.Pool.Exec(context.Background(), `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,ARRAY['identity',$2],to_jsonb($3::text)) WHERE id=$1`, f.snapshot.SessionID, field, uuid.NewString()); err != nil {
-			t.Fatal(err)
-		}
-		assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusConflict, "claim_conflict")
-		if _, err := f.db.Pool.Exec(context.Background(), `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,ARRAY['identity',$2],to_jsonb($3::text)) WHERE id=$1`, f.snapshot.SessionID, field, old); err != nil {
-			t.Fatal(err)
-		}
+		t.Run(field, func(t *testing.T) {
+			report := startupReportValue(t, startupBody(f))
+			startupExpectWrite(t, f, current, &report, false, nil, nil, f.handler.principal, nil)
+			assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusConflict, "claim_conflict")
+		})
 	}
 }
 
@@ -231,24 +316,52 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	previous := "1"
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
 	grantBody := jsonBody(t, grant)
+	report := startupReportValue(t, startupBody(f))
 	reportBody := jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": startupBody(f)})
-	start := make(chan struct{})
-	granted := make(chan *httptest.ResponseRecorder, 1)
+	matched, grantFinished := make(chan struct{}), make(chan struct{})
+	var release sync.Once
+	reportDone := make(chan struct{})
+	finishGrant := func() { release.Do(func() { close(grantFinished) }) }
+	t.Cleanup(func() {
+		finishGrant()
+		select {
+		case <-reportDone:
+		case <-time.After(5 * time.Second):
+			t.Error("startup report request did not drain")
+		}
+	})
+	startupExpectWrite(t, f, startupTaskModel(f.task), &report, false, nil, nil, f.handler.principal, func() {
+		close(matched)
+		select {
+		case <-grantFinished:
+		case <-time.After(5 * time.Second):
+			t.Error("concurrent grant did not complete")
+			panic("grant timeout")
+		}
+	})
 	reported := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		<-start
-		granted <- projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", grantBody)
-	}()
-	go func() {
-		<-start
+		defer close(reportDone)
 		reported <- startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", reportBody)
 	}()
-	close(start)
-	decodeResponse[sessioncore.GrantResult](t, <-granted, http.StatusOK)
-	result := <-reported
-	if result.Code != http.StatusOK && result.Code != http.StatusConflict {
-		t.Fatalf("unexpected report result: %d %s", result.Code, result.Body)
+	select {
+	case <-matched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("report did not reach its Session fence")
 	}
+	f.store.WriteSessionCall = f.store.run
+	decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", grantBody), http.StatusOK)
+	finishGrant()
+	var result *httptest.ResponseRecorder
+	select {
+	case result = <-reported:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup report response did not complete")
+	}
+	assertProjectError(t, result, http.StatusConflict, "claim_conflict")
+	nextRecord := f.record
+	nextRecord.Snapshot.ExecutionGeneration, nextRecord.Snapshot.Identity.ControllerInstanceID = "2", grant.ControllerInstanceID
+	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), &report), nextRecord)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("racing old report crossed generation boundary")

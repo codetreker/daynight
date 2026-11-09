@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,106 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
+
+func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthFamilyIssue) {
+	t.Helper()
+	projectID, taskID := uuid.NewString(), uuid.NewString()
+	mustQueryExec(t, db, `INSERT INTO projects(id,name,repo_url) VALUES($1,'credential lock','example')`, projectID)
+	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'credential lock')`, taskID, projectID)
+	workerID := uuid.NewString()
+	putWorkerSnapshot(t, db, workerSnapshotFixture(issue.Grant.UserID, workerID, time.Now().UTC()))
+	bot := model.Bot{ID: uuid.NewString(), OwnerUserID: issue.Grant.UserID, WorkerID: workerID, Name: "Credential lock", RequestFingerprint: strings.Repeat("a", 64), ResolvedConfiguration: model.BotConfiguration{WorkerID: workerID, Cwd: "/ordinary", Provider: "codex", Args: []string{}}}
+	if err := writeBotTest(db, t.Context(), func(dao store.BotWriteDAO) error { return dao.InsertBot(t.Context(), bot) }); err != nil {
+		t.Fatal(err)
+	}
+	principal := model.Principal{Kind: model.OAuthCredential, UserID: issue.Grant.UserID, CredentialID: issue.AccessID}
+	for _, target := range []string{"task", "bot"} {
+		func() {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, issue.AccessID, issue.AccessExpiresAt)
+			_, err := db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
+				_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, time.Now())
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			holder, err := db.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(context.Background())
+			id, table, prefix := taskID, "tasks", "SELECT deleted_at FROM tasks WHERE project_id="
+			if target == "bot" {
+				id, table, prefix = bot.ID, "bots", "SELECT id::text FROM bots WHERE id="
+			}
+			if _, err := holder.Exec(ctx, `SELECT id FROM `+table+` WHERE id=$1 FOR UPDATE`, id); err != nil {
+				t.Fatal(err)
+			}
+			done, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				if target == "task" {
+					_, err := db.WriteThread(ctx, func(scope store.ThreadScope) error {
+						if _, err := scope.TaskDAO().LockTaskPresence(ctx, projectID, taskID); err != nil {
+							return err
+						}
+						_, err := scope.CredentialDAO().Credential(ctx, principal)
+						return err
+					})
+					done <- err
+				} else {
+					_, err := db.WriteBot(ctx, func(scope store.BotScope) error {
+						if _, err := scope.BotDAO().Bot(ctx, bot.ID); err != nil {
+							return err
+						}
+						return scope.BotDAO().Credential(ctx, principal)
+					})
+					done <- err
+				}
+			}()
+			defer func() {
+				cancel()
+				_ = holder.Rollback(context.Background())
+				select {
+				case <-finished:
+				case <-time.After(2 * time.Second):
+					t.Error("OAuth target lock waiter did not drain")
+				}
+			}()
+			waitTransferTeamLock(t, ctx, db, prefix, holder.Conn().PgConn().PID())
+			var expiry time.Time
+			if err := db.Pool.QueryRow(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()+interval '20 milliseconds' WHERE id=$1 RETURNING expires_at`, issue.AccessID).Scan(&expiry); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				var expired bool
+				if err := db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&expired); err != nil {
+					t.Fatal(err)
+				}
+				if expired {
+					break
+				}
+				if err := waitThreadClock(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, model.ErrNotFound) {
+					t.Fatalf("OAuth credential survived %s lock wait: %v", target, err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}()
+	}
+	mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, issue.AccessID, issue.AccessExpiresAt)
+}
 
 func TestOAuthFamilyTransactionAndAdmission(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -88,6 +189,7 @@ func TestOAuthFamilyTransactionAndAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	familyCredentialAfterTargetLock(t, db, issue)
 	_, err = db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
 		changed, err := scope.CredentialFamilyDAO().RevokeFamily(ctx, issue.Grant.ID, now)
 		if err != nil || !changed {
@@ -125,6 +227,91 @@ func TestOAuthFamilyTransactionAndAdmission(t *testing.T) {
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens)`).Scan(&count, new(int)); err != nil || count != 0 {
 		t.Fatalf("access after revoke: %d %v", count, err)
+	}
+	codeIssue := issue
+	codeIssue.Grant.ID, codeIssue.AccessID = uuid.NewString(), uuid.NewString()
+	codeIssue.AccessHash, codeIssue.RefreshHash = secret.Hash("code access"), secret.Hash("code refresh")
+	record := authorizationFailureRecord(now)
+	record.ClientID, record.UserID, record.GrantID = issue.Grant.ClientID, user, codeIssue.Grant.ID
+	record.Status, record.State, record.StatePresent = "approved", "", false
+	record.CodeHash = secret.Hash("single code")
+	expiry := now.Add(time.Minute)
+	record.CodeExpiresAt = &expiry
+	_, err = db.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
+		pending := record
+		pending.Status = "pending"
+		inserted, err := scope.AuthorizationDAO().InsertAuthorization(ctx, pending, 10, now)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return errors.New("normal authorization refused")
+		}
+		return scope.AuthorizationDAO().UpdateAuthorization(ctx, record)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(context.Background())
+	holderDAO := oauth.NewDAO(holder)
+	current, err := holderDAO.AuthorizationByCode(ctx, record.CodeHash, true)
+	if err != nil || current.Status != "approved" {
+		t.Fatalf("approved code lock: %+v %v", current, err)
+	}
+	replay, replayDone := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(replayDone)
+		_, err := db.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
+			observed, err := scope.AuthorizationDAO().AuthorizationByCode(ctx, record.CodeHash, true)
+			if err != nil {
+				return err
+			}
+			if observed.Status != "consumed" {
+				return errors.New("code lock did not observe committed consumption")
+			}
+			return model.ErrNotFound
+		})
+		replay <- err
+	}()
+	defer func() {
+		cancel()
+		_ = holder.Rollback(context.Background())
+		select {
+		case <-replayDone:
+		case <-time.After(2 * time.Second):
+			t.Error("authorization replay did not drain")
+		}
+	}()
+	waitTransferTeamLock(t, ctx, db, "SELECT id::text,binding_hash,client_snapshot", holder.Conn().PgConn().PID())
+	if err := holderDAO.IssueFamily(ctx, codeIssue); err != nil {
+		t.Fatal(err)
+	}
+	current.Status = "consumed"
+	if err := holderDAO.UpdateAuthorization(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-replay:
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("consumed code replay: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var grants, accesses, refreshes int
+	if err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants WHERE id=$1),(SELECT count(*) FROM oauth_access_tokens WHERE grant_id=$1),(SELECT count(*) FROM oauth_refresh_tokens WHERE grant_id=$1)`, codeIssue.Grant.ID).Scan(&grants, &accesses, &refreshes); err != nil || grants != 1 || accesses != 1 || refreshes != 1 {
+		t.Fatalf("code redemption family=%d/%d/%d error=%v", grants, accesses, refreshes, err)
+	}
+	var retainedState int
+	if err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants),(SELECT count(*) FROM oauth_access_tokens),(SELECT count(*) FROM oauth_refresh_tokens),(SELECT count(*) FROM oauth_authorizations WHERE state<>'')`).Scan(&grants, &accesses, &refreshes, &retainedState); err != nil || grants != 2 || accesses != 1 || refreshes != 2 || retainedState != 0 {
+		t.Fatalf("issued or revoked family rows changed: grants=%d access=%d refresh=%d state=%d error=%v", grants, accesses, refreshes, retainedState, err)
 	}
 }
 
