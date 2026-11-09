@@ -10,6 +10,8 @@ export type WindowsProcessStopKernel = {
   close(handle: unknown): void;
 };
 type Member = ProcessIdentity & { handle: unknown };
+type DiagnosticIdentity = ProcessRow & { birth: string };
+const diagnosticIdentity = ({ pid, parentPid, birth }: ProcessIdentity): DiagnosticIdentity => ({ pid, parentPid, birth: birth.toString() });
 let kernel: Promise<WindowsProcessStopKernel> | undefined;
 
 const loadKernel = async (): Promise<WindowsProcessStopKernel> => {
@@ -98,6 +100,9 @@ export const stopWindowsProcessTree = async (options: {
   checkDeadline();
   options.assertCurrent();
   const members: Member[] = [], handles: unknown[] = [], failures: unknown[] = [];
+  const ancestry: Array<{ reason: "parent-unproven" | "parent-changed" | "child-predates-parent";
+    snapshot: ProcessRow; member: DiagnosticIdentity; parent: DiagnosticIdentity | null; signaled: false }> = [];
+  let ancestryFailures = 0;
   const capture = (pid: number): Member | null => {
     checkDeadline();
     const handle = api.open(pid);
@@ -141,7 +146,14 @@ export const stopWindowsProcessTree = async (options: {
             if (member !== null) {
               if (parent.member !== null && member.parentPid === parent.pid && member.birth >= parent.member.birth) {
                 accepted = member; members.push(member);
-              } else if (!api.signaled(member.handle)) throw new Error("A live Windows review descendant cannot be attributed through its original parent.");
+              } else if (!api.signaled(member.handle)) {
+                ancestryFailures++;
+                if (ancestry.length < 8) ancestry.push({
+                  reason: parent.member === null ? "parent-unproven" : member.parentPid !== parent.pid ? "parent-changed" : "child-predates-parent",
+                  snapshot: { pid: row.pid, parentPid: row.parentPid }, member: diagnosticIdentity(member),
+                  parent: parent.member === null ? null : diagnosticIdentity(parent.member), signaled: false,
+                });
+              }
             }
           } catch (error) { failures.push(error); }
           // Traverse missing intermediates too: a vanished branch is harmless,
@@ -151,6 +163,9 @@ export const stopWindowsProcessTree = async (options: {
       }
       checkDeadline();
     } catch (error) { failures.push(error); }
+    if (ancestryFailures > 0) failures.push(new Error("A live Windows review descendant cannot be attributed through its original parent.\nWindows review ancestry: " +
+      JSON.stringify({ schemaVersion: 1, root: diagnosticIdentity(root), liveRejected: ancestryFailures,
+        omitted: ancestryFailures - ancestry.length, candidates: ancestry })));
     // A held root object pins the taskkill PID. Recheck it after inventory,
     // including failed inventory, before retaining the existing /T behavior.
     rootLive(root);
