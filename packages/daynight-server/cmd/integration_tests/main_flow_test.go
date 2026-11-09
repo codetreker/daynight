@@ -14,6 +14,7 @@ import (
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("personal worker prompts", func(t *testing.T) { serverAPIPromptNormalFlow(t, f) })
 	t.Run("task lifecycle", func(t *testing.T) {
 		project := createProject(t, f, "API lifecycle")
 		task := createTask(t, f, project, "Created task", nil)
