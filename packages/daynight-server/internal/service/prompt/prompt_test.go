@@ -46,6 +46,12 @@ func (m *promptMock) next(name string, args ...any) call {
 	}
 	return c
 }
+func (m *promptMock) checkContext(ctx context.Context) {
+	m.t.Helper()
+	if m.writeContext != nil && ctx != m.writeContext {
+		m.t.Fatal("DAO context changed")
+	}
+}
 func (m *promptMock) check() {
 	m.t.Helper()
 	if len(m.expected) > 0 {
@@ -113,10 +119,12 @@ func (m *promptMock) ProjectAccess(_ context.Context, p model.Principal, id stri
 	c := m.next("access", p, id)
 	return model.ProjectAccess{}, c.err
 }
-func (m *promptMock) LockPromptProject(_ context.Context, p model.Principal, id string) error {
+func (m *promptMock) LockPromptProject(ctx context.Context, p model.Principal, id string) error {
+	m.checkContext(ctx)
 	return m.next("lock", p, id).err
 }
-func (m *promptMock) PromptWorkerExists(_ context.Context, u, id string) error {
+func (m *promptMock) PromptWorkerExists(ctx context.Context, u, id string) error {
+	m.checkContext(ctx)
 	return m.next("worker", u, id).err
 }
 func (m *promptMock) PromptMetadata(_ context.Context, u string, s model.PromptScope, id string) (store.PromptMetadata, error) {
@@ -133,21 +141,24 @@ func (m *promptMock) PromptText(_ context.Context, u string, s model.PromptScope
 	}
 	return c.result.(string), nil
 }
-func (m *promptMock) PromptResource(_ context.Context, u string, s model.PromptScope, id string) (model.PromptResource, error) {
+func (m *promptMock) PromptResource(ctx context.Context, u string, s model.PromptScope, id string) (model.PromptResource, error) {
+	m.checkContext(ctx)
 	c := m.next("resource", u, s, id)
 	if c.err != nil {
 		return model.PromptResource{}, c.err
 	}
 	return c.result.(model.PromptResource), nil
 }
-func (m *promptMock) CreatePrompt(_ context.Context, u string, s model.PromptScope, id, text string) (model.PromptResource, error) {
+func (m *promptMock) CreatePrompt(ctx context.Context, u string, s model.PromptScope, id, text string) (model.PromptResource, error) {
+	m.checkContext(ctx)
 	c := m.next("create", u, s, id, text)
 	if c.err != nil {
 		return model.PromptResource{}, c.err
 	}
 	return c.result.(model.PromptResource), nil
 }
-func (m *promptMock) UpdatePrompt(_ context.Context, u string, s model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
+func (m *promptMock) UpdatePrompt(ctx context.Context, u string, s model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
+	m.checkContext(ctx)
 	c := m.next("update", u, s, id, next, expected, text)
 	if c.err != nil {
 		return model.PromptResource{}, c.err
