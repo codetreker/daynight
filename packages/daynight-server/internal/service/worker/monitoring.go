@@ -175,7 +175,7 @@ func (s *Workers) getMonitoring(ctx context.Context, p model.Principal, id strin
 	}
 	o, err := monitoring.ParseObservation(read.Value.Body)
 	if err != nil {
-		return monitoring.DetailResponse{}, monitoringUnavailable(err)
+		return monitoring.DetailResponse{}, monitoringUnavailable(&store.MonitoringError{Kind: "format", Cause: err})
 	}
 	projects, tasks := rules.scopes(o)
 	sources, err := s.monitoringResources(ctx, p, []string{id}, projects, tasks)
@@ -231,7 +231,7 @@ func (s *Workers) QueryMonitoring(ctx context.Context, p model.Principal, ids []
 			item.ExpiresAt = &v.Receipt.ExpiresAt
 			summary, err := monitoring.ParseSummary(v.Summary)
 			if err != nil {
-				return monitoring.QueryResponse{}, monitoringUnavailable(err)
+				return monitoring.QueryResponse{}, monitoringUnavailable(&store.MonitoringError{Kind: "format", Cause: err})
 			}
 			item.Summary = summary
 		}

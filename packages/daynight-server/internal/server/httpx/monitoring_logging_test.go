@@ -13,12 +13,16 @@ import (
 )
 
 func TestMonitoringFailureLogsSafeDependencyClassification(t *testing.T) {
-	var output bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&output, nil))
-	secret := errors.New("redis://secret:password@example.invalid/private")
-	err := &model.Fault{Code: "monitoring_unavailable", Message: "Worker monitoring is unavailable.", Cause: &store.MonitoringError{Kind: "network", Cause: secret}}
-	LogFailure(logger, context.Background(), "worker_monitoring", "read", err)
-	if !strings.Contains(output.String(), `"dependency_cause":"network"`) || strings.Contains(output.String(), secret.Error()) || !errors.Is(err, secret) {
-		t.Fatalf("unsafe or unclassified diagnostic: %s", output.String())
+	for _, kind := range []string{"network", "format"} {
+		t.Run(kind, func(t *testing.T) {
+			var output bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&output, nil))
+			secret := errors.New("redis://secret:password@example.invalid/private")
+			err := &model.Fault{Code: "monitoring_unavailable", Message: "Worker monitoring is unavailable.", Cause: &store.MonitoringError{Kind: kind, Cause: secret}}
+			LogFailure(logger, context.Background(), "worker_monitoring", "read", err)
+			if !strings.Contains(output.String(), `"dependency_cause":"`+kind+`"`) || strings.Contains(output.String(), secret.Error()) || !errors.Is(err, secret) {
+				t.Fatalf("unsafe or unclassified diagnostic: %s", output.String())
+			}
+		})
 	}
 }

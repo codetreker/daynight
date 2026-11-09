@@ -308,6 +308,13 @@ func TestMonitoringServiceReads(t *testing.T) {
 			}})
 			_, err := s.GetMonitoring(context.Background(), servicePrincipal(), serviceWorker)
 			serviceFault(t, err, "monitoring_unavailable")
+			if tc.err == nil {
+				var failure *store.MonitoringError
+				var cause *model.Fault
+				if !errors.As(err, &failure) || failure.Kind != "format" || !errors.As(failure.Cause, &cause) || cause.Code != "invalid_input" {
+					t.Fatalf("stored body classification: %v", err)
+				}
+			}
 			if tc.err != nil && !errors.Is(err, tc.err) {
 				t.Fatal(err)
 			}
@@ -339,6 +346,11 @@ func TestMonitoringServiceReads(t *testing.T) {
 		}})
 		_, err = s.QueryMonitoring(context.Background(), servicePrincipal(), []string{serviceWorker})
 		serviceFault(t, err, "monitoring_unavailable")
+		var failure *store.MonitoringError
+		var cause *model.Fault
+		if !errors.As(err, &failure) || failure.Kind != "format" || !errors.As(failure.Cause, &cause) || cause.Code != "invalid_input" {
+			t.Fatalf("stored summary classification: %v", err)
+		}
 	})
 }
 
