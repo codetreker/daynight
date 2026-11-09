@@ -21,13 +21,22 @@ type taskStore interface {
 	store.ProjectWriter
 }
 
+type taskListOperations struct {
+	requireProjectRead func(context.Context, projectcore.ProjectAccessReader, model.Principal, string) (model.ProjectAccess, error)
+	readList           func(context.Context, taskcore.ReadDAO, string, taskcore.ListSelection) (store.TaskPage, *model.Fault, error)
+}
+
 type Tasks struct {
-	store    taskStore
-	capturer Capturer
+	store          taskStore
+	capturer       Capturer
+	listOperations taskListOperations
 }
 
 func NewTasks(database taskStore, capture ...Capturer) *Tasks {
-	return &Tasks{store: database, capturer: capturer(capture)}
+	return &Tasks{
+		store: database, capturer: capturer(capture),
+		listOperations: taskListOperations{requireProjectRead: projectcore.RequireProjectRead, readList: taskcore.ReadList},
+	}
 }
 
 type TaskListRequest struct {
