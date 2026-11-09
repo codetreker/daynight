@@ -104,6 +104,66 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	}
 }
 
+func TestWorkerConfigurationStoreRemainsIndependentOfTasks(t *testing.T) {
+	database := workerStorage(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	owner, workerID := testutil.QueryID(40), testutil.QueryID(41)
+	value := testutil.WorkerConfiguration()
+	value.MaxConcurrent = 2
+	var initial model.WorkerDesiredConfiguration
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, owner, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		dao := scope.WorkerDAO()
+		if _, err := dao.UpsertWorker(ctx, testutil.WorkerSnapshotFixture(owner, workerID, admission.ObservedAt)); err != nil {
+			return err
+		}
+		initial, err = dao.SetWorkerConfiguration(ctx, owner, workerID, 1, value)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || initial.UpdatedAt.IsZero() {
+		t.Fatalf("initial configuration did not commit: %+v %v", completion, err)
+	}
+	read := func(want model.WorkerConfigurationResource) {
+		t.Helper()
+		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, owner, workerID)
+			if err == nil && !reflect.DeepEqual(got, want) {
+				t.Errorf("stored configuration: got=%+v want=%+v", got, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: initial.UpdatedAt, Value: value}, ObservationRevision: "0"}
+	read(original)
+	if _, err := database.Pool.Exec(ctx, `DROP TABLE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	value.MaxConcurrent++
+	var updated model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		current, err := dao.WorkerConfiguration(ctx, owner, workerID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(current, original) {
+			t.Errorf("configuration changed with Task storage unavailable: got=%+v want=%+v", current, original)
+		}
+		updated, err = dao.SetWorkerConfiguration(ctx, owner, workerID, 2, value)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || updated.UpdatedAt.IsZero() {
+		t.Fatalf("configuration write queried Task storage: %+v %v", completion, err)
+	}
+	read(model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: updated.UpdatedAt, Value: value}, ObservationRevision: "0"})
+}
+
 func TestWorkerConfigurationDAOFailuresRetainCauses(t *testing.T) {
 	database := workerStorage(t)
 	ctx := context.Background()

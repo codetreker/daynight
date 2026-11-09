@@ -933,8 +933,8 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 Core admission tests own 99/100/101 decisions and active-window boundaries.
 PostgreSQL Worker tests retain real owner locks, counts, clock samples and expiry;
 root Store tests retain `WriteWorker` completion, physical rollback, cancellation
-and persisted readback. The remaining Worker suites retain their existing fixture
-requirements. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
+and persisted readback. Other Worker suites use the fixtures required by their
+own proof. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
 records these proof owners.
 
 ### Worker Report capacity tests
@@ -963,6 +963,28 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 The [Worker Report capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-report-capacity-test-owners.md)
 records the protocol, rule and projection proof owners. Other root HTTP tests
 retain their own environment requirements.
+
+### Worker configuration service tests
+
+The selected `internal/service/worker` configuration tests execute revision
+parsing, normalization and service coordination with controlled snapshots,
+transaction completion and the directly invoked Core configuration operation.
+They preserve exact arguments, context and transaction-bound DAO identity,
+refusals, cancellation, error chains and result suppression. Run this subset
+without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)' \
+  ./internal/service/worker
+```
+
+The PostgreSQL Worker contract suite retains actual configuration write/read
+independence after Task storage is removed. Other bootstrap, CAS and capacity
+cases keep their existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
+records these proof owners.
 
 ### Identity service tests
 
