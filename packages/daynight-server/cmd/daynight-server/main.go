@@ -48,7 +48,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 func serveApp(ctx, startup context.Context, cancelStartup context.CancelFunc, cfg config.Config, app *service.App, logger *slog.Logger) int {
 	handler, err := server.New(app, cfg, logger)
 	if err == nil {
-		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
+		var metrics []server.MetricsEndpoint
+		if cfg.MetricsListenAddress != "" {
+			metrics = append(metrics, server.MetricsEndpoint{Address: cfg.MetricsListenAddress, Registry: app.Metrics})
+		}
+		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close, metrics...)
 		if startErr == nil {
 			if startErr = app.Start(ctx); startErr != nil {
 				cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)

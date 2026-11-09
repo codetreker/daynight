@@ -19,6 +19,7 @@ services:
     image: nginx:1.30.6-alpine3.24
     ports:
       - "127.0.0.1::80"
+      - "127.0.0.1::81"
       - "127.0.0.1:${DAYNIGHT_DEV_CI_FIXTURE_PORT}:${DAYNIGHT_DEV_CI_FIXTURE_PORT}"
     volumes:
       - ../localhost/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -43,6 +44,7 @@ services:
     environment:
       DAYNIGHT_DATABASE_URL: postgres://daynight:daynight-dev-ci@postgres:5432/daynight?sslmode=disable
       DAYNIGHT_LISTEN_ADDR: 127.0.0.1:8787
+      DAYNIGHT_METRICS_LISTEN_ADDR: 127.0.0.1:8788
       DAYNIGHT_STORAGE_ROOT: /var/lib/daynight/storage
       DAYNIGHT_TASK_SYNC_OVERLAP: ${DAYNIGHT_TASK_SYNC_OVERLAP:-10s}
     volumes:

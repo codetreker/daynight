@@ -95,6 +95,16 @@ The automatic-execution switch shares the same per-task write gate. Details also
 manage attachments. Use the CLI or API to create tasks and edit metadata. The
 HTTP API uses the same origin at `/api/v1`.
 
+The stack also exposes Prometheus metrics at
+`http://127.0.0.1:8788/metrics`. Set `DAYNIGHT_METRICS_PORT` in `.env` to
+change this host port; it must differ from `DAYNIGHT_PORT`. The gateway forwards
+metrics over a separate TCP stream to the server's loopback metrics listener.
+Both published ports bind host loopback only. The metrics endpoint has no
+application authentication; protect access to the host and its network
+namespace. The business port does not expose `/metrics`. See the
+[server metrics configuration](../../packages/daynight-server/README.md#metrics)
+for the endpoint and collector behavior.
+
 Users see only member projects; a new project's creator becomes its administrator.
 All members can read/write tasks and set status; administrators additionally
 manage members and invitations. Existing projects need member records prepared
