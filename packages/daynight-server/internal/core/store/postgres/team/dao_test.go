@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -102,6 +103,7 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 	if err != nil || count != 2 {
 		t.Fatalf("admins: %d %v", count, err)
 	}
+	execute(t, tx, `UPDATE team_members SET created_at='2026-01-01' WHERE team_id=$1`, first.ID)
 	members, err := reader.TeamMembers(ctx, first.ID)
 	if err != nil || len(members) != 2 {
 		t.Fatalf("members: %+v %v", members, err)
@@ -110,10 +112,15 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 	if err != nil || len(mp.Items) != 1 || !mp.HasMore {
 		t.Fatalf("member page: %+v %v", mp, err)
 	}
+	paged := append([]model.TeamMemberProfile{}, mp.Items...)
 	position := &store.Position{CreatedAt: mp.Items[0].Membership.CreatedAt, ID: mp.Items[0].Membership.UserID}
 	mp, err = reader.TeamMembersPage(ctx, first.ID, store.Page{Limit: 2, After: position})
 	if err != nil || len(mp.Items) != 1 || mp.HasMore {
 		t.Fatalf("member continuation: %+v %v", mp, err)
+	}
+	paged = append(paged, mp.Items...)
+	if !reflect.DeepEqual(paged, members) {
+		t.Fatalf("equal-timestamp member pages differ from full directory: paged %#v full %#v", paged, members)
 	}
 
 	if err := writer.RemoveMember(ctx, guest); err != nil {

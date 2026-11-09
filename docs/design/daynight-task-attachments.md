@@ -650,9 +650,14 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - Storage：bucket 隔离、真实相对路径、同路径完整覆盖、原始字节一致、实际大小、
   缺失与权限错误、取消、普通失败的临时文件清理及路径不能越出根目录；同/不同分片及
   project 前缀下同名文件的字节独立、兄弟目录保留与空目录清理，由真实本地文件验证。
-- 附件服务：通过合成 principal、Project/Task 数据与严格 snapshot、mutation、DAO 预期，
-  验证准入、规范化 UUID 分片地址、原始路径校验、文件/元数据操作顺序、结果与错误链、
-  完成事实、取消，以及上传租约和传输清理。测试不连接数据库；写入参数不当作持久化证据。
+- 附件服务：通过合成 principal、Project/Task 数据及实例所属的窄操作依赖，控制直接调用的
+  Project read、path-conflict 和 metadata read/write/delete，另用严格 snapshot、mutation
+  和直接 DAO 预期验证真实 callback 的 capability、context、参数和顺序。纯输入/分页编码、
+  文件 gate、I/O、staging/publication、租约与释放机制保持真实，验证规范化 UUID 分片地址、
+  准入、文件/元数据顺序、结果和错误链、完成事实、取消及传输清理。测试不连接数据库；
+  写入参数不当作持久化证据。Core Attachment 保全冲突查询的 Project/Task/context 及
+  metadata write/delete 的取消 context、精确参数、单次调用与错误链；Core Project 的独立
+  read delegation 测试保全原 principal、Project ID、context 与完整 access 返回值。
 - PG：附件 DAO 验证实际 SQL、文件/目录前缀冲突、覆盖保留元数据身份、删除、分页、历史
   字段值及 task 版本/状态/图不变；根 scope 测试验证 Task/Project 删除与附件变更的真实
   锁顺序、准入后的撤权、事务完成，以及文件副作用后的回滚和持久化读回。

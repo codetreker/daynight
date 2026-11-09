@@ -10,6 +10,7 @@ import (
 )
 
 func TestTaskPrioritySnapshotRetainsPredecessorOrderingAndFence(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, db, 1)

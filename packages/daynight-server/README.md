@@ -616,6 +616,7 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
+| `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
@@ -778,13 +779,14 @@ on the separate listener are excluded.
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
 Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
-PostgreSQL instance; the module check owns SQL and other module mechanisms, and
-the startup/shutdown check owns command lifecycle mechanisms.
+PostgreSQL instance. The module check also requires `DAYNIGHT_TEST_REDIS_URL`
+for an isolated Redis instance; it owns SQL, Redis and other module mechanisms,
+while the startup/shutdown check owns command lifecycle mechanisms.
 Database-independent suites have focused commands below.
 The regular Session HTTP selection uses Go dependencies and local transport
-fixtures without database, gateway, CLI or Web preparation. For a disposable
-instance for the complete check, use the same PostgreSQL **18.6-bookworm** image
-as CI:
+fixtures without database, gateway, CLI or Web preparation. For disposable
+instances for the complete check, use PostgreSQL **18.6-bookworm** and Redis
+**8.10.3**, as in CI:
 
 ```bash
 docker run --detach --name daynight-server-tests \
@@ -792,15 +794,22 @@ docker run --detach --name daynight-server-tests \
   --env POSTGRES_DB=daynight --publish 127.0.0.1::5432 postgres:18.6-bookworm
 docker port daynight-server-tests 5432
 docker exec daynight-server-tests pg_isready -U daynight -d daynight
+docker run --detach --name daynight-server-redis-tests \
+  --publish 127.0.0.1::6379 redis:8.10.3 \
+  redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy noeviction
+docker port daynight-server-redis-tests 6379
+docker exec daynight-server-redis-tests redis-cli ping
 ```
 
-Set the reported loopback port in the test URL, then run:
+Set the reported loopback ports in the test URLs, then run:
 
 ```bash
 export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
+export DAYNIGHT_TEST_REDIS_URL='redis://127.0.0.1:PORT/0'
 bash scripts/check.sh
 bash scripts/startup-shutdown.sh
 docker rm --force --volumes daynight-server-tests
+docker rm --force --volumes daynight-server-redis-tests
 ```
 
 The module check builds and vets the Go module using its unit-test Web resource
@@ -905,6 +914,36 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Identity service tests
+
+`internal/service/identity` tests mock the directly invoked Core Identity and
+Personal Team operations through private instance bindings. `New` binds the real
+operations and `time.Now`. The complete ordinary suite clears database and auth
+fixture variables and executes real service callbacks, completion handling and
+UniAuth SDK HTTP transport.
+
+Tests verify raw input and principal propagation, context and transaction-bound
+capability identity, login consumption before upstream retrieval, shared
+user/Personal Team/session scope, partial login results, secret suppression,
+completion precedence, device rate scopes and known-rollback collision retries.
+Actual SDK parsing, response errors, cancellation, provider discovery and profile
+encoding remain with the service adapter. Core Identity and Personal Team tests
+own business admission, credentials, expiry and device decisions; PostgreSQL
+Identity tests own SQL, current-row locks, uniqueness, persisted fields and
+cross-DAO rollback. Controlled completion does not prove persistence.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/identity ./internal/core/identity
+```
+
+PostgreSQL receivers use the documented isolated database configuration and run
+with `go test ./internal/core/store/postgres/identity ./internal/core/store/postgres`.
+
+The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
+
 ### Bot management service tests
 
 The `internal/service/bot` suite executes actual snapshot/write callbacks,
@@ -962,6 +1001,37 @@ These physical assertions run with isolated PostgreSQL through the module check;
 mocked outcomes cannot establish them. The
 [Runtime test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-runtime-service-test-boundary.md)
 records the operation bindings and proof ownership.
+
+### Team service tests
+
+The `internal/service/team` suite executes Team scope callbacks, completion
+handling and invitation/eligibility orchestration with strict direct-operation
+mocks. `NewTeams` binds private, instance-owned Team admission, business and
+eligibility operations to their production implementations. Unit fixtures supply
+independent domain facts, errors and completion outcomes, checking principal,
+raw input, IDs, context, transaction capabilities, calls and required order.
+They do not run core business rules, construct an in-memory Store or prepare
+identity/database fixtures. The test binary clears database and UniAuth fixture
+variables before its ordinary suite.
+
+Run the module without PostgreSQL or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/team
+```
+
+Completion tests retain allocated-ID errors, staged snapshot refusals and the
+method-specific result contracts. Invitation acceptance uses a completed read
+snapshot followed by an independent Team write scope; eligibility refresh uses
+that write scope and runs only after the lower mutation succeeds. Core tests
+own lifecycle, last-admin, invitation and post-lock clock decisions. PostgreSQL
+owners verify current facts after Team/invitation locks, SQL failures, consumption,
+rollback and fresh persisted readback. `PersonalTeamID` belongs to Identity.
+The [Team test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-team-service-test-boundary.md)
+records these proof owners and the distinct read/completion behavior.
 
 ### Business rules and DAO mocks
 
@@ -1109,10 +1179,18 @@ records the read-before-validation distinction.
 
 ### Attachment service and store tests
 
+The complete `internal/service/attachment` suite"
+through "including during complete module validation", with:
+
 The complete `internal/service/attachment` suite uses synthetic principals,
-Project and Task facts with strict expectations on the existing snapshot,
-attachment mutation and DAO interfaces. Each operation has an explicit call
-plan; unconfigured, extra or unconsumed calls fail. Query results are configured
+Project and Task facts and controls directly invoked Project-read, path-conflict
+and metadata read/write/delete operations through private instance-owned function
+dependencies. The production constructor binds the real Core functions. Snapshot,
+attachment mutation and directly used DAO interfaces remain controlled separately.
+Each logical operation has an explicit call plan checking callback capability,
+context, canonical addresses, inputs and order; unconfigured, extra or unconsumed
+calls fail. Lower business DAO calls fail explicitly, so the fixture cannot
+silently resume real Core operations. Operation and query results are configured
 independently of captured writes. Callback execution and transaction completion
 remain separate, including `committed`, `not_committed` and `unknown` outcomes.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
@@ -1132,6 +1210,11 @@ upload leases and transfer cleanup. Real temporary files and permits remain
 where the assertion concerns their use and lifetime. The content reader still
 crosses the actual 5 MiB boundary; test-local fixtures do not reduce production
 limits or timing defaults.
+
+Core Attachment tests retain exact conflict-query Project/Task/context forwarding
+and metadata write/delete cancellation context, input, one-call and error-chain
+assertions. The independent Core Project read receiver retains the original
+Attachment principal, Project ID, context and complete inherited access result.
 
 PostgreSQL attachment DAO tests own SQL mapping, upsert identity, pagination,
 literal wildcard prefixes, legacy metadata and affected-row failures. Root
@@ -1575,7 +1658,8 @@ of its production code from the other job.
 unit-test Web resource overlay. The absolute replacement paths remain valid
 when the command coverage run changes directory and its fresh-process test
 builds a child from the module root. Production builds retain real Web assets.
-Tests and their database state require the isolated PostgreSQL instance;
+Module tests require isolated PostgreSQL and Redis instances; command tests
+require isolated PostgreSQL. Redis DAO fixtures use unique keys and remove them;
 preparation failures fail validation. Package concurrency stays limited to two:
 schema-isolated fixtures still share the database-wide migration advisory lock.
 Both entries clear cached test results before their coverage runs.
@@ -1850,6 +1934,37 @@ saved observations while applying current access and undeleted-task filtering
 to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
+
+## Worker current monitoring
+
+The account can store and read one bounded current observation per recent
+Worker. The [contract](../../docs/spec/daynight-worker-monitoring.md) defines
+its closed fields, diagnostic content, permissions and errors; the
+[design](../../docs/design/daynight-worker-monitoring.md) explains storage and
+failure isolation. This server capability does not itself collect Worker state
+or provide a Web presentation.
+
+| Method | Path | Result |
+|---|---|---|
+| `PUT` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, accepted or duplicate receipt |
+| `GET` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, current permission-filtered observation or absent state |
+| `POST` | `/api/v1/me/workers/monitoring/query` | `200`, ordered summaries for 1–100 distinct admitted Worker IDs |
+
+These authenticated routes accept no query parameters. The request owner comes
+from the principal; an unknown, other-account or expired Worker returns 404,
+including any failed admission in a batch. Stored observations expire after
+one hour; reads and duplicate or rejected writes do not renew them. Detail and
+summary responses have separate encoding budgets. Four CAS conflicts return
+409, unavailable storage returns `503 monitoring_unavailable`, and an uncertain
+write returns `503 monitoring_write_outcome_unknown`; callers must read back an
+unknown result before deciding what to do. Current access filters associated
+names, IDs and private details without changing the Worker's total capacity.
+
+Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring. The only supported URL query parameter is `db`; connection and retry limits are fixed.
+If it is empty, the monitoring API returns 503 while existing business APIs and
+readiness continue; a nonempty invalid URL fails configuration validation.
+The Redis connection is owned only by monitoring and is closed during shutdown.
+See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
 
 ## Worker cloud configuration
 

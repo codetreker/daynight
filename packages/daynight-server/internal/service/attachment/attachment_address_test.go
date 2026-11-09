@@ -35,7 +35,7 @@ func (s *attachmentRecordedStorage) Delete(ctx context.Context, bucket, path str
 func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 	_, m, files, task, p := attachmentUnit(t)
 	recorded := &attachmentRecordedStorage{Storage: files}
-	subject := NewAttachments(m, m, recorded)
+	subject := m.service(m, recorded)
 	owners := []model.Task{
 		task,
 		{ProjectID: task.ProjectID, ID: "ab000000-0000-4000-8000-000000000002"},

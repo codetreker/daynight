@@ -48,7 +48,7 @@ describe("Webhook private-state cleanup in the authenticated application", () =>
       fireEvent.click(screen.getByRole("button", { name: "Account menu: Alice" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     } else { privateFailure = true; fireEvent.click(screen.getByRole("button", { name: "Refresh" })); }
-    await screen.findByText("Webhook recovery records could not be cleared.");
+    await screen.findByText("Local recovery records could not be cleared.");
     await waitFor(() => expect(document.body.textContent).not.toContain("authorization=private-marker"));
     expect(screen.queryByRole("heading", { name: "Private endpoint" })).toBeNull();
     expect(sessionStorage.getItem(pendingKey)).not.toBeNull();
@@ -56,7 +56,7 @@ describe("Webhook private-state cleanup in the authenticated application", () =>
     expect(fetch.mock.calls.filter(([url, init]) => url.includes("webhooks") && init?.method !== undefined && init.method !== "GET")).toHaveLength(0);
     denyStorage = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry cleanup" }));
-    await waitFor(() => expect(screen.queryByText("Webhook recovery records could not be cleared.")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Local recovery records could not be cleared.")).toBeNull());
     expect(sessionStorage.getItem(pendingKey)).toBeNull();
   });
 });

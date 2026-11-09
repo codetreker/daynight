@@ -26,12 +26,16 @@ func InvalidInput(message string) error {
 }
 
 func DecodeObject(w http.ResponseWriter, request *http.Request, allowed ...string) (map[string]json.RawMessage, error) {
+	return DecodeObjectLimit(w, request, MaxJSONBody, allowed...)
+}
+
+func DecodeObjectLimit(w http.ResponseWriter, request *http.Request, limit int64, allowed ...string) (map[string]json.RawMessage, error) {
 	mediaType, parameters, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") {
 		CloseUnreadBody(w, request)
 		return nil, InvalidInput("Content-Type must be application/json with UTF-8 encoding")
 	}
-	body, err := ReadBody(w, request, MaxJSONBody, transport.JSONBodyReadTimeout)
+	body, err := ReadBody(w, request, limit, transport.JSONBodyReadTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +254,9 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusGone
 		case "not_found", "message_not_found", "invitation_unavailable":
 			status = http.StatusNotFound
-		case "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown":
+		case "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			status = http.StatusServiceUnavailable
-		case "configuration_not_initialized", "search_changed":
+		case "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
 			status = http.StatusConflict
 		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "resource_limit_exceeded":
 			status = http.StatusConflict

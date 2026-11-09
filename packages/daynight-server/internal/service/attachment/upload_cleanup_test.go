@@ -113,7 +113,7 @@ func TestUploadLeaseAcquireFailureReleasesPartialPermits(t *testing.T) {
 func TestPutLeaseCleanupAndRetention(t *testing.T) {
 	_, m, files, task, p := attachmentUnit(t)
 	closeFailure := errors.New("lease close failed")
-	subject := NewAttachments(m, m, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
+	subject := m.service(m, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
 	planAttachmentPut(m, p, task, attachmentItem(task, "file", "text/plain", 5), true)
 	item, created, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("saved"))
 	var transaction *store.TransactionError
@@ -152,7 +152,7 @@ func TestPutLeaseCleanupAndRetention(t *testing.T) {
 func TestTransferPutFromLeaseCleanupAndRetention(t *testing.T) {
 	_, m, files, task, p := attachmentUnit(t)
 	closeFailure := errors.New("lease close failed")
-	subject := NewAttachments(m, m, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
+	subject := m.service(m, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
 	source := func(store.AttachmentMutationScope) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("saved")), nil
 	}

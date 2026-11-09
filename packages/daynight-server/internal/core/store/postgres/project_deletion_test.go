@@ -14,6 +14,7 @@ import (
 )
 
 func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, _, project := membershipFixture(t)
 	ctx := context.Background()
 	claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: actor.UserID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(), Phase: model.WorkerExecuting, State: model.WorkerActive, ClaimedAt: time.Now().UTC()}
@@ -104,6 +105,7 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 }
 
 func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, _, _, project := membershipFixture(t)
 	ctx := context.Background()
 	for _, raw := range []string{"{", `{"claimId":1}`} {

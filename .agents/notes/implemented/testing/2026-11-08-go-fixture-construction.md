@@ -24,11 +24,13 @@ records the existing fail-on-access fixture used for Project input checks.
 
 Attachment input rejection uses a synthetic authenticated principal with nil
 dependencies. Project settings and invalid page budgets use the existing
-validation fixture, whose storage entry points fail if called. Identity's invalid
-login scope, provider and return-path matrix uses an unavailable writer and no
-upstream client; every input must still produce the expected domain fault without
-opening a transaction. A real Identity integration test retains rejected-scope
-zero-row readback, accepted return paths and upstream callback configuration.
+validation fixture, whose storage entry points fail if called. Identity service
+admission tests supply explicit lower refusals and require no transaction or
+upstream request. Core Identity tests own the original provider and return-path
+matrix. Browser-scope rejection and SDK callback configuration execute in the
+service adapter; Store Identity tests own persisted login fields and serialized
+admission. The [Identity operation ownership decision](2026-11-09-identity-direct-operation-tests.md)
+records this allocation, including real SDK transport and scope completion.
 
 Graph and Sync store tests retain their failing description expressions, scoped
 data, Unicode previews, versions, dependency fields and snapshot/time boundaries

@@ -27,6 +27,7 @@ func setSnapshotTaskClaim(t *testing.T, database *Store, projectID string, taskN
 }
 
 func TestWorkerSnapshotErrorsRollbackAndPreserveCauses(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
@@ -54,6 +55,7 @@ func TestWorkerSnapshotErrorsRollbackAndPreserveCauses(t *testing.T) {
 }
 
 func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	database := isolatedStore(t)
 	userID, workerID := queryID(1), queryID(2)

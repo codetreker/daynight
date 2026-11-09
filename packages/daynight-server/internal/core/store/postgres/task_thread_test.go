@@ -105,6 +105,7 @@ func TestThreadMigrationDefaultsCompositeIdentityAndRestart(t *testing.T) {
 }
 
 func TestThreadRejectedAppendRollsBackCandidateAndLazyHead(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	rejected := errors.New("reject after insertion")
@@ -131,6 +132,7 @@ func TestThreadRejectedAppendRollsBackCandidateAndLazyHead(t *testing.T) {
 }
 
 func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	var closed ThreadScope

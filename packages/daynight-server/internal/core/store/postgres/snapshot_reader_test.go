@@ -16,6 +16,7 @@ import (
 )
 
 func TestSnapshotSessionReaderSharesTaskWorkerAndSessionView(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, member, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -137,6 +138,7 @@ func TestSnapshotSessionReaderSharesTaskWorkerAndSessionView(t *testing.T) {
 }
 
 func TestSnapshotReadersShareAuthorizationAndDataView(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, member, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

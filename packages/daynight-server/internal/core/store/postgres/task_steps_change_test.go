@@ -13,6 +13,7 @@ import (
 )
 
 func TestTaskStepsChangeStoreFailuresKeepCausesAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)

@@ -22,6 +22,7 @@ func newStoredInvitation(project model.Project, creator model.Principal, label s
 }
 
 func TestMembershipStorageFailureRollsBackProjectCreation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, admin, _, _ := membershipFixture(t)
 	ctx := context.Background()
 	if _, err := s.Pool.Exec(ctx, `CREATE FUNCTION reject_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test member rollback'; END $$; CREATE TRIGGER reject_member BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_member()`); err != nil {
@@ -42,6 +43,7 @@ func TestMembershipStorageFailureRollsBackProjectCreation(t *testing.T) {
 }
 
 func TestMembershipStorageOperationalFailures(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, admin, _, _ := membershipFixture(t)
 	s.Close()
 	if _, err := s.CreatePrivateProject(context.Background(), admin, uuid.NewString(), "Closed", "https://example.com/closed"); err == nil {

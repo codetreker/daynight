@@ -52,17 +52,17 @@ func TestAttachmentPresenceErrorAndAuthorizationSemantics(t *testing.T) {
 		}
 		missing := "ab000000-0000-4000-8000-000000000002"
 		m.expect("snapshot").callback = true
-		m.expect("access", p, task.ProjectID).result = model.ProjectAccess{}
+		m.expect("projectRead", p, task.ProjectID).result = model.ProjectAccess{}
 		m.expect("presence", task.ProjectID, missing).result = store.TaskPresence{Found: false}
 		requireFault(t, run(p, missing), "not_found")
 		outsider := p
 		outsider.UserID = "ef000000-0000-4000-8000-000000000003"
 		m.expect("snapshot").callback = true
-		m.expect("access", outsider, task.ProjectID).err = model.ErrNotFound
+		m.expect("projectRead", outsider, task.ProjectID).err = projectReadNotFound()
 		requireFault(t, run(outsider, task.ID), "not_found")
 		failure := errors.New("presence query failed")
 		m.expect("snapshot").callback = true
-		m.expect("access", p, task.ProjectID).result = model.ProjectAccess{}
+		m.expect("projectRead", p, task.ProjectID).result = model.ProjectAccess{}
 		m.expect("presence", task.ProjectID, task.ID).err = failure
 		if err := run(p, task.ID); !errors.Is(err, failure) {
 			t.Fatalf("%s presence error: %v", action, err)
@@ -74,7 +74,7 @@ func TestAttachmentPresenceErrorAndAuthorizationSemantics(t *testing.T) {
 		}
 		deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		m.expect("snapshot").callback = true
-		m.expect("access", p, task.ProjectID).result = model.ProjectAccess{}
+		m.expect("projectRead", p, task.ProjectID).result = model.ProjectAccess{}
 		m.expect("presence", task.ProjectID, task.ID).result = store.TaskPresence{Found: true, DeletedAt: &deleted}
 		err := run(p, task.ID)
 		requireFault(t, err, "task_deleted")
