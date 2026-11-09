@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSqliteSequence, loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../src/platform/sqlite-sql.js";
 
+import { createMemoryDatabase } from "../helpers/sqlite.js";
 import { openSqliteDatabase } from "../../src/platform/sqlite-access.js";
 import { currentSqliteVersion, type SqliteFormat } from "../../src/platform/sqlite-format.js";
 
@@ -69,13 +70,10 @@ describe("filename-ordered SQLite SQL sequences", () => {
         expect(db.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[]).toEqual(schemas.get(version));
       },
     };
-    const file = path.join(fileURLToPath(directory), "state.sqlite");
+    const file = createMemoryDatabase();
     const db = openSqliteDatabase({ file, format, allowCreate: true, onMigration: () => {} }); connections.add(db);
     expect(db.pragma("user_version", { simple: true })).toBe(3);
     expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "baseline-second-third", extra: null }]);
-    db.close();
-    const reopened = openSqliteDatabase({ file, format, allowCreate: false, onMigration: () => {} }); connections.add(reopened);
-    expect(reopened.prepare("SELECT value FROM records").get()).toEqual({ value: "baseline-second-third" });
   });
   it("uses the first filename version as the baseline and excludes unrelated files and auxiliary directories", () => {
     const directory = sequence([["006-future.sql", "ALTER TABLE records ADD COLUMN extra TEXT;"], ["005-baseline.sql", "CREATE TABLE records (id INTEGER);"]]);

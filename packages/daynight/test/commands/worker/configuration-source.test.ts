@@ -9,7 +9,7 @@ import { updateConfigurationFile } from "../../../src/config/files.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import {
   assertWorkerConfigurationIsLocal, parseWorkerCloudBootstrap, parseWorkerLocalConfiguration,
-  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForProject,
+  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForId, workerLocalRepositoryForProject,
 } from "../../../src/commands/worker/configuration-source.js";
 import { resolveWorkerCloudProjectNative } from "../../../src/commands/worker/configuration.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -56,6 +56,15 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration sources", () => {
+  it("rejects a 129-Project bootstrap before remote lookup and leaves the source unchanged", async () => {
+    const repositories = Array.from({ length: 129 }, (_, n) => ({ projectId: uuid(n + 10), remote: `https://git.example/team/repo${n}.git`, path: `../repo${n}` }));
+    const f = await fixture({ worker: { repositories } });
+    const resolve = vi.fn(async () => ({ id: uuid(1) }));
+    await expect(parseWorkerCloudBootstrap(f.source, f.paths, resolve, new AbortController().signal)).rejects.toThrow("128");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(() => parseWorkerConfiguration(f.source, f.paths)).toThrow("128");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
   it("reads only local-owned values while obsolete managed values are invalid", async () => {
     const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories", agentControlMode: "web" } });
     const local = await readWorkerLocalConfiguration(f.paths);
@@ -110,6 +119,8 @@ describe("Worker cloud configuration sources", () => {
     ] } });
     const local = await readWorkerLocalConfiguration(f.paths);
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toEqual({ projectId: project.id, remote: project.repoUrl, path: path.join(f.directory, "retained") });
+    expect(await workerLocalRepositoryForId(local, f.paths, project.id)).toEqual({ projectId: project.id, remote: project.repoUrl, path: path.join(f.directory, "retained") });
+    expect(await workerLocalRepositoryForId(local, f.paths, uuid(8))).toBeUndefined();
   });
 
   it("rejects selected mapping conflicts and physical overlaps with local state", async () => {

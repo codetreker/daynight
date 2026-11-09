@@ -18,379 +18,473 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5/pgconn"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func TestTaskHTTPLifecycleDefaultsAndUpdateSemantics(t *testing.T) {
-	database := projectTestStore(t)
+func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	collection := taskCollection(project.ID)
-	empty := projectRequest(handler, http.MethodGet, collection, "")
-	page := decodeResponse[api.TaskPage](t, empty, http.StatusOK)
-	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
-		t.Fatalf("empty task list: %s", empty.Body)
+	h := newHTTPFixture(t, &logs)
+	created := testTask("Default values")
+	changed := created
+	changed.Title, changed.Description, changed.Version = "Renamed", "Filled", 4
+	h.Tasks.CreateFunc = func(ctx context.Context, principal model.Principal, projectID string, input taskcore.CreateTask) (model.Task, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Title != "Default values" || input.Description != "" || len(input.DependsOn) != 0 || input.DependsOn == nil || input.Properties == nil || len(input.Properties) != 0 || input.AssignedTo != nil || input.RequiredPlatform != nil {
+			t.Fatalf("create input: %+v principal=%+v project=%s", input, principal, projectID)
+		}
+		return created, nil
 	}
-	response := projectRequest(handler, http.MethodPost, collection, `{"title":"Default values"}`)
-	task := decodeResponse[api.Task](t, response, http.StatusCreated)
-	if task.ID == "" || task.ProjectID != project.ID || task.Title != "Default values" || task.Description != "" || task.Status != "todo" || task.Version != 1 || !task.Ready || task.DependsOn == nil || task.BlockedBy == nil || len(task.DependsOn) != 0 || len(task.BlockedBy) != 0 || task.CreatedAt.IsZero() || task.CreatedAt.Location() != time.UTC || task.CreatedAt != task.UpdatedAt {
-		t.Fatalf("created task DTO: %+v", task)
+	h.Tasks.UpdateFunc = func(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateTask) (model.Task, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || input.Version != 3 || input.Title == nil || *input.Title != "Renamed" || input.Description == nil || *input.Description != "Filled" || input.DependsOn == nil || len(*input.DependsOn) != 0 || input.ExternalDependsOn != nil || input.Properties != nil || input.AllowAgents != nil || input.AssignedTo != nil || input.RequiredPlatform != nil {
+			t.Fatalf("update input: %+v", input)
+		}
+		return changed, nil
 	}
-	if response.Header().Get("Location") != taskPath(task) {
-		t.Fatalf("invalid task location: %s", response.Header().Get("Location"))
+	h.Tasks.ObserveRESTFunc = func(ctx context.Context, principal model.Principal, projectID, id string, extended bool) (taskservice.TaskObservation, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || extended {
+			t.Fatalf("read scope: %+v %s %s extended=%v", principal, projectID, id, extended)
+		}
+		return taskservice.TaskObservation{Task: changed, Epoch: testEpoch}, nil
 	}
-	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 18 {
+	h.Tasks.ListFunc = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || !reflect.DeepEqual(input, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}) {
+			t.Fatalf("list input: %+v", input)
+		}
+		return taskservice.TaskPage{Items: []model.Task{changed}}, nil
+	}
+	collection := taskCollection(testProjectID)
+	response := projectRequest(h, http.MethodPost, collection, `{"title":"Default values"}`)
+	actual := decodeResponse[api.Task](t, response, http.StatusCreated)
+	if actual.ID != created.ID || actual.ProjectID != created.ProjectID || actual.Title != created.Title || actual.Description != created.Description || actual.Status != string(created.Status) || actual.Version != created.Version || actual.Ready != created.Ready || !reflect.DeepEqual(actual.DependsOn, created.DependsOn) || !reflect.DeepEqual(actual.BlockedBy, created.BlockedBy) || actual.CreatedAt != created.CreatedAt || actual.UpdatedAt != created.UpdatedAt || response.Header().Get("Location") != collection+"/"+testTaskID {
+		t.Fatalf("created DTO: %+v headers=%v", actual, response.Header())
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 19 {
 		t.Fatalf("task DTO fields: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo"} {
+	for _, key := range []string{"id", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo", "cancelledAt", "startedAt", "completedAt"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing task DTO field %s", key)
 		}
 	}
-	read := decodeResponse[api.Task](t, projectRequest(handler, http.MethodGet, taskCollection(strings.ToUpper(project.ID))+"/"+strings.ToUpper(task.ID), ""), http.StatusOK)
-	if !reflect.DeepEqual(read, task) {
-		t.Fatalf("persisted task differs: %+v %+v", task, read)
+	updated := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, collection+"/"+testTaskID, `{"version":3,"title":"Renamed","description":"Filled","dependsOn":[]}`), http.StatusOK)
+	if updated.Title != changed.Title || updated.Description != changed.Description || updated.Version != changed.Version {
+		t.Fatalf("updated DTO: %+v", updated)
 	}
-	changed := updateHTTPTask(t, handler, task, map[string]any{"title": "Renamed", "description": "Filled"})
-	if changed.Title != "Renamed" || changed.Description != "Filled" || changed.Status != "todo" || changed.Version != task.Version+1 || changed.CreatedAt != task.CreatedAt || !changed.UpdatedAt.After(task.UpdatedAt) {
-		t.Fatalf("field update: %+v", changed)
+	readResponse := projectRequest(h, http.MethodGet, taskCollection(strings.ToUpper(testProjectID))+"/"+strings.ToUpper(testTaskID), "")
+	read := decodeResponse[api.Task](t, readResponse, http.StatusOK)
+	if !reflect.DeepEqual(read, updated) || readResponse.Header().Get("Daynight-Task-Epoch") != testEpoch {
+		t.Fatalf("observed DTO: %+v headers=%v", read, readResponse.Header())
 	}
-	noop := updateHTTPTask(t, handler, changed, map[string]any{"title": changed.Title, "description": changed.Description})
-	if !reflect.DeepEqual(noop, changed) {
-		t.Fatalf("semantic no-op changed task: %+v %+v", changed, noop)
+	page := decodeResponse[api.TaskPage](t, projectRequest(h, http.MethodGet, collection, ""), http.StatusOK)
+	if len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], updated) || page.NextCursor != nil {
+		t.Fatalf("task list DTO: %+v", page)
 	}
-	cleared := updateHTTPTask(t, handler, noop, map[string]any{"description": "", "dependsOn": []string{}})
-	if cleared.Description != "" || cleared.Title != noop.Title || len(cleared.DependsOn) != 0 || cleared.DependsOn == nil || cleared.Version != noop.Version+1 {
-		t.Fatalf("clear and omission semantics: %+v", cleared)
-	}
-	started := setHTTPTask(t, handler, cleared, "in_progress")
-	done := setHTTPTask(t, handler, started, "done")
-	for _, pair := range [][2]api.Task{{cleared, started}, {started, done}} {
-		before, after := pair[0], pair[1]
-		if after.Version != before.Version+1 || !after.UpdatedAt.After(before.UpdatedAt) {
-			t.Fatalf("status change did not advance metadata once: %+v %+v", before, after)
-		}
-		switch after.Status {
-		case "in_progress":
-			if after.StartedAt == nil || !after.StartedAt.Equal(after.UpdatedAt) || after.CompletedAt != nil {
-				t.Fatal("start did not atomically record its start and clear completion")
-			}
-		case "done":
-			if !reflect.DeepEqual(after.StartedAt, before.StartedAt) || after.CompletedAt == nil || !after.CompletedAt.Equal(after.UpdatedAt) ||
-				after.StartedAt != nil && after.CompletedAt.Before(*after.StartedAt) {
-				t.Fatal("completion did not preserve its start and atomically record its end")
-			}
-		}
-		after.StartedAt, after.CompletedAt = before.StartedAt, before.CompletedAt
-		after.Status, after.Version, after.UpdatedAt, after.Ready = before.Status, before.Version, before.UpdatedAt, before.Ready
-		if !reflect.DeepEqual(after, before) {
-			t.Fatalf("status change changed unrelated content: %+v %+v", before, after)
+	for _, fragment := range []string{`"project_id":"` + testProjectID + `"`, `"task_id":"` + testTaskID + `"`, `"route":"PATCH /api/v1/projects/{projectId}/tasks/{taskId}"`} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("missing diagnostics %s: %s", fragment, &logs)
 		}
 	}
-	if done.Status != "done" || done.Ready || done.Version != started.Version+1 {
-		t.Fatalf("status update: %+v", done)
-	}
-	page = decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, collection, ""), http.StatusOK)
-	if len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], done) || page.NextCursor != nil {
-		t.Fatalf("persisted task list: %+v", page)
-	}
-	if !strings.Contains(logs.String(), `"project_id":"`+project.ID+`"`) || !strings.Contains(logs.String(), `"task_id":"`+task.ID+`"`) || !strings.Contains(logs.String(), `"route":"PATCH /api/v1/projects/{projectId}/tasks/{taskId}"`) || strings.Contains(logs.String(), "Filled") || strings.Contains(logs.String(), "Default values") {
-		t.Fatalf("unsafe or missing task diagnostics: %s", &logs)
+	if strings.Contains(logs.String(), "Filled") || strings.Contains(logs.String(), "Default values") {
+		t.Fatalf("task data leaked in diagnostics: %s", &logs)
 	}
 }
 
-func TestTaskHTTPStrictInputsDoNotMutate(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Original")
+func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	collection := taskCollection(testProjectID)
+	path := collection + "/" + testTaskID
 	for _, body := range []string{
 		"", "null", "[]", `{`, `{"title":"x"]`, `{"title":"x"} {}`,
 		`{"Title":"x"}`, `{"title":"x","title":"y"}`, `{"title":"x","ti\u0074le":"y"}`,
-		`{}`, `{"title":null}`, `{"title": true}`, `{"title":[]}`, `{"title":" "}`, `{"title":"\u0000"}`,
-		`{"title":"x","description": null }`, `{"title":"x","description":1}`, `{"title":"x","description":"\u0000"}`,
-		`{"title":"x","dependsOn": null }`, `{"title":"x","dependsOn":{}}`, `{"title":"x","dependsOn":"id"}`,
+		`{}`, `{"title":null}`, `{"title":true}`, `{"title":[]}`,
+		`{"title":"x","description":null}`, `{"title":"x","description":1}`,
+		`{"title":"x","dependsOn":null}`, `{"title":"x","dependsOn":{}}`, `{"title":"x","dependsOn":"id"}`,
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
-		`{"title":"x","dependsOn":["invalid"]}`, `{"title":"x","status":"todo"}`, `{"title":"x","version":1}`,
-		`{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
-		"{\"title\":\"" + string([]byte{0xff}) + "\"}", `{"title":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"}`,
+		`{"title":"x","status":"todo"}`, `{"title":"x","version":1}`, `{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
+		"{\"title\":\"" + string([]byte{0xff}) + "\"}",
 	} {
-		t.Run("create-"+body[:min(len(body), 70)], func(t *testing.T) {
-			assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), body), http.StatusBadRequest, "invalid_input")
+		t.Run("create_"+body[:min(len(body), 70)], func(t *testing.T) {
+			assertProjectError(t, projectRequest(h, http.MethodPost, collection, body), http.StatusBadRequest, "invalid_input")
 		})
 	}
+	assertProjectError(t, projectRequest(h, http.MethodPost, collection, `{"title":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, body := range []string{
 		"", "null", `[]`, `{"version":1,}`, `{"version":1,"title":"x"} false`,
-		`{}`, `{"title":"x"}`, `{"version":1}`, `{"version":null,"title":"x"}`, `{"version":0,"title":"x"}`,
-		`{"version":-1,"title":"x"}`, `{"version":"1","title":"x"}`, `{"version":true,"title":"x"}`,
+		`{}`, `{"title":"x"}`, `{"version":1}`, `{"version":null,"title":"x"}`, `{"version":0,"title":"x"}`, `{"version":-1,"title":"x"}`, `{"version":"1","title":"x"}`, `{"version":true,"title":"x"}`,
 		`{"version":1.0,"title":"x"}`, `{"version":1e0,"title":"x"}`, `{"version":9223372036854775808,"title":"x"}`,
-		`{"version":1,"Title":"x"}`, `{"version":1,"version":1,"title":"x"}`, `{"version":1,"id":"readonly"}`,
-		`{"version":1,"title": null }`, `{"version":1,"title":1}`, `{"version":1,"title":" "}`,
-		`{"version":1,"description": null }`, `{"version":1,"description":false}`, `{"version":1,"description":"\u0000"}`,
-		`{"version":1,"status": null }`, `{"version":1,"status":[]}`, `{"version":1,"status":"blocked"}`,
-		`{"version":1,"status":"todo"}`, `{"version":1,"status":"done","title":"Changed"}`,
-		`{"version":1,"dependsOn": null }`, `{"version":1,"dependsOn":true}`, `{"version":1,"dependsOn":[null]}`,
-		`{"version":1,"dependsOn":["invalid"]}`, `{"version":1,"unknown":"private-body-secret"}`,
+		`{"version":1,"Title":"x"}`, `{"version":1,"version":1,"title":"x"}`, `{"version":1,"id":"readonly"}`, `{"version":1,"title":null}`, `{"version":1,"title":1}`,
+		`{"version":1,"description":null}`, `{"version":1,"description":false}`, `{"version":1,"status":null}`, `{"version":1,"status":[]}`, `{"version":1,"status":"blocked"}`, `{"version":1,"status":"todo"}`, `{"version":1,"status":"done","title":"Changed"}`,
+		`{"version":1,"dependsOn":null}`, `{"version":1,"dependsOn":true}`, `{"version":1,"dependsOn":[null]}`, `{"version":1,"unknown":"private-body-secret"}`,
 	} {
-		t.Run("patch-"+body[:min(len(body), 70)], func(t *testing.T) {
-			assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task), body), http.StatusBadRequest, "invalid_input")
+		t.Run("patch_"+body[:min(len(body), 70)], func(t *testing.T) {
+			assertProjectError(t, projectRequest(h, http.MethodPatch, path, body), http.StatusBadRequest, "invalid_input")
 		})
 	}
-	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
-		t.Fatal("rejected update changed persisted state")
+	if h.Tasks.TotalCalls() != 0 {
+		t.Fatalf("protocol refusal called service %d times", h.Tasks.TotalCalls())
 	}
-	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID), ""), http.StatusOK)
-	if len(page.Items) != 1 {
-		t.Fatal("invalid create persisted a task")
+	for _, tc := range []struct{ method, body string }{
+		{http.MethodPost, `{"title":" "}`}, {http.MethodPost, `{"title":"\u0000"}`}, {http.MethodPost, `{"title":"x","description":"\u0000"}`}, {http.MethodPost, `{"title":"x","dependsOn":["invalid"]}`},
+		{http.MethodPatch, `{"version":1,"title":" "}`}, {http.MethodPatch, `{"version":1,"description":"\u0000"}`}, {http.MethodPatch, `{"version":1,"dependsOn":["invalid"]}`},
+	} {
+		t.Run("domain_"+tc.method+tc.body, func(t *testing.T) {
+			f := newHTTPFixture(t, io.Discard)
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tc.body), &fields); err != nil {
+				t.Fatal(err)
+			}
+			target := collection
+			if tc.method == http.MethodPost {
+				f.Tasks.CreateFunc = func(_ context.Context, _ model.Principal, _ string, input taskcore.CreateTask) (model.Task, error) {
+					var title string
+					if err := json.Unmarshal(fields["title"], &title); err != nil {
+						t.Fatal(err)
+					}
+					if input.Title != title {
+						t.Fatalf("domain title changed: %q", input.Title)
+					}
+					if raw, exists := fields["description"]; exists {
+						var description string
+						if err := json.Unmarshal(raw, &description); err != nil {
+							t.Fatal(err)
+						}
+						if input.Description != description {
+							t.Fatalf("domain description changed: %q", input.Description)
+						}
+					}
+					if raw, exists := fields["dependsOn"]; exists {
+						var dependencies []string
+						if err := json.Unmarshal(raw, &dependencies); err != nil {
+							t.Fatal(err)
+						}
+						if !slices.Equal(input.DependsOn, dependencies) {
+							t.Fatalf("domain dependencies changed: %v", input.DependsOn)
+						}
+					}
+					return model.Task{}, &model.Fault{Code: "invalid_input", Message: "Task input is invalid."}
+				}
+			} else {
+				target = path
+				f.Tasks.UpdateFunc = func(_ context.Context, _ model.Principal, _, _ string, input taskcore.UpdateTask) (model.Task, error) {
+					if input.Version != 1 {
+						t.Fatalf("domain version changed: %+v", input)
+					}
+					if raw, exists := fields["title"]; exists {
+						var title string
+						if err := json.Unmarshal(raw, &title); err != nil {
+							t.Fatal(err)
+						}
+						if input.Title == nil || *input.Title != title {
+							t.Fatalf("domain title changed: %+v", input)
+						}
+					}
+					if raw, exists := fields["description"]; exists {
+						var description string
+						if err := json.Unmarshal(raw, &description); err != nil {
+							t.Fatal(err)
+						}
+						if input.Description == nil || *input.Description != description {
+							t.Fatalf("domain description changed: %+v", input)
+						}
+					}
+					if raw, exists := fields["dependsOn"]; exists {
+						var dependencies []string
+						if err := json.Unmarshal(raw, &dependencies); err != nil {
+							t.Fatal(err)
+						}
+						if input.DependsOn == nil || !slices.Equal(*input.DependsOn, dependencies) {
+							t.Fatalf("domain dependencies changed: %+v", input)
+						}
+					}
+					return model.Task{}, &model.Fault{Code: "invalid_input", Message: "Task input is invalid."}
+				}
+			}
+			assertProjectError(t, projectRequest(f, tc.method, target, tc.body), http.StatusBadRequest, "invalid_input")
+		})
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task), `{"version":9223372036854775807,"title":"x"}`), http.StatusConflict, "version_conflict")
 }
 
 func TestTaskHTTPDependencyErrorsAndDerivedFields(t *testing.T) {
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, projectTestStore(t), &logs)
-	project := taskProject(t, handler)
-	first := createHTTPTask(t, handler, project.ID, "First")
-	second := createHTTPTask(t, handler, project.ID, "Second")
-	prerequisites := []string{second.ID, first.ID}
-	sorted := slices.Clone(prerequisites)
-	slices.Sort(sorted)
-	target := createHTTPTask(t, handler, project.ID, "Target", prerequisites...)
-	if target.Ready || !slices.Equal(target.DependsOn, sorted) || !slices.Equal(target.BlockedBy, sorted) {
-		t.Fatalf("task derived fields are not sorted: %+v", target)
-	}
-	refuse := func(task api.Task, values map[string]any, code string, ids []string) {
-		t.Helper()
-		values["version"] = task.Version
-		response := projectRequest(handler, http.MethodPatch, taskPath(task), jsonBody(t, values))
-		assertProjectError(t, response, http.StatusConflict, code)
-		fault := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
-		if ids != nil && (fault.Error.Details == nil || !slices.Equal(fault.Error.Details.TaskIDs, ids)) {
-			t.Fatalf("incorrect blocker details: %+v want %v", fault, ids)
-		}
-		if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
-			t.Fatal("refused mutation changed task fields, edges, version or time")
-		}
-	}
-	target = updateHTTPTask(t, handler, target, map[string]any{"description": "Additional work can be revised while blocked", "properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "https://example.com/pr", Title: "Draft"}})}})
-	if target.Status != "todo" || !slices.Equal(target.BlockedBy, sorted) {
-		t.Fatalf("blocked todo metadata update: %+v", target)
-	}
-	response := projectRequest(handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"}))
-	assertProjectError(t, response, http.StatusConflict, "dependency_unsatisfied")
-	fault := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
-	if fault.Error.Details == nil || !slices.Equal(fault.Error.Details.TaskIDs, sorted) || !reflect.DeepEqual(readHTTPTask(t, handler, target), target) {
-		t.Fatalf("refused start lost blockers or mutated task: %+v", fault)
-	}
-	refuse(first, map[string]any{"dependsOn": []string{target.ID}}, "dependency_cycle", []string{target.ID})
-	noop := updateHTTPTask(t, handler, target, map[string]any{"dependsOn": sorted})
-	if !reflect.DeepEqual(noop, target) {
-		t.Fatal("dependency order changed a semantic no-op")
-	}
-	first = setHTTPTask(t, handler, first, "in_progress")
-	first = setHTTPTask(t, handler, first, "done")
-	second = setHTTPTask(t, handler, second, "in_progress")
-	second = setHTTPTask(t, handler, second, "done")
-	ready := readHTTPTask(t, handler, target)
-	if !ready.Ready || len(ready.BlockedBy) != 0 || ready.Version != target.Version || ready.UpdatedAt != target.UpdatedAt {
-		t.Fatalf("prerequisite changes altered downstream metadata: %+v", ready)
-	}
-	started := setHTTPTask(t, handler, ready, "in_progress")
-	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(started), jsonBody(t, map[string]any{"version": target.Version, "title": started.Title})), http.StatusConflict, "version_conflict")
-	cleared := updateHTTPTask(t, handler, started, map[string]any{"dependsOn": []string{}})
-	if cleared.DependsOn == nil || len(cleared.DependsOn) != 0 || len(cleared.BlockedBy) != 0 || cleared.Status != "in_progress" {
-		t.Fatalf("dependency clearing: %+v", cleared)
-	}
+	dependencies := []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
 	for _, code := range []string{"dependency_unsatisfied", "dependency_cycle", "version_conflict"} {
-		if !strings.Contains(logs.String(), `"cause":"`+code+`"`) || !strings.Contains(logs.String(), `"error_code":"`+code+`"`) {
-			t.Fatalf("domain refusal is not classified: %s", &logs)
-		}
+		t.Run(code, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			h.Tasks.UpdateFunc = func(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateTask) (model.Task, error) {
+				if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || input.Version != 7 || input.DependsOn == nil || !slices.Equal(*input.DependsOn, dependencies) {
+					t.Fatalf("dependency update: %+v", input)
+				}
+				return model.Task{}, &model.Fault{Code: code, Message: "Task dependency operation refused.", TaskIDs: dependencies}
+			}
+			response := projectRequest(h, http.MethodPatch, taskCollection(testProjectID)+"/"+testTaskID, jsonBody(t, map[string]any{"version": 7, "dependsOn": dependencies}))
+			fault := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
+			if fault.Error.Code != code || fault.Error.Details == nil || !slices.Equal(fault.Error.Details.TaskIDs, dependencies) {
+				t.Fatalf("dependency error details: %+v", fault)
+			}
+			if !strings.Contains(logs.String(), `"cause":"`+code+`"`) || !strings.Contains(logs.String(), `"error_code":"`+code+`"`) {
+				t.Fatalf("dependency error classification: %s", &logs)
+			}
+		})
+	}
+	h := newHTTPFixture(t, io.Discard)
+	result := testTask("Blocked target")
+	result.DependsOn, result.BlockedBy, result.Ready = dependencies, slices.Clone(dependencies), false
+	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
+	}
+	actual := decodeResponse[api.Task](t, projectRequest(h, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, ""), http.StatusOK)
+	if actual.Ready || !slices.Equal(actual.DependsOn, dependencies) || !slices.Equal(actual.BlockedBy, dependencies) {
+		t.Fatalf("derived DTO fields changed: %+v", actual)
 	}
 }
 
 func TestTaskHTTPScopesIDsAndMethods(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, projectTestStore(t), &logs)
-	project, other := taskProject(t, handler), taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "private-title-secret")
-	foreign := createHTTPTask(t, handler, other.ID, "foreign-title-secret")
-	missing := "00000000-0000-4000-8000-000000000099"
-	for _, projectID := range []string{missing, other.ID} {
-		for _, method := range []string{http.MethodGet, http.MethodPatch} {
-			response := projectRequest(handler, method, taskCollection(projectID)+"/"+task.ID, `{"version":1,"title":"changed"}`)
-			assertProjectError(t, response, http.StatusNotFound, "not_found")
-			if strings.Contains(response.Body.String(), "secret") {
-				t.Fatal("foreign task content exposed")
-			}
-		}
-	}
+	h := newHTTPFixture(t, &logs)
+	collection := taskCollection(testProjectID)
+	path := collection + "/" + testTaskID
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		assertProjectError(t, projectRequest(handler, method, taskCollection(missing), `{"title":"valid"}`), http.StatusNotFound, "not_found")
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"/"+missing, ""), http.StatusNotFound, "not_found")
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		assertProjectError(t, projectRequest(handler, method, taskCollection("invalid-secret-id"), `{"title":"valid"}`), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(h, method, taskCollection("invalid-secret-id"), `{"title":"valid"}`), http.StatusBadRequest, "invalid_input")
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPatch} {
-		assertProjectError(t, projectRequest(handler, method, taskCollection("invalid-secret-id")+"/"+task.ID, `{"version":1,"title":"valid"}`), http.StatusBadRequest, "invalid_input")
-		assertProjectError(t, projectRequest(handler, method, taskCollection(project.ID)+"/invalid-secret-task", `{"version":1,"title":"valid"}`), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(h, method, taskCollection("invalid-secret-id")+"/"+testTaskID, `{"version":1,"title":"valid"}`), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(h, method, collection+"/invalid-secret-task", `{"version":1,"title":"valid"}`), http.StatusBadRequest, "invalid_input")
 	}
-	for _, refs := range [][]string{{task.ID, task.ID}, {foreign.ID, missing}} {
-		response := projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Invalid references", "dependsOn": refs}))
-		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "dependsOn": []string{task.ID}})), http.StatusBadRequest, "invalid_input")
-	for path, allowed := range map[string]string{taskCollection(project.ID): "GET, HEAD, POST", taskPath(task): "GET, HEAD, PATCH, DELETE"} {
-		response := projectRequest(handler, http.MethodPut, path, "")
+	for target, allow := range map[string]string{collection: "GET, HEAD, POST", path: "GET, HEAD, PATCH, DELETE"} {
+		response := projectRequest(h, http.MethodPut, target, "")
 		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
-		if response.Header().Get("Allow") != allowed {
-			t.Fatalf("wrong Allow header: %s", response.Header().Get("Allow"))
+		if response.Header().Get("Allow") != allow {
+			t.Fatalf("wrong Allow: %s", response.Header().Get("Allow"))
 		}
-		if response := projectRequest(handler, http.MethodHead, path, ""); response.Code != http.StatusOK {
-			t.Fatalf("HEAD is not supported: %d", response.Code)
+	}
+	if h.Tasks.TotalCalls() != 0 {
+		t.Fatalf("invalid route called service %d times", h.Tasks.TotalCalls())
+	}
+	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+		return taskservice.TaskObservation{Task: testTask("Head resource"), Epoch: testEpoch}, nil
+	}
+	h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		return taskservice.TaskPage{Items: []model.Task{}}, nil
+	}
+	for _, target := range []string{collection, path} {
+		response := projectRequest(h, http.MethodHead, target, "")
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("HEAD route: %d %v", response.Code, response.Header())
 		}
 	}
 	if strings.Contains(logs.String(), "secret") {
 		t.Fatalf("raw path or content leaked: %s", &logs)
 	}
+	missing := "00000000-0000-4000-8000-000000000099"
+	for _, resource := range []struct{ projectID, id string }{{missing, testTaskID}, {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", testTaskID}, {testProjectID, missing}} {
+		for _, method := range []string{http.MethodGet, http.MethodPatch} {
+			t.Run(resource.projectID+"/"+resource.id+"/"+method, func(t *testing.T) {
+				f := newHTTPFixture(t, io.Discard)
+				if method == http.MethodGet {
+					f.Tasks.ObserveRESTFunc = func(_ context.Context, _ model.Principal, projectID, id string, _ bool) (taskservice.TaskObservation, error) {
+						if projectID != resource.projectID || id != resource.id {
+							t.Fatalf("read scope changed: %s %s", projectID, id)
+						}
+						return taskservice.TaskObservation{}, &model.Fault{Code: "not_found", Message: "Task was not found."}
+					}
+				} else {
+					f.Tasks.UpdateFunc = func(_ context.Context, _ model.Principal, projectID, id string, _ taskcore.UpdateTask) (model.Task, error) {
+						if projectID != resource.projectID || id != resource.id {
+							t.Fatalf("update scope changed: %s %s", projectID, id)
+						}
+						return model.Task{}, &model.Fault{Code: "not_found", Message: "Task was not found."}
+					}
+				}
+				assertProjectError(t, projectRequest(f, method, taskCollection(resource.projectID)+"/"+resource.id, `{"version":1,"title":"changed"}`), http.StatusNotFound, "not_found")
+			})
+		}
+	}
+}
+
+func TestTaskHTTPUnavailableCollectionsAndDependencyInputForwarding(t *testing.T) {
+	missing := "00000000-0000-4000-8000-000000000099"
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			if method == http.MethodGet {
+				h.Tasks.ListFunc = func(_ context.Context, principal model.Principal, projectID string, _ taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+					if principal != h.principal || projectID != missing {
+						t.Fatalf("missing collection scope: %+v %s", principal, projectID)
+					}
+					return taskservice.TaskPage{}, &model.Fault{Code: "not_found", Message: "Project was not found."}
+				}
+			} else {
+				h.Tasks.CreateFunc = func(_ context.Context, principal model.Principal, projectID string, input taskcore.CreateTask) (model.Task, error) {
+					if principal != h.principal || projectID != missing || input.Title != "valid" {
+						t.Fatalf("missing create scope: %+v %s %+v", principal, projectID, input)
+					}
+					return model.Task{}, &model.Fault{Code: "not_found", Message: "Project was not found."}
+				}
+			}
+			assertProjectError(t, projectRequest(h, method, taskCollection(missing), `{"title":"valid"}`), http.StatusNotFound, "not_found")
+		})
+	}
+	for _, references := range [][]string{{testTaskID, testTaskID}, {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", missing}} {
+		t.Run(strings.Join(references, "/"), func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			h.Tasks.CreateFunc = func(_ context.Context, _ model.Principal, _ string, input taskcore.CreateTask) (model.Task, error) {
+				if !slices.Equal(input.DependsOn, references) {
+					t.Fatalf("dependency input was changed: %v", input.DependsOn)
+				}
+				return model.Task{}, &model.Fault{Code: "invalid_input", Message: "Dependency references are invalid."}
+			}
+			assertProjectError(t, projectRequest(h, http.MethodPost, taskCollection(testProjectID), jsonBody(t, map[string]any{"title": "Invalid references", "dependsOn": references})), http.StatusBadRequest, "invalid_input")
+		})
+	}
+	h := newHTTPFixture(t, io.Discard)
+	h.Tasks.UpdateFunc = func(_ context.Context, _ model.Principal, _, _ string, input taskcore.UpdateTask) (model.Task, error) {
+		if input.Version != 9223372036854775807 || input.DependsOn == nil || !slices.Equal(*input.DependsOn, []string{testTaskID}) {
+			t.Fatalf("exact version/selfdependency input changed: %+v", input)
+		}
+		return model.Task{}, &model.Fault{Code: "version_conflict", Message: "Task version changed."}
+	}
+	assertProjectError(t, projectRequest(h, http.MethodPatch, taskCollection(testProjectID)+"/"+testTaskID, jsonBody(t, map[string]any{"version": int64(9223372036854775807), "dependsOn": []string{testTaskID}})), http.StatusConflict, "version_conflict")
 }
 
 func TestTaskHTTPListFiltersKeysetsAndCursorScopes(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project, other := taskProject(t, handler), taskProject(t, handler)
-	first := createHTTPTask(t, handler, project.ID, "Ready one")
-	second := createHTTPTask(t, handler, project.ID, "Ready two")
-	blocked := createHTTPTask(t, handler, project.ID, "Blocked", first.ID)
-	extraReady := createHTTPTask(t, handler, project.ID, "Additional")
-	extraBlocked := createHTTPTask(t, handler, project.ID, "Additional blocked", first.ID)
-	active := createHTTPTask(t, handler, project.ID, "Active")
-	active = setHTTPTask(t, handler, active, "in_progress")
-	done := createHTTPTask(t, handler, project.ID, "Done")
-	done = setHTTPTask(t, handler, done, "in_progress")
-	done = setHTTPTask(t, handler, done, "done")
-	if _, err := database.Pool.Exec(context.Background(), "UPDATE tasks SET created_at='2026-01-01T00:00:00Z', updated_at='2026-01-01T00:00:00Z'"); err != nil {
-		t.Fatal(err)
-	}
-	for query, ids := range map[string][]string{
-		"status=todo&ready=true": {first.ID, second.ID, extraReady.ID}, "status=todo&ready=false": {blocked.ID, extraBlocked.ID},
-		"status=in_progress&ready=false": {active.ID}, "status=done": {done.ID}, "status=done&ready=true": {},
+	for _, tc := range []struct {
+		query  string
+		status model.TaskStatus
+		ready  *bool
+	}{
+		{"status=todo&ready=true", model.TaskTodo, boolPointerHTTP(true)},
+		{"status=todo&ready=false", model.TaskTodo, boolPointerHTTP(false)},
+		{"status=in_progress&ready=false", model.TaskInProgress, boolPointerHTTP(false)},
+		{"status=done", model.TaskDone, nil},
+		{"status=done&ready=true", model.TaskDone, boolPointerHTTP(true)},
 	} {
-		slices.Sort(ids)
-		page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"?"+query, ""), http.StatusOK)
-		actual := make([]string, 0, len(page.Items))
-		for _, task := range page.Items {
-			actual = append(actual, task.ID)
+		t.Run(tc.query, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			result := testTask("Filtered task")
+			result.Status = tc.status
+			cursor := "opaque + / cursor"
+			h.Tasks.ListFunc = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+				if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Status == nil || *input.Status != tc.status || !reflect.DeepEqual(input.Ready, tc.ready) || input.Limit != 50 || input.Cursor != nil || input.ExtendedWorker {
+					t.Fatalf("list query: %+v", input)
+				}
+				return taskservice.TaskPage{Items: []model.Task{result}, NextCursor: &cursor}, nil
+			}
+			page := decodeResponse[api.TaskPage](t, projectRequest(h, http.MethodGet, taskCollection(testProjectID)+"?"+tc.query, ""), http.StatusOK)
+			if len(page.Items) != 1 || page.Items[0].ID != result.ID || page.Items[0].Status != string(tc.status) || page.NextCursor == nil || *page.NextCursor != cursor {
+				t.Fatalf("list projection: %+v", page)
+			}
+		})
+	}
+	h := newHTTPFixture(t, io.Discard)
+	cursor := "opaque + / cursor"
+	h.Tasks.ListFunc = func(_ context.Context, _ model.Principal, _ string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		if input.Limit != 1 || input.Cursor == nil || *input.Cursor != cursor {
+			t.Fatalf("cursor forwarding: %+v", input)
 		}
-		if !slices.Equal(actual, ids) || page.NextCursor != nil {
-			t.Fatalf("AND filter %s: %v want %v", query, actual, ids)
-		}
+		return taskservice.TaskPage{Items: []model.Task{}}, nil
 	}
-	expected := []string{first.ID, second.ID, extraReady.ID}
-	slices.Sort(expected)
-	path := taskCollection(project.ID) + "?status=todo&ready=true&limit=1"
-	firstPage := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
-	if len(firstPage.Items) != 1 || firstPage.Items[0].ID != expected[0] || firstPage.NextCursor == nil {
-		t.Fatalf("first filtered keyset: %+v", firstPage)
+	response := projectRequest(h, http.MethodGet, taskCollection(testProjectID)+"?limit=1&cursor="+url.QueryEscape(cursor), "")
+	page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
+	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(response.Body.String(), `"items":[]`) || !strings.Contains(response.Body.String(), `"nextCursor":null`) {
+		t.Fatalf("empty page projection: %s", response.Body)
 	}
-	cursor := url.QueryEscape(*firstPage.NextCursor)
-	middle := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, path+"&cursor="+cursor, ""), http.StatusOK)
-	if len(middle.Items) != 1 || middle.Items[0].ID != expected[1] || middle.NextCursor == nil {
-		t.Fatalf("middle filtered keyset: %+v", middle)
+	f := newHTTPFixture(t, io.Discard)
+	for _, query := range []string{"limit=", "limit=0", "limit=101", "limit=x", "limit=1&limit=2", "cursor=", "cursor=x&cursor=y", "status=", "status=todo&status=done", "ready=", "ready=1", "ready=TRUE", "ready=yes", "ready=true&ready=false", "unknown=x", "status=%xx", "ready=true;limit=1"} {
+		assertProjectError(t, projectRequest(f, http.MethodGet, taskCollection(testProjectID)+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
-	final := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, path+"&cursor="+url.QueryEscape(*middle.NextCursor), ""), http.StatusOK)
-	if len(final.Items) != 1 || final.Items[0].ID != expected[2] || final.NextCursor != nil {
-		t.Fatalf("final keyset: %+v", final)
+	if f.Tasks.TotalCalls() != 0 {
+		t.Fatalf("query rejection called service %d times", f.Tasks.TotalCalls())
 	}
-	for _, path := range []string{
-		taskCollection(other.ID) + "?status=todo&ready=true&cursor=" + cursor,
-		taskCollection(project.ID) + "?status=todo&ready=false&cursor=" + cursor,
-		taskCollection(project.ID) + "?status=done&ready=true&cursor=" + cursor,
-		taskCollection(project.ID) + "?cursor=" + cursor,
-		"/api/v1/projects?cursor=" + cursor,
-	} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, path, ""), http.StatusBadRequest, "invalid_input")
-	}
-	projects := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1", ""), http.StatusOK)
-	if projects.NextCursor == nil {
-		t.Fatal("project cursor was not produced")
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"?cursor="+url.QueryEscape(*projects.NextCursor), ""), http.StatusBadRequest, "invalid_input")
-	for _, query := range []string{"limit=", "limit=0", "limit=101", "limit=x", "limit=1&limit=2", "cursor=", "cursor=invalid", "cursor=x&cursor=y", "status=", "status=blocked", "status=proposed", "status=todo&status=done", "ready=", "ready=1", "ready=TRUE", "ready=yes", "ready=true&ready=false", "unknown=x", "status=%xx", "ready=true;limit=1"} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"?"+query, ""), http.StatusBadRequest, "invalid_input")
+	for _, query := range []string{"cursor=invalid", "status=blocked", "status=proposed"} {
+		t.Run("domain_"+query, func(t *testing.T) {
+			f := newHTTPFixture(t, io.Discard)
+			f.Tasks.ListFunc = func(_ context.Context, _ model.Principal, _ string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+				if input.Limit != 50 {
+					t.Fatalf("domain query input: %+v", input)
+				}
+				return taskservice.TaskPage{}, &model.Fault{Code: "invalid_input", Message: "Task selection is invalid."}
+			}
+			assertProjectError(t, projectRequest(f, http.MethodGet, taskCollection(testProjectID)+"?"+query, ""), http.StatusBadRequest, "invalid_input")
+		})
 	}
 }
 
-func TestTaskHTTPDatabaseFailuresAndCancellation(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "private-task-secret")
-	if _, err := database.Pool.Exec(context.Background(), "ALTER TABLE tasks RENAME TO private_table_secret"); err != nil {
-		t.Fatal(err)
-	}
-	for _, request := range []struct{ method, path, body string }{
-		{http.MethodGet, taskCollection(project.ID), ""}, {http.MethodGet, taskPath(task), ""},
-		{http.MethodPost, taskCollection(project.ID), `{"title":"private-body-secret"}`},
-		{http.MethodPatch, taskPath(task), `{"version":1,"title":"private-body-secret"}`},
-		{http.MethodPut, taskPath(task) + "/status", `{"version":1,"status":"done"}`},
+func boolPointerHTTP(value bool) *bool { return &value }
+
+func TestTaskHTTPOperationalFailuresAndCancellation(t *testing.T) {
+	for _, tc := range []struct{ method, suffix, body string }{
+		{http.MethodGet, "", ""}, {http.MethodGet, "/" + testTaskID, ""}, {http.MethodPost, "", `{"title":"private-body-secret"}`}, {http.MethodPatch, "/" + testTaskID, `{"version":1,"title":"private-body-secret"}`}, {http.MethodPut, "/" + testTaskID + "/status", `{"version":1,"status":"done"}`},
 	} {
-		response := projectRequest(handler, request.method, request.path, request.body)
-		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
-		if strings.Contains(response.Body.String(), "secret") || strings.Contains(response.Body.String(), "SQL") || strings.Contains(response.Body.String(), "database") {
-			t.Fatalf("database internals leaked: %s", response.Body)
+		t.Run(tc.method+tc.suffix, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			failure := &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private_table_secret SQL driver-secret")}
+			switch {
+			case tc.method == http.MethodGet && tc.suffix == "":
+				h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+					return taskservice.TaskPage{}, failure
+				}
+			case tc.method == http.MethodGet:
+				h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+					return taskservice.TaskObservation{}, failure
+				}
+			case tc.method == http.MethodPost:
+				h.Tasks.CreateFunc = func(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error) {
+					return model.Task{}, failure
+				}
+			case tc.method == http.MethodPatch:
+				h.Tasks.UpdateFunc = func(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error) {
+					return model.Task{}, failure
+				}
+			default:
+				h.Tasks.SetStatusFunc = func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error) {
+					return model.Task{}, failure
+				}
+			}
+			response := projectRequest(h, tc.method, taskCollection(testProjectID)+tc.suffix, tc.body)
+			assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+			if strings.Contains(response.Body.String(), "secret") || strings.Contains(response.Body.String(), "SQL") || strings.Contains(response.Body.String(), "database") || strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"component":"task"`) || !strings.Contains(logs.String(), `"cause":"database"`) {
+				t.Fatalf("operational error leaked or lost classification: body=%s logs=%s", response.Body, &logs)
+			}
+		})
+	}
+	var logs bytes.Buffer
+	h := newHTTPFixture(t, &logs)
+	entered, exited := make(chan struct{}), make(chan struct{})
+	h.Tasks.UpdateFunc = func(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateTask) (model.Task, error) {
+		if principal != h.principal || projectID != testProjectID || id != testTaskID || input.Version != 1 || input.Title == nil || *input.Title != "canceled-update" {
+			t.Errorf("canceled update input: %+v", input)
 		}
+		close(entered)
+		<-ctx.Done()
+		close(exited)
+		return model.Task{}, ctx.Err()
 	}
-	if strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"component":"task"`) || !strings.Contains(logs.String(), `"cause":"database"`) {
-		t.Fatalf("unsafe or incorrect database diagnostic: %s", &logs)
-	}
-	if _, err := database.Pool.Exec(context.Background(), "ALTER TABLE private_table_secret RENAME TO tasks"); err != nil {
-		t.Fatal(err)
-	}
-	transaction, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer transaction.Rollback(context.Background())
-	if _, err := transaction.Exec(context.Background(), "SELECT id FROM projects WHERE id=$1 FOR UPDATE", project.ID); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	request := httptest.NewRequest(http.MethodPatch, taskPath(task), strings.NewReader(`{"version":1,"title":"canceled-update"}`)).WithContext(ctx)
-	authorizeResourceRequest(handler, request)
+	request := httptest.NewRequest(http.MethodPatch, taskCollection(testProjectID)+"/"+testTaskID, strings.NewReader(`{"version":1,"title":"canceled-update"}`)).WithContext(ctx)
+	authorizeResourceRequest(h, request)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Request-ID", "project-test")
 	response, finished := httptest.NewRecorder(), make(chan struct{})
-	go func() { handler.ServeHTTP(response, request); close(finished) }()
-	for {
-		var waiting bool
-		if err := database.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE pid <> pg_backend_pid() AND application_name=current_setting('application_name')
-			AND wait_event_type='Lock' AND query LIKE '%FOR UPDATE%')`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
+	t.Cleanup(func() {
+		cancel()
 		select {
 		case <-finished:
-			t.Fatal("task update finished before releasing project lock")
-		case <-ctx.Done():
-			t.Fatal("task update did not wait for project lock")
-		case <-time.After(5 * time.Millisecond):
+		case <-time.After(5 * time.Second):
+			t.Error("canceled HTTP update did not drain")
 		}
-	}
+	})
+	go func() { h.ServeHTTP(response, request); close(finished) }()
+	await(t, entered)
 	cancel()
+	await(t, exited)
 	await(t, finished)
 	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"cause":"canceled"`) {
-		t.Fatalf("canceled update wrote response or lost cause: %s %s", response.Body, &logs)
-	}
-	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
-		t.Fatal("canceled lock wait mutated task")
+		t.Fatalf("canceled update response: body=%s logs=%s", response.Body, &logs)
 	}
 }
 
@@ -399,7 +493,7 @@ func TestTaskHTTPKnownFaultsPreserveOperationalPrecedence(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, err := range []error{
 		&model.Fault{Code: "unknown", Message: "unknown-secret"},
-		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &pgconn.PgError{Message: "driver-secret"}),
+		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("driver-secret")}),
 		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, context.Canceled),
 	} {
 		response := httptest.NewRecorder()

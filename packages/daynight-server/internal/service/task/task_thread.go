@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	threadcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/thread"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
 const threadOperationTimeout = 10 * time.Second
@@ -20,13 +21,14 @@ type TaskThreads struct {
 		store.SnapshotReader
 		store.ThreadWriter
 	}
+	capturer Capturer
 }
 
 func NewTaskThreads(database interface {
 	store.SnapshotReader
 	store.ThreadWriter
-}) *TaskThreads {
-	return &TaskThreads{store: database}
+}, capture ...Capturer) *TaskThreads {
+	return &TaskThreads{store: database, capturer: capturer(capture)}
 }
 
 type CreateThreadMessage struct {
@@ -58,11 +60,16 @@ type ThreadPageDocument struct {
 type ThreadMessageError struct {
 	MessageID string
 	Execution *model.ThreadExecution
+	Outcome   store.TransactionOutcome
 	Cause     error
 }
 
 func (err *ThreadMessageError) Error() string { return "post thread message failed" }
 func (err *ThreadMessageError) Unwrap() error { return err.Cause }
+
+// TransactionOutcome reports the store's actual completion fact, including a
+// successful rollback. It is independent of any cleanup error in the cause.
+func (err *ThreadMessageError) TransactionOutcome() store.TransactionOutcome { return err.Outcome }
 
 func threadScope(principal model.Principal, projectID, taskID string) (string, string, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
@@ -77,6 +84,9 @@ func threadScope(principal model.Principal, projectID, taskID string) (string, s
 }
 
 func threadAccessError(err error) error {
+	if errors.Is(err, store.ErrProjectDeleted) {
+		return &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
+	}
 	if errors.Is(err, model.ErrNotFound) {
 		return &model.Fault{Code: "forbidden", Message: "Project access is required.", Cause: err}
 	}
@@ -135,7 +145,8 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 			return err
 		}
 		result = ThreadMessageDocument{Message: message, JSON: encoded}
-		return nil
+		f := protocol.Fact{Type: protocol.ThreadPosted, ProjectID: projectID, TaskID: taskID, MessageID: message.ID, OccurredAt: message.CreatedAt, CreatedAt: &message.CreatedAt, ReplyTo: message.ReplyTo}
+		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = errors.New("thread write did not commit")
@@ -144,6 +155,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 		}
 	}
 	if err != nil {
+		failure.Outcome = completion.Outcome
 		failure.Cause = err
 		return ThreadMessageDocument{}, failure
 	}

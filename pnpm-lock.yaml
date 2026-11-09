@@ -10,6 +10,7 @@ patchedDependencies:
   '@dagrejs/dagre@3.1.1': 142fd75deec2b03c9d6839bcdb87804ff902b25f9af621d6f8140b52c765ef7b
   '@github/copilot-sdk@1.0.11': fae42174ff94618d74662c54a4e086db1d1ec3dc02a0e9e650d8a0b3c696f68f
   '@xyflow/system@0.0.83': 5bb2dbf7a659c5abc2776087ca263fb707abfe3da27393fca9bbe56e7429d343
+  mermaid@12.2.0: bbf6e606a78ead41409eb6dc66d4651dacdffd44ffafbfdd46d54e1e6d420999
   node-pty@1.1.0: fafbe015bc6c5527a2279c7ef62bda81d72c7b5cf7514a00acae75a85e647773
   vscode-jsonrpc@8.2.1: a1ff24ae283caaee5a88fa6f1807826f36e19a7eb29e57d55eec4c594fe77f6b
 
@@ -106,7 +107,7 @@ importers:
         version: 8.0.4
       mermaid:
         specifier: 12.2.0
-        version: 12.2.0
+        version: 12.2.0(patch_hash=bbf6e606a78ead41409eb6dc66d4651dacdffd44ffafbfdd46d54e1e6d420999)
       mime:
         specifier: 4.1.1
         version: 4.1.1
@@ -171,6 +172,18 @@ importers:
       vitest:
         specifier: 5.0.5
         version: 5.0.5(@opentelemetry/api@1.10.0)(@types/node@24.19.2)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1)(vite@8.3.4(@types/node@24.19.2)(yaml@2.9.1))
+
+  packages/e2e_tests:
+    devDependencies:
+      '@playwright/test':
+        specifier: 1.64.1
+        version: 1.64.1
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
 
 packages:
 
@@ -4397,7 +4410,7 @@ snapshots:
 
   merge-descriptors@2.0.0: {}
 
-  mermaid@12.2.0:
+  mermaid@12.2.0(patch_hash=bbf6e606a78ead41409eb6dc66d4651dacdffd44ffafbfdd46d54e1e6d420999):
     dependencies:
       '@braintree/sanitize-url': 7.1.2
       '@iconify/utils': 3.1.7

@@ -1,14 +1,14 @@
 # 任务执行耗时与卡住提醒架构
 
 本设计落实[需求 TT1–TT6](../spec/daynight-task-timing.md)，
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-23-task-timing-design.md)保存采用理由。
+[决策记录](../../.agents/notes/archived/architecture/2026-10-23-task-timing-design.md)保存采用理由。
 任务起止持久化、图数据库时间、项目阈值、设置页、共享时钟和实时展示构成当前机制。
 整体验收必须使用对应源码的运行证据，设计与实现代码不能替代运行结果。
 
 ## 现有结构与职责
 
 [状态服务](../../packages/daynight-server/internal/service/task/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
-[项目写事务](../../packages/daynight-server/internal/core/store/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
+[项目写事务](../../packages/daynight-server/internal/core/store/postgres/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
 `updated_at` 随普通编辑变化，不能作为执行起点。
 [任务链图读取服务](../../packages/daynight-server/internal/service/task/task_graph.go)在只读快照中
 读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)
@@ -37,7 +37,7 @@ flowchart LR
 ## 存储与生命周期
 
 `009_task_timing.sql` 给 `tasks` 增加可空 `started_at`、`completed_at timestamptz`，已有记录保持 `NULL`。
-core 与 API 使用可空时间字段，JSON 明确输出 `startedAt`、`completedAt`，不省略未知值。
+core 与 API 使用可空时间字段，JSON明确输出startedAt、completedAt及独立cancelledAt，不省略未知值。
 
 任务写入根据数据库旧状态与目标状态维护计时，而非依赖调用者传入时间：
 
@@ -47,6 +47,7 @@ core 与 API 使用可空时间字段，JSON 明确输出 `startedAt`、`complet
 | in_progress/done → todo | null | null |
 | in_progress → done | 保留真实可空起点 | 锁后 `statement_timestamp()` |
 | todo → done | null | 锁后 `statement_timestamp()` |
+| 进入cancelled | 保留 | 保留；另写数据库cancelledAt |
 | 普通编辑或同状态 | 保留 | 保留 |
 
 同状态在版本检查后无修改；过期同状态仍冲突。历史 proposed→todo 迁移保留执行时间，
@@ -104,7 +105,7 @@ Project、items[] 和 graph.project.settings.version 均保持 bigint，覆盖�
 图资源的顶层 `observedAt` 来自同一只读事务中的数据库时钟查询，采样安排在图数据和统计读取之后。
 它与任务起止时间共享时钟来源；不使用 Go HTTP Date 的秒精度时间或客户端墙钟推算执行耗时。
 
-Web 在 task-sync 响应解析完成后立即捕获 `performance.now()`，在 IDB 原子应用和索引计算之前保存 `GraphSnapshot.receivedMonotonic`。
+成功 task-sync API reader 在 `await response.text()` 完成后立即捕获 `performance.now()`，早于 JSON 解码、source scan 和合同校验；本地 `TaskSyncRead` 将该时间交给 `useTaskGraph`，历史接纳、IDB 原子应用和索引计算沿用它作为 `GraphSnapshot.receivedMonotonic`。这个 receipt 不来自服务端 JSON、磁盘或其它标签页。
 同一 snapshot 保存该响应最新 `observedAt` 和仅用于本机最近刷新标签的 `receivedAt`；服务端样本和单调接收时间必须成对更新。仅本地摘要的 snapshot 将 `observedAt`、`receivedAt` 置为 null，revision 为 0，不产生服务器时钟；它的本机时间与单调锚点只服务概览近期分类。
 摘要按任务 ID 和精确业务版本合并，Project 设置独立按版本合并；仅时钟变化时复用整个 graph/index，仅设置变化时替换 Project 元数据并复用任务索引。持久与跨页数据不能恢复本页的单调时钟锚点。
 因此缓存图自身的 `graph.observedAt` 可能仍是旧样本。
@@ -146,7 +147,7 @@ ProjectSettingsPanel 按 user/project 键隔离，成员查看权威值，管理
 共享 foreground request guard 保留同用户表单与焦点，换号 generation 使旧读写失效。
 
 `TaskExecutionPresentation` 在图卡片与独立任务行复用耗时、提醒和可访问说明，并为 Goal 子任务行复用耗时本身。
-进行中为当前服务端显示时间减起点，完成为终点减起点，未知起点不显示耗时。
+进行中为当前服务端显示时间减起点，完成为终点减起点。取消仅在原执行起止都已知时显示历史差值，否则隐藏；从不使用cancelledAt补造执行耗时或产生卡住提醒。未知起点不显示耗时。
 共享 `taskExecution` 以 `allowAgents=true`、进行中状态和已知起点作为提醒的必要条件，
 再严格比较原始毫秒值 `elapsed > executionWarningMinutes * 60_000`，格式化仅影响文字。
 `allowAgents=false` 保留同一实时计时订阅与耗时展示，返回的 `overdue` 为 false，因此两个展示入口均无警告样式、文字或可访问提醒含义。
@@ -181,6 +182,6 @@ Goal 子任务行另覆盖两种许可下的分钟推进、45 分钟完成冻结
 未来调查者可在服务端 JSON 日志中按 `project_id` 和设置请求的 `request_id` 过滤，确认保存阶段及错误类别；不记录令牌、描述内容或表单原始正文。
 
 服务端不增加后台作业或告警扫描器。网页时钟仅属于当前项目页面，错误与取消归现有页面请求所有者；
-浏览器定时器只推进本地显示，不产生逐卡网络请求或遥测。每个任务增加两个可空时间字段，
+浏览器定时器只推进本地显示，不产生逐卡网络请求或遥测。每个任务带有两个可空执行时间字段和独立cancelledAt，
 每个图增加一个时钟字段，每个项目增加固定大小 settings。图节点/边上限与列表分页沿用既有约束；计时复用每 15 秒的可见页面 task-sync，不另建轮询；
 设置读取复用 Project，修改仅增加一次显式 PATCH，不新增模型工具或无界历史输出。

@@ -1,3 +1,6 @@
+import type { TaskStatus } from "../task/status.js";
+export type { TaskStatus } from "../task/status.js";
+
 export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
 export type TaskStep = {
   readonly id: string;
@@ -47,7 +50,6 @@ export type MoveTaskStepInput = {
 };
 export type MoveTaskStepOptions = TaskStepWriteOptions;
 
-export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
 
 export type User = {
@@ -163,6 +165,20 @@ export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly member
 export type InvitationInspection = ProjectInvitationInspection | TeamInvitationInspection;
 export type InvitationAcceptance = ProjectInvitationAcceptance | TeamInvitationAcceptance;
 
+export type ProjectDeletionClaim = {
+  readonly taskId: string;
+  readonly title: string;
+  readonly worker: { readonly machineName: string; readonly platform: TaskPlatform; readonly phase: WorkerPhase; readonly paused: boolean; readonly connectivity: "online" | "offline" | "unknown" };
+};
+export type ProjectDeletionPreview = {
+  readonly observedAt: string;
+  readonly project: { readonly id: string; readonly name: string; readonly repoUrl: string; readonly ownerTeam: TeamRef };
+  readonly summary: { readonly taskCount: number; readonly unfinishedTaskCount: number; readonly attachmentCount: number };
+  readonly activeClaims: readonly ProjectDeletionClaim[];
+  readonly nextCursor: string | null;
+};
+export type ProjectDeletionReceipt = { readonly projectId: string; readonly deleted: true };
+
 export type ProjectTransferPreview = {
   readonly sourceTeam: TeamRef;
   readonly targetTeam: TeamRef & { readonly version: bigint };
@@ -233,12 +249,21 @@ export type WorkerAssistantProvider = {
 };
 export type WorkerAssistantHost = {
   readonly protocolVersion: 1;
+  readonly creationConfigurationVersion?: 1;
   readonly observedAt: string;
   readonly defaultCwd: string;
   readonly defaultProvider: WorkerAgent;
   readonly providers: readonly WorkerAssistantProvider[];
 };
+export type WorkerConfigurationValue = { readonly value: string; readonly source: "local" | "cloud" } | { readonly value: null; readonly source: "native" };
+export type WorkerRuntimeNative = { readonly agent: WorkerAgent; readonly model: WorkerConfigurationValue; readonly reasoningEffort: WorkerConfigurationValue };
+export type WorkerRuntimeConfiguration = {
+  readonly schemaVersion: 1;
+  readonly native: WorkerRuntimeNative | null;
+  readonly projects: readonly { readonly projectId: string; readonly native: WorkerRuntimeNative | null }[];
+};
 export type WorkerTelemetry = {
+  readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
   readonly workingDirectory: string;
@@ -300,6 +325,7 @@ export type Task = {
   readonly assignedTo: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly cancelledAt: string | null;
   readonly version: bigint;
   readonly properties: TaskProperties;
   readonly createdAt: string;
@@ -320,6 +346,7 @@ export type TaskGraphSummary = {
   readonly todo: number;
   readonly inProgress: number;
   readonly done: number;
+  readonly cancelled: number;
   readonly ready: number;
   readonly blocked: number;
 };
@@ -389,9 +416,24 @@ export type TaskFilters = {
   readonly compatiblePlatform?: TaskPlatform;
   readonly workerId?: string;
 };
+export type TaskSearchInput = Omit<TaskFilters, "workerId"> & { readonly query: string };
+export type TaskSearchItem = {
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly status: TaskStatus;
+  readonly cancelledAt: string | null;
+  readonly context: { readonly taskId: string; readonly title: string } | null;
+  readonly match: { readonly fields: readonly ("title" | "description")[]; readonly descriptionSnippet: string | null };
+};
+export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
 export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
+  readonly writeOutcome?: "not_committed";
+  readonly reason?: string;
+  readonly position?: number;
+  readonly length?: number;
   readonly encodedBytes?: number;
   readonly maxEncodedBytes?: number;
   readonly taskIds?: readonly string[];

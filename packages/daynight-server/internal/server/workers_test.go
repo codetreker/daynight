@@ -2,12 +2,17 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -30,80 +35,84 @@ func snapshotDetailHTTP(t *testing.T, handler http.Handler, id string) api.Worke
 
 func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, projectTestStore(t), &logs)
-	extendedWorkerTestHandler(handler)
-	empty := decodeResponse[api.WorkerPage](t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers", ""), http.StatusOK)
+	f := newWorkerHTTPFixture(t, &logs)
+	handler := f.handler
+	empty := f.list(t, "/api/v1/me/workers", store.Page{Limit: 50}, nil)
 	if empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil || empty.ObservedAt.IsZero() {
 		t.Fatal("invalid empty worker page")
 	}
-	id := uuid.NewString()
+	id := "c3333333-3333-4333-8333-333333333333"
 	body := workerSnapshotReportBody()
 	body["taskInventory"] = nil
-	reported := reportSnapshotHTTP(t, handler, strings.ToUpper(id), body)
+	unknownSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}}
+	reported := f.report(t, strings.ToUpper(id), body, nil, nil, unknownSnapshot)
 	if reported.ObservedAt.IsZero() || reported.LastReportedAt.IsZero() {
 		t.Fatal("report lacks server timestamps")
 	}
-	unknown := snapshotDetailHTTP(t, handler, id)
+	unknown := f.detail(t, id, unknownSnapshot)
 	if unknown.Worker.ActiveTaskCount != nil || unknown.Worker.TaskObservationState != "unavailable" || unknown.Worker.TaskObservedAt != nil || unknown.Worker.InventoryObservedAt != nil || unknown.Worker.Tasks == nil {
 		t.Fatalf("unknown inventory became idle: %+v", unknown)
 	}
 	body = workerSnapshotReportBody()
-	reportSnapshotHTTP(t, handler, id, body)
-	idle := snapshotDetailHTTP(t, handler, id)
+	inventoryAt := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	idleSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: []model.WorkerObservedTask{}}}
+	f.report(t, id, body, nil, []model.WorkerObservedTask{}, idleSnapshot)
+	idle := f.detail(t, id, idleSnapshot)
 	if idle.Worker.ActiveTaskCount == nil || *idle.Worker.ActiveTaskCount != 0 || idle.Worker.TaskObservationState != "observed" || idle.Worker.TaskObservedAt == nil || idle.Worker.InventoryObservedAt == nil || idle.Worker.Telemetry.CPU.Value == nil || idle.Worker.Telemetry.Versions.Codex.State != "not_installed" || idle.Worker.Telemetry.Versions.Copilot.Code == nil {
 		t.Fatalf("idle or telemetry shape incorrect: %+v", idle)
 	}
-	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Snapshot-owned task"), map[string]any{"allowAgents": true})
-	claim := workerClaimBody(task.Version)
-	claim["workerId"] = id
-	claim["agent"] = "claude"
-	task = claimHTTPWorker(t, handler, task, claim)
-	task = updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "opaque\x00", Title: "Opaque evidence"}})}})
-	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": project.ID, "taskId": task.ID, "claimId": apiWorker(t, task.Properties).ClaimID}}}
-	reportSnapshotHTTP(t, handler, id, body)
-	active := snapshotDetailHTTP(t, handler, id)
+	projectID, taskID, claimID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	claim := map[string]any{"claimId": claimID, "state": "active", "userId": handler.principal.UserID, "workerId": id, "machine": map[string]any{"id": uuid.NewString(), "name": "Worker"}, "platform": "linux", "agent": "claude", "agentControlMode": "web", "worktreeId": uuid.NewString(), "phase": "preparing", "herdr": nil, "nativeSessionId": nil, "claimedAt": f.now.Format(time.RFC3339Nano)}
+	task := model.Task{ID: taskID, ProjectID: projectID, Title: "Snapshot-owned task", Status: model.TaskInProgress, Properties: model.TaskProperties{"worker": json.RawMessage(jsonBody(t, claim)), "pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Opaque evidence"}]`)}}
+	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": projectID, "taskId": taskID, "claimId": claimID}}}
+	expectedItems := []model.WorkerObservedTask{{ProjectID: projectID, TaskID: taskID, ClaimID: claimID, Title: task.Title, ProjectName: "Project", Status: model.TaskInProgress, Phase: model.WorkerPreparing, Agent: model.AgentClaude}}
+	activeSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: expectedItems}}
+	f.report(t, id, body, []store.WorkerTaskSource{{Task: task, ProjectName: "Project"}}, expectedItems, activeSnapshot)
+	active := f.detail(t, id, activeSnapshot)
 	if active.Worker.ActiveTaskCount == nil || *active.Worker.ActiveTaskCount != 1 || len(active.Worker.Tasks) != 1 || active.Worker.Tasks[0].Agent != "claude" || active.Worker.Tasks[0].Title != task.Title {
 		t.Fatalf("authorized task snapshot missing: %+v", active)
 	}
-	done := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, map[string]any{"version": task.Version, "status": "done", "claimId": apiWorker(t, task.Properties).ClaimID})), http.StatusOK)
-	if done.Status != "done" {
-		t.Fatal("task not completed")
-	}
 	body["taskInventory"] = nil
-	reportSnapshotHTTP(t, handler, id, body)
-	stale := snapshotDetailHTTP(t, handler, id)
+	staleSnapshot := activeSnapshot
+	staleSnapshot.TaskSnapshot.State = model.WorkerTasksStale
+	f.report(t, id, body, nil, nil, staleSnapshot)
+	stale := f.detail(t, id, staleSnapshot)
 	if stale.Worker.TaskObservationState != "stale" || len(stale.Worker.Tasks) != 1 || stale.Worker.Tasks[0].Status != "in_progress" || stale.Worker.TaskObservedAt == nil || !stale.Worker.TaskObservedAt.Equal(*active.Worker.TaskObservedAt) {
 		t.Fatalf("historical snapshot was overwritten by current task state: %+v", stale)
 	}
 	lastSeen := stale.Worker.LastReportedAt
-	if next := snapshotDetailHTTP(t, handler, id); !next.Worker.LastReportedAt.Equal(lastSeen) {
+	if next := f.detail(t, id, staleSnapshot); !next.Worker.LastReportedAt.Equal(lastSeen) {
 		t.Fatal("GET refreshed liveness")
 	}
-	second := uuid.NewString()
+	second := "d4444444-4444-4444-8444-444444444444"
 	secondBody := workerSnapshotReportBody()
 	secondBody["versions"].(map[string]any)["herdr"] = map[string]any{"state": "not_running", "checkedAt": "2026-10-29T00:00:00Z"}
-	reportSnapshotHTTP(t, handler, second, secondBody)
-	page := decodeResponse[api.WorkerPage](t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers?limit=1", ""), http.StatusOK)
+	secondSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: second, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, secondBody), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: []model.WorkerObservedTask{}}}
+	f.report(t, second, secondBody, nil, []model.WorkerObservedTask{}, secondSnapshot)
+	count := 1
+	summaries := []store.WorkerSummary{{WorkerID: id, CreatedAt: staleSnapshot.CreatedAt, LastReportedAt: lastSeen, Machine: staleSnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksStale, TaskObservedAt: &f.now, ActiveTaskCount: &count}, {WorkerID: second, CreatedAt: secondSnapshot.CreatedAt, LastReportedAt: secondSnapshot.LastReportedAt, Machine: secondSnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksObserved}}
+	page := f.list(t, "/api/v1/me/workers?limit=1", store.Page{Limit: 1}, summaries)
 	if len(page.Items) != 1 || page.Items[0].WorkerID != id || page.NextCursor == nil {
 		t.Fatalf("first page incorrect: %+v", page)
 	}
-	next := decodeResponse[api.WorkerPage](t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers?limit=1&cursor="+url.QueryEscape(*page.NextCursor), ""), http.StatusOK)
+	next := f.list(t, "/api/v1/me/workers?limit=1&cursor="+url.QueryEscape(*page.NextCursor), store.Page{Limit: 1, After: &store.Position{CreatedAt: staleSnapshot.CreatedAt, ID: id}}, summaries[1:])
 	if len(next.Items) != 1 || next.Items[0].WorkerID != second || next.NextCursor != nil {
 		t.Fatalf("stable continuation incorrect: %+v", next)
 	}
-	if logsText := logs.String(); !strings.Contains(logsText, `"worker_id":"`+id+`"`) || !strings.Contains(logsText, `"component":"worker_report"`) || strings.Contains(logsText, "/private/work") || strings.Contains(logsText, "Private worker machine") || strings.Contains(logsText, "Snapshot-owned task") {
+	if text := logs.String(); !strings.Contains(text, `"worker_id":"`+id+`"`) || !strings.Contains(text, `"component":"worker_report"`) || strings.Contains(text, "/private/work") || strings.Contains(text, "Private worker machine") || strings.Contains(text, "Snapshot-owned task") {
 		t.Fatal("worker logs lack correlation or expose private content")
 	}
 }
 
 func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	f := newWorkerHTTPFixture(t, io.Discard)
+	handler := f.handler
 	id := uuid.NewString()
 	path := "/api/v1/me/workers/" + id
-	for _, body := range []string{"", `null`, `[]`, `{}`, `{"state":true}`, `{"machine":null,"machine":null}`, strings.Repeat(" ", httpx.MaxJSONBody) + "{}", string([]byte{'{', 0xff, '}'})} {
+	for _, body := range []string{"", `null`, `[]`, `{}`, `{"state":true}`, `{"machine":null,"machine":null}`, string([]byte{'{', 0xff, '}'})} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", body), http.StatusBadRequest, "invalid_input")
 	}
+	assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", strings.Repeat(" ", httpx.MaxJSONBody)+"{}"), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, mutate := range []func(map[string]any){
 		func(b map[string]any) { b["userId"] = uuid.NewString() }, func(b map[string]any) { b["workingDirectory"] = "NUL\x00" }, func(b map[string]any) { b["platform"] = "unknown" },
 		func(b map[string]any) { b["cpu"].(map[string]any)["value"].(map[string]any)["usagePercent"] = 101 },
@@ -140,7 +149,19 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 	for _, target := range []string{"not-uuid", id + "?", id + "?x=1"} {
 		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers/"+target, ""), http.StatusBadRequest, "invalid_input")
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
+	calls := 0
+	f.read(t, &workerHTTPReader{t: t, WorkerCall: func(_ context.Context, u, w string, now time.Time) (model.WorkerSnapshot, error) {
+		calls++
+		if u != handler.principal.UserID || w != id || now != f.now {
+			t.Fatal("wrong missing-worker query")
+		}
+		return model.WorkerSnapshot{}, model.ErrNotFound
+	}}, func() {
+		assertProjectError(t, projectRequest(handler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
+	})
+	if calls != 1 {
+		t.Fatalf("missing-worker calls: %d", calls)
+	}
 	for _, test := range []struct{ path, method, allow string }{{"/api/v1/me/workers", http.MethodPost, "GET, HEAD"}, {path, http.MethodPatch, "GET, HEAD"}, {path + "/report", http.MethodGet, "POST"}} {
 		response := projectRequest(handler, test.method, test.path, "")
 		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")

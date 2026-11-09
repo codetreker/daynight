@@ -25,6 +25,7 @@ export const TaskPlatformConfirmation = ({ confirmation, ...props }: {
   readonly confirmation: PlatformConfirmation;
   readonly owner: RefObject<HTMLElement | null>;
   readonly fallbackFocus: RefObject<HTMLElement | null>;
+  readonly confirmDisabled?: boolean;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
 }) => {

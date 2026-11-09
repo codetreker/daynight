@@ -2,67 +2,72 @@ package task_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func TestTaskHTTPTimingIsServerOwnedFrozenAndSharedAcrossResources(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	project := taskProject(t, handler)
-	created := projectRequest(handler, http.MethodPost, taskCollection(project.ID), `{"title":"Timed execution"}`)
-	task := decodeResponse[api.Task](t, created, http.StatusCreated)
+func TestTaskHTTPTimingProjectsSuppliedIntervalsAcrossResources(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	created := testTask("Timed execution")
+	h.Tasks.CreateFunc = func(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error) {
+		return created, nil
+	}
+	collection := taskCollection(testProjectID)
+	path := collection + "/" + testTaskID
+	response := projectRequest(h, http.MethodPost, collection, `{"title":"Timed execution"}`)
+	task := decodeResponse[api.Task](t, response, http.StatusCreated)
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(created.Body.Bytes(), &fields); err != nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"startedAt", "completedAt"} {
+	for _, name := range []string{"startedAt", "completedAt", "cancelledAt"} {
 		if !bytes.Equal(fields[name], []byte("null")) {
-			t.Fatalf("new task omitted unknown %s or invented timing: %s", name, created.Body)
+			t.Fatalf("unknown %s was omitted or invented: %s", name, response.Body)
 		}
-		assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), `{"title":"Rejected","`+name+`":"2026-01-01T00:00:00Z"}`), http.StatusBadRequest, "invalid_input")
-		assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task), `{"version":1,"title":"Rejected","`+name+`":null}`), http.StatusBadRequest, "invalid_input")
-		assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", `{"version":1,"status":"todo","`+name+`":null}`), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(h, http.MethodPost, collection, `{"title":"Rejected","`+name+`":"2026-01-01T00:00:00Z"}`), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(h, http.MethodPatch, path, `{"version":1,"title":"Rejected","`+name+`":null}`), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(h, http.MethodPut, path+"/status", `{"version":1,"status":"todo","`+name+`":null}`), http.StatusBadRequest, "invalid_input")
 	}
-	if task.StartedAt != nil || task.CompletedAt != nil {
-		t.Fatalf("creation started an execution: %+v", task)
+	if task.StartedAt != nil || task.CompletedAt != nil || task.CancelledAt != nil || h.Tasks.Calls("Create") != 1 || h.Tasks.TotalCalls() != 1 {
+		t.Fatalf("readonly timing reached service or creation invented interval: %+v calls=%d", task, h.Tasks.TotalCalls())
 	}
-	task = setHTTPTask(t, handler, task, "in_progress")
-	if task.StartedAt == nil || task.CompletedAt != nil || !task.StartedAt.Equal(task.UpdatedAt) || task.StartedAt.Location() != time.UTC {
-		t.Fatalf("start did not expose the database start: %+v", task)
+	start := created.CreatedAt.In(time.FixedZone("recorded", 9*60*60))
+	end := start.Add(time.Hour)
+	result := created
+	result.Status, result.Version, result.StartedAt, result.CompletedAt, result.UpdatedAt = model.TaskDone, 3, &start, &end, end
+	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 	}
-	start := *task.StartedAt
-	previous := task
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "title": "Edited during execution"})), http.StatusOK)
-	if !task.StartedAt.Equal(start) || task.CompletedAt != nil {
-		t.Fatalf("metadata edit reset the running interval: %+v", task)
+	h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		return taskservice.TaskPage{Items: []model.Task{result}}, nil
 	}
-	same := setHTTPTask(t, handler, task, "in_progress")
-	if !reflect.DeepEqual(same, task) {
-		t.Fatal("same state changed execution timing")
+	h.Tasks.GraphFunc = func(ctx context.Context, principal model.Principal, projectID, id string) (model.TaskGraph, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID {
+			t.Fatalf("graph scope changed: %+v %s %s", principal, projectID, id)
+		}
+		return model.TaskGraph{Project: testProject(), ObservedAt: end, Tasks: []model.GraphTask{{ID: testTaskID, TitlePreview: result.Title, Status: result.Status, CreatedAt: result.CreatedAt, UpdatedAt: result.UpdatedAt, StartedAt: &start, CompletedAt: &end}}, Summary: model.TaskGraphSummary{Total: 1, Done: 1}}, nil
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: previous.Version, Status: "done"})), http.StatusConflict, "version_conflict")
-	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
-		t.Fatal("rejected lifecycle write changed execution timing")
+	read := decodeResponse[api.Task](t, projectRequest(h, http.MethodGet, path, ""), http.StatusOK)
+	list := decodeResponse[api.TaskPage](t, projectRequest(h, http.MethodGet, collection, ""), http.StatusOK)
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(h, http.MethodGet, "/api/v1/projects/"+testProjectID+"/task-graph?taskId="+testTaskID, ""), http.StatusOK)
+	if len(list.Items) != 1 || len(graph.Tasks) != 1 {
+		t.Fatalf("timing projection missing resource: list=%+v graph=%+v", list, graph)
 	}
-	task = setHTTPTask(t, handler, task, "done")
-	if task.CompletedAt == nil || !task.StartedAt.Equal(start) || task.CompletedAt.Before(start) || !task.CompletedAt.Equal(task.UpdatedAt) {
-		t.Fatalf("completion did not freeze its real interval: %+v", task)
+	for _, interval := range []struct{ start, end *time.Time }{{read.StartedAt, read.CompletedAt}, {list.Items[0].StartedAt, list.Items[0].CompletedAt}, {graph.Tasks[0].StartedAt, graph.Tasks[0].CompletedAt}} {
+		if interval.start == nil || interval.end == nil || !interval.start.Equal(start) || !interval.end.Equal(end) || interval.start.Location() != time.UTC || interval.end.Location() != time.UTC {
+			t.Fatalf("supplied interval changed during encoding: start=%v end=%v", interval.start, interval.end)
+		}
 	}
-	end := *task.CompletedAt
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "description": "Edited after execution"})), http.StatusOK)
-	if !task.StartedAt.Equal(start) || !task.CompletedAt.Equal(end) {
-		t.Fatalf("finished interval changed during an edit: %+v", task)
-	}
-	listed := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID), ""), http.StatusOK)
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID), ""), http.StatusOK)
-	if len(listed.Items) != 1 || !reflect.DeepEqual(listed.Items[0], task) || len(graph.Tasks) != 1 ||
-		!reflect.DeepEqual(graph.Tasks[0].StartedAt, task.StartedAt) || !reflect.DeepEqual(graph.Tasks[0].CompletedAt, task.CompletedAt) || graph.ObservedAt.Before(end) {
-		t.Fatalf("resource timing differs across reads: task %+v, list %+v, graph %+v", task, listed, graph)
+	if !graph.ObservedAt.Equal(end) || graph.ObservedAt.Location() != time.UTC || read.Version != 3 || read.CancelledAt != nil {
+		t.Fatalf("resource timing projection: task=%+v graph=%+v", read, graph)
 	}
 }

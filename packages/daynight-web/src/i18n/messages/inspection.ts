@@ -92,6 +92,7 @@ export type InspectionMessages = {
     readonly configuration: string;
     readonly unsupported: string;
     readonly tooLarge: string;
+    readonly complexity: string;
     readonly image: string;
   };
   readonly deletion: {
@@ -132,6 +133,10 @@ export type InspectionMessages = {
     readonly startTiming: string;
     readonly finishTiming: string;
     readonly directFinishTiming: string;
+    readonly cancelQuestion: string;
+    readonly confirmCancellation: string;
+    readonly cancelExplanation: string;
+    readonly releaseBeforeCancel: string;
     readonly pending: string;
     readonly confirmed: string;
     readonly currentState: string;
@@ -188,6 +193,7 @@ export type InspectionMessages = {
     readonly noBlockers: string;
     readonly successors: string;
     readonly successorsMissing: string;
+    readonly successorsPartial: string;
     readonly noSuccessors: string;
     readonly created: string;
     readonly updated: string;
@@ -197,7 +203,6 @@ export type InspectionMessages = {
     readonly copyTitleFailed: string;
     readonly copied: string;
     readonly copyFailed: string;
-    readonly footer: string;
     readonly countedHeading: (args: { label: string; count: string }) => string;
   };
   readonly pr: {

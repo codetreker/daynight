@@ -2,6 +2,7 @@ package service
 
 import (
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -15,10 +16,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func deletedTaskStorage(t *testing.T, database *store.Store, task model.Task) (string, *time.Time, time.Time, int64) {
+func deletedTaskStorage(t *testing.T, database *postgres.Store, task model.Task) (string, *time.Time, time.Time, int64) {
 	t.Helper()
 	var data string
 	var deleted *time.Time
@@ -42,7 +43,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	if marker != nil {
 		t.Fatal("new task starts deleted")
 	}
-	sync := taskservice.NewTaskSync(database, time.Second)
+	sync := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), time.Second)
 	baseline, err := sync.Get(ctx, principal, task.ProjectID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)

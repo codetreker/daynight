@@ -21,8 +21,10 @@ func pointer[T any](value T) *T { return &value }
 func requireFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != code {
-		t.Fatalf("expected %s, got %v", code, err)
+	var transaction *store.TransactionError
+	wrapped := errors.As(err, &transaction) && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || (!wrapped && err.Error() != fault.Message) {
+		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault
 }
@@ -391,5 +393,68 @@ func TestWorkerConfigurationValidationAndTransactionFailures(t *testing.T) {
 	}
 	if result, err := workers.Configuration(ctx, principal, id); err != nil || result.Desired.Revision != "2" {
 		t.Fatalf("configuration queried Tasks: %+v %v", result, err)
+	}
+}
+
+func TestWorkerSummaryByteLimitContinuesAndRejectsOversizedFirstItem(t *testing.T) {
+	_, database, _, principal := testsupport.ProjectService(t)
+	ctx := context.Background()
+	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
+	for index, id := range ids {
+		_, err := database.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
+			VALUES ($1,$2,statement_timestamp()+$3 * interval '1 second',statement_timestamp(),
+			jsonb_build_object('machine',jsonb_build_object('id',$4::text,'name',repeat('<',1000000)),'platform','linux'),
+			'{"state":"unavailable","items":[]}'::jsonb)`, principal.UserID, id, index, uuid.NewString())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	workers := NewWorkers(database)
+	request := model.PageRequest{Limit: 100}
+	for _, id := range ids {
+		page, err := workers.List(ctx, principal, request)
+		if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != id {
+			t.Fatalf("page: %+v %v", page.NextCursor, err)
+		}
+		request.Cursor = page.NextCursor
+	}
+	if request.Cursor != nil {
+		t.Fatal("last page has cursor")
+	}
+	_, err := database.Pool.Exec(ctx, `UPDATE workers SET telemetry=jsonb_set(telemetry,'{machine,name}',to_jsonb(repeat('<',1500000))) WHERE worker_id=$1`, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = workers.List(ctx, principal, model.PageRequest{Limit: 100})
+	requireFault(t, err, "resource_limit_exceeded")
+}
+
+func TestWorkerSummaryValidatesTaskIDInsideRequestedCount(t *testing.T) {
+	_, database, _, principal := testsupport.ProjectService(t)
+	ctx := context.Background()
+	ids := []string{uuid.NewString(), uuid.NewString()}
+	for index, id := range ids {
+		size := 7 << 20
+		if index == 1 {
+			size = 2 << 20
+		}
+		_, err := database.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
+        VALUES($1,$2,statement_timestamp()+$3 * interval '1 second',statement_timestamp(),
+        jsonb_build_object('machine',jsonb_build_object('id',$4::text,'name',repeat('x',$5)),'platform','linux'),
+        CASE WHEN $3=0 THEN '{"state":"unavailable","items":[]}'::jsonb ELSE '{"state":"observed","items":[{"taskId":"bad"}]}'::jsonb END)`, principal.UserID, id, index, uuid.NewString(), size)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	workers := NewWorkers(database)
+	if _, err := workers.List(ctx, principal, model.PageRequest{Limit: 100}); err == nil {
+		t.Fatal("invalid candidate within count was hidden by byte limit")
+	}
+	page, err := workers.List(ctx, principal, model.PageRequest{Limit: 1})
+	if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != ids[0] || page.NextCursor == nil {
+		t.Fatalf("count lookahead: %d cursor=%v err=%v", len(page.Items), page.NextCursor, err)
+	}
+	if _, err := workers.List(ctx, principal, model.PageRequest{Limit: 1, Cursor: page.NextCursor}); err == nil {
+		t.Fatal("invalid returned task ID accepted")
 	}
 }

@@ -1,6 +1,7 @@
 import type { CopilotSession } from "@github/copilot-sdk";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
+import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
 export class CopilotControls {
   readonly store: ProviderControls;
   private toolApproval: string | null = null;
@@ -22,6 +23,14 @@ export class CopilotControls {
     }
     if (!resume && unattended && this.toolApproval !== "allow") throw new Error("Native Copilot cannot confirm unattended tool permissions.");
     await this.refresh();
+  }
+  async validateSelection(requested: NativeModelSelection): Promise<void> {
+    const [current, listing] = await Promise.all([controlDeadline(this.native.rpc.model.getCurrent(), "Copilot current model"), controlDeadline(this.native.rpc.model.list(), "Copilot models")]);
+    if (!Array.isArray(listing.list) || listing.list.length > 500) throw new Error("Invalid Copilot native model catalog.");
+    assertNativeModelSelection("Copilot", requested, { model: current.modelId ?? null, effort: current.reasoningEffort ?? null, models: listing.list.map(value => {
+      const item = record(value), levels = item.supportedReasoningEfforts ?? record(record(item.capabilities).supports).reasoning_effort;
+      return { id: string(item.id), efforts: Array.isArray(levels) ? levels.filter((value): value is string => typeof value === "string") : null };
+    }) });
   }
   async refresh(includeCommands = true) {
     try {

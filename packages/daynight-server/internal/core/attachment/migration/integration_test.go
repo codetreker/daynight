@@ -27,7 +27,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 type attachmentMigrationIntegrationOwner struct {
@@ -36,7 +36,7 @@ type attachmentMigrationIntegrationOwner struct {
 }
 
 type attachmentMigrationIntegrationFixture struct {
-	database    *store.Store
+	database    *postgres.Store
 	databaseURL string
 	root        string
 	projects    []string

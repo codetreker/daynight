@@ -11,16 +11,35 @@ const snapshot = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../da
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
 afterEach(() => { clients.forEach((c) => c.close()); clients.length = 0; vi.useRealTimers(); });
-function fixture(storage: Storage | null = null, principal = userId) {
-  const s = snapshot(); let receive!: (message: BrowserMessage) => void; let close!: () => void;
+function fixture(storage: Storage | null = null, principal = userId, ownerUserId = userId, overrides: Partial<TaskSessionSnapshot> = {}) {
+  const s = { ...snapshot(), ...overrides }; let receive!: (message: BrowserMessage) => void; let close!: () => void;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const channel: SessionChannel = { close: vi.fn() };
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; close = onClose; return channel; }) };
-  const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage }); clients.push(client);
+  const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage });
+  client.setCurrentReadVisible(true); clients.push(client);
   return { s, api, client, receive: (message: BrowserMessage) => receive(message), disconnect: () => close() };
 }
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' }); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true)); }
 describe('task session transport lifecycle', () => {
+  it('keeps a non-owner live reader connected while refusing messages, cancellation and responses', async () => {
+    const f = fixture(null, userId, '00000010-1111-4111-8111-111111111111', { operations: { canSend: true, canCancel: true, canRespond: true }, currentTurnId: 'working-turn', activity: 'working' });
+    const interaction = { interactionId: 'approval', revision: '1', state: 'pending' as const, kind: 'approval' as const, title: 'Approve Write', detail: 'notes/review.txt', actions: ['allow_once' as const, 'reject' as const] };
+    vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [
+      { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Shared live output' }] },
+      { kind: 'interaction', entryId: 'request', entrySeq: '2', revision: '1', interaction }
+    ], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    await ready(f);
+    f.client.setDraft('unauthorized draft');
+    await expect(f.client.send('hello')).rejects.toThrow();
+    await expect(f.client.cancel()).rejects.toThrow();
+    await expect(f.client.respond(interaction, { kind: 'approval', action: 'allow_once' })).rejects.toThrow();
+    expect(f.api.command).not.toHaveBeenCalled();
+    expect(f.client.snapshot()).toMatchObject({ status: 'ready', connected: true, draft: { text: '' } });
+    expect(f.client.snapshot().state.entries.map(entry => entry.entryId)).toEqual(['message', 'request']);
+    expect(f.api.channel).toHaveBeenCalledOnce();
+  });
+
   it('discovers a later native registration without bypassing the wait or rebuilding its channel', async () => {
     vi.useFakeTimers();
     const f = fixture();
@@ -314,4 +333,96 @@ it('retains the loaded offline view until the same execution can load its new lo
   expect(f.client.snapshot().state.entries).toEqual([entry]);
   await expect(f.client.send('cannot send offline')).rejects.toThrow();
   expect(f.api.command).not.toHaveBeenCalled();
+});
+
+
+describe('page-local operation progress', () => {
+  it.each(['execute_command', 'update_setting', 'interaction_response'] as const)('tracks %s until its own acceptance contract completes', async kind => {
+    const f = fixture();
+    const interaction = { interactionId: 'approval', revision: '1', state: 'pending' as const, title: 'Run', kind: 'approval' as const, detail: 'Run tool', actions: ['allow_once' as const] };
+    Object.assign(f.s, { controls: { revision: '1', settings: [{ id: 'model', category: 'model', label: 'Model', value: 'a', description: null, mutable: true, scope: 'session', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }], commands: [{ id: 'compact', name: 'compact', description: 'Compact', argumentHint: null, available: true }], settingsError: null, commandsError: null } });
+    Object.assign(f.s, { operations: { ...f.s.operations, canRespond: true } });
+    const page = await f.api.timeline(f.s.sessionId, 'tail', null, new AbortController().signal);
+    vi.mocked(f.api.timeline).mockResolvedValue({ ...page, items: [{ entryId: 'approval', entrySeq: '1', revision: '1', kind: 'interaction', interaction }] });
+    await ready(f); vi.useFakeTimers();
+    let receipt!: SessionOperation;
+    vi.mocked(f.api.command).mockImplementation(async (_id, c) => receipt = { protocol: c.protocol, ...sessionBinding(c), sessionId: c.sessionId, executionGeneration: c.executionGeneration, operationId: c.operationId, kind: c.kind, state: 'accepted', providerResult: null, error: null });
+    vi.mocked(f.api.operation).mockImplementation(async () => receipt);
+    const work = kind === 'execute_command' ? f.client.executeCommand('compact', '', '1') : kind === 'update_setting' ? f.client.updateSetting('model', 'b', '1') : f.client.respond(interaction, { kind: 'approval', action: 'allow_once' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.client.snapshot().operationProgress.get(receipt.operationId)).toBe('sending');
+    receipt = { ...receipt, state: 'provider_accepted', providerResult: 'handled' };
+    await vi.advanceTimersByTimeAsync(750);
+    if (kind === 'execute_command') expect(f.client.snapshot().operationProgress.size).toBe(0);
+    else {
+      expect(f.client.snapshot().operationProgress.get(receipt.operationId)).toBe('sending');
+      await vi.advanceTimersByTimeAsync(9250);
+      expect(f.client.snapshot().operationProgress.get(receipt.operationId)).toBe('waiting');
+      receipt = { ...receipt, state: 'confirmed' };
+      await vi.advanceTimersByTimeAsync(750);
+      expect(f.client.snapshot().operationProgress.size).toBe(0);
+    }
+    await work;
+    expect(f.api.command).toHaveBeenCalledOnce();
+  });
+
+  it('times an unanswered POST without changing the ledger, draft, or sending again', async () => {
+    const f = fixture(); await ready(f); vi.useFakeTimers();
+    f.client.setDraft('keep this');
+    vi.mocked(f.api.command).mockImplementation(() => new Promise(() => {}));
+    void f.client.send('keep this');
+    const id = vi.mocked(f.api.command).mock.calls[0]![1].operationId;
+    expect(f.client.snapshot().operationProgress.get(id)).toBe('sending');
+    expect(f.client.snapshot().state.operations.get(id)?.state).toBe('unknown');
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(f.client.snapshot().operationProgress.get(id)).toBe('sending');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.client.snapshot().operationProgress.get(id)).toBe('waiting');
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(f.client.snapshot().operationProgress.has(id)).toBe(false);
+    expect(f.client.snapshot().draft.text).toBe('keep this');
+    await expect(f.client.send('keep this')).rejects.toThrow();
+    expect(f.api.command).toHaveBeenCalledOnce();
+  });
+
+  it.each(['disconnect', 'refresh', 'pause'] as const)('does not revive progress after %s or a late relay receipt', async action => {
+    const f = fixture(); await ready(f); vi.useFakeTimers();
+    let reply!: (operation: SessionOperation) => void;
+    vi.mocked(f.api.command).mockImplementation(() => new Promise(resolve => { reply = resolve; }));
+    void f.client.send('hello').catch(() => {});
+    const command = vi.mocked(f.api.command).mock.calls[0]![1];
+    expect(f.client.snapshot().operationProgress.has(command.operationId)).toBe(true);
+    if (action === 'disconnect') f.disconnect(); else f.client[action]();
+    expect(f.client.snapshot().operationProgress.size).toBe(0);
+    reply({ protocol: command.protocol, ...sessionBinding(command), sessionId: command.sessionId, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'accepted', providerResult: null, error: null });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(f.client.snapshot().operationProgress.size).toBe(0);
+    expect(f.api.command).toHaveBeenCalledOnce();
+  });
+
+  it('ends progress on a real unknown receipt and never restores it from storage', async () => {
+    const storage = window.sessionStorage; storage.clear();
+    const f = fixture(storage); await ready(f);
+    vi.mocked(f.api.command).mockImplementation(async (_id, c) => ({ protocol: c.protocol, ...sessionBinding(c), sessionId: c.sessionId, executionGeneration: c.executionGeneration, operationId: c.operationId, kind: c.kind, state: 'unknown', providerResult: null, error: null }));
+    await expect(f.client.send('hello')).rejects.toThrow('unknown');
+    expect(f.client.snapshot().operationProgress.size).toBe(0);
+    f.client.close();
+    const restored = fixture(storage); await ready(restored);
+    expect(restored.client.snapshot().state.operations.size).toBe(1);
+    expect(restored.client.snapshot().operationProgress.size).toBe(0);
+    expect(restored.api.command).not.toHaveBeenCalled();
+  });
+
+  it('clears progress on streamed acceptance even before the POST returns', async () => {
+    const f = fixture(); await ready(f);
+    let reject!: (error: Error) => void;
+    vi.mocked(f.api.command).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const sending = f.client.send('hello').catch(() => {});
+    const c = vi.mocked(f.api.command).mock.calls[0]![1];
+    f.receive({ protocol: f.s.protocol, type: 'event', cursor: 'one', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'operation', payload: { protocol: c.protocol, ...sessionBinding(c), sessionId: c.sessionId, executionGeneration: c.executionGeneration, operationId: c.operationId, kind: c.kind, state: 'provider_accepted', providerResult: 'started', error: null } } });
+    expect(f.client.snapshot().operationProgress.size).toBe(0);
+    reject(new Error('late lost response')); await sending;
+    expect(f.client.snapshot().state.operations.get(c.operationId)?.state).toBe('provider_accepted');
+    expect(f.client.snapshot().operationProgress.size).toBe(0);
+  });
 });

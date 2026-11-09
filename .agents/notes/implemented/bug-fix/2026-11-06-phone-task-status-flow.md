@@ -33,11 +33,11 @@ standalone pages and fullscreen; desktop layout and short-height compact rules
 retain their existing responsibilities. Pause controls and claim summaries
 remain outside the status row.
 
-This extends the [compact header decision](../simplification/2026-10-24-compact-task-detail-header.md)
-and the [fullscreen decision](../feature/2026-10-25-task-detail-fullscreen.md).
-The [automation decision](../architecture/2026-10-23-task-agent-automation.md)
-and [platform control decision](../simplification/2026-10-24-task-platform-confirmation-control.md)
-retain confirmation and mutation ownership. The [Web requirements](../../../../docs/spec/daynight-web.md)
+This extends the [compact header decision](../../archived/simplification/2026-10-24-compact-task-detail-header.md)
+and the [fullscreen decision](../../archived/feature/2026-10-25-task-detail-fullscreen.md).
+The [automation decision](../../archived/architecture/2026-10-23-task-agent-automation.md)
+and [platform control decision](../../archived/simplification/2026-10-24-task-platform-confirmation-control.md)
+record the rationale for the existing confirmation and mutation ownership. The [Web requirements](../../../../docs/spec/daynight-web.md)
 own row limits; the [Web design](../../../../docs/design/daynight-web.md)
 owns current component layout.
 

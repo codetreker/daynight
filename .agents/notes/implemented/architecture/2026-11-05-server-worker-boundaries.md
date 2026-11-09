@@ -15,12 +15,14 @@ with Task claim authority.
 freshness and configuration revision rules. `service/worker` selects the
 snapshot and Worker write scopes and coordinates inventory and configuration;
 `server/worker` adapts the authenticated HTTP resources. The Worker DAO binds
-batch queries and configuration writes to the existing Read Committed scope.
+account admission, batch queries and configuration writes to the existing Read
+Committed scope. The [active admission decision](2026-11-07-worker-active-admission.md)
+explains its per-account serialization and capacity rules.
 Task claim rules remain owned by `core/task`.
 
-The [snapshot decision](2026-10-28-worker-runtime-snapshots.md) explains the
+The [snapshot decision](../../archived/architecture/2026-10-28-worker-runtime-snapshots.md) explains the
 independent report and current-access filtering, and the [cloud configuration
-decision](2026-11-04-worker-cloud-configuration.md) owns desired and observed
+decision](../../archived/architecture/2026-11-04-worker-cloud-configuration.md) records the rationale for desired and observed
 configuration semantics.
 
 ## Alternatives
@@ -37,5 +39,5 @@ ordering and serialize unrelated work.
 
 Worker reports preserve the independent transaction, batched access checks,
 unchanged Task state and separate desired and observation revisions. Completion
-and cleanup failures retain priority over domain refusals. SQL remains in the
-existing store implementation until its physical migration.
+and cleanup failures retain priority over domain refusals. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns the
+Worker SQL implementation.

@@ -73,7 +73,17 @@ func (s *Execution) UpdateArchive(ctx context.Context, p model.Principal, projec
 	})
 	return out, err
 }
-func (s *Execution) PutArchive(ctx context.Context, p model.Principal, project, taskID, id string, data []byte) (sp.ArchiveStatus, error) {
+func (s *Execution) PutArchive(ctx context.Context, p model.Principal, project, taskID, id string, data []byte) (out sp.ArchiveStatus, err error) {
+	op, err := s.BeginArchive(ctx, p, project, taskID, id, ArchiveV1Upload)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, op.Close()) }()
+	return op.PutArchive(ctx, data)
+}
+
+func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data []byte) (sp.ArchiveStatus, error) {
+	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out sp.ArchiveStatus
 	doc, err := sp.DecodeArchive(data)
 	if err != nil {
@@ -83,6 +93,9 @@ func (s *Execution) PutArchive(ctx context.Context, p model.Principal, project, 
 	digest := hex.EncodeToString(hash[:])
 	size := strconv.Itoa(len(data))
 	err = s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *record, t task) error {
+		if r.Owner != op.owner {
+			return conflict()
+		}
 		if err := archiveWriter(p, r, doc.Fence, doc.ControllerID, doc.ControllerInstanceID); err != nil {
 			return err
 		}
@@ -139,9 +152,35 @@ func (s *Execution) PutArchive(ctx context.Context, p model.Principal, project, 
 	})
 	return out, err
 }
-func (s *Execution) ArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (json.RawMessage, error) {
+func (s *Execution) ArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (*RetainedArchive, error) {
+	reservation, err := s.TryReserveArchivePreflight()
+	if err != nil {
+		return nil, err
+	}
+	return s.ArchiveContentReserved(ctx, p, project, taskID, id, reservation)
+}
+
+func (s *Execution) ArchiveContentReserved(ctx context.Context, p model.Principal, project, taskID, id string, reservation *ArchivePreflightReservation) (*RetainedArchive, error) {
+	op, err := s.BeginArchiveReserved(ctx, p, project, taskID, id, ArchiveV1Read, reservation)
+	if err != nil {
+		return nil, err
+	}
+	op.mu.Lock()
+	data, err := s.archiveContent(ctx, op)
+	op.mu.Unlock()
+	if err != nil {
+		return nil, errors.Join(err, op.Close())
+	}
+	return &RetainedArchive{Data: data, operation: op}, nil
+}
+
+func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
+	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
-	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, _ *record, _ task) error {
+	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) (result error) {
+		if r.Owner != op.owner {
+			return conflict()
+		}
 		status, path, err := archiveStatus(ctx, tx, id)
 		if err != nil {
 			return err
@@ -153,7 +192,7 @@ func (s *Execution) ArchiveContent(ctx context.Context, p model.Principal, proje
 		if err != nil {
 			return err
 		}
-		defer object.Body.Close()
+		defer func() { result = archiveCleanupFailure(result, object.Body.Close()) }()
 		data, err := io.ReadAll(io.LimitReader(object.Body, sp.MaxArchiveBytes+1))
 		if err != nil {
 			return err

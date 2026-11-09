@@ -40,3 +40,30 @@ func taskWriteHeader(ctx context.Context, tx store.ProjectWriteScope, taskID str
 	}
 	return header, taskcore.RequireVersion(header.Version, version)
 }
+
+// PartitionDependencies combines the MCP ordinary and external sets only after
+// enforcing the single complete-set limit. Core validates identities and edges.
+func PartitionDependencies(ordinary, external *[]string) (*[]string, *[]string, error) {
+	if ordinary == nil && external == nil {
+		return nil, nil, nil
+	}
+	count := 0
+	for _, group := range []*[]string{ordinary, external} {
+		if group != nil {
+			count += len(*group)
+		}
+	}
+	if count > taskcore.MaxDependencies {
+		return nil, nil, invalidInput("Task dependencies must contain at most 15 items.")
+	}
+	all := make([]string, 0, count)
+	ext := []string{}
+	if ordinary != nil {
+		all = append(all, (*ordinary)...)
+	}
+	if external != nil {
+		all = append(all, (*external)...)
+		ext = append(ext, (*external)...)
+	}
+	return &all, &ext, nil
+}

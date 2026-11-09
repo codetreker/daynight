@@ -1,53 +1,59 @@
 package session
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
 func TestControllerUpgradeAuthenticationDoesNotConsumeGrant(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	v, err := f.s.Register(ctx, f.p, f.project, f.task, f.r)
+	v, err := registerAuthenticationFixture(f, ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
+	f.SelectRegistrationWrite(t)
+	grant, err := grantAuthenticationFixture(f, ctx, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.SelectGrantWrite(t)
+	f.SelectSessionWrite(t)
 	for range 2 {
-		if err = f.s.AuthenticateController(ctx, grant.Token); err != nil {
+		if err = authenticateControllerFixture(f, ctx, grant.Token, nil); err != nil {
 			t.Fatal("pre-upgrade authentication consumed grant", err)
 		}
 	}
 	hello := sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}
-	connected, err := f.s.Connect(ctx, grant.Token, hello, uuid.NewString())
+	connected, err := connectAuthenticationFixture(f, ctx, grant.Token, hello)
 	if err != nil || connected.ConnectionEpoch != "1" {
 		t.Fatal("authenticated bootstrap could not connect", connected, err)
 	}
-	if err = f.s.AuthenticateController(ctx, grant.Token); err == nil {
+	f.SelectConnectionWrite(t)
+	if err = authenticateControllerFixture(f, ctx, grant.Token, nil); err == nil {
 		t.Fatal("consumed bootstrap authenticated")
 	}
-	reconnect, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
+	reconnect, err := grantAuthenticationFixture(f, ctx, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.SelectGrantWrite(t)
+	f.SelectSessionWrite(t)
 	for range 2 {
-		if err = f.s.AuthenticateController(ctx, reconnect.Token); err != nil {
+		if err = authenticateControllerFixture(f, ctx, reconnect.Token, nil); err != nil {
 			t.Fatal("reconnect grant was consumed", err)
 		}
-		if _, err = f.s.Connect(ctx, reconnect.Token, hello, uuid.NewString()); err != nil {
+		if _, err = connectAuthenticationFixture(f, ctx, reconnect.Token, hello); err != nil {
 			t.Fatal("reconnect failed", err)
 		}
+		f.SelectConnectionWrite(t)
 	}
 }
 
@@ -56,42 +62,76 @@ func TestControllerUpgradeAuthenticationRechecksGrantAuthority(t *testing.T) {
 		t.Run(condition, func(t *testing.T) {
 			f, v := connectFixture(t)
 			ctx := context.Background()
-			grant, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
+			grant, err := grantAuthenticationFixture(f, ctx, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = f.s.AuthenticateController(ctx, grant.Token); err != nil {
+			f.SelectGrantWrite(t)
+			f.SelectSessionWrite(t)
+			if err = authenticateControllerFixture(f, ctx, grant.Token, nil); err != nil {
 				t.Fatal(err)
 			}
+			work := map[string]int{}
+			var lookupFailure error
 			switch condition {
 			case "unknown":
 				grant.Token = "dncontroller_unknown"
+				work = map[string]int{"LockTask": 0, "SessionBotID": 0, "LockSession": 0, "LockCredential": 0, "ProjectAccess": 0}
 			case "expired":
 				f.s.now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 			case "consumed":
-				_, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET grant_kind='bootstrap',grant_consumed=true WHERE id=$1`, v.SessionID)
+				f.data.Session.GrantKind, f.data.Session.Consumed = "bootstrap", true
 			case "parent_revoked":
-				_, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID)
+				revokeFixtureCredential(t, f, f.p)
+				work["ProjectAccess"] = 0
 			case "membership_removed":
-				_, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID)
+				denyFixtureProject(t, f, f.p)
 			case "claim_withdrawn":
-				_, err = taskservice.NewTasks(f.db).WithdrawWorker(ctx, f.p, f.project, f.task, taskcore.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
+				f.data.Task.Worker = nil
 			case "storage_failure":
-				_, err = f.db.Pool.Exec(ctx, `ALTER TABLE task_sessions RENAME TO unavailable_task_sessions`)
+				lookupFailure = errors.New("grant lookup unavailable")
+				f.dao.SessionLocationByGrantFn = func(context.Context, []byte) (store.SessionLocation, error) {
+					return store.SessionLocation{}, lookupFailure
+				}
+				work = map[string]int{"LockTask": 0, "SessionBotID": 0, "LockSession": 0, "LockCredential": 0, "ProjectAccess": 0}
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = f.s.AuthenticateController(ctx, grant.Token)
+			err = authenticateControllerFixture(f, ctx, grant.Token, work)
 			if err == nil {
 				t.Fatal("changed grant authority authenticated", condition)
 			}
 			if condition == "storage_failure" {
 				var refusal *model.Fault
-				if errors.As(err, &refusal) {
+				if errors.As(err, &refusal) || !errors.Is(err, lookupFailure) {
 					t.Fatal("storage failure was hidden as invalid credentials", err)
 				}
 			}
 		})
 	}
+}
+
+func registerAuthenticationFixture(f fixture, ctx context.Context) (sp.Snapshot, error) {
+	phase := f.RegistrationPhase(ctx, map[string]int{"InsertTaskSession": 1})
+	defer f.dao.FinishContext(phase)
+	return f.s.Register(phase, f.p, f.project, f.task, f.r)
+}
+
+func grantAuthenticationFixture(f fixture, ctx context.Context, id string, grant sp.Grant) (GrantResult, error) {
+	phase := f.BrowserPhase(ctx, map[string]int{"SetSessionGrant": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(phase)
+	return f.s.Grant(phase, f.p, f.project, f.task, id, grant)
+}
+
+func authenticateControllerFixture(f fixture, ctx context.Context, token string, work map[string]int) error {
+	phase := f.GrantPhase(ctx, work)
+	defer f.dao.FinishContext(phase)
+	return f.s.AuthenticateController(phase, token)
+}
+
+func connectAuthenticationFixture(f fixture, ctx context.Context, token string, hello sp.ControllerMessage) (sp.Snapshot, error) {
+	phase := f.GrantPhase(ctx, map[string]int{"ConnectSession": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(phase)
+	return f.s.Connect(phase, token, hello, uuid.NewString())
 }

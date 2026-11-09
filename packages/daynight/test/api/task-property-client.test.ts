@@ -55,6 +55,16 @@ describe("generic property API resources", () => {
     expect(String(fetch.mock.calls[1]![1]!.body)).toBe('{"version":9007199254740993}');
   });
 
+  it("accepts a same-version removal when the property is already absent", async () => {
+    const absent = { ...resource, properties: { future: { version: 7 } } };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(absent));
+    const actual = await client(fetch).removeTaskProperty(projectId, taskId, "pullRequests", { version });
+    expect(actual).toEqual(absent);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![1]!.method).toBe("DELETE");
+    expect(String(fetch.mock.calls[0]![1]!.body)).toBe('{"version":9007199254740993}');
+  });
+
   it.each([
     { projectId: otherId }, { taskId: otherId }, { version: 1.5 }, { version: 0 },
     { properties: null }, { properties: [] }, { properties: undefined },

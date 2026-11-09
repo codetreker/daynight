@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, SessionOperation } from '../src/api/types';
 import type { SessionControls } from '../../daynight/src/session/controls';
+import { sessionBinding } from '../../daynight/src/session/protocol';
 import { SessionComposer } from '../src/features/task-agent-session/SessionComposer';
 import { SessionControlsPanel } from '../src/features/task-agent-session/SessionControlsPanel';
 import { hydrateSession, emptySessionState } from '../src/features/task-agent-session/state';
@@ -16,6 +17,80 @@ const controls: SessionControls = { revision: '3', settings: [
 const snapshot = (): SessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), controls, turnStartedAt: null });
 const state = () => hydrateSession(emptySessionState(), snapshot(), []);
 const base = () => ({ state: state(), connected: true, onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), onUpdateSetting: vi.fn(async () => {}), onRefreshControls: vi.fn(async () => {}) });
+
+describe('compact assistant settings', () => {
+  it.each([
+    ['Model', 'Model', '{Enter}'],
+    ['Model', 'Model', ' '],
+    ['Permissions', 'Approval policy', '{Enter}'],
+    ['Permissions', 'Approval policy', ' '],
+  ])('enters %s settings with %s control after keyboard activation %s', async (triggerName, controlName, key) => {
+    vi.stubGlobal('innerHeight', 400);
+    const user = userEvent.setup(), props = base();
+    render(<section className="task-agent-session"><SessionComposer {...props} presentation={{ compactMenus: true }} /></section>);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Keep this assistant draft' } });
+    expect(input.closest('form')).toHaveClass('session-composer-compact-menus');
+    act(() => screen.getByRole('button', { name: triggerName }).focus());
+    await user.keyboard(key);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('combobox', { name: controlName })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue('Keep this assistant draft');
+    expect(props.onUpdateSetting).not.toHaveBeenCalled();
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Model', 'Model', 'model', 'native-a', 'native-b'],
+    ['Permissions', 'Approval policy', 'permissions', 'ask', 'allow'],
+  ])('retains the confirmed %s value and blocks duplicate changes until confirmation', async (triggerName, controlName, settingId, previous, next) => {
+    vi.stubGlobal('innerHeight', 400);
+    const props = base(), change = Promise.withResolvers<void>();
+    props.onUpdateSetting.mockReturnValue(change.promise);
+    const element = (current = props.state, intents = new Map<string, { operationId: string; settingId: string; value: string; confirmedValue: string }>()) =>
+      <section className="task-agent-session"><SessionComposer {...props} state={current} settingIntents={intents} presentation={{ compactMenus: true }} /></section>;
+    const view = render(element()), input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Draft during settings confirmation' } });
+    fireEvent.click(screen.getByRole('button', { name: triggerName }));
+    const select = screen.getByRole('combobox', { name: controlName });
+    fireEvent.change(select, { target: { value: next } });
+    expect(props.onUpdateSetting).toHaveBeenCalledExactlyOnceWith(settingId, next, '3');
+    expect(select).toHaveValue(previous);
+    expect(select).toBeDisabled();
+    fireEvent.change(select, { target: { value: next } });
+    expect(props.onUpdateSetting).toHaveBeenCalledOnce();
+
+    const s = props.state.snapshot!;
+    const operation: SessionOperation = { protocol: s.protocol, sessionId: s.sessionId, ...sessionBinding(s), executionGeneration: s.executionGeneration, operationId: 'settings-change', kind: 'update_setting', state: 'accepted', providerResult: null, error: null };
+    const intents = new Map([[settingId, { operationId: operation.operationId, settingId, value: next, confirmedValue: previous }]]);
+    await act(async () => change.resolve());
+    view.rerender(element({ ...props.state, operations: new Map([[operation.operationId, operation]]) }, intents));
+    expect(screen.getByRole('combobox', { name: controlName })).toBe(select);
+    expect(select).toHaveValue(previous);
+    expect(select).toBeDisabled();
+    expect(screen.getByRole('button', { name: triggerName })).toHaveAttribute('data-pending', 'true');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(props.onSend).not.toHaveBeenCalled();
+
+    const confirmed = { ...props.state, snapshot: { ...s, controls: { ...controls, revision: '4', settings: controls.settings.map(setting => setting.id === settingId ? { ...setting, value: next } : setting) } }, operations: new Map([[operation.operationId, { ...operation, state: 'confirmed' as const }]]) };
+    view.rerender(element(confirmed, intents));
+    expect(select).toHaveValue(next);
+    expect(select).toBeEnabled();
+    expect(screen.getByRole('button', { name: triggerName })).not.toHaveAttribute('data-pending');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    expect(screen.getByRole('textbox')).toBe(input);
+    expect(input).toHaveValue('Draft during settings confirmation');
+    expect(props.onUpdateSetting).toHaveBeenCalledOnce();
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+});
 
 describe('command candidate reverse navigation', () => {
   it.each(['/model', '/permissions', '/compact', '/rev'])('preserves plain Tab confirmation for %s', async value => {
@@ -123,12 +198,12 @@ describe('composer provider controls', () => {
     expect(screen.getByRole('combobox', { name: 'Approval policy' })).toHaveValue('ask');
     expect(props.onSend).not.toHaveBeenCalled();
   });
-  it('shows target and confirmed native value separately while a setting is pending', () => {
+  it('keeps the confirmed native value visible without progress text while a setting is pending', () => {
     const s = state(), op = { protocol: s.snapshot!.protocol, sessionId: s.snapshot!.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'pending', kind: 'update_setting', state: 'accepted', providerResult: null, error: null } as SessionOperation;
     const intents = new Map([['model', { operationId: op.operationId, settingId: 'model', value: 'native-b', confirmedValue: 'native-a' }]]);
-    render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[op.operationId, op]]) }} intents={intents} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
-    expect(screen.getByRole('combobox')).toHaveValue('native-b');
-    expect(screen.getByText('Pending provider confirmation. Current: Native A')).toBeVisible();
+    render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[op.operationId, op]]) }} intents={intents} operationProgress={new Map([[op.operationId, 'sending']])} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
+    expect(screen.getByRole('combobox')).toHaveValue('native-a');
+    expect(screen.queryByText(/Pending provider confirmation/)).toBeNull();
   });
   it('filters commands, completes arguments, and invokes the catalog ID instead of sending slash text', async () => {
     const props = base(); render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
@@ -557,6 +632,33 @@ it.each(['revision', 'description', 'availability', 'id', 'error'] as const)('re
   expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });
 
+
+it.each([
+  ['unknown', 'sending', null],
+  ['dispatching', 'waiting', null],
+  ['accepted', undefined, 'Change outcome is unknown. Check the original operation. Current: Native A'],
+  ['unknown', undefined, 'Change outcome is unknown. Check the original operation. Current: Native A'],
+] as const)('distinguishes setting %s with %s page progress from an uncertain restored change', (phase, progress, label) => {
+  const s = state();
+  const operation: SessionOperation = { protocol: s.snapshot!.protocol, sessionId: s.snapshot!.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'setting', kind: 'update_setting', state: phase, providerResult: null, error: null };
+  const intents = new Map([['model', { operationId: operation.operationId, settingId: 'model', value: 'native-b', confirmedValue: 'native-a' }]]);
+  render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[operation.operationId, operation]]) }} intents={intents} operationProgress={progress ? new Map([[operation.operationId, progress]]) : new Map()} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
+  expect(screen.getByRole('combobox')).toBeDisabled();
+  expect(screen.getByRole('combobox')).toHaveValue('native-a');
+  if (label) expect(screen.getByText(label)).toBeVisible();
+  else expect(screen.queryByRole('status')).toBeNull();
+});
+
+it.each(['send_message', 'execute_command', 'update_setting', 'refresh_controls'] as const)('keeps %s pending without a warning or a fallback read-only notice', kind => {
+  const props = base(), s = props.state.snapshot!;
+  const operation: SessionOperation = { protocol: s.protocol, sessionId: s.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'operation', kind, state: 'unknown', providerResult: null, error: null };
+  props.state = { ...props.state, operations: new Map([[operation.operationId, operation]]) };
+  const { container } = render(<SessionComposer {...props} operationProgress={new Map([[operation.operationId, 'sending']])} />);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Draft retained' } });
+  expect(container.querySelector('.session-notice')).toBeNull();
+  expect(screen.getByRole('button', { name: /Send|Awaiting provider confirmation/ })).toBeDisabled();
+  expect(screen.getByRole('textbox')).toHaveValue('Draft retained');
+});
 
 it.each([
   ['en', 'Open chat commands', 'Refresh commands', 'Refreshing…', 'Reload'],

@@ -1,9 +1,9 @@
-import type { TaskStatus } from "../../api/types";
+import { isTerminalStatus, taskEndedAt, taskProgressStatus, type TaskProgressStatus } from "../../api/task-status";
 import type { GraphIndex } from "../task-graph/model";
 import { isRecentCompletion, latestKnownGoalCompletion, recentTaskWindow, timestampNanoseconds } from "./task-visibility";
 
 export type OverviewTaskTarget = { readonly kind: "chain"; readonly taskId: string } | { readonly kind: "standalone" };
-export type OverviewProgressCount = { readonly done: number; readonly total: number; readonly percent: number; readonly status: TaskStatus };
+export type OverviewProgressCount = { readonly done: number; readonly cancelled: number; readonly ended: number; readonly total: number; readonly percent: number; readonly status: TaskProgressStatus };
 export type OverviewChainProgress = OverviewProgressCount & {
   readonly taskId: string;
   readonly title: string;
@@ -16,7 +16,8 @@ export type OverviewProgress = {
   readonly nextUpdateAt: bigint | null;
 };
 
-const count = (done: number, total: number, status: TaskStatus): OverviewProgressCount => ({ done, total, percent: Math.floor(done * 100 / total), status });
+const count = (done: number, cancelled: number, total: number, status: TaskProgressStatus): OverviewProgressCount =>
+  ({ done, cancelled, ended: done + cancelled, total, percent: Math.floor((done + cancelled) * 100 / total), status });
 
 export const overviewProgress = (index: GraphIndex, chainIds: readonly string[], standaloneIds: readonly string[], now: bigint): OverviewProgress => {
   const window = recentTaskWindow(now);
@@ -28,29 +29,32 @@ export const overviewProgress = (index: GraphIndex, chainIds: readonly string[],
   };
   const chains = chainIds.flatMap((taskId): OverviewChainProgress[] => {
     const progress = index.components.get(taskId)!.progress;
-    if (progress.status === "done") {
+    if (progress.ended === progress.total) {
       const completed = latestKnownGoalCompletion(index, taskId);
       observeCompletion(completed);
       if (!isRecentCompletion(completed, window)) return [];
     }
     const task = index.nodes.get(taskId)!;
-    return [{ taskId, title: task.titlePreview, titleTruncated: task.titleTruncated, ...count(progress.done, progress.total, progress.status) }];
+    return [{ taskId, title: task.titlePreview, titleTruncated: task.titleTruncated, ...count(progress.done, progress.cancelled, progress.total, progress.status) }];
   });
   let done = 0;
+  let cancelled = 0;
   let inProgress = false;
   const recentStandaloneIds = standaloneIds.filter((id) => {
     const task = index.nodes.get(id)!;
-    if (task.status !== "done") {
+    if (!isTerminalStatus(task.status)) {
       if (task.status === "in_progress") inProgress = true;
       return true;
     }
-    const completed = task.completedAt === null ? null : timestampNanoseconds(task.completedAt);
+    const endedAt = taskEndedAt(task);
+    const completed = endedAt === null ? null : timestampNanoseconds(endedAt);
     observeCompletion(completed);
     if (!isRecentCompletion(completed, window)) return false;
-    done++;
+    if (task.status === "done") done++;
+    else cancelled++;
     return true;
   });
   const total = recentStandaloneIds.length;
-  const status = done === total ? "done" : done > 0 || inProgress ? "in_progress" : "todo";
-  return { chains, standalone: total === 0 ? null : count(done, total, status), recentStandaloneIds, nextUpdateAt };
+  const status = taskProgressStatus(done, cancelled, total, inProgress);
+  return { chains, standalone: total === 0 ? null : count(done, cancelled, total, status), recentStandaloneIds, nextUpdateAt };
 };

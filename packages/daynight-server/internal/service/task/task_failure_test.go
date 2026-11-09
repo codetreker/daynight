@@ -1,65 +1,19 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
-
-type taskQueryAction struct {
-	match func(string) bool
-	start func()
-	end   func()
-}
-
-type taskQueryKey struct{}
-
-func (action taskQueryAction) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	matched := action.match(data.SQL)
-	if matched && action.start != nil {
-		action.start()
-	}
-	return context.WithValue(ctx, taskQueryKey{}, matched)
-}
-
-func (action taskQueryAction) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(taskQueryKey{}) == true && action.end != nil {
-		action.end()
-	}
-}
-
-type tracedTaskService struct {
-	*taskservice.Tasks
-	store *store.Store
-}
-
-func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *tracedTaskService {
-	t.Helper()
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.ConnConfig.Tracer = action
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	db := &store.Store{Pool: pool}
-	return &tracedTaskService{Tasks: taskservice.NewTasks(db), store: db}
-}
 
 func assertOperational(t *testing.T, err error) {
 	t.Helper()
@@ -69,202 +23,381 @@ func assertOperational(t *testing.T, err error) {
 	}
 }
 
-func TestTaskReadAndWriteDatabaseFailures(t *testing.T) {
-	for _, table := range []string{"tasks", "projects"} {
-		t.Run(table, func(t *testing.T) {
-			tasks, database, project, _, principal := taskService(t)
-			target := createTask(t, tasks, principal, project.ID, "Target")
-			if _, err := database.Pool.Exec(context.Background(), "DROP TABLE "+table); err != nil {
-				t.Fatal(err)
+type taskFailureFixture struct {
+	ctx            context.Context
+	project        model.Project
+	target         model.Task
+	principal      model.Principal
+	database       *taskStoreMock
+	scope          *taskProjectScopeMock
+	projects       *projectWriterMock
+	tasks          *taskWriterMock
+	sessions       *projectSessionMock
+	callbackError  error
+	writeCalls     int
+	expectedWrites int
+}
+
+func newTaskFailureFixture(t *testing.T, ctx context.Context, outcome store.TransactionOutcome) *taskFailureFixture {
+	t.Helper()
+	project, target, principal := taskMockModels()
+	base := newTaskMockBase(t, "store")
+	f := &taskFailureFixture{ctx: ctx, project: project, target: target, principal: principal, expectedWrites: 1,
+		database: &taskStoreMock{taskMockBase: base},
+		scope:    &taskProjectScopeMock{taskMockBase: base.withLabel("scope")},
+		projects: &projectWriterMock{taskMockBase: base.withLabel("projects")},
+		tasks:    &taskWriterMock{taskMockBase: base.withLabel("tasks")},
+		sessions: &projectSessionMock{taskMockBase: base.withLabel("sessions")}}
+	f.scope.ProjectDAOFn = func() store.ProjectWriteDAO { return f.projects }
+	f.scope.TaskDAOFn = func() store.TaskWriteDAO { return f.tasks }
+	f.projects.ProjectAccessFn = func(actual context.Context, actor model.Principal) (model.ProjectAccess, error) {
+		if actual != ctx || actor != principal {
+			t.Fatal("Project access changed context or principal")
+		}
+		return taskMockAccess(project, principal), nil
+	}
+	f.database.WriteProjectFn = func(actual context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+		if actual != ctx || id != project.ID || work == nil {
+			t.Fatal("Project writer changed context, identity or callback")
+		}
+		f.writeCalls++
+		if f.writeCalls > f.expectedWrites {
+			t.Fatal("unexpected additional Project write")
+		}
+		f.callbackError = work(f.scope)
+		return store.Completion{Outcome: outcome}, f.callbackError
+	}
+	t.Cleanup(func() {
+		if f.writeCalls != f.expectedWrites {
+			t.Fatalf("Project write calls: %d, want %d", f.writeCalls, f.expectedWrites)
+		}
+	})
+	return f
+}
+
+func (f *taskFailureFixture) expectTask(t *testing.T, target model.Task) {
+	t.Helper()
+	called := false
+	f.tasks.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
+		if called {
+			t.Fatal("unexpected additional Task lookup")
+		}
+		called = true
+		if ctx != f.ctx || id != target.ID {
+			t.Fatal("Task lookup changed context or identity")
+		}
+		return target, nil
+	}
+}
+
+func (f *taskFailureFixture) expectPrerequisites(t *testing.T, prerequisites []model.Task) {
+	t.Helper()
+	called := false
+	f.tasks.TasksByIDFn = func(ctx context.Context, ids []string) ([]model.Task, error) {
+		if called {
+			t.Fatal("unexpected additional prerequisite lookup")
+		}
+		called = true
+		expected := make([]string, len(prerequisites))
+		for i, prerequisite := range prerequisites {
+			expected[i] = prerequisite.ID
+		}
+		if ctx != f.ctx || !slices.Equal(ids, expected) {
+			t.Fatalf("prerequisite lookup: %v, want %v", ids, expected)
+		}
+		return prerequisites, nil
+	}
+}
+
+func TestTaskReadAndWriteDAOFailures(t *testing.T) {
+	for _, source := range []string{"tasks", "projects"} {
+		t.Run(source, func(t *testing.T) {
+			ctx := t.Context()
+			project, target, principal := taskMockModels()
+			cause := errors.New(source + " unavailable")
+			base := newTaskMockBase(t, "store")
+			projectReader := &projectReaderMock{taskMockBase: base.withLabel("projects")}
+			reader := &taskReaderMock{taskMockBase: base.withLabel("tasks")}
+			snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("snapshot"), ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+			projectReader.ProjectAccessFn = func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+				if source == "projects" {
+					return model.ProjectAccess{}, cause
+				}
+				return taskMockAccess(project, principal), nil
 			}
-			_, getErr := tasks.Get(context.Background(), principal, project.ID, target.ID)
-			_, listErr := tasks.List(context.Background(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
-			_, updateErr := tasks.Update(context.Background(), principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
-			_, createErr := tasks.Create(context.Background(), principal, project.ID, taskcore.CreateTask{Title: "New"})
+			reader.TaskFn = func(context.Context, string, string) (model.Task, error) { return model.Task{}, cause }
+			reader.TasksFn = func(context.Context, string, store.TaskQuery) (store.TaskPage, error) { return store.TaskPage{}, cause }
+			f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
+			f.expectedWrites = 5
+			f.database.ReadSnapshotFn = func(actual context.Context, work func(store.SnapshotScope) error) error {
+				if actual != ctx {
+					t.Fatal("snapshot changed context")
+				}
+				return work(snapshot)
+			}
+			if source == "projects" {
+				f.projects.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+					return model.ProjectAccess{}, cause
+				}
+			}
+			f.tasks.TaskFn = func(context.Context, string) (model.Task, error) { return model.Task{}, cause }
+			f.tasks.TasksByIDFn = func(context.Context, []string) ([]model.Task, error) { return nil, cause }
+			tasks := taskservice.NewTasks(f.database)
+			_, getErr := tasks.Get(ctx, principal, project.ID, target.ID)
+			_, listErr := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
+			_, updateErr := tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
+			_, createErr := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "New"})
 			failures := []error{getErr, listErr, updateErr, createErr}
 			for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
-				_, err := tasks.SetStatus(context.Background(), principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: status})
+				_, err := tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: status})
 				failures = append(failures, err)
 			}
 			for _, err := range failures {
 				assertOperational(t, err)
-				var pgError *pgconn.PgError
-				if !errors.As(err, &pgError) || pgError.Code != "42P01" {
-					t.Fatalf("missing query cause: %v", err)
+				if !errors.Is(err, cause) {
+					t.Fatalf("lost DAO cause: %v", err)
 				}
 			}
 		})
 	}
-	tasks, database, project, _, principal := taskService(t)
-	database.Close()
-	_, err := tasks.List(context.Background(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
+	ctx := t.Context()
+	project, _, principal := taskMockModels()
+	cause := errors.New("snapshot reader closed")
+	database := &taskStoreMock{taskMockBase: newTaskMockBase(t, "store"), ReadSnapshotFn: func(context.Context, func(store.SnapshotScope) error) error { return cause }}
+	_, err := taskservice.NewTasks(database).List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 	assertOperational(t, err)
+	if !errors.Is(err, cause) {
+		t.Fatalf("closed reader cause: %v", err)
+	}
 }
 
 func TestTaskPolicyQueryCancellationPreservesCause(t *testing.T) {
-	tasks, _, project, databaseURL, principal := taskService(t)
-	predecessor := createTask(t, tasks, principal, project.ID, "Predecessor")
-	predecessor = startTask(t, tasks, principal, predecessor)
-	predecessor = finishTask(t, tasks, principal, predecessor)
-	target := createTask(t, tasks, principal, project.ID, "Target", predecessor.ID)
-	target = startTask(t, tasks, principal, target)
-	target = finishTask(t, tasks, principal, target)
-	for _, fragment := range []string{"t.id = ANY($2::uuid[])", "WITH RECURSIVE edges"} {
-		t.Run(fragment, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+	for _, step := range []string{"prerequisites", "reachability"} {
+		t.Run(step, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, start: cancel})
-			input := taskcore.UpdateTask{Version: target.Version, Title: pointer("Rejected")}
-			_, err := traced.Update(ctx, principal, project.ID, target.ID, input)
+			f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
+			target := f.target
+			prerequisite := target
+			prerequisite.ID = "66666666-6666-4666-8666-666666666666"
+			prerequisite.Status = model.TaskDone
+			target.DependsOn = []string{prerequisite.ID}
+			target.Status = model.TaskDone
+			f.expectTask(t, target)
+			f.tasks.TasksByIDFn = func(actual context.Context, ids []string) ([]model.Task, error) {
+				if actual != ctx || !slices.Equal(ids, target.DependsOn) {
+					t.Fatal("wrong prerequisite lookup")
+				}
+				if step == "prerequisites" {
+					cancel()
+					return nil, actual.Err()
+				}
+				return []model.Task{prerequisite}, nil
+			}
+			f.tasks.ReachableFn = func(actual context.Context, from, to string, replacement store.DependencyReplacement) (bool, error) {
+				if actual != ctx || from != prerequisite.ID || to != target.ID || replacement.TaskID != target.ID || !slices.Equal(replacement.DependsOn, target.DependsOn) {
+					t.Fatal("wrong reachability lookup")
+				}
+				cancel()
+				return false, actual.Err()
+			}
+			_, err := taskservice.NewTasks(f.database).Update(ctx, f.principal, f.project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Rejected")})
 			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) {
+			if !errors.Is(err, context.Canceled) || !errors.Is(f.callbackError, context.Canceled) {
 				t.Fatalf("query cancellation cause: %v", err)
 			}
-			assertTaskUnchanged(t, tasks, principal, target)
-			assertTaskUnchanged(t, tasks, principal, predecessor)
 		})
 	}
 }
 
 func TestTaskStatusQueryCancellationPreservesCauseAndState(t *testing.T) {
-	for _, action := range []struct{ from, to model.TaskStatus }{
-		{model.TaskTodo, model.TaskInProgress}, {model.TaskInProgress, model.TaskDone}, {model.TaskDone, model.TaskTodo},
-	} {
-		for _, query := range []struct {
-			fragment string
-			after    bool
-		}{{"FROM tasks t", false}, {"UPDATE tasks SET", false}, {"UPDATE tasks SET", true}} {
-			t.Run(fmt.Sprintf("%s_to_%s %s after=%t", action.from, action.to, query.fragment, query.after), func(t *testing.T) {
-				tasks, _, project, databaseURL, principal := taskService(t)
-				predecessor := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Predecessor"))
-				target := createTask(t, tasks, principal, project.ID, "Target", predecessor.ID)
-				target = setStatusTask(t, tasks, principal, target, action.from)
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				trace := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, query.fragment) }}
-				if query.after {
-					trace.end = cancel
-				} else {
-					trace.start = cancel
-				}
-				traced := tracedTasks(t, databaseURL, trace)
-				_, err := traced.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: action.to})
-				assertOperational(t, err)
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("status cancellation lost cause: %v", err)
-				}
-				assertTaskUnchanged(t, tasks, principal, target)
-				assertTaskUnchanged(t, tasks, principal, predecessor)
-			})
-		}
-	}
-}
-
-func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	ctx := context.Background()
-	a := createTask(t, tasks, principal, project.ID, "A")
-	b := createTask(t, tasks, principal, project.ID, "B")
-	old := createTask(t, tasks, principal, project.ID, "Old")
-	target := createTask(t, tasks, principal, project.ID, "Target", old.ID)
-	dependencies := []string{a.ID, b.ID}
-	slices.Sort(dependencies)
-	statement := fmt.Sprintf(`CREATE FUNCTION reject_second_edge() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN IF NEW.depends_on_task_id = '%s'::uuid THEN RAISE EXCEPTION 'private edge diagnostic'; END IF; RETURN NEW; END $$;
-		CREATE TRIGGER reject_second_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_second_edge()`, dependencies[1])
-	if _, err := database.Pool.Exec(ctx, statement); err != nil {
-		t.Fatal(err)
-	}
-	_, updateErr := tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: &dependencies})
-	_, createErr := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Rejected create", DependsOn: dependencies})
-	for _, err := range []error{updateErr, createErr} {
-		assertOperational(t, err)
-		var pgError *pgconn.PgError
-		if !errors.As(err, &pgError) || pgError.Code != "P0001" || strings.Contains(err.Error(), "private edge") {
-			t.Fatalf("partial failure cause/redaction: %v", err)
-		}
-	}
-	assertTaskUnchanged(t, tasks, principal, target)
-	page, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
-	if err != nil || len(page.Items) != 4 {
-		t.Fatalf("failed creation left rows: %#v, %v", page, err)
-	}
-}
-
-func TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	predecessor := createTask(t, tasks, principal, project.ID, "Predecessor")
-	target := createTask(t, tasks, principal, project.ID, "Target", predecessor.ID)
-	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") },
-		end: func() {
-			if err := writeProjectForTest(database, context.Background(), project.ID, func(tx store.ProjectWriteScope) error {
-				_, err := tx.TaskDAO().UpdateTask(context.Background(), predecessor.ID, store.TaskWrite{Title: predecessor.Title, Status: model.TaskDone})
-				return err
-			}); err != nil {
-				t.Fatal(err)
+	for _, action := range []struct{ from, to model.TaskStatus }{{model.TaskTodo, model.TaskInProgress}, {model.TaskInProgress, model.TaskDone}, {model.TaskDone, model.TaskTodo}} {
+		t.Run(fmt.Sprintf("%s_to_%s", action.from, action.to), func(t *testing.T) {
+			for _, step := range []string{"read", "write", "after-write"} {
+				t.Run(step, func(t *testing.T) {
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
+					target := f.target
+					target.Status = action.from
+					before := target
+					f.tasks.TaskFn = func(context.Context, string) (model.Task, error) {
+						if step == "read" {
+							cancel()
+							return model.Task{}, ctx.Err()
+						}
+						return target, nil
+					}
+					if action.from == model.TaskDone {
+						f.tasks.ActiveDependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
+					}
+					f.tasks.UpdateTaskFn = func(actual context.Context, id string, values store.TaskWrite) (model.Task, error) {
+						if actual != ctx || id != target.ID || values.Status != action.to || values.Title != target.Title || values.Description != target.Description {
+							t.Fatal("status mutation changed unrelated values")
+						}
+						cancel()
+						if step == "write" {
+							return model.Task{}, actual.Err()
+						}
+						result := target
+						result.Status = values.Status
+						result.Version++
+						return result, nil
+					}
+					f.scope.SessionDAOFn = func() store.ProjectSessionDAO { return f.sessions }
+					f.sessions.DrainTaskSessionsFn = func(actual context.Context, id string, _ store.TaskSessionDrain) error {
+						if actual != ctx || id != target.ID {
+							t.Fatal("wrong session drain")
+						}
+						return actual.Err()
+					}
+					result, err := taskservice.NewTasks(f.database).SetStatus(ctx, f.principal, f.project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: action.to})
+					assertOperational(t, err)
+					if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(target, before) || result.ID != "" {
+						t.Fatalf("status cancellation result/cause/input: %#v, %v", result, err)
+					}
+				})
 			}
-		},
-	})
-	read, err := traced.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || read.Ready || !slices.Equal(read.BlockedBy, []string{predecessor.ID}) {
-		t.Fatalf("RR task read mixed snapshots: %#v, %v", read, err)
-	}
-	fresh, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || !fresh.Ready || len(fresh.BlockedBy) != 0 || fresh.Version != target.Version || !fresh.UpdatedAt.Equal(target.UpdatedAt) {
-		t.Fatalf("fresh read/metadata: %#v, %v", fresh, err)
-	}
-}
-
-func TestTaskReopenDependentQueryCancellationPreservesCause(t *testing.T) {
-	tasks, _, project, databaseURL, principal := taskService(t)
-	target := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Completed prerequisite"))
-	dependent := startTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Active dependent", target.ID))
-	for _, after := range []bool{false, true} {
-		t.Run(fmt.Sprintf("after=%t", after), func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			trace := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "SELECT t.id::text FROM task_dependencies d") }}
-			if after {
-				trace.end = cancel
-			} else {
-				trace.start = cancel
-			}
-			traced := tracedTasks(t, databaseURL, trace)
-			_, err := traced.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("dependent query cancellation lost cause: %v", err)
-			}
-			assertTaskUnchanged(t, tasks, principal, target)
-			assertTaskUnchanged(t, tasks, principal, dependent)
 		})
 	}
 }
 
-func TestTaskStatusPartialWriteFailureRollsBackTimingAndMaterials(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	ctx := context.Background()
-	prerequisite := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Completed prerequisite"))
-	target, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{
-		Title: "Original", Description: "Preserved Markdown", DependsOn: []string{prerequisite.ID}, ExternalDependsOn: []string{prerequisite.ID},
-		Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://github.com/owner/repo/pull/1", Title: "Existing evidence"}}...),
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestTaskPartialWriteFailurePreservesCauseAndCandidate(t *testing.T) {
+	for _, operation := range []string{"create", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := t.Context()
+			f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
+			first := f.target
+			first.ID = "66666666-6666-4666-8666-666666666666"
+			second := f.target
+			second.ID = "77777777-7777-4777-8777-777777777777"
+			dependencies := []string{first.ID, second.ID}
+			if operation == "update" {
+				f.expectTask(t, f.target)
+			}
+			f.expectPrerequisites(t, []model.Task{first, second})
+			f.tasks.ReachableFn = func(context.Context, string, string, store.DependencyReplacement) (bool, error) { return false, nil }
+			privateCause := errors.New("private edge diagnostic")
+			cause := &store.Error{Phase: "operation", SQLState: "P1001", DatabaseFailure: true, Cause: privateCause}
+			write := func(actual context.Context, id string, values store.TaskWrite) (model.Task, error) {
+				if actual != ctx || (operation == "update" && id != f.target.ID) || values.Title != "Changed" || values.Description != "Changed" || !slices.Equal(values.DependsOn, dependencies) || !slices.Equal(testPRs(t, values.Properties), []model.PullRequestProperty{{URL: "changed", Title: "Changed"}}) {
+					t.Fatalf("wrong write candidate: %#v", values)
+				}
+				return model.Task{}, cause
+			}
+			f.tasks.UpdateTaskFn = write
+			f.tasks.CreateTaskFn = write
+			tasks := taskservice.NewTasks(f.database)
+			var result model.Task
+			var err error
+			properties := propertyPatch(model.PullRequestProperty{URL: "changed", Title: "Changed"})
+			if operation == "update" {
+				result, err = tasks.Update(ctx, f.principal, f.project.ID, f.target.ID, taskcore.UpdateTask{Version: f.target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: &dependencies, Properties: properties})
+			} else {
+				result, err = tasks.Create(ctx, f.principal, f.project.ID, taskcore.CreateTask{Title: "Changed", Description: "Changed", DependsOn: dependencies, Properties: properties})
+			}
+			assertOperational(t, err)
+			var failure *store.Error
+			if result.ID != "" || !errors.Is(err, cause) || !errors.Is(err, privateCause) || !errors.As(err, &failure) || failure != cause || strings.Contains(err.Error(), "private edge") || f.callbackError != cause {
+				t.Fatalf("partial-write result/cause: %#v %v", result, err)
+			}
+		})
 	}
-	target = updateTask(t, tasks, principal, target, taskcore.UpdateTask{AllowAgents: pointer(true)})
-	if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION reject_status_edge() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION 'private status edge diagnostic'; END $$;
-		CREATE TRIGGER reject_status_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_status_edge()`); err != nil {
-		t.Fatal(err)
+}
+
+func TestTaskReadUsesOneScopeForProjectAndDerivedState(t *testing.T) {
+	ctx := t.Context()
+	project, target, principal := taskMockModels()
+	prerequisiteID := "66666666-6666-4666-8666-666666666666"
+	target.DependsOn = []string{prerequisiteID}
+	target.BlockedBy = []string{prerequisiteID}
+	target.Ready = false
+	base := newTaskMockBase(t, "store")
+	projects := &projectReaderMock{taskMockBase: base.withLabel("projects"), ProjectAccessFn: func(actual context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		if actual != ctx || p != principal || id != project.ID {
+			t.Fatal("wrong project access")
+		}
+		return taskMockAccess(project, principal), nil
+	}}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("tasks"), TaskFn: func(actual context.Context, p, id string) (model.Task, error) {
+		if actual != ctx || p != project.ID || id != target.ID {
+			t.Fatal("wrong Task read")
+		}
+		return target, nil
+	}}
+	scope := &taskSnapshotScopeMock{taskMockBase: base.withLabel("snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	snapshots := 0
+	database := &taskStoreMock{taskMockBase: base, ReadSnapshotFn: func(actual context.Context, work func(store.SnapshotScope) error) error {
+		if actual != ctx {
+			t.Fatal("snapshot context changed")
+		}
+		snapshots++
+		return work(scope)
+	}}
+	result, err := taskservice.NewTasks(database).Get(ctx, principal, project.ID, target.ID)
+	if err != nil || snapshots != 1 || !reflect.DeepEqual(result, target) {
+		t.Fatalf("scope-bound derived read: %#v %v", result, err)
 	}
-	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
+	if got := base.trace.snapshot(); !slices.Equal(got, []string{"store.ReadSnapshot", "snapshot.ProjectDAO", "projects.ProjectAccess", "snapshot.TaskDAO", "tasks.Task"}) {
+		t.Fatalf("read scope order: %v", got)
+	}
+}
+
+func TestTaskReopenDependentQueryCancellationPreservesCause(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after=%t", after), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
+			target := f.target
+			target.Status = model.TaskDone
+			f.expectTask(t, target)
+			f.tasks.ActiveDependentIDsFn = func(actual context.Context, id string) ([]string, error) {
+				if actual != ctx || id != target.ID {
+					t.Fatal("wrong dependent query")
+				}
+				cancel()
+				if !after {
+					return nil, actual.Err()
+				}
+				return []string{}, nil
+			}
+			f.tasks.UpdateTaskFn = func(actual context.Context, _ string, _ store.TaskWrite) (model.Task, error) {
+				return model.Task{}, actual.Err()
+			}
+			_, err := taskservice.NewTasks(f.database).SetStatus(ctx, f.principal, f.project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
+			assertOperational(t, err)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("dependent cancellation cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestTaskStatusWriteFailurePreservesTimingAndMaterialsCandidate(t *testing.T) {
+	ctx := t.Context()
+	f := newTaskFailureFixture(t, ctx, store.TransactionNotCommitted)
+	prerequisiteID := "66666666-6666-4666-8666-666666666666"
+	target := f.target
+	target.Title = "Original"
+	target.Description = "Preserved Markdown"
+	target.DependsOn = []string{prerequisiteID}
+	target.ExternalDependsOn = []string{prerequisiteID}
+	target.AllowAgents = true
+	target.Properties = propertyPatch(model.PullRequestProperty{URL: "https://github.com/owner/repo/pull/1", Title: "Existing evidence"})
+	f.expectTask(t, target)
+	privateCause := errors.New("private status edge diagnostic")
+	cause := &store.Error{Phase: "operation", SQLState: "P0001", DatabaseFailure: true, Cause: privateCause}
+	f.tasks.UpdateTaskFn = func(actual context.Context, id string, values store.TaskWrite) (model.Task, error) {
+		if actual != ctx || id != target.ID || values.Status != model.TaskInProgress || values.Title != target.Title || values.Description != target.Description || values.AllowAgents != target.AllowAgents || !slices.Equal(values.DependsOn, target.DependsOn) || !slices.Equal(values.ExternalDependsOn, target.ExternalDependsOn) || !reflect.DeepEqual(values.Properties, target.Properties) {
+			t.Fatalf("status changed materials: %#v", values)
+		}
+		return model.Task{}, cause
+	}
+	_, err := taskservice.NewTasks(f.database).SetStatus(ctx, f.principal, f.project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
 	assertOperational(t, err)
-	var pgError *pgconn.PgError
-	if !errors.As(err, &pgError) || pgError.Code != "P0001" || strings.Contains(err.Error(), "private status edge") {
-		t.Fatalf("status write failure cause/redaction: %v", err)
+	var failure *store.Error
+	if !errors.Is(err, privateCause) || !errors.As(err, &failure) || failure != cause || strings.Contains(err.Error(), "private status edge") {
+		t.Fatalf("lost status failure cause or redaction: %v", err)
 	}
-	assertTaskUnchanged(t, tasks, principal, target)
-	assertTaskUnchanged(t, tasks, principal, prerequisite)
 }

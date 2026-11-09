@@ -85,6 +85,18 @@ The receipt can confirm success with no remaining actor access. Do not replay an
 unknown submission automatically: a later Project read, including 404, cannot
 prove whether the transfer committed. Grants and invitations remain independent.
 
+## Project deletion
+
+Delete only with explicit authorization for the target Project. Interactive
+deletion requires the displayed JSON string literal of its name, including when
+`--confirm` is supplied. Noninteractive deletion requires `--confirm`. The
+complete preview is an observation, not a version or identity condition on the
+DELETE; current permissions and active claims are checked by the service.
+The command sends at most one DELETE. A validated receipt confirms deletion; a
+lost or malformed response leaves the outcome unknown and must not be replayed
+automatically. A later 404 cannot establish the original outcome. A local output
+or cleanup failure after a confirmed receipt does not undo that confirmation.
+
 ## Task Step writes
 
 Read `task step list <task-id> --json` for the complete current collection and

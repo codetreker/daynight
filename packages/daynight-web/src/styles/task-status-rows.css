@@ -19,6 +19,20 @@
   --row-status: #246d4a;
 }
 
+[data-task-status="cancelled"] {
+  --row-background: #f3eff7;
+  --row-hover: #ebe5f1;
+  --row-border: #d6cbdf;
+  --row-status: #705c80;
+}
+
+[data-task-status="ended"] {
+  --row-background: #eef4f2;
+  --row-hover: #e3ece8;
+  --row-border: #cadbd3;
+  --row-status: #4b6f60;
+}
+
 .task-status-surface[data-task-status] {
   background: var(--row-background);
   border-color: var(--row-border);

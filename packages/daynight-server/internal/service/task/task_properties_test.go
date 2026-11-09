@@ -1,103 +1,168 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"context"
 	"errors"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	ctx := context.Background()
-	prerequisite := createTask(t, tasks, principal, project.ID, "Prerequisite")
-	old := createTask(t, tasks, principal, project.ID, "Old")
-
-	old = startTask(t, tasks, principal, old)
-	old = finishTask(t, tasks, principal, old)
-	target, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Original", DependsOn: []string{old.ID}, Properties: propertyPatch([]model.PullRequestProperty{{URL: "old\x00", Title: "Old"}}...)})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	target = startTask(t, tasks, principal, target)
+func TestTaskPropertiesCandidateFailureAndWriteErrorPropagation(t *testing.T) {
+	project, target, _ := taskMockModels()
+	old := target
+	old.ID = "66666666-6666-4666-8666-666666666666"
+	old.Status = model.TaskDone
+	prerequisite := target
+	prerequisite.ID = "77777777-7777-4777-8777-777777777777"
+	target.Status = model.TaskInProgress
+	target.StartedAt = pointer(target.UpdatedAt)
+	target.DependsOn = []string{old.ID}
+	target.Properties = propertyPatch(model.PullRequestProperty{URL: "old\x00", Title: "Old"})
 	properties := propertyPatch(model.PullRequestProperty{URL: "changed\x00", Title: "Changed"})
-	_, err = tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
-	requireFault(t, err, "dependency_unsatisfied")
-	assertTaskUnchanged(t, tasks, principal, target)
-
-	prerequisite = startTask(t, tasks, principal, prerequisite)
-	prerequisite = finishTask(t, tasks, principal, prerequisite)
-	for _, fragment := range []string{"UPDATE tasks SET", "INSERT INTO task_dependencies"} {
-		t.Run("cancel after "+fragment, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel})
-			_, err := traced.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("partial-write cancellation lost cause: %v", err)
+	configureCandidate := func(t *testing.T, f *propertyWriteFixture, dependency model.Task) {
+		f.dao.TasksByIDFn = func(ctx context.Context, ids []string) ([]model.Task, error) {
+			if ctx != f.ctx || !slices.Equal(ids, []string{prerequisite.ID}) {
+				t.Fatalf("property candidate prerequisite selection: %v", ids)
 			}
-			assertTaskUnchanged(t, tasks, principal, target)
+			return []model.Task{dependency}, nil
+		}
+		f.dao.ReachableFn = func(ctx context.Context, from, to string, replacement store.DependencyReplacement) (bool, error) {
+			if ctx != f.ctx || from != prerequisite.ID || to != target.ID || replacement.TaskID != target.ID || !slices.Equal(replacement.DependsOn, []string{prerequisite.ID}) {
+				t.Fatalf("property replacement reachability: %#v", replacement)
+			}
+			return false, nil
+		}
+	}
+	t.Run("candidate refused before writes", func(t *testing.T) {
+		f := newPropertyWriteFixture(t, target, propertyCommit(t))
+		configureCandidate(t, f, prerequisite)
+		_, err := f.tasks.Update(f.ctx, f.principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
+		requireFault(t, err, "dependency_unsatisfied")
+	})
+	prerequisite.Status = model.TaskDone
+	for _, failure := range []error{context.Canceled, errors.New("dependency write failed")} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			f := newPropertyWriteFixture(t, target, propertyAbort(t, func(err error) {
+				if !errors.Is(err, failure) {
+					t.Fatalf("property callback lost write cause: %v", err)
+				}
+			}))
+			configureCandidate(t, f, prerequisite)
+			want := propertyExpectedWrite(target, properties)
+			want.Title = "Changed"
+			want.Description = "Changed"
+			want.DependsOn = []string{prerequisite.ID}
+			f.expectUpdate(want, model.Task{}, failure)
+			actual, err := f.tasks.Update(f.ctx, f.principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
+			assertOperational(t, err)
+			if !errors.Is(err, failure) || !reflect.DeepEqual(actual, model.Task{}) {
+				t.Fatalf("property write exposed failed candidate or changed cause: %#v %v", actual, err)
+			}
 		})
 	}
-	if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION reject_property_edge() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION 'rejected dependency'; END $$;
-		CREATE TRIGGER reject_property_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_property_edge()`); err != nil {
-		t.Fatal(err)
-	}
-	_, err = tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
-	assertOperational(t, err)
-	assertTaskUnchanged(t, tasks, principal, target)
-	_, err = tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Rejected", DependsOn: []string{prerequisite.ID}, Properties: properties})
-	assertOperational(t, err)
-	page, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
-	if err != nil || len(page.Items) != 3 {
-		t.Fatalf("partial create persisted: %+v, %v", page, err)
-	}
+	t.Run("failed create", func(t *testing.T) {
+		failure := errors.New("dependency create failed")
+		f := newPropertyWriteFixture(t, target, propertyAbort(t, func(err error) {
+			if !errors.Is(err, failure) {
+				t.Fatalf("create callback lost cause: %v", err)
+			}
+		}))
+		f.wantReads = 0
+		f.wantWrites = 1
+		f.dao.TasksByIDFn = func(ctx context.Context, ids []string) ([]model.Task, error) {
+			if ctx != f.ctx || !slices.Equal(ids, []string{prerequisite.ID}) {
+				t.Fatal("create prerequisite selection changed")
+			}
+			return []model.Task{prerequisite}, nil
+		}
+		f.dao.ReachableFn = func(ctx context.Context, from, to string, r store.DependencyReplacement) (bool, error) {
+			if ctx != f.ctx || from != prerequisite.ID || to != r.TaskID || !slices.Equal(r.DependsOn, []string{prerequisite.ID}) {
+				t.Fatal("create dependency replacement changed")
+			}
+			return false, nil
+		}
+		f.dao.CreateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
+			f.writes++
+			if ctx != f.ctx || values.Title != "Rejected" || values.Status != model.TaskTodo || !propertyPropertiesEqual(t, values.Properties, properties) || !slices.Equal(values.DependsOn, []string{prerequisite.ID}) {
+				t.Fatalf("create candidate: %#v", values)
+			}
+			return model.Task{}, failure
+		}
+		actual, err := f.tasks.Create(f.ctx, f.principal, project.ID, taskcore.CreateTask{Title: "Rejected", DependsOn: []string{prerequisite.ID}, Properties: properties})
+		assertOperational(t, err)
+		if !errors.Is(err, failure) || !reflect.DeepEqual(actual, model.Task{}) {
+			t.Fatalf("failed create: %#v %v", actual, err)
+		}
+	})
 }
 
-func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	target := createTask(t, tasks, principal, project.ID, "Original")
+func TestTaskPropertiesVersionAndSnapshotScope(t *testing.T) {
+	project, target, principal := taskMockModels()
 	first, second := propertyPatch(model.PullRequestProperty{URL: "first", Title: "First"}), propertyPatch(model.PullRequestProperty{URL: "second", Title: "Second"})
-	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Properties: first})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Properties: second})
-		})
-	assertOneTaskWinner(t, results, "version_conflict")
-	before, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || before.Version != target.Version+1 || !(slices.Equal(testPRs(t, before.Properties), testPRs(t, first)) || slices.Equal(testPRs(t, before.Properties), testPRs(t, second))) {
-		t.Fatalf("concurrent property result: %+v, %v", before, err)
-	}
-	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") },
-		end: func() {
-			if err := writeProjectForTest(database, context.Background(), project.ID, func(tx store.ProjectWriteScope) error {
-				_, err := tx.TaskDAO().UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]model.PullRequestProperty{{URL: "new", Title: "New"}}...)})
-				return err
-			}); err != nil {
-				t.Fatal(err)
+	for _, props := range []model.TaskProperties{first, second} {
+		t.Run(string(props["pullRequests"]), func(t *testing.T) {
+			result := propertyTaskResult(target, props)
+			f := newPropertyWriteFixture(t, target, propertyCommit(t))
+			f.dao.TasksByIDFn = func(ctx context.Context, ids []string) ([]model.Task, error) {
+				if ctx != f.ctx || len(ids) != 0 {
+					t.Fatal("property-only update changed dependencies")
+				}
+				return []model.Task{}, nil
 			}
-		},
-	})
-	read, err := traced.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || !reflect.DeepEqual(read, before) {
-		t.Fatalf("snapshot mixed task fields and properties: %+v, %v", read, err)
+			f.expectUpdate(propertyExpectedWrite(target, props), result, nil)
+			actual, err := f.tasks.Update(f.ctx, f.principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Properties: props})
+			if err != nil || !reflect.DeepEqual(actual, result) {
+				t.Fatalf("property update: %#v %v", actual, err)
+			}
+			t.Run("fresh version refuses stale write", func(t *testing.T) {
+				stale := newPropertyWriteFixture(t, result, propertyCommit(t))
+				_, err := stale.tasks.Update(stale.ctx, stale.principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Properties: second})
+				requireFault(t, err, "version_conflict")
+			})
+		})
 	}
-	after, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || after.Title != "New snapshot" || after.Version != before.Version+1 || !slices.Equal(testPRs(t, after.Properties), []model.PullRequestProperty{{URL: "new", Title: "New"}}) {
-		t.Fatalf("fresh properties snapshot: %+v, %v", after, err)
+	before := propertyTaskResult(target, first)
+	after := propertyTaskResult(before, propertyPatch(model.PullRequestProperty{URL: "new", Title: "New"}))
+	after.Title = "New snapshot"
+	for _, current := range []model.Task{before, after} {
+		t.Run(current.Title, func(t *testing.T) {
+			base := newTaskMockBase(t, "property snapshot")
+			accessCalls, taskCalls, scopeCalls := 0, 0, 0
+			projects := &projectReaderMock{taskMockBase: base.withLabel("projects"), ProjectAccessFn: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+				accessCalls++
+				if ctx != t.Context() || p != principal || id != project.ID {
+					t.Fatal("property access changed snapshot scope")
+				}
+				return taskMockAccess(project, principal), nil
+			}}
+			reader := &taskReaderMock{taskMockBase: base.withLabel("tasks"), TaskFn: func(ctx context.Context, pid, id string) (model.Task, error) {
+				taskCalls++
+				if ctx != t.Context() || pid != project.ID || id != current.ID || accessCalls != 1 {
+					t.Fatal("property Task read preceded its scoped access")
+				}
+				return current, nil
+			}}
+			scope := &taskSnapshotScopeMock{taskMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+			database := &taskStoreMock{taskMockBase: base.withLabel("store"), ReadSnapshotFn: func(ctx context.Context, work func(store.SnapshotScope) error) error {
+				scopeCalls++
+				if ctx != t.Context() {
+					t.Fatal("property snapshot changed context")
+				}
+				return work(scope)
+			}}
+			actual, err := taskservice.NewTasks(database).Get(t.Context(), principal, project.ID, target.ID)
+			if err != nil || !reflect.DeepEqual(actual, current) || scopeCalls != 1 || taskCalls != 1 || accessCalls != 1 {
+				t.Fatalf("property snapshot mixed its row: %#v %v", actual, err)
+			}
+		})
+	}
+	if !reflect.DeepEqual(target.Properties, model.TaskProperties{}) {
+		t.Fatal("property candidates mutated their source model")
 	}
 }

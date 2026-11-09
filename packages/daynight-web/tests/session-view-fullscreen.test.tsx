@@ -13,12 +13,12 @@ let sequence = 0;
 function fixture() {
   const snapshot: SessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
   const userId = `display-user-${++sequence}`;
-  let view: SessionViewState = { startupReport: null, errorCode: null, environmentConnected: true, historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...emptySessionState(), snapshot, entries: [
+  let view: SessionViewState = { operationProgress: new Map(), startupReport: null, errorCode: null, environmentConnected: true, historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...emptySessionState(), snapshot, entries: [
     { entryId: 'message', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Keep this message' }] },
     { entryId: 'thought', entrySeq: '2', revision: '1', kind: 'reasoning', text: 'Private reasoning' },
   ] }, archiveState: null, settingIntents: new Map(), draft: { text: 'Keep this draft', revision: '1', submission: null }, status: 'ready', connected: true, authPaused: false, error: 'Connection diagnostic', hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
   const listeners = new Set<() => void>();
-  const client = { subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); }, snapshot: () => view, refresh: vi.fn(), loadOlder: vi.fn(), resource: vi.fn(), respond: vi.fn(), setDraft: vi.fn(), send: vi.fn(), cancel: vi.fn(), updateSetting: vi.fn(), executeCommand: vi.fn(), refreshControls: vi.fn() } as unknown as TaskSessionClient;
+  const client = { subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); }, snapshot: () => view, canInteract: () => true, refresh: vi.fn(), loadOlder: vi.fn(), resource: vi.fn(), respond: vi.fn(), setDraft: vi.fn(), send: vi.fn(), cancel: vi.fn(), updateSetting: vi.fn(), executeCommand: vi.fn(), refreshControls: vi.fn() } as unknown as TaskSessionClient;
   return { client, userId, snapshot, key: (user = userId, session = snapshot.sessionId) => `daynight.web.session.display.v1:${JSON.stringify([user, session])}`, update: (next: Partial<SessionViewState>) => act(() => { view = { ...view, ...next }; listeners.forEach(listener => listener()); }), get: () => view };
 }
 

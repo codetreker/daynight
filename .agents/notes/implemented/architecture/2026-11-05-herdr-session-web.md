@@ -15,7 +15,11 @@ The task host dispatches current executions to the existing Web adapter or a
 terminal client. Terminal observation follows actual view and document visibility;
 closing its viewer channel releases its browser lease without stopping Worker
 recording. Historical selection and a separate managed attachment section open
-fixed Session references through read-only archive loaders.
+fixed Session references through read-only archive loaders. The
+[Session owner interaction decision](../bug-fix/2026-11-07-task-session-owner-interaction.md)
+restricts live input and control to the persisted owner while retaining project
+readers. The terminal client checks validated ownership independently of transport
+and lease state; the native client carries the verified claim owner.
 
 Managed entries occupy a separate section of the attachment sidebar and share
 the existing preview column. An additional vertical recording region would
@@ -35,8 +39,8 @@ Input sequences belong to the lease ID and control epoch. Discovering the native
 Session ID enriches an existing binding without resetting the relay's accepted
 sequence, pending operation or deadline. Actual execution, connection, terminal
 address and input control-epoch changes still fence pending operations and late
-receipts. Human confirmations retain their execution and control identity, plus
-the operation ID for unknown acknowledgements; submission checks that identity
+receipts. Human confirmations retain their execution, owner and control identity,
+plus the operation ID for unknown acknowledgements; submission checks that identity
 again so an old checkbox cannot authorize a new control context.
 
 The [stable terminal recovery decision](../bug-fix/2026-11-05-stable-terminal-recovery.md)

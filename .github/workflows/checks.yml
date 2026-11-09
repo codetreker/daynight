@@ -21,6 +21,7 @@ jobs:
       cli: ${{ steps.modules.outputs.cli }}
       server: ${{ steps.modules.outputs.server }}
       web: ${{ steps.modules.outputs.web }}
+      e2e: ${{ steps.modules.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -57,7 +58,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -69,6 +69,9 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        if: matrix.os == 'macos-15'
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
       - name: Record native validation environment
         id: environment
         run: node packages/daynight/scripts/validation-environment.ts
@@ -77,7 +80,11 @@ jobs:
       - name: Test the local development installer
         run: pnpm dev:test
       - name: Test the compiled CLI
+        if: matrix.os != 'macos-15'
         run: pnpm --filter @codetreker/daynight exec vitest run
+      - name: Test the compiled CLI with macOS termination diagnostics
+        if: matrix.os == 'macos-15'
+        run: node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
       - name: Pack the CLI for runtime compatibility checks
         if: matrix.os == 'ubuntu-latest'
         run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
@@ -109,6 +116,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() && matrix.os == 'macos-15' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-termination-macos-15
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
   verify-installed:
     name: verify (installed CLI, ${{ matrix.os }})
     needs: detect-changes
@@ -116,7 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -126,7 +143,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -138,6 +154,9 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        if: matrix.os == 'macos-15'
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
       - name: Record native validation environment
         id: environment
         run: node packages/daynight/scripts/validation-environment.ts
@@ -151,10 +170,6 @@ jobs:
           name: daynight-cli-installed-${{ matrix.os }}
           path: |
             .tmp/validation-environment.json
-            .tmp/e2e-evidence.json
-            .tmp/update-evidence.json
-            .tmp/project-task-evidence.json
-            .tmp/skill-install-evidence.json
             .tmp/installed-cli-preparation.json
           include-hidden-files: true
           if-no-files-found: error
@@ -164,115 +179,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daynight-cli-installed-probes-${{ matrix.os }}
-          path: .tmp/validation-probes.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-
-  verify-macos:
-    name: verify (macOS ARM64)
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
-    runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
-      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          check-latest: true
-          package-manager-cache: false
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 11.28.6
-          run_install: false
-          dest: ${{ github.workspace }}/.tmp/pnpm
-      - name: Install native CLI dependencies
-        id: preparation
-        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Require macOS ARM64
-        id: architecture
-        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
-      - name: Record ordinary CLI environment
-        id: ordinary-environment
-        run: node packages/daynight/scripts/validation-environment.ts
-      - name: Verify ordinary CLI
-        id: ordinary-validation
-        timeout-minutes: 10
-        run: |
-          pnpm typecheck
-          pnpm build
-          pnpm dev:test
-          node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
-      - name: Upload ordinary CLI environment
-        if: ${{ always() && steps.ordinary-environment.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-tests-macos-15
-          path: .tmp/validation-environment.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload ordinary CLI probe diagnostics
-        if: ${{ always() && steps.ordinary-environment.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-tests-probes-macos-15
-          path: .tmp/validation-probes.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload macOS test termination diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-tests-termination-macos-15
-          path: .tmp/native-validation/
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Clear installed CLI evidence paths
-        id: installed-evidence
-        if: ${{ !cancelled() && steps.preparation.outcome == 'success' && steps.architecture.outcome == 'success' }}
-        run: |
-          node --input-type=module -e "import { rm } from 'node:fs/promises'; await Promise.all(['.tmp/validation-environment.json', '.tmp/validation-probes.json'].map((path) => rm(path, { force: true })));"
-      - name: Record installed CLI environment
-        id: installed-environment
-        if: ${{ !cancelled() && steps.preparation.outcome == 'success' && steps.architecture.outcome == 'success' && steps.installed-evidence.outcome == 'success' }}
-        run: node packages/daynight/scripts/validation-environment.ts
-      - name: Verify installed CLI
-        id: installed-validation
-        if: ${{ !cancelled() && steps.installed-environment.outcome == 'success' }}
-        timeout-minutes: 10
-        run: |
-          pnpm build
-          pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts
-      - name: Upload installed CLI acceptance evidence
-        if: ${{ always() && steps.installed-environment.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-installed-macos-15
-          path: |
-            .tmp/validation-environment.json
-            .tmp/e2e-evidence.json
-            .tmp/update-evidence.json
-            .tmp/project-task-evidence.json
-            .tmp/skill-install-evidence.json
-            .tmp/installed-cli-preparation.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload installed CLI probe diagnostics
-        if: ${{ always() && steps.installed-evidence.outcome == 'success' && steps.installed-environment.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-installed-probes-macos-15
           path: .tmp/validation-probes.json
           include-hidden-files: true
           if-no-files-found: error
@@ -338,6 +244,10 @@ jobs:
         run: sudo bash .github/scripts/use-ubuntu-archives.sh /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt
       - name: Prepare isolated Bash 4.2 and zsh toolchains
         run: bash packages/daynight/scripts/prepare-completion-shells.sh
+      - name: Verify completion behavior in all supported shells
+        run: |
+          pnpm build
+          python3 -u packages/daynight/test/commands/completion/shell-module.py --shell all
       - name: Exercise actual Tab completion in Bash 4.2, modern Bash and zsh
         id: completion-validation
         run: pnpm completion:acceptance
@@ -367,7 +277,6 @@ jobs:
       XDG_CACHE_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/cache
       GOENV: "off"
       GOTOOLCHAIN: go1.27.2
-      DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
     services:
       postgres:
@@ -407,92 +316,41 @@ jobs:
           version: 11.28.6
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
-      - name: Install frontend build dependencies
-        run: pnpm --dir ../.. install --frozen-lockfile --store-dir "$GITHUB_WORKSPACE/.tmp/pnpm-store"
-      - name: Validate server coverage and installed project/task CLI behavior
+      - name: Prepare production Web resources for API integration
+        working-directory: .
+        env:
+          COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+          npm_config_devdir: ${{ github.workspace }}/.tmp/node-gyp
+        run: |
+          pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+          pnpm web:build
+      - name: Validate Go module tests and coverage
         id: server-validation
         run: bash scripts/check.sh --coverage
-      - name: Upload server acceptance and coverage evidence
+      - name: Validate normal Go API integration flows
+        id: server-integration
+        run: bash scripts/integration.sh
+      - name: Reconcile owned API integration resources
+        if: ${{ always() && steps.server-integration.outcome != 'skipped' }}
+        run: bash scripts/integration.sh --cleanup
+      - name: Upload Go API integration evidence
+        if: ${{ always() && steps.server-integration.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-server-api-integration
+          path: |
+            packages/daynight-server/.tmp/integration-results/**/build.json
+            packages/daynight-server/.tmp/integration-results/**/result.json
+            packages/daynight-server/.tmp/integration-results/**/run.log
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload Go coverage evidence
         if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daynight-server-acceptance
-          path: |
-            packages/daynight-server/.tmp/coverage.out
-            .tmp/project-task-service-evidence.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-
-  verify-server-e2e:
-    name: verify (Go server E2E)
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.server == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      GOCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-cache
-      GOMODCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-mod
-      GOPATH: ${{ github.workspace }}/packages/daynight-server/.tmp/go
-      GOBIN: ${{ github.workspace }}/packages/daynight-server/.tmp/bin
-      TMPDIR: ${{ github.workspace }}/packages/daynight-server/.tmp/tmp
-      XDG_CONFIG_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/config
-      XDG_CACHE_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/cache
-      GOENV: "off"
-      GOTOOLCHAIN: go1.27.2
-      DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}
-      DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
-    services:
-      postgres:
-        image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
-        env:
-          POSTGRES_USER: daynight
-          POSTGRES_PASSWORD: daynight-test
-          POSTGRES_DB: daynight
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U daynight -d daynight"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    defaults:
-      run:
-        working-directory: packages/daynight-server
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Prepare module-local tool directories
-        run: mkdir -p .tmp/go-cache .tmp/go-mod .tmp/go .tmp/bin .tmp/tmp .tmp/config .tmp/cache
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: 1.27.2
-          cache: true
-          cache-dependency-path: packages/daynight-server/go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 11.28.6
-          run_install: false
-          dest: ${{ github.workspace }}/.tmp/pnpm
-      - name: Install frontend build dependencies
-        run: pnpm --dir ../.. install --frozen-lockfile --store-dir "$GITHUB_WORKSPACE/.tmp/pnpm-store"
-      - name: Validate server E2E and installed project/task CLI behavior
-        id: server-validation
-        run: bash scripts/check.sh --e2e
-      - name: Upload server E2E acceptance evidence
-        if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-server-e2e-acceptance
-          path: |
-            packages/daynight-server/.tmp/acceptance-evidence.json
-            .tmp/project-task-e2e-evidence.json
+          path: packages/daynight-server/coverage.out
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -502,11 +360,10 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright-browsers
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -521,7 +378,7 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Verify the complete Web harness and coverage
+      - name: Verify Web types, production build, harness and coverage
         id: web-quality
         run: node packages/daynight-web/scripts/ci.mts quality
       - name: Upload complete web coverage evidence
@@ -536,26 +393,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  verify-web:
-    name: verify (web ${{ matrix.shard }}/2)
+  verify-web-browser:
+    name: verify (web browser)
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.web == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright-browsers
-      GOCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-cache
-      GOMODCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-mod
-      GOPATH: ${{ github.workspace }}/packages/daynight-server/.tmp/go
-      GOBIN: ${{ github.workspace }}/packages/daynight-server/.tmp/bin
-      GOENV: "off"
-      GOTOOLCHAIN: go1.27.2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -570,52 +417,104 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Install the locked Playwright Chromium browser
+        run: pnpm --filter @codetreker/daynight-web exec playwright install --with-deps chromium
+      - name: Verify frontend assistant browser regressions
+        id: web-browser
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: ${{ github.workspace }}/packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml
+        run: pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/bots-viewport-playwright.config.ts --reporter=line,junit
+      - name: Upload frontend assistant browser evidence
+        if: ${{ always() && steps.web-browser.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-web-assistant-browser
+          path: |
+            packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml
+            packages/daynight-web/.tmp/acceptance/bots-viewport/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-e2e:
+    name: verify (product E2E)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright-browsers
+      DAYNIGHT_E2E_RUN_POINTER: ${{ github.workspace }}/.tmp/product-e2e-run.json
+      GOCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-mod
+      GOPATH: ${{ github.workspace }}/.tmp/product-e2e-cache/go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 2
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        timeout-minutes: 2
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Prepare product E2E build caches
+        timeout-minutes: 1
+        run: mkdir -p .tmp/product-e2e-cache/go-build .tmp/product-e2e-cache/go-mod .tmp/product-e2e-cache/go
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 3
         with:
           go-version: 1.27.2
           cache: true
-          cache-dependency-path: packages/daynight-server/go.sum
-      - name: Verify isolated deployment lifecycle
-        if: ${{ matrix.shard == 2 }}
-        run: bash deployment/dev-ci/tests/run.sh
-      - name: Select official Ubuntu package archives
-        run: sudo bash .github/scripts/use-ubuntu-archives.sh /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt
-      - name: Verify production dashboard and container deployment
-        id: web-acceptance
-        run: node packages/daynight-web/scripts/ci.mts browser --shard=${{ matrix.shard }}/2
-      - name: Recover recorded dashboard acceptance resources
-        if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
-        run: node packages/daynight-web/scripts/acceptance.mts --cleanup
-      - name: Verify attachment persistence and paired backup restoration
-        if: ${{ matrix.shard == 2 }}
-        run: node deployment/dev-ci/tests/attachments.mts
-      - name: Upload production browser and cleanup evidence
-        if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
+          cache-dependency-path: |
+            packages/daynight-server/go.sum
+            packages/e2e_tests/src/build.ts
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+        timeout-minutes: 3
+      - name: Install the locked product E2E Chromium browser
+        timeout-minutes: 4
+        run: pnpm --filter @codetreker/daynight-e2e exec playwright install --with-deps chromium
+      - name: Verify product E2E types
+        timeout-minutes: 1
+        run: pnpm --filter @codetreker/daynight-e2e typecheck
+      - name: Verify product E2E harness behavior
+        timeout-minutes: 1
+        run: pnpm e2e:test:harness
+      - name: Verify the complete isolated product journey
+        id: product-e2e
+        timeout-minutes: 15
+        run: pnpm e2e:test
+      - name: Reconcile product E2E resources after execution
+        if: ${{ always() && steps.product-e2e.outcome != 'skipped' }}
+        timeout-minutes: 3
+        run: pnpm e2e:cleanup
+      - name: Upload product E2E evidence
+        timeout-minutes: 1
+        if: ${{ always() && steps.product-e2e.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-web-acceptance-${{ matrix.shard }}
+          name: daynight-product-e2e
           path: |
-            packages/daynight-web/.tmp/acceptance/
-            .tmp/dev-ci/
-            .tmp/attachment-deployment-*/
-            .tmp/team-members-results/
+            .tmp/product-e2e/*/results/**
+            .tmp/product-e2e/*/logs/**
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
-      - name: Upload functional shard summary
-        if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-web-summary-${{ matrix.shard }}
-          path: packages/daynight-web/.tmp/acceptance/*/evidence.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
+
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-macos, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
+    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser, verify-e2e]
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 5
     steps:
       - name: Require preceding jobs to succeed or be skipped
         env:
@@ -625,31 +524,10 @@ jobs:
         if: ${{ needs.detect-changes.outputs.web == 'true' }}
         env:
           WEB_QUALITY_RESULT: ${{ needs.verify-web-quality.result }}
-          WEB_SHARD_RESULT: ${{ needs.verify-web.result }}
-        run: |
-          test "$WEB_QUALITY_RESULT" = success
-          test "$WEB_SHARD_RESULT" = success
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - name: Download first Web shard summary
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: daynight-web-summary-1
-          path: .tmp/web-shards/1
-      - name: Download second Web shard summary
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: daynight-web-summary-2
-          path: .tmp/web-shards/2
-      - name: Verify complete Web shard evidence
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
-        run: node packages/daynight-web/scripts/acceptance/report.mts --shards .tmp/web-shards/1/*/evidence.json .tmp/web-shards/2/*/evidence.json
+          WEB_BROWSER_RESULT: ${{ needs.verify-web-browser.result }}
+        run: test "$WEB_QUALITY_RESULT" = success && test "$WEB_BROWSER_RESULT" = success
+      - name: Require selected product E2E to succeed
+        if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+        env:
+          E2E_RESULT: ${{ needs.verify-e2e.result }}
+        run: test "$E2E_RESULT" = success

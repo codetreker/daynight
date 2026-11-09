@@ -1,0 +1,574 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:daynight:webhook:event:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "specversion",
+    "id",
+    "source",
+    "type",
+    "subject",
+    "time",
+    "datacontenttype",
+    "data"
+  ],
+  "properties": {
+    "specversion": {
+      "const": "1.0"
+    },
+    "id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^urn:daynight:project:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "type": {
+      "enum": [
+        "cc.daynight.task.created.v1",
+        "cc.daynight.task.status_changed.v1",
+        "cc.daynight.task.paused.v1",
+        "cc.daynight.task.deleted.v1",
+        "cc.daynight.task.step_updated.v1",
+        "cc.daynight.task.thread_posted.v1"
+      ]
+    },
+    "subject": {
+      "type": "string"
+    },
+    "time": {
+      "$ref": "#/$defs/time"
+    },
+    "datacontenttype": {
+      "const": "application/json"
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "const": "cc.daynight.task.created.v1"
+        },
+        "data": {
+          "$ref": "#/$defs/created"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "cc.daynight.task.status_changed.v1"
+        },
+        "data": {
+          "$ref": "#/$defs/status"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "cc.daynight.task.paused.v1"
+        },
+        "data": {
+          "$ref": "#/$defs/paused"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "cc.daynight.task.deleted.v1"
+        },
+        "data": {
+          "$ref": "#/$defs/deleted"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "cc.daynight.task.step_updated.v1"
+        },
+        "data": {
+          "$ref": "#/$defs/step"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "cc.daynight.task.thread_posted.v1"
+        },
+        "data": {
+          "$ref": "#/$defs/thread"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19
+    },
+    "taskStatus": {
+      "enum": [
+        "todo",
+        "in_progress",
+        "done",
+        "cancelled"
+      ]
+    },
+    "stepStatus": {
+      "enum": [
+        "todo",
+        "in_progress",
+        "done",
+        "skipped"
+      ]
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "projectId",
+        "taskId"
+      ],
+      "properties": {
+        "projectId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "taskId": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "created": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        }
+      ],
+      "required": [
+        "taskVersion",
+        "status",
+        "paused"
+      ],
+      "properties": {
+        "taskVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "status": {
+          "$ref": "#/$defs/taskStatus"
+        },
+        "paused": {
+          "type": "boolean"
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "status": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "properties": {
+                  "previousStatus": {
+                    "const": "todo"
+                  },
+                  "status": {
+                    "const": "todo"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "previousStatus": {
+                    "const": "in_progress"
+                  },
+                  "status": {
+                    "const": "in_progress"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "previousStatus": {
+                    "const": "done"
+                  },
+                  "status": {
+                    "const": "done"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "previousStatus": {
+                    "const": "cancelled"
+                  },
+                  "status": {
+                    "const": "cancelled"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "required": [
+        "taskVersion",
+        "previousStatus",
+        "status"
+      ],
+      "properties": {
+        "taskVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "previousStatus": {
+          "$ref": "#/$defs/taskStatus"
+        },
+        "status": {
+          "$ref": "#/$defs/taskStatus"
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "paused": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        }
+      ],
+      "required": [
+        "taskVersion",
+        "paused"
+      ],
+      "properties": {
+        "taskVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "paused": {
+          "const": true
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "deleted": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        }
+      ],
+      "required": [
+        "taskVersion",
+        "deletedAt"
+      ],
+      "properties": {
+        "taskVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "deletedAt": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "step": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        }
+      ],
+      "required": [
+        "taskVersion",
+        "stepId",
+        "action",
+        "fromPosition",
+        "toPosition",
+        "previousStatus",
+        "status",
+        "changedFields"
+      ],
+      "properties": {
+        "taskVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "stepId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}$"
+        },
+        "action": {
+          "enum": [
+            "created",
+            "deleted",
+            "moved",
+            "status_changed",
+            "updated"
+          ]
+        },
+        "fromPosition": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "maxLength": 19
+            }
+          ]
+        },
+        "toPosition": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "maxLength": 19
+            }
+          ]
+        },
+        "previousStatus": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stepStatus"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stepStatus"
+            }
+          ]
+        },
+        "changedFields": {
+          "enum": [
+            [],
+            [
+              "description"
+            ],
+            [
+              "title"
+            ],
+            [
+              "description",
+              "title"
+            ]
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "created",
+                "deleted"
+              ]
+            },
+            "fromPosition": {
+              "type": "null"
+            },
+            "toPosition": {
+              "type": "null"
+            },
+            "previousStatus": {
+              "type": "null"
+            },
+            "status": {
+              "type": "null"
+            },
+            "changedFields": {
+              "maxItems": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "moved"
+            },
+            "fromPosition": {
+              "type": "string"
+            },
+            "toPosition": {
+              "type": "string"
+            },
+            "previousStatus": {
+              "type": "null"
+            },
+            "status": {
+              "type": "null"
+            },
+            "changedFields": {
+              "maxItems": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "status_changed"
+            },
+            "fromPosition": {
+              "type": "null"
+            },
+            "toPosition": {
+              "type": "null"
+            },
+            "previousStatus": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "allOf": [
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "previousStatus": {
+                        "const": "todo"
+                      },
+                      "status": {
+                        "const": "todo"
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "previousStatus": {
+                        "const": "in_progress"
+                      },
+                      "status": {
+                        "const": "in_progress"
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "previousStatus": {
+                        "const": "done"
+                      },
+                      "status": {
+                        "const": "done"
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "previousStatus": {
+                        "const": "skipped"
+                      },
+                      "status": {
+                        "const": "skipped"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "updated"
+            },
+            "fromPosition": {
+              "type": "null"
+            },
+            "toPosition": {
+              "type": "null"
+            },
+            "previousStatus": {
+              "type": "null"
+            },
+            "status": {
+              "type": "null"
+            },
+            "changedFields": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "thread": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        }
+      ],
+      "required": [
+        "messageId",
+        "createdAt",
+        "position",
+        "replyTo"
+      ],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/time"
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "createdAt",
+            "messageId"
+          ],
+          "properties": {
+            "createdAt": {
+              "$ref": "#/$defs/time"
+            },
+            "messageId": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        "replyTo": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/uuid"
+            }
+          ]
+        }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}

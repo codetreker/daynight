@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -28,6 +29,29 @@ func requireFault(t *testing.T, err error, code string) *model.Fault {
 		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault
+}
+
+type projectValidationStore struct{}
+
+func (projectValidationStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
+	panic("Project request validation unexpectedly called ReadSnapshot")
+}
+
+func (projectValidationStore) WriteProject(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
+	panic("Project request validation unexpectedly called WriteProject")
+}
+
+func (projectValidationStore) WriteProjectCreation(context.Context, string, func(store.ProjectCreationDAO) error) (store.Completion, error) {
+	panic("Project request validation unexpectedly called WriteProjectCreation")
+}
+
+func projectValidationFixture() (*Projects, model.Principal) {
+	principal := model.Principal{
+		Kind:         model.SessionCredential,
+		UserID:       "00000000-0000-4000-8000-000000000001",
+		CredentialID: "00000000-0000-4000-8000-000000000002",
+	}
+	return NewProjects(projectValidationStore{}), principal
 }
 
 func TestCreateAndGetProject(t *testing.T) {
@@ -58,7 +82,7 @@ func TestCreateAndGetProject(t *testing.T) {
 }
 
 func TestCanonicalID(t *testing.T) {
-	_, _, _, principal := projectService(t)
+	projects, principal := projectValidationFixture()
 	for _, value := range []string{"00000000-0000-0000-0000-000000000000", "F47AC10B-58CC-11CF-A447-001122334455", "f47ac10b-58cc-71cf-a447-001122334455"} {
 		got, err := model.CanonicalID(value)
 		if err != nil || got != strings.ToLower(value) {
@@ -68,7 +92,7 @@ func TestCanonicalID(t *testing.T) {
 	for _, value := range []string{"", "f47ac10b58cc11cfa447001122334455", "{f47ac10b-58cc-11cf-a447-001122334455}", "urn:uuid:f47ac10b-58cc-11cf-a447-001122334455", "f47ac10b_58cc-11cf-a447-001122334455", "f47ac10b-58cc_11cf-a447-001122334455", "f47ac10b-58cc-11cf_a447-001122334455", "f47ac10b-58cc-11cf-a447_001122334455", "z47ac10b-58cc-11cf-a447-001122334455"} {
 		_, err := model.CanonicalID(value)
 		requireFault(t, err, "invalid_input")
-		_, err = NewProjects(nil).Get(context.Background(), principal, value)
+		_, err = projects.Get(context.Background(), principal, value)
 		requireFault(t, err, "invalid_input")
 	}
 }
@@ -78,8 +102,7 @@ type entropyFailure struct{ err error }
 func (r entropyFailure) Read([]byte) (int, error) { return 0, r.err }
 
 func TestCreateValidationAndEntropyFailure(t *testing.T) {
-	_, _, _, principal := projectService(t)
-	projects := NewProjects(nil)
+	projects, principal := projectValidationFixture()
 	for _, name := range []string{"", " \t\n\u2003", "bad\x00name", "bad\xffname"} {
 		_, err := projects.Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: name, RepoURL: "https://example.com/repo"})
 		requireFault(t, err, "invalid_input")
@@ -131,7 +154,7 @@ func TestProjectSnapshotQueryFailuresRemainOperational(t *testing.T) {
 	}
 }
 
-func createPrivateProjectFixture(database *store.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
+func createPrivateProjectFixture(database *postgres.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
 	var project model.Project
 	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
 		var err error
@@ -318,9 +341,9 @@ func cursorJSON(t *testing.T, cursor listCursor) string {
 }
 
 func TestProjectListRejectsInvalidRequests(t *testing.T) {
-	_, _, _, principal := projectService(t)
+	projects, principal := projectValidationFixture()
 	for _, limit := range []int{-1, 0, 101} {
-		_, err := NewProjects(nil).List(context.Background(), principal, model.PageRequest{Limit: limit})
+		_, err := projects.List(context.Background(), principal, model.PageRequest{Limit: limit})
 		requireFault(t, err, "invalid_input")
 	}
 	scope := store.ProjectScope{Kind: store.ProjectScopeAll}
@@ -358,7 +381,7 @@ func TestProjectListRejectsInvalidRequests(t *testing.T) {
 	}
 	invalid = append(invalid, "not base64", "e30=", "e31")
 	for _, cursor := range invalid {
-		_, err := NewProjects(nil).List(context.Background(), principal, model.PageRequest{Limit: 50, Cursor: &cursor})
+		_, err := projects.List(context.Background(), principal, model.PageRequest{Limit: 50, Cursor: &cursor})
 		requireFault(t, err, "invalid_input")
 	}
 }

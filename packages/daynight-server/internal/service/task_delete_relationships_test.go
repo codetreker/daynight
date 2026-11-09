@@ -1,6 +1,7 @@
 package service
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -11,10 +12,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func taskDeleteProjectFacts(t *testing.T, database *store.Store, projectID string) string {
+func taskDeleteProjectFacts(t *testing.T, database *postgres.Store, projectID string) string {
 	t.Helper()
 	var facts string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(
@@ -60,7 +61,7 @@ func TestTaskDeletionRemovesIncomingRelationshipsAndPreservesSourceFacts(t *test
 		data, marker, updated, version := deletedTaskStorage(t, database, source)
 		before[source.ID] = facts{data, marker, updated, version}
 	}
-	sync := taskservice.NewTaskSync(database, time.Second)
+	sync := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), time.Second)
 	baseline, err := sync.Get(ctx, principal, projectID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)

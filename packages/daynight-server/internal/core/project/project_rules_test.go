@@ -88,6 +88,35 @@ func TestProjectInputValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProjectCreationAdmissionBoundaries(t *testing.T) {
+	p := testPrincipal()
+	input := CreateProject{Name: strings.Repeat("😀", 256), RepoURL: "host:repo", ExpectedUserID: p.UserID}
+	if err := ValidateCreate(p, input); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{strings.Repeat("a", 257), strings.Repeat("😀", 256) + "a"} {
+		input.Name = name
+		faultCode(t, ValidateCreateFields(p, input), "invalid_input")
+		_, _, err := Create(context.Background(), nil, p.UserID, testProject, input)
+		faultCode(t, err, "invalid_input")
+	}
+	input.Name = "project"
+	input.RepoURL = "https://example.com/" + strings.Repeat("x", MaxRepoURLBytes-len("https://example.com/"))
+	if err := ValidateCreate(p, input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRepositoryMatch(input.RepoURL); err != nil {
+		t.Fatal(err)
+	}
+	input.RepoURL += "x"
+	faultCode(t, ValidateCreate(p, input), "invalid_input")
+	faultCode(t, ValidateCreateFields(p, input), "invalid_input")
+	_, _, err := Create(context.Background(), nil, p.UserID, testProject, input)
+	faultCode(t, err, "invalid_input")
+	_, err = NewRepositoryMatch(input.RepoURL)
+	faultCode(t, err, "invalid_input")
+}
 func TestProjectReadAuthorizationAndFailures(t *testing.T) {
 	ctx := context.Background()
 	p := testPrincipal()

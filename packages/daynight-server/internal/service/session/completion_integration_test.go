@@ -12,6 +12,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
@@ -83,7 +84,7 @@ func TestSessionWriterCompletionControlsLivePublication(t *testing.T) {
 	for _, mode := range []string{"committed_cleanup", "unknown", "unknown_committed", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			db, err := store.Open(ctx, testsupport.ServiceDatabaseURL(t))
+			db, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
 			if err != nil {
 				t.Fatal(err)
 			}

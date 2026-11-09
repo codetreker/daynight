@@ -64,12 +64,15 @@ func (op *Operation) LockCredential(ctx context.Context, scope store.SessionScop
 	return credential(ctx, tx, p, s.now())
 }
 
-func (op *Operation) ProjectAdmin(ctx context.Context, scope store.SessionScope, p model.Principal, project string) (bool, error) {
-	access, err := scope.SessionDAO().ProjectAccess(ctx, p.UserID, project)
-	if errors.Is(err, model.ErrNotFound) {
-		return false, denied()
+func (op *Operation) CheckProjectAccess(ctx context.Context, scope store.SessionScope, p model.Principal, project string) error {
+	_, err := scope.SessionDAO().ProjectAccess(ctx, p.UserID, project)
+	if errors.Is(err, store.ErrSessionProjectNotFound) {
+		return fault("not_found", "Session is not available.")
 	}
-	return access.Role == model.ProjectAdmin, err
+	if errors.Is(err, model.ErrNotFound) {
+		return denied()
+	}
+	return err
 }
 
 // CheckBot applies the deletion barrier after the service locks the Bot.
@@ -132,7 +135,7 @@ func (op *Operation) BindTestBrowser(ctx context.Context, a *Access) error {
 	return nil
 }
 
-func (op *Operation) BindTaskBrowser(ctx context.Context, a *Access, t *TaskAccess, p model.Principal, project, taskID string, admin bool) error {
+func (op *Operation) BindTaskBrowser(ctx context.Context, a *Access, t *TaskAccess, p model.Principal, project, taskID string) error {
 	r := a.record
 	if r.Snapshot.TestExecutionID != "" || r.Snapshot.Identity.ProjectID != project || r.Snapshot.Identity.TaskID != taskID || !current(t.task, r) {
 		return conflict()
@@ -141,7 +144,7 @@ func (op *Operation) BindTaskBrowser(ctx context.Context, a *Access, t *TaskAcce
 	if err := s.archiveExpired(ctx, a.tx, r); err != nil {
 		return err
 	}
-	a.task, a.write = t.task, admin || r.Owner == p.UserID
+	a.task, a.write = t.task, r.Owner == p.UserID
 	return nil
 }
 
@@ -188,7 +191,7 @@ func (op *Operation) LoadTerminal(ctx context.Context, scope store.SessionScope,
 	return &TerminalAccess{tx: tx, record: r}, nil
 }
 
-func (op *Operation) BindTerminal(a *TerminalAccess, t *TaskAccess, p model.Principal, project, taskID string, deleted, admin bool) error {
+func (op *Operation) BindTerminal(a *TerminalAccess, t *TaskAccess, p model.Principal, project, taskID string, deleted bool) error {
 	r := a.record
 	if r.Owner.ProjectID != project || r.Owner.TaskID != taskID {
 		return conflict()
@@ -198,7 +201,7 @@ func (op *Operation) BindTerminal(a *TerminalAccess, t *TaskAccess, p model.Prin
 			return err
 		}
 	}
-	a.task, a.write = t.task, admin || p.UserID == r.Owner.OwnerUserID
+	a.task, a.write = t.task, p.UserID == r.Owner.OwnerUserID
 	return nil
 }
 

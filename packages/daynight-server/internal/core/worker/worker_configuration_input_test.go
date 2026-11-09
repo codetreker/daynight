@@ -33,8 +33,8 @@ func configurationInputJSON(t *testing.T, value any) json.RawMessage {
 
 func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *testing.T) {
 	document := configurationInputDocument()
-	document["maxConcurrent"] = int64(9007199254740991)
-	document["pollIntervalMs"] = int64(2147483647)
+	document["maxConcurrent"] = int64(64)
+	document["pollIntervalMs"] = int64(60000)
 	document["recoveryLimit"] = int64(0)
 	document["native"] = map[string]any{"agent": "copilot", "model": "provider/model", "args": []any{"--flag", "a b"}}
 	document["projects"] = []any{
@@ -45,7 +45,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaxConcurrent != 9007199254740991 || value.PollIntervalMs != 2147483647 || value.RecoveryLimit != 0 || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
+	if value.MaxConcurrent != 64 || value.PollIntervalMs != 60000 || value.RecoveryLimit != 0 || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
 		t.Fatalf("invalid parsed settings: %+v", value)
 	}
 	if len(value.Projects) != 2 || value.Projects[0].ProjectID != configurationInputProjectA || value.Projects[1].ProjectID != configurationInputProjectB || len(value.Projects[0].NativeOverrides) != 0 {
@@ -171,7 +171,7 @@ func configurationInputExchange(item map[string]any) map[string]any {
 func TestWorkerConfigurationInputParsesCompleteApplicationOutcomes(t *testing.T) {
 	native := map[string]any{"agent": "claude", "model": nil, "args": []any{}}
 	items := []any{
-		configurationInputItem("maxConcurrent", 3), configurationInputItem("pollIntervalMs", 1), configurationInputItem("recoveryLimit", 0),
+		configurationInputItem("maxConcurrent", 3), configurationInputItem("pollIntervalMs", 1000), configurationInputItem("recoveryLimit", 0),
 		configurationInputItem("native", native), configurationInputItem("projectPreparation", true), configurationInputItem("projectRemoval", true), configurationInputItem("projectNative", native),
 	}
 	failure := configurationInputItem("projectPreparation", nil)

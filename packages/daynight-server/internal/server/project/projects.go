@@ -1,6 +1,8 @@
 package project
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -27,6 +29,9 @@ func RegisterRoutes(mux *http.ServeMux, projects *projectservice.Projects, auth 
 	mux.HandleFunc("POST /api/v1/projects", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects", auth.Require(handler.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}", auth.Require(handler.get))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}", auth.Require(handler.delete))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/deletion-preview", auth.Require(handler.deletionPreview))
+	mux.HandleFunc("/api/v1/projects/{projectId}/deletion-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/access", auth.Require(handler.access))
 	mux.HandleFunc("/api/v1/projects/{projectId}/access", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/transfer-preview", auth.Require(handler.transferPreview))
@@ -36,7 +41,7 @@ func RegisterRoutes(mux *http.ServeMux, projects *projectservice.Projects, auth 
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/settings", auth.Require(handler.settings))
 	mux.HandleFunc("/api/v1/projects/{projectId}/settings", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH")))
 	mux.HandleFunc("/api/v1/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/projects/{projectId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/projects/{projectId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, DELETE")))
 }
 
 // ProjectResponse projects a Project into its HTTP representation.
@@ -133,16 +138,24 @@ func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, prin
 		}
 		input.Shared = true
 	}
-	result, err := h.projects.ListScoped(request.Context(), principal, input)
+	result, err := h.projects.ListAdmitted(request.Context(), principal, input, func(items []model.Project, cursor *string) error {
+		response := projectPageResponse(items, cursor)
+		_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, response, true)
+		return err
+	})
 	if err != nil {
 		httpx.WriteError(w, request, logger, "project", "list", err)
 		return
 	}
-	response := api.ProjectPage{Items: make([]api.Project, 0, len(result.Items)), NextCursor: result.NextCursor}
-	for _, project := range result.Items {
+	httpx.WriteJSON(w, request, logger, http.StatusOK, projectPageResponse(result.Items, result.NextCursor))
+}
+
+func projectPageResponse(items []model.Project, cursor *string) api.ProjectPage {
+	response := api.ProjectPage{Items: make([]api.Project, 0, len(items)), NextCursor: cursor}
+	for _, project := range items {
 		response.Items = append(response.Items, ProjectResponse(project))
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+	return response
 }
 
 func (h *projectHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {

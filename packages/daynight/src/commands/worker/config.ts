@@ -15,6 +15,8 @@ import type { WorkerPaths } from "./paths.js";
 import type { ExecutionConfiguration } from "./types.js";
 import type { AgentControlMode } from "../../api/types.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
+import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
+import { normalizeWorkerNative } from "./native-overrides.js";
 
 export type WorkerRepositoryConfiguration = ExecutionConfiguration & {
   remote: string;
@@ -55,23 +57,33 @@ const text = (value: unknown, field: string): string => {
 const number = (value: Record<string, unknown>, field: keyof Pick<WorkerConfiguration, "maxConcurrent" | "pollIntervalMs" | "recoveryLimit">): number => {
   if (!Object.hasOwn(value, field)) return workerConfigurationDefaults[field];
   const result = value[field];
-  const minimum = field === "recoveryLimit" ? 0 : 1;
-  if (typeof result !== "number" || !Number.isSafeInteger(result) || result < minimum || (field === "pollIntervalMs" && result > 2_147_483_647)) {
-    throw new TypeError(`worker.${field} must be a ${minimum === 0 ? "nonnegative" : "positive"} safe integer${field === "pollIntervalMs" ? " no greater than 2147483647" : ""}.`);
+  const minimum = field === "recoveryLimit" ? 0 : field === "pollIntervalMs" ? 1000 : 1;
+  const maximum = field === "recoveryLimit" ? 10 : field === "pollIntervalMs" ? 60_000 : 64;
+  if (typeof result !== "number" || !Number.isSafeInteger(result) || result < minimum || result > maximum) {
+    throw new TypeError(`worker.${field} must be an integer between ${minimum} and ${maximum}.`);
   }
   return result;
 };
 
-const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration): ExecutionConfiguration => {
+const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration, local?: WorkerLocalNativeOverrides): ExecutionConfiguration => {
   const agent = Object.hasOwn(value, "agent") ? value.agent : inherited.agent;
   if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError(`${field}.agent must be codex, claude or copilot.`);
   const sameKind = agent === inherited.agent;
   const model = Object.hasOwn(value, "model") ? value.model === null ? null : text(value.model, `${field}.model`) : sameKind ? inherited.model : null;
+  if (model !== null && Buffer.byteLength(model) > 256) throw new TypeError(`${field}.model must be at most 256 UTF-8 bytes.`);
   let args: readonly string[];
   if (Object.hasOwn(value, "args")) {
     if (!Array.isArray(value.args)) throw new TypeError(`${field}.args must be a sequence of native arguments.`);
-    args = value.args.map((argument: unknown) => text(argument, `${field}.args`));
+    if (value.args.length > 128) throw new TypeError(`${field}.args must contain at most 128 arguments.`);
+    args = value.args.map((argument: unknown) => {
+      const parsed = text(argument, `${field}.args`);
+      if (Buffer.byteLength(parsed) > 4096) throw new TypeError(`${field}.args entries must be at most 4096 UTF-8 bytes.`);
+      return parsed;
+    });
   } else args = sameKind ? [...inherited.args] : [];
+  if (local !== undefined && (local.agentModel !== undefined || local.agentReasoningEffort !== undefined)) {
+    return { ...normalizeWorkerNative({ agent, model, args }, inherited.agentControlMode ?? "herdr", local).native, validateNativeSelection: true, agentControlMode: inherited.agentControlMode ?? "herdr", recoveryLimit: inherited.recoveryLimit };
+  }
   if (inherited.agentControlMode === "web") parseProviderArguments(agent, args);
   else validateHerdrAgentArguments(agent, args);
   return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
@@ -81,7 +93,9 @@ export const resolveWorkerRepositoryPath = (value: unknown, field: string, paths
   const configured = text(value, field);
   if (configured.startsWith("~")) throw new TypeError(`${field} must be absolute or relative to the configuration directory; tilde expansion is not supported.`);
   if (pathApi.sep === "\\" && /^[a-z]:(?![\\/])/i.test(configured)) throw new TypeError(`${field} must not be a drive-relative Windows path.`);
-  return pathApi.resolve(pathApi.dirname(paths.configFile), configured);
+  const resolved = pathApi.resolve(pathApi.dirname(paths.configFile), configured);
+  if (Buffer.byteLength(resolved) > 4096) throw new TypeError(`${field} must be at most 4096 UTF-8 bytes after resolution.`);
+  return resolved;
 };
 
 export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pathApi: PathApi = path): WorkerConfiguration => {
@@ -92,11 +106,13 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     : workerConfigurationDefaults.repositoryRoot;
   const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
   if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  const local = parseWorkerLocalNativeOverrides(worker);
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, agentControlMode, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
-  });
+  }, local);
   const configuredRepositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(configuredRepositories)) throw new TypeError("worker.repositories must be a sequence.");
+  if (configuredRepositories.length > 128) throw new TypeError("worker.repositories must contain at most 128 Projects.");
   const identities = new Set<string>();
   const projects = new Set<string>();
   const locations: string[] = [];
@@ -118,7 +134,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
       if (projects.has(projectId)) throw new TypeError(`${field}.projectId duplicates another worker repository.`);
       projects.add(projectId);
     }
-    return { ...agentConfiguration(repository, field, effective), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
+    return { ...agentConfiguration(repository, field, effective, local), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
   return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
 };

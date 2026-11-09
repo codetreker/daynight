@@ -2,9 +2,7 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -14,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -33,17 +30,6 @@ type assigneeHTTPResult struct {
 
 func taskAssigneesPath(projectID string) string {
 	return "/api/v1/projects/" + projectID + "/task-assignees"
-}
-
-func assigneeHTTPIdentity(t *testing.T, database *store.Store, handler *resourceTestHandler, userID string) *resourceTestHandler {
-	t.Helper()
-	entropy := sha256.Sum256([]byte(userID + uuid.NewString()))
-	token := "dnpat_" + base64.RawURLEncoding.EncodeToString(entropy[:])
-	digest := sha256.Sum256([]byte(token))
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'assignee HTTP reader',now(),now()+interval '1 hour')`, uuid.NewString(), userID, digest[:]); err != nil {
-		t.Fatal(err)
-	}
-	return &resourceTestHandler{Handler: handler.Handler, token: token}
 }
 
 func assigneeHTTPQuery(ids ...string) string {
@@ -118,13 +104,4 @@ func assigneeHTTPEntries(t *testing.T, actual assigneeHTTPResult, expected map[s
 		t.Fatalf("unresolved identities: got %v want %v", actual.UnresolvedUserIDs, want)
 	}
 	return result
-}
-
-func taskAssigneeHTTPFacts(t *testing.T, database *store.Store, projectID string) string {
-	t.Helper()
-	var facts string
-	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t WHERE project_id=$1`, projectID).Scan(&facts); err != nil {
-		t.Fatal(err)
-	}
-	return facts
 }

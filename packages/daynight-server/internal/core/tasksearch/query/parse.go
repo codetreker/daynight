@@ -3,12 +3,17 @@ package query
 import (
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 )
 
 const (
-	maxBytes = 8 * 1024
-	maxTerms = 128
-	maxDepth = 32
+	// MaxBytes bounds the encoded Search expression before parsing.
+	MaxBytes = 8 * 1024
+	// MaxTerms bounds the number of terms in an expression.
+	MaxTerms = 128
+	// MaxDepth bounds nested expression groups.
+	MaxDepth = 32
 )
 
 type tokenKind uint8
@@ -39,7 +44,7 @@ func syntax(reason string, t token) error {
 func tokenize(raw string) ([]token, error) {
 	position := 1
 	for offset, r := range raw {
-		if offset+utf8.RuneLen(r) > maxBytes {
+		if offset+utf8.RuneLen(r) > MaxBytes {
 			return nil, &Error{Reason: "query_too_large", Position: position, Length: 1}
 		}
 		position++
@@ -123,7 +128,7 @@ func (p *parser) current() token { return p.tokens[p.index] }
 func (p *parser) take() token    { t := p.current(); p.index++; return t }
 
 // Parse parses the original expression and returns a negation-normal-form tree.
-func Parse(raw string) (*Node, error) {
+func Parse(raw string) (*tasksearch.Node, error) {
 	tokens, err := tokenize(raw)
 	if err != nil {
 		return nil, err
@@ -145,7 +150,7 @@ func Parse(raw string) (*Node, error) {
 	return n, nil
 }
 
-func (p *parser) parseOr() (*Node, error) {
+func (p *parser) parseOr() (*tasksearch.Node, error) {
 	left, err := p.parseAnd()
 	if err != nil {
 		return nil, err
@@ -156,14 +161,14 @@ func (p *parser) parseOr() (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = combine(Or, left, right)
+		left = combine(tasksearch.Or, left, right)
 	}
 	return left, nil
 }
 
 func startsOperand(k tokenKind) bool { return k == tWord || k == tPhrase || k == tLeft || k == tNot }
 
-func (p *parser) parseAnd() (*Node, error) {
+func (p *parser) parseAnd() (*tasksearch.Node, error) {
 	left, err := p.parseUnary()
 	if err != nil {
 		return nil, err
@@ -179,12 +184,12 @@ func (p *parser) parseAnd() (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = combine(And, left, right)
+		left = combine(tasksearch.And, left, right)
 	}
 	return left, nil
 }
 
-func (p *parser) parseUnary() (*Node, error) {
+func (p *parser) parseUnary() (*tasksearch.Node, error) {
 	negated := false
 	start := p.current().pos
 	hasNot := false
@@ -207,28 +212,28 @@ func (p *parser) parseUnary() (*Node, error) {
 	return n, nil
 }
 
-func combine(kind Kind, left, right *Node) *Node {
-	return &Node{Kind: kind, Left: left, Right: right, Position: left.Position, Length: right.Position + right.Length - left.Position}
+func combine(kind tasksearch.Kind, left, right *tasksearch.Node) *tasksearch.Node {
+	return &tasksearch.Node{Kind: kind, Left: left, Right: right, Position: left.Position, Length: right.Position + right.Length - left.Position}
 }
 
-func negate(n *Node) {
-	if n.Kind == Leaf {
+func negate(n *tasksearch.Node) {
+	if n.Kind == tasksearch.Leaf {
 		n.Negated = !n.Negated
 		return
 	}
-	if n.Kind == And {
-		n.Kind = Or
+	if n.Kind == tasksearch.And {
+		n.Kind = tasksearch.Or
 	} else {
-		n.Kind = And
+		n.Kind = tasksearch.And
 	}
 	negate(n.Left)
 	negate(n.Right)
 }
 
-func (p *parser) parsePrimary() (*Node, error) {
+func (p *parser) parsePrimary() (*tasksearch.Node, error) {
 	t := p.current()
 	if t.kind == tLeft {
-		if p.depth == maxDepth {
+		if p.depth == MaxDepth {
 			return nil, syntax("nesting_too_deep", t)
 		}
 		p.take()
@@ -258,14 +263,14 @@ func (p *parser) parsePrimary() (*Node, error) {
 		return nil, syntax("expected_operand", t)
 	}
 	p.take()
-	field := AnyField
+	field := tasksearch.AnyField
 	start := t
 	if t.kind == tWord && p.current().kind == tColon && !p.current().space {
 		switch t.value {
 		case "title":
-			field = TitleField
+			field = tasksearch.TitleField
 		case "description":
-			field = DescriptionField
+			field = tasksearch.DescriptionField
 		default:
 			return nil, syntax("unknown_field", t)
 		}
@@ -280,8 +285,8 @@ func (p *parser) parsePrimary() (*Node, error) {
 		p.take()
 	}
 	p.terms++
-	if p.terms > maxTerms {
+	if p.terms > MaxTerms {
 		return nil, syntax("too_many_terms", start)
 	}
-	return &Node{Kind: Leaf, Atom: Atom{Field: field, Term: FoldASCII(t.value)}, Position: start.pos, Length: t.pos + t.length - start.pos}, nil
+	return &tasksearch.Node{Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: field, Term: FoldASCII(t.value)}, Position: start.pos, Length: t.pos + t.length - start.pos}, nil
 }

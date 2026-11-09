@@ -15,6 +15,13 @@ const changed = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker response contracts', () => {
+  it('reads current runtime sources and preserves their removal in later reports', () => {
+    const runtimeConfiguration = { schemaVersion: 1, native: { agent: 'codex', model: { value: 'model', source: 'local' }, reasoningEffort: { value: null, source: 'native' } }, projects: [] };
+    const current = changed(['worker', 'telemetry', 'runtimeConfiguration'], runtimeConfiguration);
+    expect(parse(current)).toEqual(current);
+    expect(parse(workerDetail()).worker.telemetry).not.toHaveProperty('runtimeConfiguration');
+    expect(() => parse(changed(['worker', 'telemetry', 'runtimeConfiguration'], null))).toThrow();
+  });
   const assistantHost = () => ({ protocolVersion: 1, observedAt: WORKER_TIME, defaultCwd: '/srv/workspaces', defaultProvider: 'copilot', providers: [
     { provider: 'codex', available: false, reason: 'not_found', model: null, args: [] },
     { provider: 'claude', available: true, reason: null, model: null, args: [] },
@@ -24,6 +31,11 @@ describe('Worker response contracts', () => {
     const value = changed(['worker', 'telemetry', 'assistantHost'], assistantHost());
     expect(parse(value)).toEqual(value);
     expect(parse(workerDetail())).toEqual(workerDetail());
+  });
+  it('preserves the versioned native creation capability and rejects unknown versions', () => {
+    const value = changed(['worker', 'telemetry', 'assistantHost'], { ...assistantHost(), creationConfigurationVersion: 1 });
+    expect(parse(value)).toEqual(value);
+    for (const version of [null, 0, 2, '1']) expect(() => parse(changed(['worker', 'telemetry', 'assistantHost'], { ...assistantHost(), creationConfigurationVersion: version }))).toThrow();
   });
   it('accepts remote Windows absolute paths independently of the browser platform', () => {
     for (const defaultCwd of ['C:\\Users\\person', '\\\\host\\share', '//host/share']) {

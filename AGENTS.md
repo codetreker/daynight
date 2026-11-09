@@ -155,6 +155,9 @@ investigations stay read-only unless recording a proposal is authorized.
   before adding to, modifying, or reviewing daynight-server.
 - Follow the [UI design principles](docs/ui-design.md) when designing, adding,
   modifying, or reviewing UI.
+- Read and follow the [test-writing rules](docs/writing_tests.md) before adding,
+  modifying, or reviewing tests. Use them to establish test ownership, dependency
+  isolation, integration scope, CI selection and resource cleanup.
 - Use [prose-standard](.agents/skills/prose-standard/SKILL.md) to preserve
   obligations, conditions, ownership, failures, and essential rationale.
 - Use [trim-cot-leakage](.agents/skills/trim-cot-leakage/SKILL.md) to remove

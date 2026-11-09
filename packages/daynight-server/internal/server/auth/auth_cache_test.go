@@ -174,7 +174,7 @@ func TestMatchesEntityTag(t *testing.T) {
 }
 
 func TestCachedUserRepresentation(t *testing.T) {
-	auth := &Authentication{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	auth := &Authentication{RequestAuthentication: &RequestAuthentication{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}}
 	name, avatar := "Profile <&> 中文", "data:image/png;base64,AAAA"
 	user := api.User{ID: "10000000-0000-4000-8000-000000000001", Name: &name, AvatarURL: &avatar}
 	body, err := json.Marshal(user)

@@ -33,11 +33,11 @@ errors remain failures. Once a write may have occurred, the original operation
 remains unknown and suspended; unpausing does not replay it or restore control.
 
 This partially replaces the periodic-only macOS application of the
-[task pause decision](../feature/2026-11-02-task-paused-worker-pings.md), which
+[task pause decision](../../archived/feature/2026-11-02-task-paused-worker-pings.md), which
 originally isolated continuation from initial input and cleanup. The
-[input arbitration decision](../architecture/2026-11-04-herdr-input-arbitration.md)
+[input arbitration decision](../../archived/architecture/2026-11-04-herdr-input-arbitration.md)
 retains its immutable receipts and manual ownership; the
-[lifecycle decision](../architecture/2026-11-04-herdr-worker-lifecycle.md)
+[lifecycle decision](../../archived/architecture/2026-11-04-herdr-worker-lifecycle.md)
 continues to own run identity and stopping.
 
 ## Alternatives

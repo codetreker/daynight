@@ -2,7 +2,7 @@
 
 ## 所有者与调用方向
 
-[需求](../spec/daynight-task-thread.md)拥有服务端行为及消费者义务，[CLI设计](task-thread-cli.md)拥有终端解析、展示、预算与确认生命周期，[Web设计](task-thread-web.md)拥有Discussion面板、临时内存与连续读取。`api/task_threads.go`定义公开DTO；`internal/core/model/task_thread.go`定义消息、不可变作者、内部位置和页面；`internal/core/store/task_thread_*.go`拥有PostgreSQL消息读写，`internal/core/store/project_access.go`拥有共同项目准入及强准入；`internal/core/task/thread` 拥有消息准入、来源及容量规则；`internal/service/task/task_thread.go` 编排授权和事务完成，`internal/server/task/task_threads.go` 注册路由、严格解码和输出。
+[需求](../spec/daynight-task-thread.md)拥有服务端行为及消费者义务，[CLI设计](task-thread-cli.md)拥有终端解析、展示、预算与确认生命周期，[Web设计](task-thread-web.md)拥有Discussion面板、临时内存与连续读取。`api/task_threads.go`定义公开DTO；`internal/core/model/task_thread.go`定义消息、不可变作者、内部位置和页面；`internal/core/store/postgres/task/`拥有PostgreSQL消息读写，`internal/core/store/postgres/internal/project_access.go`拥有共同项目准入及强准入；`internal/core/task/thread` 拥有消息准入、来源及容量规则；`internal/service/task/task_thread.go` 编排授权和事务完成，`internal/server/task/task_threads.go` 注册路由、严格解码和输出。
 
 `internal/core/task/codec` 拥有纯响应类型与编码，将 model 映射到响应并生成实际字节；API 通过类型别名复用这些类型。service 的消息/页文档同时携带 core 值和已验证 JSON；server 直接写入该缓冲，不再经过 Encoder 或追加 LF。createdAt 通过显式 UTC `2006-01-02T15:04:05.000Z` 格式化。store 不依赖 HTTP 或 API DTO。
 
@@ -56,10 +56,10 @@ List 使用现有只读 Repeatable Read，在同一快照重验 credential、Req
 
 ## 验证与可观测性
 
-分层测试使用现有随机 schema 和真实 PostgreSQL/认证 handler。store 测试检验迁移与索引、复合身份、快照和锁、数据库 UUID 的一次生成、时钟/清理与 commit 应答丢失；service 测试检验准入、来源、名称快照、期限、分页、容量和 Task 不变量；server 测试检验严格 HTTP、身份/Origin、错误优先级及实际响应字节。
+分层测试按 [测试编写规则](../writing_tests.md) 隔离被测职责之外的依赖。store 使用隔离真实 PostgreSQL，检验迁移与索引、复合身份、快照和锁、数据库 UUID 的一次生成、时钟/清理与 commit 应答丢失。service 通过可控 DAO、scope 和 transaction 结果验证准入、来源、名称快照、期限、分页、容量和 Task 不变量。server 使用直接 Thread service mock、真实路由与 credential middleware，检验严格 HTTP、身份/Origin、错误优先级，以及 service Document 字节的发送、短写和取消。Document 的字节生成与页面准入由 service/协议所有者验证。正常发帖、回复和读回由显式 API 集成入口验证完整组装链路。
 
 时钟循环以私有逐调用 sampler/wait seam 确定性复现回拨、恢复及预算；生产 SQL 另以锁后采样集成证明。commit 测试在真实底层提交后注入返回错误，新连接确认持久记录，服务仍分类未知；它不模拟所有网络故障。锁观察按本测试 schema/连接定位，过期证明直接观察数据库消息与 head，而非只看过期主体读失败。
 
 HTTP 日志使用既有 requestId，追加 project_id、task_id、message_id 和经过验证的有限执行来源。component=task_thread；失败保留 phase、安全 cause/code，未知提交记录 thread_error_code=message_outcome_unknown 与 write_outcome=unknown。正文、名称、token、DSN、SQL 和原始上游错误不进入日志。
 
-[决策记录](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。

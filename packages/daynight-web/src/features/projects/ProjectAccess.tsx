@@ -199,7 +199,10 @@ export class ProjectAccessSession {
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     const unsubscribe = this.scope.subscribe((event) => {
-      if (event.projectId !== this.projectId || !event.accessRevoked) return;
+      if (event.projectId !== this.projectId) return;
+      if (event.accessRestored) { this.refreshVisible(); return; }
+      if (event.taskNotFound) { void this.revalidateAfterMutation(); return; }
+      if (!event.accessRevoked) return;
       this.barrier = this.beginObservation();
       const previous = this.state.error;
       const knownDenial = event.error instanceof ApiError && event.error.kind === 'server' && event.error.status === 404 && event.error.code === 'not_found';

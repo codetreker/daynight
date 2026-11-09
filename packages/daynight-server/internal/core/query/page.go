@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 type listCursor struct {
@@ -16,6 +17,7 @@ type listCursor struct {
 	Kind               string              `json:"kind"`
 	UserID             string              `json:"userId,omitempty"`
 	ProjectID          string              `json:"projectId"`
+	TeamID             string              `json:"teamId,omitempty"`
 	Status             *string             `json:"status"`
 	Ready              *bool               `json:"ready"`
 	AllowAgents        *bool               `json:"allowAgents"`
@@ -31,6 +33,7 @@ type ListScope struct {
 	Kind               string
 	UserID             string
 	ProjectID          string
+	TeamID             string
 	Status             *string
 	Ready              *bool
 	AllowAgents        *bool
@@ -47,6 +50,9 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 	page := store.Page{Limit: request.Limit}
 	if request.Cursor == nil {
 		return page, nil
+	}
+	if len(*request.Cursor) > transport.MaxEncodedCursorBytes {
+		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
 	data, err := base64.RawURLEncoding.Strict().DecodeString(*request.Cursor)
 	if err != nil {
@@ -77,7 +83,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 	}
 	id, err := model.CanonicalID(cursor.ID)
 	if err != nil || id != cursor.ID || cursor.Version != expectedVersion || cursor.Kind != scope.Kind ||
-		cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || !model.EqualOptional(cursor.Status, scope.Status) ||
+		cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
 		!model.EqualOptional(cursor.Ready, scope.Ready) || !model.EqualOptional(cursor.AllowAgents, scope.AllowAgents) || !model.EqualOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !model.EqualOptional(cursor.WorkerID, scope.WorkerID) || !model.EqualOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
@@ -86,7 +92,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 }
 
 func EncodeListCursor(scope ListScope, createdAt time.Time, id string) (string, error) {
-	cursor := listCursor{Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, Status: scope.Status,
+	cursor := listCursor{Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, TeamID: scope.TeamID, Status: scope.Status,
 		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, WorkerID: scope.WorkerID, WorkerUserID: scope.WorkerUserID, CreatedAt: createdAt, ID: id}
 	if scope.Kind == "tasks" {
 		assignment, err := TaskAssignmentScope(scope.AssignedTo)

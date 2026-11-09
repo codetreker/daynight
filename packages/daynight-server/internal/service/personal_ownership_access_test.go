@@ -1,6 +1,7 @@
 package service
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -69,7 +70,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	if _, err := tasks.Graph(ctx, owner, project.ID, task.ID); err != nil {
 		t.Fatal("inherited graph access", err)
 	}
-	sync, err := taskservice.NewTaskSync(f.database, 10*time.Second).Get(ctx, owner, project.ID, taskservice.TaskSyncRequest{})
+	sync, err := taskservice.NewTaskSync(f.database, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, owner, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil || sync.ActorAccess.Role != model.ProjectAdmin || sync.ActorAccess.DirectGrant != nil || len(sync.Tasks) != 1 {
 		t.Fatalf("sync did not publish actual inherited access: %#v %v", sync, err)
 	}
@@ -86,7 +87,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	attachments := attachmentservice.NewAttachments(f.database, files)
+	attachments := attachmentservice.NewAttachments(f.database, f.database, files)
 	putAttachment(t, attachments, owner, task, "inherited.txt", "Inherited attachment")
 	if page, err := attachments.List(ctx, owner, project.ID, task.ID, model.PageRequest{Limit: 10}); err != nil || len(page.Items) != 1 {
 		t.Fatalf("inherited attachment metadata: %#v %v", page, err)

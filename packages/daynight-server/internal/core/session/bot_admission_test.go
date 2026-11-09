@@ -9,7 +9,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 )
 
@@ -22,83 +21,125 @@ func botFault(t *testing.T, err error, code string) {
 }
 func markBotDeleted(t *testing.T, f fixture, bot model.Bot) {
 	t.Helper()
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE bots SET deletion=$2,version=version+1 WHERE id=$1`, bot.ID, encode(model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: bot.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})); err != nil {
-		t.Fatal(err)
-	}
+	d := botDAO(f)
+	d.value.Deletion = &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: bot.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+	d.archiveMetadata.BotValid = false
+	d.BindFn, d.StartupFn, d.PreferenceFn = nil, nil, nil
 }
 func TestBotDeletedBindingRejectsEverySharedEntryWithStaleLiveState(t *testing.T) {
-	f, out, input, _ := connectBot(t)
+	f, out, input, _ := connectedBotFixture(t)
 	ctx := context.Background()
 	v := out.Session
 	state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true}}
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+	if _, err := f.s.Handle(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1, "Bot": 1}), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
 	}
+	f.SelectSessionWrite(t)
 	g := BotGrant{BotVersion: out.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"}}
-	grant, err := f.s.GrantBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, g)
+	grant, err := f.s.GrantBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 3, "LockSession": 1, "SetSessionGrant": 1, "SaveSession": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, g)
 	if err != nil {
 		t.Fatal(err)
 	}
+	selectBotGrant(t, f, grant)
 	doc := encode(sp.ArchiveDocument{Fence: v.Fence, SchemaVersion: 1, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}})
 	if _, err := sp.DecodeArchive(doc); err != nil {
 		t.Fatal(err)
 	}
 	markBotDeleted(t, f, out.Bot)
 	checks := map[string]func() error{
-		"register": func() error { _, e := f.s.RegisterBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, input); return e },
-		"grant":    func() error { _, e := f.s.GrantBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, g); return e },
+		"register": func() error {
+			_, e := f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, input)
+			return e
+		},
+		"grant": func() error {
+			_, e := f.s.GrantBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, g)
+			return e
+		},
 		"report": func() error {
-			_, e := f.s.ReportBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+			_, e := f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
 			return e
 		},
-		"snapshot":               func() error { _, e := f.s.TestSnapshot(ctx, f.p, v.SessionID); return e },
-		"other service snapshot": func() error { _, e := New(f.db).TestSnapshot(ctx, f.p, v.SessionID); return e },
-		"browser poll":           func() error { _, _, _, e := f.s.BrowserPoll(ctx, f.p, "", "", v.SessionID, ""); return e },
-		"timeline":               func() error { _, e := f.s.Timeline(ctx, f.p, "", "", v.SessionID, "tail", "", 10); return e },
-		"resource":               func() error { _, _, e := f.s.Resource(ctx, f.p, "", "", v.SessionID, uuid.NewString()); return e },
+		"snapshot": func() error {
+			_, e := f.s.TestSnapshot(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, v.SessionID)
+			return e
+		},
+		"other service snapshot": func() error {
+			_, e := New(f.writer).TestSnapshot(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, v.SessionID)
+			return e
+		},
+		"browser poll": func() error {
+			_, _, _, e := f.s.BrowserPoll(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, "")
+			return e
+		},
+		"timeline": func() error {
+			_, e := f.s.Timeline(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, "tail", "", 10)
+			return e
+		},
+		"resource": func() error {
+			_, _, e := f.s.Resource(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, uuid.NewString())
+			return e
+		},
 		"submit": func() error {
-			_, e := f.s.Submit(ctx, f.p, "", "", v.SessionID, sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "refresh_controls"})
+			_, e := f.s.Submit(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "refresh_controls"})
 			return e
 		},
-		"operation":    func() error { _, e := f.s.Operation(ctx, f.p, "", "", v.SessionID, uuid.NewString()); return e },
-		"authenticate": func() error { return f.s.AuthenticateController(ctx, grant.Token) },
+		"operation": func() error {
+			_, e := f.s.Operation(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, uuid.NewString())
+			return e
+		},
+		"authenticate": func() error {
+			return f.s.AuthenticateController(botPhase(t, f, ctx, map[string]int{"SessionLocationByGrant": 1, "SessionBotID": 1, "Bot": 1}), grant.Token)
+		},
 		"hello": func() error {
-			_, e := f.s.Connect(ctx, grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
+			_, e := f.s.Connect(botPhase(t, f, ctx, map[string]int{"SessionLocationByGrant": 1, "SessionBotID": 1, "Bot": 1}), grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
 			return e
 		},
-		"poll":           func() error { _, e := f.s.Poll(ctx, v.ControllerFence); return e },
-		"source ack":     func() error { _, e := f.s.SourceSeq(ctx, v.ControllerFence); return e },
-		"archive status": func() error { _, e := f.s.ArchiveStatus(ctx, f.p, "", "", v.SessionID); return e },
+		"poll": func() error {
+			_, e := f.s.Poll(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "Bot": 1}), v.ControllerFence)
+			return e
+		},
+		"source ack": func() error {
+			_, e := f.s.SourceSeq(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "Bot": 1}), v.ControllerFence)
+			return e
+		},
+		"archive status": func() error {
+			_, e := f.s.ArchiveStatus(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID)
+			return e
+		},
 		"archive update": func() error {
-			_, e := f.s.UpdateArchive(ctx, f.p, "", "", v.SessionID, sp.ArchiveUpdate{Fence: v.Fence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, State: "pending"})
+			_, e := f.s.UpdateArchive(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, sp.ArchiveUpdate{Fence: v.Fence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, State: "pending"})
 			return e
 		},
-		"archive put":     func() error { _, e := f.s.PutArchive(ctx, f.p, "", "", v.SessionID, doc); return e },
-		"archive content": func() error { _, e := f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID); return e },
+		"archive put": func() error {
+			_, e := f.s.PutArchive(botPhase(t, f, ctx, map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1}), f.p, "", "", v.SessionID, doc)
+			return e
+		},
+		"archive content": func() error {
+			_, e := f.s.ArchiveContent(botPhase(t, f, ctx, map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1}), f.p, "", "", v.SessionID)
+			return e
+		},
 	}
 	for name, check := range checks {
 		t.Run(name, func(t *testing.T) { botFault(t, check(), "resource_conflict") })
 	}
 	for _, kind := range []string{"heartbeat", "events", "content_response", "operation_begin", "operation_receipt", "reconcile", "sync_state", "source_reset"} {
 		t.Run(kind, func(t *testing.T) {
-			_, err := f.s.Handle(ctx, sp.ControllerMessage{Type: kind, ControllerFence: v.ControllerFence})
+			_, err := f.s.Handle(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "Bot": 1}), sp.ControllerMessage{Type: kind, ControllerFence: v.ControllerFence})
 			botFault(t, err, "resource_conflict")
 		})
 	}
-	if _, err := f.s.RegisterTest(ctx, f.p, input.Registration); err == nil {
+	if _, err := f.s.RegisterTest(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "LockTestOwner": 1, "FindTestRegistration": 1}), f.p, input.Registration); err == nil {
 		t.Fatal("ordinary registration revived deleted Bot")
 	}
-	if _, err := f.s.Grant(ctx, f.p, "", "", v.SessionID, g.Grant); err == nil {
+	if _, err := f.s.Grant(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, "", "", v.SessionID, g.Grant); err == nil {
 		t.Fatal("ordinary grant revived deleted Bot")
 	}
-	if _, err := f.s.StopTest(ctx, f.p, v.SessionID, sp.TestStop{}); err == nil {
+	if _, err := f.s.StopTest(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, v.SessionID, sp.TestStop{}); err == nil {
 		t.Fatal("ordinary stop changed deleted Bot")
 	}
 }
 
-func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
-	f, bot, original := botFixture(t)
-	ctx := context.Background()
+func TestBotRegistrationRejectsInvalidRoleAndProtocolBeforeRunner(t *testing.T) {
 	for name, mutate := range map[string]func(*BotRegistration){
 		"version":       func(v *BotRegistration) { v.BotVersion = 0 },
 		"empty role":    func(v *BotRegistration) { v.RoleConfiguration.Instructions = "" },
@@ -110,138 +151,158 @@ func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
 		"protocol":      func(v *BotRegistration) { v.Registration.Protocol = "invalid" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			input := original
+			execution, principal, bot, input := botRegistrationValidationFixture()
 			mutate(&input)
-			_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
+			_, err := execution.RegisterBot(t.Context(), principal, bot.WorkerID, bot.ID, input)
 			botFault(t, err, "invalid_input")
 		})
 	}
+}
+
+func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
+	f, bot, original := botFixture(t)
+	ctx := context.Background()
+	invalid := original
+	invalid.Configuration.Cwd = ""
+	_, err := f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{}), f.p, bot.WorkerID, bot.ID, invalid)
+	botFault(t, err, "invalid_input")
+	assertBotRegistrationUnbound(t, f, bot)
 	changed := original
 	changed.Configuration.Cwd = "/changed"
-	_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, changed)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, bot.WorkerID, bot.ID, changed)
 	botFault(t, err, "session_conflict")
 	changed = original
 	changed.Registration.Provider = "claude"
-	_, err = f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, changed)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, bot.WorkerID, bot.ID, changed)
 	botFault(t, err, "session_conflict")
 	changed = original
 	changed.BotVersion = 2
-	_, err = f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, changed)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, bot.WorkerID, bot.ID, changed)
 	botFault(t, err, "version_conflict")
-	_, err = f.s.RegisterBot(ctx, f.p, uuid.NewString(), bot.ID, original)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, uuid.NewString(), bot.ID, original)
 	botFault(t, err, "forbidden")
-	_, err = f.s.RegisterBot(ctx, f.p, bot.WorkerID, uuid.NewString(), original)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), f.p, bot.WorkerID, uuid.NewString(), original)
 	botFault(t, err, "not_found")
 	other := addMember(t, f, "admin")
-	_, err = f.s.RegisterBot(ctx, other, bot.WorkerID, bot.ID, original)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1, "Bot": 1}), other, bot.WorkerID, bot.ID, original)
 	botFault(t, err, "forbidden")
 	login := f.p
 	login.Kind = model.SessionCredential
-	_, err = f.s.RegisterBot(ctx, login, bot.WorkerID, bot.ID, original)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{}), login, bot.WorkerID, bot.ID, original)
 	botFault(t, err, "forbidden")
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, f.p.CredentialID); err != nil {
-		t.Fatal(err)
+	f.dao.LockCredentialFn = func(context.Context, model.Principal, time.Time) error {
+		return fault("unauthenticated", "Credential expired.")
 	}
-	_, err = f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, original)
+	_, err = f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 1}), f.p, bot.WorkerID, bot.ID, original)
 	botFault(t, err, "unauthenticated")
 }
 
 func TestBotParentRevocationAndBrowserIdentityAreRechecked(t *testing.T) {
-	f, out, _, _ := connectBot(t)
+	f, out, _, _ := connectedBotFixture(t)
 	ctx := context.Background()
 	v := out.Session
 	other := addMember(t, f, "admin")
-	_, err := f.s.TestSnapshot(ctx, other, v.SessionID)
+	_, err := f.s.TestSnapshot(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "LockSession": 1, "LockCredential": 1, "Bot": 1}), other, v.SessionID)
 	botFault(t, err, "forbidden")
 	fresh := f.p
 	fresh.CredentialID = uuid.NewString()
-	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'fresh',now())`, fresh.CredentialID, fresh.UserID, []byte("01234567890123456789012345678901")); err != nil {
-		t.Fatal(err)
+	f.dao.LockCredentialFn = func(_ context.Context, p model.Principal, _ time.Time) error {
+		if p == f.p {
+			return fault("unauthenticated", "Parent credential revoked.")
+		}
+		if p != fresh {
+			t.Fatal("unexpected replacement principal")
+		}
+		return nil
 	}
-	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.s.TestSnapshot(ctx, fresh, v.SessionID)
+	_, err = f.s.TestSnapshot(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "Bot": 1}), fresh, v.SessionID)
 	botFault(t, err, "unauthenticated")
-	_, err = f.s.Poll(ctx, v.ControllerFence)
+	_, err = f.s.Poll(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 1, "Bot": 1}), v.ControllerFence)
 	botFault(t, err, "unauthenticated")
-	_, err = f.s.ReportBot(ctx, fresh, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+	_, err = f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 3, "LockSession": 1, "Bot": 1}), fresh, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
 	botFault(t, err, "unauthenticated")
 	g := BotGrant{BotVersion: out.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"}}
-	_, err = f.s.GrantBot(ctx, fresh, out.Bot.WorkerID, out.Bot.ID, g)
+	_, err = f.s.GrantBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 3, "LockSession": 1, "Bot": 1}), fresh, out.Bot.WorkerID, out.Bot.ID, g)
 	botFault(t, err, "unauthenticated")
 }
 
 func TestBotReportRechecksReadinessEvenWhenTheStoredResultMatches(t *testing.T) {
-	f, out, _, _ := connectBot(t)
+	f, out, _, _ := connectedBotFixture(t)
 	ctx := context.Background()
 	v := out.Session
 	state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle"}
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+	if _, err := f.s.Handle(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1, "Bot": 1}), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
 	}
+	f.SelectSessionWrite(t)
 	report := readyBotReport(out)
-	ready, err := f.s.ReportBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, report)
+	ready, err := f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 4, "LockSession": 1, "Bot": 1, "SetBotStartup": 1, "CommitBotPreferences": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, report)
 	if err != nil {
 		t.Fatal(err)
 	}
+	selectBotStartup(t, f, ready)
 	report.BotVersion = ready.Version
-	same, err := f.s.ReportBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, report)
+	same, err := f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 4, "LockSession": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, report)
 	if err != nil || same.Version != ready.Version {
 		t.Fatal("no-op report advanced version", err)
 	}
 	f.s.now = func() time.Time { return time.Now().Add(HeartbeatTimeout + time.Second) }
-	_, err = f.s.ReportBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, report)
+	_, err = f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 3, "LockSession": 1, "Bot": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, report)
 	botFault(t, err, "controller_offline")
 }
 
-func TestOrdinaryRegistrationRejectsBotWithoutWaitingOnItsLock(t *testing.T) {
-	f, out, input := registeredBot(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	tx, err := f.db.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
+func TestOrdinaryRegistrationRejectsBotBeforeTakingItsLock(t *testing.T) {
+	f, _, input := registeredBot(t)
+	botDAO(f).BotFn = func(context.Context, string) (model.Bot, error) {
+		t.Fatal("ordinary registration acquired a Bot")
+		return model.Bot{}, nil
 	}
-	defer tx.Rollback(context.Background())
-	if _, err = tx.Exec(ctx, `SELECT id FROM bots WHERE id=$1 FOR UPDATE`, out.Bot.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.s.RegisterTest(ctx, f.p, input.Registration)
+	_, err := f.s.RegisterTest(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 1, "LockTestOwner": 1, "FindTestRegistration": 1}), f.p, input.Registration)
 	botFault(t, err, "forbidden")
 }
 
-func TestBotDeletionCommitPrecedesWaitingBrowserAndControllerAdmission(t *testing.T) {
+func TestBotDeletionObservationPrecedesWaitingBrowserAndControllerAdmission(t *testing.T) {
 	for _, path := range []string{"browser", "controller"} {
 		t.Run(path, func(t *testing.T) {
-			f, out, _, _ := connectBot(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			f, out, _, _ := connectedBotFixture(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			tx, err := f.db.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback(context.Background())
-			if _, err = tx.Exec(ctx, `UPDATE bots SET deletion=$2 WHERE id=$1`, out.Bot.ID, encode(model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: out.Bot.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})); err != nil {
-				t.Fatal(err)
+			entered, release := make(chan struct{}), make(chan struct{})
+			botDAO(f).BotFn = func(ctx context.Context, id string) (model.Bot, error) {
+				if id != out.Bot.ID {
+					t.Error("wrong Bot lock")
+				}
+				close(entered)
+				select {
+				case <-release:
+					return botDAO(f).value, nil
+				case <-ctx.Done():
+					return model.Bot{}, ctx.Err()
+				}
 			}
 			result := make(chan error, 1)
 			go func() {
 				if path == "browser" {
-					_, e := f.s.TestSnapshot(ctx, f.p, out.Session.SessionID)
-					result <- e
+					_, err := f.s.TestSnapshot(botPhase(t, f, ctx, map[string]int{"SessionBotID": 1, "Bot": 1}), f.p, out.Session.SessionID)
+					result <- err
 				} else {
-					_, e := f.s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: out.Session.ControllerFence})
-					result <- e
+					_, err := f.s.Handle(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "Bot": 1}), sp.ControllerMessage{Type: "heartbeat", ControllerFence: out.Session.ControllerFence})
+					result <- err
 				}
 			}()
-			waitErr := waitArchiveLock(ctx, f, "SELECT id::text FROM bots WHERE id=")
-			commitErr := tx.Commit(ctx)
-			err = <-result
-			if waitErr != nil || commitErr != nil {
-				t.Fatalf("deletion transaction: %v %v", waitErr, commitErr)
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
-			botFault(t, err, "resource_conflict")
+			markBotDeleted(t, f, out.Bot)
+			close(release)
+			select {
+			case err := <-result:
+				botFault(t, err, "resource_conflict")
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
 		})
 	}
 }
@@ -254,72 +315,73 @@ func TestBotReadyReportRequiresCurrentConnectionCredentialAfterGrantReplacement(
 				name = "already ready"
 			}
 			t.Run(invalidation+"/"+name, func(t *testing.T) {
-				f, out, _, _ := connectBot(t)
+				f, out, _, _ := connectedBotFixture(t)
 				ctx := context.Background()
 				v := out.Session
 				state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle"}
-				if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+				if _, err := f.s.Handle(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1, "Bot": 1}), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 					t.Fatal(err)
 				}
+				f.SelectSessionWrite(t)
 				if alreadyReady {
-					ready, err := f.s.ReportBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+					ready, err := f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 4, "LockSession": 1, "Bot": 1, "SetBotStartup": 1, "CommitBotPreferences": 1}), f.p, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
 					if err != nil {
 						t.Fatal(err)
 					}
+					selectBotStartup(t, f, ready)
 					out.Bot = ready
 				}
 				replacement := f.p
 				replacement.CredentialID = uuid.NewString()
-				if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'replacement',now())`, replacement.CredentialID, replacement.UserID, []byte("01234567890123456789012345678901")); err != nil {
-					t.Fatal(err)
+				f.dao.LockCredentialFn = func(_ context.Context, p model.Principal, _ time.Time) error {
+					if p != f.p && p != replacement {
+						t.Fatal("unexpected grant principal")
+					}
+					return nil
 				}
-				grant, err := f.s.GrantBot(ctx, replacement, out.Bot.WorkerID, out.Bot.ID, BotGrant{BotVersion: out.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "reconnect"}})
+				grant, err := f.s.GrantBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 3, "LockSession": 1, "SetSessionGrant": 1, "SaveSession": 1, "Bot": 1}), replacement, out.Bot.WorkerID, out.Bot.ID, BotGrant{BotVersion: out.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "reconnect"}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if invalidation == "revoked" {
-					_, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID)
-				} else {
-					_, err = f.db.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, f.p.CredentialID)
+				selection := f
+				selection.p = replacement
+				selectBotGrant(t, selection, grant)
+				f.dao.LockCredentialFn = func(_ context.Context, p model.Principal, _ time.Time) error {
+					if p == f.p {
+						return fault("unauthenticated", "Connection credential "+invalidation+".")
+					}
+					if p != replacement {
+						t.Fatal("unexpected replacement principal")
+					}
+					return nil
 				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				result, err := f.s.ReportBot(ctx, replacement, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+				beforeStartup, beforePreferences := botDAO(f).startupCalls, botDAO(f).preferenceCalls
+				result, err := f.s.ReportBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 4, "LockSession": 1, "Bot": 1}), replacement, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
 				if err == nil {
 					t.Fatalf("replacement grant accepted synchronization from a revoked connection: startup=%s version=%d", result.StartupResult.State, result.Version)
 				}
 				botFault(t, err, "unauthenticated")
-				current, err := botservice.New(f.db).Get(ctx, replacement, out.Bot.ID)
-				if err != nil || current.Version != out.Bot.Version || current.StartupResult.State != out.Bot.StartupResult.State {
-					t.Fatalf("rejected report changed startup: %+v %v", current, err)
-				}
-				var preferences int
-				if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM bot_worker_preferences WHERE user_id=$1`, f.p.UserID).Scan(&preferences); err != nil {
-					t.Fatal(err)
-				}
-				expectedPreferences := 0
-				if alreadyReady {
-					expectedPreferences = 1
-				}
-				if preferences != expectedPreferences {
-					t.Fatalf("rejected report changed preferences: got %d want %d", preferences, expectedPreferences)
+				if botDAO(f).startupCalls != beforeStartup || botDAO(f).preferenceCalls != beforePreferences {
+					t.Fatal("refused readiness proposed startup or successful preferences")
 				}
 
 				// A replacement PAT grants readiness only after its own connection consumes
 				// the grant and publishes a new synchronization observation.
-				var sourceEpoch string
-				if err = f.db.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&sourceEpoch); err != nil {
-					t.Fatal(err)
-				}
-				out.Session, err = f.s.Connect(ctx, grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, SourceEpoch: sourceEpoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
+				sourceEpoch := *f.data.Session.SourceEpoch
+				out.Session, err = f.s.Connect(botPhase(t, f, ctx, map[string]int{"SessionLocationByGrant": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "ConnectSession": 1, "SaveSession": 1, "Bot": 1}), grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, SourceEpoch: sourceEpoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: out.Session.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+				f.SelectConnectionWrite(t)
+				if _, err = f.s.Handle(botPhase(t, f, ctx, map[string]int{"SessionLocation": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 2, "UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1, "Bot": 1}), sp.ControllerMessage{Type: "sync_state", ControllerFence: out.Session.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 					t.Fatal(err)
 				}
-				result, err = f.s.ReportBot(ctx, replacement, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+				f.SelectSessionWrite(t)
+				counts := map[string]int{"LockCredential": 4, "LockSession": 1, "Bot": 1}
+				if !alreadyReady {
+					counts["SetBotStartup"], counts["CommitBotPreferences"] = 1, 1
+				}
+				result, err = f.s.ReportBot(botPhase(t, f, ctx, counts), replacement, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
 				if err != nil || result.StartupResult.State != "ready" {
 					t.Fatalf("replacement connection's synchronization was rejected: %+v %v", result, err)
 				}

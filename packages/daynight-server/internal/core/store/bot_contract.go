@@ -22,6 +22,7 @@ type DeleteBot struct {
 }
 
 type BotWriteDAO interface {
+	BotCreationReader
 	Credential(context.Context, model.Principal) error
 	Worker(context.Context, string, string) error
 	LockCreation(context.Context, string) error
@@ -29,13 +30,8 @@ type BotWriteDAO interface {
 	Bot(context.Context, string) (model.Bot, error)
 	BotDefaults(context.Context, string) (model.BotDefaultsInput, error)
 	InsertBot(context.Context, model.Bot) error
-	DeleteBot(context.Context, string, int64, model.BotDeletion) (model.Bot, error)
 	SaveBotDeletion(context.Context, string, *model.BotDeletion) (model.Bot, error)
 	BindBotSession(context.Context, string, int64, string, model.BotRoleConfiguration) (model.Bot, error)
 	SetBotStartup(context.Context, string, int64, model.BotStartupResult) (model.Bot, error)
 	CommitBotPreferences(context.Context, string) error
 }
-
-var _ BotWriter = (*Store)(nil)
-var _ BotScope = (*botTx)(nil)
-var _ BotWriteDAO = (*botTx)(nil)

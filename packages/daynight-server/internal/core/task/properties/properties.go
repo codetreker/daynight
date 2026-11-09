@@ -22,6 +22,17 @@ func CheckWritable(name string) error {
 }
 
 func Normalize(values model.TaskProperties) (model.TaskProperties, error) {
+	result, err := normalizeWritable(values)
+	if err != nil {
+		return nil, err
+	}
+	if err := taskproperty.Admit(result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func normalizeWritable(values model.TaskProperties) (model.TaskProperties, error) {
 	result := make(model.TaskProperties, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		if err := CheckWritable(name); err != nil {
@@ -42,14 +53,21 @@ func DecodePatch(data []byte) (model.TaskPropertiesPatch, error) {
 	if err != nil {
 		return nil, &taskproperty.ValidationError{Path: "properties", Rule: err.Error(), Cause: err}
 	}
-	return Normalize(model.TaskProperties(fields))
+	return normalizeWritable(model.TaskProperties(fields))
 }
 
 func ParseInput(name, input string) (json.RawMessage, error) {
 	if err := CheckWritable(name); err != nil {
 		return nil, err
 	}
-	return taskproperty.ParseInput(name, input)
+	value, err := taskproperty.ParseInput(name, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := taskproperty.AdmitValue(name, value); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 func WithWorker(values model.TaskProperties, worker *model.WorkerClaim) (model.TaskProperties, error) {
@@ -65,6 +83,9 @@ func WithWorker(values model.TaskProperties, worker *model.WorkerClaim) (model.T
 	}
 	value, err := taskproperty.NormalizeValue("worker", raw)
 	if err != nil {
+		return nil, err
+	}
+	if err := taskproperty.AdmitValue("worker", value); err != nil {
 		return nil, err
 	}
 	result["worker"] = value

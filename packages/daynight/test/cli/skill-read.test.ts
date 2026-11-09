@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/application.js";
@@ -32,6 +32,22 @@ const context = (packageDirectory: string) => {
 };
 
 describe("root CLI usage reading", () => {
+  it("leaves corrupt configuration bytes and directory contents unchanged", async () => {
+    const { packageDirectory, manual } = await fixture();
+    const home = path.join(packageDirectory, "home"), state = path.join(home, ".daynight"), config = path.join(state, "config.yml");
+    await mkdir(state, { recursive: true }); await writeFile(config, "serverUrl: [\n");
+    const { client, chunks, errors } = context(packageDirectory);
+    client.homeDirectory = vi.fn(() => home);
+    expect(await runCli(["--skill"], client)).toBe(0);
+    expect(Buffer.concat(chunks)).toEqual(await readFile(manual)); expect(errors).toEqual([]);
+    for (const args of [["--skill", "SKILL.md"], ["--skill", "references/handbook.md"], ["--skill", "--help"], ["--skill", "extra"], ["skill", "--skill"]]) {
+      chunks.length = 0;
+      expect(await runCli(args, client)).toBe(2); expect(chunks).toEqual([]);
+    }
+    expect(client.homeDirectory).not.toHaveBeenCalled();
+    expect(await readFile(config, "utf8")).toBe("serverUrl: [\n");
+    expect(await readdir(home)).toEqual([".daynight"]); expect(await readdir(state)).toEqual(["config.yml"]);
+  });
   it("writes the exact installed manual bytes without loading commands, skill bundles or user state", async () => {
     const { packageDirectory, manual } = await fixture();
     const { client, chunks, errors, close } = context(packageDirectory);

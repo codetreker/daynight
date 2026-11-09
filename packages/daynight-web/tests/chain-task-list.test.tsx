@@ -15,7 +15,7 @@ const render = createLocaleRender('zh-CN', { taskCache: true });
 const time = '2026-10-20T12:00:00Z';
 const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status, dependsOn, externalDependsOn, blockedBy: [], ready: false,
-  requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
+  requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
 const seeds = [
   task('Goal', 'done'), task('Other root', 'done'), task('Implementation', 'in_progress', ['Goal', 'Other root']),
@@ -32,7 +32,7 @@ const indexOf = (items = seeds): GraphIndex => {
     tasks,
     summary: {
       total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
-      inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length,
+      inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: 0,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length,
     },
   };

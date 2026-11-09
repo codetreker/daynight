@@ -70,30 +70,62 @@ func (s *Identity) validReturnPath(value string) bool {
 		return false
 	}
 	target := path.Clean(decoded)
+	if target == "/oauth" || strings.HasPrefix(target, "/oauth/") {
+		// Only an existing local consent journey may resume through login. The
+		// external callback and authorization parameters never become return paths.
+		query, err := url.ParseQuery(u.RawQuery)
+		if err != nil || target != "/oauth/consent" || u.Path != "/oauth/consent" || u.Fragment != "" || len(query) != 1 || len(query["request"]) != 1 {
+			return false
+		}
+		id, err := uuid.Parse(query.Get("request"))
+		return err == nil && id != uuid.Nil && id.String() == query.Get("request")
+	}
 	return target != "/login" && !strings.HasPrefix(target, "/login/") && target != callback.Path && !strings.HasPrefix(target, callback.Path+"/")
+}
+
+// ValidateLogin checks the input before creating a browser scope or transaction.
+func (s *Identity) ValidateLogin(provider, returnPath string) error {
+	if provider != "microsoft" && provider != "google" && provider != "github" {
+		return invalidInput("Provider must be microsoft, google, or github.")
+	}
+	if returnPath == "" {
+		returnPath = "/projects"
+	}
+	if AdmitReturnPath(returnPath) != nil || !s.validReturnPath(returnPath) {
+		return invalidInput("Return path must be a main-site path outside authentication routes and at most 4096 bytes.")
+	}
+	return nil
 }
 
 // StartLogin prepares the one-time material before the upstream authorization
 // URL is constructed. The caller persists it in a separate transaction.
 func (s *Identity) StartLogin(provider, returnPath string, now time.Time) (LoginStart, model.LoginTransaction, error) {
-	if provider != "microsoft" && provider != "google" && provider != "github" {
-		return LoginStart{}, model.LoginTransaction{}, invalidInput("Provider must be microsoft, google, or github.")
+	if err := s.ValidateLogin(provider, returnPath); err != nil {
+		return LoginStart{}, model.LoginTransaction{}, err
 	}
 	if returnPath == "" {
 		returnPath = "/projects"
-	}
-	if !s.validReturnPath(returnPath) {
-		return LoginStart{}, model.LoginTransaction{}, invalidInput("Return path must be a main-site path outside authentication routes.")
 	}
 	start := LoginStart{ID: uuid.NewString(), State: secret.Random(""), BrowserBinding: secret.Random(""), ExpiresAt: now.Add(LoginLifetime)}
 	pending := model.LoginTransaction{ID: start.ID, StateHash: secret.Hash(start.State), BrowserBindingHash: secret.Hash(start.BrowserBinding), Provider: provider, ReturnPath: returnPath, ExpiresAt: start.ExpiresAt}
 	return start, pending, nil
 }
-func (s *Identity) CreateLogin(ctx context.Context, dao store.IdentityDAO, pending model.LoginTransaction, now time.Time) error {
-	if err := dao.CleanupCredentials(ctx, now); err != nil {
-		return err
+func (s *Identity) CreateLogin(ctx context.Context, dao store.IdentityDAO, pending model.LoginTransaction, appNow time.Time) (time.Time, error) {
+	now, rejection, err := dao.AdmitLogin(ctx, pending.ScopeHash, MaxPendingLoginsGlobal, MaxPendingLoginsPerBrowser)
+	if err != nil {
+		return time.Time{}, err
 	}
-	return dao.InsertLogin(ctx, pending)
+	if rejection != "" {
+		return time.Time{}, &model.Fault{Code: rejection, Message: "Login capacity is unavailable. Please try again later."}
+	}
+	pending.ExpiresAt = now.Add(LoginLifetime)
+	if err := dao.CleanupLoginCredentials(ctx, now, appNow); err != nil {
+		return time.Time{}, err
+	}
+	if err := dao.InsertLogin(ctx, pending); err != nil {
+		return time.Time{}, err
+	}
+	return pending.ExpiresAt, nil
 }
 func ValidateCallback(query url.Values, binding string) error {
 	if len(query["state"]) != 1 || !secret.Valid(query.Get("state"), "") || !secret.Valid(binding, "") {
@@ -149,6 +181,10 @@ func (s *Identity) User(ctx context.Context, dao store.IdentityDAO, p model.Prin
 	u, facts, err := dao.IdentityUser(ctx, p.UserID)
 	return u, facts, authLookupError(err)
 }
+func (s *Identity) PersonalTeam(ctx context.Context, dao store.IdentityDAO, p model.Principal) (store.PersonalTeamFacts, error) {
+	facts, err := dao.IdentityPersonalTeam(ctx, p.UserID)
+	return facts, authLookupError(err)
+}
 func ValidateSession(p model.Principal) error {
 	if p.Kind != model.SessionCredential {
 		return forbidden()
@@ -165,7 +201,7 @@ func ValidateCreatePAT(p model.Principal, input CreatePAT, now time.Time) (*time
 	if err := ValidateSession(p); err != nil {
 		return nil, err
 	}
-	if !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 100 {
+	if !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > MaxPATNameCodePoints {
 		return nil, invalidInput("Token name must contain 1 to 100 UTF-8 characters without NUL.")
 	}
 	return validatedTokenExpiry(input.ExpiresAt, now.Truncate(time.Microsecond))

@@ -2,8 +2,11 @@ package query
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 )
 
 // Evidence describes positive hits on branches that satisfy the expression.
@@ -15,13 +18,13 @@ type Evidence struct {
 }
 
 // Evaluate applies an NNF expression to complete, original task text.
-func Evaluate(root *Node, title, description string) Evidence {
+func Evaluate(root *tasksearch.Node, title, description string) Evidence {
 	evidence, _ := EvaluateContext(context.Background(), root, title, description)
 	return evidence
 }
 
 // EvaluateContext observes cancellation during folding and substring scans.
-func EvaluateContext(ctx context.Context, root *Node, title, description string) (Evidence, error) {
+func EvaluateContext(ctx context.Context, root *tasksearch.Node, title, description string) (Evidence, error) {
 	needTitle, needDescription := fields(root)
 	var err error
 	if needTitle {
@@ -39,9 +42,9 @@ func EvaluateContext(ctx context.Context, root *Node, title, description string)
 	return evaluate(ctx, root, title, description)
 }
 
-func fields(n *Node) (bool, bool) {
-	if n.Kind == Leaf {
-		return n.Atom.Field != DescriptionField, n.Atom.Field != TitleField
+func fields(n *tasksearch.Node) (bool, bool) {
+	if n.Kind == tasksearch.Leaf {
+		return n.Atom.Field != tasksearch.DescriptionField, n.Atom.Field != tasksearch.TitleField
 	}
 	lt, ld := fields(n.Left)
 	rt, rd := fields(n.Right)
@@ -72,20 +75,20 @@ func index(ctx context.Context, text, term string) (int, error) {
 	return -1, nil
 }
 
-func evaluate(ctx context.Context, n *Node, title, description string) (Evidence, error) {
+func evaluate(ctx context.Context, n *tasksearch.Node, title, description string) (Evidence, error) {
 	if err := ctx.Err(); err != nil {
 		return Evidence{}, err
 	}
-	if n.Kind == Leaf {
+	if n.Kind == tasksearch.Leaf {
 		var titleHit, descriptionHit bool
-		if n.Atom.Field != DescriptionField {
+		if n.Atom.Field != tasksearch.DescriptionField {
 			i, err := index(ctx, title, n.Atom.Term)
 			if err != nil {
 				return Evidence{}, err
 			}
 			titleHit = i >= 0
 		}
-		if n.Atom.Field != TitleField {
+		if n.Atom.Field != tasksearch.TitleField {
 			i, err := index(ctx, description, n.Atom.Term)
 			if err != nil {
 				return Evidence{}, err
@@ -110,10 +113,54 @@ func evaluate(ctx context.Context, n *Node, title, description string) (Evidence
 	if err != nil {
 		return Evidence{}, err
 	}
-	if n.Kind == And && (!left.Matches || !right.Matches) {
+	if n.Kind == tasksearch.And && (!left.Matches || !right.Matches) {
 		return Evidence{}, nil
 	}
-	if n.Kind == Or && !left.Matches && !right.Matches {
+	if n.Kind == tasksearch.Or && !left.Matches && !right.Matches {
+		return Evidence{}, nil
+	}
+	e := Evidence{Matches: true}
+	if left.Matches {
+		e.Title, e.Description = left.Title, left.Description
+		e.DescriptionTerms = append(e.DescriptionTerms, left.DescriptionTerms...)
+	}
+	if right.Matches {
+		e.Title = e.Title || right.Title
+		e.Description = e.Description || right.Description
+		e.DescriptionTerms = append(e.DescriptionTerms, right.DescriptionTerms...)
+	}
+	return e, nil
+}
+
+// EvaluateHits applies the same expression semantics to DAO-projected hits.
+func EvaluateHits(ctx context.Context, n *tasksearch.Node, hits map[tasksearch.Atom]Evidence) (Evidence, error) {
+	if err := ctx.Err(); err != nil {
+		return Evidence{}, err
+	}
+	if n.Kind == tasksearch.Leaf {
+		e, ok := hits[n.Atom]
+		if !ok {
+			return Evidence{}, errors.New("search evidence is missing an atom")
+		}
+		matched := e.Title || e.Description
+		if n.Negated {
+			return Evidence{Matches: !matched}, nil
+		}
+		e.Matches = matched
+		if e.Description {
+			e.DescriptionTerms = []string{n.Atom.Term}
+		}
+		return e, nil
+	}
+	left, err := EvaluateHits(ctx, n.Left, hits)
+	if err != nil {
+		return Evidence{}, err
+	}
+	right, err := EvaluateHits(ctx, n.Right, hits)
+	if err != nil {
+		return Evidence{}, err
+	}
+	if n.Kind == tasksearch.And && (!left.Matches || !right.Matches) || n.Kind == tasksearch.Or && !left.Matches && !right.Matches {
 		return Evidence{}, nil
 	}
 	e := Evidence{Matches: true}

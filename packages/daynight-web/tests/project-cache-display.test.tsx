@@ -8,7 +8,7 @@ import { useTaskGraph } from "../src/features/projects/useTaskGraph";
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
-import { taskSyncFromGraph, taskSyncEpoch, TEST_VIEWER_ID } from "./helpers/taskSync";
+import { taskSyncReadFixture, taskSyncFromGraph, taskSyncEpoch, TEST_VIEWER_ID } from "./helpers/taskSync";
 
 vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), getTaskSync: vi.fn() }));
 
@@ -55,7 +55,7 @@ afterEach(() => { scopes.splice(0).forEach((cache) => cache.dispose()); });
 
 it("publishes cold durable data before sync, keeps online admission separate, and applies the background delta", async () => {
   await seed(); const cache = scope(); const pending = deferred<TaskSync>();
-  vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
   const { result } = mount(cache);
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   expect(result.current).toMatchObject({ status: "ready", error: null, snapshot: { observedAt: null, receivedAt: null } });
@@ -70,8 +70,78 @@ it("publishes cold durable data before sync, keeps online admission separate, an
   expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
 });
 
+it.each([false, true])("never previews a delayed peer's old graph while sync is pending or fails (hint received: %s)", async (hintFirst) => {
+  const peer = scope(); const signal = new AbortController().signal;
+  const delayed = await peer.beginSync(projectId, signal);
+  const cache = scope(); const fence = await cache.beginTaskRead(projectId, taskId, 1, 1, signal);
+  const currentEpoch = "30000000-0000-4000-8000-000000000002";
+  expect(await cache.observeHistory(fence, currentEpoch, signal)).toBe("current");
+  const hints = vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
+  const old = taskSyncFromGraph(graph(), { versionForTask: () => 1n });
+  expect(await peer.observeHistory(delayed, old.epoch, signal)).toBe("current");
+  await peer.applySync(delayed, old, signal);
+  hints.mockRestore();
+  if (hintFirst) {
+    let received = false; const unsubscribe = cache.subscribe(event => { if (event.historyChanged) received = true; });
+    const injector = new Channel("daynight-task-cache"); injector.postMessage({ userId: TEST_VIEWER_ID, projectId });
+    await waitFor(() => expect(received).toBe(true)); unsubscribe(); injector.close();
+  }
+  const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
+  const { result } = mount(cache);
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledOnce());
+  expect(result.current).toMatchObject({ status: "loading", snapshot: null });
+  const failure = new ApiError("network");
+  await act(async () => { pending.reject(failure); });
+  await waitFor(() => expect(result.current).toMatchObject({ status: "error", snapshot: null, error: failure }));
+});
+
+it("automatically confirms a peer's real replacement before restoring the project graph", async () => {
+  await seed(); const cache = scope();
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(sync(graph())));
+  const view = mount(cache);
+  await waitFor(() => expect(view.result.current.snapshot?.revision).toBeGreaterThan(0));
+  const replacementEpoch = "30000000-0000-4000-8000-000000000002";
+  const replacement = graphFixture([detailFixture(projectId, taskId, { title: "Replacement history", version: 2n })]);
+  const confirmation = deferred<TaskSync>(); const finalRead = deferred<TaskSync>();
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await confirmation.promise)).mockImplementationOnce(async () => taskSyncReadFixture(await finalRead.promise));
+  const peer = scope(); const signal = new AbortController().signal;
+  const ticket = await peer.beginSync(projectId, signal);
+  expect(await peer.observeHistory(ticket, replacementEpoch, signal)).toBe("confirm");
+  const peerConfirmation = await peer.beginSync(projectId, signal);
+  expect(await peer.observeHistory(peerConfirmation, replacementEpoch, signal)).toBe("retired");
+  const fresh = await peer.beginSync(projectId, signal);
+  await act(async () => { await peer.applySync(fresh, taskSyncFromGraph(replacement, { epoch: replacementEpoch, versionForTask: () => 2n }), signal); });
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
+  expect(view.result.current.snapshot).toBeNull();
+  const current = taskSyncFromGraph(replacement, { query: { epoch: replacementEpoch }, epoch: replacementEpoch, versionForTask: () => 2n });
+  await act(async () => { confirmation.resolve(current); });
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));
+  expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview ?? "Replacement history").toBe("Replacement history");
+  await act(async () => { finalRead.resolve(current); });
+  await waitFor(() => expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview).toBe("Replacement history"));
+  expect(view.result.current.error).toBeNull();
+});
+
+it("bounds project graph retries when consecutive live observations keep replacing history", async () => {
+  const cache = scope();
+  vi.spyOn(cache, "observeHistory").mockResolvedValue("retired");
+  vi.mocked(getTaskSync).mockImplementation(async () => taskSyncReadFixture(taskSyncFromGraph(graph(), { versionForTask: () => 1n })));
+  const view = mount(cache);
+  await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: { kind: "protocol" } }));
+  expect(getTaskSync).toHaveBeenCalledTimes(2);
+});
+
+it("bounds graph confirmation and subsequent repeated history replacements", async () => {
+  const cache = scope();
+  vi.spyOn(cache, "observeHistory").mockResolvedValueOnce("confirm").mockResolvedValue("retired");
+  vi.mocked(getTaskSync).mockImplementation(async () => taskSyncReadFixture(taskSyncFromGraph(graph(), { versionForTask: () => 1n })));
+  const view = mount(cache);
+  await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: { kind: "protocol" } }));
+  expect(getTaskSync).toHaveBeenCalledTimes(3);
+});
+
 it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), new ApiError("server", 500, "internal_error")])("retains cached data and exposes a failed background sync %#", async (failure) => {
-  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
   const { result } = mount(cache);
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   const data = result.current.snapshot!.graph;
@@ -80,7 +150,7 @@ it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), 
   expect(result.current.status).toBe("ready"); expect(result.current.snapshot!.graph).toBe(data);
   expect(result.current.snapshot!.receivedAt).toBeNull();
   expect((await cache.readProject(projectId, new AbortController().signal))!.manifest.maxUpdatedAt).toBe(graph().tasks[0]!.updatedAt);
-  const retried = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(retried.promise);
+  const retried = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await retried.promise));
   act(() => { result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
   expect(vi.mocked(getTaskSync).mock.calls[1]![1]).toEqual(vi.mocked(getTaskSync).mock.calls[0]![1]);
@@ -92,13 +162,15 @@ it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), 
 });
 
 it("displays a cached empty project before sync and atomically replaces history when the epoch changes", async () => {
-  const empty = { ...graph(), tasks: [], summary: { total: 0, todo: 0, done: 0, inProgress: 0, ready: 0, blocked: 0 } };
-  await seed(empty); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  const empty = { ...graph(), tasks: [], summary: { total: 0, todo: 0, done: 0, cancelled: 0, inProgress: 0, ready: 0, blocked: 0 } };
+  await seed(empty); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
   const { result } = mount();
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   expect(result.current.snapshot!.graph.summary.total).toBe(0);
-  await act(async () => { pending.resolve(sync(graph(), 1n, "30000000-0000-4000-8000-000000000002")); });
-  await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(0));
+  const epoch = "30000000-0000-4000-8000-000000000002";
+  vi.mocked(getTaskSync).mockImplementation(async () => taskSyncReadFixture(taskSyncFromGraph(graph(), { epoch, versionForTask: () => 1n })));
+  await act(async () => { pending.resolve(sync(graph(), 1n, epoch)); });
+  await waitFor(() => expect(result.current.snapshot?.revision).toBeGreaterThan(0));
   expect(result.current.snapshot!.graph.summary.total).toBe(1);
 });
 
@@ -116,7 +188,7 @@ it("rebuilds corrupt local rows through the existing full sync without publishin
   await seed();
   const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   await database.delete("summaries", [TEST_VIEWER_ID, projectId, taskId]); database.close();
-  const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
   const { result } = mount();
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledOnce());
   expect(result.current).toMatchObject({ status: "loading", snapshot: null, error: null });
@@ -139,7 +211,7 @@ it("honors the foreground identity gate before displaying cached content", async
 
 it("hides cached data immediately on an identity change and ignores the former user's late sync", async () => {
   await seed(); let currentScope = scope(); const pending = deferred<TaskSync>();
-  vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise).mockImplementation(() => new Promise(() => {}));
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise)).mockImplementation(() => new Promise(() => {}));
   const { result, rerender } = renderHook(() => useTaskGraph(projectId), {
     wrapper: ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={currentScope}>{children}</TaskCacheProvider>,
   });
@@ -153,7 +225,7 @@ it("hides cached data immediately on an identity change and ignores the former u
 
 it("hides the previous project immediately and ignores its late background result", async () => {
   await seed(); const pending = deferred<TaskSync>();
-  vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise).mockImplementation(() => new Promise(() => {}));
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise)).mockImplementation(() => new Promise(() => {}));
   const { result, rerender } = mount();
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   rerender({ projectId: otherProjectId });
@@ -164,7 +236,7 @@ it("hides the previous project immediately and ignores its late background resul
 });
 
 it("withdraws a cached preview and durable baseline when the live project check denies access", async () => {
-  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
   const { result } = mount(cache);
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   const failure = new ApiError("server", 404, "not_found");
@@ -174,7 +246,7 @@ it("withdraws a cached preview and durable baseline when the live project check 
 });
 
 it("does not resurrect a revoked cached generation from its late successful sync", async () => {
-  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
   const { result } = mount(cache);
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   const ticket = await cache.beginSync(projectId, new AbortController().signal);
@@ -187,7 +259,7 @@ it("does not resurrect a revoked cached generation from its late successful sync
 it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden after %s withdrawal until this scope successfully syncs", async (withdrawal) => {
   await seed(); const cache = scope(); const peer = scope(); const initial = deferred<TaskSync>();
   const intervals = vi.spyOn(globalThis, "setInterval");
-  vi.mocked(getTaskSync).mockReturnValueOnce(initial.promise);
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await initial.promise));
   const view = mount(cache);
   await waitFor(() => expect(view.result.current.snapshot?.revision).toBe(0));
   const replacementEpoch = "30000000-0000-4000-8000-000000000002";
@@ -198,7 +270,8 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
     await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null }));
   }
   const ticket = await peer.beginSync(projectId, new AbortController().signal);
-  await act(async () => { await peer.applySync(ticket, taskSyncFromGraph(replacement, { epoch: replacementEpoch, versionForTask: () => 2n }), new AbortController().signal); });
+  let replacementGeneration = "";
+  await act(async () => { replacementGeneration = (await peer.applySync(ticket, taskSyncFromGraph(replacement, { epoch: replacementEpoch, versionForTask: () => 2n }), new AbortController().signal)).project.manifest.cacheGeneration; });
   if (withdrawal === "response") {
     expect(view.result.current.snapshot!.graph.tasks[0]!.titlePreview).not.toBe("Replacement history");
     await act(async () => { initial.reject(new ApiError("server", 404, "not_found")); });
@@ -209,11 +282,11 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   try {
     expect(await database.get("projects", [TEST_VIEWER_ID, projectId])).toMatchObject({ state: "active", epoch: replacementEpoch,
-      cacheGeneration: peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration });
+      cacheGeneration: replacementGeneration });
     expect(await database.countFromIndex("summaries", "by-project", [TEST_VIEWER_ID, projectId])).toBe(1);
   } finally { database.close(); }
 
-  const retry = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(retry.promise);
+  const retry = deferred<TaskSync>(); void retry.promise.catch(() => {}); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await retry.promise));
   act(() => { view.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
   expect(view.result.current.snapshot).toBeNull();
@@ -221,7 +294,7 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   await act(async () => { retry.reject(offline); });
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: offline }));
 
-  const automatic = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(automatic.promise);
+  const automatic = deferred<TaskSync>(); void automatic.promise.catch(() => {}); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await automatic.promise));
   const poll = intervals.mock.calls.find(([, delay]) => delay === 15_000)![0] as () => void;
   act(() => { poll(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));
@@ -230,7 +303,8 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   await act(async () => { automatic.reject(failure); });
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: failure }));
 
-  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(recovery.promise);
+  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await recovery.promise))
+    .mockImplementation(async () => taskSyncReadFixture(taskSyncFromGraph(replacement, { query: { epoch: replacementEpoch }, epoch: replacementEpoch, versionForTask: () => 2n })));
   act(() => { view.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(4));
   expect(view.result.current.snapshot).toBeNull();
@@ -265,12 +339,13 @@ it("keeps withdrawal knowledge across same-scope remount and project navigation 
   await waitFor(() => expect(independent.result.current.snapshot?.revision).toBe(0));
   expect(independent.result.current.snapshot!.graph.project.id).toBe(projectId);
   independent.unmount();
-  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(recovery.promise);
+  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await recovery.promise)).mockImplementation(async () => taskSyncReadFixture({ ...replacement, mode: "delta" }));
   act(() => { reopened.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(6));
   await act(async () => { recovery.resolve({ ...replacement, mode: "delta" }); });
   await waitFor(() => expect(reopened.result.current.snapshot?.revision).toBeGreaterThan(0));
   reopened.unmount();
+  vi.mocked(getTaskSync).mockImplementation(() => new Promise(() => {}));
   const admitted = mount(cache);
   await waitFor(() => expect(admitted.result.current.snapshot?.revision).toBe(0));
 });

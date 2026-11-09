@@ -9,37 +9,48 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"time"
 
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	attachmentprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 )
 
 type attachmentHandler struct {
-	attachments *attachmentservice.Attachments
-	logger      *slog.Logger
+	attachments     *attachmentservice.Attachments
+	logger          *slog.Logger
+	bodyReadTimeout time.Duration
 }
 
 func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
-	handler := &attachmentHandler{attachments: attachments, logger: logger}
+	handler := newAttachmentHandler(attachments, logger)
+	handler.registerRoutes(mux, auth)
+}
+
+func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
+	return &attachmentHandler{attachments: attachments, logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout}
+}
+
+func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, auth *authhttp.Authentication) {
 	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
 	mux.HandleFunc("GET "+base+"/attachments", auth.Require(handler.list))
 	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", auth.Require(handler.put))
 	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", auth.Require(handler.download))
 	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", auth.Require(handler.delete))
 	mux.HandleFunc("GET "+base+"/preview/{path...}", auth.Require(handler.preview))
-	mux.HandleFunc(base+"/attachments", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT, DELETE")))
-	mux.HandleFunc(base+"/preview/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
+	mux.HandleFunc(base+"/preview/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
 }
 
 func attachmentResponse(attachment model.Attachment) api.Attachment {
-	return api.Attachment{Path: attachment.Path, ContentType: attachment.ContentType,
-		SizeBytes: attachment.SizeBytes, CreatedAt: attachment.CreatedAt.UTC(), UpdatedAt: attachment.UpdatedAt.UTC()}
+	return attachmentprotocol.REST(attachment)
 }
 
 func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
@@ -62,7 +73,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
-	page, err := h.attachments.List(request.Context(), principal, projectID, taskID, input)
+	page, err := h.attachments.ListREST(request.Context(), principal, projectID, taskID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
@@ -78,6 +89,7 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
+		httpx.CloseUnreadBody(w, request)
 		httpx.WriteError(w, request, logger, "attachment", "put", err)
 		return
 	}
@@ -86,13 +98,25 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 		contentType = "application/octet-stream"
 	}
 	if _, _, err := mime.ParseMediaType(contentType); err != nil || len(request.Header.Values("Content-Type")) > 1 {
+		httpx.CloseUnreadBody(w, request)
 		httpx.WriteError(w, request, logger, "attachment", "put", httpx.InvalidInput("Content-Type must be a valid media type"))
 		return
 	}
-	attachment, created, err := h.attachments.Put(request.Context(), principal, projectID, taskID,
-		request.PathValue("path"), contentType, request.Body)
+	body := httpx.NewDeadlineBody(w, request, h.bodyReadTimeout)
+	attachment, created, lease, err := h.attachments.PutRetained(request.Context(), principal, projectID, taskID,
+		request.PathValue("path"), contentType, body)
+	if lease != nil {
+		defer func() {
+			if closeErr := lease.Close(); closeErr != nil {
+				httpx.LogFailure(logger, request.Context(), "attachment", "put", closeErr)
+			}
+		}()
+	}
+	if closeErr := body.Close(); closeErr != nil {
+		httpx.LogFailure(logger, request.Context(), "attachment", "put", closeErr)
+	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "attachment", "put", err)
+		httpx.WriteBodyError(w, request, logger, "attachment", "put", err)
 		return
 	}
 	status := http.StatusOK

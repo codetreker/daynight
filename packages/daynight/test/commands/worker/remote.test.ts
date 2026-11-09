@@ -16,7 +16,7 @@ const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine:
 const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
-  assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
+  assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
   properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: claim?.state !== "active",
 });
@@ -62,6 +62,35 @@ afterEach(async () => {
 });
 
 describe("worker remote API", () => {
+  it("publishes a failed native startup for the observed claim with authenticated HTTP and reads it back", async () => {
+    const token = "fixture-startup-token";
+    const report = { schemaVersion: 1 as const, source: "worker" as const, sessionId: uuid(30), claimId: descriptor.claimId,
+      executionGeneration: "1", controllerInstanceId: uuid(31), revision: "1", observedAt: time,
+      startup: { state: "failed" as const, reasonCode: "native_rejected" as const },
+      recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } };
+    const initial = task(taskId, { ...worker, agentControlMode: "web" });
+    const updated = { ...initial, version: 2n, properties: { ...initial.properties, worker: { ...worker, agentControlMode: "web" as const, phase: "waiting" as const, herdr: null, nativeSessionId: null }, sessionStartup: report } };
+    const requests: { method: string | undefined; url: string | undefined; authorization: string | undefined; protocol: string | string[] | undefined; body: unknown }[] = [];
+    let saved = false;
+    const serverUrl = await listen((request, response, body) => {
+      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, protocol: request.headers["daynight-worker-protocol"], body });
+      if (request.url === "/api/v1/me") respond(response, { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(90), kind: "personal", name: null } });
+      else if (request.method === "PATCH") { saved = true; respond(response, updated); }
+      else respond(response, saved ? updated : initial);
+    }, { identity: false });
+    const remote = createWorkerRemote({ serverUrl, serverToken: token });
+    expect(await remote.currentUserId(signal())).toBe(worker.userId);
+    const observed = await remote.readTask(projectId, taskId, signal());
+    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report }, signal())).resolves.toEqual(updated);
+    await expect(remote.readTask(projectId, taskId, signal())).resolves.toEqual(updated);
+    const taskPath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+    expect(requests.map(({ method, url }) => [method, url])).toEqual([["GET", "/api/v1/me"], ["GET", taskPath], ["PATCH", `${taskPath}/worker-claim`], ["GET", taskPath]]);
+    expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
+    expect(requests.slice(1).map(({ protocol }) => protocol)).toEqual(["2", "2", "2"]);
+    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report });
+    expect(JSON.stringify(report)).not.toContain(token);
+  });
+
   it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
     const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
     const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
@@ -208,8 +237,8 @@ describe("worker remote API", () => {
     const second = createWorkerRemote({ serverUrl, serverToken: "test-account-b" });
     await expect(first.currentUserId(signal())).resolves.toBe(worker.userId);
     await expect(second.currentUserId(signal())).resolves.toBe(uuid(80));
-    await expect(first.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual([]);
-    await expect(second.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual([]);
+    await expect(first.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual({ tasks: [], coveredProjectIds: [projectId], unavailableProjectIds: [] });
+    await expect(second.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual({ tasks: [], coveredProjectIds: [projectId], unavailableProjectIds: [] });
     expect(headers).toEqual(["Bearer test-account-a", "Bearer test-account-b", "Bearer test-account-a", "Bearer test-account-b"]);
   });
 
@@ -317,7 +346,9 @@ describe("worker remote API", () => {
     });
     const remote = (await verifiedRemote(serverUrl));
     const result = await remote.ownInventory([{ projectId }, { projectId }, { projectId: secondProject }], workerId, signal());
-    expect(result.map(({ id }) => id)).toEqual([taskId, uuid(10), uuid(9)]);
+    expect(result.tasks.map(({ id }) => id)).toEqual([taskId, uuid(10), uuid(9)]);
+    expect(result.coveredProjectIds).toEqual([projectId, secondProject]);
+    expect(result.unavailableProjectIds).toEqual([]);
     expect(calls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
       { workerId, limit: "100" }, { workerId, limit: "100", cursor: "inventory cursor+/=" }, { workerId, limit: "100" },
     ]);
@@ -343,6 +374,43 @@ describe("worker remote API", () => {
       respond(response, { items: [task(taskId, worker)], nextCursor: null });
     });
     await expect((await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: uuid(8) }], workerId, signal())).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("discards incomplete pages for an unavailable project while preserving healthy project claims", async () => {
+    const other = uuid(8);
+    const serverUrl = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost");
+      if (url.pathname.includes(projectId)) {
+        if (url.searchParams.has("cursor")) respond(response, { error: { code: "not_found", message: "not found", requestId: "missing" } }, 404);
+        else respond(response, { items: [task(taskId, worker)], nextCursor: "next" });
+      } else respond(response, { items: [task(uuid(9), worker, other)], nextCursor: null });
+    });
+    const result = await (await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: other }], workerId, signal());
+    expect(result).toEqual({ tasks: [task(uuid(9), worker, other)], coveredProjectIds: [other], unavailableProjectIds: [projectId] });
+  });
+
+  it("invalidates as soon as a project returns 404 before waiting for another project", async () => {
+    let release!: () => void, entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const serverUrl = await listen((request, response) => {
+      if (request.url!.includes(projectId)) respond(response, { error: { code: "not_found", message: "not found", requestId: "missing" } }, 404);
+      else { entered(); void held.then(() => respond(response, { items: [], nextCursor: null })); }
+    });
+    const invalidated = vi.fn();
+    const pending = (await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: uuid(8) }], workerId, signal(), invalidated);
+    try { await waiting; expect(invalidated).toHaveBeenCalledOnce(); }
+    finally { release(); }
+    await pending;
+  });
+
+  it("does not mistake an identity mismatch on a 404 for an unavailable project", async () => {
+    const serverUrl = await listen((_request, response) => {
+      response.setHeader("Daynight-User-ID", uuid(80));
+      respond(response, { error: { code: "not_found", message: "not found", requestId: "missing" } }, 404);
+    });
+    await expect((await verifiedRemote(serverUrl)).ownInventory([{ projectId }], workerId, signal())).rejects.toMatchObject({ phase: "protocol" });
+    await expect((await verifiedRemote(serverUrl)).resolveProject({ repoUrl: project().repoUrl, projectId }, signal())).rejects.toMatchObject({ phase: "protocol" });
   });
 
   it("skips released candidates through later pages while preserving service order", async () => {
@@ -390,7 +458,7 @@ describe("worker remote API", () => {
     });
     const remote = (await verifiedRemote(serverUrl));
     await expect(remote.claim(task(), descriptor, signal())).rejects.toMatchObject({ outcomeUnconfirmed: true });
-    await expect(remote.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual([task(taskId, worker)]);
+    await expect(remote.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual({ tasks: [task(taskId, worker)], coveredProjectIds: [projectId], unavailableProjectIds: [] });
     expect(requests).toEqual([{ method: "POST", body: { ...descriptor, version: 1n } }, { method: "GET", body: null }]);
   });
 

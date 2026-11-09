@@ -8,7 +8,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 	"github.com/google/uuid"
 )
@@ -18,13 +20,22 @@ type database interface {
 	store.ProjectWriter
 	store.ProjectCreationWriter
 }
-type Projects struct{ store database }
+type Projects struct {
+	store  database
+	engine *session.Engine
+}
 type Memberships struct {
 	store database
 	now   func() time.Time
 }
 
-func NewProjects(db database) *Projects       { return &Projects{store: db} }
+func NewProjects(db database, engines ...*session.Engine) *Projects {
+	engine := session.NewEngine(nil)
+	if len(engines) > 0 {
+		engine = engines[0]
+	}
+	return &Projects{store: db, engine: engine}
+}
 func NewMemberships(db database) *Memberships { return &Memberships{store: db, now: time.Now} }
 func completed(c store.Completion, err error, refusal *model.Fault) error {
 	if err != nil {
@@ -66,6 +77,12 @@ func (s *Projects) CreateWithAccess(ctx context.Context, p model.Principal, inpu
 	if err := core.ValidateCreate(p, input); err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
+	return s.createValidated(ctx, p, input)
+}
+
+// createValidated requires the caller to validate identity, authorization inputs,
+// name and repository syntax before allocating an ID or starting a transaction.
+func (s *Projects) createValidated(ctx context.Context, p model.Principal, input core.CreateProject) (model.Project, model.ProjectAccess, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return model.Project{}, model.ProjectAccess{}, fmt.Errorf("generate project ID: %w", err)
@@ -113,13 +130,25 @@ func (s *Projects) List(ctx context.Context, p model.Principal, request model.Pa
 	return s.ListScoped(ctx, p, core.ProjectListRequest{Page: request})
 }
 func (s *Projects) ListScoped(ctx context.Context, p model.Principal, request core.ProjectListRequest) (core.ProjectPage, error) {
+	return s.listScoped(ctx, p, request, 0)
+}
+
+// ListScopedBounded limits the materialized text of each Project in the page.
+func (s *Projects) ListScopedBounded(ctx context.Context, p model.Principal, request core.ProjectListRequest, maxItemBytes int) (core.ProjectPage, error) {
+	if maxItemBytes < 1 || maxItemBytes > 128<<20 {
+		return core.ProjectPage{}, &model.Fault{Code: "invalid_input", Message: "Invalid Project item budget."}
+	}
+	return s.listScoped(ctx, p, request, maxItemBytes)
+}
+
+func (s *Projects) listScoped(ctx context.Context, p model.Principal, request core.ProjectListRequest, maxItemBytes int) (core.ProjectPage, error) {
 	if err := core.ValidateList(p, request); err != nil {
 		return core.ProjectPage{}, err
 	}
 	var result store.ProjectPage
 	err := read(ctx, s.store, func(dao store.ProjectReader) error {
 		var err error
-		result, err = core.ReadList(ctx, dao, p, request)
+		result, err = core.ReadListBounded(ctx, dao, p, request, maxItemBytes)
 		return err
 	})
 	if err != nil {
@@ -187,7 +216,10 @@ func (s *Projects) Transfer(ctx context.Context, p model.Principal, id string, i
 	c, err := s.store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
 		var err error
 		result, err = core.Transfer(ctx, scope.ProjectDAO(), p, id, source, target, input)
-		return err
+		if err != nil {
+			return err
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{ProjectID: id})
 	})
 	if err := completed(c, err, nil); err != nil {
 		return core.TransferReceipt{}, err

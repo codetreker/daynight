@@ -2,25 +2,33 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
+
+const uiTestShell = "<html><body>server test shell</body></html>\n"
+
+const uiTestScriptPath = "/assets/app-12345678.js"
 
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := New(Dependencies{}, configuredTestConfig(), logger)
+	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = handler.(Handler).Shutdown(context.Background()) })
 	return httpx.RequestLogging(logger, handler)
 }
 
@@ -28,7 +36,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	var logs bytes.Buffer
 	handler := uiTestHandler(t, &logs)
 	root := projectRequest(handler, http.MethodGet, "/", "")
-	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || !strings.Contains(root.Body.String(), `<div id="root"></div>`) {
+	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != uiTestShell {
 		t.Fatalf("root UI response: %d %+v", root.Code, root.Header())
 	}
 	var entries []map[string]any
@@ -46,25 +54,27 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/teams/00000000-0000-4000-8000-000000000099/settings", "/teams/00000000-0000-4000-8000-000000000099/members", "/teams/invalid-private-team/members", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("product entry did not return the production index: %d", response.Code)
+			t.Fatalf("product entry did not return the server shell: %d", response.Code)
 		}
 	}
 	for _, projectID := range []string{"00000000-0000-4000-8000-000000000099", "invalid-private-project"} {
 		for _, suffix := range []string{"", "/members", "/settings"} {
 			response := projectRequest(handler, http.MethodGet, "/projects/"+projectID+suffix, "")
 			if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("project deep link did not return actual index: %d", response.Code)
+				t.Fatalf("project deep link did not return server shell: %d", response.Code)
 			}
 		}
 	}
-	assets := regexp.MustCompile(`(?:src|href)="(/assets/[^"?#]+)"`).FindAllStringSubmatch(root.Body.String(), -1)
-	if len(assets) < 2 {
-		t.Fatal("no emitted assets in production HTML")
-	}
-	for _, asset := range assets {
-		response := projectRequest(handler, http.MethodGet, asset[1], "")
-		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" || response.Body.Len() == 0 || response.Header().Get("Content-Type") == "text/html; charset=utf-8" {
-			t.Fatalf("production asset response: %d %+v", response.Code, response.Header())
+	for _, asset := range []struct {
+		path, body, contentType string
+	}{
+		{uiTestScriptPath, "console.log(\"server test asset\");\n", "text/javascript"},
+		{"/assets/style-12345678.css", "body { color: black; }\n", "text/css"},
+	} {
+		response := projectRequest(handler, http.MethodGet, asset.path, "")
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" || response.Body.String() != asset.body ||
+			response.Header().Get("Content-Length") != strconv.Itoa(len(asset.body)) || !strings.HasPrefix(response.Header().Get("Content-Type"), asset.contentType) {
+			t.Fatalf("test asset response: %s %d %+v", asset.path, response.Code, response.Header())
 		}
 	}
 	for _, target := range []string{
@@ -86,7 +96,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	}
 }
 
-func TestUISetupGuideUsesProductionIndexAndSafeRequestLog(t *testing.T) {
+func TestUISetupGuideUsesServerShellAndSafeRequestLog(t *testing.T) {
 	var logs bytes.Buffer
 	handler := uiTestHandler(t, &logs)
 	index := projectRequest(handler, http.MethodGet, "/", "")
@@ -116,7 +126,7 @@ func TestUISetupGuideUsesProductionIndexAndSafeRequestLog(t *testing.T) {
 					t.Fatalf("setup route did not retain index headers: %+v", response.Header())
 				}
 				if test.method == http.MethodHead && response.Body.Len() != 0 || test.method == http.MethodGet && !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) {
-					t.Fatal("setup route did not return the production index or suppress the HEAD body")
+					t.Fatal("setup route did not return the server shell or suppress the HEAD body")
 				}
 			} else {
 				assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -136,7 +146,7 @@ func TestUISetupGuideUsesProductionIndexAndSafeRequestLog(t *testing.T) {
 	}
 }
 
-func TestUIStandaloneTaskDetailReloadUsesProductionIndexAndSafeRequestLog(t *testing.T) {
+func TestUIStandaloneTaskDetailReloadUsesServerShellAndSafeRequestLog(t *testing.T) {
 	var logs bytes.Buffer
 	handler := uiTestHandler(t, &logs)
 	index := projectRequest(handler, http.MethodGet, "/", "")
@@ -155,7 +165,7 @@ func TestUIStandaloneTaskDetailReloadUsesProductionIndexAndSafeRequestLog(t *tes
 			logs.Reset()
 			response := projectRequest(handler, http.MethodGet, target.path, "")
 			if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) || response.Header().Get("Content-Type") != "text/html; charset=utf-8" || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("standalone deep link did not return actual index: %s %d %+v", target.path, response.Code, response.Header())
+				t.Fatalf("standalone deep link did not return server shell: %s %d %+v", target.path, response.Code, response.Header())
 			}
 			var entry map[string]any
 			decoder := json.NewDecoder(&logs)
@@ -171,11 +181,6 @@ func TestUIStandaloneTaskDetailReloadUsesProductionIndexAndSafeRequestLog(t *tes
 
 func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	handler := uiTestHandler(t, io.Discard)
-	index := projectRequest(handler, http.MethodGet, "/", "")
-	asset := regexp.MustCompile(`src="(/assets/[^"?#]+)"`).FindStringSubmatch(index.Body.String())
-	if len(asset) != 2 {
-		t.Fatal("no production script asset")
-	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	for _, target := range []string{
@@ -187,7 +192,7 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001?tab=attachments",
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001/attachments/nested/plan.md",
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001/attachments/nested/plan.md?tab=overview",
-		asset[1],
+		uiTestScriptPath,
 	} {
 		for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
 			response := projectRequest(handler, method, target, "private-body")
@@ -214,23 +219,36 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 }
 
 func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Task")
-	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + project.ID, "/api/v1/projects/" + project.ID + "/members", taskCollection(project.ID), taskPath(task), graphPath(project.ID, task.ID)} {
-		response := projectRequest(handler, http.MethodGet, target, "")
+	f := newTaskHTTPFixture(t)
+	path := taskCollection(f.project.ID) + "/" + f.target.ID
+	graph := graphPath(f.project.ID, f.target.ID)
+	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + f.project.ID, "/api/v1/projects/" + f.project.ID + "/members", taskCollection(f.project.ID), path, graph} {
+		switch target {
+		case "/api/v1/projects":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "list", nil, nil)
+		case "/api/v1/projects/" + f.project.ID:
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "project", nil, nil)
+		case "/api/v1/projects/" + f.project.ID + "/members":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
+		case taskCollection(f.project.ID):
+			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}}, []store.TaskPage{{Items: []model.Task{f.target}}})
+		case path:
+			f.expectRead(f.target)
+		case graph:
+			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}})
+		}
+		response := projectRequest(f.handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
 			t.Fatalf("UI registration changed API response: %s %d %+v", target, response.Code, response.Header())
 		}
-		if (target == taskPath(task) || target == graphPath(project.ID, task.ID)) && response.Header().Get("Cache-Control") != "no-store" {
+		if (target == path || target == graph) && response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("latest task read may be cached: %s %+v", target, response.Header())
 		}
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+project.ID+"/members", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project.ID+"/members", nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	f.handler.ServeHTTP(response, request)
 	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
 	if response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
 		t.Fatal("member API must retain authenticated JSON behavior")
@@ -308,7 +326,7 @@ func TestUIAssistantDirectLoadAndReloadKeepAPIProtected(t *testing.T) {
 			for range 2 {
 				response := request(http.MethodGet, path)
 				if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) || response.Header().Get("Content-Type") != "text/html; charset=utf-8" || response.Header().Get("Cache-Control") != "no-store" {
-					t.Fatalf("assistant direct load/reload did not return production index: %d %s", response.Code, response.Body.String())
+					t.Fatalf("assistant direct load/reload did not return server shell: %d %s", response.Code, response.Body.String())
 				}
 			}
 			head := request(http.MethodHead, path)
