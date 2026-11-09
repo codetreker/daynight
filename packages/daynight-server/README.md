@@ -1154,10 +1154,18 @@ records the read-before-validation distinction.
 
 ### Attachment service and store tests
 
+The complete `internal/service/attachment` suite"
+through "including during complete module validation", with:
+
 The complete `internal/service/attachment` suite uses synthetic principals,
-Project and Task facts with strict expectations on the existing snapshot,
-attachment mutation and DAO interfaces. Each operation has an explicit call
-plan; unconfigured, extra or unconsumed calls fail. Query results are configured
+Project and Task facts and controls directly invoked Project-read, path-conflict
+and metadata read/write/delete operations through private instance-owned function
+dependencies. The production constructor binds the real Core functions. Snapshot,
+attachment mutation and directly used DAO interfaces remain controlled separately.
+Each logical operation has an explicit call plan checking callback capability,
+context, canonical addresses, inputs and order; unconfigured, extra or unconsumed
+calls fail. Lower business DAO calls fail explicitly, so the fixture cannot
+silently resume real Core operations. Operation and query results are configured
 independently of captured writes. Callback execution and transaction completion
 remain separate, including `committed`, `not_committed` and `unknown` outcomes.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
@@ -1177,6 +1185,11 @@ upload leases and transfer cleanup. Real temporary files and permits remain
 where the assertion concerns their use and lifetime. The content reader still
 crosses the actual 5 MiB boundary; test-local fixtures do not reduce production
 limits or timing defaults.
+
+Core Attachment tests retain exact conflict-query Project/Task/context forwarding
+and metadata write/delete cancellation context, input, one-call and error-chain
+assertions. The independent Core Project read receiver retains the original
+Attachment principal, Project ID, context and complete inherited access result.
 
 PostgreSQL attachment DAO tests own SQL mapping, upsert identity, pagination,
 literal wildcard prefixes, legacy metadata and affected-row failures. Root

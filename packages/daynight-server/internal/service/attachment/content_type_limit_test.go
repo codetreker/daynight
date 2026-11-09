@@ -88,7 +88,7 @@ func TestContentTypeLimitAndLegacyAccess(t *testing.T) {
 		t.Fatalf("legacy delete: %v", err)
 	}
 	m.read(principal, task)
-	m.expect("metadata", task.ProjectID, task.ID, "legacy").err = model.ErrNotFound
+	m.expect("metadataRead", task.ProjectID, task.ID, "legacy").err = attachmentNotFound()
 	_, _, err = service.Open(ctx, principal, task.ProjectID, task.ID, "legacy")
 	requireFault(t, err, "not_found")
 }

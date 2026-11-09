@@ -17,7 +17,16 @@ import (
 	"github.com/google/uuid"
 )
 
+type attachmentOperations struct {
+	requireProjectRead func(context.Context, projectcore.ProjectAccessReader, model.Principal, string) (model.ProjectAccess, error)
+	checkPathConflict  func(context.Context, store.AttachmentReader, attachmentcore.Address) error
+	metadata           func(context.Context, store.AttachmentReader, attachmentcore.Address) (model.Attachment, error)
+	putMetadata        func(context.Context, store.AttachmentWriter, attachmentcore.Address, string, int64) (model.Attachment, bool, error)
+	deleteMetadata     func(context.Context, store.AttachmentWriter, attachmentcore.Address) error
+}
+
 type Attachments struct {
+	operations  attachmentOperations
 	store       store.SnapshotReader
 	mutations   store.AttachmentMutationWriter
 	files       filestorage.Storage
@@ -50,7 +59,13 @@ func NewAttachments(database store.SnapshotReader, mutations store.AttachmentMut
 	if capacity > 4 {
 		capacity = 4
 	}
-	return &Attachments{store: database, mutations: mutations, files: files, uploadSlots: make(chan struct{}, capacity)}
+	return &Attachments{operations: attachmentOperations{
+		requireProjectRead: projectcore.RequireProjectRead,
+		checkPathConflict:  attachmentcore.CheckPathConflict,
+		metadata:           attachmentcore.Metadata,
+		putMetadata:        attachmentcore.PutMetadata,
+		deleteMetadata:     attachmentcore.DeleteMetadata,
+	}, store: database, mutations: mutations, files: files, uploadSlots: make(chan struct{}, capacity)}
 }
 
 func (s *Attachments) mutate(ctx context.Context, principal model.Principal, address attachmentcore.Address, operation func(store.AttachmentMutationDAO) error) error {
@@ -82,7 +97,7 @@ func (s *Attachments) mutate(ctx context.Context, principal model.Principal, add
 func (s *Attachments) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(store.AttachmentReader) error) error {
 	var missing *model.Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.operations.requireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
@@ -200,7 +215,7 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 			return taskcore.NotFound(model.ErrTaskDeleted)
 		}
 		dao := scope.AttachmentDAO()
-		if err := attachmentcore.CheckPathConflict(ctx, dao, address); err != nil {
+		if err := s.operations.checkPathConflict(ctx, dao, address); err != nil {
 			return err
 		}
 		info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, attachmentcore.BoundedContent(content))
@@ -211,7 +226,7 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 			}
 			return fmt.Errorf("write attachment content: %w", err)
 		}
-		attachment, created, err = attachmentcore.PutMetadata(ctx, dao, address, contentType, info.Size)
+		attachment, created, err = s.operations.putMetadata(ctx, dao, address, contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
 		}
@@ -287,7 +302,7 @@ func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Princip
 		return nil, fmt.Errorf("acquire attachment gate: %w", err)
 	}
 	if err := s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
-		return attachmentcore.CheckPathConflict(ctx, dao, address)
+		return s.operations.checkPathConflict(ctx, dao, address)
 	}); err != nil {
 		return nil, errors.Join(err, permit.Close())
 	}
@@ -362,7 +377,7 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 			return taskcore.NotFound(model.ErrTaskDeleted)
 		}
 		dao := scope.AttachmentDAO()
-		if err := attachmentcore.CheckPathConflict(ctx, dao, a.address); err != nil {
+		if err := a.service.operations.checkPathConflict(ctx, dao, a.address); err != nil {
 			return err
 		}
 		content, err := source(scope)
@@ -382,7 +397,7 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 			return fmt.Errorf("publish attachment content: %w", err)
 		}
 		publication = filestorage.Published
-		attachment, created, err = attachmentcore.PutMetadata(ctx, dao, a.address, a.contentType, info.Size)
+		attachment, created, err = a.service.operations.putMetadata(ctx, dao, a.address, a.contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
 		}
@@ -430,7 +445,7 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 	var attachment model.Attachment
 	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
-		attachment, err = attachmentcore.Metadata(ctx, reader, address)
+		attachment, err = s.operations.metadata(ctx, reader, address)
 		return err
 	})
 	if err != nil {
@@ -458,14 +473,14 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 	defer permit.Close()
 	fileStarted := false
 	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
-		if _, err := attachmentcore.Metadata(ctx, dao, address); err != nil {
+		if _, err := s.operations.metadata(ctx, dao, address); err != nil {
 			return err
 		}
 		fileStarted = true
 		if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
 			return fmt.Errorf("delete attachment content: %w", err)
 		}
-		if err := attachmentcore.DeleteMetadata(ctx, dao, address); err != nil {
+		if err := s.operations.deleteMetadata(ctx, dao, address); err != nil {
 			return fmt.Errorf("delete attachment metadata: %w", err)
 		}
 		return nil

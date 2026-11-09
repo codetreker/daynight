@@ -111,9 +111,9 @@ func TestAdmittedAttachmentUploadDoesNotReauthorizeStream(t *testing.T) {
 			}
 			refused := newAttachmentMock(t)
 			observed := &observedAttachmentStorage{Storage: files}
-			rejected := NewAttachments(refused, refused, observed)
+			rejected := refused.service(refused, observed)
 			refused.expect("snapshot").callback = true
-			refused.expect("access", p, task.ProjectID).err = model.ErrNotFound
+			refused.expect("projectRead", p, task.ProjectID).err = projectReadNotFound()
 			refused.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 			refused.expect("authorize", p, task.ProjectID).err = model.ErrNotFound
 			_, _, err = rejected.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("must not replace"))
@@ -122,7 +122,7 @@ func TestAdmittedAttachmentUploadDoesNotReauthorizeStream(t *testing.T) {
 			refused.expect("authorize", p, task.ProjectID).err = model.ErrNotFound
 			requireFault(t, rejected.Delete(t.Context(), p, task.ProjectID, task.ID, "file"), "not_found")
 			refused.expect("snapshot").callback = true
-			refused.expect("access", p, task.ProjectID).err = model.ErrNotFound
+			refused.expect("projectRead", p, task.ProjectID).err = projectReadNotFound()
 			_, _, err = rejected.Open(t.Context(), p, task.ProjectID, task.ID, "file")
 			requireFault(t, err, "not_found")
 			if observed.calls.Load() != 0 {
@@ -210,7 +210,7 @@ func TestAttachmentMutationsUseLifecycleScope(t *testing.T) {
 			release := func() { once.Do(func() { close(observed.release) }) }
 			go func() {
 				defer close(done)
-				finished <- attachmentMutation(ctx, NewAttachments(m, m, observed), p, task, operation)
+				finished <- attachmentMutation(ctx, m.service(m, observed), p, task, operation)
 			}()
 			defer func() {
 				cancel()
@@ -280,14 +280,14 @@ func TestTaskPresenceControlsAttachmentMutations(t *testing.T) {
 				if !deleted {
 					if operation == "delete" {
 						m.metadata(task, item)
-						m.expect("delete", task.ProjectID, task.ID, "file")
+						m.expect("metadataDelete", task.ProjectID, task.ID, "file")
 					} else {
 						m.conflict(task, "file", false)
-						m.expect("put", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5}).result = attachmentPutResult{attachmentItem(task, "file", "text/plain", 5), operation == "put"}
+						m.expect("metadataPut", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5}).result = attachmentPutResult{attachmentItem(task, "file", "text/plain", 5), operation == "put"}
 					}
 				}
 				observed := &observedAttachmentStorage{Storage: files}
-				err := attachmentMutation(t.Context(), NewAttachments(m, m, observed), p, task, operation)
+				err := attachmentMutation(t.Context(), m.service(m, observed), p, task, operation)
 				if deleted {
 					requireFault(t, err, "task_deleted")
 					if observed.calls.Load() != 0 {

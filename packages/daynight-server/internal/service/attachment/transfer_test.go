@@ -37,7 +37,7 @@ func expectTransferMutation(m *attachmentMock, task model.Task, path string, com
 	return e
 }
 func expectTransferMetadata(m *attachmentMock, task model.Task, path, contentType string, size int64, item model.Attachment, created bool) *attachmentExpectation {
-	e := m.expect("put", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: path, ContentType: contentType, SizeBytes: size})
+	e := m.expect("metadataPut", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: path, ContentType: contentType, SizeBytes: size})
 	e.result = attachmentPutResult{item, created}
 	return e
 }
@@ -193,7 +193,7 @@ func TestPutTransferPublicationFailuresPreserveTransactionFacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			publisher := &failingTransferPublisher{Storage: files, cause: test.cause, publishFirst: test.publishFirst}
-			subject := NewAttachments(m, m, publisher)
+			subject := m.service(m, publisher)
 			namespace := transferNamespace(t)
 			private, err := files.AcquireGate(t.Context(), filestorage.PrivateGate, namespace.ID())
 			if err != nil {
