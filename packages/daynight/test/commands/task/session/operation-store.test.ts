@@ -88,7 +88,15 @@ it.skipIf(process.platform !== "win32")("uses real protected current-user Window
       throw new Error(`Windows ACL ${stage} failed after process close (code=${exit.code}, signal=${exit.signal}).`, { cause });
     }
   };
-  const script = "$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:DAYNIGHT_ACL_PROBE; $s=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if (!$a.AreAccessRulesProtected -or $a.Access.Count -ne 1 -or $a.Access[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $s -or $a.Access[0].IsInherited) { throw 'Unexpected ACL' }; Write-Output 'private'";
+  // Windows PowerShell's .NET Framework reads the OS ACL without module autoloading.
+  const script = `
+$ErrorActionPreference = 'Stop'
+$acl = [System.IO.File]::GetAccessControl($env:DAYNIGHT_ACL_PROBE, [System.Security.AccessControl.AccessControlSections]::Access)
+$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if (!$acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].IsInherited -or $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'Unexpected ACL' }
+[Console]::WriteLine('private')
+`;
   const observed = await runNative("private-acl-readback", "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { ...process.env, DAYNIGHT_ACL_PROBE: target });
   expect(observed.stdout.trim()).toBe("private");
   await runNative("public-ace-grant", "icacls.exe", [target, "/grant", "*S-1-1-0:(R)"]);
