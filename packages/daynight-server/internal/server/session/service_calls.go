@@ -2,12 +2,13 @@ package session
 
 import (
 	"context"
+	"io"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
-	"io"
 )
 
 type archiveOperation interface {
@@ -75,65 +76,71 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		return serviceCalls{}
 	}
 	return serviceCalls{
-		ArchiveContentReserved: func(ctx context.Context, principal model.Principal, project, task, id string, reservation io.Closer) (archiveContent, error) {
-			content, err := service.ArchiveContentReserved(ctx, principal, project, task, id, reservation.(*sessioncore.ArchivePreflightReservation))
-			if err != nil {
-				return archiveContent{}, err
-			}
-			return archiveContent{Data: content.Data, Closer: content}, nil
-		},
-		ArchiveStatus:          service.ArchiveStatus,
-		AuthenticateController: service.AuthenticateController,
-		BeginArchiveReserved: func(ctx context.Context, principal model.Principal, project, task, id string, mode sessioncore.ArchiveMode, reservation io.Closer) (archiveOperation, error) {
-			return service.BeginArchiveReserved(ctx, principal, project, task, id, mode, reservation.(*sessioncore.ArchivePreflightReservation))
-		},
-		BindTerminalConnection:   service.BindTerminalConnection,
-		BrowserPoll:              service.BrowserPoll,
-		Connect:                  service.Connect,
-		Current:                  service.Current,
-		CurrentTerminal:          service.CurrentTerminal,
-		CurrentWithStartup:       service.CurrentWithStartup,
-		Disconnect:               service.Disconnect,
-		DisconnectTerminal:       service.DisconnectTerminal,
-		DisconnectTerminalViewer: service.DisconnectTerminalViewer,
-		FinalizeTerminal:         service.FinalizeTerminal,
-		Grant:                    service.Grant,
-		Handle:                   service.Handle,
-		HandleTerminalControl:    service.HandleTerminalControl,
-		ListTest:                 service.ListTest,
-		Operation:                service.Operation,
-		Poll:                     service.Poll,
-		PollTerminal:             service.PollTerminal,
-		Register:                 service.Register,
-		RegisterTerminal:         service.RegisterTerminal,
-		RegisterTest:             service.RegisterTest,
-		Resource:                 service.Resource,
-		SourceSeq:                service.SourceSeq,
-		StopTest:                 service.StopTest,
-		Submit:                   service.Submit,
-		SubmitTerminal:           service.SubmitTerminal,
-		TerminalArchiveContentReserved: func(ctx context.Context, principal model.Principal, project, task, id string, reservation io.Closer) (archiveContent, error) {
-			content, err := service.TerminalArchiveContentReserved(ctx, principal, project, task, id, reservation.(*sessioncore.ArchivePreflightReservation))
-			if err != nil {
-				return archiveContent{}, err
-			}
-			return archiveContent{Data: content.Data, Closer: content}, nil
-		},
-		TerminalArchiveState:       service.TerminalArchiveState,
-		TerminalArchiveStatus:      service.TerminalArchiveStatus,
-		TerminalAutomationRecovery: service.TerminalAutomationRecovery,
-		TerminalHistory:            service.TerminalHistory,
-		TerminalOperation:          service.TerminalOperation,
-		TerminalReceipt:            service.TerminalReceipt,
-		TerminalRecordingEvidence:  service.TerminalRecordingEvidence,
-		TerminalState:              service.TerminalState,
-		TestSnapshot:               service.TestSnapshot,
-		Timeline:                   service.Timeline,
-		TryReserveArchivePreflight: func() (io.Closer, error) { return service.TryReserveArchivePreflight() },
-		UpdateArchive:              service.UpdateArchive,
-		UpdateTerminalArchive:      service.UpdateTerminalArchive,
-		UpdateTerminalLedger:       service.UpdateTerminalLedger,
-		UpdateTerminalRecording:    service.UpdateTerminalRecording,
-		UpdateTerminalRecovery:     service.UpdateTerminalRecovery,
+		ArchiveContentReserved:         archiveContentCall(service.ArchiveContentReserved),
+		ArchiveStatus:                  service.ArchiveStatus,
+		AuthenticateController:         service.AuthenticateController,
+		BeginArchiveReserved:           archiveOperationCall(service.BeginArchiveReserved),
+		BindTerminalConnection:         service.BindTerminalConnection,
+		BrowserPoll:                    service.BrowserPoll,
+		Connect:                        service.Connect,
+		Current:                        service.Current,
+		CurrentTerminal:                service.CurrentTerminal,
+		CurrentWithStartup:             service.CurrentWithStartup,
+		Disconnect:                     service.Disconnect,
+		DisconnectTerminal:             service.DisconnectTerminal,
+		DisconnectTerminalViewer:       service.DisconnectTerminalViewer,
+		FinalizeTerminal:               service.FinalizeTerminal,
+		Grant:                          service.Grant,
+		Handle:                         service.Handle,
+		HandleTerminalControl:          service.HandleTerminalControl,
+		ListTest:                       service.ListTest,
+		Operation:                      service.Operation,
+		Poll:                           service.Poll,
+		PollTerminal:                   service.PollTerminal,
+		Register:                       service.Register,
+		RegisterTerminal:               service.RegisterTerminal,
+		RegisterTest:                   service.RegisterTest,
+		Resource:                       service.Resource,
+		SourceSeq:                      service.SourceSeq,
+		StopTest:                       service.StopTest,
+		Submit:                         service.Submit,
+		SubmitTerminal:                 service.SubmitTerminal,
+		TerminalArchiveContentReserved: archiveContentCall(service.TerminalArchiveContentReserved),
+		TerminalArchiveState:           service.TerminalArchiveState,
+		TerminalArchiveStatus:          service.TerminalArchiveStatus,
+		TerminalAutomationRecovery:     service.TerminalAutomationRecovery,
+		TerminalHistory:                service.TerminalHistory,
+		TerminalOperation:              service.TerminalOperation,
+		TerminalReceipt:                service.TerminalReceipt,
+		TerminalRecordingEvidence:      service.TerminalRecordingEvidence,
+		TerminalState:                  service.TerminalState,
+		TestSnapshot:                   service.TestSnapshot,
+		Timeline:                       service.Timeline,
+		TryReserveArchivePreflight:     archiveReservationCall(service.TryReserveArchivePreflight),
+		UpdateArchive:                  service.UpdateArchive,
+		UpdateTerminalArchive:          service.UpdateTerminalArchive,
+		UpdateTerminalLedger:           service.UpdateTerminalLedger,
+		UpdateTerminalRecording:        service.UpdateTerminalRecording,
+		UpdateTerminalRecovery:         service.UpdateTerminalRecovery,
+	}
+}
+
+func archiveReservationCall(reserve func() (*sessioncore.ArchivePreflightReservation, error)) func() (io.Closer, error) {
+	return func() (io.Closer, error) { return reserve() }
+}
+
+func archiveOperationCall(begin func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, *sessioncore.ArchivePreflightReservation) (*sessioncore.ArchiveOperation, error)) func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (archiveOperation, error) {
+	return func(ctx context.Context, principal model.Principal, project, task, id string, mode sessioncore.ArchiveMode, reservation io.Closer) (archiveOperation, error) {
+		return begin(ctx, principal, project, task, id, mode, reservation.(*sessioncore.ArchivePreflightReservation))
+	}
+}
+
+func archiveContentCall(read func(context.Context, model.Principal, string, string, string, *sessioncore.ArchivePreflightReservation) (*sessioncore.RetainedArchive, error)) func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error) {
+	return func(ctx context.Context, principal model.Principal, project, task, id string, reservation io.Closer) (archiveContent, error) {
+		content, err := read(ctx, principal, project, task, id, reservation.(*sessioncore.ArchivePreflightReservation))
+		if err != nil {
+			return archiveContent{}, err
+		}
+		return archiveContent{Data: content.Data, Closer: content}, nil
 	}
 }
