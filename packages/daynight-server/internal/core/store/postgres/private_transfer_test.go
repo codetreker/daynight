@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -233,6 +234,36 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	if err := authorize(principal, "oauth", grant); err != nil {
 		t.Fatal(err)
 	}
+	replacement := principal
+	replacement.CredentialID = uuid.NewString()
+	hash := make([]byte, 32)
+	hash[0] = 5
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, replacement.CredentialID, grant, user, hash, now, now.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM oauth_access_tokens WHERE id=$1`, access); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", grant); err == nil {
+		t.Fatal("deleted access token admitted")
+	}
+	if err := authorize(replacement, "oauth", grant); err != nil {
+		t.Fatalf("same grant replacement access: %v", err)
+	}
+	otherPrincipal := principal
+	otherPrincipal.CredentialID = otherAccess
+	if err := authorize(otherPrincipal, "oauth", grant); err == nil {
+		t.Fatal("access token from another grant admitted")
+	}
+	pat := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: uuid.NewString()}
+	hash[0] = 6
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',$4)`, pat.CredentialID, user, hash, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(pat, "oauth", grant); err == nil {
+		t.Fatal("PAT admitted for an OAuth transfer")
+	}
+	principal = replacement
 	blocker, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -431,16 +462,20 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	abort := errors.New("receipt did not commit")
+	if _, err := db.Pool.Exec(ctx, `CREATE FUNCTION reject_transfer_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.data->>'receipt' = 'fail' THEN RAISE EXCEPTION 'injected receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_transfer_receipt BEFORE UPDATE ON private_transfers FOR EACH ROW EXECUTE FUNCTION reject_transfer_receipt()`); err != nil {
+		t.Fatal(err)
+	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
+		current, e := transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
 		if e != nil {
 			return e
 		}
-		return abort
+		current.Data = []byte(`{"receipt":"fail"}`)
+		_, e = d.Put(ctx, current, current.Version)
+		return e
 	})
-	if !errors.Is(err, abort) {
-		t.Fatal(err)
+	if failed, _ := store.DatabaseErrorFacts(err); !failed {
+		t.Fatalf("receipt failure lost its database cause: %v", err)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		current, e := d.Get(ctx, r.ID)
@@ -451,16 +486,25 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		if e != nil {
 			return e
 		}
-		if total != 100 || current.OutstandingBytes != 100 {
+		reserved, e := d.ReservedTotal(ctx)
+		if e != nil {
+			return e
+		}
+		if total != 100 || reserved != 100 || current.OutstandingBytes != 100 || current.ReservedBytes != r.ReservedBytes || current.Version != r.Version || string(current.Data) != string(r.Data) {
 			t.Fatal("rollback lost unmaterialized reservation", total, current)
 		}
-		r, e = transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
+		current, e = transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
+		if e != nil {
+			return e
+		}
+		current.Data = []byte(`{"receipt":"accepted"}`)
+		r, e = d.Put(ctx, current, current.Version)
 		return e
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.OutstandingBytes != 40 || r.ReservedBytes != 100 {
+	if r.OutstandingBytes != 40 || r.ReservedBytes != 100 || !strings.Contains(string(r.Data), "accepted") {
 		t.Fatalf("materialization %+v", r)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
@@ -489,10 +533,21 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		if total != 100 || outstanding != 40 {
 			t.Fatalf("ledger %d/%d", total, outstanding)
 		}
-		return nil
+		current, e := transfercore.ConsumeReservation(ctx, d, r.ID, 40, r.Version)
+		if e != nil {
+			return e
+		}
+		current.Data = []byte(`{"receipt":"complete"}`)
+		r, e = d.Put(ctx, current, current.Version)
+		return e
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var receipt string
+	var reserved, outstanding int64
+	if err := db.Pool.QueryRow(ctx, `SELECT t.data->>'receipt',t.reserved_bytes,t.outstanding_bytes,l.reserved_bytes,l.outstanding_bytes FROM private_transfers t CROSS JOIN private_transfer_ledger l WHERE t.id=$1 AND l.singleton`, r.ID).Scan(&receipt, &r.ReservedBytes, &r.OutstandingBytes, &reserved, &outstanding); err != nil || receipt != "complete" || r.ReservedBytes != 100 || r.OutstandingBytes != 0 || reserved != 100 || outstanding != 0 {
+		t.Fatalf("published reservation: %+v ledger=%d/%d error=%v", r, reserved, outstanding, err)
 	}
 }
 
@@ -915,10 +970,17 @@ func TestPrivateTransferRejectsInvalidStoredDirection(t *testing.T) {
 
 func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
 	ctx := t.Context()
-	db := isolatedStore(t)
+	db, owner, _, project := membershipFixture(t)
+	task := queryTask(t, db, project.ID, 10, model.TaskTodo)
 	now := time.Now().UTC()
-	record := transferRecord(uuid.NewString(), now)
+	record := transferRecord(owner.UserID, now)
+	record.ProjectID, record.TaskID = project.ID, task.ID
+	credential := model.Principal{Kind: model.PATCredential, UserID: owner.UserID, CredentialID: record.AuthorityID}
+	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',$4)`, record.AuthorityID, owner.UserID, make([]byte, 32), now)
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		if err := d.Authorize(ctx, credential, record.AuthorityKind, record.AuthorityID, project.ID, task.ID); err != nil {
+			return err
+		}
 		var err error
 		record, _, err = transfercore.Create(ctx, d, record)
 		if err != nil {
@@ -928,16 +990,37 @@ func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		record.State = "cleanup_pending"
+		lease := now.Add(5 * time.Second)
+		record.State, record.LeaseUntil = "committing", &lease
+		record.Data = []byte(`{"operationId":"result","receipt":"unknown"}`)
 		record, err = transfercore.Update(ctx, d, record, record.Version)
 		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	mustQueryExec(t, db, `DELETE FROM personal_access_tokens WHERE id=$1`, record.AuthorityID)
+	renewedLease := now.Add(45 * time.Second).Truncate(time.Microsecond)
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		current, err := d.Get(ctx, record.ID)
+		if err != nil {
+			return err
+		}
+		current.LeaseUntil = &renewedLease
+		current, err = d.Put(ctx, current, current.Version)
+		if err != nil {
+			return err
+		}
+		current.State = "cleanup_pending"
+		record, err = transfercore.Update(ctx, d, current, current.Version)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("admitted progress after credential deletion: %v", err)
+	}
 	state := "committed"
 	record.CleanupFromState = &state
-	record.Data = []byte(`{"operationId":"result"}`)
+	record.Data = []byte(`{"operationId":"result","receipt":"confirmed"}`)
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var err error
 		record, err = transfercore.UpdatePending(ctx, d, record, record.Version)
@@ -949,6 +1032,12 @@ func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
 	if record.State != "cleanup_pending" || record.CleanupFromState == nil || *record.CleanupFromState != "committed" || record.ReservedBytes != 10 {
 		t.Fatalf("late result lost cleanup obligation: %+v", record)
 	}
+	var operation, receipt string
+	var reserved int64
+	var lease time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT cleanup_from_state,data->>'operationId',data->>'receipt',reserved_bytes,lease_until FROM private_transfers WHERE id=$1`, record.ID).Scan(&state, &operation, &receipt, &reserved, &lease); err != nil || state != "committed" || operation != "result" || receipt != "confirmed" || reserved != 10 || !lease.Equal(renewedLease) {
+		t.Fatalf("persisted late receipt after credential deletion: state=%s operation=%s receipt=%s reserved=%d lease=%v error=%v", state, operation, receipt, reserved, lease, err)
+	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var err error
 		record, err = transfercore.Close(ctx, d, record.ID, record.Version, now.Add(time.Hour))
@@ -957,7 +1046,7 @@ func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.CleanupFromState == nil || *record.CleanupFromState != "committed" || string(record.Data) != `{"operationId": "result"}` {
+	if record.CleanupFromState == nil || *record.CleanupFromState != "committed" || string(record.Data) != `{"receipt": "confirmed", "operationId": "result"}` {
 		t.Fatalf("close lost receipt: %+v", record)
 	}
 }

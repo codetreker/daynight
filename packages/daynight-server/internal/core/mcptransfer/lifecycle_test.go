@@ -124,36 +124,6 @@ func TestBindingAndIdentity(t *testing.T) {
 	}
 }
 
-func TestJSONNumericAndStructureEquality(t *testing.T) {
-	for _, tc := range []struct {
-		a, b  any
-		equal bool
-	}{
-		{json.Number("0"), json.Number("-0.00e100"), true},
-		{json.Number("1000"), json.Number("1e3"), true},
-		{json.Number("-1.20"), json.Number("-12e-1"), true},
-		{json.Number("1"), json.Number("2"), false},
-		{json.Number("1e999999999999999999999"), json.Number("1"), false},
-		{json.Number("1"), json.Number("1e999999999999999999999"), false},
-		{json.Number("1.2e-9223372036854775808"), json.Number("1"), false},
-		{json.Number("10e9223372036854775807"), json.Number("1"), false},
-		{json.Number("1"), "1", false},
-		{[]any{true, "x"}, []any{true, "x"}, true},
-		{[]any{true}, []any{false}, false},
-		{[]any{true}, []any{}, false},
-		{[]any{true}, "x", false},
-		{map[string]any{"a": true}, map[string]any{"a": true}, true},
-		{map[string]any{"a": true}, map[string]any{"b": true}, false},
-		{map[string]any{"a": true}, map[string]any{"a": false}, false},
-		{map[string]any{"a": true}, map[string]any{}, false},
-		{map[string]any{"a": true}, "x", false},
-	} {
-		if got := EqualJSON(tc.a, tc.b); got != tc.equal {
-			t.Errorf("%v vs %v: %v", tc.a, tc.b, got)
-		}
-	}
-}
-
 func TestLifecycleStateGraphAndReceipts(t *testing.T) {
 	states := map[string][]string{"receiving": {"receiving", "committing"}, "preparing": {"preparing", "readable", "failed"}, "readable": {"readable"}, "committing": {"committing", "committed", "failed", "unknown"}, "unknown": {"unknown", "committed", "failed"}, "closed": {}}
 	all := []string{"receiving", "preparing", "readable", "committing", "committed", "failed", "unknown", "cleanup_pending", "closed"}
@@ -174,6 +144,11 @@ func TestLifecycleStateGraphAndReceipts(t *testing.T) {
 		want := s == "receiving" || s == "preparing" || s == "readable" || s == "committing"
 		if ContentState(s) != want {
 			t.Errorf("content %s", s)
+		}
+	}
+	for _, state := range []string{"failed", "committed", "cleanup_pending"} {
+		if Allowed(state, "receiving") {
+			t.Errorf("%s transfer can restart", state)
 		}
 	}
 	if OperationID([]byte(`{"operationId":2}`)) != "" {

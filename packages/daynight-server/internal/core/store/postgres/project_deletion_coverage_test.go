@@ -2,11 +2,17 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	transfercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -162,5 +168,137 @@ func TestPrivateTransferProjectLifecycleAdmissionAndFailures(t *testing.T) {
 	completion, err = check(project.ID, task.ID)
 	if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &driver) || driver.Code != "42703" {
 		t.Fatalf("lifecycle read failure: %+v %v", completion, err)
+	}
+}
+
+func TestPrivateTransferProjectLifecycleSerializesProjectDeletion(t *testing.T) {
+	for _, deletionFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deletion-first=%t", deletionFirst), func(t *testing.T) {
+			f := attachmentWitnessFixture(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			files, err := local.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			record := transferRecord(f.user, time.Now().UTC())
+			record.ProjectID, record.TaskID = f.project, f.task
+			if _, err := f.database.WritePrivateTransfer(ctx, func(dao store.PrivateTransferDAO) error {
+				var err error
+				record, _, err = transfercore.Create(ctx, dao, record)
+				if err != nil {
+					return err
+				}
+				record, err = transfercore.Reserve(ctx, dao, record.ID, 5, 100)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			namespace, err := filestorage.NewTransferNamespace(record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunk := model.UploadChunk{TransferID: record.ID, ChunkID: uuid.NewString(), ObjectID: uuid.NewString(), Size: 5, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("chunk")))}
+			reached := make(chan struct{})
+			release, resume := attachmentWitnessPause(t)
+			defer resume()
+			pause := func() error {
+				close(reached)
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			write := func() error {
+				_, err := f.database.WritePrivateTransfer(ctx, func(dao store.PrivateTransferDAO) error {
+					current, err := dao.Get(ctx, record.ID)
+					if err != nil {
+						return err
+					}
+					if err := dao.LockProjectLifecycle(ctx, f.project, f.task); err != nil {
+						return err
+					}
+					if !deletionFirst {
+						if err := pause(); err != nil {
+							return err
+						}
+					}
+					if _, err := files.PutTransfer(ctx, namespace, chunk.ObjectID, strings.NewReader("chunk")); err != nil {
+						return err
+					}
+					if err := dao.InsertUploadChunk(ctx, chunk); err != nil {
+						return err
+					}
+					current, err = transfercore.ConsumeReservation(ctx, dao, record.ID, chunk.Size, current.Version)
+					if err != nil {
+						return err
+					}
+					current.Data = []byte(`{"receipt":"confirmed"}`)
+					_, err = dao.Put(ctx, current, current.Version)
+					return err
+				})
+				return err
+			}
+			remove := func() error {
+				return attachmentWitnessDelete(ctx, f, true, func() error {
+					if deletionFirst {
+						return pause()
+					}
+					return nil
+				})
+			}
+			var mutation, deletion <-chan error
+			if deletionFirst {
+				deletion = attachmentWitnessAsync(t, ctx, remove)
+			} else {
+				mutation = attachmentWitnessAsync(t, ctx, write)
+			}
+			attachmentWitnessWait(t, ctx, reached)
+			var blocker int32
+			query := `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1%'`
+			if deletionFirst {
+				query = `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'UPDATE projects SET deleted_at=%'`
+			}
+			if err := f.database.Pool.QueryRow(ctx, query).Scan(&blocker); err != nil {
+				t.Fatal(err)
+			}
+			if deletionFirst {
+				mutation = attachmentWitnessAsync(t, ctx, write)
+			} else {
+				deletion = attachmentWitnessAsync(t, ctx, remove)
+			}
+			attachmentWitnessBlocked(t, ctx, f.database, blocker)
+			resume()
+			mutationErr := attachmentWitnessResult(t, ctx, mutation)
+			if err := attachmentWitnessResult(t, ctx, deletion); err != nil {
+				t.Fatal(err)
+			}
+			if deletionFirst && !errors.Is(mutationErr, model.ErrNotFound) || !deletionFirst && mutationErr != nil {
+				t.Fatalf("chunk outcome after lifecycle ordering: %v", mutationErr)
+			}
+			var count int
+			var reserved, outstanding int64
+			if err := f.database.Pool.QueryRow(ctx, `SELECT reserved_bytes,outstanding_bytes,(SELECT count(*) FROM private_upload_chunks WHERE transfer_id=$1) FROM private_transfers WHERE id=$1`, record.ID).Scan(&reserved, &outstanding, &count); err != nil {
+				t.Fatal(err)
+			}
+			object, openErr := files.OpenTransfer(ctx, namespace, chunk.ObjectID)
+			if deletionFirst {
+				if !errors.Is(openErr, fs.ErrNotExist) || count != 0 || reserved != 5 || outstanding != 5 {
+					t.Fatalf("deleted Project admitted a chunk: file=%v receipts=%d reservation=%d/%d", openErr, count, reserved, outstanding)
+				}
+			} else {
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				content, readErr := io.ReadAll(object.Body)
+				closeErr := object.Body.Close()
+				if readErr != nil || closeErr != nil || string(content) != "chunk" || count != 1 || reserved != 5 || outstanding != 0 {
+					t.Fatalf("ordered chunk did not persist: content=%q read=%v close=%v receipts=%d reservation=%d/%d", content, readErr, closeErr, count, reserved, outstanding)
+				}
+			}
+		})
 	}
 }

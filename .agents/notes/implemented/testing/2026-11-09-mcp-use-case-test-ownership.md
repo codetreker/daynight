@@ -51,7 +51,11 @@ request drain; the respective services own transfer receipts, retry/status
 observations and deleted-project operation refusal. Store retains the actual
 project lifecycle and credential reads. Attachment file-effect errors expose
 their cause while retaining the original error chain, allowing the adapter to
-interpret completion facts independently of file execution.
+interpret completion facts independently of file execution. The
+[MCP transfer service ownership decision](2026-11-09-mcptransfer-test-ownership.md)
+keeps its real lifecycle, permits and chunk stream while controlling DAO,
+transaction and directly invoked attachment-operation results; Store and process
+witnesses retain receipt persistence and crash recovery.
 
 The MCP test binary clears database and UniAuth fixture variables before test
 execution. Full module validation can provide infrastructure to its physical

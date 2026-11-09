@@ -35,15 +35,26 @@ type attachmentPut interface {
 	AcquireUploadLease(context.Context, model.Principal, string, string) (io.Closer, error)
 }
 
+type transferAdmission interface {
+	PutFromWithLease(context.Context, io.Closer, func(store.AttachmentMutationScope) (io.ReadCloser, error)) (model.Attachment, bool, error)
+	Close() error
+}
+
 type Uploads struct {
 	lifecycle       *Lifecycle
 	files           filestorage.TransferStorage
 	attachments     attachmentPut
+	admitTransfer   func(context.Context, model.Principal, string, string, string, string, filestorage.TransferNamespace) (transferAdmission, error)
 	renewalInterval time.Duration
 }
 
 func NewUploads(lifecycle *Lifecycle, files filestorage.TransferStorage, attachments attachmentPut) *Uploads {
-	return &Uploads{lifecycle: lifecycle, files: files, attachments: attachments, renewalInterval: 20 * time.Second}
+	return &Uploads{
+		lifecycle: lifecycle, files: files, attachments: attachments, renewalInterval: 20 * time.Second,
+		admitTransfer: func(ctx context.Context, principal model.Principal, project, task, path, contentType string, namespace filestorage.TransferNamespace) (transferAdmission, error) {
+			return attachments.AdmitTransfer(ctx, principal, project, task, path, contentType, namespace)
+		},
+	}
 }
 
 type uploadData = transfer.UploadData
@@ -466,7 +477,7 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if e != nil {
 		return nil, e
 	}
-	admission, e := s.attachments.AdmitTransfer(p.Context, a.Principal, project, task, r.Path, r.ContentType, namespace)
+	admission, e := s.admitTransfer(p.Context, a.Principal, project, task, r.Path, r.ContentType, namespace)
 	if e != nil {
 		return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, e
 	}

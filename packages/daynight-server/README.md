@@ -723,8 +723,9 @@ transport build. Production builds use the real Web assets described under
 
 `bash scripts/startup-shutdown.sh` owns command configuration and exit status,
 startup and readiness, graceful shutdown and deadlines, concurrent migrations,
-migration failure recovery, persistence across restart, and attachment
-revocation during an admitted upload. The command tests stay in
+migration failure recovery, persistence across restart, attachment
+revocation during an admitted upload, and private-transfer orphan recovery after
+abrupt process exit. The command tests stay in
 `cmd/daynight-server` so they exercise the private `main` and `run` entries, but
 the explicit `startupshutdown` build tag keeps them out of ordinary module test
 discovery. The entry also runs `TestWebhookRunnerAbruptProcessRecovery` with
@@ -1183,6 +1184,45 @@ preserves the original rationale. The
 owns responsibility boundaries; the
 [Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
 records the direct Session binding and retained proofs.
+
+### MCP transfer service tests
+
+The complete `internal/service/mcptransfer` suite controls the existing private
+transfer DAO and transaction boundaries. Reads, proposed writes and completion
+outcomes are explicit, independently constructed facts; recorded writes do not
+supply later reads or simulate persistence. Unconfigured calls fail, and the
+test binary clears database and UniAuth test variables.
+
+Uploads control the directly invoked attachment operation through an
+instance-owned private admission adapter. `NewUploads` still binds that adapter
+to the real attachment service, with the same public constructor and production
+renewal interval. Tests execute the actual transfer lifecycle, permits, files,
+gates, cancellation and drain, lease renewal, chunk stream and hash verification.
+The real 5 MiB file limit, ten 512 KiB chunks, inline 512 KiB and excess inputs
+remain exercised.
+
+Run the complete service suite without database or authentication fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/service/mcptransfer
+```
+
+PostgreSQL tests retain actual receipt/reservation atomicity, failed final writes,
+authority replacement, late receipts after credential revocation and Project
+lifecycle lock order. Core owns exact JSON binding equivalence, including extreme
+exponents tested in a real bounded subprocess. The startup/shutdown entry runs
+`TestMCPTransferCrossProcessCrashRecovery`: a child holds a real private gate
+around an unreceipted orphan; cleanup must refuse while it lives, and a fresh
+Lifecycle subprocess reclaims the object and releases accounting after the
+writer is killed. This is a process-mechanism witness in the existing lifecycle
+job. Normal assembled API flows retain their separate integration entry.
+
+The [MCP transfer ownership decision](../../.agents/notes/implemented/testing/2026-11-09-mcptransfer-test-ownership.md)
+records the proof allocation. Measurements include receiving Store, core and
+process work; supplied receipts and completion outcomes are not evidence of
+physical persistence.
 
 ### MCP protocol tests
 
