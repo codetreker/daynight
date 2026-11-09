@@ -290,8 +290,7 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 
 func TestSessionWriterClosedPoolDoesNotInvokeCallback(t *testing.T) {
 	ctx := t.Context()
-	db := isolatedStore(t)
-	db.Close()
+	db := closedStore(t)
 	completion, err := db.WriteSession(ctx, func(store.SessionScope) error {
 		t.Fatal("closed pool invoked callback")
 		return nil
