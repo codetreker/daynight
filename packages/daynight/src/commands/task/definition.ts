@@ -1,4 +1,5 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
+import { taskStatuses } from "../../task/status.js";
 
 const helpOption: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
 const projectOption: CommandOption = { names: ["--project"], description: "Use this project UUID for this invocation", value: { name: "project-id", kind: "text" } };
@@ -8,10 +9,10 @@ const titleOption: CommandOption = { names: ["--title"], description: "Task titl
 const descriptionOption: CommandOption = { names: ["--description"], description: "Task description; an empty value clears it", value: { name: "description", kind: "text", allowEmpty: true } };
 const dependencyOption: CommandOption = { names: ["--depends-on"], description: "Ordinary prerequisite UUID; repeat for the complete ordinary set", value: { name: "task-id", kind: "text" }, repeatable: true };
 const externalDependencyOption: CommandOption = { names: ["--external-depends-on"], description: "External prerequisite UUID; repeat for the complete external set", value: { name: "task-id", kind: "text" }, repeatable: true };
-const dependencyDetails = "Supplying either dependency option replaces every dependency and its classification. --depends-on supplies ordinary prerequisites; --external-depends-on supplies external prerequisites. External-only input keeps only those external prerequisites; ordinary-only input makes every supplied prerequisite ordinary. IDs must be valid UUIDs and occur once across both options. Both kinds block execution until completed.";
+const dependencyDetails = "Supplying either dependency option replaces every dependency and its classification. --depends-on supplies ordinary prerequisites; --external-depends-on supplies external prerequisites. External-only input keeps only those external prerequisites; ordinary-only input makes every supplied prerequisite ordinary. IDs must be valid UUIDs and occur once across both options. Both kinds block execution until done or cancelled.";
 const assignedToOption: CommandOption = { names: ["--assigned-to"], description: "Task assignee UUID", value: { name: "user-id", kind: "text" } };
 const assignedToFilterOption: CommandOption = { names: ["--assigned-to"], description: "Include tasks assigned to this user, me, or unassigned", value: { name: "user-id|me|unassigned", kind: "text" } };
-const statusOption: CommandOption = { names: ["--status"], description: "Task status", value: { name: "status", kind: "text", choices: ["todo", "in_progress", "done"] } };
+const statusOption: CommandOption = { names: ["--status"], description: "Task status", value: { name: "status", kind: "text", choices: taskStatuses } };
 const allowAgentsOption: CommandOption = { names: ["--allow-agents"], description: "Automatic-execution permission", value: { name: "true|false", kind: "text", choices: ["true", "false"] } };
 const platformChoices = ["windows", "linux", "macos"] as const;
 const requiredPlatformOption: CommandOption = { names: ["--required-platform"], description: "Required execution platform", value: { name: "platform", kind: "text", choices: platformChoices } };
@@ -34,7 +35,15 @@ export const taskDefinition: CommandDefinition = {
       name: "list",
       description: "List unfinished tasks, with in-progress and ready tasks first",
       options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, listJsonOption, helpOption],
-      details: "By default, exclude done tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and done tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
+      details: "By default, exclude done and cancelled tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and terminal tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
+    },
+    {
+      name: "search",
+      description: "Search task IDs, titles and descriptions in one project",
+      arguments: [{ name: "expression", description: "Complete search expression" }],
+      options: [statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, { names: ["--json"], description: "Print search results as a JSON array" }, helpOption],
+      allowOptionsTerminator: true,
+      details: "Pass the complete expression as one argument; use -- before an expression starting with a dash. Supports AND, OR, NOT, parentheses, quoted phrases, id:, title: and description:.\nAll statuses, including done, are searched by default. Filters combine with the expression. Every page is read before output, preserving server order. Search output omits assignee and update time; use task show for complete details.",
     },
     {
       name: "ready",
@@ -85,10 +94,10 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "set-status",
-      description: "Set a task to todo, in_progress, or done",
-      arguments: [taskArgument, { name: "status", description: "Target task status", choices: ["todo", "in_progress", "done"] }],
+      description: "Set a task to todo, in_progress, done, or cancelled",
+      arguments: [taskArgument, { name: "status", description: "Target task status", choices: taskStatuses }],
       options: [claimOption, versionOption, projectOption, helpOption],
-      details: "Every direct prerequisite must be done when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration.\nUse --claim-id with done to complete an explicitly identified active worker claim as its current owner. The claim is never inferred from the task or environment. Without --claim-id, use ordinary task status setting.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
+      details: "Every direct prerequisite must be done or cancelled when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done. Cancellation does not require satisfied prerequisites and cannot be reversed. An active worker must be released before cancellation; released history may be cancelled.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration. Cancellation preserves execution timestamps and records cancelledAt; task records and materials remain readable.\nUse --claim-id with done to complete an explicitly identified active worker claim as its current owner. The claim is never inferred from the task or environment. Without --claim-id, use ordinary task status setting.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
     },
     {
       name: "delete",

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createOperation, parseApiJson } from "../../../src/api/index.js";
+import { ApiError, createApiClient, createOperation, parseApiJson } from "../../../src/api/index.js";
 import type { ApiClient, Operation, Project, Task, TaskGraph } from "../../../src/api/index.js";
 import { UsageError } from "../../../src/cli/context.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
@@ -16,8 +16,8 @@ const accountId = "abcdefab-6666-4222-8333-123456789abc";
 const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
+const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
 const propertySchema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
 const operations: Operation[] = [];
@@ -25,7 +25,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
-    previewProjectTransfer: vi.fn(), transferProject: vi.fn(),
+    previewProjectTransfer: vi.fn(), transferProject: vi.fn(), previewProjectDeletion: vi.fn(), deleteProject: vi.fn(),
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
@@ -49,7 +49,7 @@ const fixture = (operation = createOperation()) => {
     createProject: vi.fn<ApiClient["createProject"]>(), listProjects: vi.fn<ApiClient["listProjects"]>(),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
     createTask: vi.fn<ApiClient["createTask"]>().mockResolvedValue(task), getTask: vi.fn<ApiClient["getTask"]>().mockResolvedValue(task),
-    listTasks: vi.fn<ApiClient["listTasks"]>().mockResolvedValue([task]), listReadyTasks: vi.fn<ApiClient["listReadyTasks"]>().mockResolvedValue([task]), updateTask: vi.fn<ApiClient["updateTask"]>().mockResolvedValue(task),
+    listTasks: vi.fn<ApiClient["listTasks"]>().mockResolvedValue([task]), searchTasks: vi.fn<ApiClient["searchTasks"]>().mockResolvedValue([]), listReadyTasks: vi.fn<ApiClient["listReadyTasks"]>().mockResolvedValue([task]), updateTask: vi.fn<ApiClient["updateTask"]>().mockResolvedValue(task),
     deleteTask: vi.fn<ApiClient["deleteTask"]>().mockResolvedValue(),
     setTaskStatus: vi.fn<ApiClient["setTaskStatus"]>().mockResolvedValue(task),
     listTaskPage: async () => { throw new Error("Unused worker API method"); },
@@ -61,7 +61,7 @@ const fixture = (operation = createOperation()) => {
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     getTaskGraph: vi.fn<ApiClient["getTaskGraph"]>().mockResolvedValue(graph),
     putTaskAttachment: vi.fn<ApiClient["putTaskAttachment"]>(), listTaskAttachments: vi.fn<ApiClient["listTaskAttachments"]>(),
-    readTaskAttachment: vi.fn<ApiClient["readTaskAttachment"]>(), removeTaskAttachment: vi.fn<ApiClient["removeTaskAttachment"]>(),
+    readTaskAttachment: vi.fn<ApiClient["readTaskAttachment"]>(), removeTaskAttachment: vi.fn<ApiClient["removeTaskAttachment"]>(), webhookRequest: async <T>(): Promise<T> => { throw new Error("Unavailable in this test."); },
   };
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn<() => string>(() => { throw new Error("Dispatch must not read home"); }),
@@ -78,7 +78,7 @@ const fixture = (operation = createOperation()) => {
 };
 
 describe("task parameter boundaries", () => {
-  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
+  it.each([[], ["--help"], ...["create", "list", "search", "ready", "show", "update", "set-status", "delete", "graph", "properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
     const f = fixture();
     await runTaskCommand(args, f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenCalledOnce();
@@ -137,6 +137,7 @@ describe("task parameter boundaries", () => {
     ["update", taskId, "--pull-request-title=", "--clear-pull-requests"],
     ["update", taskId, "--pull-request-url", "-leading", "--pull-request-title", "Title"],
     ["graph"], ["graph", "invalid"], ["graph", taskId, "extra"], ["graph", taskId, "--depends-only", "--depends-only"],
+    ["search"], ["search", ""], ["search", " \t"], ["search", "\0"], ["search", "x", "--project", "invalid"], ["search", "x", "--assigned-to", "invalid"], ["search", "x", "--status", "invalid"], ["search", "x", "--all"],
     ["graph", taskId, "--ready"], ["create", "--title", "Title", "--json"], ["list", "--ready", "--ready"],
     ...["0", "101", "-1", "+1", "1.5", "1e1", " 1", "1 ", "Infinity", "99999999999999999999999999999", ""].map((value) => ["ready", `--limit=${value}`]),
     ["ready", "--status", "todo"], ["ready", "--cursor", "next"], ["ready", "--limit", "1", "--limit", "2"],
@@ -149,6 +150,36 @@ describe("task parameter boundaries", () => {
     await expect(runTaskCommand(args, f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("searches an explicit project without reading it and preserves the raw expression and filter values", async () => {
+    const f = fixture();
+    const query = '  title:"缓存 😀 \\"x\\""  ';
+    await runTaskCommand(["search", query, "--project", projectId.toUpperCase(), "--status", "done", "--assigned-to", "me", "--ready", "--allow-agents", "false", "--compatible-platform", "linux", "--json"], f.context, f.dependencies);
+    expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(f.api.searchTasks).toHaveBeenCalledExactlyOnceWith(projectId, { query, status: "done", assignedTo: "me", ready: true, allowAgents: false, compatiblePlatform: "linux" });
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith("[]\n");
+  });
+
+  it("resolves the repository when no project is supplied", async () => {
+    const f = fixture();
+    await runTaskCommand(["search", "--", "-literal"], f.context, f.dependencies);
+    expect(f.dependencies.resolveProject).toHaveBeenCalledOnce();
+    expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.api.searchTasks).toHaveBeenCalledExactlyOnceWith(projectId, { query: "-literal" });
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Project: ${projectId}\nNo matching tasks.\n`);
+  });
+
+  it("keeps stdout empty when a search exceeds its shared response budget", async () => {
+    const operation = createOperation({ limits: { responseBytes: 32 } });
+    const f = fixture(operation);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(" ".repeat(33), { status: 200, headers: { "content-type": "application/json", "Daynight-User-ID": accountId } }));
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
+    f.api.searchTasks.mockImplementation(api.searchTasks);
+    await expect(runTaskCommand(["search", "query", "--project", projectId, "--json"], f.context, f.dependencies)).rejects.toThrow("HTTP response byte limit exceeded");
+    expect(fetch).toHaveBeenCalledOnce();
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
@@ -188,9 +219,9 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
-  it.each(["todo", "in_progress", "done"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {
+  it.each(["todo", "in_progress", "done", "cancelled"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {
     const f = fixture();
-    const result = { ...task, status, description: "Full status result", version: task.version + 1n };
+    const result = { ...task, status, ready: status === "todo", cancelledAt: status === "cancelled" ? time : null, description: "Full status result", version: task.version + 1n };
     f.api.setTaskStatus.mockResolvedValue(result);
     await runTaskCommand(["set-status", taskId.toUpperCase(), status], f.context, f.dependencies);
     expect(f.dependencies.resolveProject).toHaveBeenCalledExactlyOnceWith({ serverUrl: "http://localhost:8787", operation: f.operation, api: f.api, workingDirectory: path.resolve("caller") });
@@ -201,7 +232,7 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task status set.\n${renderTask(result)}`);
   });
 
-  it.each(["todo", "in_progress", "done"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
+  it.each(["todo", "in_progress", "done", "cancelled"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
     const f = fixture();
     const failure = new Error("Version conflict");
     f.api.setTaskStatus.mockRejectedValue(failure);

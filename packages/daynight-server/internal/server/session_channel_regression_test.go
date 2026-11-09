@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,19 +21,16 @@ func TestControllerChannelRejectsInvalidGrantsBeforeUpgrade(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			f := sessionHTTPSetup(t)
 			token := f.grant.Token
-			var err error
 			switch kind {
 			case "unknown":
 				token = "dncontroller_invalid"
 			case "expired":
-				_, err = f.db.Pool.Exec(context.Background(), `UPDATE task_sessions SET grant_expires_at=now()-interval '1 second' WHERE id=$1`, f.snapshot.SessionID)
+				expired := time.Now().Add(-time.Second)
+				f.record.GrantExpiry = &expired
 			case "consumed":
-				_, err = f.db.Pool.Exec(context.Background(), `UPDATE task_sessions SET grant_consumed=true WHERE id=$1`, f.snapshot.SessionID)
+				f.record.Consumed = true
 			case "revoked":
-				_, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID)
-			}
-			if err != nil {
-				t.Fatal(err)
+				f.credentialRevoked = true
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -59,12 +57,21 @@ func TestControllerChannelStaleOfferRejectsOnlyOperation(t *testing.T) {
 	publish := func(seq string) {
 		sessionWSWrite(t, conn, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: seq, Kind: "state", Payload: json.RawMessage(jsonBody(t, state))}}})
 		sessionWSKind(t, conn, "events_ack")
+		f.supplyState(state)
+		source, _ := strconv.ParseInt(seq, 10, 64)
+		f.supplySource(source)
 	}
 	publish("1")
 	submit := func() sp.Command {
 		command := sp.Command{Protocol: sp.Protocol, RequestID: "stale-offer", Fence: snapshot.Fence, OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"bounded test input"}],"expectedTurnId":null}`)}
-		decodeResponse[map[string]any](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+snapshot.SessionID+"/commands", jsonBody(t, command)), http.StatusAccepted)
+		f.expectCommand(t, command)
+		receipt := decodeResponse[struct {
+			Operation sp.Operation `json:"operation"`
+		}](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+snapshot.SessionID+"/commands", jsonBody(t, command)), http.StatusAccepted).Operation
+		f.suppliedOperation(t, command, receipt)
+		f.selectOffers(t, command.OperationID)
 		sessionWSKind(t, conn, "operation_offer")
+		f.suppliedOffer(t, command.OperationID, snapshot.ConnectionEpoch)
 		return command
 	}
 	command := submit()
@@ -76,6 +83,7 @@ func TestControllerChannelStaleOfferRejectsOnlyOperation(t *testing.T) {
 	if err := json.Unmarshal(frame["operation"], &receipt); err != nil || receipt.State != "rejected" || receipt.OperationID != command.OperationID {
 		t.Fatal(receipt, err)
 	}
+	f.supplyReceipt(t, receipt)
 	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "heartbeat", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence})
 	sessionWSKind(t, conn, "heartbeat_ack")
 	state.Activity = "idle"

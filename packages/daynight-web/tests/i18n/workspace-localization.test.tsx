@@ -1,5 +1,5 @@
 import { selectTaskList } from '../helpers/projectViews';
-import { createGraphSyncFixture } from "../helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "../helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,10 +23,10 @@ const projectId = "10000000-0000-4000-8000-000000000001";
 const taskId = "20000000-0000-4000-8000-000000000001";
 const date = "2026-10-20T12:34:56Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Project 用户数据", repoUrl: "https://example.com/repo", createdAt: date, updatedAt: date };
-const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
+const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
 const graph = (items = tasks): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project, tasks: items,
-  summary: { total: items.length, todo: items.filter((task) => task.status === "todo").length, done: items.filter((task) => task.status === "done").length,
+  summary: { total: items.length, todo: items.filter((task) => task.status === "todo").length, done: items.filter((task) => task.status === "done").length, cancelled: 0,
     inProgress: items.filter((task) => task.status === "in_progress").length, ready: items.filter((task) => task.ready).length,
     blocked: items.filter((task) => task.status === "todo" && !task.ready).length },
 });
@@ -46,7 +46,7 @@ beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    return taskSyncReadFixture(syncFixture.toSync(value, query, replacementEpochs.get(value)));
   });
 });
 
@@ -122,7 +122,7 @@ describe("workspace localization", () => {
     [new ApiError("network", null, "network", "network-id"), "Project could not be loaded", "无法连接服务，请检查本地服务后重试。"],
     [new ApiError("protocol", 200, "protocol", "protocol-id"), "Task graph data is incomplete", "任务图数据不完整或不一致，请重试。"],
     [new ApiError("server", 404, "not_found", "missing-id"), "Project not found", "这个项目不存在，请返回项目列表。"],
-    [new ApiError("server", 409, "graph_limit_exceeded", "limit-id", { nodeCount: 1001, edgeCount: 5100, maxNodes: 1000, maxEdges: 5000 }), "Task graph exceeds the display limit", "完整任务图超过当前支持的展示规模。"],
+    [new ApiError("server", 500, "internal_error", "read-id"), "Project could not be loaded", "暂时无法读取任务图，请重试。"],
   ] as const)("retranslates an existing %s error and retains its request ID without retrying", async (error, title, detail) => {
     graphRequest.mockRejectedValueOnce(error);
     window.history.replaceState(null, "", `/projects/${projectId}`);
@@ -136,12 +136,12 @@ describe("workspace localization", () => {
     expect(within(alert).getByText(detail)).toBeVisible();
     expect(screen.getByText(error.requestId!)).toBe(requestId);
     expect(graphRequest).toHaveBeenCalledTimes(1);
-    if (error.graphLimit !== undefined) expect(alert).toHaveTextContent("当前 1,001 个任务、5,100 条依赖；支持最多 1,000 个任务、5,000 条依赖。");
   });
 
   it("retains task tabs, filters, rows and scroll state, and retranslates a semantic removed-task notice", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
+    const replacement = resetSnapshot(graph([]));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValue(replacement);
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
@@ -173,11 +173,11 @@ describe("workspace localization", () => {
     await user.selectOptions(selector, "en");
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
     expect(screen.getByRole("button", { name: "Dismiss notification" })).toBe(dismiss);
-    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(graphRequest).toHaveBeenCalledTimes(3);
     expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeVisible();
     await user.click(dismiss);
     expect(screen.queryByText(en.workspace.project.selectedTaskRemoved)).toBeNull();
-    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(graphRequest).toHaveBeenCalledTimes(3);
     await user.selectOptions(selector, "zh-CN");
     expect(screen.queryByRole("button", { name: "关闭提示" })).toBeNull();
   });

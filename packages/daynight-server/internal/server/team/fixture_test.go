@@ -11,7 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -51,7 +51,7 @@ func (w *threadFailingWriter) Write(data []byte) (int, error) {
 
 type teamResourceHandler struct {
 	http.Handler
-	database  *store.Store
+	database  *postgres.Store
 	principal model.Principal
 	cookie    *http.Cookie
 	origin    string

@@ -6,6 +6,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
 func (s *Memberships) read(ctx context.Context, p model.Principal, id string, admin bool, op func(store.ProjectReader, model.ProjectAccess) error) error {
@@ -25,6 +27,32 @@ func (s *Memberships) read(ctx context.Context, p model.Principal, id string, ad
 		}
 		return op(dao, access)
 	})
+}
+func (s *Memberships) writeAffected(ctx context.Context, p model.Principal, id, user string, admin bool, op func(store.ProjectWriteDAO) error) error {
+	id, err := core.ValidateRead(p, id)
+	if err != nil {
+		return err
+	}
+	var refusal *model.Fault
+	c, err := s.store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
+		return completion.Capture(func() error {
+			dao := scope.ProjectDAO()
+			if admin {
+				access, err := core.RequireProjectWrite(ctx, dao, p)
+				if err != nil {
+					return err
+				}
+				if err = core.RequireProjectAdmin(access); err != nil {
+					return err
+				}
+			}
+			if err := op(dao); err != nil {
+				return err
+			}
+			return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{ProjectID: id, UserID: user})
+		}, &refusal)
+	})
+	return completed(c, err, refusal)
 }
 func (s *Memberships) write(ctx context.Context, p model.Principal, id string, op func(store.ProjectWriteDAO) error) error {
 	id, err := core.ValidateRead(p, id)
@@ -71,12 +99,12 @@ func (s *Memberships) SetRole(ctx context.Context, p model.Principal, projectID,
 		return model.ProjectGrant{}, err
 	}
 	var result model.ProjectGrant
-	err = s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
+	err = s.writeAffected(ctx, p, projectID, id, true, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.SetRole(ctx, dao, id, input)
 		return err
 	})
-	return result, err
+	return result, core.ProjectWriteError(err)
 }
 func (s *Memberships) Remove(ctx context.Context, p model.Principal, projectID, userID string, input core.RemoveProjectMember) error {
 	if err := core.ValidateMemberActor(p, input.ExpectedUserID); err != nil {
@@ -86,7 +114,7 @@ func (s *Memberships) Remove(ctx context.Context, p model.Principal, projectID, 
 	if err != nil {
 		return err
 	}
-	return s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error { return core.Remove(ctx, dao, id, input) })
+	return core.ProjectWriteError(s.writeAffected(ctx, p, projectID, id, true, func(dao store.ProjectWriteDAO) error { return core.Remove(ctx, dao, id, input) }))
 }
 func (s *Memberships) SetGrant(ctx context.Context, p model.Principal, projectID, userID string, input core.SetProjectGrant) (core.SetGrantResult, error) {
 	id, err := core.ValidateSetGrant(p, userID, input)
@@ -94,12 +122,12 @@ func (s *Memberships) SetGrant(ctx context.Context, p model.Principal, projectID
 		return core.SetGrantResult{}, err
 	}
 	var result core.SetGrantResult
-	err = s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
+	err = s.writeAffected(ctx, p, projectID, id, true, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.SetGrant(ctx, dao, p, id, input)
 		return err
 	})
-	return result, err
+	return result, core.ProjectWriteError(err)
 }
 func (s *Memberships) RemoveGrant(ctx context.Context, p model.Principal, projectID, userID string, input core.RemoveProjectMember) (core.RemoveGrantResult, error) {
 	if err := core.ValidateMemberActor(p, input.ExpectedUserID); err != nil {
@@ -114,12 +142,12 @@ func (s *Memberships) RemoveGrant(ctx context.Context, p model.Principal, projec
 		return core.RemoveGrantResult{}, err
 	}
 	var result core.RemoveGrantResult
-	err = s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
+	err = s.writeAffected(ctx, p, projectID, id, true, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.RemoveGrant(ctx, dao, p, projectID, id, input)
 		return err
 	})
-	return result, err
+	return result, core.ProjectWriteError(err)
 }
 func (s *Memberships) CreateInvitation(ctx context.Context, p model.Principal, id, expected string) (core.MintedInvitation, error) {
 	if err := core.ValidateMemberActor(p, expected); err != nil {
@@ -190,7 +218,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, p model.Principal, s
 		return core.InvitationAcceptance{}, err
 	}
 	var result core.InvitationAcceptance
-	err := write(ctx, s.store, id, func(dao store.ProjectWriteDAO) error {
+	err := s.writeAffected(ctx, p, id, p.UserID, false, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.AcceptInvitation(ctx, dao, p, id, secret, s.now)
 		return err

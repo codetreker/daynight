@@ -13,14 +13,18 @@ an unresolved defect behind a later passing run.
 
 ## Decision
 
-The ordinary phase of the dedicated macOS ARM64 job executes its unchanged command under
+The macOS ARM64 entry in the ordinary `verify` matrix executes its unchanged
+test command under
 [`observe-native-validation.mjs`](../../../../packages/daynight/scripts/observe-native-validation.mjs).
 The observer inherits the command's stdio and environment, records its PID and
 exit code or signal, and propagates failure. It does not change suite selection,
-Vitest concurrency or test deadlines. The [single macOS allocation decision](2026-11-05-single-macos-native-allocation.md)
-owns the current ten-minute validation-phase limits and twenty-minute job limit.
-Ordinary termination diagnostics upload before installed validation begins and
-remain separate from the environment/probe paths reused by those phases.
+Vitest concurrency or test deadlines. The
+[independent macOS validation decision](2026-11-07-independent-macos-cli-validation.md)
+owns the shared native matrices and their ten-minute job limit. Conditional
+macOS steps select the observer and upload its termination diagnostics; Linux
+and Windows execute the same ordinary test command directly. Installed
+validation prepares its own runner and workspace, so diagnostic collection and
+receipt paths have no cross-phase ordering or reuse requirement.
 
 Incremental observations contain process IDs, parent/group IDs, resident memory
 and elapsed lifetime without command arguments or environment values. Process

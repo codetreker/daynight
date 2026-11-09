@@ -1,19 +1,23 @@
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { useEffect } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTask, getTaskSync } from "../src/api/client";
+import { searchTasks, TaskSearchError } from "../src/api/task-search";
 import type { GraphTask, TaskDetail, TaskGraph, TaskStatus } from "../src/api/types";
 import { ProjectPage } from "../src/features/projects/ProjectPage";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { projectChain, type GraphIndex } from "../src/features/task-graph/model";
+import * as TaskSearchModule from "../src/features/task-search/useTaskSearch";
+import { waitForState } from "./helpers/waitForState";
 
 const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
-vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), getTask: vi.fn(), getTaskSync: vi.fn() }));
+vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
+vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
   index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
@@ -24,12 +28,12 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
 </div>)}</div> }));
-vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
-  projectId: string; taskId: string; snapshot: GraphSnapshot; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
+vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
+  projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
-  const state = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
+  const state = useTaskDetail(projectId, taskId, snapshot?.revision ?? 0, snapshot?.index.nodes.get(taskId));
   useEffect(() => () => onRestoreFocus(), [onRestoreFocus]);
-  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
+  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="observation-kind">{observation.kind}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
     <button onClick={() => onSelectTask(C)}>关系跳转</button><button onClick={() => onSelectTask(X)}>未知关系</button>
     <button onClick={onRefreshGraph}>刷新全图</button><button onClick={onClose}>关闭详情</button></aside>;
 } }));
@@ -53,13 +57,13 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id === projectId ? "核心项目" : "另一个项目", repoUrl: "git@github.com:example/project.git", createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
-      done: tasks.filter((task) => task.status === "done").length, inProgress: tasks.filter((task) => task.status === "in_progress").length,
+      done: tasks.filter((task) => task.status === "done").length, cancelled: 0, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === "todo" && !task.ready).length },
   };
 };
@@ -71,11 +75,22 @@ const deferred = <T,>() => {
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const detailRequest = vi.mocked(getTask);
-const selectTasks = () => { fireEvent.click(screen.getByRole('tab', { name: '任务列表' })); };
+const sectionTabs = () => within(document.querySelector<HTMLElement>(".project-section-tabs")!);
+const taskTabs = () => within(document.querySelector<HTMLElement>(".project-task-tabs")!);
+const titleActions = () => within(document.querySelector<HTMLElement>(".project-title-actions")!);
+const chainList = () => within(screen.getByTestId("root-list"));
+const chainDialog = () => within(document.querySelector<HTMLElement>('[id^="task-graph-"]')!);
+const detail = () => within(screen.getByLabelText("详情测试外壳"));
+const searchForm = () => within(document.querySelector<HTMLElement>(".task-search-form")!);
+const searchResults = () => within(document.querySelector<HTMLElement>(".task-search-results")!);
+const listButton = (name: string) => chainList().getByRole("button", { name });
+const findListButton = (name: string) => waitFor(() => listButton(name));
+const findNodeButton = (name: string) => waitFor(() => chainDialog().getByRole("button", { name }));
+const selectTasks = () => { fireEvent.click(sectionTabs().getByRole('tab', { name: '任务列表' })); };
 const number = (label: string) => screen.getByText(label, { selector: ".stat-label" }).parentElement?.querySelector(".stat-number")?.textContent;
 const preferenceKey = (id = projectId) => `daynight:project-view:${id}`;
 const rememberRoot = (root: string | null, id = projectId) => window.localStorage.setItem(preferenceKey(id), JSON.stringify({ expandedRootId: root }));
-const openChain = async (name: string) => { fireEvent.click(await screen.findByRole("button", { name })); };
+const openChain = async (name: string) => { fireEvent.click(await findListButton(name)); };
 
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
@@ -83,6 +98,7 @@ const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullReq
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
+  vi.mocked(searchTasks).mockReset();
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
@@ -90,25 +106,134 @@ beforeEach(() => {
     const sync = syncFixture.toSync(value, query, replacementEpochs.get(value));
     servedGraphs.set(projectId, value);
     for (const task of sync.tasks) servedVersions.set(`${projectId}/${task.id}`, task.version);
-    return sync;
+    return taskSyncReadFixture(sync);
   });
 });
 
 beforeEach(() => {
-  graphRequest.mockReset(); detailRequest.mockReset();
+  graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
-    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
+    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
       id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
     return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
 });
 
 describe("project dashboard", () => {
+  it("keeps search available without a graph and opens a hit with direct observation", async () => {
+    graphRequest.mockRejectedValue(new ApiError("network"));
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.click(searchForm().getByRole("button", { name: "搜索语法" }));
+    expect(screen.getByText(/id:、title: 和 description:/)).toBeTruthy();
+    fireEvent.change(input, { target: { value: "历史" } });
+    expect(searchTasks).not.toHaveBeenCalled();
+    fireEvent.submit(input.closest("form")!);
+    const result = await waitFor(() => searchResults().getByRole("button", { name: "打开任务：完整的历史任务" }));
+    expect(screen.getByText("原任务链", { exact: false })).toBeTruthy();
+    expect(result).toHaveTextContent("ID 命中 · 描述命中 · 匹配描述");
+    expect(result).toHaveTextContent(X);
+    fireEvent.click(result);
+    expect(screen.getByTestId("selected-task")).toHaveTextContent(X);
+    expect(screen.getByTestId("observation-kind")).toHaveTextContent("direct");
+    fireEvent.click(detail().getByRole("button", { name: "关闭详情" }));
+    expect(result).toHaveFocus();
+  });
+
+  it("keeps draft edits separate and restores ordinary task state on clear", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await findListButton("另一任务链");
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("未找到匹配任务");
+    fireEvent.change(input, { target: { value: "未提交" } });
+    expect(screen.getByText("搜索结果：缓存")).toBeTruthy();
+    expect(searchTasks).toHaveBeenCalledTimes(1);
+    fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
+    expect(listButton("另一任务链")).toBeTruthy();
+    expect(input).toHaveFocus();
+  });
+
+  it("reports syntax errors and selects the Unicode location in the submitted expression", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockRejectedValue(new TaskSearchError(400, "invalid_search_expression", "search-request", { reason: "unexpected_closing_group", position: 4, length: 1 }));
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByText("搜索语法第 4 个字符：多余的右括号。")).toBeTruthy();
+    expect(input).toHaveFocus();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([4, 5]);
+    expect(screen.queryByText("未找到匹配任务")).toBeNull();
+  });
+
+  it("retains pagination focus while the next page is loading and after it arrives", async () => {
+    graphRequest.mockResolvedValue(graph());
+    const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
+    const item = { id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.change(input, { target: { value: "页" } }); fireEvent.submit(input.closest("form")!);
+    await waitFor(() => searchResults().getByRole("button", { name: "打开任务：第一页" }));
+    const next = within(document.querySelector<HTMLElement>(".task-search-results .list-pagination")!).getByRole("button", { name: "下一页" }); next.focus(); fireEvent.click(next);
+    expect(next).toHaveFocus(); expect(next).toHaveAttribute("aria-disabled", "true");
+    await act(async () => { pending.resolve({ projectId, total: 16, items: [{ ...item, id: B, title: "第二页" }], nextCursor: null }); });
+    expect(await waitFor(() => searchResults().getByRole("button", { name: "打开任务：第二页" }))).toBeTruthy();
+    expect(next).toHaveFocus(); expect(next).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("exits search before navigating from overview to a task chain", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("未找到匹配任务");
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
+    document.getElementById(`task-root-${C}`)!.scrollIntoView = vi.fn();
+    fireEvent.click(within(document.getElementById("project-overview-progress")!).getByRole("button", { name: /另一任务链.*前往任务列表/ }));
+    expect(listButton("另一任务链")).toHaveFocus();
+    expect(input).toHaveValue("");
+    expect(screen.queryByText("未找到匹配任务")).toBeNull();
+  });
+
+  it("does not steal focus or selection when a syntax error is repeated by a background check", async () => {
+    graphRequest.mockResolvedValue(graph());
+    let currentSearch!: TaskSearchModule.TaskSearchController;
+    const useTaskSearch = TaskSearchModule.useTaskSearch;
+    vi.spyOn(TaskSearchModule, "useTaskSearch").mockImplementation((...args) => {
+      currentSearch = useTaskSearch(...args);
+      return currentSearch;
+    });
+    const errors: TaskSearchError[] = [];
+    vi.mocked(searchTasks).mockImplementation(async () => {
+      const failure = new TaskSearchError(400, "invalid_search_expression", "search-request", { reason: "unexpected_closing_group", position: 4, length: 1 });
+      errors.push(failure);
+      throw failure;
+    });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("搜索语法第 4 个字符：多余的右括号。");
+    input.setSelectionRange(0, 0); const help = searchForm().getByRole("button", { name: "搜索语法" }); help.focus();
+    fireEvent(document, new Event("visibilitychange"));
+    await waitForState(() => expect(searchTasks).toHaveBeenCalledTimes(2));
+    await waitForState(() => expect(currentSearch.error).toBe(errors[1]));
+    await waitFor(() => expect(help).toHaveFocus());
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
+  });
+
   it("routes session shortcuts directly to the selected task session tab", async () => {
     graphRequest.mockResolvedValue(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    fireEvent.click(await screen.findByRole('button', { name: `进入会话 ${A}` }));
+    fireEvent.click(await findListButton(`进入会话 ${A}`));
     expect(window.location.pathname).toBe(`/projects/${projectId}/tasks/${A}`);
     expect(window.location.search).toBe('?tab=session');
     expect(screen.queryByLabelText('详情测试外壳')).toBeNull();
@@ -132,10 +257,10 @@ describe("project dashboard", () => {
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(screen.getByText("git@github.com:example/project.git")).toBeTruthy();
     expect(screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime")).not.toBe(time);
-    fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
+    fireEvent.click(listButton("已完成根"));
     expect(screen.getByTestId(`chain-${A}`)).toBeTruthy();
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "关闭依赖图" }));
+    fireEvent.click(chainDialog().getByRole("button", { name: "关闭依赖图" }));
     expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
   });
 
@@ -144,13 +269,13 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
-    fireEvent.click(screen.getByRole("button", { name: "另一任务链" }));
+    fireEvent.click(listButton("另一任务链"));
     const receipt = screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime");
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    expect(screen.getByRole("button", { name: "正在刷新…" })).toBeDisabled();
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
+    expect(titleActions().getByRole("button", { name: "正在刷新…" })).toBeDisabled();
     expect(screen.queryByRole("status")).toBeNull();
     expect(number("任务总数")).toBe("4");
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     await act(async () => { pending.reject(new ApiError("server", 500, "internal_error", "refresh-request")); });
     expect((await screen.findByRole("alert")).textContent).toContain("仍显示上次成功读取的数据");
     expect(screen.getByText("refresh-request")).toBeTruthy();
@@ -170,12 +295,12 @@ describe("project dashboard", () => {
 
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     expect(number("任务总数")).toBe("4");
     expect(screen.queryByRole("status", { name: "正在加载任务图" })).toBeNull();
     expect(screen.queryByText(/最近成功刷新/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
-    fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
+    fireEvent.click(listButton("已完成根"));
+    fireEvent.click(await findNodeButton("节点 后续任务"));
     expect(screen.getByTestId("detail-state")).toHaveTextContent("loading");
     expect(detailRequest).not.toHaveBeenCalled();
 
@@ -192,38 +317,38 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([seeds[2]!, seeds[3]!])));
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
-    const trigger = await screen.findByRole("button", { name: "节点 后续任务" });
+    const trigger = await findNodeButton("节点 后续任务");
     trigger.focus(); fireEvent.click(trigger);
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
-    fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
+    fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
     await waitFor(() => expect(screen.queryByRole("complementary")).toBeNull());
     expect(await screen.findByText("所选任务已不在新的任务图中，详情已关闭。")).toBeTruthy();
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
-    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "任务链" }));
+    expect(document.activeElement).toBe(taskTabs().getByRole("tab", { name: "任务链" }));
     expect(number("任务总数")).toBe("2");
     const preferences = { ...window.localStorage };
     const requests = graphRequest.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "关闭提示" }));
     expect(screen.queryByText("所选任务已不在新的任务图中，详情已关闭。")).toBeNull();
     expect(screen.queryByRole("complementary")).toBeNull();
-    expect(screen.getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tab", { name: "任务链" })).toHaveAttribute("aria-selected", "true");
+    expect(sectionTabs().getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
+    expect(taskTabs().getByRole("tab", { name: "任务链" })).toHaveAttribute("aria-selected", "true");
     expect(number("任务总数")).toBe("2");
     expect(window.localStorage).toMatchObject(preferences);
     expect(graphRequest).toHaveBeenCalledTimes(requests);
     expect(screen.getByRole("heading", { name: "核心项目" })).toHaveFocus();
 
     graphRequest.mockResolvedValue(graph([seeds[2]!, seeds[3]!]));
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(requests + 1));
-    await waitFor(() => expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled());
+    fireEvent.click(await waitFor(() => titleActions().getByRole("button", { name: "刷新" })));
+    await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(requests + 1));
+    await waitFor(() => expect(titleActions().getByRole("button", { name: "刷新" })).toBeEnabled());
     expect(screen.queryByText("所选任务已不在新的任务图中，详情已关闭。")).toBeNull();
 
     await openChain("另一任务链");
-    fireEvent.click(screen.getByRole("button", { name: "节点 阻塞任务" }));
+    fireEvent.click(chainDialog().getByRole("button", { name: "节点 阻塞任务" }));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("阻塞任务"));
     graphRequest.mockResolvedValue(resetSnapshot(graph([])));
-    fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
+    fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
     expect(await screen.findByRole("button", { name: "关闭提示" })).toBeVisible();
     expect(screen.queryByRole("complementary")).toBeNull();
   });
@@ -232,13 +357,14 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
-    fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
+    fireEvent.click(await findNodeButton("节点 后续任务"));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     expect(detailRequest).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("detail-business-status").textContent).toBe("todo");
     expect(number("已完成")).toBe("1");
-    fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
+    await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(titleActions().getByRole("button", { name: "刷新" })).toBeEnabled());
     expect(detailRequest).toHaveBeenCalledOnce();
     expect(screen.getByTestId("selected-task").textContent).toBe(B);
     expect(number("已完成")).toBe("1");
@@ -251,17 +377,17 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValue(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
-    const trigger = await screen.findByRole("button", { name: "节点 后续任务" });
+    const trigger = await findNodeButton("节点 后续任务");
     trigger.focus(); fireEvent.click(trigger);
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
-    fireEvent.click(screen.getByRole("button", { name: "关系跳转" }));
+    fireEvent.click(detail().getByRole("button", { name: "关系跳转" }));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("另一任务链"));
     expect(screen.getByTestId("selected-task").textContent).toBe(C);
-    fireEvent.click(screen.getByRole("button", { name: "未知关系" }));
-    await waitFor(() => expect(detailRequest.mock.calls.at(-1)?.[1]).toBe(X));
+    fireEvent.click(detail().getByRole("button", { name: "未知关系" }));
+    await waitForState(() => expect(detailRequest.mock.calls.at(-1)?.[1]).toBe(X));
     expect(screen.getByTestId("selected-task")).toHaveTextContent(X);
     expect(screen.getByTestId("detail-title")).toBeEmptyDOMElement();
-    fireEvent.click(screen.getByRole("button", { name: "关闭详情" }));
+    fireEvent.click(detail().getByRole("button", { name: "关闭详情" }));
     expect(document.activeElement).toBe(trigger);
     await act(async () => { unknown.resolve(await resolveDetail(...detailRequest.mock.calls.at(-1)!)); });
   });
@@ -270,11 +396,11 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
-    fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
+    fireEvent.click(await findNodeButton("节点 后续任务"));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
-    fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
+    fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
     await screen.findByRole("heading", { name: "还没有任务" });
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("tab", { name: "任务列表" })));
+    await waitFor(() => expect(document.activeElement).toBe(sectionTabs().getByRole("tab", { name: "任务列表" })));
     expect(number("任务总数")).toBe("0");
     expect(screen.queryByTestId("root-list")).toBeNull();
   });
@@ -313,14 +439,13 @@ describe("project dashboard", () => {
     await screen.findByRole("heading", { name: "核心项目" });
   });
 
-  it("explains graph limits using actual counts and rejects malformed graph snapshots", async () => {
-    graphRequest.mockRejectedValueOnce(new ApiError("server", 409, "graph_limit_exceeded", "large-graph", { nodeCount: 1001, edgeCount: 5100, maxNodes: 1000, maxEdges: 5000 }))
+  it("shows generic read failures and rejects malformed graph snapshots", async () => {
+    graphRequest.mockRejectedValueOnce(new ApiError("server", 500, "internal_error", "graph-read-failed"))
       .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [X] } : task) });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const alert = await screen.findByRole("alert");
-    expect(within(alert).getByRole("heading", { name: "任务图超过展示上限" })).toBeTruthy();
-    expect(alert.textContent).toContain("当前 1,001 个任务、5,100 条依赖；支持最多 1,000 个任务、5,000 条依赖。");
-    expect(alert.textContent).toContain("large-graph");
+    expect(within(alert).getByRole("heading", { name: "项目加载失败" })).toBeTruthy();
+    expect(alert.textContent).toContain("graph-read-failed");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "任务图数据不完整" });
     expect(screen.queryByText("任务总数")).toBeNull();
@@ -367,7 +492,7 @@ describe("status-first task chains", () => {
     expect(new Set(snapshot.tasks.map((task) => Date.parse(task.createdAt))).size).toBe(1);
     graphRequest.mockResolvedValue(snapshot);
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("button", { name: "最新任务链" });
+    await findListButton("最新任务链");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(presentedRoots()).toEqual([A, F, E].map((id) => `task-root-${id}`));
     expect(screen.getByTestId("root-list")).toHaveAttribute("data-index-roots", [A, E, F].join(","));
@@ -384,13 +509,13 @@ describe("status-first task chains", () => {
       .mockResolvedValueOnce(resetSnapshot(graph([seeds[2]!, seeds[3]!, ...newerRoots])));
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await screen.findByRole("button", { name: "最新任务链" });
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
+    await findListButton("最新任务链");
     expect(presentedRoots()).toEqual([A, F, E, C].map((id) => `task-root-${id}`));
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${F}`)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await waitFor(() => expect(screen.queryByTestId(`chain-${A}`)).toBeNull());
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(presentedRoots()).toEqual([F, E, C].map((id) => `task-root-${id}`)));
     expect(presentedRoots()).toEqual([F, E, C].map((id) => `task-root-${id}`));
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(window.localStorage.getItem(preferenceKey())).toBeNull();
@@ -399,9 +524,9 @@ describe("status-first task chains", () => {
   it("keeps a closed list closed when newer chains arrive", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...seeds, ...newerRoots]));
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("button", { name: "另一任务链" });
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await screen.findByRole("button", { name: "最新任务链" });
+    await findListButton("另一任务链");
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
+    await findListButton("最新任务链");
     expect(presentedRoots()).toEqual([A, F, E, C].map((id) => `task-root-${id}`));
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(window.localStorage.getItem(preferenceKey())).toBeNull();
@@ -416,10 +541,10 @@ describe("transient task chain dialogs", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("另一任务链");
     expect(screen.getByTestId(`chain-${C}`)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
     expect(window.localStorage.getItem(preferenceKey())).toBeNull();
@@ -432,15 +557,15 @@ describe("transient task chain dialogs", () => {
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     view.unmount();
     view = render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("button", { name: "已完成根" });
+    await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     await openChain("另一任务链");
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
-    await screen.findByRole("button", { name: "另一任务链" });
+    await findListButton("另一任务链");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     await openChain("另一任务链");
     view.rerender(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("button", { name: "已完成根" });
+    await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
   });
 
@@ -451,12 +576,12 @@ describe("transient task chain dialogs", () => {
       const write = vi.spyOn(Storage.prototype, "setItem");
       graphRequest.mockResolvedValue(graph());
       render(<ProjectPage projectId={projectId} />); selectTasks();
-      await screen.findByRole("button", { name: "已完成根" });
+      await findListButton("已完成根");
       expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
       expect(read.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
       await openChain("已完成根");
       expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
-      fireEvent.click(screen.getByRole("button", { name: "关闭依赖图" }));
+      fireEvent.click(chainDialog().getByRole("button", { name: "关闭依赖图" }));
       expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
       expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
       expect(window.localStorage.getItem(preferenceKey())).toBe(stored);
@@ -467,8 +592,8 @@ describe("transient task chain dialogs", () => {
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await screen.findByRole("button", { name: "已完成根" });
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
+    await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
   });
 
@@ -481,7 +606,7 @@ describe("transient task chain dialogs", () => {
     expect(read.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
     await act(async () => { pending.resolve(graph()); });
     await openChain("已完成根");
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     await screen.findByRole("alert");
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
@@ -493,7 +618,7 @@ describe("transient task chain dialogs", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "关闭依赖图" }));
+    fireEvent.click(chainDialog().getByRole("button", { name: "关闭依赖图" }));
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
   });
 });

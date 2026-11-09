@@ -14,12 +14,13 @@ const me = { id: userId, email: null, emailVerified: null, name: null, avatarUrl
 const team = (id: string) => ({ id, kind: id === personalId ? "personal" : "ordinary", name: id === personalId ? null : " Team ", version: 1n, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: "admin", version: 1n, createdAt: time, updatedAt: time } });
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
-const fixture = async (defaultValue?: string) => {
+const fixture = async (defaultValue?: string, projectPages?: readonly unknown[]) => {
   const base = path.resolve("../../.tmp"); await mkdir(base, { recursive: true });
   const dir = await mkdtemp(path.join(base, "team-command-")); dirs.push(dir); vi.stubEnv("DN_CONFIG_DIR", dir);
   const config = `serverUrl: http://localhost:8787\nserverToken: test-token\n${defaultValue === undefined ? "" : `teamDefaults:\n  http://localhost:8787:\n    ${userId}: ${defaultValue}\n    ${wrongId}: ${wrongId}\n  https://elsewhere.test:\n    ${userId}: ${wrongId}\n`}`;
   await writeFile(path.join(dir, "config.yml"), config);
   const calls: string[] = [];
+  const projectQueries: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     calls.push(`${init?.method} ${new URL(String(url)).pathname}`);
     const parsed = new URL(String(url));
@@ -28,12 +29,16 @@ const fixture = async (defaultValue?: string) => {
     if (parsed.pathname === "/api/v1/teams") return new Response(stringifyApiJson({ items: [team(personalId), team(teamId)], nextCursor: null }), { headers });
     if (parsed.pathname === `/api/v1/teams/${wrongId}` || parsed.searchParams.get("teamId") === wrongId) return new Response(stringifyApiJson({ error: { code: "not_found", message: "Team was not found.", requestId: "request" } }), { status: 404, headers });
     if (parsed.pathname.startsWith("/api/v1/teams/")) return new Response(stringifyApiJson(team(parsed.pathname.split("/").at(-1)!)), { headers });
+    if (parsed.pathname === "/api/v1/projects" && projectPages !== undefined) {
+      projectQueries.push(parsed.search);
+      return new Response(stringifyApiJson({ items: [projectPages[parsed.searchParams.has("cursor") ? 1 : 0]], nextCursor: parsed.searchParams.has("cursor") ? null : "next /+" }), { headers });
+    }
     return new Response(stringifyApiJson({ items: [], nextCursor: null }), { headers });
   });
   const stdout = vi.fn<(value: string) => void>();
   const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout, stderr: vi.fn(), stdoutBytes: vi.fn(async (_value: Uint8Array) => {}) };
   const dependencies = { runServerCommand: ((ctx, command) => runServerCommand(ctx, command, { fetch })) as typeof runServerCommand };
-  return { dir, config, calls, stdout, context, dependencies };
+  return { dir, config, calls, stdout, context, dependencies, projectQueries };
 };
 
 describe("Team command context", () => {
@@ -54,6 +59,19 @@ describe("Team command context", () => {
     expect(JSON.parse(f.stdout.mock.calls[2]![0])).toEqual([]);
     expect(await readFile(path.join(f.dir, "config.yml"), "utf8")).toBe(f.config);
     expect(f.calls.every((call) => call.startsWith("GET "))).toBe(true);
+  });
+  it("prints both pages of projects owned by the selected Team", async () => {
+    const project = (id: string, name: string) => ({ id, name, repoUrl: `https://example.test/${name}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId, version: 1n }, createdAt: time, updatedAt: time });
+    const projects = [project("11111111-1111-4111-8111-111111111111", "first"), project("22222222-2222-4222-8222-222222222222", "second")];
+    const f = await fixture(undefined, projects);
+    await runTeamCommand(["projects", "--team", teamId, "--json"], f.context, f.dependencies);
+    expect(f.stdout).toHaveBeenCalledOnce();
+    expect(f.stdout.mock.calls[0]![0]).toBe(`${stringifyApiJson(projects)}\n`);
+    expect(f.calls).toEqual(["GET /api/v1/me", "GET /api/v1/projects", "GET /api/v1/projects"]);
+    const queries = f.projectQueries.map(value => new URLSearchParams(value));
+    expect(queries.map(query => query.get("teamId"))).toEqual([teamId, teamId]);
+    expect(queries.map(query => query.get("cursor"))).toEqual([null, "next /+"]);
+    expect(await readFile(path.join(f.dir, "config.yml"), "utf8")).toBe(f.config);
   });
   it("rejects stale default yet allows list and explicit targets", async () => {
     const f = await fixture(wrongId);

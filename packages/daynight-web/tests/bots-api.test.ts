@@ -14,6 +14,17 @@ const deletedBot = (state: 'pending' | 'failed' | 'completed' = 'pending') => ({
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Bot response contracts', () => {
+  it('preserves frozen native selections and permits resolved defaults to differ from provider defaults', () => {
+    const config = { ...botDefinition().resolvedConfiguration, model: 'chosen', reasoningEffort: 'none', selection: { schemaVersion: 1, modelSource: 'preference', reasoningEffortSource: 'explicit', configurationGeneration: 'a'.repeat(64), catalogGeneration: botId(60) } };
+    const value = { ...botDefinition(), requestedOverrides: { reasoningEffort: 'none' }, resolvedConfiguration: config };
+    expect(parseBot(value, BOT_USER)).toEqual(value);
+    const defaults = { ...botDefaults(), configuration: config, workers: [{ ...botWorkerDefaults(), configuration: config }] };
+    expect(parseBotDefaults(defaults)).toEqual(defaults);
+    expect(() => parseBot({ ...value, resolvedConfiguration: { ...config, reasoningEffort: 'high' } }, BOT_USER)).toThrow();
+    expect(() => parseBot({ ...value, resolvedConfiguration: { ...config, selection: { ...config.selection, modelSource: 'unknown' } } }, BOT_USER)).toThrow();
+    expect(() => parseBot({ ...value, resolvedConfiguration: { ...config, selection: { ...config.selection, reasoningEffortSource: 'cloud' } } }, BOT_USER)).toThrow();
+    expect(() => parseBot({ ...value, requestedOverrides: { model: 'chosen' }, resolvedConfiguration: config }, BOT_USER)).toThrow();
+  });
   it('preserves exact int64 versions and real startup states', () => {
     const pending = { ...botDefinition(), version: '9223372036854775807', creationOrder: '9007199254740993' };
     expect(parseBot(pending, BOT_USER)).toEqual(pending);
@@ -133,6 +144,33 @@ describe('Bot deletion API', () => {
 });
 
 describe('Bot account API', () => {
+  it.each([{}, { model: 'chosen' }, { reasoningEffort: 'none' }, { model: 'chosen', reasoningEffort: 'none' }])('sends only explicit native overrides %j', async native => {
+    const overrides = { workerId: botId(20), ...native };
+    const config = { ...botDefinition().resolvedConfiguration, model: native.model ?? null, reasoningEffort: native.reasoningEffort ?? null, selection: { schemaVersion: 1, modelSource: native.model ? 'explicit' : 'native', reasoningEffortSource: native.reasoningEffort ? 'explicit' : 'native' } };
+    const value = { ...botDefinition(), requestedOverrides: overrides, resolvedConfiguration: config };
+    const fetch = vi.fn().mockResolvedValue(botResponse(value)); vi.stubGlobal('fetch', fetch);
+    expect(await createBot({ id: botId(), name: 'Assistant 1', overrides }, signal(), admission())).toEqual(value);
+    expect(JSON.parse(fetch.mock.calls[0]![1].body)).toEqual({ id: botId(), name: 'Assistant 1', overrides });
+  });
+  it('queries native overrides without mutating them or submitting creation', async () => {
+    const fetch = vi.fn().mockResolvedValue(botResponse(botDefaults())); vi.stubGlobal('fetch', fetch);
+    await getBotDefaults(botId(20), signal(), admission(), { cwd: '/ordinary/directory', provider: 'codex', model: 'native/model', reasoningEffort: 'none' });
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/me/bots/defaults?workerId=${botId(20)}&cwd=%2Fordinary%2Fdirectory&provider=codex&model=native%2Fmodel&reasoningEffort=none`);
+    expect(fetch.mock.calls[0]![1].method).not.toBe('POST');
+  });
+  it.each([{ model: null }, { model: '' }, { model: '汉'.repeat(86) }, { reasoningEffort: null }, { reasoningEffort: '' }, { reasoningEffort: 'high\n' }, { reasoningEffort: '汉'.repeat(22) }])('rejects malformed native overrides without dispatch %#', async overrides => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    await expect(createBot({ id: botId(), name: 'Assistant 1', overrides } as unknown as Parameters<typeof createBot>[0], signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('retains native overrides and original ID after a lost creation response', async () => {
+    const overrides = { workerId: botId(20), model: 'chosen', reasoningEffort: 'none' };
+    const value = { ...botDefinition(), requestedOverrides: overrides, resolvedConfiguration: { ...botDefinition().resolvedConfiguration, model: 'chosen', reasoningEffort: 'none', selection: { schemaVersion: 1, modelSource: 'explicit', reasoningEffortSource: 'explicit' } } };
+    const fetch = vi.fn().mockRejectedValueOnce(new TypeError('lost')).mockResolvedValueOnce(botResponse(value)); vi.stubGlobal('fetch', fetch);
+    await expect(createBot({ id: botId(), name: 'Assistant 1', overrides }, signal(), admission())).rejects.toMatchObject({ name: 'BotCreationUnknown', id: botId() });
+    expect(await getBot(botId(), signal(), admission())).toEqual(value);
+    expect(fetch.mock.calls.map(([, options]) => options.method)).toEqual(['POST', undefined]);
+  });
   it('reads authenticated pages, original identities and Worker-specific defaults', async () => {
     const page = { items: [botDefinition()], nextCursor: null };
     const fetch = vi.fn().mockResolvedValueOnce(botResponse(page)).mockResolvedValueOnce(botResponse(botDefinition())).mockResolvedValueOnce(botResponse(botDefaults()));

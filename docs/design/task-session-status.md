@@ -4,34 +4,54 @@
 
 ## 状态与入口
 
-只有进行中的任务、已授权的当前任务摘要及成功读取的当前 Session 才能提供入口。`sessions/current` 由服务端选择任务当前 Worker claim；浏览器还核对返回的 project、task、claim、worker 和 worktree 身份。无关联、不适用模式、未注册、未知活动、无权限、失败或超过 15 秒的结果不产生角标或空入口。
+列表仅消费现有项目 `task-sync` 返回的完整 `sessions` 集合，按 15 秒周期观察。每项为 Task ID 与 `working | notice | warning | pending` 之一，不读取完整 `/sessions/current`，不另建逐任务 HTTP 调度。服务端的可靠关联、live 状态和期限判断由[同步架构](daynight-task-sync.md#服务端-session-状态投影)拥有。
 
-| 可靠的当前会话状态 | 角标 | 含义 |
+| `sessions[taskId]` | 角标 | 含义与入口 |
 |---|---|---|
-| 非 active 生命周期或明确 disconnected | warning（红） | 任务仍在进行中，会话需要检查 |
-| connected 且 synchronized，activity 为 waiting_input | notice（黄） | 会话需要响应 |
-| connected 且 synchronized，activity 为 idle 或 stopped | warning（红） | 任务仍在进行中，会话需要检查 |
-| connected 且 synchronized，activity 为 working | working（绿） | 会话正在工作 |
-| 初始化或同步中 | 无 | 已确认可访问时仍可进入 Session |
+| `warning` | warning（红） | 任务仍在进行中，会话需要检查，入口可用 |
+| `notice` | notice（黄） | 会话需要响应，入口可用 |
+| `working` | working（绿） | 会话正在工作，入口可用 |
+| `pending` | 无 | 可靠当前会话正在初始化或同步，入口仍可用 |
+| Task 键缺席 | 无 | 无可靠当前贡献，不产生该贡献的入口 |
 
-生命周期与明确断线优先于残留活动。HTTP 失败不是离线证据，只隐藏摘要。Provider 已将待处理审批、问题和表单归一为 `waiting_input`；`operations.canRespond` 表示能力，不能证明存在待处理交互。绿色不代表任务完成或整链所有成员均被观测。
+生命周期非 active 或明确断线优先于未同步及残留活动；connected 且 synchronized 时，waiting_input 为 notice、idle/stopped 为 warning、working 为 working。active 且未断线的 unknown 活动不提供可靠贡献；缺失 live 或 live fence 不匹配沿用服务端断线归一化，仍可贡献 warning。`pending` 不表示未注册、失败或无会话。HTTP 或解析失败撤销摘要，不能解释为离线、pending 或合法空集合。Provider 已将待处理审批、问题和表单归一为 waiting_input，操作能力不用于推测待处理内容。绿色不代表任务完成或整链所有成员均被观测。
 
-子任务所有有效状态入口使用 `taskDetailUrl` 的 `tab=session` 导航到相应任务页面，随后复用详情的权限、claim 和会话检查。标题仍打开概览。链状态入口仅展开成员，不选择任意 Session；链标题仍负责展开或折叠。
+子任务所有有效状态入口使用 `taskDetailUrl` 的 `tab=session` 导航到相应任务页面，随后复用详情的权限、claim 和会话检查；pending 沿用同一无角标入口。标题仍打开概览。链状态入口仅展开成员，不选择任意 Session；链标题仍负责展开或折叠。完整 Current 的读取与控制准入属于详情客户端，列表状态不授予内容或操作权限。
 
-## 摘要与聚合
+## 页面生产者与缓存边界
 
-`features/task-session-summary/` 拥有页面内共享摘要。Provider 绑定 `TaskCacheScope` 和 project，从已授权的 `TaskSummary.properties.worker` 取得 claim，不把缺少属性的 `GraphTask` 当作执行身份。单任务和链头读取同一份摘要，不缓存 timeline，不建立列表 channel，也不持久化会话摘要。
+`useTaskGraph` 拥有稳定的页面内 `TaskSessionSummaryStore`，并是唯一生产者。它沿用项目同步请求、身份准入、取消和请求代次，在成功接纳 Task 数据后发布对应 Session 观察。store 经 `ProjectPage → ProjectTaskWorkspace → TaskSessionSummaryProvider` 传递；Provider 只提供 context 与展示活动，不创建另一个数据源。
 
-每个可见链通过 IntersectionObserver 注册完整 `component.memberIds`，包含根任务，排除仅由外部前置边引用的其它链。折叠和负责人筛选不缩小聚合范围。取 warning > notice > working；全部没有角标则隐藏。成员删除、完成、撤权、claim 变化和过期都会撤销旧贡献。
+`api/types.ts` 的本地 `TaskSyncRead {sync, receivedMonotonic}` 保存 body 读取完成的单调时间。成功 decoder 在 `await response.text()` 完成后立即捕获 `performance.now()`，随后才执行 JSON 解码、source scan 和合同校验；历史观察、IDB 提交及渲染沿用该 receipt。非成功响应继续原错误解码流程。receipt 不是 wire 字段，不能从服务器 JSON、磁盘或其它标签页取得。
 
-并发最多四个未完成请求，每个任务在上一次请求结束至少五秒后再读。取消中的请求在 transport settle 前仍占并发名额，旧请求不能覆盖新 claim。切页、离开可视范围、隐藏文档、切换外层 Overview 或账户失效时撤销摘要并取消读取；重新可见立即刷新。任务缓存通知触发身份复核，请求提交结果前再次核对当前身份。失败不显示全局错误，下次正常刷新可恢复。
+Session entry 只含四态、执行绑定与本次 receipt，并只驻留当前页面内存。它不写入 Task properties、version、updatedAt、IndexedDB 或 BroadcastChannel，不触发普通 Task 变更通知、正文失效、额外 Task 图计算或 HTTP。Task-sync 自身既有 Task 合并、图校验与持久化仍执行一次。独立的持久 Session 记录目录保持其原有所有者，与列表瞬时状态分开。
+
+## 观察绑定与迟到响应
+
+`TaskCacheScope.beginSync` 在原有同一 IDB 事务中读取 manifest、水位与完整 stored Tasks，返回 `TaskSyncTicket.taskBindings`。绑定由 `task-cache/execution-binding.ts` 提取，仅包括 Task status，以及 Worker 的 claimId、workerId、worktreeId、state 与 agentControlMode；缺少 Worker 明确为 null。它是本次请求的不可变本地基线，不增加持久记录或 Session 版本。
+
+`deriveTaskSyncBindings` 对 snapshot 只使用实际响应 Tasks；对 delta 使用 ticket 基线并覆盖实际响应 Tasks。它不使用 `applySync` 最终的 max-version 合并结果给旧 Session 状态改绑：该结果可能已保留另一标签页发布的较新执行。
+
+页面在发送 HTTP 前捕获已有 `authRequestsPauseRevision()`；历史与 Task 应用等待完成后，重新核对请求代次、取消和 scope，且仅在该 auth pause revision 未变化时发布 Session 观察。暂停时 store 已撤销贡献，即使随后恢复准入，暂停前的响应也不能重新发布它们；这一检查只约束 Session replace，原 Task 合并、图发布及 auth shell 保持各自规则。接纳同时使用结果 manifest 的 userFence、cacheGeneration 与 epoch 检查当前准入。snapshot 可以建立新 cacheGeneration，不能要求结果仍等于旧 ticket 的 generation。store 对状态值和完整集合中的缺席采用同一比较：只有 observed binding 与当前已授权 Task binding 完全匹配、且适用 Session 的任务，才能增加、替换或撤销贡献。
+
+例如请求观察 claim C1，期间缓存接纳 C2：C1 的旧状态不能覆盖 C2，C1 的键缺席也不能删除 C2 或延长 C2 的 receipt。当前 C2 的可靠完整观察缺少该键时，正常撤销 C2。普通 Task 缓存通知只复核并撤销已失效绑定；其它 task-sync 来源和标签页不能向本页面发布 Session map。响应 Session key 不属于其 observed eligible Task binding 时为协议错误。
+
+## 新鲜度、展示活动与聚合
+
+观察在 `performance.now() - receivedMonotonic <= 30_000` 时有效，超过 30 秒撤销角标及该贡献入口。发布前检查期限；body 后解码、历史及 IDB 等待超过期限的响应不能短暂显示或续期。store 安排最早到期点的本地 timer，并在恢复展示或文档可见时立即复核，不依赖后台 timer 准时执行。渲染、缓存通知及其它标签页更新均不能续期。
+
+正常 15 秒同步等待保留尚有效的贡献。当前读取失败、auth pause、scope/项目准入失效、账户切换、任务完成或执行绑定变化撤销相应贡献；过期或已被取代的请求不能撤销较新观察。身份恢复继续沿用现有项目同步，没有本地 auth 轮询或 Session retry scheduler。
+
+每个可见链通过 IntersectionObserver 注册完整 `component.memberIds`，包含根任务，排除仅由外部前置边引用的其它链。折叠和负责人筛选不缩小聚合范围。取 warning > notice > working；pending 只贡献入口可访问性，不产生聚合角标。Provider 的活动和链可见性控制展示范围，不驱动网络；外层 Overview 和任务列表继续使用同一个项目同步所有者及完整索引，重开保留仍有效的页面状态。导航、项目/身份变化与页面释放清理所属内存、timer 和订阅。
 
 ## 视觉与可访问性
 
 进行中状态保持无背景和边框的正文。角标使用 Georgia 斜体，回退 Times New Roman/serif，字号 8.5px、行高 12px、字距 0.03em；没有背景、边框、图标或动画。固定状态区域预留右侧余量，绝对定位角标，显隐和词长变化不改变标题、状态坐标或行高。
 
-标题与状态入口为同级控件。有效入口至少 44px 高，鼠标、触屏和键盘使用同一动作。悬浮或键盘焦点提供具体状态说明，aria-label 同时包含任务名、状态和动作；文字与颜色共同表达语义。
+标题与状态入口为同级控件。有效入口至少 44px 高，鼠标、触屏和键盘使用同一动作。悬浮或键盘焦点提供具体状态说明，aria-label 同时包含任务名、状态和动作；文字与颜色共同表达语义。状态更新不重新挂载行或改变标题、焦点和展开状态。
 
 ## 验证边界
 
-摘要测试覆盖状态顺序、当前身份、权限、迟到响应、并发上限、默认五秒刷新间隔、新鲜度和可见性，并验证测试注入的短轮询周期。组件测试覆盖链全成员聚合及兄弟控件交互。真实服务浏览器验收在页面初始化前注入较短的摘要刷新周期，验证真实 Controller 状态、实际 current 数据、直接 Session 导航与桌面及窄屏几何；请求期限和十五秒新鲜度仍各自生效。轮询默认值与测试覆盖机制由[浏览器验收轮询决策](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)说明。原型只表达设计，不能替代这些集成证据。
+API 所属测试覆盖必填四态 map、规范 UUID 与容量、非法输入、body→receipt→解码顺序，以及原非成功响应和关系 decoder。缓存与 store 所属测试覆盖同事务请求基线、snapshot/delta overlay、最终 scope fence、旧值与旧缺席、多标签页执行变化、30 秒精确边界、延迟发布、失败/auth pause 和恢复，并证明 Session-only 更新不写 Task 缓存或触发正文与普通通知。
+
+生产组件测试覆盖根任务、折叠与筛选隐藏的普通成员、外部前置排除、全部优先级、pending 入口，以及标题、子任务状态与链状态三个导航动作。少量顺序浏览器流程验证列表/Overview 无 current、现有 task-sync 更新状态、实际 Session 导航、角标几何和内容/草稿稳定；完整客户端与缓存故障矩阵保留在各自模块。性能对照记录同条件请求数、字节及服务端读取工作，不能从理论调度降幅推断生产 CPU 或带宽降幅。决策及替代方案由[列表状态接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存。

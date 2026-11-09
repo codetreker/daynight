@@ -62,7 +62,7 @@ Git、GitHub CLI、Copilot、npm 或网络请求，不修改 shell 启动文件�
 解析结果使用按首个选项名索引的只读 Map：开关为 `true`，标量值为字符串，
 repeatable 选项为只读字符串数组。未声明 repeatable 的选项只能指定一次；依赖
 值按出现顺序追加，不去重、不拆分 CSV。Task 的 `--description` 声明 `allowEmpty`，
-list 的 `--status` 与 set-status 的目标位置参数声明 `todo`、`in_progress`、`done` 三个 choices，
+list 的 `--status` 与 set-status 的目标位置参数声明`todo`、`in_progress`、`done`、`cancelled`四个choices，状态值来自纯src/task/status.ts，不经API业务入口加载，
 update 不声明状态选项；set-status 声明 task ID、目标状态、project 和 if-version。update、list 和 ready 的 `--allow-agents` 声明 true/false choices，既有 Bash/zsh 生成器从该枚举产生静态候选；create 不声明此字段。
 `--depends-on` 声明
 repeatable。`project create` 的名称是一个必填位置参数，`--repo` 是可选 text 选项，
@@ -109,8 +109,9 @@ flowchart LR
 
 [`completion/bash.ts`](../../packages/daynight/src/commands/completion/bash.ts) 在检查
 版本下限后，通过 `complete -F` 为根命令名称及其 `aliases` 注册同一函数。函数维护 `COMPREPLY` 数组，利用 Bash
-≥4.2 的 `compopt` 按当前语义启用文件名处理、目录后缀和引号。命令候选不沿用
-目录补全选项，避免同名本地目录改变命令补全的结果。
+≥4.2 的 `compopt` 按当前语义选择文件名处理和目录后缀。双引号内的目录候选由
+生成器显式转义反斜杠、双引号、美元符号和反引号，避免不同 Readline 版本将路径
+解释为 shell 展开或命令替换。命令候选不沿用目录补全选项，避免同名本地目录改变命令补全的结果。
 
 `COMP_WORDS` 的边界受 `COMP_WORDBREAKS` 影响，与 CLI 最终收到的 argv 不同。
 状态机从光标前的有效输入还原参数，处理 repo 地址中的 `:`；光标位于行中时，
@@ -262,68 +263,19 @@ shell；持久启动配置由 setup 管理，不写入 review 配置或审查状
 
 ## 验证
 
-共享语法测试校验必填命名值、原值保留、重复和缺失值、帮助以及既有命令回归。
-生成器测试覆盖 shell 数据引用、目录与 text 类型分派；编译后入口测试验证帮助、
-参数错误和生成脚本不进入业务 I/O。安装测试验证显式选择、父进程检测失败、
-文件优先级、手写加载语句、管理块完整性、重复安装、原字节与权限保留、符号链接、
-无效文件及写入失败。Task 扩展还需验证空描述、输入顺序及重复
-依赖、完整状态值、首个 `=` 分隔、内联前导连字符，以及目录/开关内联拒绝。
+共享语法与生成器单测验证选项、参数、引用、候选及输入边界；启动配置单测验证
+文件选择、管理块、重复安装和错误处理。真实 shell 验证使用
+[`shell-completion.py`](../../packages/daynight/test/acceptance/shell-completion.py)
+通过 PTY 在 Bash 4.2、现代 Bash 和 zsh 中检查 `daynight`、`dn` 的基本 Tab 补全，
+并从隔离的启动文件实际加载补全。脚本记录编辑器就绪状态、补全过程与清理结果；
+直接调用生成函数不能代替真实 Readline 或 ZLE 的接入验证。
 
-[`shell-completion.py`](../../packages/daynight/test/acceptance/shell-completion.py) 通过
-PTY 驱动真实 Tab，检查编辑缓冲区、光标位置和实际解析后的 argv。直接调用函数可
-辅助定位，不能代替 Readline 或 zsh 对引号、后缀和候选的处理。zsh 接受目录输入时
-可以按原生规则移除自动添加的末尾斜杠；验收同时检查插入时后缀及最终路径语义。
-脚本加载后设置执行哨兵，要求每次 Tab 都不调用 Node 或 daynight。
-
-驱动分别确认主提示符切换和编辑器内重置。初始化及实际执行命令后，先等待新一代
-主提示符标记，再请求实际 Readline/ZLE widget 回执。丢弃测试输入使用排队执行的
-editor reset widget，在同一 generation 内确认空状态。每个场景发送输入前再次
-核对当前 generation、空编辑缓冲区和光标 0；输出静默与 capture 标记均不能证明
-编辑器已经完成上一项操作。
-
-每个真实 shell 都执行两种管道阻塞证明：首个提示符在编辑器进入前被阻塞，证明
-30 ms 输出静默可以与未就绪状态同时存在；capture widget 在输出标记后被阻塞，
-证明排队的 reset 请求等待其退出后才执行。两种证明均须取得实际编辑器的空状态
-回执，并保留候选、argv、光标、执行哨兵和既有超时要求。同步依据及失败情形见
-[就绪验证决策](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)。
-
-场景包括根命令、嵌套命令、别名、帮助与版本选项、shell 参数、空前缀、已用选项、
-光标位于行中、remote 的 `:`，以及空格、中文、单引号、双引号和美元符号目录。
-`--path` 在 remote 前后及目录完成后的下一参数均需覆盖；目录名与 `review` 或
-`project` 同名时，命令补全仍插入命令并保留正确分隔符。
-
-project 场景覆盖 create/list/show、必填位置名称、可选 `--repo`、`--json`、已使用选项隐藏，
-以及名称、repo 地址和 project ID 的文件回退抑制。名称待输入时不生成文件候选，
-仍可补全未使用的选项；`--` 后只允许名称文本，选项和文件候选均被抑制。repo 值
-待输入时，包括引号输入及以选项前缀开始的当前词，保持输入且不生成文件或选项候选。
-Task 场景
-覆盖重复依赖仍可输入、标量已用后隐藏、分离及内联状态候选、空描述后的选项恢复、
-内联值片段替换及自由标题、描述、ID 不回落文件候选。属性命令覆盖可选 task ID 后的 --schema、空 value 后的选项、-- 后短横线值，以及属性名/值没有文件或远端目录候选；退出属性专用 PR 选项。
-
-Bash 4.2 是明确下限，需要真实 4.2 执行验证；现代 Bash 和 zsh 也必须有真实证据。
-Linux 准备脚本在仓库 `.tmp/` 中校验固定 SHA-256 的 GNU Bash 4.2 源码并构建所需
-程序；zsh 使用现有程序或仅下载、解包发行版软件包。该脚本不做系统安装，输出环境
-文件供本地和独立 CI 作业使用同一验收入口。
-
-解包的 zsh 在首次 ZLE 初始化前定位自身原生模块和补全函数。直接加载脚本的
-PTY 验收使用任务专属的 `ZDOTDIR/.zshenv`，通过 `zsh -d -i` 启动；该文件设置解包工具链的准确 `module_path`
-和补全函数目录，不拼接宿主 `fpath`。准备完成后关闭 `RCS` 与 `GLOBAL_RCS`，避免
-操作者启动配置影响验收。交互设置先执行 `compaudit`，失败立即退出；通过后执行
-`compinit -D`。工具链路径和权限必须满足安全审查，不得进入人工信任提示。进程
-环境或启动后的交互命令不能替代首次模块定位所需的 zsh 启动文件。
-
-setup 验收使用独立主目录与启动文件，在真实 Bash 4.2、现代 Bash 和 zsh 中验证
-登录与非登录启动后的注册和 Tab。覆盖 Bash 登录文件优先级、共享 `.profile` 的
-POSIX 可解析性、zsh 未设置、绝对与相对目录规则、已有初始化及管理块重复加载，
-并验证既有 CRLF 自定义文件追加后的真实加载与 Tab，保留生成操作的无 I/O 回归。
-空 `ZDOTDIR` 的根目录映射通过隔离的模拟文件 I/O 单元测试验证，不在宿主根目录
-创建启动文件。安装后从启动文件实际加载的路径与直接 source 验收分别检查，不能
-只以管理块文本存在代替 shell 行为。
-
-测试不修改开发者启动文件，不依赖其配置、认证或全局安装；临时 shell、终端、探针
-和 fixture 均在任务 `.tmp/` 中，由创建者清理。完整验证命令由
-[README](../../README.md#cli-development)拥有。托管结果由对应源码版本的 CI 作业与
-补全 artifact 记录；本地通过记录不代替该版本的托管验收。
+Linux 准备脚本在仓库 `.tmp/` 中校验固定 SHA-256 的 GNU Bash 4.2 源码并构建
+程序；zsh 使用现有程序或仅下载、解包发行版软件包，不做系统安装。解包的 zsh
+在首次 ZLE 初始化前从任务专属启动文件定位原生模块和补全函数，并执行安全审查。
+测试不修改开发者启动文件，不依赖其配置或认证；临时 shell、终端和 fixture 由
+创建者清理。验证命令由 [README](../../README.md#cli-development)拥有；本地结果
+不代替对应源码版本的 CI 结果。
 
 ## 依据
 

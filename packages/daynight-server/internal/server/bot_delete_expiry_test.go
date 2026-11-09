@@ -2,26 +2,18 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
-
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -33,119 +25,81 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				phase = "replay"
 			}
 			t.Run(string(kind)+"/"+phase, func(t *testing.T) {
-				h := authTestHarness(t)
-				cookie := h.Login(t, "bot-delete-owner")
-				pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"bot-delete","expiresAt":null}`, []*http.Cookie{cookie}, nil, h.Origin), 201)
-				principal, err := h.Identity.Authenticate(context.Background(), model.PATCredential, pat.Token)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+				principal := defaultHTTPPrincipal()
+				principal.Kind = kind
+				tx := newHTTPTestStoreForPrincipal(t, principal)
+				h := resourceTestServerForPrincipal(t, tx, attachmentTestFiles(t), io.Discard, principal)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				worker := uuid.NewString()
-				if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now(),'{}','{}')`, principal.UserID, worker); err != nil {
-					t.Fatal(err)
-				}
-				bots := botservice.New(h.Database)
-				configuration := model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "codex", Args: []string{}}
-				bot, err := bots.Create(ctx, principal, botcore.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
-				if err != nil {
-					t.Fatal(err)
-				}
-				engine := sessioncore.NewEngine(nil)
-				relay := sessionservice.New(h.Database, engine)
-				digest := sha256.Sum256([]byte("Use Daynight CLI."))
-				bound, err := relay.RegisterBot(ctx, principal, worker, bot.ID, sessioncore.BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				v := bound.Session
-				if _, err = relay.GrantBot(ctx, principal, worker, bot.ID, sessioncore.BotGrant{BotVersion: bound.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "bootstrap"}}); err != nil {
-					t.Fatal(err)
-				}
-				mux := http.NewServeMux()
-				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-				bothttp.RegisterRoutes(mux, bots, botservice.NewDeletions(h.Database, nil, engine), h.Auth, logger)
-				h.Handler = httpx.RequestLogging(logger, mux)
-				cookies, authorization, table := []*http.Cookie(nil), []string{"Bearer " + pat.Token}, "personal_access_tokens"
-				if kind == model.SessionCredential {
-					cookies, authorization, table = []*http.Cookie{cookie}, nil, "sessions"
-					principal, err = h.Identity.Authenticate(ctx, kind, cookie.Value)
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
+				worker, sessionID, executionID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+				instant := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
+				role := model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: "frozen-digest"}
+				bot := model.Bot{ID: uuid.NewString(), OwnerUserID: principal.UserID, WorkerID: worker, Name: "Assistant", Version: 2, ResolvedConfiguration: model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "codex", Args: []string{}}, SessionID: &sessionID, TestExecutionID: &executionID, RoleConfiguration: &role, StartupResult: model.BotStartupResult{State: "pending"}, CreatedAt: instant, UpdatedAt: instant}
+				input := store.DeleteBot{Version: 2, DeletionID: uuid.NewString()}
 				path := "/api/v1/me/bots/" + bot.ID
-				body := jsonBody(t, map[string]any{"ifVersion": strconv.FormatInt(bound.Bot.Version, 10), "deletionId": uuid.NewString()})
+				body := jsonBody(t, map[string]any{"ifVersion": strconv.FormatInt(input.Version, 10), "deletionId": input.DeletionID})
 				request := func() *httptest.ResponseRecorder {
-					return h.Request("DELETE", path, body, cookies, authorization, h.Origin)
+					r := httptest.NewRequest(http.MethodDelete, path, strings.NewReader(body)).WithContext(ctx)
+					r.Header.Set("Content-Type", "application/json")
+					r.Header.Set("Origin", configuredTestConfig().PublicOrigin)
+					r.Header.Set("X-Request-ID", "project-test")
+					if kind == model.PATCredential {
+						r.Header.Set("Authorization", "Bearer "+httpTestToken(kind))
+					} else {
+						r.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(kind)})
+					}
+					response := httptest.NewRecorder()
+					h.ServeHTTP(response, r)
+					return response
+				}
+				deleted := bot
+				deleted.Version, deleted.UpdatedAt = 3, instant.Add(time.Second)
+				deleted.Deletion = &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+				intentCalls := []string{"LockCredential", "Bot", "LockBotSessions", "RevokeBotSessions", "SaveBotDeletion", "LockCredential"}
+				replayCalls := []string{"LockCredential", "Bot", "LockCredential"}
+				configureIntent := func(d *botExpiryDAO) {
+					d.SessionsCall = func(id string) ([]store.BotSession, error) {
+						d.check(id == bot.ID, "LockBotSessions")
+						return []store.BotSession{{ID: sessionID, Owner: principal.UserID, Scope: "test", Backend: "web"}}, nil
+					}
+					d.RevokeCall = func(id string) error { d.check(id == bot.ID, "RevokeBotSessions"); return nil }
+					d.DeletionCall = func(id string, deletion *model.BotDeletion) (model.Bot, error) {
+						d.check(id == bot.ID && reflect.DeepEqual(deletion, deleted.Deletion), "SaveBotDeletion")
+						return deleted, nil
+					}
 				}
 				if replay {
-					decodeResponse[api.Bot](t, request(), 200)
-				}
-				state := func() string {
-					t.Helper()
-					var value string
-					if err := h.Database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('bot',to_jsonb(b),'sessions',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id) FROM task_sessions s WHERE s.bot_id=b.id))::text FROM bots b WHERE b.id=$1`, bot.ID).Scan(&value); err != nil {
-						t.Fatal(err)
+					d := newBotExpiryPhase(t, tx, principal, bot, intentCalls, store.TransactionCommitted)
+					configureIntent(d)
+					out := decodeResponse[api.Bot](t, request(), http.StatusOK)
+					if out.Version != 3 || out.Deletion == nil || out.Deletion.DeletionID != input.DeletionID {
+						t.Fatal("deletion setup changed its requested identity")
 					}
-					return value
+					bot = deleted
 				}
-				before := state()
-				lock, err := h.Database.Pool.Begin(ctx)
-				if err != nil {
-					t.Fatal(err)
+				calls := intentCalls
+				if replay {
+					calls = replayCalls
 				}
-				defer lock.Rollback(context.Background())
-				if _, err = lock.Exec(ctx, "SELECT id FROM bots WHERE id=$1 FOR UPDATE", bot.ID); err != nil {
-					t.Fatal(err)
+				d := newBotExpiryPhase(t, tx, principal, bot, calls, store.TransactionNotCommitted)
+				d.expired = true
+				if !replay {
+					configureIntent(d)
 				}
-				if _, err = h.Database.Pool.Exec(ctx, "UPDATE "+table+" SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1", principal.CredentialID); err != nil {
-					t.Fatal(err)
+				response := blockedBotExpiryResponse(t, ctx, cancel, d, request)
+				assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+				valid := newBotExpiryPhase(t, tx, principal, bot, calls, store.TransactionCommitted)
+				if !replay {
+					configureIntent(valid)
 				}
-				result := make(chan *httptest.ResponseRecorder, 1)
-				go func() { result <- request() }()
-				ticker := time.NewTicker(5 * time.Millisecond)
-				defer ticker.Stop()
-				wait := func(query string, args ...any) {
-					t.Helper()
-					for {
-						var ready bool
-						if err := h.Database.Pool.QueryRow(ctx, query, args...).Scan(&ready); err != nil {
-							t.Fatal(err)
-						}
-						if ready {
-							return
-						}
-						select {
-						case <-ctx.Done():
-							t.Fatal(ctx.Err())
-						case <-ticker.C:
-						}
-					}
+				out := decodeResponse[api.Bot](t, request(), http.StatusOK)
+				if out.Version != deleted.Version || out.Deletion == nil || out.Deletion.DeletionID != input.DeletionID || out.BotDefinition != nil {
+					t.Fatal("valid deletion changed the bound identity or receipt")
 				}
-				wait(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid)))`, int32(lock.Conn().PgConn().PID()))
-				wait("SELECT expires_at<=clock_timestamp() FROM "+table+" WHERE id=$1", principal.CredentialID)
-				if err = lock.Commit(ctx); err != nil {
-					t.Fatal(err)
-				}
-				select {
-				case response := <-result:
-					assertProjectError(t, response, 401, "unauthenticated")
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
-				if state() != before {
-					t.Fatal("expired HTTP deletion changed Bot or Session authorization")
-				}
-				if _, err = h.Database.Pool.Exec(ctx, "UPDATE "+table+" SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1", principal.CredentialID); err != nil {
-					t.Fatal(err)
-				}
-				deleted := decodeResponse[api.Bot](t, request(), 200)
-				committed := state()
-				repeated := decodeResponse[api.Bot](t, request(), 200)
-				if repeated.Version != deleted.Version || state() != committed {
-					t.Fatal("valid HTTP replay changed committed state")
+				newBotExpiryPhase(t, tx, principal, deleted, replayCalls, store.TransactionCommitted)
+				repeated := decodeResponse[api.Bot](t, request(), http.StatusOK)
+				if jsonBody(t, repeated) != jsonBody(t, out) {
+					t.Fatal("valid HTTP replay changed the confirmed result")
 				}
 			})
 		}

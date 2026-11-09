@@ -30,7 +30,7 @@ scroll lock prevents background scrolling. Explicit close restores the current
 name button when it remains connected and available. Crossing the breakpoint
 closes the old dialog mode before entering the new one.
 
-The [shared fullscreen hook](2026-11-04-session-fullscreen.md) accepts an optional
+The [shared fullscreen hook](../../archived/feature/2026-11-04-session-fullscreen.md) accepts an optional
 ancestor boundary through `BotSessionHost` and `SessionView`. The Bot conversation
 boundary includes its title, original Session subtree and details. Fullscreen
 registration, isolation, viewport variables and focus use that root without

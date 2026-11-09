@@ -7,6 +7,7 @@ import type { SessionTimelineReadingHandle } from '../task-agent-session/Session
 import { useSessionMessages } from '../task-agent-session/messages';
 import { BotSessionCache, botSessionKey, type BotSessionPane } from './session-cache';
 import type { SessionPresentationSlots } from '../task-agent-session/session-presentation-slots';
+import { BotConversationEmpty } from './BotConversationEmpty';
 import './bot-session.css';
 
 /** Own this hook above the selected Bot and its details panel. Neither selection nor details recreate it. */
@@ -38,12 +39,18 @@ export function BotSessionHost({ cache, binding, active = true, fullscreenBounda
   const guardRevision = useSyncExternalStore(cache.subscribe, cache.guardSnapshot);
   const key = binding ? botSessionKey(binding) : null;
   const current = cache.isCurrent();
+  const assistantPresentation: SessionPresentationSlots = {
+    ...presentation,
+    variant: 'assistant',
+    renderEmpty: slot => <BotConversationEmpty {...slot} />,
+    composer: { ...presentation?.composer, compactMenus: true },
+  };
   useLayoutEffect(() => { cache.select(binding); }, [cache, key, current, guardRevision]);
   const selected = current && panes.some(pane => pane.key === key);
   return <section className="bot-session-host" aria-label={m.title}>
     {!selected ? <p className="session-empty" role="status">{current ? m.loading : m.unavailable}</p> : null}
     {panes.map(pane => <div key={pane.key} className="bot-session-pane" data-bot-id={pane.binding.botId} hidden={!active || !current || pane.key !== key} inert={!active || !current || pane.key !== key}>
-      <BotPane {...(presentation ? { presentation } : {})} pane={pane} current={current} active={active && current && pane.key === key} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
+      <BotPane presentation={assistantPresentation} pane={pane} current={current} active={active && current && pane.key === key} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
     </div>)}
   </section>;
 }

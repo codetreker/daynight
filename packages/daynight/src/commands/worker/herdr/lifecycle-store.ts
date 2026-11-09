@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
-import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../../platform/sqlite-format.js";
 import { assertTerminalBinding, isPreparedSessionV2StopProof, parseSessionV2Message, parseSessionV2Owner, parseSessionV2Runs, parseTerminalBinding } from "../../../session/v2/protocol.js";
 import { bool, canonicalSessionJson, choice, decodeStrictSessionJson, exact, hash, integer, list, nativeText, nullable, seq, text, timestamp, unique, uuid } from "../../../session/v2/values.js";
@@ -207,7 +207,7 @@ export const readHerdrLifecycleRecords = (filename: string): HerdrLifecycleRecor
   } finally { db.close(); }
 };
 
-export const openHerdrLifecycleStore = (filename: string, options: { onMigration?: SqliteMigrationReporter } = {}) => {
+export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter } = {}) => {
   const format = createHerdrLifecycleStoreFormat(db => {
     for (const table of ["executions", "never_started_retirements"] as const) {
       const rows = db.prepare(`SELECT identity, version, data FROM ${table} ORDER BY identity`).all() as LifecycleRow[];
@@ -255,7 +255,7 @@ export const openHerdrLifecycleStore = (filename: string, options: { onMigration
     return get({ ...next.owner, claimId: next.claimId })!;
   });
   return {
-    close: (): void => { closeSqliteDatabase(db, { file: filename, format: herdrLifecycleStoreFormat }); },
+    close: (): void => { closeSqliteDatabase(db, { file: db.name, format: herdrLifecycleStoreFormat }); },
     get,
     retired,
     listRetired: (): HerdrLifecycleRecord[] => read(() => (db.prepare("SELECT identity, version, data FROM never_started_retirements ORDER BY identity").all() as LifecycleRow[]).map(row => { const record = parseRow(row); return retired({ ...record.owner, claimId: record.claimId })!; })),

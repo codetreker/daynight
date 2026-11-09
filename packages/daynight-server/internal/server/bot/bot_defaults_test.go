@@ -59,9 +59,14 @@ func TestBotDefaultsHTTPStrictCreateAndDefaultsInputs(t *testing.T) {
 		`{` + valid + `,"resolvedConfiguration":{}}`, `{` + valid + `,"overrides":null}`, `{` + valid + `,"overrides":[]}`,
 		`{` + valid + `,"overrides":{"workerId":null}}`, `{` + valid + `,"overrides":{"cwd":null}}`, `{` + valid + `,"overrides":{"provider":null}}`,
 		`{` + valid + `,"overrides":{"workerId":42}}`, `{` + valid + `,"overrides":{"cwd":false}}`, `{` + valid + `,"overrides":{"provider":{}}}`,
-		`{` + valid + `,"overrides":{"model":"ignored"}}`, `{` + valid + `,"overrides":{"cwd":"/one","cwd":"/two"}}`,
+		`{` + valid + `,"overrides":{"unknown":"ignored"}}`,
+		`{` + valid + `,"overrides":{"model":null}}`, `{` + valid + `,"overrides":{"model":" "}}`, `{` + valid + `,"overrides":{"reasoningEffort":null}}`, `{` + valid + `,"overrides":{"reasoningEffort":42}}`, `{` + valid + `,"overrides":{"cwd":"/one","cwd":"/two"}}`,
 	} {
 		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 400, "invalid_input")
+	}
+	for _, overrides := range []string{`{"model":"model-a"}`, `{"reasoningEffort":"high"}`, `{"model":"model-a","reasoningEffort":"high"}`} {
+		// Valid native fields reach configuration resolution; this owner has no Worker.
+		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", `{`+valid+`,"overrides":`+overrides+`}`), 409, "resource_conflict")
 	}
 	for _, query := range []string{"?x=1", "?workerId=", "?workerId=bad", "?workerId=" + id + "&workerId=" + id, "?workerId=%zz"} {
 		assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults"+query, ""), 400, "invalid_input")
@@ -119,10 +124,13 @@ func TestBotDefaultsHTTPCandidatesAndExplicitOfflineChoice(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
 	legacy, usable := uuid.NewString(), uuid.NewString()
-	reportSnapshotHTTP(t, handler, legacy, workerSnapshotReportBody())
+	legacyReport := reportSnapshotHTTP(t, handler, legacy, workerSnapshotReportBody())
 	reportBotHostHTTP(t, handler, usable)
 	response := projectRequest(handler, "GET", "/api/v1/me/bots/defaults", "")
 	defaults := decodeResponse[api.BotDefaults](t, response, 200)
+	if age := defaults.ObservedAt.Sub(legacyReport.LastReportedAt); age < 0 || age >= 120*time.Second {
+		t.Fatalf("legacy worker was not online at selection: report=%s observed=%s", legacyReport.LastReportedAt, defaults.ObservedAt)
+	}
 	if defaults.WorkerID == nil || *defaults.WorkerID != usable || defaults.Configuration == nil || defaults.Configuration.WorkerID != usable || defaults.Reason != nil || len(defaults.Workers) != 2 {
 		t.Fatalf("usable host not selected: %+v", defaults)
 	}
@@ -184,4 +192,22 @@ func TestBotDefaultsHTTPBrowserCreationRequiresOrigin(t *testing.T) {
 	}
 	assertProjectError(t, h.Request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, h.Origin), 409, "resource_conflict")
 	decodeResponse[api.BotDefaults](t, h.Request("GET", "/api/v1/me/bots/defaults", "", []*http.Cookie{cookie}, nil, ""), 200)
+}
+
+func TestBotCreationHTTPSelectionRefusals(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	worker := uuid.NewString()
+	reportBotHostHTTP(t, handler, worker)
+	foreign := uuid.NewString()
+	body := `{"id":"` + uuid.NewString() + `","name":"foreign","overrides":{"workerId":"` + foreign + `"}}`
+	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 403, "forbidden")
+	_, err := database.Pool.Exec(context.Background(), `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
+ SELECT user_id,gen_random_uuid(),created_at,last_seen_at,telemetry,task_snapshot FROM workers CROSS JOIN generate_series(1,100)
+ WHERE user_id=$1 AND worker_id=$2`, handler.principal.UserID, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = `{"id":"` + uuid.NewString() + `","name":"overflow"}`
+	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 409, "active_worker_limit_exceeded")
 }

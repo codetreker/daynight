@@ -17,10 +17,8 @@ type SnapshotScope interface {
 	ProjectDAO() ProjectReader
 	TaskDAO() TaskReader
 	WorkerDAO() WorkerReader
+	SessionDAO() SessionReader
 	BotDAO() BotReader
 	AttachmentDAO() AttachmentReader
 	ObservedAt(context.Context) (time.Time, error)
 }
-
-var _ SnapshotReader = (*Store)(nil)
-var _ SnapshotScope = (*Snapshot)(nil)

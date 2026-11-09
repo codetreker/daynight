@@ -2,11 +2,15 @@ import { constants, existsSync } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { createOperation, OperationError, type Operation } from "../../../api/operation.js";
+import { createOperation, OperationError } from "../../../api/operation.js";
+import type { Operation } from "../../../api/operation.js";
 import type { WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerAssistantProvider } from "../../../api/types.js";
 import { copilotExecutable } from "../../controller/providers/copilot-runtime.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess, type HerdrCommand, type HerdrCommandResult } from "../herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "../herdr/command.js";
+import type { HerdrCommand, HerdrCommandResult } from "../herdr/command.js";
+import { captureCodexProbeEnvironment, createCodexProbeOwner } from "../codex-probe-owner.js";
+import type { CodexProbeOwner } from "../codex-probe-owner.js";
 import { NativeVersionOutputError, parseNativeAgentVersion } from "../herdr/version-probe.js";
 import type { ExecutionConfiguration } from "../types.js";
 
@@ -73,6 +77,8 @@ export const createAssistantHostCollector = (options: {
   const resolveExecutable = options.resolveExecutable ?? assistantProviderExecutable;
   const runCommand = options.runCommand ?? ((command, operation) => runHerdrCommand(command, operation, spawnHerdrProcess, { cleanupWithinDeadline: true }));
   const cleanupFailures = new Map<WorkerAgent, unknown>();
+  const codexEnvironment = captureCodexProbeEnvironment(environment);
+  const localCodexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory);
   let pendingDirectory = false;
   const directory = async (operation: Operation): Promise<string> => {
     if (pendingDirectory) throw new OperationError("deadline");
@@ -87,7 +93,7 @@ export const createAssistantHostCollector = (options: {
     return observe(request, operation);
   };
   return {
-    collect: async (operation: Operation): Promise<AssistantHostSample> => {
+    collect: async (operation: Operation, codexProbes: CodexProbeOwner = localCodexProbes): Promise<AssistantHostSample> => {
       operation.check();
       const current = configuration();
       const configured = { ...current, args: [...current.args] };
@@ -109,16 +115,24 @@ export const createAssistantHostCollector = (options: {
             parseProviderArguments(provider, args);
           } catch (error) { return fail("unsupported_arguments", error, true); }
           if (directoryError !== undefined) return fail(directoryError instanceof OperationError ? "timeout" : "invalid_cwd", directoryError);
-          if (cleanupFailures.has(provider)) return fail("unavailable", cleanupFailures.get(provider));
+          if (cleanupFailures.has(provider)) {
+            const previous = cleanupFailures.get(provider);
+            if (hasUnconfirmedHerdrCommandCleanup(previous)) return fail("unavailable", previous);
+            cleanupFailures.delete(provider);
+          }
           try {
             collection.check();
             const file = resolveExecutable(provider);
-            const version = await runCommand({ file, args: provider === "copilot" ? ["--no-auto-update", "--version"] : ["--version"], environment, cwd }, collection);
-            parseNativeAgentVersion(provider, version.stdout);
-            const help = await runCommand({ file, args: helpArguments(provider), environment, cwd }, collection);
-            if (!supportsWeb(provider, help.stdout)) return fail("unavailable", new Error("The native executable does not advertise the required Web transport options."));
-            collection.check();
-            return { provider, available: true, reason: null, model, args };
+            const probeEnvironment = provider === "codex" && file === "codex" ? codexEnvironment : environment;
+            const observeProvider = async (): Promise<WorkerAssistantProvider> => {
+              const version = await runCommand({ file, args: provider === "copilot" ? ["--no-auto-update", "--version"] : ["--version"], environment: probeEnvironment, cwd }, collection);
+              parseNativeAgentVersion(provider, version.stdout);
+              const help = await runCommand({ file, args: helpArguments(provider), environment: probeEnvironment, cwd }, collection);
+              if (!supportsWeb(provider, help.stdout)) return fail("unavailable", new Error("The native executable does not advertise the required Web transport options."));
+              collection.check();
+              return { provider, available: true, reason: null, model, args };
+            };
+            return provider === "codex" ? await codexProbes.observe({ file, environment: probeEnvironment, workingDirectory: options.workingDirectory }, collection, observeProvider) : await observeProvider();
           } catch (error) {
             if (hasHerdrCommandCleanupFailure(error)) cleanupFailures.set(provider, error);
             return fail(reasonOf(error), error);
@@ -128,7 +142,7 @@ export const createAssistantHostCollector = (options: {
           if (cleanupFailures.size > 0) throw new AggregateError([error, ...cleanupFailures.values()], "Assistant host observation was cancelled with unconfirmed process cleanup.", { cause: error });
           throw error;
         }
-        return { assistantHost: { protocolVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configured.agent, providers: entries }, issues };
+        return { assistantHost: { protocolVersion: 1, creationConfigurationVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configured.agent, providers: entries }, issues };
       } finally { collection.dispose(); }
     },
   };

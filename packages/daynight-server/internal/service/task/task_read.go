@@ -11,19 +11,34 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
+// TaskObservation binds a complete task to the project history observed with it.
+type TaskObservation struct {
+	Task  model.Task
+	Epoch string
+}
+
 func (s *Tasks) Get(ctx context.Context, principal model.Principal, projectID, id string) (model.Task, error) {
+	observation, err := s.read(ctx, principal, projectID, id, false)
+	return observation.Task, err
+}
+
+func (s *Tasks) Observe(ctx context.Context, principal model.Principal, projectID, id string) (TaskObservation, error) {
+	return s.read(ctx, principal, projectID, id, true)
+}
+
+func (s *Tasks) read(ctx context.Context, principal model.Principal, projectID, id string, withEpoch bool) (TaskObservation, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
-		return model.Task{}, err
+		return TaskObservation{}, err
 	}
 	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
-		return model.Task{}, err
+		return TaskObservation{}, err
 	}
 	id, err = model.CanonicalID(id)
 	if err != nil {
-		return model.Task{}, err
+		return TaskObservation{}, err
 	}
-	var result model.Task
+	var result TaskObservation
 	var missing *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
@@ -33,14 +48,18 @@ func (s *Tasks) Get(ctx context.Context, principal model.Principal, projectID, i
 			return err
 		}
 		var err error
-		result, missing, err = taskcore.ReadTask(ctx, snapshot.TaskDAO(), projectID, id)
+		result.Task, missing, err = taskcore.ReadTask(ctx, snapshot.TaskDAO(), projectID, id)
+		if err != nil || missing != nil || !withEpoch {
+			return err
+		}
+		result.Epoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, projectID)
 		return err
 	})
 	if err != nil {
-		return model.Task{}, fmt.Errorf("get task: %w", err)
+		return TaskObservation{}, fmt.Errorf("get task: %w", err)
 	}
 	if missing != nil {
-		return model.Task{}, missing
+		return TaskObservation{}, missing
 	}
 	return result, nil
 }
@@ -55,7 +74,7 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	}
 	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{
 		PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready,
-		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, WorkerID: request.WorkerID,
+		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, WorkerID: request.WorkerID,
 	})
 	if err != nil {
 		return TaskPage{}, err

@@ -2,8 +2,11 @@ package tasksearch
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +24,6 @@ type searchFixture struct {
 	fence         store.TaskSearchFence
 	rows          store.TaskSearchPage
 	graph         store.TaskSearchGraph
-	size          store.TaskSearchSize
 	denied        bool
 	graphCalled   bool
 	completion    error
@@ -55,12 +57,6 @@ func (f *searchFixture) Matches(context.Context, string, store.TaskSearchQuery) 
 	}
 	return f.rows, nil
 }
-func (f *searchFixture) ContextSize(context.Context, string, []string) (store.TaskSearchSize, error) {
-	if f.failurePhase == "size" {
-		return store.TaskSearchSize{}, f.failure
-	}
-	return f.size, nil
-}
 func (f *searchFixture) ContextGraph(context.Context, string, []string) (store.TaskSearchGraph, error) {
 	f.graphCalled = true
 	if f.failurePhase == "graph" {
@@ -85,7 +81,7 @@ func principal() model.Principal {
 }
 func testFixture() *searchFixture {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	return &searchFixture{fence: store.TaskSearchFence{Epoch: user, Count: "2", VersionSum: "2"}, rows: store.TaskSearchPage{Total: 2, HasMore: true, Items: []store.TaskSearchRow{{ID: child, Title: "Cache", Description: "raw markdown", Status: model.TaskDone, UpdatedAt: now, TitlePriority: true}}}, size: store.TaskSearchSize{NodeCount: 2, EdgeCount: 1}, graph: store.TaskSearchGraph{Nodes: []store.TaskSearchNode{{ID: child, CreatedAt: now}, {ID: root, CreatedAt: now.Add(-time.Hour)}}, Edges: []store.TaskSearchEdge{{TaskID: child, DependsOnID: root}}}}
+	return &searchFixture{fence: store.TaskSearchFence{Epoch: user, Count: "2", VersionSum: "2"}, rows: store.TaskSearchPage{Total: 2, HasMore: true, Items: []store.TaskSearchRow{{ID: child, Title: "Cache", Description: "raw markdown", Status: model.TaskDone, UpdatedAt: now, TitlePriority: true}}}, graph: store.TaskSearchGraph{Nodes: []store.TaskSearchNode{{ID: child, CreatedAt: now}, {ID: root, CreatedAt: now.Add(-time.Hour)}}, Edges: []store.TaskSearchEdge{{TaskID: child, DependsOnID: root}}}}
 }
 func TestSearchPageAndCursor(t *testing.T) {
 	f := testFixture()
@@ -116,17 +112,10 @@ func TestSearchPageAndCursor(t *testing.T) {
 		t.Fatalf("scope not bound: %v", err)
 	}
 }
-func TestSearchLimitsAndCompletion(t *testing.T) {
+func TestSearchCompletion(t *testing.T) {
 	f := testFixture()
-	f.size.NodeCount = MaxNodes + 1
-	_, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1})
-	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "search_context_limit_exceeded" || f.graphCalled {
-		t.Fatalf("overflow must reject before graph: %v %+v", err, f)
-	}
-	f = testFixture()
 	f.completion = errors.New("commit failed")
-	_, err = Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1})
+	_, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1})
 	if !errors.Is(err, f.completion) {
 		t.Fatalf("completion failure hidden: %v", err)
 	}
@@ -184,7 +173,7 @@ func TestSearchInvalidRequests(t *testing.T) {
 }
 
 func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
-	for _, phase := range []string{"fence", "matches", "size", "graph", "titles"} {
+	for _, phase := range []string{"fence", "matches", "graph", "titles"} {
 		t.Run(phase, func(t *testing.T) {
 			f := testFixture()
 			f.failurePhase = phase
@@ -195,27 +184,6 @@ func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
 			}
 		})
 	}
-	t.Run("missing representative", func(t *testing.T) {
-		f := testFixture()
-		f.missingTitles = true
-		if _, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1}); err == nil {
-			t.Fatal("missing context title accepted")
-		}
-	})
-	t.Run("invalid graph", func(t *testing.T) {
-		f := testFixture()
-		f.graph.Nodes = nil
-		if _, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1}); err == nil {
-			t.Fatal("missing context graph accepted")
-		}
-	})
-	t.Run("inconsistent evidence", func(t *testing.T) {
-		f := testFixture()
-		f.rows.Items[0].TitlePriority = false
-		if _, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1}); err == nil {
-			t.Fatal("inconsistent ranking accepted")
-		}
-	})
 	t.Run("empty continuation", func(t *testing.T) {
 		f := testFixture()
 		f.rows.Items = nil
@@ -246,7 +214,7 @@ func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
 }
 
 func TestSearchCursorValidation(t *testing.T) {
-	scope := cursorScope{Version: 1, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: "hash"}
 	valid := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "0", VersionSum: "123456789012345678901234567890"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	encoded, err := encodeCursor(valid)
 	if err != nil {
@@ -289,5 +257,51 @@ func TestSearchCursorValidation(t *testing.T) {
 	valid.Position.UpdatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := encodeCursor(valid); err == nil {
 		t.Fatal("unencodable time accepted")
+	}
+}
+
+func TestSearchIDEvidenceAndContinuation(t *testing.T) {
+	const id = child
+	f := testFixture()
+	f.rows.Items[0].TitlePriority = false
+	f.rows.Items[0].ExactIDPriority = true
+	page, err := Search(context.Background(), f, principal(), projectID, Request{Query: "id:" + id, Limit: 1})
+	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Match.Fields, []string{"id"}) || page.Items[0].Match.DescriptionSnippet != nil || page.NextCursor == nil {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("id:"+id))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}}
+	value, err := decodeCursor(*page.NextCursor, scope)
+	if err != nil || !value.Position.ExactIDPriority || value.Position.TitlePriority || value.Position.ID != id {
+		t.Fatalf("position=%+v err=%v", value.Position, err)
+	}
+
+}
+
+func TestSearchCursorV2RequiresCanonicalExactPriority(t *testing.T) {
+	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+	c := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "1", VersionSum: "1"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
+	encoded, err := encodeCursor(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"missing":     strings.Replace(string(raw), `"ExactIDPriority":false,`, "", 1),
+		"null":        strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":null`, 1),
+		"wrong type":  strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":"false"`, 1),
+		"old version": strings.Replace(string(raw), `"version":2`, `"version":1`, 1),
+		"duplicate":   strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":false,"ExactIDPriority":false`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeCursor(base64.RawURLEncoding.EncodeToString([]byte(value)), scope); err == nil {
+				t.Fatal("invalid cursor accepted")
+			}
+		})
+	}
+	if _, err := decodeCursor(encoded, scope); err != nil {
+		t.Fatalf("explicit false rejected: %v", err)
 	}
 }

@@ -6,7 +6,7 @@ import type { SessionV2Message, SessionV2Payloads } from "../../../session/v2/ty
 import { herdrInputEnvelope } from "./input-store.js";
 import type { HerdrInputStore } from "./input-store.js";
 import type { HerdrInputBatch, HerdrInputOperation, HerdrInputRecord, HerdrInputTarget, HerdrInputWriteContext } from "./input-types.js";
-import { HerdrInputBlockedError } from "./agents.js";
+import { HerdrAgentActionError, HerdrInputWaitingError } from "./agents.js";
 
 type Result = SessionV2Payloads["operation_result"];
 type ControlAck = SessionV2Payloads["control_ack"];
@@ -21,6 +21,7 @@ export const createHerdrInputArbiter = (options: {
   store: HerdrInputStore; sessionId: string;
   verify: (target: HerdrInputTarget, purpose: Purpose, signal?: AbortSignal) => Promise<void>;
   execute: (batch: HerdrInputBatch, context: HerdrInputWriteContext) => Promise<void>;
+  propagateAutomaticFailures?: boolean;
   now?: () => number; monotonic?: () => number;
 }) => {
   const { store, sessionId } = options, now = options.now ?? Date.now, monotonic = options.monotonic ?? (() => performance.now());
@@ -122,12 +123,18 @@ export const createHerdrInputArbiter = (options: {
       let blockedBeforeWrite = false;
       update(draft => {
         const op = draft.operations.find(value => value.operationId === batch.operationId)!; if (op.result.state !== "dispatching") return;
-        blockedBeforeWrite = !running.written && batch.source !== "web" && error instanceof HerdrInputBlockedError;
+        blockedBeforeWrite = !running.written && batch.source !== "web" && error instanceof HerdrInputWaitingError;
         op.result = result(batch.operationId, running.written ? "unknown" : "rejected", running.written ? "input_unknown" : blockedBeforeWrite ? "automation_suspended" : (error instanceof AdmissionError || error instanceof SessionV2Error) ? error.code : "invalid_payload");
         if (batch.source === "initial") draft.initialOutcome = running.written ? "unknown" : "pending";
         if (running.written) { draft.unknownInput = true; draft.lease = null; draft.leaseSeq = "0"; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); if (!["closing", "closed"].includes(draft.state)) draft.state = "suspended"; }
       });
       if (blockedBeforeWrite) throw error;
+      if (!running.written && batch.source !== "web" && batch.source !== "cleanup" && error instanceof AdmissionError && error.code === "automation_suspended" && operation(batch.operationId)?.result.state === "rejected" && ["manual", "suspended"].includes(record().state)) {
+        throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.", { cause: error });
+      }
+      if (options.propagateAutomaticFailures && !running.written && batch.source !== "web" && batch.source !== "cleanup" && !(error instanceof AdmissionError) && !(error instanceof SessionV2Error) && operation(batch.operationId)?.result.state === "rejected") {
+        throw new HerdrAgentActionError("The original input admission failed before a write.", "agent.prompt", "not-submitted", { cause: error, promptSubmission: "not-submitted" });
+      }
     } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); if (onAbort) running.controller.signal.removeEventListener("abort", onAbort); running.controller.abort(new Error("The native input batch ended.")); active.delete(batch.operationId); }
     return operation(batch.operationId)!.result;
   };

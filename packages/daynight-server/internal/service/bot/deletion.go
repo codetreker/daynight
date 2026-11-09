@@ -2,15 +2,11 @@ package bot
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
-	"strings"
 	"time"
-	"unicode/utf8"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
@@ -25,6 +21,13 @@ type BotDeletionReceipt struct {
 	Stop       *sp.TestStop           `json:"stop"`
 	Result     model.BotCleanupResult `json:"result"`
 }
+
+// DeletionCleanupError reports that the deletion barrier committed, but a
+// subsequent cleanup operation failed. The cause retains its own transaction facts.
+type DeletionCleanupError struct{ Cause error }
+
+func (e *DeletionCleanupError) Error() string { return "bot deletion cleanup: " + e.Cause.Error() }
+func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
 
 type liveSessions interface{ DiscardBotSession(string) }
 
@@ -58,11 +61,10 @@ func deletionID(value string) bool {
 	id, err := uuid.Parse(value)
 	return err == nil && id.String() == value
 }
-func deletionJSON(value any) []byte  { data, _ := json.Marshal(value); return data }
-func sameDeletionJSON(a, b any) bool { return string(deletionJSON(a)) == string(deletionJSON(b)) }
+func deletionJSON(value any) []byte { data, _ := json.Marshal(value); return data }
 
 func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p model.Principal) error {
-	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
+	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && p.Kind != model.OAuthCredential {
 		return deletionDenied()
 	}
 	if err := dao.LockCredential(ctx, p, s.now()); err != nil {
@@ -84,16 +86,10 @@ func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p mod
 	if err != nil {
 		return bot, err
 	}
-	if bot.OwnerUserID != p.UserID {
-		return bot, deletionDenied()
+	if err := botcore.RequireDeletionOwner(bot, p); err != nil {
+		return bot, err
 	}
 	return bot, nil
-}
-func saveDeletion(ctx context.Context, dao store.BotWriteDAO, bot model.Bot) (model.Bot, error) {
-	if bot.Version == math.MaxInt64 {
-		return model.Bot{}, deletionFault("version_exhausted", "Bot version cannot advance.")
-	}
-	return dao.SaveBotDeletion(ctx, bot.ID, bot.Deletion)
 }
 
 // DeleteBot commits admission revocation before physical cleanup.
@@ -108,15 +104,13 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err != nil {
 			return err
 		}
-		if bot.Deletion != nil {
-			if bot.Deletion.DeletionID != input.DeletionID || bot.Deletion.RequestedVersion != input.Version {
-				return deletionFault("resource_conflict", "Bot deletion belongs to a different request.")
-			}
+		replay, err := botcore.DeletionRequest(bot, input)
+		if err != nil {
+			return err
+		}
+		if replay {
 			out = bot
 			return s.credential(ctx, scope.SessionDAO(), p)
-		}
-		if bot.Version != input.Version {
-			return deletionFault("version_conflict", "Bot version has changed.")
 		}
 		sessions, err = scope.SessionDAO().LockBotSessions(ctx, id)
 		if err != nil {
@@ -125,8 +119,8 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err = scope.SessionDAO().RevokeBotSessions(ctx, id); err != nil {
 			return err
 		}
-		bot.Deletion = &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
-		out, err = saveDeletion(ctx, scope.BotDAO(), bot)
+		bot.Deletion = botcore.NewDeletion(input)
+		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
 		if err != nil {
 			return err
 		}
@@ -143,18 +137,18 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 	if completion.Outcome != store.TransactionCommitted {
 		return model.Bot{}, errors.New("Bot deletion commit was not confirmed")
 	}
-	if out.Deletion.WorkerCleanup.State == "completed" && out.Deletion.ServerCleanup.State != "completed" {
-		return s.clean(ctx, p, id, input.DeletionID)
+	if botcore.NeedsServerCleanup(out) {
+		cleaned, err := s.clean(ctx, p, id, input.DeletionID)
+		if err != nil {
+			return model.Bot{}, &DeletionCleanupError{Cause: err}
+		}
+		return cleaned, nil
 	}
 	return out, nil
 }
 
-func validCleanupResult(result model.BotCleanupResult) bool {
-	return result.State == "completed" && result.Code == nil || result.State == "failed" && result.Code != nil && utf8.ValidString(*result.Code) && strings.TrimSpace(*result.Code) != "" && !strings.ContainsRune(*result.Code, 0)
-}
-
 func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, workerID, id string, input BotDeletionReceipt) (model.Bot, error) {
-	if !deletionID(workerID) || !deletionID(id) || !deletionID(input.DeletionID) || !validCleanupResult(input.Result) {
+	if !deletionID(workerID) || !deletionID(id) || !deletionID(input.DeletionID) || !botcore.ValidCleanupResult(input.Result) {
 		return model.Bot{}, deletionFault("invalid_input", "Invalid Bot deletion receipt.")
 	}
 	if p.Kind != model.PATCredential {
@@ -165,32 +159,22 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 			return model.Bot{}, deletionFault("invalid_input", "Invalid Bot execution stop proof.")
 		}
 	}
-	sum := sha256.Sum256(deletionJSON(input))
-	digest := hex.EncodeToString(sum[:])
+	digest := botcore.ReceiptDigest(deletionJSON(input))
 	var out model.Bot
 	completion, err := s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
 		bot, err := s.lockBot(ctx, scope, p, id)
 		if err != nil {
 			return err
 		}
-		if bot.WorkerID != workerID {
-			return deletionDenied()
+		change, needsStopProof, err := botcore.PrepareWorkerCleanup(bot, workerID, input.DeletionID, input.Result, digest)
+		if err != nil {
+			return err
 		}
-		if bot.Deletion == nil || bot.Deletion.DeletionID != input.DeletionID {
-			return deletionConflict()
-		}
-		if bot.Deletion.WorkerCleanup.State == "completed" {
-			if bot.Deletion.ReceiptDigest != digest {
-				return deletionConflict()
-			}
+		if !change {
 			out = bot
 			return nil
 		}
-		if input.Result.State == "failed" && sameDeletionJSON(input.Result, bot.Deletion.WorkerCleanup) {
-			out = bot
-			return nil
-		}
-		if input.Result.State == "completed" {
+		if needsStopProof {
 			if bot.SessionID == nil {
 				if input.Stop != nil {
 					return deletionConflict()
@@ -215,10 +199,9 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 					return deletionConflict()
 				}
 			}
-			bot.Deletion.ReceiptDigest = digest
 		}
-		bot.Deletion.WorkerCleanup = input.Result
-		out, err = saveDeletion(ctx, scope.BotDAO(), bot)
+		botcore.ApplyWorkerCleanup(&bot, input.Result, digest)
+		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
 		return err
 	})
 	if err != nil {
@@ -227,7 +210,7 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 	if completion.Outcome != store.TransactionCommitted {
 		return model.Bot{}, errors.New("Bot receipt commit was not confirmed")
 	}
-	if out.Deletion.WorkerCleanup.State != "completed" || out.Deletion.ServerCleanup.State == "completed" {
+	if !botcore.NeedsServerCleanup(out) {
 		return out, nil
 	}
 	return s.clean(ctx, p, id, input.DeletionID)
@@ -242,10 +225,11 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 		if err != nil {
 			return err
 		}
-		if bot.Deletion == nil || bot.Deletion.DeletionID != deletionID || bot.Deletion.WorkerCleanup.State != "completed" {
-			return deletionConflict()
+		change, err := botcore.PrepareServerCleanup(bot, deletionID)
+		if err != nil {
+			return err
 		}
-		if bot.Deletion.ServerCleanup.State == "completed" {
+		if !change {
 			out = bot
 			return nil
 		}
@@ -279,8 +263,8 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 			cleanupFailed = true
 			return err
 		}
-		bot.Deletion.ServerCleanup = model.BotCleanupResult{State: "completed"}
-		out, err = saveDeletion(ctx, scope.BotDAO(), bot)
+		botcore.CompleteServerCleanup(&bot)
+		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
 		return err
 	})
 	if completion.Outcome == store.TransactionCommitted {
@@ -303,16 +287,15 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 		if e != nil {
 			return e
 		}
-		if bot.Deletion == nil || bot.Deletion.DeletionID != deletionID {
-			return deletionConflict()
+		change, e := botcore.FailServerCleanup(&bot, deletionID)
+		if e != nil {
+			return e
 		}
-		if bot.Deletion.ServerCleanup.State == "completed" {
+		if !change {
 			out = bot
 			return nil
 		}
-		code := "server_cleanup_failed"
-		bot.Deletion.ServerCleanup = model.BotCleanupResult{State: "failed", Code: &code}
-		out, e = saveDeletion(ctx, scope.BotDAO(), bot)
+		out, e = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
 		return e
 	})
 	if failure != nil {

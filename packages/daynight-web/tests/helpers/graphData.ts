@@ -17,7 +17,7 @@ const graph = (number: number, name: string, seeds: readonly TaskSeed[]): TaskGr
     const createdAt = new Date(Date.UTC(2026, 9, 21, 9, task.number * 10)).toISOString();
     return {
       id: id(task.number), titlePreview: task.title, titleTruncated: false, status: task.status,
-      assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+      assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
       dependsOn: task.dependencies.map(id).sort(), externalDependsOn: task.externalDependencies.map(id).sort(), blockedBy,
       ready: task.status === 'todo' && blockedBy.length === 0, createdAt, updatedAt: createdAt,
     };
@@ -32,7 +32,7 @@ const graph = (number: number, name: string, seeds: readonly TaskSeed[]): TaskGr
       total: tasks.length,
       todo: tasks.filter((task) => task.status === 'todo').length,
       inProgress: tasks.filter((task) => task.status === 'in_progress').length,
-      done: tasks.filter((task) => task.status === 'done').length,
+      done: tasks.filter((task) => task.status === 'done').length, cancelled: 0,
       ready: tasks.filter((task) => task.ready).length,
       blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length,
     },

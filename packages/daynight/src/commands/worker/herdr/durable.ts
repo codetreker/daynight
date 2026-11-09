@@ -23,7 +23,7 @@ import { herdrInputEnvelope, openHerdrInputStore } from "./input-store.js";
 import { createHerdrInputArbiter, type HerdrInputArbiter } from "./input-arbiter.js";
 import type { HerdrInputTarget } from "./input-types.js";
 import { inspectHerdrInput } from "./input-readiness.js";
-import { HerdrInputBlockedError } from "./agents.js";
+import { HerdrInputWaitingError } from "./agents.js";
 import { submitTerminalInput, type TerminalInput } from "./terminal-input.js";
 import { createHerdrRpcClient } from "./rpc.js";
 import { createHerdrInputSession } from "./input-session.js";
@@ -34,6 +34,7 @@ import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrAr
 import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
 import { createHerdrRecordingArchive } from "./recording-archive.js";
 import { createHerdrRecordingResources } from "./recording-resources.js";
+import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
 
 type BaseOptions = Parameters<typeof createWorkerHerdr>[0];
 type Identity = HerdrExecutionOwner;
@@ -73,6 +74,26 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   readRecording?: (record: HerdrLifecycleRecord, signal: AbortSignal) => Promise<HerdrRecordingScreen>;
   currentUserId?: (signal: AbortSignal) => Promise<string>;
 }) : WorkerHerdrAdapter => {
+  const selectionOwner = options.selectionVerifier ?? createNativeSelectionVerifier();
+  // A newer queued probe invalidates an older cleanup result. The synchronous
+  // resource views must retain ownership until that newer generation settles.
+  let selectionEpoch = 0, settledSelectionEpoch = 0;
+  const settleSelection = async (): Promise<void> => {
+    const epoch = selectionEpoch;
+    settledSelectionEpoch = -1;
+    await selectionOwner.settle();
+    if (selectionEpoch !== epoch) throw new Error("Native selection changed during cleanup; original resources must be retained.");
+    settledSelectionEpoch = epoch;
+  };
+  const selectionVerifier: NativeSelectionVerifier = {
+    verify: async (input, operation) => {
+      const epoch = ++selectionEpoch;
+      await selectionOwner.verify(input, operation);
+      if (selectionEpoch === epoch) settledSelectionEpoch = epoch;
+    },
+    settle: settleSelection,
+    close: () => selectionOwner.close(),
+  };
   mkdirSync(options.paths.workerDirectory, { recursive: true, mode: 0o700 });
   const store = openHerdrLifecycleStore(path.join(options.paths.workerDirectory, "herdr-executions.sqlite"));
   const inheritedSessions = new Set(store.list().map(record => record.sessionId));
@@ -99,7 +120,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const connected = new Set<string>();
   const attachedRuns = new Set<string>();
   const locks = new Map<string, Promise<void>>();
-  const legacy = createAdapter(options);
+  const legacy = createAdapter({ ...options, selectionVerifier });
   const need = (owner: Identity): HerdrLifecycleRecord => {
     if (store.retired(owner)) throw new Error("The original never-started claim is retired; execution cannot resume.");
     const record = store.get(owner);
@@ -116,18 +137,29 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     try { return await action(); }
     finally { release(); if (locks.get(name) === tail) locks.delete(name); }
   };
-  const verifyClaim = async (owner: Identity, operation: Operation, input: boolean): Promise<Task> => {
+  class ClaimAuthorizationError extends Error {}
+  const verifyClaim = async (owner: Identity, operation: Operation): Promise<Task> => {
     const task = await options.readTask(owner.projectId, owner.taskId, operation.signal);
     const claim = readWorkerClaim(task.properties);
-    if (task.projectId !== owner.projectId || task.id !== owner.taskId || task.status !== "in_progress" || !task.allowAgents || !claim || claim.state !== "active" || claim.claimId !== owner.claimId || claim.workerId !== options.workerId || claim.worktreeId !== owner.worktreeId || claim.agentControlMode !== "herdr") throw new Error("The original active Herdr claim no longer authorizes native execution.");
-    if (input && readTaskPaused(task.properties) === true) throw new HerdrAgentActionError("The task is paused; input was not submitted.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+    if (task.projectId !== owner.projectId || task.id !== owner.taskId || task.status !== "in_progress" || !task.allowAgents || !claim || claim.state !== "active" || claim.claimId !== owner.claimId || claim.workerId !== options.workerId || claim.worktreeId !== owner.worktreeId || claim.agentControlMode !== "herdr") throw new ClaimAuthorizationError("The original active Herdr claim no longer authorizes native execution.");
     return task;
+  };
+  const verifyInputPurpose = async (owner: Identity, operation: Operation, purpose: "automatic" | "manual" | "resume"): Promise<void> => {
+    const task = await verifyClaim(owner, operation);
+    if (purpose !== "manual" && readTaskPaused(task.properties) === true) {
+      if (purpose === "resume") throw new SessionV2Error("permission_denied");
+      throw new HerdrInputWaitingError("task_paused", "The task is paused; automatic input is waiting.");
+    }
+  };
+  const verifyAutomaticAdmission = async (owner: Identity, operation: Operation): Promise<void> => {
+    try { await verifyInputPurpose(owner, operation, "automatic"); }
+    catch (error) { if (error instanceof ClaimAuthorizationError) throw new SessionV2Error("permission_denied"); throw error; }
   };
   const adapter = (record: HerdrLifecycleRecord, directory = current(record).instanceDirectory) => {
     let value = adapters.get(directory);
     if (!value) {
       const owner = identity(record);
-      value = createAdapter({ ...options, paths: { ...options.paths, herdrDirectory: directory, logsDirectory: path.join(directory, "logs") },
+      value = createAdapter({ ...options, selectionVerifier, paths: { ...options.paths, herdrDirectory: directory, logsDirectory: path.join(directory, "logs") },
         retainOnStartupFailure: true, isolatedRun: true,
         onDaemonSpawn: async pid => {
           const daemon = await native.capture(pid, "daemon");
@@ -214,17 +246,21 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const hadJournal = inputStore.get(record.sessionId) !== null;
     const initialized = inputStore.bind(target, !hadJournal && inheritedSessions.has(record.sessionId) ? "unconfirmed" : record.initialAssignment, record.controlEpoch, { allowRecovery });
     if (!hadJournal && (record.automationBlocked || disconnectedBeforeInput.has(record.sessionId))) inputStore.update(initialized, draft => { draft.state = "suspended"; draft.unknownInput = true; });
-    arbiter = createHerdrInputArbiter({ store: inputStore, sessionId: record.sessionId,
+    arbiter = createHerdrInputArbiter({ store: inputStore, sessionId: record.sessionId, propagateAutomaticFailures: true,
       verify: async (expected, purpose, signal) => {
         const operation = createOperation({ ...(signal ? { signal } : {}), limits: { totalMs: 10_000 } });
         try {
           const fresh = need(owner);
           if (inputFailures.has(fresh.sessionId)) throw new SessionV2Error("source_corrupt");
           if (!matchesInput(fresh, expected) || current(fresh).phase !== "active") throw new SessionV2Error("stale_fence");
+          if (purpose === "automatic") {
+            try { await verifyRuntime(fresh); } catch { throw new SessionV2Error("target_changed"); }
+          }
           if (purpose === "cleanup") {
             const task = await options.readTask(owner.projectId, owner.taskId, operation.signal), claim = readWorkerClaim(task.properties);
             if (!claim || claim.claimId !== owner.claimId || claim.workerId !== options.workerId || claim.worktreeId !== owner.worktreeId || !task.allowAgents || readTaskPaused(task.properties) === true) throw new SessionV2Error("permission_denied");
-          } else { try { await verifyClaim(owner, operation, true); } catch { throw new SessionV2Error("permission_denied"); } }
+          } else if (purpose === "automatic") await verifyAutomaticAdmission(owner, operation);
+          else { try { await verifyInputPurpose(owner, operation, purpose); } catch { throw new SessionV2Error("permission_denied"); } }
           try { await verifyRuntime(fresh); } catch { throw new SessionV2Error("target_changed"); }
           // Lease requests use only read-only ownership/readiness checks; no native attach occurs here.
           const batch = nativeBatches.get(fresh.sessionId);
@@ -233,7 +269,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           const readiness = await inspect(fresh, batch?.written ? "manual" : purpose, operation);
           if (batch && (batch.width !== readiness.width || batch.height !== readiness.height)) throw new SessionV2Error("target_changed");
           const guard = purpose === "automatic" ? promptGuards.get(fresh.sessionId) : undefined;
-          if (guard && !await guard(operation)) throw new SessionV2Error("automation_suspended");
+          if (guard && !await guard(operation)) {
+            try { await verifyRuntime(need(owner)); } catch { throw new SessionV2Error("target_changed"); }
+            await verifyAutomaticAdmission(owner, operation);
+            throw new SessionV2Error("stale_fence");
+          }
           try { await verifyRuntime(need(owner)); } catch { throw new SessionV2Error("target_changed"); }
           const input = inputStore.get(fresh.sessionId);
           const manualWrite = input?.operations.some(value => value.source === "web" && value.result.state === "dispatching") === true;
@@ -241,9 +281,19 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
             const remote = await (options.sessionApi ?? createHerdrSessionApi(options.serverOrigin, options.serverToken, { timeoutMs: 10_000 })).state({ owner: fresh.owner, sessionId: fresh.sessionId, claimId: fresh.claimId }, operation.signal);
             if (!remote.connected || remote.connectionEpoch !== fresh.connectionEpoch || remote.executionGeneration !== expected.executionGeneration) throw new SessionV2Error("stale_fence");
             if (manualWrite && (remote.control?.state !== "manual" || remote.control.controlEpoch !== input!.controlEpoch || canonicalSessionJson(remote.control.lease) !== canonicalSessionJson(input!.lease))) throw new SessionV2Error("lease_expired");
-            if (purpose === "automatic" && remote.control !== null && (remote.control.state !== "automation" || remote.control.controlEpoch !== input?.controlEpoch)) throw new SessionV2Error("automation_suspended");
+            if (purpose === "automatic" && remote.control !== null && (remote.control.state !== "automation" || remote.control.controlEpoch !== input?.controlEpoch)) {
+              if (remote.control.state === "manual" || remote.control.state === "suspended") {
+                try { await verifyRuntime(need(owner)); } catch { throw new SessionV2Error("target_changed"); }
+                throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
+              }
+              throw new SessionV2Error("stale_fence");
+            }
           }
           if (inputFailures.has(fresh.sessionId)) throw new SessionV2Error("source_corrupt");
+          if (purpose === "automatic") {
+            try { await verifyRuntime(need(owner)); } catch { throw new SessionV2Error("target_changed"); }
+            await verifyAutomaticAdmission(owner, operation);
+          }
         } finally { operation.dispose(); }
       },
       execute: async (batch, write) => {
@@ -328,11 +378,21 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     } catch (error) { recordingFailed(record, error); return; }
     if (commitBoundary && recovered.length) update(owner, draft => { for (const value of recovered) { const segment = draft.segments.find(s => s.segmentId === value.segmentId)!; segment.endedAt = value.boundary.endedAt; segment.durationMs = value.boundary.durationMs; } });
   };
-  const resources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && !store.retired(identity(record))),
+  const recordingResources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && !store.retired(identity(record))),
     get: need, source: record => { if (recordingFailures.has(record.sessionId)) throw recordingFailures.get(record.sessionId); return recording.source(record).snapshot(); },
     publishStopped: async (record, operation) => { await finishStop(identity(record), operation); }, readTask: options.readTask,
     currentUserId: options.currentUserId ?? (async () => { throw new Error("The original resource owner cannot be authenticated."); }),
   });
+  const resources: typeof recordingResources = {
+    resources: () => recordingResources.resources().map(resource => ({ ...resource, stopped: resource.stopped && selectionEpoch === settledSelectionEpoch })),
+    advance: async (...args) => { await settleSelection(); return recordingResources.advance(...args); },
+    retry: async (...args) => { await settleSelection(); return recordingResources.retry(...args); },
+    dispose: async (...args) => { await settleSelection(); return recordingResources.dispose(...args); },
+    cleaned: owner => {
+      if (selectionEpoch !== settledSelectionEpoch) throw new Error("Native selection probe cleanup is unconfirmed; original resources must be retained.");
+      recordingResources.cleaned(owner);
+    },
+  };
   // The same durable deletion decision retires both resource ownership and
   // pending stop publication. Disposal does not fabricate a remote ledger ACK.
   const retainedResources = () => resources.resources().filter(resource => !hasConfirmedHerdrResourceDeletion(resource));
@@ -355,7 +415,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     if (current(record).phase === "active" && disconnected) {
       // Reconnect the original live target even when its identity and frame have
       // not changed. Registration cannot restore its suspended input authority.
-      await verifyClaim(owner, operation, false);
+      await verifyClaim(owner, operation);
       await verifyRuntime(record);
     }
     // Native identity can appear after the first input. A later unchanged
@@ -368,9 +428,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   };
   const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void) => {
     const record = need(context), run = current(record), arbiter = getInput(context);
-    if (run.phase !== "active" || arbiter.state().state !== "automation" || arbiter.record().unknownInput) throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-    await verifyClaim(context, operation, true); await verifyRuntime(record);
-    if (guard && !await guard(operation)) return { submission: "skipped" as const, observation: await adapter(record).tasks.observe(context, bindingFor(run), operation) };
+    if (run.phase !== "active") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+    await verifyRuntime(record); await verifyInputPurpose(context, operation, "automatic");
+    const control = arbiter.state().state;
+    if (control === "manual" || control === "suspended" || arbiter.record().unknownInput) throw new HerdrInputWaitingError("control_suspended", "The original input admission is waiting for explicit control handoff.");
+    if (control !== "automation") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+    if (guard && !await guard(operation)) {
+      await verifyRuntime(need(context));
+      await verifyInputPurpose(context, operation, "automatic");
+      return { submission: "skipped" as const, observation: await adapter(record).tasks.observe(context, bindingFor(run), operation) };
+    }
     const initial = arbiter.record().initialOutcome === "pending";
     const body = initial ? record.initialPrompt : prompt;
     if (body === null) throw new Error("The original pending assignment body is missing.");
@@ -378,7 +445,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     update(context, draft => { current(draft).admission = operationId; if (initial) draft.initialAssignment = "dispatching"; });
     if (guard) promptGuards.set(record.sessionId, guard);
     const result = await arbiter.submit({ operationId, source: initial ? "initial" : "continuation", text: body }, operation.signal).catch(error => {
-      if (error instanceof HerdrInputBlockedError) update(context, draft => { current(draft).admission = null; if (initial) draft.initialAssignment = "pending"; });
+      if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") update(context, draft => { current(draft).admission = null; if (initial) draft.initialAssignment = "pending"; });
       throw error;
     }).finally(() => { promptGuards.delete(record.sessionId); });
     update(context, draft => {
@@ -386,6 +453,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       if (initial) draft.initialAssignment = result.state === "transport_completed" ? "transport_completed" : result.state === "rejected" ? "pending" : "unknown";
       else if (result.state === "unknown") draft.automationBlocked = true;
     });
+    if (result.state === "rejected" && result.errorCode === "automation_suspended" && ["manual", "suspended"].includes(arbiter.state().state)) throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
     if (result.state !== "transport_completed") throw new HerdrAgentActionError(`The original input admission returned ${result.state}: ${result.errorCode ?? "input_unknown"}.`, "agent.prompt", result.state === "rejected" ? "not-submitted" : "unknown", { promptSubmission: result.state === "rejected" ? "not-submitted" : "unknown" });
     const observed = await adapter(need(context)).tasks.observe(context, bindingFor(run), operation); enrich(context, observed);
     const receipt: HerdrPromptReceipt = { submission: "submitted", observation: observed };
@@ -396,6 +464,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     return receipt;
   };
   const finishStop = async (owner: Identity, operation: Operation): Promise<void> => {
+    await settleSelection();
     await stopRecording(owner);
     // Each segment ends at its own run boundary, including after interrupted closure.
     update(owner, draft => {
@@ -449,7 +518,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const release = options.sessionApi ? () => {} : inputSession.holdRecovery(record.sessionId, entry.prepare);
     const api = apiFor(operation), expected = { owner: record.owner, sessionId: record.sessionId, claimId: record.claimId };
     try {
-      await verifyClaim(owner, operation, false); await verifyRuntime(record); await inspect(record, "resume", operation);
+      await verifyClaim(owner, operation); await verifyRuntime(record); await inspect(record, "resume", operation);
       let receipt = await api.readRecovery(expected, entry.prepare.payload.recoveryId, operation.signal);
       const digest = createHash("sha256").update(canonicalSessionJson(entry.prepare)).digest("hex");
       if (receipt.payload.prepareDigest !== digest || receipt.payload.stopOperationId !== priorRun.stopOperationId || receipt.payload.nativeSessionId !== run.run.binding.nativeSessionId) throw new Error("The service recovery receipt differs from the original shutdown intent.");
@@ -492,8 +561,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       bridgeRegistrations.delete(before.sessionId);
     };
     try { await serialize(owner, async () => {
+    // Probe cleanup gates resource release, but cannot delay or suppress an
+    // independent attempt to stop this claim's original native processes.
+    const results = await Promise.allSettled([settleSelection(), (async () => {
     let record = need(owner);
-    if (record.runs.length === 0 && record.preparation === null) return;
+    if (record.runs.length === 0 && record.preparation === null) return false;
     let run = current(record);
     if (run.phase !== "stopped_confirmed") {
       if (run.stopOperationId === null && run.daemon !== null && await native.observe(run.daemon) !== "same" && await native.bootIdentity() === run.daemon.bootId) {
@@ -545,6 +617,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         r.run.stopProof = preparedStop ? { ...proof, nativeLaunch: "not_submitted", daemon: { pid: daemon.pid, birthToken: daemon.birthToken, bootId: daemon.bootId }, processes: [{ role: "shell", pid: shell.pid, birthToken: shell.birthToken, bootId: shell.bootId }] } : proof;
       });
     }
+    return true;
+    })()]);
+    const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Herdr native stopping and probe cleanup both failed.");
+    if (results[1].status !== "fulfilled" || !results[1].value) return;
     // Segment closure is a separate recoverable boundary after the stop proof commits.
     await finishStop(owner, operation);
     if (reason === "terminal" && input && !inputJournalError) input.close();
@@ -595,7 +673,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       return result;
     },
     prepareWorkspace: (context, title, operation) => serialize(context, async () => {
-      await verifyClaim(context, operation, false);
+      await verifyClaim(context, operation);
       let record = need(context);
       if (record.runs.length === 0) {
         const state = await apiFor(operation).current({ owner: record.owner, claimId: record.claimId }, operation.signal);
@@ -644,7 +722,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const beforeStart = async (active: Operation): Promise<void> => {
         const fresh = need(context), target = current(fresh), shell = run.processes.find(proof => proof.role === "shell");
         if (target.run.executionGeneration !== run.run.executionGeneration || !["prepared", "launch_requested"].includes(target.phase)) throw new Error("The original native launch no longer owns its prepared run.");
-        await verifyClaim(context, active, false);
+        await verifyClaim(context, active);
         if (run.daemon === null || shell === undefined || await native.observe(run.daemon) !== "same" || await native.observe(shell) !== "same") throw new Error("The original prepared runtime changed before native launch.");
         const peer = await native.peer(adapter(fresh).paths.apiEndpoint);
         if (JSON.stringify(peer.auditToken) !== JSON.stringify(run.daemon.auditToken) || peer.bootId !== run.daemon.bootId || peer.birthToken !== run.daemon.birthToken) throw new Error("The original daemon endpoint was replaced before native launch.");
@@ -677,8 +755,10 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await resumeShutdownRecovery(context, operation);
       if (!options.sessionApi) await inputSession.poll(record.sessionId);
       attachedRuns.add(`${record.sessionId}/${run.run.executionGeneration}`);
-      if (observed.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-      if (getInput(context).state().state !== "automation") return observed;
+      if (observed.status === "blocked") throw new HerdrInputWaitingError("native_blocked", "The native agent requires operator action before input.");
+      const inputState = getInput(context).state().state;
+      if (inputState === "manual" || inputState === "suspended") throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
+      if (inputState !== "automation") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
       await send(context, need(context).initialAssignment === "pending" ? input.prompt : "Continue the original assigned task under its existing authorization.", operation, undefined, input.onPromptSubmitted);
       const after = await manager.observe(context, binding, operation); await publishObservedIdentity(context, after, operation); return after;
     }),
@@ -703,6 +783,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         candidates: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && isHerdrNeverStarted(record)).map(identity),
         retired: () => store.listRetired().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId).map(record => ({ owner: identity(record), cwd: record.cwd, agent: record.owner.provider })),
         retire: (owner, operation, verifyWorktreeAbsent) => serialize(owner, async () => {
+          await settleSelection();
           const record = need(owner);
           if (!isHerdrNeverStarted(record)) throw new Error("The original claim has execution evidence; never-started retirement is prohibited.");
           if (!options.currentUserId || await options.currentUserId(operation.signal) !== record.owner.ownerUserId) throw new Error("Never-started retirement requires the original authenticated owner.");
@@ -744,7 +825,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       archive: resources,
       responsibilities: () => retainedResources().map(resource => resource.owner),
       hasPreparedRun: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.runs.at(-1)?.phase === "prepared"; },
-      isStopped: owner => { const record = store.get(owner); return record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
+      isStopped: owner => { const record = store.get(owner); return selectionEpoch === settledSelectionEpoch && record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
       cleanup: async (owner, prompt, operation) => {
         let notified = false;
         const record = need(owner);

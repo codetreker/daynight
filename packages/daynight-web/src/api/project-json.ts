@@ -27,8 +27,7 @@ export const decodeProjectPageJson = async (response: Response): Promise<unknown
   return parsed;
 };
 
-export const decodeTaskGraphJson = async (response: Response): Promise<unknown> => {
-  const text = await response.text();
+export const decodeTaskGraphText = (text: string): unknown => {
   const parsed: unknown = JSON.parse(text);
   if (object(parsed)) {
     const fields = jsonObjectSources(text);
@@ -36,4 +35,14 @@ export const decodeTaskGraphJson = async (response: Response): Promise<unknown> 
     if (Object.hasOwn(parsed, "actorAccess")) parsed.actorAccess = projectAccessSource(fields.get("actorAccess")!);
   }
   return parsed;
+};
+
+export const decodeTaskGraphJson = async (response: Response): Promise<unknown> => decodeTaskGraphText(await response.text());
+
+export type TaskSyncJsonRead = { readonly value: unknown; readonly receivedMonotonic: number };
+
+export const decodeTaskSyncJson = async (response: Response): Promise<TaskSyncJsonRead> => {
+  const text = await response.text();
+  const receivedMonotonic = performance.now();
+  return { value: decodeTaskGraphText(text), receivedMonotonic };
 };

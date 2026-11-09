@@ -21,7 +21,7 @@ process.on('message', message => {
   const accept = (target, chunk) => {
     if (failed) return;
     bytes += chunk.length;
-    if (bytes > 65536) { failed = true; send({type:'failure'}); return; }
+    if (bytes > 65536) { failed = true; send({type:'failure',code:'limit_exceeded'}); return; }
     target.push(chunk);
   };
   child.stdout.on('data', chunk => accept(stdout, chunk));

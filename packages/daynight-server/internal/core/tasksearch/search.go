@@ -17,10 +17,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
-
-const MaxNodes int64 = 20000
-const MaxEdges int64 = 100000
 
 type Request struct {
 	Query              string
@@ -40,14 +38,15 @@ type Match struct {
 	DescriptionSnippet *string  `json:"descriptionSnippet"`
 }
 type Item struct {
-	ID         string           `json:"id"`
-	ProjectID  string           `json:"projectId"`
-	Title      string           `json:"title"`
-	Status     model.TaskStatus `json:"status"`
-	AssignedTo *string          `json:"assignedTo"`
-	UpdatedAt  time.Time        `json:"updatedAt"`
-	Context    *Context         `json:"context"`
-	Match      Match            `json:"match"`
+	ID          string           `json:"id"`
+	ProjectID   string           `json:"projectId"`
+	Title       string           `json:"title"`
+	Status      model.TaskStatus `json:"status"`
+	AssignedTo  *string          `json:"assignedTo"`
+	CancelledAt *time.Time       `json:"cancelledAt"`
+	UpdatedAt   time.Time        `json:"updatedAt"`
+	Context     *Context         `json:"context"`
+	Match       Match            `json:"match"`
 }
 type Page struct {
 	ProjectID  string  `json:"projectId"`
@@ -78,7 +77,7 @@ func invalidCursor() error {
 	return &model.Fault{Code: "invalid_input", Message: "Cursor is invalid for this search."}
 }
 func decodeCursor(encoded string, scope cursorScope) (cursor, error) {
-	if len(encoded) > 16384 {
+	if len(encoded) > transport.MaxEncodedCursorBytes {
 		return cursor{}, invalidCursor()
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
@@ -156,7 +155,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		return Page{}, err
 	}
 	hash := sha256.Sum256([]byte(request.Query))
-	scope := cursorScope{Version: 1, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	scope := cursorScope{Version: 2, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
 	var prior *cursor
 	if request.Cursor != nil {
 		value, err := decodeCursor(*request.Cursor, scope)
@@ -190,43 +189,35 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		for _, row := range rows.Items {
 			ids = append(ids, row.ID)
 		}
-		contexts := map[string]*Context{}
+		contexts := make(map[string]*Context, len(ids))
 		if len(ids) > 0 {
-			size, err := snapshot.ContextSize(ctx, projectID, ids)
-			if err != nil {
-				return err
-			}
-			result.NodeCount = size.NodeCount
-			if size.NodeCount > MaxNodes || size.EdgeCount > MaxEdges {
-				return &model.Fault{Code: "search_context_limit_exceeded", Message: "Search task context exceeds its limit.", GraphLimit: &model.GraphLimitDetails{NodeCount: size.NodeCount, EdgeCount: size.EdgeCount, MaxNodes: MaxNodes, MaxEdges: MaxEdges}}
-			}
 			graph, err := snapshot.ContextGraph(ctx, projectID, ids)
 			if err != nil {
 				return err
 			}
+			result.NodeCount = int64(len(graph.Nodes))
 			representatives, err := componentRepresentatives(ctx, graph, ids)
 			if err != nil {
 				return err
 			}
 			wanted := make([]string, 0, len(representatives))
-			seen := map[string]bool{}
-			for _, id := range representatives {
-				if id != "" && !seen[id] {
-					seen[id] = true
-					wanted = append(wanted, id)
+			seen := make(map[string]bool, len(representatives))
+			for _, id := range ids {
+				representative := representatives[id]
+				if representative != "" && !seen[representative] {
+					seen[representative] = true
+					wanted = append(wanted, representative)
 				}
 			}
-			titles, err := snapshot.Titles(ctx, projectID, wanted)
-			if err != nil {
-				return err
-			}
-			for id, representative := range representatives {
-				if representative != "" {
-					title, ok := titles[representative]
-					if !ok {
-						return fmt.Errorf("missing search context title")
+			if len(wanted) > 0 {
+				titles, err := snapshot.Titles(ctx, projectID, wanted)
+				if err != nil {
+					return err
+				}
+				for id, representative := range representatives {
+					if representative != "" {
+						contexts[id] = &Context{TaskID: representative, Title: titles[representative]}
 					}
-					contexts[id] = &Context{TaskID: representative, Title: title}
 				}
 			}
 		}
@@ -234,14 +225,14 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			evidence, err := query.EvaluateContext(ctx, ast, row.Title, row.Description)
+			evidence, err := query.EvaluateContext(ctx, ast, query.Text{ID: row.ID, Title: row.Title, Description: row.Description})
 			if err != nil {
 				return err
 			}
-			if !evidence.Matches || evidence.Title != row.TitlePriority {
-				return fmt.Errorf("search evidence differs from database result")
-			}
 			fields := []string{}
+			if evidence.ID {
+				fields = append(fields, "id")
+			}
 			if evidence.Title {
 				fields = append(fields, "title")
 			}
@@ -252,14 +243,14 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if err != nil {
 				return err
 			}
-			result.Items = append(result.Items, Item{ID: row.ID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, UpdatedAt: row.UpdatedAt.UTC(), Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
+			result.Items = append(result.Items, Item{ID: row.ID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
 		}
 		if rows.HasMore {
 			if len(rows.Items) == 0 {
 				return fmt.Errorf("search page has no continuation position")
 			}
 			last := rows.Items[len(rows.Items)-1]
-			encoded, err := encodeCursor(cursor{Scope: scope, Fence: fence, Position: store.TaskSearchPosition{TitlePriority: last.TitlePriority, UpdatedAt: last.UpdatedAt, ID: last.ID}})
+			encoded, err := encodeCursor(cursor{Scope: scope, Fence: fence, Position: store.TaskSearchPosition{ExactIDPriority: last.ExactIDPriority, TitlePriority: last.TitlePriority, UpdatedAt: last.UpdatedAt, ID: last.ID}})
 			if err != nil {
 				return err
 			}

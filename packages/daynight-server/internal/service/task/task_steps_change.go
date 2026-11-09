@@ -76,7 +76,10 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		if err := tx.TaskDAO().UpdateTaskStep(ctx, taskID, mutation.Candidate[mutation.To]); err != nil {
 			return err
 		}
-		return tx.TaskDAO().TouchTask(ctx, taskID, observed)
+		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
+			return err
+		}
+		return s.captureStep(ctx, tx, projectID, taskID, stepID, "updated", observed, nil, nil, &current[mutation.To], &mutation.Candidate[mutation.To])
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

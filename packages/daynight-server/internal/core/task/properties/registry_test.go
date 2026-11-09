@@ -54,14 +54,15 @@ func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T
 		_, err := taskproperty.Normalize(properties)
 		var invalidValue *taskproperty.ValidationError
 		if !errors.As(err, &invalidValue) {
-			t.Fatalf("invalid stored property lost typed error: %v", err)
+			t.Fatalf("invalid property input lost typed error: %v", err)
 		}
 	}
-	if _, err := taskproperty.Worker(model.TaskProperties{"worker": json.RawMessage(`null`)}); err == nil {
-		t.Fatal("worker accessor accepted illegal present value")
+	var decode *json.UnmarshalTypeError
+	if _, err := taskproperty.Worker(model.TaskProperties{"worker": json.RawMessage(`{"claimId":1}`)}); !errors.As(err, &decode) {
+		t.Fatalf("worker accessor lost typed decode error: %v", err)
 	}
-	if _, err := taskproperty.PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`null`)}); err == nil {
-		t.Fatal("PR accessor accepted illegal present value")
+	if _, err := taskproperty.PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":1}]`)}); !errors.As(err, &decode) {
+		t.Fatalf("PR accessor lost typed decode error: %v", err)
 	}
 	worker.AgentControlMode = ""
 	if _, err := WithWorker(actual, &worker); err == nil {

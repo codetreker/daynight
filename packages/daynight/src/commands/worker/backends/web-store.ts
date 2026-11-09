@@ -1,6 +1,6 @@
 import { parseStartupObservation, type StartupObservation, type SessionStartupReport } from "../../../session/startup.js";
 import { randomUUID } from "node:crypto";
-import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
@@ -11,7 +11,7 @@ import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginal
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
-export const openWebExecutionStore = (filename: string, options: { onMigration?: SqliteMigrationReporter } = {}) => {
+export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter } = {}) => {
   const db = openSqliteDatabase({ file: filename, format: webExecutionStoreFormat, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
   const atomic = <T>(operation: () => T): T => {
@@ -53,7 +53,7 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
     return value;
   });
   return {
-    close: (): void => { closeSqliteDatabase(db, { file: filename, format: webExecutionStoreFormat }); }, getTask, getOrchestrationBlocker,
+    close: (): void => { closeSqliteDatabase(db, { file: db.name, format: webExecutionStoreFormat }); }, getTask, getOrchestrationBlocker,
     blockOrchestration: (identity: ClaimIdentity, failure: OrchestrationFailure, now: number): OrchestrationBlocker => atomic(() => {
       const task = getTask(identity);
       if (task === null || task.status !== "active" || task.cleanup !== null) throw new Error("Orchestration failure requires the original active execution.");
@@ -165,11 +165,13 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       const task = getTask(identity), execution = task?.webExecution;
       if (task === null || execution == null || execution.sessionId === null || task.status === "done") return null;
       if (identity.webExecution != null && (identity.webExecution.executionGeneration !== execution.executionGeneration || identity.webExecution.controllerInstanceId !== execution.controllerInstanceId || identity.webExecution.sessionId !== execution.sessionId)) throw new Error("Startup observation belongs to another execution generation.");
-      const observation = parseStartupObservation(startup);
+      const incoming = parseStartupObservation(startup), previous = execution.startupReport;
+      // Every producer must preserve the later launch outcome over an unfinished journal.
+      const observation = incoming.state === "starting" && previous?.startup.reasonCode === "controller_start_unknown"
+        ? previous.startup : incoming;
       const recovery: SessionStartupReport["recovery"] = task.recovery.pauseReason === null
         ? { state: "none", reasonCode: null }
         : { state: "blocked", reasonCode: task.recovery.reasonCode ?? "recovery_blocked" };
-      const previous = execution.startupReport;
       if (previous !== undefined && same(previous.startup, observation) && same(previous.recovery, recovery)) return previous;
       const report: SessionStartupReport = { schemaVersion: 1, source: "worker", sessionId: execution.sessionId, claimId: task.claimId,
         executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId,

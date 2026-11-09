@@ -12,7 +12,8 @@
 .session-status { display: inline-flex; align-items: center; gap: 6px; color: #68758a; font-size: 11px; }
 .session-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #8e98a8; }
 .session-status.online::before { background: #428260; }
-.session-timeline-shell { flex: 1; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
+/* Share shrinking space with expanded composer panels without a hard minimum. */
+.session-timeline-shell { flex: 1 1 100px; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
 .session-timeline { height: 100%; min-width: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 22px 26px; }
 .session-timeline-content { max-width: 960px; margin: auto; min-width: 0; }
 .session-entry { margin: 0 0 18px; min-width: 0; overflow-wrap: anywhere; }
@@ -54,10 +55,8 @@
 .session-notice { color: #7a6539; background: #fff9ea; padding: 7px 10px; border-radius: 5px; font-size: 11px; margin: 0 0 9px; overflow-wrap: anywhere; }
 .session-error { margin: 8px 12px; color: #9c3d48; font-size: 12px; overflow-wrap: anywhere; }
 .session-receipts { flex: none; max-height: 72px; overflow: auto; padding: 4px 26px; background: #fafbfe; font-size: 10px; color: #758096; }
+.session-receipt > span { min-width: 0; overflow-wrap: anywhere; }
 .session-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 3px 0; }
-.session-receipt-progress { flex: none; width: 7px; height: 7px; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: session-receipt-spin 1s linear infinite; }
-@keyframes session-receipt-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .session-receipt-progress { animation: none; } }
 .session-receipt.unknown, .session-receipt.failed, .session-receipt.rejected { color: #995d32; }
 .session-resource { margin: 8px 0; font-size: 12px; }
 .session-resource a { color: #5555b6; text-decoration: underline; }
@@ -100,13 +99,19 @@
   .session-header-default { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "status" "actions"; }
   .session-header-default > .session-header-actions { justify-self: end; }
 }
-.task-agent-session.session-fullscreen {
+.task-agent-session.session-fullscreen, .bot-conversation[data-session-fullscreen="true"] {
   position: fixed;
   z-index: 40;
-  top: var(--session-viewport-top, 0px);
-  left: var(--session-viewport-left, 0px);
-  width: var(--session-viewport-width, 100%);
-  height: var(--session-viewport-height, 100dvh);
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  box-sizing: border-box;
+  /* The opaque surface covers the layout viewport, including the region behind
+     keyboard accessories. Only its content box follows the visual viewport. */
+  padding-top: calc(var(--session-viewport-top, 0px) + var(--session-fullscreen-inset, 0px));
+  padding-left: calc(var(--session-viewport-left, 0px) + var(--session-fullscreen-inset, 0px));
+  padding-right: calc(max(0px, 100vw - var(--session-viewport-left, 0px) - var(--session-viewport-width, 100vw)) + var(--session-fullscreen-inset, 0px));
+  padding-bottom: calc(max(0px, 100dvh - var(--session-viewport-top, 0px) - var(--session-viewport-height, 100dvh)) + var(--session-fullscreen-inset, 0px) + var(--session-result-reserve, 0px));
   max-width: none;
   max-height: none;
   margin: 0;
@@ -114,7 +119,10 @@
   border-radius: 0;
   overflow: hidden;
   background: #fff;
+  overscroll-behavior: contain;
 }
+.session-fullscreen :is(textarea, .session-controls-panel, .session-command-menu, .session-receipts, .session-request-content),
+.bot-conversation[data-session-fullscreen="true"] :is(textarea, .session-controls-panel, .session-command-menu, .session-receipts, .session-request-content) { overscroll-behavior: contain; }
 .session-fullscreen .session-timeline-shell { min-height: 0; }
 .session-fullscreen > .session-empty { flex-shrink: 1; min-height: 0; overflow: auto; }
 @media (max-width: 600px) {

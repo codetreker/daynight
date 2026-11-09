@@ -1,24 +1,11 @@
 import { parseApiJson } from "./json.js";
-import { jsonContainerSources, jsonObjectSources } from "./json-source.js";
+import { jsonObjectSources } from "./json-source.js";
 import { array, bool, fields, id, malformed, text } from "./validation.js";
 import type { ThreadAuthor, ThreadExecution, ThreadMessage, ThreadPage, ThreadReadQuery } from "./types.js";
 
 export const THREAD_MESSAGE_BYTES = 65_536;
-export const THREAD_PAGE_BYTES = 262_144;
-
-const encoder = new TextEncoder();
-const fits = (source: string, limit: number): void => {
-  if (encoder.encode(source).byteLength > limit) return malformed();
-};
-
-export const decodeThreadJsonSource = (source: string, kind: "page" | "message" | "error"): unknown => {
-  fits(source, kind === "message" ? THREAD_MESSAGE_BYTES : THREAD_PAGE_BYTES);
-  const members = jsonObjectSources(source);
-  if (kind === "page") {
-    const items = members.get("items");
-    if (items === undefined || !items.startsWith("[")) return malformed();
-    for (const item of jsonContainerSources(items)) fits(item, THREAD_MESSAGE_BYTES);
-  }
+export const decodeThreadJsonSource = (source: string): unknown => {
+  jsonObjectSources(source);
   return parseApiJson(source);
 };
 

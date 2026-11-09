@@ -10,8 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,15 +19,17 @@ import (
 	resources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 )
 
-func TestBundledPageAndReferencedAssets(t *testing.T) {
-	ui := New(resources.New())
-	index, err := resources.New().Read("dist/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(index, []byte(`<div id="root"></div>`)) || bytes.Contains(index, []byte("/src/main.tsx")) {
-		t.Fatal("embedded page is not the production frontend")
-	}
+func testUIResources() *resources.Resources {
+	return resources.NewFromFS(fstest.MapFS{
+		"dist/index.html":                &fstest.MapFile{Data: []byte("<html><body>server test shell</body></html>\n")},
+		"dist/assets/app-12345678.js":    &fstest.MapFile{Data: []byte("console.log(\"server test asset\");\n")},
+		"dist/assets/style-12345678.css": &fstest.MapFile{Data: []byte("body { color: black; }\n")},
+	})
+}
+
+func TestPageAndAssetsServeProvidedResources(t *testing.T) {
+	ui := New(testUIResources())
+	index := []byte("<html><body>server test shell</body></html>\n")
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		response := httptest.NewRecorder()
 		if err := ui.Page(response, httptest.NewRequest(method, "/", nil)); err != nil {
@@ -38,40 +38,34 @@ func TestBundledPageAndReferencedAssets(t *testing.T) {
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/html; charset=utf-8" ||
 			response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Length") != strconv.Itoa(len(index)) ||
 			method == http.MethodGet && !bytes.Equal(response.Body.Bytes(), index) || method == http.MethodHead && response.Body.Len() != 0 {
-			t.Fatalf("page response differs from embedded artifact: %d %+v", response.Code, response.Header())
+			t.Fatalf("page response differs from provided shell: %d %+v", response.Code, response.Header())
 		}
 	}
-	assets := regexp.MustCompile(`(?:src|href)="(/assets/[^"?#]+)"`).FindAllStringSubmatch(string(index), -1)
-	if len(assets) < 2 {
-		t.Fatal("production index does not reference emitted script and stylesheet")
-	}
-	for _, reference := range assets {
-		assetPath := reference[1]
-		expected, err := resources.New().Read("dist" + assetPath)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, asset := range []struct {
+		path, body, contentType string
+	}{
+		{"/assets/app-12345678.js", "console.log(\"server test asset\");\n", "text/javascript"},
+		{"/assets/style-12345678.css", "body { color: black; }\n", "text/css"},
+	} {
 		for _, method := range []string{http.MethodGet, http.MethodHead} {
 			response := httptest.NewRecorder()
-			if err := ui.Asset(response, httptest.NewRequest(method, assetPath, nil)); err != nil {
+			if err := ui.Asset(response, httptest.NewRequest(method, asset.path, nil)); err != nil {
 				t.Fatal(err)
 			}
 			if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" ||
-				response.Header().Get("Content-Length") != strconv.Itoa(len(expected)) ||
-				method == http.MethodGet && !bytes.Equal(response.Body.Bytes(), expected) || method == http.MethodHead && response.Body.Len() != 0 {
-				t.Fatalf("asset %s differs from production artifact: %d %+v", assetPath, response.Code, response.Header())
+				response.Header().Get("Content-Length") != strconv.Itoa(len(asset.body)) ||
+				method == http.MethodGet && response.Body.String() != asset.body || method == http.MethodHead && response.Body.Len() != 0 {
+				t.Fatalf("asset %s differs from provided bytes: %d %+v", asset.path, response.Code, response.Header())
 			}
-			contentType := response.Header().Get("Content-Type")
-			if path.Ext(assetPath) == ".js" && !strings.HasPrefix(contentType, "text/javascript") ||
-				path.Ext(assetPath) == ".css" && !strings.HasPrefix(contentType, "text/css") {
-				t.Fatalf("incorrect asset MIME: %s %s", assetPath, contentType)
+			if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, asset.contentType) {
+				t.Fatalf("incorrect asset MIME: %s %s", asset.path, contentType)
 			}
 		}
 	}
 }
 
 func TestAssetsRejectDirectoriesMissingAndTraversal(t *testing.T) {
-	ui := New(resources.New())
+	ui := New(testUIResources())
 	for _, target := range []string{"/assets/", "/assets/.", "/assets/..", "/assets/../index.html", "/assets//index.js", "/assets/missing.js", "/index.html", "/assets/%2e%2e/index.html", "/assets/nested/../../index.html"} {
 		t.Run(target, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -164,7 +158,7 @@ func (w *failedWriter) Write(data []byte) (int, error) {
 
 func TestResponseWriteFailuresAndCancellation(t *testing.T) {
 	for _, partial := range []bool{false, true} {
-		ui := New(resources.New())
+		ui := New(testUIResources())
 		writer := &failedWriter{header: make(http.Header), partial: partial}
 		err := ui.Page(writer, httptest.NewRequest(http.MethodGet, "/", nil))
 		var responseError *ResponseError
@@ -179,7 +173,7 @@ func TestResponseWriteFailuresAndCancellation(t *testing.T) {
 	for _, duringRead := range []bool{false, true} {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		ui := New(resources.New())
+		ui := New(testUIResources())
 		if duringRead {
 			ui = New(resources.NewFromFS(resourceFailureFS{cancel: cancel}))
 		} else {
@@ -223,13 +217,13 @@ func TestUIErrorsCancellationAndFailedWriteUseSafeSingleBoundary(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
-	httpx.RequestLogging(logger, uiHandler(logger, New(resources.New()).Page)).ServeHTTP(response, request)
+	httpx.RequestLogging(logger, uiHandler(logger, New(testUIResources()).Page)).ServeHTTP(response, request)
 	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"cause":"canceled"`) {
 		t.Fatalf("canceled UI request wrote a response or lost cause: %s %s", response.Body, &logs)
 	}
 	logs.Reset()
 	writer := &countFailedUIWriter{header: make(http.Header)}
-	uiHandler(logger, New(resources.New()).Page)(writer, httptest.NewRequest(http.MethodGet, "/", nil))
+	uiHandler(logger, New(testUIResources()).Page)(writer, httptest.NewRequest(http.MethodGet, "/", nil))
 	if writer.writes != 1 || writer.status != http.StatusOK || strings.Contains(logs.String(), "private") || !strings.Contains(logs.String(), `"phase":"response"`) || strings.Count(logs.String(), `"type":"operation_error"`) != 1 {
 		t.Fatalf("failed UI writer attempted a second response or lost safe error: %+v %s", writer, &logs)
 	}
@@ -256,5 +250,36 @@ func TestRegisterRoutesUsesProvidedResources(t *testing.T) {
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setup", nil))
 	if response.Code != http.StatusOK || response.Body.String() != "custom shell" {
 		t.Fatalf("registered route did not use provided resources: %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestBadRequestHandlerServesShellAndPreservesFailureBoundaries(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	index := "<html><body>server test shell</body></html>\n"
+	handler := New(testUIResources()).BadRequestHandler(logger)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(method, "/oauth/authorize?private=value", nil))
+		if w.Code != http.StatusBadRequest || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Content-Length") != strconv.Itoa(len(index)) || (method == http.MethodGet && w.Body.String() != index) || (method == http.MethodHead && w.Body.Len() != 0) {
+			t.Fatalf("bad-request shell: %s %d %+v %q", method, w.Code, w.Header(), w.Body)
+		}
+	}
+	for _, tc := range []struct {
+		resources ResourceReader
+		status    int
+	}{
+		{resources.NewFromFS(fstest.MapFS{}), http.StatusNotFound},
+		{resources.NewFromFS(resourceFailureFS{openErr: errors.New("private-resource-failure")}), http.StatusInternalServerError},
+	} {
+		w := httptest.NewRecorder()
+		New(tc.resources).BadRequestHandler(logger).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil))
+		if w.Code != tc.status || strings.Contains(w.Body.String(), "private") || strings.Contains(w.Body.String(), "<html") {
+			t.Fatalf("resource failure: %d %q", w.Code, w.Body)
+		}
+	}
+	writer := &countFailedUIWriter{header: make(http.Header)}
+	handler.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil))
+	if writer.status != http.StatusBadRequest || writer.writes != 1 {
+		t.Fatalf("failed delivery retried response: %+v", writer)
 	}
 }

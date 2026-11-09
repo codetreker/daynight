@@ -116,3 +116,19 @@ func TestWorkerAssistantHostRejectsMalformedJSONFields(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerAssistantHostCreationConfigurationCapabilityIsOptionalAndStrict(t *testing.T) {
+	for _, value := range []any{1, 2, 0, nil, "1", 1.5} {
+		body := assistantHostBody()
+		body["creationConfigurationVersion"] = value
+		raw, _ := json.Marshal(body)
+		host, err := workerAssistantHostInput(raw)
+		if value == 1 {
+			if err != nil || host.CreationConfigurationVersion != 1 {
+				t.Fatalf("supported capability: %+v %v", host, err)
+			}
+		} else if err == nil {
+			t.Fatalf("accepted unsupported capability: %v", value)
+		}
+	}
+}

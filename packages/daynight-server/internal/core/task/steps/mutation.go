@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
 )
 
 // Mutation is an admitted dense candidate and its affected interval.
@@ -32,6 +33,13 @@ func missingTarget(header model.TaskHeader, err error) error {
 	return NotFound(header.Version, err)
 }
 
+func admitText(step model.TaskStep) error {
+	if err := text.Admit(step.Title, step.Description); err != nil {
+		return &model.Fault{Code: "invalid_input", Message: err.Error(), Cause: err}
+	}
+	return nil
+}
+
 func AdmitAdd(header model.TaskHeader, current []model.TaskStep, step model.TaskStep, before, after *string) (Mutation, error) {
 	if err := checkCollection(header, current); err != nil {
 		return Mutation{}, err
@@ -43,6 +51,9 @@ func AdmitAdd(header model.TaskHeader, current []model.TaskStep, step model.Task
 	case errors.Is(err, ErrAnchorNotFound):
 		return Mutation{}, &model.Fault{Code: "not_found", Message: "Step anchor was not found."}
 	case err != nil:
+		return Mutation{}, err
+	}
+	if err := admitText(candidate[position]); err != nil {
 		return Mutation{}, err
 	}
 	if err := ensureVersion(header); err != nil {
@@ -60,6 +71,9 @@ func AdmitChange(header model.TaskHeader, current []model.TaskStep, id string, c
 		return Mutation{}, missingTarget(header, err)
 	}
 	if err != nil {
+		return Mutation{}, err
+	}
+	if err := admitText(candidate[index]); err != nil {
 		return Mutation{}, err
 	}
 	if changed {

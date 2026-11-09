@@ -16,6 +16,7 @@ type Pending = { command: TrackedCommand; generation: number; startedAt: number 
 // Native conversation identity may be enriched without changing the execution target.
 export const sameTerminalFence = (a: TerminalSessionState, b: TerminalSessionState) => a.sessionId === b.sessionId && a.claimId === b.claimId && a.executionGeneration === b.executionGeneration && a.connectionEpoch === b.connectionEpoch && canonicalSessionJson({ ...a.binding, nativeSessionId: null }) === canonicalSessionJson({ ...b.binding, nativeSessionId: null });
 const sameAdmissionState = (a: TerminalSessionState, b: TerminalSessionState) => sameTerminalFence(a, b)
+  && canonicalSessionJson(a.owner) === canonicalSessionJson(b.owner)
   && a.binding.nativeSessionId === b.binding.nativeSessionId && a.connected === b.connected
   && canonicalSessionJson(a.control) === canonicalSessionJson(b.control)
   && canonicalSessionJson(a.capabilities) === canonicalSessionJson(b.capabilities);
@@ -82,10 +83,11 @@ export class TerminalSessionClient {
   private channelConfirmed() {
     return !this.needsReconciliation && this.view.transport === 'connected' && this.channelMatches(this.view.session);
   }
-  private ownsLease() { const lease = this.view.session?.control?.lease; return this.live() && this.channelConfirmed() && this.view.phase === 'ready' && this.view.session?.connected === true && this.view.session.control?.state === 'manual' && lease?.holderUserId === this.options.userId && lease.browserClientId === this.browserClientId && Date.parse(lease.expiresAt) > Date.now(); }
+  private isOwner() { return this.view.session?.owner.ownerUserId === this.options.userId; }
+  private ownsLease() { const lease = this.view.session?.control?.lease; return this.isOwner() && this.live() && this.channelConfirmed() && this.view.phase === 'ready' && this.view.session?.connected === true && this.view.session.control?.state === 'manual' && lease?.holderUserId === this.options.userId && lease.browserClientId === this.browserClientId && Date.parse(lease.expiresAt) > Date.now(); }
   private publish(change: Partial<TerminalClientSnapshot>) {
     this.view = { ...this.view, ...change, ...(this.persistenceError === null ? {} : { error: this.persistenceError, phase: 'error' as const }) };
-    this.view = { ...this.view, inputReady: this.live() && this.channelConfirmed(), ownsControl: this.ownsLease() };
+    this.view = { ...this.view, inputReady: this.isOwner() && this.live() && this.channelConfirmed(), ownsControl: this.ownsLease() };
     for (const listener of this.listeners) listener();
   }
   private request() { const controller = new AbortController(); this.requests.add(controller); return controller; }
@@ -231,7 +233,7 @@ export class TerminalSessionClient {
   }
   private admitted(action: string): TerminalSessionState | null {
     const state = this.view.session;
-    if (!this.live() || !this.channelConfirmed() || this.view.phase !== 'ready' || this.view.pending || this.view.result?.state === 'unknown' && !this.view.unknownAcknowledged || state === null || !state.connected || !state.capabilities.observe || !state.capabilities.control || !state.capabilities.archive || !state.control?.availableActions.some(a => a === action)) return null;
+    if (!this.isOwner() || !this.live() || !this.channelConfirmed() || this.view.phase !== 'ready' || this.view.pending || this.view.result?.state === 'unknown' && !this.view.unknownAcknowledged || state === null || !state.connected || !state.capabilities.observe || !state.capabilities.control || !state.capabilities.archive || !state.control?.availableActions.some(a => a === action)) return null;
     return state;
   }
   control = async (action: SessionV2Payloads['control_request']['action'], confirmation: { draftHandled?: boolean; initialUnknownDisposition?: 'delivered_continue' | null } = {}): Promise<void> => {

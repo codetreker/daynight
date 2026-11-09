@@ -10,7 +10,7 @@ and removing a page's last row can leave keyboard focus without a target.
 
 ## Decision
 
-The existing [shared write owner](2026-11-04-task-steps-web-status.md) submits
+The existing [shared write owner](../../archived/architecture/2026-11-04-task-steps-web-status.md) submits
 and validates deletion against the complete previous collection. The confirmation
 identifies the record and explains the effects on its description, references
 and any dirty draft. The form has its own identity so a confirmed late receipt

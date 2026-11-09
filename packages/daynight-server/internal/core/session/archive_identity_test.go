@@ -32,20 +32,28 @@ func TestArchiveNativeIdentitySurvivesAnotherRelayLiveCache(t *testing.T) {
 			})
 			f.s.files = files
 			archiveTerminal(t, f)
-			if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET draining_until=$2,snapshot=jsonb_set(snapshot,'{lifecycle}','"draining"') WHERE id=$1`, v.SessionID, now.Add(time.Minute)); err != nil {
-				t.Fatal(err)
-			}
+			configureArchiveFixture(f)
+			f.dao.Expect("SetSessionArchiveReady", 1)
+			f.dao.Expect("SetSessionArchiveState", 0)
+			drainingUntil := now.Add(time.Minute)
+			f.data.Session.DrainUntil = &drainingUntil
+			f.data.Session.Snapshot.Lifecycle = "draining"
 
 			// The controller's relay keeps its last acknowledged null identity;
 			// another instance receives the archive after the native process stops.
-			writer := New(f.db, files)
+			writer := New(f.writer, files)
 			native := "native-created-after-last-ack"
 			doc := sp.ArchiveDocument{Fence: v.Fence, SchemaVersion: 1, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, NativeSessionID: &native, Entries: []sp.TimelineEntry{localEntry(t, "1")}, Resources: []sp.ArchiveResource{}}
 			data := encode(doc)
-			status, err := writer.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data)
+			status, err := fixtureArchivePut(f, writer, ctx, f.p, f.project, f.task, v.SessionID, data, map[string]int{"SetSessionArchiveReady": 1, "SaveSession": 1})
 			if err != nil || status.State != "ready" {
 				t.Fatal(status, err)
 			}
+			if f.writes.Session == nil || f.writes.Session.Snapshot.Identity.NativeSessionID == nil || *f.writes.Session.Snapshot.Identity.NativeSessionID != native {
+				t.Fatal("writer did not propose finalized native identity")
+			}
+			f.SelectSessionWrite(t)
+			acceptArchiveWrites(t, f, v.SessionID, data)
 			cached := f.s.live[v.SessionID]
 			if cached == nil || cached.value == nil || cached.value.Snapshot.Identity.NativeSessionID != nil {
 				t.Fatal("original relay did not retain the old live snapshot")
@@ -53,7 +61,13 @@ func TestArchiveNativeIdentitySurvivesAnotherRelayLiveCache(t *testing.T) {
 			if expire {
 				now = now.Add(2 * time.Minute)
 			}
-			current, err := f.s.Current(ctx, f.p, f.project, f.task)
+			work := map[string]int{"CurrentTaskSession": 1, "SessionBotID": 1, "LockSession": 1}
+			if expire {
+				work["SaveSession"] = 1
+			}
+			phase := f.TaskPhase(ctx, work)
+			current, err := f.s.Current(phase, f.p, f.project, f.task)
+			f.dao.FinishContext(phase)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -68,16 +82,24 @@ func TestArchiveNativeIdentitySurvivesAnotherRelayLiveCache(t *testing.T) {
 			if snapshot.Lifecycle != lifecycle || snapshot.Operations.CanSend || snapshot.Operations.CanRespond {
 				t.Fatal("terminal read restored control", snapshot)
 			}
-			var savedNative *string
-			var savedLifecycle string
-			if err = f.db.Pool.QueryRow(ctx, `SELECT snapshot->'identity'->>'nativeSessionId',snapshot->>'lifecycle' FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&savedNative, &savedLifecycle); err != nil || savedNative == nil || *savedNative != native || savedLifecycle != lifecycle {
-				t.Fatal("terminal read regressed persisted identity", savedNative, savedLifecycle, err)
+			if expire {
+				if f.writes.Session == nil || f.writes.Session.Snapshot.Identity.NativeSessionID == nil || *f.writes.Session.Snapshot.Identity.NativeSessionID != native || f.writes.Session.Snapshot.Lifecycle != "archived" {
+					t.Fatal("expiration did not preserve identity in its proposed archived snapshot")
+				}
+				f.SelectSessionWrite(t)
 			}
-			got, err := f.s.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID)
-			if err != nil || !bytes.Equal(got, data) {
+			saved := f.data.Session.Snapshot
+			if saved.Identity.NativeSessionID == nil || *saved.Identity.NativeSessionID != native || saved.Lifecycle != lifecycle {
+				t.Fatal("terminal read regressed proposed identity", saved.Identity.NativeSessionID, saved.Lifecycle)
+			}
+			got, err := fixtureArchiveContent(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, nil)
+			if err != nil || !bytes.Equal(got.Data, data) {
 				t.Fatal("archive differs across relay instances", err)
 			}
-			if _, err = f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err != nil {
+			if err := got.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, data, nil); err != nil {
 				t.Fatal("original relay rejected identical archive retry", err)
 			}
 		})

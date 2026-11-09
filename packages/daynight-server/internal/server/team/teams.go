@@ -100,11 +100,15 @@ func (h *teamHandler) list(w http.ResponseWriter, r *http.Request, p model.Princ
 		httpx.WriteError(w, r, logger, "team", "list", err)
 		return
 	}
-	response := api.TeamPage{Items: make([]api.Team, 0, len(result.Items)), NextCursor: result.NextCursor}
-	for _, team := range result.Items {
+	httpx.WriteJSON(w, r, logger, http.StatusOK, teamPageResponse(result.Items, result.NextCursor))
+}
+
+func teamPageResponse(items []model.Team, cursor *string) api.TeamPage {
+	response := api.TeamPage{Items: make([]api.Team, 0, len(items)), NextCursor: cursor}
+	for _, team := range items {
 		response.Items = append(response.Items, teamResponse(team))
 	}
-	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
+	return response
 }
 
 func (h *teamHandler) get(w http.ResponseWriter, r *http.Request, p model.Principal) {

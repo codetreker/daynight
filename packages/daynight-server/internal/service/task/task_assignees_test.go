@@ -1,24 +1,15 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"context"
 	"errors"
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func serviceAssigneeItems(t *testing.T, result model.TaskAssignees, expected map[string]bool, unresolved []string) map[string]model.TaskAssignee {
@@ -47,98 +38,140 @@ func serviceAssigneeItems(t *testing.T, result model.TaskAssignees, expected map
 	return items
 }
 
+func taskReadAssignee(id string, access bool, name, avatar *string) model.TaskAssigneeFact {
+	return model.TaskAssigneeFact{UserID: id, ProfileID: &id, Qualified: true, HasProjectAccess: access, Name: name, AvatarURL: avatar}
+}
+
+func taskReadAssigneeFacts(facts ...model.TaskAssigneeFact) []model.TaskAssigneeFact {
+	result := slices.Clone(facts)
+	slices.SortFunc(result, func(a, b model.TaskAssigneeFact) int { return strings.Compare(a.UserID, b.UserID) })
+	return result
+}
+
+func (f *taskReadFixture) assignees(facts []model.TaskAssigneeFact, requested []string) *taskservice.Tasks {
+	f.reader.TaskAssigneesFn = nil
+	f.reader.ResolveTaskAssigneesFn = nil
+	if requested == nil {
+		f.reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
+			f.requireProject(ctx, id)
+			return facts, nil
+		}
+	} else {
+		f.reader.ResolveTaskAssigneesFn = func(ctx context.Context, id string, userIDs []string) ([]model.TaskAssigneeFact, error) {
+			f.requireProject(ctx, id)
+			if !slices.Equal(userIDs, requested) {
+				f.t.Fatalf("resolved IDs=%v want=%v", userIDs, requested)
+			}
+			return facts, nil
+		}
+	}
+	return taskservice.NewTasks(f.store)
+}
+
 func TestTaskAssigneesCatalogueAndResolutionScope(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	current := workerMember(t, database, project.ID)
-	want := map[string]bool{admin.UserID: true, current.UserID: true}
-	var historical []model.Task
-	var formerIDs []string
-	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
-		former := workerMember(t, database, project.ID)
-		task := createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
-		task = setStatusTask(t, tasks, admin, task, status)
-		historical = append(historical, task)
-		if status == model.TaskTodo {
-			createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
-		}
-		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
-			t.Fatal(err)
-		}
-		want[former.UserID] = false
-		formerIDs = append(formerIDs, former.UserID)
-	}
-	deletedOwner := workerMember(t, database, project.ID)
-	deleted := createAssignedTask(t, tasks, admin, project.ID, &deletedOwner.UserID)
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, deleted.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, deletedOwner.UserID); err != nil {
-		t.Fatal(err)
-	}
-	outsider := servicePrincipal(t, database)
-	otherProject, err := projectservice.NewProjects(database).Create(ctx, outsider, coreproject.CreateProject{ExpectedUserID: outsider.UserID, Name: "Other project", RepoURL: "host:other"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	createAssignedTask(t, tasks, outsider, otherProject.ID, &outsider.UserID)
+	f := newTaskReadFixture(t)
+	current := taskReadID(20)
+	formerIDs := []string{taskReadID(21), taskReadID(22), taskReadID(23)}
+	outsider, missing, deletedOwner := taskReadID(30), taskReadID(99), taskReadID(40)
 	name, avatar := "Canonical former profile", "https://images.example.test/former.png"
-	if _, err := database.Pool.Exec(ctx, `UPDATE users SET name=$2,avatar_url=$3,email='private-directory@example.test' WHERE id=$1`, formerIDs[0], name, avatar); err != nil {
-		t.Fatal(err)
-	}
-	catalogue, err := tasks.Assignees(ctx, admin, project.ID, taskservice.TaskAssigneesRequest{})
+	facts := taskReadAssigneeFacts(taskReadAssignee(f.principal.UserID, true, nil, nil), taskReadAssignee(current, true, nil, nil), taskReadAssignee(formerIDs[0], false, &name, &avatar), taskReadAssignee(formerIDs[1], false, nil, nil), taskReadAssignee(formerIDs[2], false, nil, nil))
+	want := map[string]bool{f.principal.UserID: true, current: true, formerIDs[0]: false, formerIDs[1]: false, formerIDs[2]: false}
+	tasks := f.assignees(facts, nil)
+	catalogue, err := tasks.Assignees(f.ctx, f.principal, f.project.ID, taskservice.TaskAssigneesRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	items := serviceAssigneeItems(t, catalogue, want, nil)
-	if items[current.UserID].Name != nil || items[current.UserID].AvatarURL != nil || !model.EqualOptional(items[formerIDs[0]].Name, &name) || !model.EqualOptional(items[formerIDs[0]].AvatarURL, &avatar) {
+	if items[current].Name != nil || items[current].AvatarURL != nil || !model.EqualOptional(items[formerIDs[0]].Name, &name) || !model.EqualOptional(items[formerIDs[0]].AvatarURL, &avatar) {
 		t.Fatalf("nullable or canonical profiles changed: %#v", items)
 	}
-	memberView, err := tasks.Assignees(ctx, current, project.ID, taskservice.TaskAssigneesRequest{})
-	if err != nil || !reflect.DeepEqual(memberView, catalogue) {
-		t.Fatal("ordinary member cannot read the same project-scoped directory", err)
+	member := f.principal
+	member.UserID = current
+	f.projectReader.ProjectAccessFn = func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		f.requireProject(ctx, id)
+		if p != member {
+			t.Fatal("member identity changed")
+		}
+		access := taskMockAccess(f.project, p)
+		access.Role = model.ProjectMemberRole
+		return access, nil
 	}
-	missing := uuid.NewString()
-	resolved, err := tasks.Assignees(ctx, admin, project.ID, taskservice.TaskAssigneesRequest{UserIDs: []string{outsider.UserID, strings.ToUpper(current.UserID), formerIDs[0], missing, deletedOwner.UserID}})
+	memberView, err := tasks.Assignees(f.ctx, member, f.project.ID, taskservice.TaskAssigneesRequest{})
+	if err != nil || !reflect.DeepEqual(memberView, catalogue) {
+		t.Fatal("ordinary member cannot read the same scoped directory", err)
+	}
+	admin := f.principal
+	f.projectReader.ProjectAccessFn = func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		f.requireProject(ctx, id)
+		if p != admin {
+			t.Fatal("resolution actor changed")
+		}
+		return taskMockAccess(f.project, p), nil
+	}
+	request := []string{outsider, strings.ToUpper(current), formerIDs[0], missing, deletedOwner}
+	wantIDs := slices.Clone(request)
+	for index := range wantIDs {
+		wantIDs[index] = strings.ToLower(wantIDs[index])
+	}
+	slices.Sort(wantIDs)
+	resolution := taskReadAssigneeFacts(taskReadAssignee(current, true, nil, nil), taskReadAssignee(formerIDs[0], false, &name, &avatar), model.TaskAssigneeFact{UserID: outsider}, model.TaskAssigneeFact{UserID: missing}, model.TaskAssigneeFact{UserID: deletedOwner})
+	resolved, err := f.assignees(resolution, wantIDs).Assignees(f.ctx, admin, f.project.ID, taskservice.TaskAssigneesRequest{UserIDs: request})
 	if err != nil {
 		t.Fatal(err)
 	}
-	serviceAssigneeItems(t, resolved, map[string]bool{current.UserID: true, formerIDs[0]: false}, []string{outsider.UserID, missing, deletedOwner.UserID})
-	for _, before := range historical {
-		assertTaskUnchanged(t, tasks, admin, before)
+	serviceAssigneeItems(t, resolved, map[string]bool{current: true, formerIDs[0]: false}, []string{outsider, missing, deletedOwner})
+	if f.reads != 3 {
+		t.Fatalf("directory requests used %d snapshots", f.reads)
 	}
 }
 
 func TestTaskAssigneesDirectInputBoundsAndAuthorization(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
+	f := newTaskReadFixture(t)
+	tasks := taskservice.NewTasks(f.store)
 	ids := make([]string, 101)
 	for index := range ids {
-		ids[index] = uuid.NewString()
+		ids[index] = taskReadID(index + 1)
 	}
 	for _, invalid := range [][]string{{}, {""}, {"me"}, {"unassigned"}, {"bad"}, {ids[0], ids[0]}, {ids[0], strings.ToUpper(ids[0])}, ids} {
-		_, err := tasks.Assignees(ctx, admin, project.ID, taskservice.TaskAssigneesRequest{UserIDs: invalid})
+		_, err := tasks.Assignees(f.ctx, f.principal, f.project.ID, taskservice.TaskAssigneesRequest{UserIDs: invalid})
 		requireFault(t, err, "invalid_input")
 	}
-	result, err := tasks.Assignees(ctx, admin, project.ID, taskservice.TaskAssigneesRequest{UserIDs: ids[:100]})
+	for _, bad := range []string{"", "bad"} {
+		_, err := tasks.Assignees(f.ctx, f.principal, bad, taskservice.TaskAssigneesRequest{})
+		requireFault(t, err, "invalid_input")
+	}
+	_, err := tasks.Assignees(f.ctx, model.Principal{}, f.project.ID, taskservice.TaskAssigneesRequest{})
+	requireFault(t, err, "unauthenticated")
+	if f.reads != 0 {
+		t.Fatal("invalid directory input reached storage")
+	}
+	unqualified := make([]model.TaskAssigneeFact, 100)
+	for index, id := range ids[:100] {
+		unqualified[index] = model.TaskAssigneeFact{UserID: id}
+	}
+	result, err := f.assignees(unqualified, ids[:100]).Assignees(f.ctx, f.principal, f.project.ID, taskservice.TaskAssigneesRequest{UserIDs: ids[:100]})
 	if err != nil {
 		t.Fatal(err)
 	}
 	serviceAssigneeItems(t, result, map[string]bool{}, ids[:100])
-	for _, bad := range []string{"", "bad"} {
-		_, err := tasks.Assignees(ctx, admin, bad, taskservice.TaskAssigneesRequest{})
-		requireFault(t, err, "invalid_input")
-	}
-	_, err = tasks.Assignees(ctx, model.Principal{}, project.ID, taskservice.TaskAssigneesRequest{})
-	requireFault(t, err, "unauthenticated")
-	for _, actor := range []model.Principal{servicePrincipal(t, database), admin} {
-		projectID := project.ID
-		if actor.UserID == admin.UserID {
-			projectID = uuid.NewString()
+	for _, missingProject := range []bool{false, true} {
+		f := newTaskReadFixture(t)
+		actor, id := f.principal, f.project.ID
+		if missingProject {
+			id = taskReadID(99)
+		} else {
+			actor.UserID = taskReadID(98)
 		}
-		result, err := tasks.Assignees(ctx, actor, projectID, taskservice.TaskAssigneesRequest{})
+		f.projectReader.ProjectAccessFn = func(ctx context.Context, p model.Principal, projectID string) (model.ProjectAccess, error) {
+			f.requireActive()
+			if ctx != f.ctx || p != actor || projectID != id {
+				t.Fatal("refused directory identity changed")
+			}
+			return model.ProjectAccess{}, model.ErrNotFound
+		}
+		result, err := taskservice.NewTasks(f.store).Assignees(f.ctx, actor, id, taskservice.TaskAssigneesRequest{})
 		requireFault(t, err, "not_found")
-		if len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
+		if !reflect.DeepEqual(result, model.TaskAssignees{}) {
 			t.Fatal("refused directory returned partial identities")
 		}
 	}
@@ -146,165 +179,172 @@ func TestTaskAssigneesDirectInputBoundsAndAuthorization(t *testing.T) {
 
 func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 	for _, resolve := range []bool{false, true} {
-		tasks, database, project, databaseURL, admin := taskService(t)
-		ctx := context.Background()
-		target := workerMember(t, database, project.ID)
-		before := createAssignedTask(t, tasks, admin, project.ID, &target.UserID)
+		f := newTaskReadFixture(t)
+		target := taskReadID(20)
 		oldName, newName := "Before snapshot", "After snapshot"
-		if _, err := database.Pool.Exec(ctx, `UPDATE users SET name=$2 WHERE id=$1`, target.UserID, oldName); err != nil {
-			t.Fatal(err)
-		}
-		var once sync.Once
-		writes := 0
-		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: func() {
-			once.Do(func() {
-				writes++
-				if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error { return tx.ProjectDAO().RemoveMember(ctx, target.UserID) }); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := database.Pool.Exec(ctx, `UPDATE users SET name=$2,updated_at=statement_timestamp() WHERE id=$1`, target.UserID, newName); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}})
-		request := taskservice.TaskAssigneesRequest{}
+		var requested []string
 		if resolve {
-			request.UserIDs = []string{target.UserID}
+			requested = []string{target}
 		}
-		old, err := traced.Assignees(ctx, admin, project.ID, request)
-		if err != nil || writes != 1 {
-			t.Fatalf("snapshot interleaving did not execute: writes=%d %v", writes, err)
-		}
-		oldExpected := map[string]bool{target.UserID: true}
+		before := []model.TaskAssigneeFact{taskReadAssignee(target, true, &oldName, nil)}
+		after := []model.TaskAssigneeFact{taskReadAssignee(target, false, &newName, nil)}
+		oldExpected := map[string]bool{target: true}
+		freshExpected := map[string]bool{target: false}
 		if !resolve {
-			oldExpected[admin.UserID] = true
+			before = taskReadAssigneeFacts(append(before, taskReadAssignee(f.principal.UserID, true, nil, nil))...)
+			after = taskReadAssigneeFacts(append(after, taskReadAssignee(f.principal.UserID, true, nil, nil))...)
+			oldExpected[f.principal.UserID] = true
+			freshExpected[f.principal.UserID] = true
+		}
+		request := taskservice.TaskAssigneesRequest{UserIDs: requested}
+		old, err := f.assignees(before, requested).Assignees(f.ctx, f.principal, f.project.ID, request)
+		if err != nil || f.reads != 1 {
+			t.Fatalf("one original scope: %d %v", f.reads, err)
 		}
 		oldItems := serviceAssigneeItems(t, old, oldExpected, nil)
-		if !model.EqualOptional(oldItems[target.UserID].Name, &oldName) {
-			t.Fatal("directory mixed old access with a new profile")
+		fresh, err := f.assignees(after, requested).Assignees(f.ctx, f.principal, f.project.ID, request)
+		if err != nil || f.reads != 2 {
+			t.Fatalf("one fresh scope: %d %v", f.reads, err)
 		}
-		fresh, err := tasks.Assignees(ctx, admin, project.ID, request)
-		if err != nil {
-			t.Fatal(err)
+		freshItems := serviceAssigneeItems(t, fresh, freshExpected, nil)
+		if !model.EqualOptional(oldItems[target].Name, &oldName) || !model.EqualOptional(freshItems[target].Name, &newName) || !model.EqualOptional(old.Items[0].Name, &oldName) {
+			t.Fatal("membership and profile scope fields were mixed or old response changed")
 		}
-		oldExpected[target.UserID] = false
-		freshItems := serviceAssigneeItems(t, fresh, oldExpected, nil)
-		if !model.EqualOptional(freshItems[target.UserID].Name, &newName) {
-			t.Fatal("fresh read did not see the independently changed profile")
-		}
-		assertTaskUnchanged(t, tasks, admin, before)
 	}
 }
 
 func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
 	for _, resolve := range []bool{false, true} {
-		tasks, database, project, databaseURL, admin := taskService(t)
-		ctx := context.Background()
-		former := workerMember(t, database, project.ID)
-		before := createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
-		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
-			t.Fatal(err)
-		}
-		var after model.Task
-		var once sync.Once
-		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: func() {
-			once.Do(func() {
-				after = updateTask(t, tasks, admin, before, taskcore.UpdateTask{AssignedTo: assignmentChange(nil)})
-			})
-		}})
-		request := taskservice.TaskAssigneesRequest{}
+		f := newTaskReadFixture(t)
+		former := taskReadID(20)
+		var requested []string
 		if resolve {
-			request.UserIDs = []string{former.UserID}
+			requested = []string{former}
 		}
-		old, err := traced.Assignees(ctx, admin, project.ID, request)
-		if err != nil || after.Version != before.Version+1 {
-			t.Fatal("assignment snapshot interleaving failed", err)
-		}
-		want := map[string]bool{former.UserID: false}
-		if !resolve {
-			want[admin.UserID] = true
-		}
-		serviceAssigneeItems(t, old, want, nil)
-		fresh, err := tasks.Assignees(ctx, admin, project.ID, request)
-		if err != nil {
-			t.Fatal(err)
-		}
+		before := []model.TaskAssigneeFact{taskReadAssignee(former, false, nil, nil)}
+		var after []model.TaskAssigneeFact
+		beforeExpected := map[string]bool{former: false}
 		if resolve {
-			serviceAssigneeItems(t, fresh, map[string]bool{}, []string{former.UserID})
+			after = []model.TaskAssigneeFact{{UserID: former}}
 		} else {
-			serviceAssigneeItems(t, fresh, map[string]bool{admin.UserID: true}, nil)
+			before = taskReadAssigneeFacts(append(before, taskReadAssignee(f.principal.UserID, true, nil, nil))...)
+			after = []model.TaskAssigneeFact{taskReadAssignee(f.principal.UserID, true, nil, nil)}
+			beforeExpected[f.principal.UserID] = true
 		}
-		assertTaskUnchanged(t, tasks, admin, after)
+		request := taskservice.TaskAssigneesRequest{UserIDs: requested}
+		old, err := f.assignees(before, requested).Assignees(f.ctx, f.principal, f.project.ID, request)
+		if err != nil || f.reads != 1 {
+			t.Fatalf("original assignment scope: %v", err)
+		}
+		serviceAssigneeItems(t, old, beforeExpected, nil)
+		fresh, err := f.assignees(after, requested).Assignees(f.ctx, f.principal, f.project.ID, request)
+		if err != nil || f.reads != 2 {
+			t.Fatalf("fresh assignment scope: %v", err)
+		}
+		if resolve {
+			serviceAssigneeItems(t, fresh, map[string]bool{}, []string{former})
+		} else {
+			serviceAssigneeItems(t, fresh, map[string]bool{f.principal.UserID: true}, nil)
+		}
+		serviceAssigneeItems(t, old, beforeExpected, nil)
 	}
 }
 
 func TestTaskAssigneesReaderRemovalUsesSnapshotThenHidesProject(t *testing.T) {
-	tasks, database, project, databaseURL, admin := taskService(t)
-	ctx := context.Background()
-	reader := workerMember(t, database, project.ID)
-	var once sync.Once
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: func() {
-		once.Do(func() {
-			if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, reader.UserID); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}})
-	old, err := traced.Assignees(ctx, reader, project.ID, taskservice.TaskAssigneesRequest{})
-	if err != nil {
+	f := newTaskReadFixture(t)
+	reader := f.principal
+	reader.UserID = taskReadID(20)
+	f.principal = reader
+	admin := taskReadID(21)
+	old, err := f.assignees(taskReadAssigneeFacts(taskReadAssignee(admin, true, nil, nil), taskReadAssignee(reader.UserID, true, nil, nil)), nil).Assignees(f.ctx, reader, f.project.ID, taskservice.TaskAssigneesRequest{})
+	if err != nil || f.reads != 1 {
 		t.Fatal(err)
 	}
-	serviceAssigneeItems(t, old, map[string]bool{admin.UserID: true, reader.UserID: true}, nil)
-	fresh, err := tasks.Assignees(ctx, reader, project.ID, taskservice.TaskAssigneesRequest{})
+	serviceAssigneeItems(t, old, map[string]bool{admin: true, reader.UserID: true}, nil)
+	f.projectReader.ProjectAccessFn = func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		f.requireProject(ctx, id)
+		if p != reader {
+			t.Fatal("removed actor changed")
+		}
+		return model.ProjectAccess{}, model.ErrNotFound
+	}
+	f.reader.TaskAssigneesFn = nil
+	fresh, err := taskservice.NewTasks(f.store).Assignees(f.ctx, reader, f.project.ID, taskservice.TaskAssigneesRequest{})
 	requireFault(t, err, "not_found")
-	if len(fresh.Items) != 0 || len(fresh.UnresolvedUserIDs) != 0 {
+	if !reflect.DeepEqual(fresh, model.TaskAssignees{}) || f.reads != 2 {
 		t.Fatal("removed reader obtained directory identities")
 	}
 }
 
 func TestTaskAssigneesFailuresNeverReturnPartialProfiles(t *testing.T) {
-	query := func(sql string) bool {
-		return strings.Contains(sql, "FROM candidate_ids candidate") || strings.Contains(sql, "FROM unnest($2::uuid[]) requested")
-	}
 	for _, resolve := range []bool{false, true} {
 		for _, atEnd := range []bool{false, true} {
-			_, database, project, databaseURL, admin := taskService(t)
-			ctx, cancel := context.WithCancel(context.Background())
-			action := taskQueryAction{match: query, start: cancel}
-			if atEnd {
-				action.start, action.end = nil, cancel
-			}
-			traced := tracedTasks(t, databaseURL, action)
+			f := newTaskReadFixture(t)
+			ctx, cancel := context.WithCancel(f.ctx)
+			defer cancel()
+			f.ctx = ctx
 			request := taskservice.TaskAssigneesRequest{}
+			var requested []string
 			if resolve {
-				request.UserIDs = []string{admin.UserID}
+				requested = []string{f.principal.UserID}
+				request.UserIDs = requested
 			}
-			result, err := traced.Assignees(ctx, admin, project.ID, request)
-			cancel()
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
-				t.Fatalf("failed directory leaked partial or lost cancellation: %#v %v", result, err)
+			tasks := f.assignees(nil, requested)
+			failure := func() ([]model.TaskAssigneeFact, error) {
+				cancel()
+				var rows []model.TaskAssigneeFact
+				if atEnd {
+					rows = []model.TaskAssigneeFact{taskReadAssignee(f.principal.UserID, true, nil, nil)}
+				}
+				return rows, ctx.Err()
 			}
-			if err := database.Pool.Ping(context.Background()); err != nil {
-				t.Fatal("failed query leaked its connection", err)
+			if resolve {
+				f.reader.ResolveTaskAssigneesFn = func(got context.Context, id string, ids []string) ([]model.TaskAssigneeFact, error) {
+					f.requireProject(got, id)
+					if !slices.Equal(ids, requested) {
+						t.Fatal("failed resolution IDs changed")
+					}
+					return failure()
+				}
+			} else {
+				f.reader.TaskAssigneesFn = func(got context.Context, id string) ([]model.TaskAssigneeFact, error) {
+					f.requireProject(got, id)
+					return failure()
+				}
+			}
+			result, err := tasks.Assignees(ctx, f.principal, f.project.ID, request)
+			var fault *model.Fault
+			if !errors.Is(err, context.Canceled) || errors.As(err, &fault) || !reflect.DeepEqual(result, model.TaskAssignees{}) {
+				t.Fatalf("directory failure leaked partial rows or cause: %#v %v", result, err)
 			}
 		}
-	}
-	for _, resolve := range []bool{false, true} {
-		tasks, database, project, _, admin := taskService(t)
-		if _, err := database.Pool.Exec(context.Background(), `DROP TABLE tasks CASCADE`); err != nil {
-			t.Fatal(err)
-		}
+		f := newTaskReadFixture(t)
+		storage := errors.New("directory storage failure")
 		request := taskservice.TaskAssigneesRequest{}
+		var requested []string
 		if resolve {
-			request.UserIDs = []string{admin.UserID}
+			requested = []string{f.principal.UserID}
+			request.UserIDs = requested
 		}
-		result, err := tasks.Assignees(context.Background(), admin, project.ID, request)
-		assertOperational(t, err)
-		var pg *pgconn.PgError
-		if !errors.As(err, &pg) || pg.Code != "42P01" || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
-			t.Fatalf("storage failure became partial/empty success: %#v %v", result, err)
+		tasks := f.assignees(nil, requested)
+		if resolve {
+			f.reader.ResolveTaskAssigneesFn = func(ctx context.Context, id string, ids []string) ([]model.TaskAssigneeFact, error) {
+				f.requireProject(ctx, id)
+				if !slices.Equal(ids, requested) {
+					t.Fatal("failed resolution changed")
+				}
+				return nil, storage
+			}
+		} else {
+			f.reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
+				f.requireProject(ctx, id)
+				return nil, storage
+			}
+		}
+		result, err := tasks.Assignees(f.ctx, f.principal, f.project.ID, request)
+		var fault *model.Fault
+		if !errors.Is(err, storage) || errors.As(err, &fault) || !reflect.DeepEqual(result, model.TaskAssignees{}) {
+			t.Fatalf("storage failure became partial success or refusal: %#v %v", result, err)
 		}
 	}
-
 }

@@ -35,6 +35,7 @@ export const createTerminalPrompt = (): CliPrompt => {
     try {
       return await action({ input: process.stdin, output: process.stderr, signal: AbortSignal.any([signal, closing.signal]) });
     } catch (cause) {
+      if (cause instanceof Error && cause.name === "AbortPromptError") signal.throwIfAborted();
       if (cause instanceof Error && ["ExitPromptError", "AbortPromptError"].includes(cause.name)) throw new CliCancelledError(undefined, { cause });
       throw cause;
     } finally {

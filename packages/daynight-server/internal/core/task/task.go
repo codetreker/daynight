@@ -8,9 +8,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
 )
 
 type CreateTask struct {
@@ -39,10 +41,14 @@ func invalidInput(message string) error { return &model.Fault{Code: "invalid_inp
 
 func PropertyFault(err error) *model.Fault {
 	var invalid *taskproperty.ValidationError
-	if !errors.As(err, &invalid) {
-		return nil
+	var violation *limit.Violation
+	if errors.As(err, &invalid) {
+		return &model.Fault{Code: "invalid_input", Message: invalid.Error(), Cause: err}
 	}
-	return &model.Fault{Code: "invalid_input", Message: invalid.Error(), Cause: err}
+	if errors.As(err, &violation) {
+		return &model.Fault{Code: "invalid_input", Message: violation.Error(), Cause: err}
+	}
+	return nil
 }
 
 func PropertyInputError(err error) error {
@@ -86,6 +92,9 @@ func canonicalAssignedTo(value *string) (*string, error) {
 }
 
 func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
+	if err := AdmitDependencies(input.DependsOn); err != nil {
+		return store.TaskWrite{}, PropertyInputError(err)
+	}
 	props, err := properties.Normalize(input.Properties)
 	if err != nil {
 		return store.TaskWrite{}, PropertyInputError(err)
@@ -135,6 +144,9 @@ func UpdateCandidate(current model.Task, input UpdateTask) (store.TaskWrite, err
 		values.Description = *input.Description
 	}
 	if input.DependsOn != nil {
+		if err := AdmitDependencies(*input.DependsOn); err != nil {
+			return store.TaskWrite{}, PropertyInputError(err)
+		}
 		var err error
 		values.DependsOn, err = canonicalDependencies(*input.DependsOn, current.ID)
 		if err != nil {
@@ -187,6 +199,12 @@ func validateTaskValues(values store.TaskWrite) error {
 	if !utf8.ValidString(values.Description) || strings.ContainsRune(values.Description, 0) {
 		return invalidInput("Task description must be UTF-8 text without NUL characters.")
 	}
+	if err := text.Admit(values.Title, values.Description); err != nil {
+		return PropertyInputError(err)
+	}
+	if err := AdmitDependencies(values.DependsOn); err != nil {
+		return PropertyInputError(err)
+	}
 	return nil
 }
 
@@ -212,6 +230,11 @@ func canonicalDependencies(ids []string, self string) ([]string, error) {
 }
 
 func canonicalExternalDependencies(ids []string, self string, dependencies []string) ([]string, error) {
+	// A unique subset of an admitted complete set cannot exceed this bound.
+	// Reject it before allocating or canonicalizing the supplied identifiers.
+	if len(ids) > MaxDependencies {
+		return nil, invalidInput("External dependencies must belong to the complete dependency set.")
+	}
 	canonical, err := canonicalDependencies(ids, self)
 	if err != nil {
 		return nil, err
@@ -229,6 +252,9 @@ func canonicalExternalDependencies(ids []string, self string, dependencies []str
 }
 
 func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite) error {
+	if err := AdmitDependencies(values.DependsOn); err != nil {
+		return PropertyInputError(err)
+	}
 	prerequisites, err := dao.TasksByID(ctx, values.DependsOn)
 	if err != nil {
 		return err
@@ -259,16 +285,16 @@ func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, v
 	if len(cycles) > 0 {
 		return &model.Fault{Code: "dependency_cycle", Message: "Task dependencies would create a cycle.", TaskIDs: cycles}
 	}
-	if values.Status == model.TaskInProgress || values.Status == model.TaskDone {
+	if values.Status.RequiresSatisfiedPrerequisites() {
 		blocked := make([]string, 0)
 		for _, prerequisite := range prerequisites {
-			if prerequisite.Status != model.TaskDone {
+			if !prerequisite.Status.SatisfiesDependency() {
 				blocked = append(blocked, prerequisite.ID)
 			}
 		}
 		if len(blocked) > 0 {
 			slices.Sort(blocked)
-			return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: blocked}
+			return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done or cancelled.", TaskIDs: blocked}
 		}
 	}
 	return nil

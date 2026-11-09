@@ -1,9 +1,6 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"context"
 	"errors"
 	"reflect"
@@ -13,160 +10,287 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func deletedTaskStorage(t *testing.T, database *store.Store, task model.Task) (string, *time.Time, time.Time, int64) {
+type taskDeletionCapture func(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
+
+func (capture taskDeletionCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+	return capture(ctx, dao, facts)
+}
+
+func taskDeletionWorker(t *testing.T, state model.WorkerState) model.TaskProperties {
 	t.Helper()
-	var data string
-	var deleted *time.Time
-	var updated time.Time
-	var version int64
-	if err := database.Pool.QueryRow(context.Background(), `SELECT
-		(to_jsonb(t)-'deleted_at'-'updated_at'-'version')::text, deleted_at, updated_at, version
-		FROM tasks t WHERE project_id=$1 AND id=$2`, task.ProjectID, task.ID).Scan(&data, &deleted, &updated, &version); err != nil {
-		t.Fatal(err)
+	_, target, principal := taskMockModels()
+	descriptor := workerDescriptor()
+	return testWithWorker(t, target.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: state, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: target.CreatedAt})
+}
+
+func taskDeletionService(t *testing.T, f *taskFailureFixture, target model.Task, expectedCaptures int) *taskservice.Tasks {
+	t.Helper()
+	f.scope.SessionDAOFn = func() store.ProjectSessionDAO { return f.sessions }
+	f.sessions.DrainTaskSessionsFn = func(actual context.Context, id string, drain store.TaskSessionDrain) error {
+		if actual != f.ctx || id != target.ID || drain.ActiveClaim != nil || drain.SourceLifecycle != "active" || drain.GraceSeconds != 60 {
+			t.Fatalf("wrong deletion drain: %#v", drain)
+		}
+		return nil
 	}
-	return data, deleted, updated, version
+	f.sessions.TransitionTaskSessionReceiptsFn = func(actual context.Context, id string, transition store.TaskSessionReceiptTransition) error {
+		if actual != f.ctx || id != target.ID || transition.Lifecycle != "draining" || transition.PreviousState != "accepted" || transition.NextState != "rejected" {
+			t.Fatalf("wrong deletion receipts: %#v", transition)
+		}
+		return nil
+	}
+	f.projects.InvalidateTaskCacheFn = func(actual context.Context) error {
+		if actual != f.ctx {
+			t.Fatal("epoch invalidation changed context")
+		}
+		return nil
+	}
+	captureDAO := &captureDAOMock{taskMockBase: f.database.taskMockBase.withLabel("capture")}
+	f.scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return captureDAO }
+	captureCalls := 0
+	capture := taskDeletionCapture(func(actual context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+		captureCalls++
+		if captureCalls > 1 {
+			t.Fatal("unexpected additional deletion capture")
+		}
+		if actual != f.ctx || dao != captureDAO || len(facts) != 1 || facts[0].Type != protocol.Deleted || facts[0].ProjectID != target.ProjectID || facts[0].TaskID != target.ID || facts[0].TaskVersion != target.Version+1 || !facts[0].OccurredAt.Equal(target.UpdatedAt.Add(time.Second)) || facts[0].DeletedAt == nil || !facts[0].DeletedAt.Equal(facts[0].OccurredAt) {
+			t.Fatalf("wrong deletion capture: %#v", facts)
+		}
+		return nil
+	})
+	t.Cleanup(func() {
+		if captureCalls != expectedCaptures {
+			t.Fatalf("deletion capture calls: %d, want %d", captureCalls, expectedCaptures)
+		}
+	})
+	return taskservice.NewTasks(f.database, capture)
+}
+
+func expectTaskDeletion(t *testing.T, f *taskFailureFixture, target model.Task, removeDepends bool) {
+	t.Helper()
+	called := false
+	f.tasks.DeleteTaskFn = func(actual context.Context, id string, remove bool) (model.TaskTombstone, error) {
+		if called {
+			t.Fatal("unexpected additional Task deletion")
+		}
+		called = true
+		if actual != f.ctx || id != target.ID || remove != removeDepends {
+			t.Fatal("wrong Task deletion arguments")
+		}
+		return model.TaskTombstone{ID: target.ID, ProjectID: target.ProjectID, Version: target.Version + 1, DeletedAt: target.UpdatedAt.Add(time.Second)}, nil
+	}
 }
 
 func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	ctx := context.Background()
-	pre := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Pre"))
-	var dependents []model.Task
+	for _, scenario := range []string{"stale", "dependents", "active-worker"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+			target := f.target
+			version := target.Version
+			code := ""
+			dependents := []string{"66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777", "88888888-8888-4888-8888-888888888888"}
+			switch scenario {
+			case "stale":
+				version++
+				code = "version_conflict"
+			case "dependents":
+				target.Status = model.TaskDone
+				code = "dependency_unsatisfied"
+				f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return dependents, nil }
+			case "active-worker":
+				target.Status = model.TaskInProgress
+				target.Properties = taskDeletionWorker(t, model.WorkerActive)
+				code = "invalid_transition"
+			}
+			f.expectTask(t, target)
+			err := taskservice.NewTasks(f.database).Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: version})
+			fault := requireFault(t, err, code)
+			if scenario == "dependents" && !slices.Equal(fault.TaskIDs, dependents) {
+				t.Fatalf("missing dependent IDs: %#v", fault)
+			}
+			if f.callbackError != nil {
+				t.Fatalf("business refusal escaped callback: %v", f.callbackError)
+			}
+		})
+	}
 	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
-		dependent := createTask(t, tasks, principal, project.ID, "Dependent", pre.ID)
-		dependent = setStatusTask(t, tasks, principal, dependent, status)
-		dependents = append(dependents, dependent)
+		t.Run(string(status), func(t *testing.T) {
+			f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+			target := f.target
+			target.Status = status
+			f.expectTask(t, target)
+			f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
+			expectTaskDeletion(t, f, target, false)
+			if err := taskDeletionService(t, f, target, 1).Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
-	before, _, _, _ := deletedTaskStorage(t, database, pre)
-	var epoch string
-	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&epoch); err != nil {
-		t.Fatal(err)
-	}
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, pre.ID, taskcore.DeleteTask{Version: pre.Version + 1}), "version_conflict")
-	fault := requireFault(t, tasks.Delete(ctx, principal, project.ID, pre.ID, taskcore.DeleteTask{Version: pre.Version}), "dependency_unsatisfied")
-	want := []string{dependents[0].ID, dependents[1].ID, dependents[2].ID}
-	slices.Sort(want)
-	if !slices.Equal(fault.TaskIDs, want) {
-		t.Fatalf("missing dependent IDs: %#v", fault)
-	}
-	assertTaskUnchanged(t, tasks, principal, pre)
-	after, marker, _, _ := deletedTaskStorage(t, database, pre)
-	var afterEpoch string
-	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&afterEpoch); err != nil || marker != nil || before != after || epoch != afterEpoch {
-		t.Fatalf("refusal mutated marker/data/epoch: %v %v", marker, err)
-	}
-	active := claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), workerDescriptor())
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, active.ID, taskcore.DeleteTask{Version: active.Version}), "invalid_transition")
-	released, err := tasks.ReleaseWorker(ctx, principal, project.ID, active.ID, taskcore.ReleaseWorker{Version: active.Version, ClaimID: testWorker(t, active.Properties).ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.Delete(ctx, principal, project.ID, released.ID, taskcore.DeleteTask{Version: released.Version}); err != nil {
-		t.Fatal(err)
-	}
-	for _, dependent := range dependents {
-		if err := tasks.Delete(ctx, principal, project.ID, dependent.ID, taskcore.DeleteTask{Version: dependent.Version}); err != nil {
-			t.Fatalf("status %s cannot be deleted: %v", dependent.Status, err)
+	t.Run("released-worker", func(t *testing.T) {
+		f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+		target := f.target
+		target.Status = model.TaskInProgress
+		target.Properties = taskDeletionWorker(t, model.WorkerReleased)
+		f.expectTask(t, target)
+		f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
+		expectTaskDeletion(t, f, target, false)
+		if err := taskDeletionService(t, f, target, 1).Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version}); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if err := tasks.Delete(ctx, principal, project.ID, pre.ID, taskcore.DeleteTask{Version: pre.Version}); err != nil {
-		t.Fatal(err)
-	}
+	})
 }
 
 func TestTaskDeletionValidationAndAccessDoNotExposeHistory(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	ctx := context.Background()
-	task := createTask(t, tasks, principal, project.ID, "Private")
-	stranger := servicePrincipal(t, database)
-	requireFault(t, tasks.Delete(ctx, model.Principal{}, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version}), "unauthenticated")
-	requireFault(t, tasks.Delete(ctx, principal, "invalid", task.ID, taskcore.DeleteTask{Version: task.Version}), "invalid_input")
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, "invalid", taskcore.DeleteTask{Version: task.Version}), "invalid_input")
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, task.ID, taskcore.DeleteTask{Version: 0}), "invalid_input")
-	requireFault(t, tasks.Delete(ctx, stranger, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version}), "not_found")
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, "00000000-0000-4000-8000-000000000099", taskcore.DeleteTask{Version: 1}), "not_found")
-	assertTaskUnchanged(t, tasks, principal, task)
-	if err := tasks.Delete(ctx, principal, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version}); err != nil {
-		t.Fatal(err)
+	project, target, principal := taskMockModels()
+	database := &taskStoreMock{taskMockBase: newTaskMockBase(t, "store")}
+	tasks := taskservice.NewTasks(database)
+	for _, request := range []struct {
+		actor         model.Principal
+		projectID, id string
+		version       int64
+		code          string
+	}{
+		{model.Principal{}, project.ID, target.ID, target.Version, "unauthenticated"},
+		{principal, "invalid", target.ID, target.Version, "invalid_input"},
+		{principal, project.ID, "invalid", target.Version, "invalid_input"},
+		{principal, project.ID, target.ID, 0, "invalid_input"},
+	} {
+		requireFault(t, tasks.Delete(t.Context(), request.actor, request.projectID, request.id, taskcore.DeleteTask{Version: request.version}), request.code)
 	}
-	_, err := tasks.Get(ctx, stranger, project.ID, task.ID)
-	requireFault(t, err, "not_found")
-	requireFault(t, tasks.Delete(ctx, stranger, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version}), "not_found")
-}
-
-func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	pre := createTask(t, tasks, principal, project.ID, "Prerequisite")
-	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return model.Task{}, tasks.Delete(ctx, principal, project.ID, pre.ID, taskcore.DeleteTask{Version: pre.Version})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "New dependent", DependsOn: []string{pre.ID}})
-		})
-	success := 0
-	for _, result := range results {
-		if result.err == nil {
-			success++
-			continue
-		}
-		var fault *model.Fault
-		if !errors.As(result.err, &fault) || fault.Code != "invalid_input" && fault.Code != "dependency_unsatisfied" {
-			t.Fatalf("unexpected concurrent refusal: %v", result.err)
-		}
+	if len(database.trace.snapshot()) != 0 {
+		t.Fatal("invalid deletion entered storage")
 	}
-	if success != 1 {
-		t.Fatalf("both deletion and a live reference committed: %#v", results)
-	}
-	page, err := tasks.List(context.Background(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, task := range page.Items {
-		for _, dependency := range task.DependsOn {
-			if !slices.ContainsFunc(page.Items, func(candidate model.Task) bool { return candidate.ID == dependency }) {
-				t.Fatal("concurrent write left a dangling active dependency")
+	t.Run("inaccessible-project", func(t *testing.T) {
+		f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+		stranger := principal
+		stranger.UserID = "99999999-9999-4999-8999-999999999999"
+		f.projects.ProjectAccessFn = func(actual context.Context, actor model.Principal) (model.ProjectAccess, error) {
+			if actual != f.ctx || actor != stranger {
+				t.Fatal("wrong inaccessible principal")
 			}
+			return model.ProjectAccess{}, model.ErrNotFound
 		}
-	}
+		requireFault(t, taskservice.NewTasks(f.database).Delete(f.ctx, stranger, project.ID, target.ID, taskcore.DeleteTask{Version: target.Version}), "not_found")
+		if f.callbackError != nil {
+			t.Fatal("inaccessible project refusal escaped callback")
+		}
+	})
+	t.Run("missing-task", func(t *testing.T) {
+		f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+		f.tasks.TaskFn = func(context.Context, string) (model.Task, error) { return model.Task{}, model.ErrNotFound }
+		requireFault(t, taskservice.NewTasks(f.database).Delete(f.ctx, principal, project.ID, target.ID, taskcore.DeleteTask{Version: target.Version}), "not_found")
+	})
 }
 
-func TestTaskDeletionRollsBackWhenEpochInvalidationFails(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Unchanged")
-	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION reject_epoch_rotation() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION 'epoch rotation failed'; END $$;
-		CREATE TRIGGER reject_epoch_rotation BEFORE UPDATE OF task_cache_epoch ON projects
-		FOR EACH ROW EXECUTE FUNCTION reject_epoch_rotation()`); err != nil {
-		t.Fatal(err)
+func TestTaskDeletionEpochFailurePreservesCause(t *testing.T) {
+	f := newTaskFailureFixture(t, t.Context(), store.TransactionNotCommitted)
+	target := f.target
+	f.expectTask(t, target)
+	f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
+	expectTaskDeletion(t, f, target, false)
+	tasks := taskDeletionService(t, f, target, 0)
+	cause := errors.New("epoch rotation failed")
+	f.projects.InvalidateTaskCacheFn = func(context.Context) error { return cause }
+	err := tasks.Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version})
+	assertOperational(t, err)
+	if !errors.Is(err, cause) || f.callbackError != cause {
+		t.Fatalf("lost epoch failure: %v", err)
 	}
-	err := tasks.Delete(ctx, principal, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version})
-	if err == nil {
-		t.Fatal("epoch failure was hidden")
-	}
-	assertTaskUnchanged(t, tasks, principal, task)
-	_, marker, _, version := deletedTaskStorage(t, database, task)
-	if marker != nil || version != task.Version {
-		t.Fatal("failed cache invalidation committed a deletion")
+	if calls := f.database.trace.snapshot(); slices.Contains(calls, "scope.CaptureDAO") {
+		t.Fatalf("capture followed failed epoch invalidation: %v", calls)
 	}
 }
 
 func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	task := claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), workerDescriptor())
-	completed, err := tasks.SetStatus(context.Background(), principal, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &testWorker(t, task.Properties).ClaimID})
-	if err != nil {
+	f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
+	target := f.target
+	target.Status = model.TaskDone
+	target.Properties = taskDeletionWorker(t, model.WorkerCompleted)
+	before := testWithWorker(t, target.Properties, testWorker(t, target.Properties))
+	f.expectTask(t, target)
+	f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
+	expectTaskDeletion(t, f, target, false)
+	if err := taskDeletionService(t, f, target, 1).Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version}); err != nil {
 		t.Fatal(err)
 	}
-	before, _, _, _ := deletedTaskStorage(t, database, completed)
-	if err := tasks.Delete(context.Background(), principal, project.ID, completed.ID, taskcore.DeleteTask{Version: completed.Version}); err != nil {
-		t.Fatal(err)
+	if !reflect.DeepEqual(target.Properties, before) {
+		t.Fatal("deletion modified completed worker properties")
 	}
-	after, _, _, _ := deletedTaskStorage(t, database, completed)
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("completed worker history was lost")
+}
+
+func TestTaskDeletionCoordinatesSessionFreezeAndEpoch(t *testing.T) {
+	for _, failure := range []string{"session", "epoch", "none"} {
+		t.Run(failure, func(t *testing.T) {
+			completion := store.TransactionCommitted
+			if failure != "none" {
+				completion = store.TransactionNotCommitted
+			}
+			f := newTaskFailureFixture(t, t.Context(), completion)
+			target := f.target
+			f.expectTask(t, target)
+			f.tasks.DependentIDsFn = func(actual context.Context, id string) ([]string, error) {
+				if actual != f.ctx || id != target.ID {
+					t.Fatal("deletion dependency scope changed")
+				}
+				return []string{}, nil
+			}
+			expectTaskDeletion(t, f, target, false)
+			captures := 0
+			if failure == "none" {
+				captures = 1
+			}
+			tasks := taskDeletionService(t, f, target, captures)
+			cause := errors.New(failure + " failed")
+			if failure == "session" {
+				drain := f.sessions.DrainTaskSessionsFn
+				f.sessions.DrainTaskSessionsFn = func(ctx context.Context, id string, plan store.TaskSessionDrain) error {
+					if err := drain(ctx, id, plan); err != nil {
+						return err
+					}
+					return cause
+				}
+			}
+			if failure == "epoch" {
+				invalidate := f.projects.InvalidateTaskCacheFn
+				f.projects.InvalidateTaskCacheFn = func(ctx context.Context) error {
+					if err := invalidate(ctx); err != nil {
+						return err
+					}
+					return cause
+				}
+			}
+			err := tasks.Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version})
+			if failure == "none" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, cause) || f.callbackError != cause {
+				t.Fatalf("deletion lost coordination failure: %v", err)
+			}
+			calls := f.database.trace.snapshot()
+			for _, method := range []string{"tasks.DeleteTask", "sessions.DrainTaskSessions", "sessions.TransitionTaskSessionReceipts", "projects.InvalidateTaskCache"} {
+				want := 1
+				if failure == "session" && (method == "sessions.TransitionTaskSessionReceipts" || method == "projects.InvalidateTaskCache") {
+					want = 0
+				}
+				if actual := countTaskCoordinationCall(calls, method); actual != want {
+					t.Fatalf("%s calls=%d want=%d in %v", method, actual, want, calls)
+				}
+			}
+		})
 	}
+}
+
+func countTaskCoordinationCall(calls []string, method string) int {
+	count := 0
+	for _, call := range calls {
+		if call == method {
+			count++
+		}
+	}
+	return count
 }

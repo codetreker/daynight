@@ -18,8 +18,8 @@ and the 24px gap leaves at least 420px for the conversation. The existing route,
 SessionHost and cache remain responsible for selection and state retention.
 
 The [management design](../../../../docs/design/bot-management-web.md) owns the
-layout mechanism. The [Session cache decision](../architecture/2026-11-04-bot-session-cache.md)
-continues to own identity and retention rules.
+layout mechanism. The [Session cache decision](../../archived/architecture/2026-11-04-bot-session-cache.md)
+records the rationale for the existing identity and retention rules.
 
 ## Alternatives
 

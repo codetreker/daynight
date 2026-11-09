@@ -13,7 +13,7 @@ describe('Worker configuration wire format', () => {
   it('retains all kinds, removed project results and recovered failure diagnostics', () => {
     const failure = { code: 'permission_denied' as const, category: 'repository' as const, phase: 'stop' as const, occurredAt: WORKER_TIME };
     const resource = observed([
-      outcome({ kind: 'maxConcurrent' }, 2), outcome({ kind: 'pollIntervalMs' }, 60_000), outcome({ kind: 'recoveryLimit' }, 0), outcome({ kind: 'native' }, configurationValue().native),
+      outcome({ kind: 'maxConcurrent' }, 2), outcome({ kind: 'pollIntervalMs' }, 60_000), outcome({ kind: 'recoveryLimit' }, 0), outcome({ kind: 'preferPlatformSpecificTasks' }, false), outcome({ kind: 'native' }, configurationValue().native),
       outcome({ kind: 'projectPreparation', projectId: workerId(3) }, true), outcome({ kind: 'projectNative', projectId: workerId(3) }, configurationValue().native),
       { ...outcome({ kind: 'projectRemoval', projectId: workerId(9) }, true), lastFailure: failure },
     ]);
@@ -21,6 +21,22 @@ describe('Worker configuration wire format', () => {
     expect(parseWorkerConfiguration({ desired: null, observationRevision: '0', observation: null })).toEqual({ desired: null, observationRevision: '0', observation: null });
     expect(parseConfigurationRevision('9223372036854775807')).toBe('9223372036854775807');
     expect(parseConfigurationRevision('0', true)).toBe('0');
+  });
+  it('requires an explicit boolean preference and keeps both observed boolean values', () => {
+    for (const enabled of [false, true]) {
+      const value = { ...configurationValue(), preferPlatformSpecificTasks: enabled };
+      expect(parseWorkerConfiguration(configurationResource('1', value)).desired!.value.preferPlatformSpecificTasks).toBe(enabled);
+      const resource = observed([outcome({ kind: 'preferPlatformSpecificTasks' }, enabled)]);
+      expect(parseWorkerConfiguration(resource).observation!.items[0]!.appliedValue).toBe(enabled);
+    }
+    const missing = { ...configurationValue() } as Record<string, unknown>;
+    delete missing.preferPlatformSpecificTasks;
+    expect(() => parseWorkerConfiguration({ ...configurationResource(), desired: { ...configurationResource().desired, value: missing } })).toThrow('invalid response');
+    for (const invalid of [null, 0, 'false', undefined]) {
+      const resource = { ...configurationResource(), desired: { ...configurationResource().desired, value: { ...configurationValue(), preferPlatformSpecificTasks: invalid } } };
+      expect(() => parseWorkerConfiguration(resource)).toThrow('invalid response');
+      expect(() => parseWorkerConfiguration(observed([{ ...outcome({ kind: 'preferPlatformSpecificTasks' }, false), appliedValue: invalid } as unknown as WorkerConfigurationOutcome]))).toThrow('invalid response');
+    }
   });
   it('preserves inheritance, explicit null/empty args and canonical Project ordering', () => {
     const resource = configurationResource('1', { ...configurationValue(), native: { agent: 'claude', model: '\uFEFF', args: ['--a', 'spaces allowed'] }, projects: [

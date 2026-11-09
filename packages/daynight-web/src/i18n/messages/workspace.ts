@@ -45,15 +45,12 @@ export type WorkspaceMessages = {
     readonly loading: string;
     readonly loadingDetail: string;
     readonly notFound: string;
-    readonly graphLimit: string;
     readonly incomplete: string;
     readonly loadingFailed: string;
     readonly networkError: string;
     readonly protocolError: string;
     readonly notFoundDetail: string;
-    readonly graphLimitDetail: string;
     readonly readError: string;
-    readonly graphLimitCounts: (args: { readonly nodes: number; readonly edges: number; readonly maxNodes: number; readonly maxEdges: number }) => string;
     readonly refreshFailed: string;
     readonly showingSnapshot: string;
     readonly retryRefresh: string;
@@ -63,6 +60,7 @@ export type WorkspaceMessages = {
     readonly totalTasks: string;
     readonly uniqueTasks: string;
     readonly completion: (args: { readonly percent: number }) => string;
+    readonly endedBreakdown: (args: { readonly done: number; readonly cancelled: number; readonly percent: number }) => string;
       readonly waiting: string;
     readonly advancing: string;
     readonly ready: string;
@@ -73,7 +71,15 @@ export type WorkspaceMessages = {
     readonly chains: string;
     readonly statusFilter: string;
     readonly allStatuses: string;
-    readonly statusOptions: Readonly<Record<"todo" | "in_progress" | "done", string>>;
+    readonly statusOptions: Readonly<Record<"todo" | "in_progress" | "done" | "cancelled", string>>;
+  };
+  readonly search: {
+    readonly form: string; readonly input: string; readonly placeholder: string; readonly submit: string; readonly clear: string;
+    readonly help: string; readonly helpDescription: string; readonly helpExamples: string; readonly heading: string;
+    readonly applied: (args: { readonly query: string }) => string; readonly empty: string; readonly loading: string;
+    readonly failed: string; readonly stale: string; readonly syntax: (args: { readonly position: number; readonly reason: string }) => string;
+    readonly reasons: Readonly<Record<string, string>>; readonly open: (args: { readonly title: string }) => string;
+    readonly idMatch: string; readonly titleMatch: string; readonly descriptionMatch: string; readonly negativeMatch: string; readonly updated: (args: { readonly date: string }) => string;
   };
   readonly overview: {
     readonly heading: string;
@@ -82,7 +88,7 @@ export type WorkspaceMessages = {
     readonly allCompleted: string;
     readonly allCompletedDetail: string;
     readonly targetUnavailable: string;
-    readonly rowLabel: (args: { readonly title: string; readonly done: number; readonly total: number; readonly percent: number }) => string;
+    readonly rowLabel: (args: { readonly title: string; readonly done: number; readonly cancelled: number; readonly total: number; readonly percent: number }) => string;
   };
   readonly standalone: {
     readonly list: string;

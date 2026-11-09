@@ -19,6 +19,7 @@ export type TaskNodeData = {
   size: Pick<CanvasNode, 'width' | 'height'>;
   onInspectTask: (id: string) => void;
   onOpenTask: (id: string, trigger: HTMLElement) => void;
+  onNavigateExternalTask: (id: string, trigger: HTMLElement) => void;
   onExpandTask: (id: string, direction: TaskExpansionDirection) => void;
   expansions: TaskExpansions;
   revealRequest: number | null;
@@ -97,6 +98,7 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
     }
   }, [data.center, data.size, getViewport, setCenter]);
   const open = useCallback((event: MouseEvent<HTMLButtonElement>) => { data.onOpenTask(data.task.id, event.currentTarget); }, [data.onOpenTask, data.task.id]);
+  const navigate = useCallback((event: MouseEvent<HTMLButtonElement>) => { data.onNavigateExternalTask(data.task.id, event.currentTarget); }, [data.onNavigateExternalTask, data.task.id]);
   const inspect = useCallback(() => { data.onInspectTask(data.task.id); }, [data.onInspectTask, data.task.id]);
   const expandable = data.expansions.prerequisites.ids.length > 0 || data.expansions.successors.ids.length > 0;
   return (
@@ -109,7 +111,11 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
       </button>
       {execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}
       <button type="button" className="task-node-details nodrag nopan" aria-haspopup="dialog" aria-label={m.detailsLabel({ title })} onClick={open} onFocus={revealOnFocus}>{m.details}</button>
-      {expandable && <div className="task-node-expansions">
+      {data.kind === 'external' ? <div className="task-node-expansions task-node-navigation">
+        <button type="button" className="task-node-expand task-node-navigate nodrag nopan" aria-label={m.expandExternalLabel({ title })} onClick={navigate} onFocus={revealOnFocus}>
+          <span>{m.expandExternal}</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10" /></svg>
+        </button>
+      </div> : expandable && <div className="task-node-expansions">
         <ExpansionControl direction="prerequisites" expansion={data.expansions.prerequisites} onFocus={revealOnFocus} onExpand={() => { data.onExpandTask(data.task.id, 'prerequisites'); }} />
         <ExpansionControl direction="successors" expansion={data.expansions.successors} onFocus={revealOnFocus} onExpand={() => { data.onExpandTask(data.task.id, 'successors'); }} />
       </div>}
