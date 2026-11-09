@@ -19,6 +19,7 @@ import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOperation, OperationError } from "../../api/operation.js";
+import type { Operation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { ApiError } from "../../api/client.js";
@@ -39,14 +40,16 @@ import type { WorkerControlRequest } from "./control.js";
 import { createWorkerDiagnostics, workerSqliteMigrationEvent } from "./diagnostics.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
+import { hasUnconfirmedHerdrCommandCleanup } from "./herdr/command.js";
 import type { WorkerHerdrAdapter } from "./herdr.js";
 import { createDurableWorkerHerdr } from "./herdr/durable.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { createWorkerPromptBuilder } from "./prompts.js";
+import { createWorkerPromptSource } from "./prompt-source.js";
 import { createWorkerRemote } from "./remote.js";
-import { createWorkerReporter } from "./reporter.js";
+import { createWorkerReporter, syncWorkerConfigurationOnce } from "./reporter.js";
 import { createWorkerRepositoryAdmission } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
@@ -155,7 +158,7 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void) => {
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
     const buildPrompt = await createWorkerPromptBuilder(options.packageDirectory);
@@ -189,7 +192,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         break;
       }
     };
-    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive,
+    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
@@ -221,6 +224,7 @@ export const runWorker = async (options: {
   let configuration: WorkerConfigurationManager | undefined;
   let renewal: Promise<void> | undefined;
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
+  let promptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
   let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
@@ -254,8 +258,10 @@ export const runWorker = async (options: {
       }
     };
     const userId = await remote.currentUserId(signal);
-    const readCloudConfiguration = async (readSignal: AbortSignal): Promise<WorkerCloudResource> => {
-      try { return await remote.configuration(workerId, readSignal); }
+    const currentPromptSource = createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId });
+    promptSource = currentPromptSource;
+    const readCloudConfiguration = async (readSignal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource> => {
+      try { return operation === undefined ? await remote.configuration(workerId, readSignal) : await remote.configuration(workerId, readSignal, operation); }
       catch (error) {
         if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
         return { desired: null, observationRevision: "0", observation: null };
@@ -574,9 +580,10 @@ export const runWorker = async (options: {
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
     }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
+        prompts: currentPromptSource,
         prepare: async operation => {
           if (!reconcileReport && manager.current().synchronized) return;
-          const actual = await readCloudConfiguration(operation.signal);
+          const actual = await readCloudConfiguration(operation.signal, operation);
           await manager.receive(actual.desired, actual.observationRevision);
           if (actual.desired !== null) bootstrap = null;
           reconcileReport = false;
@@ -587,8 +594,8 @@ export const runWorker = async (options: {
           catch (error) { reconcileReport = true; throw error; }
           return captured;
         },
-        send: async (report, captured, operation) => {
-          try { return await remote.reportConfiguration(workerId, report, captured, operation); }
+        send: async (report, captured, operation, selectors) => {
+          try { return await remote.reportConfiguration(workerId, report, captured, operation, selectors); }
           catch (error) {
             if (!(error instanceof ApiError) || error.outcomeUnconfirmed || error.phase === "prepare" && error.cause instanceof OperationError && error.cause.kind === "request_limit") reconcileReport = true;
             if (error instanceof ApiError && error.status === 404 && error.code === "not_found" && manager.current().desired === null && captured.bootstrap !== null) {
@@ -614,7 +621,7 @@ export const runWorker = async (options: {
       if (coordinatorJob !== undefined) return coordinatorJob;
       const job = (async () => {
         const currentStore = getStore();
-        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit);
+        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit, currentPromptSource);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
         }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
@@ -634,6 +641,8 @@ export const runWorker = async (options: {
             return (desired !== null || fallbackComplete) && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
+          promptSource: currentPromptSource,
+          onPromptDemand: projectIds => { if (currentPromptSource.setDemand(projectIds)) reporter!.demandChanged(); },
           buildPrompt: web.buildPrompt, emit, signal });
         const latest = view(manager.current());
         coordinator.updateConfiguration(latest ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: manager.current().effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false });
@@ -704,6 +713,7 @@ export const runWorker = async (options: {
     await Promise.allSettled([...localMappingJobs.values()]);
     await renewal;
     try { await reporter?.stop(); } catch (error) { failures.push(error); }
+    promptSource?.close();
     try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }
     try { await configuration?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
     if (coordinator !== undefined || bots !== undefined) {
@@ -732,7 +742,7 @@ export const runWorker = async (options: {
 };
 
 export const runWorkerControl = async (options: {
-  homeDirectory: string; packageDirectory: string; request: WorkerControlRequest;
+  homeDirectory: string; packageDirectory: string; version: string; request: WorkerControlRequest;
   log?: (message: string) => void; signal?: AbortSignal;
 }): Promise<void> => {
   const platform = currentWorkerPlatform();
@@ -746,6 +756,8 @@ export const runWorkerControl = async (options: {
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let actualHerdr: WorkerHerdrAdapter | undefined;
   let configurationManager: WorkerConfigurationManager | undefined;
+  let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
+  let controlResource: WorkerCloudResource | undefined;
   const failures: unknown[] = [];
   const selectionVerifier = createNativeSelectionVerifier();
   try {
@@ -775,6 +787,7 @@ export const runWorkerControl = async (options: {
         if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
         resource = { desired: null, observationRevision: "0", observation: null };
       }
+      controlResource = resource;
       if (resource.desired === null) {
         const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
         const repositories: WorkerRepositoryAssignment[] = [];
@@ -809,14 +822,56 @@ export const runWorkerControl = async (options: {
     }
     const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
     const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
-    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
-    if (frozenRetry) coordinatorConfiguration = { repositories: [], globalConfiguration: web.webStore.getTask(sources[0]!)?.configuration ?? null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const machine = machineDescription(platform);
+    const retryPromptSource = options.request.kind === "retry" ? createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId }) : undefined;
+    controlPromptSource = retryPromptSource;
+    let attemptedPromptSync = false;
+    const preparePromptSource = retryPromptSource === undefined ? undefined : async (projectId: string, inputSignal?: AbortSignal): Promise<void> => {
+      if (attemptedPromptSync) return;
+      attemptedPromptSync = true;
+      retryPromptSource.setDemand([projectId]);
+      retryPromptSource.beginCycle();
+      const operation = createOperation({ signal: inputSignal === undefined ? signal : AbortSignal.any([signal, inputSignal]), limits: { totalMs: 15_000, requestMs: 10_000 } });
+      try {
+        const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl });
+        const sample = await telemetry.collect(operation);
+        const cleanupFailure = sample.issues.find(issue => hasUnconfirmedHerdrCommandCleanup(issue.error));
+        if (cleanupFailure !== undefined) throw cleanupFailure.error;
+        let bootstrap: WorkerCloudValue | null = null;
+        const outcome = await syncWorkerConfigurationOnce({ operation, report: () => ({ ...sample.telemetry, taskInventory: null }), configuration: {
+          prompts: retryPromptSource,
+          prepare: async current => {
+            if (configurationManager === undefined) {
+              let resource = controlResource;
+              if (resource === undefined) {
+                try { resource = await remote.configuration(workerId, current.signal, current); }
+                catch (error) {
+                  if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
+                  resource = { desired: null, observationRevision: "0", observation: null };
+                }
+              }
+              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, applyNative: nativeApplication.apply });
+              await configurationManager.receive(resource.desired, resource.observationRevision);
+              if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
+            }
+          },
+          capture: () => configurationManager!.report(bootstrap),
+          send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
+          accept: async (captured, receipt) => { await configurationManager!.acknowledge(captured, receipt); },
+        } });
+        if (outcome.promptError || retryPromptSource.current(projectId) === null) diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization is unavailable; new input remains waiting." });
+      } catch (error) {
+        if (signal.aborted || inputSignal?.aborted || hasUnconfirmedHerdrCommandCleanup(error)) throw error;
+        diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
+      } finally { operation.dispose(); }
+    };
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit, retryPromptSource, preparePromptSource);
+    if (frozenRetry) coordinatorConfiguration = { repositories: [], globalConfiguration: web.webStore.getTask(sources[0]!)?.configuration ?? null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const coordinator = createWorkerCoordinator({
       store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
       hasHerdrJournal: await hasHerdrJournal(paths, platform),
       availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
-      buildPrompt: await createWorkerPromptBuilder(options.packageDirectory), emit: diagnostics.emit, signal,
+      buildPrompt: await createWorkerPromptBuilder(options.packageDirectory), ...(retryPromptSource === undefined || preparePromptSource === undefined ? {} : { promptSource: retryPromptSource, preparePromptSource }), emit: diagnostics.emit, signal,
     });
     const result = await submitWorkerControl({
       store, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories: coordinatorConfiguration.repositories,
@@ -826,6 +881,7 @@ export const runWorkerControl = async (options: {
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
   } catch (error) { failures.push(error); }
   finally {
+    controlPromptSource?.close();
     try { await configurationManager?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }

@@ -115,6 +115,123 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("shares the real response byte budget between reconciliation GET and report POST", async () => {
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, projects: [] } };
+    const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
+    const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
+    const getBody = JSON.stringify({ desired: target, observationRevision: "0", observation: null });
+    let posts = 0, getOperation: Operation | undefined, postOperation: Operation | undefined;
+    const response = (body: string, version?: string) => new Response(body, { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/api/v1/me") return response(JSON.stringify({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } }));
+      if (pathname.endsWith("/configuration")) return response(getBody, "1");
+      if (pathname.endsWith("/report")) {
+        if (++posts === 1) throw new Error("lost response");
+        const selectors = JSON.parse(new Headers(options!.headers).get("Daynight-Worker-Prompts")!) as { key: { scope: string; projectId?: string } }[];
+        const prompts = selectors.map(({ key }) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "user" ? uuid(6) : key.scope === "worker" ? uuid(4) : key.projectId, revision: "0", text: "", updatedAt: null } }));
+        return response(JSON.stringify({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: "0", observationAccepted: false, prompts } }), "2");
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    });
+    mocks.remote.mockReturnValue({ ...real,
+      project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
+      resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
+      configuration: async (workerId: string, signal: AbortSignal, operation?: Operation) => {
+        if (operation !== undefined) { getOperation ??= operation; operation.consume(operation.limits.totalBytes - Buffer.byteLength(getBody) - 1); }
+        return real.configuration(workerId, signal, operation);
+      },
+      reportConfiguration: async (...args: Parameters<typeof real.reportConfiguration>) => { if (posts !== 0) postOperation ??= args[3]; return real.reportConfiguration(...args); },
+    });
+    const running = start(f);
+    await eventually(() => expect(posts).toBe(1));
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(posts).toBeGreaterThanOrEqual(2));
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "worker_report_failed").map(([event]) => [event.message, event.error?.message, event.error?.cause?.message])).toContainEqual([expect.any(String), "http_response_200", "operation_total_limit"]));
+    expect(getOperation).toBeDefined(); expect(postOperation).toBe(getOperation);
+    expect(getOperation!.limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000, responseBytes: 128 * 1_048_576, totalBytes: 256 * 1_048_576 });
+    f.signal.abort(); await running;
+  });
+
+  it("bounds a stalled reconciliation GET by the reporter request deadline", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, projects: [] } };
+    const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
+    const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
+    const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
+    let posts = 0, reads = 0, requestSignal: AbortSignal | undefined, getOperation: Operation | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
+      if (pathname.endsWith("/configuration")) {
+        if (++reads === 1) return response({ desired: target, observationRevision: "0", observation: null }, "1");
+        requestSignal = options!.signal!;
+        return new Promise<Response>((_resolve, reject) => requestSignal!.addEventListener("abort", () => reject(requestSignal!.reason), { once: true }));
+      }
+      if (pathname.endsWith("/report")) { posts++; throw new Error("lost response"); }
+      throw new Error(`Unexpected request ${pathname}`);
+    });
+    mocks.remote.mockReturnValue({ ...real, project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
+      configuration: async (workerId: string, signal: AbortSignal, operation?: Operation) => { if (operation !== undefined) getOperation = operation; return real.configuration(workerId, signal, operation); },
+    });
+    const running = start(f);
+    await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(requestSignal).toBeDefined());
+    expect(getOperation?.limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000 });
+    await vi.advanceTimersByTimeAsync(9_999); expect(requestSignal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1); expect(requestSignal!.aborted).toBe(true);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "worker_report_failed").map(([event]) => [event.message, event.error?.message, event.error?.cause?.message])).toContainEqual([expect.any(String), "http_request", "operation_request_timeout"]));
+    expect(posts).toBe(1);
+    f.signal.abort(); await running;
+  });
+
+  it("shares the total deadline across a completed reconciliation GET and stalled POST", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, projects: [] } };
+    const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
+    const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
+    const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
+    const releaseRead = deferred<void>();
+    let posts = 0, reads = 0, readStarted = false, reportSignal: AbortSignal | undefined, getOperation: Operation | undefined, postOperation: Operation | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
+      if (pathname.endsWith("/configuration")) {
+        if (++reads > 1) { readStarted = true; await releaseRead.promise; }
+        return response({ desired: target, observationRevision: "0", observation: null }, "1");
+      }
+      if (pathname.endsWith("/report")) {
+        if (++posts === 1) throw new Error("lost response");
+        const currentSignal = options!.signal!;
+        reportSignal ??= currentSignal;
+        return new Promise<Response>((_resolve, reject) => currentSignal.addEventListener("abort", () => reject(currentSignal.reason), { once: true }));
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    });
+    mocks.remote.mockReturnValue({ ...real, project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
+      configuration: async (workerId: string, signal: AbortSignal, operation?: Operation) => { if (operation !== undefined) getOperation ??= operation; return real.configuration(workerId, signal, operation); },
+      reportConfiguration: async (...args: Parameters<typeof real.reportConfiguration>) => { if (posts !== 0) postOperation ??= args[3]; return real.reportConfiguration(...args); },
+    });
+    const running = start(f);
+    await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(readStarted).toBe(true));
+    await vi.advanceTimersByTimeAsync(7_000); releaseRead.resolve();
+    await eventuallyWithoutAdvancingTime(() => expect(reportSignal).toBeDefined());
+    expect(postOperation).toBe(getOperation);
+    await vi.advanceTimersByTimeAsync(7_000); expect(reportSignal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000); expect(reportSignal!.aborted).toBe(true);
+    expect(reportSignal!.reason).toMatchObject({ kind: "deadline" });
+    f.signal.abort(); await running;
+  });
+
   it("hot-loads platform preference into the coordinator in both directions", async () => {
     const f = await fixture(), running = start(f);
     await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === false && configuration.repositories.length === 1)).toBe(true));

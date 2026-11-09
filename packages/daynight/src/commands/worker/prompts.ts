@@ -6,6 +6,14 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { captureInstalledSkill } from "../skill/install.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
+import type { WorkerPromptTuple } from "./prompt-source.js";
+
+export const appendWorkerPrompts = (builtin: string, values: WorkerPromptTuple): string => {
+  const blocks = (["user", "project", "worker"] as const)
+    .filter(scope => values[scope].text !== "")
+    .map(scope => `----- begin ${scope} prompt -----\n${values[scope].text}\n----- end ${scope} prompt -----`);
+  return blocks.length === 0 ? builtin : [builtin, ...blocks].join("\n\n");
+};
 
 export type ManagedAssignment = LocalTask & { serverOrigin: string; workerId: string; worktreeId: string; configuration: ExecutionConfiguration; worktree: WorktreeBinding };
 const humanInterventionInstruction = "When human intervention is necessary to complete this assignment, you must set properties.paused=true on your own assigned task before waiting. This requires specific information, a decision, authorization or an action that you cannot supply within the task scope and existing authority. Follow the using-daynight managed skill's Request user interaction workflow. Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment.";

@@ -7,7 +7,10 @@ import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
-import type { WorkerCloudDesired } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
+import * as telemetryModule from "../../../src/commands/worker/telemetry.js";
+import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 
 const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn() }));
@@ -25,6 +28,7 @@ const roots: string[] = [];
 const stores = new Set<WorkerStore>();
 const resources: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const release of resources.splice(0)) await release();
   for (const store of stores) store.close(); stores.clear();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -52,7 +56,7 @@ const fixture = async (mode: "herdr" | "web" = "herdr") => {
   const sibling = store.registerPending({ projectId: project.projectId, taskId: uuid(12), claimId: uuid(13), agent: "copilot" });
   const request = { kind: "release" as const, taskId: task.taskId, claimId: task.claimId, version: 5n };
   mocks.submit.mockImplementation(async ({ store: current }: { store: WorkerStore }) => ({ task: current.completeTask(task), message: "release completed" }));
-  return { homeDirectory, packageDirectory: path.resolve("package"), request, paths, store, project, task, sibling };
+  return { homeDirectory, packageDirectory: path.resolve("package"), version: "0.0.0", workingDirectory: homeDirectory, request, paths, store, project, task, sibling };
 };
 const staleManagedSource = (mode = "herdr") => `serverUrl: ${origin}\nserverToken: dn_pat_abcdefghijklmnopqrstuvwxyz1234567890\nworkerId: ${uuid(4)}\nworker:\n  agentControlMode: ${mode}\n  agent: invalid-local-agent\n  maxConcurrent: 0\n  args: false\n  repositories: null\n`;
 const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
@@ -193,6 +197,62 @@ describe("worker synchronous management runtime ownership", () => {
     await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
     expect(mocks.remote.mock.results[0]!.value.configuration).toHaveBeenCalledOnce();
     expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).globalConfiguration).toMatchObject({ agent: "codex", model: "local-unenrolled", recoveryLimit: 2 });
+  });
+
+  it("synchronizes one batch only when retry prepares new input", async () => {
+    const f = await fixture();
+    const collect = vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] }));
+    vi.spyOn(telemetryModule, "createWorkerTelemetryCollector").mockReturnValue({ collect });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    const reportConfiguration = vi.fn(async (_workerId: string, _report: unknown, _native: unknown, _operation: unknown, selectors: readonly WorkerPromptSelector[]) => ({
+      observedAt: "2026-11-09T00:00:00Z", lastReportedAt: "2026-11-09T00:00:00Z",
+      configuration: { desired: null, observationRevision: "0", observationAccepted: false },
+      prompts: { ok: true as const, results: selectors.map(({ key }) => ({ key, status: "value" as const, value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? uuid(6) : uuid(4), revision: "0", text: "", updatedAt: null } })) },
+    }));
+    remote.reportConfiguration = reportConfiguration;
+    mocks.submit.mockImplementationOnce(async () => {
+      const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect(reportConfiguration).not.toHaveBeenCalled();
+      await options.preparePromptSource!(f.project.projectId);
+      await options.preparePromptSource!(f.project.projectId);
+      expect(options.promptSource!.current(f.project.projectId)).not.toBeNull();
+      return { task: f.task, message: "retry completed" };
+    });
+    await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
+    expect(collect).toHaveBeenCalledOnce(); expect(reportConfiguration).toHaveBeenCalledOnce();
+    const call = reportConfiguration.mock.calls[0]!;
+    expect(call[1]).toEqual({ ...workerTelemetry, taskInventory: null });
+    expect(call[4]).toEqual([{ key: { scope: "user" }, knownRevision: null }, { key: { scope: "worker" }, knownRevision: null }, { key: { scope: "project", projectId: f.project.projectId }, knownRevision: null }]);
+    expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).promptSource!.current(f.project.projectId)).toBeNull();
+  });
+
+  it("leaves new input unknown after a failed retry sync without replaying it", async () => {
+    const f = await fixture();
+    vi.spyOn(telemetryModule, "createWorkerTelemetryCollector").mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
+    const remote = mocks.remote(); mocks.remote.mockClear(); remote.reportConfiguration = vi.fn().mockRejectedValue(new Error("network failed"));
+    mocks.submit.mockImplementationOnce(async () => {
+      const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      await options.preparePromptSource!(f.project.projectId);
+      await options.preparePromptSource!(f.project.projectId);
+      expect(options.promptSource!.current(f.project.projectId)).toBeNull();
+      return { task: f.task, message: "retry waiting" };
+    });
+    await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
+    expect(remote.reportConfiguration).toHaveBeenCalledOnce();
+  });
+
+  it("does not hide an unconfirmed telemetry probe cleanup during retry", async () => {
+    const f = await fixture();
+    const failure = new HerdrCommandCleanupError([], new Error("probe cleanup"));
+    vi.spyOn(telemetryModule, "createWorkerTelemetryCollector").mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [{ component: "codex" as const, code: "unavailable" as const, error: failure }] })) });
+    const remote = mocks.remote(); mocks.remote.mockClear(); remote.reportConfiguration = vi.fn();
+    mocks.submit.mockImplementationOnce(async () => {
+      const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      await options.preparePromptSource!(f.project.projectId);
+      return { task: f.task, message: "unexpected" };
+    });
+    await expect(runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } })).rejects.toBe(failure);
+    expect(remote.reportConfiguration).not.toHaveBeenCalled();
   });
 
   it("preserves a Herdr retry lookup failure without using stale local settings or submitting task changes", async () => {

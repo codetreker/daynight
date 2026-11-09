@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import type { Socket } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { submitTerminalInput } from "../../../src/commands/worker/herdr/terminal-input.js";
+import { submitTerminalInput, validateMacosPromptInput } from "../../../src/commands/worker/herdr/terminal-input.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 const frame = (...bytes: number[]) => {
@@ -51,6 +51,12 @@ const fixture = async (handle?: (socket: Socket, message: Buffer) => boolean) =>
 afterEach(async () => { vi.useRealTimers(); for (const close of cleanup.splice(0).reverse()) await close(); });
 
 describe("strict Herdr terminal input", () => {
+  it("preflights the same complete paste byte limit and text rules", () => {
+    expect(() => validateMacosPromptInput("界".repeat(5461) + "x")).not.toThrow();
+    expect(() => validateMacosPromptInput("界".repeat(5462))).toThrow(expect.objectContaining({ name: "PromptInputLimitError", inputPath: "macos_terminal", actualBytes: 16386, maxBytes: 16384, submission: "not-submitted" }));
+    expect(() => validateMacosPromptInput("bad\x1b")).toThrow("Invalid terminal paste");
+  });
+
   it("attaches by exact terminal ID without takeover and preserves a complete Unicode paste", async () => {
     const f = await fixture();
     expect(await f.run()).toMatchObject({ status: "transport_completed" });

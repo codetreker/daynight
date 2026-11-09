@@ -39,7 +39,8 @@ const worktree={repositoryPath:c.project.localPath,commonDirectory:c.project.loc
 const git={prepareWorktree:async()=>worktree,verifyWorktree:async()=>worktree};
 const driver=createExecutionDriver({store,git,herdr:{tasks:manager},readTask:async()=>{throw new Error('Unexpected ownership request')},platform:'linux',workerId:c.workerId,serverOrigin:'https://daynight.example',buildPrompt:()=>c.prompt,emit:()=>{},now:Date.now});
 const result=await driver.advance({task,project:c.project,owner:c.owner,title:'Crash fixture',configuration:{agent:'codex',model:null,args:[],recoveryLimit:2}});
-process.send({kind:'ready',sessionId:result.nativeSession?.sessionId,stored:store.getTask(task)});
+if(result.kind!=='observed') throw new Error('Crash fixture unexpectedly waited for input');
+process.send({kind:'ready',sessionId:result.observation.nativeSession?.sessionId,stored:store.getTask(task)});
 setInterval(()=>{},1000);
 `;
   const rpc = (method: string, params: Record<string, unknown>): Record<string, unknown> => {
