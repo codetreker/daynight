@@ -648,11 +648,14 @@ the recovered value and stack are not printed by the HTTP server.
 
 ## Validate
 
-Install the root workspace dependencies with `pnpm install --frozen-lockfile`
-before validation. The complete module check includes PostgreSQL integration
-tests and requires `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated database.
-Database-independent service and rule suites run separately without that URL. For a disposable local instance, use the
-same PostgreSQL **18.6-bookworm** image as CI:
+The complete module check requires the root workspace dependencies; install them
+with `pnpm install --frozen-lockfile` before running it. That check includes
+PostgreSQL integration tests and requires `DAYNIGHT_TEST_DATABASE_URL` to identify
+an isolated database. Database-independent suites have focused commands below.
+The regular Session HTTP selection uses Go dependencies and local transport
+fixtures without database, gateway, CLI or Web preparation. For a disposable
+instance for the complete check, use the same PostgreSQL **18.6-bookworm** image
+as CI:
 
 ```bash
 docker run --detach --name daynight-server-tests \
@@ -839,7 +842,10 @@ the handler duration to the existing 60-second attachment deadline.
 
 The real 5 MiB content boundary, fixed-length and chunked requests, path guards,
 preview/download headers and error responses remain HTTP or native-resource
-assertions. Existing store metadata tests retain actual SQL, transaction and
+assertions. The consumed-body metadata failure case uses direct `PutRetained`
+and `ListREST` callbacks, controlled credential middleware and an actual TCP
+connection to verify the following keepalive request. Existing store metadata
+tests retain actual SQL, transaction and
 unchanged-state readback; native attachment lifecycle and process tests retain
 admission/publication barriers and exact metadata and bytes across restart. The
 [Attachment HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-08-attachment-http-test-ownership.md)
@@ -899,13 +905,21 @@ CI events use the same non-race policy as the module check. Unit resource
 overlays are not used for this production binary.
 
 The explicit `integration` build tag keeps these flows outside ordinary unit
-test discovery. One real Server process, UniAuth gateway, login and PAT drive
-sequential groups with separate projects: Task lifecycle, search pagination and
-dependency graph, property and Sync readback, Step operations, Thread replies,
-Attachment bytes, and Worker claim/Agent discussion. Go HTTP clients check
-resource identities, versions and actual content. The suite does not run CLI,
-browser or Web tests, and it does not contain business boundary or fault
-matrices.
+test discovery. The runner explicitly selects `TestServerAPINormalFlows` and
+`TestServerAPISessionNormalFlow`; each test owns its real Server process,
+UniAuth gateway, login, PAT and isolated resources. Task groups run sequentially
+with separate projects: lifecycle, search pagination and dependency graph,
+property and Sync readback, Step operations, Thread replies, Attachment bytes,
+and Worker claim/Agent discussion.
+
+The Session flow creates an owner-bound Web Worker claim, registers a Session,
+mints its Controller grant and performs WebSocket hello and synchronization.
+HTTP current-state readback and the browser snapshot must retain the same
+identity, generation and native Session ID. A Controller timeline event must
+arrive through the browser WebSocket with exact content and source identity.
+Go HTTP and WebSocket clients exercise the actual service and persistence
+assembly. The suite does not run CLI, browser or Web tests and contains no
+business boundary or fault matrices.
 
 Startup, build and test execution have deadlines. Owned process cleanup stops
 the Server before releasing its schema and storage and confirms authentication
@@ -953,18 +967,18 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Root `internal/server` unit tests assemble the actual modules, routes and
-HTTP authentication over strict DAO/scope callbacks. Fixed domain records,
-query results, proposed writes, call counts and transaction completion are
-explicit test inputs. Callback writes do not determine future reads or simulate
-committed state. The complete ordinary root selection executes with
+Root `internal/server` unit tests assemble actual modules, routes and HTTP
+authentication over strict DAO/scope callbacks. Fixed domain records, query
+results, proposed writes, call counts and transaction completion are explicit
+test inputs. Callback writes do not determine future reads or simulate committed
+state. The complete ordinary root selection executes with
 `DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
 SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
 pinned auth fixture as described in [validation](#validate).
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
-remain real where they are the mechanism being verified. HTTP control and
-WebSocket traffic share one application and Engine. Root startup, channel,
+remain real where they are the mechanism being verified. Root HTTP control and
+WebSocket traffic share one actual application and Engine. Startup, channel,
 serialization and shutdown cases retain their private composition observations
 and capacity boundaries. Store tests own actual SQL, database-clock expiry after
 locks, transaction outcomes and committed readback; process tests own complete
@@ -972,38 +986,68 @@ entry-point drain and restart persistence. The
 [root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
 records these fixtures and the distinction between logical and physical evidence.
 
-Domain packages own their HTTP adapters. Task protocol tests control directly
-called service/use-case results and retain actual credential middleware, HTTP
-encoding, response loss and resource handling. Representative normal complete
-API flows run in `cmd/integration_tests`. The
-[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
-owns the Task HTTP and API boundary. Attachment fixtures use controlled
-DAO/authentication facts with real transport and storage; their
-[test guide](#attachment-http-tests) identifies those boundaries. Shared
-scenario bodies have one owner, while distinct internal composition assertions
-remain in the root package. The earlier
+Domain packages own their HTTP adapters. Task and Session HTTP unit tests
+control directly called service/use-case results while retaining actual
+credential middleware, HTTP encoding, response loss and socket/resource
+handling. Their [Task](#business-rules-and-dao-mocks) and
+[Session](#session-http-tests) guides identify those boundaries. Attachment
+fixtures retain their own [protocol and native-resource scope](#attachment-http-tests).
+Normal assembled API flows run separately in `cmd/integration_tests`, including
+`TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`.
+
+Shared scenario bodies have one owner; distinct internal composition assertions
+remain in the root package. The
 [scenario consolidation](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
-records why removing copies had to preserve private application observations.
+preserves the original rationale. The
+[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
+owns responsibility boundaries; the
+[Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
+records the direct Session binding and retained proofs.
 
-Domain Bot and Session fixtures that require complete application composition
-retain their existing PostgreSQL and UniAuth observations. The domain Session
-browser ping regression uses production Session routes with real services and
-authentication in a focused route fixture. Its local interval allows actual
-Ping/Pong and subsequent event delivery to complete promptly. Route cleanup
-drains the relay and stops its engine before the outer fixture releases its
-borrowed Store and files. The
-[Session test completion decision](../../.agents/notes/implemented/testing/2026-11-07-session-protocol-test-completion.md)
-records this fixture's responsibility.
+### Session HTTP tests
 
-Domain Session fixtures share application shutdown cleanup and explicit mutable
-error expectations. Tests that deliberately revoke authority may declare the
-exact clean domain fault caused by that transition. Project deletion channel
-cases declare `not_found` after successful deletion because socket closure can
-precede the server's disconnect cleanup. Every joined cause must match the
-selected fault without an underlying cause; database errors, timeouts and other
-faults still fail cleanup. Production shutdown error handling remains unchanged.
-The [shutdown expectation decision](../../.agents/notes/implemented/testing/2026-11-07-session-deletion-shutdown-expectations.md)
-records the timing and error-preservation rationale.
+The regular `internal/server/session` suite executes actual routes and
+`RequestAuthentication` with controlled credential results and direct typed
+Session use-case callbacks. The private `serviceCalls` binding projects existing
+production service methods; test-only aliases supply the same calls without
+starting the service, engine, DAO or gateway. Tests supply valid principals,
+snapshots, events and returned bytes and verify context, canonical addresses,
+fences, inputs, outputs and call counts.
+
+Configured calls are required, and unknown, extra or missing calls fail.
+Foreground operations have finite expected counts; repeated channel polling is
+scenario-declared. Callback barriers and cancellation observe each operation's
+lifetime without a global goroutine order. Supplied replies remain independent
+of captured requests. A mock result does not implement lower business rules,
+query behavior or transaction persistence.
+
+Run the regular suite from this module without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE go test -race -count=1 -timeout=5m ./internal/server/session
+```
+
+HTTP parsing, WebSocket Ping/Pong and event delivery, generation changes,
+revocation/deletion closure, pending upgrade drain and TCP body behavior retain
+their actual transport. Archive callbacks exchange an opaque preflight
+reservation, an upload operation or content bytes with a separate closeable
+lease. Identity and exactly-once closing are checked. Actual body reading,
+backpressure and the existing 16 MiB upload/readback remain socket observations;
+archive eligibility, integrity and storage rules retain their core owners.
+Production intervals and the 120-second archive policy keep separate default
+checks; opt-in full-duration archive probes remain under [Coverage](#coverage).
+
+Service tests control lower work and transaction completion before the finisher.
+Core tests retain preflight-before-residency and terminal initial-delivery rules;
+Store tests retain failed-disconnect rollback, physical connection return and
+zero legacy content rows after native ledger writes. Fixture shutdown drains
+actual routes and validates callback/lease completion. Normal shutdown permits
+post-drain HTTP `429` checks; cleanup cancels remaining request lifetimes.
+Intentional clean refusals use an exact cause matcher, so every joined cause
+must match and unexpected errors or unfinished drain still fail. The
+[Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
+records the proof allocation and alternatives.
 
 ### Schema snapshot maintenance
 

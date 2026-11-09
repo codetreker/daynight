@@ -14,7 +14,7 @@ func (s *Service) taskQuery(ctx context.Context, principal model.Principal, proj
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		task, err := op.LockTask(ctx, scope, project, taskID)
 		if err != nil {
 			return err
@@ -36,7 +36,7 @@ func (s *Service) credential(ctx context.Context, principal model.Principal, wor
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		if err := op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func (s *Service) registerTerminal(ctx context.Context, principal model.Principa
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		if err := scope.SessionDAO().LockTaskRegistration(ctx, project, taskID); err != nil {
 			return err
 		}

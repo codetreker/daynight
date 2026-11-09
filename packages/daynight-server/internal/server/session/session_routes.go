@@ -32,8 +32,8 @@ const relayWriteTimeout = 5 * time.Second
 const relayMaxConnections = 1024
 
 type Routes struct {
-	service         *sessionservice.Service
-	auth            *authhttp.Authentication
+	service         serviceCalls
+	auth            *authhttp.RequestAuthentication
 	logger          *slog.Logger
 	instance        string
 	pingInterval    time.Duration
@@ -51,7 +51,15 @@ func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger 
 	if s != nil && auth != nil {
 		s.SetOrigin(auth.Origin())
 	}
-	return &Routes{service: s, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
+	var requestAuth *authhttp.RequestAuthentication
+	if auth != nil {
+		requestAuth = auth.RequestAuthentication
+	}
+	return newRoutes(callsFromService(s), requestAuth, logger)
+}
+
+func newRoutes(service serviceCalls, auth *authhttp.RequestAuthentication, logger *slog.Logger) *Routes {
+	return &Routes{service: service, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
 func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 	h.registerTerminalRoutes(mux)

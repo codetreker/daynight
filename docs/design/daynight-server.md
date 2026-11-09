@@ -514,11 +514,15 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 
 ## 验证设计
 
-[测试编写规则](../writing_tests.md)定义依赖和场景归属。core、service 与 server
-单元测试使用合成领域输入及已有 DAO、scope、transaction mock，不连接 PostgreSQL。
-Mock 明确检查方法、参数、调用次数与错误，独立提供查询结果及 transaction completion；
-拟写不代表持久化，后续给定读取也不模拟提交或回滚。并发工作使用所属操作的 barrier，
-未配置的后台访问必须使测试失败并完成取消与 drain。
+[测试编写规则](../writing_tests.md)定义依赖和场景归属，并按被测职责选择隔离边界。
+core 使用合成领域输入及所需 DAO mock；service 控制被编排的下层操作及所需 DAO、
+scope、transaction 结果；server HTTP 适配单元测试 mock 直接调用的 service 或业务
+用例，保留实际路由、协议认证、编解码与请求生命周期，不连接 PostgreSQL。
+Mock 明确检查方法、参数、调用次数与错误，独立提供返回值及完成结果；拟写不代表
+持久化，后续给定读取也不模拟提交或回滚。并发工作使用所属操作的 barrier，未配置的
+后台访问必须使测试失败并完成取消与 drain。Task 与 Session HTTP 单元测试采用直接
+用例边界；Session 的私有类型化回调、不透明归档能力及实际 socket 证明由
+[Session HTTP 用例决策](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)维护。
 
 根 server 单元测试组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
 Session Engine、文件和 runtime 生命周期按实际机制运行；HTTP control 与 WebSocket

@@ -358,8 +358,11 @@ Web checks use `pnpm web:typecheck`,
 Session core and Webhook service unit suites run independently without
 PostgreSQL; the
 [server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns their focused commands and dependency boundaries. Normal Go API flows use
-the separate
+owns their focused commands and dependency boundaries. The regular
+[Session HTTP unit suite](packages/daynight-server/README.md#session-http-tests)
+also runs without a database or gateway, exercising actual routes, credential
+middleware and HTTP/WebSocket/TCP transport with direct Session use-case mocks.
+Normal Go API flows use the separate
 [API integration runner](packages/daynight-server/README.md#go-api-integration),
 which builds the production Server and uses a Go HTTP client with real
 authentication and an isolated database. See the

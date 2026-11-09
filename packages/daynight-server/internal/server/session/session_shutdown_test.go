@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type sessionHTTPShutdown struct {
@@ -76,7 +75,7 @@ func TestSessionShutdownReadsCurrentExpectation(t *testing.T) {
 
 func TestSessionShutdownFaultExpectationRejectsUnexpectedCauses(t *testing.T) {
 	missing := &model.Fault{Code: "not_found"}
-	database := &pgconn.PgError{Message: "injected disconnect failure"}
+	storageFailure := errors.New("injected disconnect failure")
 	completed := func(err error) error { return fixtureDrainError{cause: err, drained: true} }
 	for _, test := range []struct {
 		name string
@@ -88,12 +87,12 @@ func TestSessionShutdownFaultExpectationRejectsUnexpectedCauses(t *testing.T) {
 		{"completed drain", completed(missing), "not_found", true},
 		{"joined expected refusals", completed(errors.Join(missing, missing)), "not_found", true},
 		{"nested expected drains", completed(errors.Join(missing, completed(missing))), "not_found", true},
-		{"mixed database failure", completed(errors.Join(missing, database)), "not_found", false},
+		{"mixed storage failure", completed(errors.Join(missing, storageFailure)), "not_found", false},
 		{"mixed timeout", completed(errors.Join(missing, context.DeadlineExceeded)), "not_found", false},
 		{"mixed domain refusal", completed(errors.Join(missing, &model.Fault{Code: "unauthenticated"})), "not_found", false},
-		{"fault retains database cause", completed(&model.Fault{Code: "not_found", Cause: database}), "not_found", false},
+		{"fault retains storage cause", completed(&model.Fault{Code: "not_found", Cause: storageFailure}), "not_found", false},
 		{"incomplete drain", fixtureDrainError{cause: missing}, "not_found", false},
-		{"unexpected database failure", completed(database), "not_found", false},
+		{"unexpected storage failure", completed(storageFailure), "not_found", false},
 		{"no error", nil, "not_found", false},
 		{"no selected fault", missing, "", false},
 	} {
