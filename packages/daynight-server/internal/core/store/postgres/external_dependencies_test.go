@@ -93,6 +93,7 @@ func TestExternalDependencyMigrationPreservesExistingFactsAndDefaults(t *testing
 }
 
 func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project, foreign := queryProject(t, database, 1), queryProject(t, database, 2)

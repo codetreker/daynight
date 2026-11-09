@@ -19,6 +19,7 @@ func workerWitnessClaim(number int, userID, workerID string, state model.WorkerS
 }
 
 func TestWorkerWithdrawalRollsBackPartialDatabaseFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	dependency := queryTask(t, database, project.ID, 2, model.TaskDone)

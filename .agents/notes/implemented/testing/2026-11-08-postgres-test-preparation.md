@@ -10,7 +10,9 @@ the same initial state. Historical migration-failure matrices replay the same
 known-good prefix before each independent failure. Snapshot comparison faults
 also repeat historical replay and snapshot construction. Expiry waits add elapsed
 time when the behavior under test receives its clock from the caller, without
-proving production clock sampling.
+proving production clock sampling. Independent storage proofs also run serially
+when their fixture state is isolated, while unrestricted overlap can increase
+catalog memory and contention on database-level advisory keys.
 
 ## Decision
 
@@ -20,6 +22,32 @@ shared test helper exposes explicit borrowed-pool ownership; its existing caller
 still own a management pool per fixture. A matrix may retain one fixture across
 its sequential cases when restoration and resource exit are verified before reuse.
 Independent tests retain separate mutable stores.
+
+Selected synchronous root parent tests enter
+[`parallelRootDatabaseTest`](../../../../packages/daynight-server/internal/core/store/postgres/testutil_test.go)
+before creating contexts, deadlines or fixtures. The helper first enters Go's
+parallel scheduler, then acquires one of two root-only permits and registers its
+release as the parent's first cleanup. Later resource and fixture cleanups run
+first in LIFO order, so the permit covers Store closure and schema deletion.
+Explicit `-parallel=1` still limits execution to one parent; larger scheduler
+values cannot increase the permit capacity. Package concurrency and production
+connection and migration-lock defaults remain unchanged.
+
+The fixtures of each selected parent retain schemas, `search_path`,
+`application_name` and operational pools separate from other parents. Descendants
+do not enter
+parallel scheduling or acquire another root permit: a parent awaiting a parallel
+child can otherwise occupy a permit while scheduler slots are occupied by other
+parents awaiting permits. The shared management pool remains protected by
+`sync.Once` and closes only after every test cleanup completes.
+
+Historical prefix migrations, explicit migration-lock holders and snapshot
+regeneration remain serial. The two database-wide waiter observations in
+[`webhook_scope_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/webhook_scope_test.go)
+also remain serial because they lack an exact waiter/blocker relationship. Go
+finishes these serial parents before resuming the queued parallel parents. Random
+schemas do not isolate production database-level advisory keys, so selected
+transactions can still wait on identity or OAuth capacity locks.
 
 The membership error matrix reuses its initial records and commits reversible
 table renames. Each case restores the original relation OID before reuse and
@@ -120,6 +148,16 @@ lock acquisition cost is small. PostgreSQL SCRAM contributes connection CPU,
 but management-pool reuse removes repeated handshakes without changing the
 required database authentication environment.
 
+**Use unrestricted parent parallelism.** The testing scheduler's width can be
+raised independently of the database resource budget. Root permits cap complete
+fixture lifetimes, including cleanup, while preserving the scheduler's narrower
+explicit settings and independent stores.
+
+**Acquire permits inside fixture helpers.** That would leave contexts and other
+parent resources outside the limit and make nested fixture acquisition part of
+the scheduling contract. Parent entry establishes the lifetime limit before any
+resources are created, without changing ordinary fixture helpers or serial tests.
+
 **Wait for natural Session/PAT expiry.** The deletion fixture previously used
 four one-second expiry windows and sampled wall time in its own callback.
 Those waits exercised the caller-time SQL predicate but could not establish
@@ -141,5 +179,8 @@ failed transactions and raw legacy inputs. Failed restoration or unfinished
 writers prevent reuse. Caller-time storage predicates
 and service clock sampling have separate proof owners; tests of SQL that samples
 database time still cross actual database time. Source-bound comparison and
-fault receipts own performance and defect-detection claims; fewer fixtures or
-removed waiting windows alone do not establish hosted CI savings.
+fault receipts own performance and defect-detection claims; fewer fixtures,
+removed waiting windows or parallel scheduling alone do not establish hosted CI
+savings. Bounded parent overlap can increase peak database memory and lock waits.
+Matching root and full-module measurements must retain the resource budget and
+verify fixture lifecycle counts, cleanup and the scheduler's explicit settings.

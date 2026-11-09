@@ -67,6 +67,7 @@ func TestProjectSettingsMigrationPreservesHistoricalMetadataAndTiming(t *testing
 }
 
 func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)

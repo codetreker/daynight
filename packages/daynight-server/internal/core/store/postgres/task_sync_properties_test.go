@@ -43,6 +43,7 @@ func (tracer *syncPropertiesTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Co
 }
 
 func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQueries(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
