@@ -1,18 +1,16 @@
 package session_test
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/api"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 func TestSessionArchiveRoutes(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := archiveHTTPSetup(t)
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
 	for _, method := range []string{http.MethodPut, http.MethodPost} {
 		request := httptest.NewRequest(method, base, strings.NewReader("{}"))
@@ -23,84 +21,100 @@ func TestSessionArchiveRoutes(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s non-JSON archive body accepted: %d", method, response.Code)
 		}
-		if response = projectRequest(f.handler, method, base+"?unknown=1", "{}"); response.Code != http.StatusBadRequest {
+		if response = f.Request(method, base+"?unknown=1", "{}"); response.Code != http.StatusBadRequest {
 			t.Fatalf("%s archive query accepted: %d", method, response.Code)
 		}
 	}
+	f.Declare("initial-status", archiveScopeCounts(true, map[string]int{"SessionArchive": 1}), false)
 	status := decodeResponse[struct {
 		Archive sp.ArchiveStatus `json:"archive"`
-	}](t, projectRequest(f.handler, "GET", base, ""), 200)
+	}](t, f.Request(http.MethodGet, base, "", "initial-status"), http.StatusOK)
 	if status.Archive.State != "unavailable" {
 		t.Fatal(status)
 	}
 	update := sp.ArchiveUpdate{Fence: f.snapshot.Fence, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, State: "pending"}
-	decodeResponse[map[string]any](t, projectRequest(f.handler, "POST", base, jsonBody(t, update)), 200)
+	f.Declare("pending-status", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveState": 1}), false)
+	decodeResponse[map[string]any](t, f.Request(http.MethodPost, base, jsonBody(t, update), "pending-status"), http.StatusOK)
+	f.AcceptState(t, "pending")
 	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
-	if r := projectRequest(f.handler, "PUT", base, jsonBody(t, doc)); r.Code != 409 {
+	raw := jsonBody(t, doc)
+	f.Declare("active-preflight", archivePreflightCounts(), false)
+	f.Declare("active-refusal", archiveScopeCounts(true, nil), false)
+	if r := f.Request(http.MethodPut, base, raw, "active-preflight", "active-refusal"); r.Code != http.StatusConflict {
 		t.Fatal(r.Code, r.Body.String())
 	}
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, f.task.ID); err != nil {
-		t.Fatal(err)
-	}
+	f.UseEndedTaskInput()
+	f.Declare("upload-preflight", archivePreflightCounts(), false)
+	f.Declare("upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
 	status = decodeResponse[struct {
 		Archive sp.ArchiveStatus `json:"archive"`
-	}](t, projectRequest(f.handler, "PUT", base, jsonBody(t, doc)), 200)
+	}](t, f.Request(http.MethodPut, base, raw, "upload-preflight", "upload"), http.StatusOK)
 	if status.Archive.State != "ready" {
 		t.Fatal(status)
 	}
-	got := decodeResponse[map[string]any](t, projectRequest(f.handler, "GET", base+"/content", ""), 200)
+	f.AcceptReady(t, []byte(raw))
+	f.Declare("content-preflight", archivePreflightCounts(), false)
+	f.Declare("content", archiveScopeCounts(false, map[string]int{"SessionArchive": 1}), false)
+	got := decodeResponse[map[string]any](t, f.Request(http.MethodGet, base+"/content", "", "content-preflight", "content"), http.StatusOK)
 	if got["archive"].(map[string]any)["sessionId"] != f.snapshot.SessionID {
 		t.Fatal(got)
 	}
 	for _, path := range []string{base, base + "/content"} {
-		for _, method := range []string{"HEAD", "DELETE"} {
-			if r := projectRequest(f.handler, method, path, ""); r.Code != 405 {
+		for _, method := range []string{http.MethodHead, http.MethodDelete} {
+			if r := f.Request(method, path, ""); r.Code != http.StatusMethodNotAllowed {
 				t.Fatal(method, r.Code)
 			}
 		}
-		if r := projectRequest(f.handler, "GET", path+"?unknown=1", ""); r.Code != 400 {
+		if r := f.Request(http.MethodGet, path+"?unknown=1", ""); r.Code != http.StatusBadRequest {
 			t.Fatal(r.Code)
 		}
-		req := httptest.NewRequest("GET", path, nil)
+		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		f.handler.ServeHTTP(rec, req)
-		if rec.Code != 401 {
+		if rec.Code != http.StatusUnauthorized {
 			t.Fatal(rec.Code)
 		}
 	}
-	for _, method := range []string{"PUT", "POST"} {
-		if r := projectRequest(f.handler, method, base, "{}"); r.Code != 400 {
-			t.Fatal(r.Code)
-		}
+	f.Declare("invalid-upload-preflight", archivePreflightCounts(), false)
+	if r := f.Request(http.MethodPut, base, "{}", "invalid-upload-preflight"); r.Code != http.StatusBadRequest {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	if r := f.Request(http.MethodPost, base, "{}"); r.Code != http.StatusBadRequest {
+		t.Fatal(r.Code, r.Body.String())
 	}
 }
 
 func TestDeletedTaskArchiveRoutesAllowFinalizationOnly(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := archiveHTTPSetup(t)
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
-	ended := decodeResponse[api.Task](t, projectRequest(f.handler, "PUT", taskPath(f.task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: f.task.Version, Status: "done", ClaimID: &f.snapshot.ClaimID})), http.StatusOK)
-	response := projectRequest(f.handler, "DELETE", taskPath(ended), jsonBody(t, api.TaskDeleteRequest{Version: ended.Version}))
-	if response.Code != http.StatusNoContent {
-		t.Fatal(response.Code, response.Body.String())
-	}
+	f.UseEndedTaskInput()
+	f.UseDeletedTaskInput()
+	f.Declare("deleted-status", archiveScopeCounts(true, map[string]int{"SessionArchive": 1}), false)
 	status := decodeResponse[struct {
 		Archive sp.ArchiveStatus `json:"archive"`
-	}](t, projectRequest(f.handler, "GET", base, ""), http.StatusOK)
+	}](t, f.Request(http.MethodGet, base, "", "deleted-status"), http.StatusOK)
 	if status.Archive.State != "unavailable" {
 		t.Fatal(status)
 	}
 	update := sp.ArchiveUpdate{Fence: f.snapshot.Fence, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, State: "pending"}
-	decodeResponse[map[string]any](t, projectRequest(f.handler, "POST", base, jsonBody(t, update)), http.StatusOK)
+	f.Declare("deleted-pending", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveState": 1}), false)
+	decodeResponse[map[string]any](t, f.Request(http.MethodPost, base, jsonBody(t, update), "deleted-pending"), http.StatusOK)
+	f.AcceptState(t, "pending")
 	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
-	decodeResponse[map[string]any](t, projectRequest(f.handler, "PUT", base, jsonBody(t, doc)), http.StatusOK)
+	raw := jsonBody(t, doc)
+	f.Declare("deleted-upload-preflight", archivePreflightCounts(), false)
+	f.Declare("deleted-upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
+	decodeResponse[map[string]any](t, f.Request(http.MethodPut, base, raw, "deleted-upload-preflight", "deleted-upload"), http.StatusOK)
+	f.AcceptReady(t, []byte(raw))
+	f.Declare("deleted-ready-status", archiveScopeCounts(true, map[string]int{"SessionArchive": 1}), false)
 	status = decodeResponse[struct {
 		Archive sp.ArchiveStatus `json:"archive"`
-	}](t, projectRequest(f.handler, "GET", base, ""), http.StatusOK)
+	}](t, f.Request(http.MethodGet, base, "", "deleted-ready-status"), http.StatusOK)
 	if status.Archive.State != "ready" || status.Archive.SHA256 == nil {
 		t.Fatal(status)
 	}
-	assertProjectError(t, projectRequest(f.handler, "GET", taskPath(ended), ""), http.StatusGone, "task_deleted")
-	for _, path := range []string{base + "/content", f.base + "/current"} {
-		assertProjectError(t, projectRequest(f.handler, "GET", path, ""), http.StatusNotFound, "not_found")
-	}
+	f.Declare("deleted-content-preflight", archivePreflightCounts(), false)
+	assertProjectError(t, f.Request(http.MethodGet, base+"/content", "", "deleted-content-preflight"), http.StatusNotFound, "not_found")
+	f.Declare("deleted-current", map[string]int{"LockTask": 1}, false)
+	assertProjectError(t, f.Request(http.MethodGet, f.base+"/current", "", "deleted-current"), http.StatusNotFound, "not_found")
 }

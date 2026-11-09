@@ -357,7 +357,10 @@ Web checks use `pnpm web:typecheck`,
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. The complete
 Session core and Webhook service suites run independently with DAO mocks;
 their focused commands belong to the
-[server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks). See the
+[server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks).
+The regular [Session HTTP suite](packages/daynight-server/README.md#session-http-tests)
+also runs independently with controlled identity and DAO facts, retaining actual
+HTTP, WebSocket and TCP transport. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
 module validation commands. `pnpm e2e:test` separately builds and runs the complete
 product with isolated PostgreSQL and full UniAuth; the [Product E2E guide](packages/e2e_tests/README.md)

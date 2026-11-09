@@ -538,10 +538,13 @@ without PostgreSQL. Store tests own SQL, locking, persistence, transaction and
 database recheck mechanisms; API integration tests cover normal assembled
 Server flows. The [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns the scope and failure expectations. The complete `internal/core/session`
-and `internal/service/webhook` suites execute without a database URL. Their
-producer, service, HTTP/protocol and PostgreSQL owners retain distinct proofs.
-The server guide owns the standalone commands; the full module check still
-includes isolated real PostgreSQL.
+and `internal/service/webhook` suites and regular `internal/server/session`
+selection execute without a database URL. Session HTTP tests use controlled
+identity facts with real HTTP, WebSocket, TCP and local files; the
+[Session HTTP guide](../packages/daynight-server/README.md#session-http-tests)
+owns their standalone command and dependency boundaries. Producer, service,
+HTTP/protocol and PostgreSQL owners retain distinct proofs. The full module
+check still includes isolated real PostgreSQL.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;

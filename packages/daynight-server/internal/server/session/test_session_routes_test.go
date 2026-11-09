@@ -2,8 +2,6 @@ package session_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,21 +10,41 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
+func independentRegistration(provider string) sp.TestRegistration {
+	return sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: provider, InitialInput: "none"}
+}
+
+func testController(t *testing.T, f *testSessionRouteFixture, snapshot sp.Snapshot, registration sp.TestRegistration, scopes ...string) (*websocket.Conn, sp.Snapshot) {
+	t.Helper()
+	grant := f.grant(t, snapshot, registration.ControllerID, registration.ControllerInstanceID)
+	epoch := uuid.NewString()
+	f.prepareConnection(t, snapshot, epoch)
+	plans := append([]string{"test-controller-auth", "test-controller-connect", "test-controller-read", "test-controller-idle", "test-controller-revoked"}, scopes...)
+	controller := sessionDial(t, f.server.URL, "/api/v1/controller-channel", grant.Token, f.backend.PlanHeader(plans...))
+	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: registration.Provider, SourceEpoch: epoch, LastAckedSourceSeq: "0"})
+	f.admitConnection(t)
+	welcome := sessionWSKind(t, controller, "welcome")
+	connected, err := sp.DecodeSnapshot(welcome["session"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.selectConnection(t, connected)
+	f.expectControllerCleanup(t)
+	return controller, connected
+}
+
 func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	registration := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "claude", InitialInput: "none"}
-	result := decodeResponse[struct {
-		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodPost, "/api/v1/test-sessions", jsonBody(t, registration)), http.StatusOK)
-	v := result.Session
+	f := newTestSessionRouteFixture(t)
+	registration := independentRegistration("claude")
+	v := f.registration(t, registration)
 	path := "/api/v1/test-sessions/" + v.SessionID
 	if v.Identity.OwnerUserID != f.handler.principal.UserID || v.Identity.ProjectID != "" || v.TestExecutionID != registration.TestExecutionID {
-		t.Fatal("wrong test identity", v)
+		t.Fatal("wrong Test identity", v)
 	}
 	for _, route := range []string{"/api/v1/test-session-capabilities", path, path + "/timeline", path + "/operations/" + uuid.NewString(), path + "/resources/" + uuid.NewString() + "/content", path + "/channel"} {
 		response := httptest.NewRecorder()
@@ -35,79 +53,86 @@ func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
 			t.Fatal("anonymous route", route, response.Code)
 		}
 	}
-	for _, route := range []string{"/api/v1/test-session-capabilities", path, path + "/timeline"} {
-		expected := http.StatusOK
-		if route == path+"/timeline" {
-			expected = http.StatusServiceUnavailable
-		}
-		if response := projectRequest(f.handler, http.MethodGet, route, ""); response.Code != expected {
-			t.Fatal("owner route", route, response.Code, response.Body.String())
-		}
-	}
-	if response := projectRequest(f.handler, http.MethodGet, f.base+"/"+v.SessionID+"/timeline", ""); response.Code == http.StatusOK {
-		t.Fatal("test leaked into task route")
-	}
-	if response := projectRequest(f.handler, http.MethodGet, "/api/v1/test-sessions/"+f.snapshot.SessionID, ""); response.Code == http.StatusOK {
-		t.Fatal("task leaked into test route")
-	}
-	grant := decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, path+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})), http.StatusOK)
-	controller := sessionDial(t, f.server.URL, "/api/v1/controller-channel", grant.Token, nil)
-	epoch := uuid.NewString()
-	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: "claude", SourceEpoch: epoch, LastAckedSourceSeq: "0"})
-	welcome := sessionWSKind(t, controller, "welcome")
-	var err error
-	v, err = sp.DecodeSnapshot(welcome["session"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	browser := sessionDial(t, f.server.URL, path+"/channel", f.handler.token, nil)
+	decodeResponse[map[string]any](t, f.request(http.MethodGet, "/api/v1/test-session-capabilities", ""), http.StatusOK)
+	decodeResponse[struct {
+		Session sp.Snapshot `json:"session"`
+	}](t, f.request(http.MethodGet, path, "", "test-read"), http.StatusOK)
+	assertProjectError(t, f.request(http.MethodGet, path+"/timeline", "", "test-offline-content"), http.StatusServiceUnavailable, "controller_offline")
+	taskPath := "/api/v1/projects/" + f.project + "/tasks/" + f.task + "/sessions/" + v.SessionID + "/timeline"
+	assertProjectError(t, f.request(http.MethodGet, taskPath, "", "test-task-route"), http.StatusConflict, "session_conflict")
+	f.mu.Lock()
+	original := f.facts.record
+	nativeID := f.native.Snapshot.SessionID
+	f.facts.record = routeCopy(f.native)
+	f.mu.Unlock()
+	assertProjectError(t, f.request(http.MethodGet, "/api/v1/test-sessions/"+nativeID, "", "test-wrong-scope"), http.StatusConflict, "session_conflict")
+	f.mu.Lock()
+	f.facts.record = original
+	f.mu.Unlock()
+	controller, v := testController(t, f, v, registration, "test-controller-sync", "test-controller-events", "test-controller-offer")
+	browser := sessionDial(t, f.server.URL, path+"/channel", f.handler.token, f.backend.PlanHeader("test-browser", "test-browser-revoked"))
 	sessionWSKind(t, browser, "snapshot")
 	state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true}}
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
 	sessionWSKind(t, controller, "sync_ack")
-	raw, _ := json.Marshal(state)
+	f.selectSession(t, true)
+	f.mu.Lock()
+	f.facts = f.connected
+	epoch := *f.connected.record.SourceEpoch
+	f.mu.Unlock()
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: raw}}})
 	sessionWSKind(t, controller, "events_ack")
+	f.selectSession(t, true)
+	f.mu.Lock()
+	f.facts = f.connected
+	f.mu.Unlock()
 	command := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "first", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"hello"}],"expectedTurnId":null}`)}
-	response := projectRequest(f.handler, http.MethodPost, path+"/commands", jsonBody(t, command))
+	response := f.request(http.MethodPost, path+"/commands", jsonBody(t, command), "test-command")
 	if response.Code != http.StatusAccepted || response.Header().Get("Location") != path+"/operations/"+command.OperationID {
-		t.Fatal("command location", response.Code, response.Body.String())
+		t.Fatal("command Location", response.Code, response.Body.String())
 	}
+	f.selectSession(t, true)
+	f.prepareOffer(t)
+	f.mu.Lock()
+	operation := f.writes.operation
+	if operation == nil || operation.OperationID != command.OperationID || operation.Command.Kind != "send_message" || operation.Actor != f.handler.principal {
+		f.mu.Unlock()
+		t.Fatal("command did not propose its original operation/actor")
+	}
+	f.connected.operation, f.connected.operationError, f.connected.accepted = routeCopy(*operation), nil, []string{command.OperationID}
+	f.connected.operation.Deadline = time.Now().Add(30 * time.Second)
+	f.facts = f.connected
+	f.writes.operation = nil
+	f.mu.Unlock()
+	f.admitOffer(t)
 	offer := sessionWSKind(t, controller, "operation_offer")
 	if string(offer["testExecutionId"]) != "\""+v.TestExecutionID+"\"" || offer["claimId"] != nil {
 		t.Fatal("offer scope", offer)
 	}
-	// Revocation closes both already-open channels and rejects every subsequent read.
-	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "unauthenticated") }
-	if _, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	controllerClosed, browserClosed := watchDeletedChannel(ctx, controller), watchDeletedChannel(ctx, browser)
+	if err := controller.Ping(ctx); err != nil {
+		t.Fatal("controller unavailable before credential revocation", err)
 	}
-	for _, conn := range []*websocket.Conn{browser, controller} {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		for {
-			_, _, err = conn.Read(ctx)
-			if err != nil {
-				break
-			}
-		}
-		timedOut := ctx.Err() != nil
-		cancel()
-		if timedOut {
-			t.Fatal("revoked channel remained open")
-		}
+	if err := browser.Ping(ctx); err != nil {
+		t.Fatal("browser unavailable before credential revocation", err)
 	}
-	if response = projectRequest(f.handler, http.MethodGet, path, ""); response.Code != http.StatusUnauthorized {
-		t.Fatal("revoked read", response.Code)
-	}
+	f.revoke(t)
+	requireDeletedChannelClosed(t, ctx, controllerClosed)
+	requireDeletedChannelClosed(t, ctx, browserClosed)
+	f.requireRevokedControllerCleanup(t)
+	assertProjectError(t, f.request(http.MethodGet, path, ""), http.StatusUnauthorized, "unauthenticated")
 }
 
 func TestTestSessionHTTPStopRequiresValidProofOwnerAndScope(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	registration := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}
-	value := decodeResponse[struct {
-		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodPost, "/api/v1/test-sessions", jsonBody(t, registration)), http.StatusOK)
-	v := value.Session
+	f := newTestSessionRouteFixture(t)
+	registration := independentRegistration("codex")
+	v := f.registration(t, registration)
 	path := "/api/v1/test-sessions/" + v.SessionID
 	proof := sp.TestStop{Protocol: sp.Protocol, Fence: v.Fence, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
 	for _, input := range []struct {
@@ -119,75 +144,76 @@ func TestTestSessionHTTPStopRequiresValidProofOwnerAndScope(t *testing.T) {
 		{path + "/stop", `{"protocol":"daynight.session.v1"`, http.StatusBadRequest},
 		{"/api/v1/test-sessions?unknown=1", jsonBody(t, registration), http.StatusBadRequest},
 		{"/api/v1/test-sessions", "{}", http.StatusBadRequest},
-		{"/api/v1/test-sessions/" + f.snapshot.SessionID + "/stop", jsonBody(t, proof), http.StatusConflict},
 	} {
-		response := projectRequest(f.handler, http.MethodPost, input.path, input.body)
-		if response.Code != input.status {
-			t.Fatalf("invalid lifecycle request %s: %d %s", input.path, response.Code, response.Body.String())
-		}
+		assertProjectError(t, f.request(http.MethodPost, input.path, input.body), input.status, "invalid_input")
 	}
+	f.mu.Lock()
+	testRecord := f.facts.record
+	f.facts.record = routeCopy(f.native)
+	f.mu.Unlock()
+	assertProjectError(t, f.request(http.MethodPost, "/api/v1/test-sessions/"+f.native.Snapshot.SessionID+"/stop", jsonBody(t, proof), "test-wrong-scope"), http.StatusConflict, "session_conflict")
+	f.mu.Lock()
+	f.facts.record = testRecord
+	f.mu.Unlock()
 	for _, route := range []string{path + "?unknown=1", "/api/v1/test-session-capabilities?unknown=1"} {
-		assertProjectError(t, projectRequest(f.handler, http.MethodGet, route, ""), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, f.request(http.MethodGet, route, ""), http.StatusBadRequest, "invalid_input")
 	}
-	capability := decodeResponse[map[string]any](t, projectRequest(f.handler, http.MethodGet, "/api/v1/test-session-capabilities", ""), http.StatusOK)
+	capability := decodeResponse[map[string]any](t, f.request(http.MethodGet, "/api/v1/test-session-capabilities", ""), http.StatusOK)
 	if len(capability) != 4 || capability["protocol"] != sp.Protocol {
 		t.Fatal("Test capability contract", capability)
 	}
 	for _, route := range []string{path, path + "/stop", "/api/v1/test-session-capabilities"} {
-		response := projectRequest(f.handler, http.MethodDelete, route, "")
-		if response.Code != http.StatusMethodNotAllowed {
+		if response := f.request(http.MethodDelete, route, ""); response.Code != http.StatusMethodNotAllowed {
 			t.Fatal("method admission", route, response.Code)
 		}
 	}
 	anonymous := httptest.NewRecorder()
-	anonymousRequest := httptest.NewRequest(http.MethodPost, path+"/stop", strings.NewReader(jsonBody(t, proof)))
-	anonymousRequest.Header.Set("X-Request-ID", "project-test")
-	f.handler.ServeHTTP(anonymous, anonymousRequest)
+	request := httptest.NewRequest(http.MethodPost, path+"/stop", strings.NewReader(jsonBody(t, proof)))
+	request.Header.Set("X-Request-ID", "project-test")
+	f.handler.ServeHTTP(anonymous, request)
 	assertProjectError(t, anonymous, http.StatusUnauthorized, "unauthenticated")
-	// A valid but different principal cannot archive even with the exact public URL and proof.
-	outsiderID, tokenID := uuid.NewString(), uuid.NewString()
-	token := "dnpat_" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))
-	digest := sha256.Sum256([]byte(token))
-	if _, err := f.db.Pool.Exec(context.Background(), `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, outsiderID, "test-stop-other-"+outsiderID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Pool.Exec(context.Background(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'other owner',now(),now()+interval '1 hour')`, tokenID, outsiderID, digest[:]); err != nil {
-		t.Fatal(err)
-	}
-	outsider := &resourceTestHandler{Handler: f.handler.Handler, token: token}
-	assertProjectError(t, projectRequest(outsider, http.MethodPost, path+"/stop", jsonBody(t, proof)), http.StatusForbidden, "forbidden")
-	assertProjectError(t, projectRequest(outsider, http.MethodGet, path, ""), http.StatusForbidden, "forbidden")
-	// A never-started proof is accepted and repeatable, without granting controller access.
+	outsiderPrincipal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	outsider := &resourceTestHandler{Handler: f.handler.Handler, token: f.auth.Credential(outsiderPrincipal), principal: outsiderPrincipal}
+	f.mu.Lock()
+	f.facts.actor = outsiderPrincipal
+	f.mu.Unlock()
+	assertProjectError(t, f.requestAs(outsider, http.MethodPost, path+"/stop", jsonBody(t, proof), "test-foreign-owner"), http.StatusForbidden, "forbidden")
+	assertProjectError(t, f.requestAs(outsider, http.MethodGet, path, "", "test-foreign-owner"), http.StatusForbidden, "forbidden")
+	f.mu.Lock()
+	f.facts.actor = f.handler.principal
+	f.mu.Unlock()
 	archived := decodeResponse[struct {
 		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodPost, path+"/stop", jsonBody(t, proof)), http.StatusOK)
-	if archived.Session.Lifecycle != "archived" || archived.Session.Operations.CanSend {
+	}](t, f.request(http.MethodPost, path+"/stop", jsonBody(t, proof), "test-stop"), http.StatusOK).Session
+	if archived.Lifecycle != "archived" || archived.Operations.CanSend {
 		t.Fatal("stop did not archive", archived)
 	}
+	f.selectStop(t, archived)
 	decodeResponse[struct {
 		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodPost, path+"/stop", jsonBody(t, proof)), http.StatusOK)
-	// Once a controller connected, that proof becomes false even after disconnection.
-	registration.RegistrationID = uuid.NewString()
-	registration.TestExecutionID = uuid.NewString()
-	value = decodeResponse[struct {
-		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodPost, "/api/v1/test-sessions", jsonBody(t, registration)), http.StatusOK)
-	v = value.Session
+	}](t, f.request(http.MethodPost, path+"/stop", jsonBody(t, proof), "test-stop-repeat"), http.StatusOK)
+	f.requireNoControllerCleanup(t)
+	registration.RegistrationID, registration.TestExecutionID = uuid.NewString(), uuid.NewString()
+	v = f.registration(t, registration)
 	path = "/api/v1/test-sessions/" + v.SessionID
+	controller, v := testController(t, f, v, registration)
 	proof.Fence = v.Fence
-	grant := decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, path+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})), http.StatusOK)
-	controller := sessionDial(t, f.server.URL, "/api/v1/controller-channel", grant.Token, nil)
-	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0"})
-	sessionWSKind(t, controller, "welcome")
-	assertProjectError(t, projectRequest(f.handler, http.MethodPost, path+"/stop", jsonBody(t, proof)), http.StatusConflict, "session_conflict")
-	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "session_conflict") }
+	assertProjectError(t, f.request(http.MethodPost, path+"/stop", jsonBody(t, proof), "test-stop-conflict"), http.StatusConflict, "session_conflict")
+	previousSaves := f.sessionSaveCount()
 	_ = controller.CloseNow()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	if err := f.routes.Shutdown(ctx); err != nil {
+		cancel()
+		t.Fatal("controller disconnect did not drain", err)
+	}
+	cancel()
+	f.requireControllerCleanup(t, previousSaves)
 	proof.StopProof.Kind = ""
 	archived = decodeResponse[struct {
 		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodPost, path+"/stop", jsonBody(t, proof)), http.StatusOK)
-	if archived.Session.Lifecycle != "archived" {
+	}](t, f.request(http.MethodPost, path+"/stop", jsonBody(t, proof), "test-stop"), http.StatusOK).Session
+	f.selectStop(t, archived)
+	if archived.Lifecycle != "archived" {
 		t.Fatal("normal stop proof not recorded")
 	}
 }

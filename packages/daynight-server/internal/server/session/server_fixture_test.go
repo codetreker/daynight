@@ -6,73 +6,89 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 )
 
 type sessionApplication interface {
 	http.Handler
 	Shutdown(context.Context) error
 }
+type sessionApplicationFactory func(*testing.T, *routeBackend, *routeAuthentication, filestorage.Storage) sessionApplication
 
-type sessionApplicationFactory func(*testing.T, *postgres.Store, filestorage.Storage) sessionApplication
-
-func newSessionHTTPApplication(t *testing.T, database *postgres.Store, files filestorage.Storage) sessionApplication {
-	t.Helper()
-	handler, err := appsupport.NewHandler(configuredTestConfig(), database, database.Ready, files, testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return handler.(sessionApplication)
-}
-
-type sessionPingApplication struct {
+type routeApplication struct {
 	http.Handler
-	routes *sessionhttp.Routes
-	engine *sessioncore.Engine
+	Service        *sessionservice.Service
+	Engine         *sessioncore.Engine
+	Routes         *sessionhttp.Routes
+	Backend        *routeBackend
+	Authentication *routeAuthentication
+	Files          filestorage.Storage
 }
 
-func (a *sessionPingApplication) Shutdown(ctx context.Context) error {
-	routeErr := a.routes.Shutdown(ctx)
-	return errors.Join(routeErr, a.engine.Stop(ctx))
+func (a *routeApplication) Shutdown(ctx context.Context) error {
+	return errors.Join(a.Routes.Shutdown(ctx), a.Engine.Stop(ctx))
 }
 
-func newSessionPingApplication(t *testing.T, database *postgres.Store, files filestorage.Storage) sessionApplication {
+func newRouteApplication(t *testing.T, backend *routeBackend, auth *routeAuthentication, files filestorage.Storage, logger *slog.Logger, ping time.Duration) *routeApplication {
 	t.Helper()
-	config := configuredTestConfig()
-	client, err := service.NewIdentityClient(config)
-	if err != nil {
-		t.Fatal(err)
+	engine := sessioncore.NewEngine(files)
+	service := sessionservice.New(backend, engine)
+	var routes *sessionhttp.Routes
+	if ping == 0 {
+		routes = sessionhttp.NewRoutes(service, auth.Authentication, logger)
+	} else {
+		routes = sessionhttp.NewRoutesWithPingIntervalForTest(service, auth.Authentication, logger, ping)
 	}
-	app := application.New(database, files, client, config.UniAuthCallbackURL, config.TaskSyncOverlap)
-	auth, err := authhttp.NewAuthentication(app.Identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, testLogger())
-	if err != nil {
-		t.Fatal(err)
+	lifetime, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	backend.mu.Lock()
+	previousFailure := backend.OnFailure
+	backend.OnFailure = func(err error) {
+		cancel()
+		if previousFailure != nil {
+			previousFailure(err)
+		}
 	}
-	routes := sessionhttp.NewRoutesWithPingIntervalForTest(app.Sessions, auth, testLogger(), 100*time.Millisecond)
+	backend.mu.Unlock()
 	mux := http.NewServeMux()
 	routes.RegisterRoutes(mux)
-	return &sessionPingApplication{Handler: mux, routes: routes, engine: app.Engine}
+	return &routeApplication{Handler: withRoutePlanLifetime(backend, mux, lifetime), Service: service, Engine: engine, Routes: routes, Backend: backend, Authentication: auth, Files: files}
 }
 
-func configuredTestConfig() configpkg.Config {
-	return configpkg.Config{
-		DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0",
-		StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
-		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",
-		UniAuthAppID: "configuration-test", UniAuthAppSecret: "configuration-test",
-		UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback",
-	}
+func newSessionHTTPApplication(t *testing.T, backend *routeBackend, auth *routeAuthentication, files filestorage.Storage) sessionApplication {
+	return newRouteApplication(t, backend, auth, files, testLogger(), 0)
+}
+
+func newSessionPingApplication(t *testing.T, backend *routeBackend, auth *routeAuthentication, files filestorage.Storage) sessionApplication {
+	return newRouteApplication(t, backend, auth, files, testLogger(), 100*time.Millisecond)
+}
+
+func withRoutePlans(backend *routeBackend, next http.Handler) http.Handler {
+	return withRoutePlanLifetime(backend, next, context.Background())
+}
+
+func withRoutePlanLifetime(backend *routeBackend, next http.Handler, lifetime context.Context) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		names := []string{}
+		if value := r.Header.Get(routePlanHeader); value != "" {
+			names = strings.Split(value, ",")
+		}
+		requestContext, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(lifetime, cancel)
+		defer func() { stop(); cancel() }()
+		ctx := backend.Plan(requestContext, names...)
+		defer backend.Finish(ctx)
+		request := r.Clone(ctx)
+		request.Header.Del(routePlanHeader)
+		next.ServeHTTP(w, request)
+	})
 }
 
 func testLogger() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }

@@ -19,14 +19,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The wrapper verifies the production deadline and shortens only the actual
-// socket deadline so this acceptance test does not wait two minutes.
+// socket deadline so this socket test does not wait two minutes.
 type archiveWriteDeadlineObserver struct {
 	http.ResponseWriter
 	started  chan struct{}
@@ -51,17 +47,19 @@ func (w *archiveWriteDeadlineObserver) Write(data []byte) (int, error) {
 }
 
 func TestArchiveSendDeadlineRetainsAndReleasesCapacity(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := archiveHTTPSetup(t)
+	f.Declare("preflight", archivePreflightCounts(), false)
+	f.Declare("upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
+	f.Declare("read", archiveScopeCounts(false, map[string]int{"SessionArchive": 1}), false)
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, f.task.ID); err != nil {
-		t.Fatal(err)
-	}
+	f.UseEndedTaskInput()
 	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
 	// Whitespace is valid archive input and must remain byte-for-byte intact.
 	raw := jsonBody(t, doc) + strings.Repeat(" ", 16*1024*1024)
-	if response := projectRequest(f.handler, http.MethodPut, base, raw); response.Code != http.StatusOK {
+	if response := f.Request(http.MethodPut, base, raw, "preflight", "upload"); response.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", response.Code, response.Body.String())
 	}
+	f.AcceptReady(t, []byte(raw))
 	started := make(chan struct{})
 	deadline := make(chan time.Time, 1)
 	done := make(chan struct{})
@@ -81,7 +79,7 @@ func TestArchiveSendDeadlineRetainsAndReleasesCapacity(t *testing.T) {
 	if err := conn.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = fmt.Fprintf(conn, "GET %s/content HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n\r\n", base, f.handler.token); err != nil {
+	if _, err = fmt.Fprintf(conn, "GET %s/content HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nDaynight-Test-Scopes: preflight,read\r\n\r\n", base, f.handler.token); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -98,8 +96,12 @@ func TestArchiveSendDeadlineRetainsAndReleasesCapacity(t *testing.T) {
 	default:
 		t.Fatal("archive write deadline not set")
 	}
-	if response := projectRequest(f.handler, http.MethodGet, base+"/content", ""); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
+	authCalls := f.auth.Count()
+	if response := f.Request(http.MethodGet, base+"/content", ""); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
 		t.Fatalf("capacity during send: %d %s", response.Code, response.Body.String())
+	}
+	if f.auth.Count() != authCalls {
+		t.Fatal("saturated archive send authenticated another request")
 	}
 	select {
 	case <-done:
@@ -121,7 +123,7 @@ func TestArchiveSendDeadlineRetainsAndReleasesCapacity(t *testing.T) {
 	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
 		t.Fatalf("interrupted response did not close: %v", readErr)
 	}
-	got := projectRequest(f.handler, http.MethodGet, base+"/content", "")
+	got := f.Request(http.MethodGet, base+"/content", "", "preflight", "read")
 	if got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), append(append([]byte(`{"archive":`), []byte(raw)...), '}')) {
 		t.Fatalf("capacity or raw bytes after failure: status %d, length %d", got.Code, got.Body.Len())
 	}
@@ -145,7 +147,8 @@ func (w *archiveReadDeadlineObserver) SetReadDeadline(deadline time.Time) error 
 }
 
 func TestArchiveUploadClientDisconnectReleasesCapacity(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := archiveHTTPSetup(t)
+	f.Declare("preflight", archivePreflightCounts(), false)
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
 	deadline := make(chan time.Time, 1)
 	done := make(chan struct{})
@@ -162,7 +165,7 @@ func TestArchiveUploadClientDisconnectReleasesCapacity(t *testing.T) {
 	if err := conn.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{", base, f.handler.token); err != nil {
+	if _, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\nDaynight-Test-Scopes: preflight\r\n\r\n{", base, f.handler.token); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -174,8 +177,12 @@ func TestArchiveUploadClientDisconnectReleasesCapacity(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("archive read deadline not set")
 	}
-	if response := projectRequest(f.handler, http.MethodPut, base, "{}"); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
+	authCalls := f.auth.Count()
+	if response := f.Request(http.MethodPut, base, "{}"); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
 		t.Fatalf("capacity during upload: %d %s", response.Code, response.Body.String())
+	}
+	if f.auth.Count() != authCalls {
+		t.Fatal("saturated archive upload authenticated another request")
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
@@ -185,41 +192,23 @@ func TestArchiveUploadClientDisconnectReleasesCapacity(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("disconnected upload did not finish")
 	}
-	if response := projectRequest(f.handler, http.MethodPut, base, "{}"); response.Code != http.StatusBadRequest {
-		t.Fatalf("capacity after timeout: %d %s", response.Code, response.Body.String())
+	if response := f.Request(http.MethodPut, base, "{}", "preflight"); response.Code != http.StatusBadRequest {
+		t.Fatalf("capacity after disconnect: %d %s", response.Code, response.Body.String())
 	}
 }
 
-func TestArchivePreflightRejectsBeforeAuthenticationWhenPoolIsFull(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	config := f.db.Pool.Config()
-	config.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	db := &postgres.Store{Pool: pool}
-	app, err := appsupport.NewHandler(configuredTestConfig(), db, db.Ready, attachmentTestFiles(t), testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.(sessionApplication).Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	}()
+func TestArchivePreflightRejectsBeforeAuthenticationWhileBodyIsUnread(t *testing.T) {
+	f := archiveHTTPSetup(t)
+	f.Declare("preflight", archivePreflightCounts(), false)
+	f.Declare("upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
 	deadline := make(chan time.Time, 1)
 	finished := make(chan struct{})
-	handler := httpx.RequestLogging(testLogger(), app)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut && r.Header.Get("X-Test-Stall") == "1" {
 			defer close(finished)
 			w = &exactReadDeadlineTestObserver{ResponseWriter: w, deadline: deadline}
 		}
-		handler.ServeHTTP(w, r)
+		f.handler.Handler.ServeHTTP(w, r)
 	}))
 	defer server.Close()
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
@@ -228,7 +217,7 @@ func TestArchivePreflightRejectsBeforeAuthenticationWhenPoolIsFull(t *testing.T)
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if _, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\nX-Test-Stall: 1\r\n\r\n{", base, f.handler.token); err != nil {
+	if _, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\nX-Test-Stall: 1\r\nDaynight-Test-Scopes: preflight\r\n\r\n{", base, f.handler.token); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -236,17 +225,7 @@ func TestArchivePreflightRejectsBeforeAuthenticationWhenPoolIsFull(t *testing.T)
 	case <-time.After(5 * time.Second):
 		t.Fatal("first upload was not admitted")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	occupied, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if occupied != nil {
-			occupied.Release()
-		}
-	}()
+	authCalls := f.auth.Count()
 	for _, tc := range []struct{ method, path, protocol string }{
 		{http.MethodPut, base, ""}, {http.MethodGet, base + "/content", ""},
 		{http.MethodPut, base, v2.Protocol}, {http.MethodGet, base + "/content", v2.Protocol},
@@ -276,17 +255,25 @@ func TestArchivePreflightRejectsBeforeAuthenticationWhenPoolIsFull(t *testing.T)
 			t.Fatalf("%s %s: %d %q %v", tc.method, tc.path, resp.StatusCode, data, readErr)
 		}
 		if tc.method == http.MethodPut && !resp.Close {
-			t.Fatalf("%s %s reused a connection with an unread body", tc.method, tc.path)
+			t.Fatalf("%s %s reused an unread-body connection", tc.method, tc.path)
 		}
 	}
-	occupied.Release()
-	occupied = nil
+	if f.auth.Count() != authCalls {
+		t.Fatal("saturated archive routes authenticated another request")
+	}
 	_ = conn.Close()
 	select {
 	case <-finished:
 	case <-time.After(5 * time.Second):
-		t.Fatal("first upload did not finish")
+		t.Fatal("disconnected upload did not finish")
 	}
+	f.UseEndedTaskInput()
+	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
+	raw := jsonBody(t, doc)
+	if response := f.Request(http.MethodPut, base, raw, "preflight", "upload"); response.Code != http.StatusOK {
+		t.Fatalf("capacity after drain: %d %s", response.Code, response.Body.String())
+	}
+	f.AcceptReady(t, []byte(raw))
 }
 
 type exactReadDeadlineTestObserver struct {
@@ -322,45 +309,28 @@ func (s *blockingArchiveStorage) Put(ctx context.Context, bucket, path string, b
 	return s.Storage.Put(ctx, bucket, path, body)
 }
 
-func TestArchivePreflightWhileStorageHoldsOnlyConnection(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, f.task.ID); err != nil {
-		t.Fatal(err)
-	}
-	config := f.db.Pool.Config()
-	config.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	db := &postgres.Store{Pool: pool}
+func TestArchivePreflightRejectsWhileUploadStorageIsBlocked(t *testing.T) {
 	files := &blockingArchiveStorage{Storage: attachmentTestFiles(t), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(files.release) }) }
 	defer release()
-	app, err := appsupport.NewHandler(configuredTestConfig(), db, db.Ready, files, testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		release()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.(sessionApplication).Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	}()
-	server := httptest.NewServer(httpx.RequestLogging(testLogger(), app))
+	f := archiveHTTPSetupWithFiles(t, files)
+	f.UseEndedTaskInput()
+	f.Declare("preflight", archivePreflightCounts(), false)
+	f.Declare("upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
+	f.Declare("read", archiveScopeCounts(false, map[string]int{"SessionArchive": 1}), false)
+	server := httptest.NewServer(f.handler.Handler)
 	defer func() { release(); server.Close() }()
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
 	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
+	raw := jsonBody(t, doc)
 	requestCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPut, server.URL+base, strings.NewReader(jsonBody(t, doc)))
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPut, server.URL+base, strings.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header = f.backend.PlanHeader("preflight", "upload")
 	req.Header.Set("Authorization", "Bearer "+f.handler.token)
 	req.Header.Set("Content-Type", "application/json")
 	result := make(chan error, 1)
@@ -378,11 +348,12 @@ func TestArchivePreflightWhileStorageHoldsOnlyConnection(t *testing.T) {
 	select {
 	case <-files.entered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("first upload did not reach storage")
+		t.Fatal("first upload did not reach real storage")
 	}
-	if pool.Stat().AcquiredConns() != 1 {
-		t.Fatal("storage upload did not hold the only transaction connection")
+	if f.backend.Called("SetSessionArchiveReady") != 0 {
+		t.Fatal("archive receipt preceded storage completion")
 	}
+	authCalls := f.auth.Count()
 	short, stop := context.WithTimeout(context.Background(), time.Second)
 	defer stop()
 	second, err := http.NewRequestWithContext(short, http.MethodPut, server.URL+base, strings.NewReader("{}"))
@@ -393,12 +364,15 @@ func TestArchivePreflightWhileStorageHoldsOnlyConnection(t *testing.T) {
 	second.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(second)
 	if err != nil {
-		t.Fatalf("second upload blocked in authentication: %v", err)
+		t.Fatalf("second upload blocked before admission: %v", err)
 	}
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil || resp.StatusCode != http.StatusTooManyRequests || !resp.Close || !bytes.Contains(body, []byte(`"resource_busy"`)) {
 		t.Fatalf("second upload: %d close=%v body=%q read=%v", resp.StatusCode, resp.Close, body, err)
+	}
+	if f.auth.Count() != authCalls {
+		t.Fatal("storage-blocked upload authenticated another request")
 	}
 	release()
 	select {
@@ -408,5 +382,9 @@ func TestArchivePreflightWhileStorageHoldsOnlyConnection(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("first upload did not finish")
+	}
+	f.AcceptReady(t, []byte(raw))
+	if response := f.Request(http.MethodGet, base+"/content", "", "preflight", "read"); response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), append(append([]byte(`{"archive":`), []byte(raw)...), '}')) {
+		t.Fatalf("capacity or bytes after storage completion: %d %s", response.Code, response.Body.String())
 	}
 }
