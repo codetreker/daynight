@@ -3,75 +3,38 @@ package mcp
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 )
 
-type attachmentCompletionWriter struct {
-	inner   store.AttachmentMutationWriter
-	outcome store.TransactionOutcome
-}
-
-func (w attachmentCompletionWriter) WriteAttachmentMutation(ctx context.Context, operation func(store.AttachmentMutationScope) error) (store.Completion, error) {
-	completion, err := w.inner.WriteAttachmentMutation(ctx, operation)
-	if err != nil {
-		return completion, err
-	}
-	return store.Completion{Outcome: w.outcome}, &store.TransactionError{Phase: "cleanup", Outcome: w.outcome, CleanupFailed: true, Cause: errors.New("cleanup failed")}
-}
-
-type failingDeleteStorage struct{ filestorage.Storage }
-
-func (f failingDeleteStorage) Delete(context.Context, string, string) error {
-	return errors.New("file delete failed")
-}
-
-func TestAttachmentRemoveActualCompletionFacts(t *testing.T) {
-	_, project, principal, tasks, database, _, _ := taskResourceClient(t)
-	task, err := tasks.Create(t.Context(), principal, project, taskcore.CreateTask{Title: "Attachment completion"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := files.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	original := attachmentservice.NewAttachments(database, database, files)
+func TestAttachmentRemoveCompletionFacts(t *testing.T) {
+	principal := model.Principal{Kind: model.PATCredential, UserID: testUserID, CredentialID: testTeamID}
 	actor := RequestActor{Principal: principal, RequestID: "completion-test"}
-	input := attachmentInput{ProjectID: project, TaskID: task.ID, Path: "file"}
+	input := attachmentInput{ProjectID: testProjectID, TaskID: testTargetID, Path: "file"}
 	for _, tc := range []struct {
-		name, want  string
-		outcome     store.TransactionOutcome
-		fileFailure bool
+		name, want string
+		cause      error
 	}{
-		{"file failure", "unknown", store.TransactionNotCommitted, true},
-		{"lost receipt", "unknown", store.TransactionUnknown, false},
-		{"committed cleanup failure", "confirmed", store.TransactionCommitted, false},
+		{"file failure", "unknown", errors.New("file delete failed")},
+		{"lost receipt", "unknown", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: errors.New("cleanup failed")}},
+		{"committed cleanup failure", "confirmed", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: errors.New("cleanup failed")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := original.Put(t.Context(), principal, project, task.ID, "file", "text/plain", strings.NewReader("x")); err != nil {
-				t.Fatal(err)
-			}
-			var subject *attachmentservice.Attachments
-			if tc.fileFailure {
-				subject = attachmentservice.NewAttachments(database, database, failingDeleteStorage{files})
-			} else {
-				subject = attachmentservice.NewAttachments(database, attachmentCompletionWriter{database, tc.outcome}, files)
-			}
+			calls := 0
+			failure := &attachmentservice.FileEffectError{Cause: tc.cause}
+			subject := attachmentDeleteOperation{t: t, delete: func(ctx context.Context, actual model.Principal, project, task, path string) error {
+				calls++
+				if ctx != t.Context() || actual != principal || project != testProjectID || task != testTargetID || path != "file" {
+					t.Errorf("incorrect remove call: principal=%+v project=%s task=%s path=%s", actual, project, task, path)
+				}
+				return failure
+			}}
 			result, err := removeAttachment(t.Context(), actor, subject, input)
-			if err == nil || result.WriteOutcome != tc.want || result.Refs["path"] != "file" {
-				t.Fatalf("outcome=%#v error=%v", result, err)
+			if !errors.Is(err, tc.cause) || result.WriteOutcome != tc.want || result.Refs["path"] != "file" || calls != 1 {
+				t.Fatalf("outcome=%#v error=%v calls=%d", result, err, calls)
 			}
 		})
 	}

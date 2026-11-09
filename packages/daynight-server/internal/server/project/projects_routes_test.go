@@ -131,32 +131,25 @@ func TestProjectRoutesDatabaseFailuresRemainSafe(t *testing.T) {
 	}
 }
 
-func TestProjectHTTPPageEncodedBudgetAndCursor(t *testing.T) {
+func TestProjectHTTPPageCountAndCursor(t *testing.T) {
 	h := projectRoutesHarness(t)
-	var ids []string
-	for _, name := range []string{"Large one", "Large two"} {
-		body := fmt.Sprintf(`{"name":%q,"repoUrl":"host:repo","expectedUserId":%q}`, name, h.adminID)
+	var projects []api.Project
+	for _, suffix := range []string{"one", "two"} {
+		name := strings.Repeat("<", 250) + suffix
+		body := jsonBody(t, api.CreateProjectRequest{Name: name, RepoURL: "host:repo-" + suffix, ExpectedUserID: h.adminID})
 		project := decodeResponse[api.ProjectDocument](t, h.call(http.MethodPost, "/api/v1/projects", body, h.admin), http.StatusCreated)
-		ids = append(ids, project.ID)
-		if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE projects SET name=repeat('<',500000) WHERE id=$1`, project.ID); err != nil {
-			t.Fatal(err)
-		}
+		projects = append(projects, project.Project)
 	}
-	first := h.call(http.MethodGet, "/api/v1/projects?limit=100", "", h.admin)
-	page := decodeResponse[api.ProjectPage](t, first, http.StatusOK)
-	if first.Body.Len() > 4<<20 || page.NextCursor == nil || page.Items[len(page.Items)-1].ID != ids[0] {
-		t.Fatalf("first page: %d %#v", first.Body.Len(), page.NextCursor)
+	complete := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=100", "", h.admin), http.StatusOK)
+	if len(complete.Items) != 3 || complete.Items[1] != projects[0] || complete.Items[2] != projects[1] || complete.NextCursor != nil {
+		t.Fatalf("complete page: %+v", complete)
 	}
-	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusOK)
-	if len(next.Items) != 1 || next.Items[0].ID != ids[1] || next.NextCursor != nil {
-		t.Fatal("continuation skipped Project")
+	first := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=2", "", h.admin), http.StatusOK)
+	if len(first.Items) != 2 || first.Items[1] != projects[0] || first.NextCursor == nil {
+		t.Fatalf("first page: %+v", first)
 	}
-	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE projects SET name=repeat('<',800000) WHERE id=$1`, ids[1]); err != nil {
-		t.Fatal(err)
+	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=2&cursor="+*first.NextCursor, "", h.admin), http.StatusOK)
+	if len(next.Items) != 1 || next.Items[0] != projects[1] || next.NextCursor != nil {
+		t.Fatalf("continuation: %+v", next)
 	}
-	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusConflict, "resource_limit_exceeded")
-	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE projects SET name=repeat('x',5000000) WHERE id=$1`, ids[1]); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusConflict, "resource_limit_exceeded")
 }

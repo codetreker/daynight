@@ -56,8 +56,9 @@ transaction persisted or rolled back. HTTP cancellation propagation is distinct
 from releasing an actual SQL query and connection.
 
 Step and Thread services supply encoded documents; HTTP tests verify those
-bytes, headers, write failures and cancellation. Server-owned envelopes and
-budgets still use the actual encoder. The
+bytes, headers, write failures and cancellation. Server-owned envelopes use the
+actual encoder, and surviving input/write capacity checks stay with their owner.
+Canonical reads do not restore response-byte admission. The
 [bounded Raw JSON decision](2026-11-08-bounded-raw-json-batching.md)
 owns capped output spans and the shared Writer's byte/error contracts, without
 changing each consumer's actual encoded boundary. The real 15-second Step socket body-timeout
@@ -98,9 +99,11 @@ a normal-flow suite cannot replace them.
 
 Task HTTP tests obtain controlled feedback without repeating a business or
 PostgreSQL implementation. Business rules, exact storage changes and normal
-full-application collaboration retain different owners. Other domain and process
-fixtures still carry their own existing scopes; adoption of the common policy
-does not claim that every historical suite has been migrated.
+full-application collaboration retain different owners. The [MCP ownership decision](2026-11-09-mcp-use-case-test-ownership.md) applies
+the same direct operation boundary to MCP protocol tests and preserves their
+lower admission, transfer and physical proofs in their actual owners. Other
+domain and process fixtures still carry their own existing scopes; adoption of
+the common policy does not claim that every historical suite has been migrated.
 
 The real socket timeout and exact encoded boundaries remain meaningful costs.
 Performance comparisons must include receiving store/API suites and complete
