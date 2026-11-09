@@ -361,3 +361,38 @@ func TestWorkerConfigurationConstructorsBindProductionOperation(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoricalConfigurationCandidateAdmissionAndRead(t *testing.T) {
+	t.Run("reject new over-limit candidate", func(t *testing.T) {
+		f := newConfigurationFixture(t)
+		value := cloudWorkerConfiguration("")
+		value.MaxConcurrent = 65
+		got, err := f.workers.PutConfiguration(f.calls.ctx, f.principal, f.worker, "2", value)
+		requireFault(t, err, "invalid_input")
+		if !reflect.DeepEqual(got, model.WorkerConfigurationResource{}) {
+			t.Fatalf("invalid candidate returned a configuration: %+v", got)
+		}
+	})
+	t.Run("read supplied repaired resource", func(t *testing.T) {
+		f := newConfigurationFixture(t)
+		at := time.Date(2026, 11, 9, 0, 0, 1, 0, time.UTC)
+		provided := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: at, Value: cloudWorkerConfiguration("")}, ObservationRevision: "0"}
+		expected := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: at, Value: cloudWorkerConfiguration("")}, ObservationRevision: "0"}
+		f.calls.want = []string{"snapshot", "read dao", "read configuration", "read complete"}
+		f.readScope.dao.(*configurationDAO).read = func(_ context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+			if user != f.principal.UserID || worker != f.worker {
+				t.Fatal("repaired configuration read changed owner or worker")
+			}
+			return provided, nil
+		}
+		f.storage.read = func(_ context.Context, operation func(store.SnapshotScope) error) error {
+			err := operation(f.readScope)
+			f.calls.take("read complete", nil)
+			return err
+		}
+		got, err := f.workers.Configuration(f.calls.ctx, f.principal, f.worker)
+		if err != nil || !reflect.DeepEqual(got, expected) {
+			t.Fatalf("repaired read: got=%+v want=%+v err=%v", got, expected, err)
+		}
+	})
+}
