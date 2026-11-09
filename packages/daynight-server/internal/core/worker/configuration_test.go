@@ -251,6 +251,75 @@ func TestPutConfigurationRejectsUnencodableStoredOverride(t *testing.T) {
 	}
 }
 
+func compatibilityConfiguration() model.WorkerConfiguration {
+	return model.WorkerConfiguration{
+		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
+		Projects: []model.WorkerProjectConfiguration{},
+	}
+}
+
+func TestExchangeConfigurationAssistantHostCompatibility(t *testing.T) {
+	at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	for _, bootstrap := range []bool{true, false} {
+		name := "future observation"
+		if bootstrap {
+			name = "bootstrap"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, principal := t.Context(), model.Principal{UserID: "compatibility-user"}
+			const workerID = "compatibility-worker"
+			current := model.WorkerConfigurationResource{ObservationRevision: "0"}
+			input := model.WorkerConfigurationExchange{}
+			if bootstrap {
+				value := compatibilityConfiguration()
+				input.Bootstrap = &value
+			} else {
+				current.Desired = &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()}
+				input.Observation = &model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "2", Items: []model.WorkerConfigurationItem{}}
+			}
+			var calls []string
+			d := &capacityConfigurationDAO{t: t}
+			d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+				calls = append(calls, "read")
+				if actual != ctx || user != principal.UserID || worker != workerID {
+					t.Errorf("configuration read arguments = %s/%s context=%v", user, worker, actual)
+				}
+				return current, nil
+			}
+			if bootstrap {
+				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+					calls = append(calls, "desired")
+					if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(value, compatibilityConfiguration()) {
+						t.Errorf("configuration write = %s/%s revision=%d value=%+v context=%v", user, worker, revision, value, actual)
+					}
+					return model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()}, nil
+				}
+			}
+			receipt, err := ExchangeConfiguration(ctx, d, principal, workerID, input)
+			wantCalls, wantWrites := []string{"read"}, 0
+			if bootstrap {
+				wantCalls, wantWrites = []string{"read", "desired"}, 1
+				want := &model.WorkerConfigurationReceipt{
+					Desired:             &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()},
+					ObservationRevision: "0", ObservationAccepted: false,
+				}
+				if err != nil || !reflect.DeepEqual(receipt, want) {
+					t.Fatalf("bootstrap receipt = %+v, want %+v: %v", receipt, want, err)
+				}
+			} else {
+				requireFault(t, err, "invalid_input")
+				if receipt != nil {
+					t.Fatalf("future observation returned a receipt: %+v", receipt)
+				}
+			}
+			if !reflect.DeepEqual(calls, wantCalls) || d.reads != 1 || d.desiredWrites != wantWrites || d.observationWrites != 0 {
+				t.Fatalf("configuration calls=%v reads=%d desired=%d observation=%d", calls, d.reads, d.desiredWrites, d.observationWrites)
+			}
+		})
+	}
+}
+
 func TestExchangeConfigurationBootstrapAndIndependentObservationCAS(t *testing.T) {
 	ctx, principal, value := context.Background(), model.Principal{UserID: "user"}, configurationFixture()
 	d := &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}
