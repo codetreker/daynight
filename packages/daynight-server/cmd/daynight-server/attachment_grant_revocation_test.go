@@ -276,6 +276,9 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	var storageRoot, binaryRoot, schema, application, binarySHA, binaryGoVersion, postgresVersion, fixtureSHA string
 	var buildConfirmed, processStarted, processReaped, sessionsRemoved, gatewayAttempted, binaryRace bool
 	var gateway *testauth.Fixture
+	var process *grantProcess
+	var adminPAT, memberPAT string
+	readiness := "not_started"
 	cleanupAllowed := func() bool { return buildConfirmed && (!processStarted || processReaped && sessionsRemoved) }
 	flags := os.Getenv("GOFLAGS")
 	flagsSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(flags)))
@@ -316,6 +319,10 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 				}
 			}
 		}
+		startup := grantStartupEvidence{Readiness: readiness, Exit: process.exitEvidence(processStarted)}
+		if process != nil {
+			startup.Logs = process.logs.diagnostics()
+		}
 		receipt := map[string]any{"sourceGit": gitHead, "sourceTree": gitTree, "dirty": dirty, "goVersion": runtime.Version(), "goFlagsSHA256": flagsSHA,
 			"buildCommand": "go build -race=<test race> -o <owned> ./cmd/daynight-server", "binaryGoVersion": binaryGoVersion, "testRaceEnabled": grantRaceEnabled, "binaryRaceEnabled": binaryRace,
 			"binarySHA256": binarySHA, "authFixtureSHA256": fixtureSHA, "postgresql": postgresVersion, "projectId": projectID, "userId": userID, "taskId": taskID,
@@ -323,12 +330,27 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 			"projectBeforePAT": beforePAT, "projectBeforeCookie": beforeCookie, "attachmentAfterPAT": afterPAT, "attachmentAfterCookie": afterCookie,
 			"prefixObserved": prefixObserved, "removalBeforeUpload": removalBeforeUpload,
 			"deniedBeforeUpload": deniedBeforeUpload, "bytesVerified": bytesVerified, "stagingRemoved": stagingRemoved,
-			"processReaped": processReaped, "serviceSessionsRemoved": sessionsRemoved, "gatewayCleanupConfirmed": gateway != nil && gateway.CleanupConfirmed(), "resourcesRemoved": cleanup, "passed": !t.Failed() && cleanup}
+			"processReaped": processReaped, "serviceSessionsRemoved": sessionsRemoved, "gatewayCleanupConfirmed": gateway != nil && gateway.CleanupConfirmed(), "resourcesRemoved": cleanup, "passed": !t.Failed() && cleanup,
+			"startup": startup}
 		encoded, err := json.Marshal(receipt)
 		if err != nil {
 			t.Error("cannot encode grant admission evidence")
 		} else {
 			t.Logf("grant_admission_evidence=%s", encoded)
+		}
+	})
+	t.Cleanup(func() {
+		if process == nil {
+			return
+		}
+		secrets := []string{adminPAT, memberPAT}
+		if gateway != nil {
+			secrets = append(secrets, gateway.AppSecret)
+		}
+		for _, secret := range secrets {
+			if process.logs.contains(secret) {
+				t.Error("service diagnostics exposed a fixture secret")
+			}
 		}
 	})
 
@@ -401,7 +423,7 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	gatewayAttempted = true
 	gateway = testauth.StartGatewayGuarded(t, values["DAYNIGHT_UNIAUTH_CALLBACK_URL"], cleanupAllowed)
 	values["DAYNIGHT_UNIAUTH_URL"], values["DAYNIGHT_UNIAUTH_APP_ID"], values["DAYNIGHT_UNIAUTH_APP_SECRET"] = gateway.Origin, gateway.AppID, gateway.AppSecret
-	process := &grantProcess{done: make(chan struct{})}
+	process = &grantProcess{done: make(chan struct{})}
 	process.command = exec.Command(binary)
 	process.command.WaitDelay = 2 * time.Second
 	process.command.Env = grantEnvironment(values)
@@ -440,31 +462,20 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	client := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 12 * time.Second}
 	defer client.CloseIdleConnections()
 	readyCtx, readyCancel := context.WithTimeout(t.Context(), 10*time.Second)
-	err = grantWait(readyCtx, func() (bool, error) {
-		select {
-		case <-process.done:
-			return false, errors.New("service exited before readiness")
-		default:
-		}
+	readiness = grantReadiness(readyCtx, process.done, func() bool {
 		response := grantRequest(readyCtx, client, http.MethodGet, origin+"/readyz", "", nil)
-		return response.err == nil && response.status == http.StatusOK, nil
+		return response.err == nil && response.status == http.StatusOK
 	})
 	readyCancel()
-	if err != nil {
+	if readiness != "ready" {
 		t.Fatal("fresh service did not become ready")
 	}
 
 	admin, member := testauth.Browser(t), testauth.Browser(t)
 	testauth.Login(t, admin, origin, "alice")
 	testauth.Login(t, member, origin, "bob")
-	adminPAT, memberPAT := testauth.CreatePAT(t, admin, origin), testauth.CreatePAT(t, member, origin)
-	t.Cleanup(func() {
-		for _, secret := range []string{adminPAT, memberPAT, gateway.AppSecret} {
-			if process.logs.contains(secret) {
-				t.Error("service diagnostics exposed a fixture secret")
-			}
-		}
-	})
+	adminPAT = testauth.CreatePAT(t, admin, origin)
+	memberPAT = testauth.CreatePAT(t, member, origin)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	adminUser := grantDecode[api.User](t, grantRequest(ctx, client, http.MethodGet, origin+"/api/v1/me", adminPAT, nil), http.StatusOK)
