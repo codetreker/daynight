@@ -22,11 +22,16 @@ owns fields, ordering, permissions and compatibility.
 A matching journal's unfinished `starting/initializing` observation does not
 replace a persisted Worker `unknown/controller_start_unknown` launch outcome.
 An abrupt pre-hello exit can leave a nonterminal journal, so its lifecycle alone
-cannot show progress after that outcome. The observer accepts subsequent typed
-ready, rejection and specific unknown initialization results from the same
-generation. It uses the existing semantic-change revision rule, preserving the
-observation time when neither startup nor recovery changes. This is a specific
-producer precedence rule, not a ranking of all startup states or wall clocks.
+cannot show progress after that outcome. The Web store's single `observeStartup`
+entry enforces this precedence for both execution advancement and independent
+summary observation. A normal Coordinator tick can read the journal through
+`advance`/`remember` before reporting; that write must preserve the launch result
+too, without requiring recovery to be paused first. Subsequent typed ready,
+rejection and specific unknown initialization results from the same generation
+remain eligible. The existing semantic-change revision rule preserves the
+observation time when neither startup nor recovery changes. Generation changes
+clear the earlier report. This is a specific producer precedence rule, not a
+ranking of all startup states or wall clocks.
 
 Provider adapters normalize proven SDK initialization rejections before cleanup.
 Copilot remote RPC errors and Claude structured control-response errors do not
@@ -60,7 +65,9 @@ identity; the independent report adds visibility without changing those gates.
 facts, but an abrupt Controller exit can prevent it from recording any outcome.
 Reading its unfinished record after the Worker observes launch uncertainty would
 publish apparent initialization with a higher revision. The launcher outcome
-must survive that read until the journal supplies an actual result.
+must survive both execution and summary writes until the journal supplies an
+actual result. Guarding only the final observer lets an earlier execution write
+erase the outcome before that guard can examine it.
 
 **Put diagnostics directly in every Session snapshot.** This would reach live
 consumers but would require compatibility projection across HTTP, welcome frames,

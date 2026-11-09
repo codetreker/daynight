@@ -28,10 +28,18 @@ vi.mock("node:child_process", async importOriginal => {
     const child = actual.spawn(...args); native.children.push(child); return child;
   } };
 });
-// OS proof collection is a separate boundary; the child exit and failed IPC are real.
+// OS process ownership is a separate boundary; the child exit and failed IPC are real.
 vi.mock("../../../src/commands/controller/process-proof.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../../src/commands/controller/process-proof.js")>();
-  return { ...actual, captureProcessProof: async (pid: number) => ({ pid, parentPid: process.pid, processGroupId: null, startedAt: "fixture", commandHash: "a".repeat(64) }) };
+  return { ...actual,
+    captureProcessProof: async (pid: number) => ({ pid, parentPid: process.pid, processGroupId: null, startedAt: "fixture", commandHash: "a".repeat(64) }),
+    confirmControllerProcessesStopped: async (controller: Parameters<typeof actual.confirmControllerProcessesStopped>[0], descendants: Parameters<typeof actual.confirmControllerProcessesStopped>[1]) => {
+      expect(controller.pid).toBe(native.children.at(-1)?.pid);
+      expect(native.children.at(-1)?.exitCode).toBe(1);
+      expect(descendants).toEqual([]);
+      return true;
+    },
+  };
 });
 
 const disposals: (() => Promise<void>)[] = [];
@@ -51,7 +59,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const workerStore = openWorkerStore(path.join(home, "worker.sqlite"), { onMigration() {} });
   disposals.push(async () => { store.close(); workerStore.close(); });
   const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
-  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 3 };
   const identity = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID() };
   let task = store.register({ ...identity, project, serverOrigin: project.serverOrigin, configuration }, 1);
   task = store.bindWorktree(task, { repositoryPath: home, commonDirectory: home, worktreePath: home, branch: "task" }, 2);
@@ -78,7 +86,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     claimId: task.claimId, executionGeneration: e.executionGeneration, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId })) } as unknown as WorkerSessionApi;
   let clock = 10;
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => clock });
-  const git = { listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
+  const git = { listWorktrees: vi.fn(async () => []), verifyWorktree: vi.fn(async () => {}) } as unknown as WorkerGitManager;
   const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, platform: "linux", buildPrompt: () => "fixture", emit() {}, now: () => clock });
   let remoteTask: Task = { id: task.taskId, projectId: project.projectId, title: "fixture", description: "fixture", status: "in_progress", allowAgents: true,
     assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
@@ -128,6 +136,48 @@ test("pre-hello child exit uncertainty survives the unfinished journal, persiste
   expect(f.update).toHaveBeenCalledOnce();
   expect(f.advance).not.toHaveBeenCalled();
   expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, retryAuthorized: false, reasonCode: "recovery_limit" });
+  expect(native.children).toHaveLength(1);
+});
+
+test("ordinary unpaused Coordinator advancement preserves pre-hello uncertainty and reports its independent recovery block", async () => {
+  const f = await fixture(), original = await f.launch();
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, pauseReason: null, retryAuthorized: false });
+  f.clock(30);
+  await f.reconcile();
+  await vi.waitFor(() => expect(f.update).toHaveBeenCalledOnce());
+  expect(f.advance).toHaveBeenCalledOnce();
+  expect(f.advance.mock.calls[0]![0].recovery.pauseReason).toBeNull();
+  await expect(f.advance.mock.results[0]!.value).rejects.toThrow("no proven session identity");
+  const report = readSessionStartupReport(f.remote().properties)!;
+  expect(report).toMatchObject({ revision: "2", observedAt: new Date(30).toISOString(), startup: original.startup,
+    executionGeneration: original.executionGeneration, controllerInstanceId: original.controllerInstanceId,
+    recovery: { state: "blocked", reasonCode: "native_identity_missing" } });
+  expect(readWorkerClaim(f.remote().properties)?.phase).toBe("waiting");
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, retryAuthorized: false, reasonCode: "native_identity_missing" });
+  const persisted = openWebExecutionStore(f.file, { onMigration() {} });
+  try { expect(persisted.getTask(f.task)?.webExecution?.startupReport).toEqual(report); } finally { persisted.close(); }
+  f.clock(40);
+  await f.reconcile();
+  expect(f.backend.observeStartupReport(f.task)).toEqual(report);
+  expect(f.update).toHaveBeenCalledOnce();
+  expect(f.advance).toHaveBeenCalledOnce();
+  expect(f.store.getTask(f.task)?.resources.nativeSession).toBeNull();
+  expect(native.children).toHaveLength(1);
+});
+
+test.each<StartupObservation>([
+  { state: "ready", reasonCode: "ready" }, { state: "failed", reasonCode: "native_rejected" },
+  { state: "unknown", reasonCode: "native_timeout" }, { state: "unknown", reasonCode: "native_transport_unknown" },
+])("ordinary unpaused advancement accepts same-generation $reasonCode progress", async startup => {
+  const f = await fixture(); await f.launch();
+  f.journal.patchSnapshot({ startup }); f.clock(30);
+  await f.reconcile();
+  await vi.waitFor(() => expect(f.update).toHaveBeenCalledOnce());
+  expect(f.advance).toHaveBeenCalledOnce();
+  await expect(f.advance.mock.results[0]!.value).rejects.toThrow("no proven session identity");
+  expect(readSessionStartupReport(f.remote().properties)).toMatchObject({ startup,
+    recovery: { state: "blocked", reasonCode: "native_identity_missing" } });
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, retryAuthorized: false });
   expect(native.children).toHaveLength(1);
 });
 

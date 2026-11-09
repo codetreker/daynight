@@ -165,11 +165,13 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       const task = getTask(identity), execution = task?.webExecution;
       if (task === null || execution == null || execution.sessionId === null || task.status === "done") return null;
       if (identity.webExecution != null && (identity.webExecution.executionGeneration !== execution.executionGeneration || identity.webExecution.controllerInstanceId !== execution.controllerInstanceId || identity.webExecution.sessionId !== execution.sessionId)) throw new Error("Startup observation belongs to another execution generation.");
-      const observation = parseStartupObservation(startup);
+      const incoming = parseStartupObservation(startup), previous = execution.startupReport;
+      // Every producer must preserve the later launch outcome over an unfinished journal.
+      const observation = incoming.state === "starting" && previous?.startup.reasonCode === "controller_start_unknown"
+        ? previous.startup : incoming;
       const recovery: SessionStartupReport["recovery"] = task.recovery.pauseReason === null
         ? { state: "none", reasonCode: null }
         : { state: "blocked", reasonCode: task.recovery.reasonCode ?? "recovery_blocked" };
-      const previous = execution.startupReport;
       if (previous !== undefined && same(previous.startup, observation) && same(previous.recovery, recovery)) return previous;
       const report: SessionStartupReport = { schemaVersion: 1, source: "worker", sessionId: execution.sessionId, claimId: task.claimId,
         executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId,
