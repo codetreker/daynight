@@ -38,6 +38,8 @@ pattern 为 `unrouted`，不使用原始路径、query 或业务 ID。成功 Hij
 覆盖 handler 生命周期；普通 API 延迟查询需限定 `mode="http"`。异常优先级为
 panic、abort、写入错误、取消、正常返回。未提交的异常使用 `none`，已提交的
 status 保持不变。具体 family 名称、buckets 和运维查询口径由服务 README 维护。
+## PostgreSQL 连接池观测
+
 PostgreSQL collector 位于 store 实现，单次采集只读取一次 `Pool.Stat()` 本地
 快照，不执行 SQL，也不拥有池的关闭权。连接状态使用固定的 `acquired`、`idle`、
 `constructing` labels；其他池指标没有 labels。连接数和上限是 Gauge，获取、
