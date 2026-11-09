@@ -249,7 +249,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (result.registration === null) return null;
       return result.binding;
     },
-    listWorktrees: async (project: WorkerProject, operation: Operation): Promise<OwnedWorktree[]> => {
+    listWorktrees: async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false): Promise<OwnedWorktree[]> => {
+      if (allowMissingRepository) {
+        const physical = await resolvePhysicalDirectory(absolute(project.localPath, "Repository path"));
+        operation.check();
+        if (physical.missingComponents.length > 0) return [];
+      }
       const repository = await inspectRepository(project, operation);
       const namespace = path.join(repository.root, ".worktrees", "daynight");
       await directory(path.dirname(namespace));
@@ -274,7 +279,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         if (target !== expectedPointer) throw new Error("The owned task worktree registration does not point to its fixed task path.");
         const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true);
         if (observed.registration === null || observed.registration.directory !== admin) throw new Error("The owned task worktree registration is ambiguous.");
-        if (owner.projectId === project.projectId) result.push({ owner, binding: observed.binding });
+        if (includeOtherProjects || owner.projectId === project.projectId) result.push({ owner, binding: observed.binding });
       }
       return result.sort((left, right) => left.owner.taskId.localeCompare(right.owner.taskId) || left.owner.claimId.localeCompare(right.owner.claimId));
     },

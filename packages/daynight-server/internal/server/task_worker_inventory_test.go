@@ -2,7 +2,7 @@ package server
 
 import (
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -10,46 +10,46 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
 func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	project := taskProject(t, handler)
-	workerID := uuid.NewString()
-	var want []string
+	f := newTaskHTTPFixture(t)
+	workerID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var wanted []model.Task
 	paused := map[string]string{}
-	for _, fixture := range []struct {
-		selected bool
-		paused   string
-	}{{}, {}, {true, "true"}, {}, {true, "false"}, {selected: true}} {
-		input := map[string]any{"allowAgents": true}
-		if fixture.paused != "" {
-			input["properties"] = api.TaskWritableProperties{"paused": json.RawMessage(fixture.paused)}
+	for index, value := range []string{"true", "false", ""} {
+		current := workerHTTPTask(t)
+		current.ID = fmt.Sprintf("55555555-5555-4555-8555-%012d", index+1)
+		current.Title, current.Status, current.Ready = "Inventory task", model.TaskInProgress, false
+		worker := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: f.principal.UserID, WorkerID: workerID,
+			Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Worker machine"}, Platform: model.PlatformLinux,
+			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: uuid.NewString(),
+			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
+		current.Properties = workerHTTPProperties(t, current.Properties, &worker)
+		if value != "" {
+			current.Properties["paused"] = json.RawMessage(value)
+			paused[current.ID] = value
 		}
-		task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Inventory task"), input)
-		body := workerClaimBody(task.Version)
-		if fixture.selected {
-			body["workerId"] = workerID
-		}
-		claimHTTPWorker(t, handler, task, body)
-		if fixture.selected {
-			if fixture.paused != "" {
-				paused[task.ID] = fixture.paused
-			}
-			want = append(want, task.ID)
-		}
+		wanted = append(wanted, current)
 	}
-	collection := taskCollection(project.ID)
+	collection := taskCollection(f.project.ID)
 	query := "?limit=1&workerId=" + strings.ToUpper(workerID)
 	var cursor *string
 	var ids []string
-	for {
-		path := collection + query
+	for index, current := range wanted {
+		requestPath := collection + query
+		var after *store.Position
 		if cursor != nil {
-			path += "&cursor=" + url.QueryEscape(*cursor)
+			requestPath += "&cursor=" + url.QueryEscape(*cursor)
+			previous := wanted[index-1]
+			after = &store.Position{CreatedAt: previous.CreatedAt, ID: previous.ID}
 		}
-		response := projectRequest(handler, http.MethodGet, path, "")
+		expected := store.TaskQuery{Page: store.Page{After: after, Limit: 1}, Worker: &store.WorkerQuery{UserID: f.principal.UserID, WorkerID: workerID}}
+		f.expectList([]store.TaskQuery{expected}, []store.TaskPage{{Items: []model.Task{current}, HasMore: index < len(wanted)-1}})
+		response := projectRequest(f.handler, http.MethodGet, requestPath, "")
 		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
 		if response.Header().Get("Cache-Control") != "no-store" || len(page.Items) != 1 || apiWorker(t, page.Items[0].Properties) == nil || apiWorker(t, page.Items[0].Properties).WorkerID != workerID || apiWorker(t, page.Items[0].Properties).State != "active" {
 			t.Fatalf("wrong inventory page: %s", response.Body)
@@ -58,22 +58,32 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		value, exists := item.Properties["paused"]
 		wantValue, wantExists := paused[item.ID]
 		if exists != wantExists || string(value) != wantValue {
-			t.Fatalf("inventory changed paused property presence or value: %#v", item.Properties)
+			t.Fatalf("inventory changed paused presence/value: %#v", item.Properties)
 		}
-		ids = append(ids, page.Items[0].ID)
-		if page.NextCursor == nil {
+		ids = append(ids, item.ID)
+		if index == len(wanted)-1 {
+			if page.NextCursor != nil {
+				t.Fatal("final inventory page unexpectedly continues")
+			}
 			break
+		}
+		if page.NextCursor == nil {
+			t.Fatal("inventory omitted cursor for later task")
 		}
 		cursor = page.NextCursor
 		for _, changed := range []string{"", "&workerId=" + uuid.NewString()} {
-			assertProjectError(t, projectRequest(handler, http.MethodGet, collection+"?limit=1&cursor="+url.QueryEscape(*cursor)+changed, ""), http.StatusBadRequest, "invalid_input")
+			assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?limit=1&cursor="+url.QueryEscape(*cursor)+changed, ""), http.StatusBadRequest, "invalid_input")
 		}
 		query = "?limit=1&workerId=" + workerID
 	}
-	if !slices.Equal(ids, want) {
-		t.Fatalf("inventory filtering hid later tasks: got %v want %v", ids, want)
+	wantedIDs := make([]string, len(wanted))
+	for index := range wanted {
+		wantedIDs[index] = wanted[index].ID
 	}
-	for _, query := range []string{"workerId=", "workerId=invalid", "workerId=null", "workerId=true", "workerId=" + workerID + "&workerId=" + workerID, "WorkerId=" + workerID, "userId=" + handler.principal.UserID} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
+	if !slices.Equal(ids, wantedIDs) {
+		t.Fatalf("inventory filtering hid later tasks: got %v want %v", ids, wantedIDs)
+	}
+	for _, query := range []string{"workerId=", "workerId=invalid", "workerId=null", "workerId=true", "workerId=" + workerID + "&workerId=" + workerID, "WorkerId=" + workerID, "userId=" + f.principal.UserID} {
+		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
 }

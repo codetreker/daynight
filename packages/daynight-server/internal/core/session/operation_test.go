@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -93,8 +95,10 @@ func TestStopWaitsForHooksAndRejectsNewOperations(t *testing.T) {
 	if err := engine.Stop(ctx); err != context.DeadlineExceeded {
 		t.Fatalf("Stop = %v", err)
 	}
-	if _, err := engine.BeginOperation(); err == nil {
-		t.Fatal("work admitted after Stop")
+	_, err = engine.BeginOperation()
+	var refusal *model.Fault
+	if !errors.As(err, &refusal) || refusal.Code != "service_unavailable" {
+		t.Fatalf("stopped operation admission: %v", err)
 	}
 	close(release)
 	if err := engine.Stop(context.Background()); err != nil {

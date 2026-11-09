@@ -1,7 +1,6 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
 	"context"
@@ -11,10 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/google/uuid"
 )
 
 func assignmentCursorFields(t *testing.T, cursor string) map[string]any {
@@ -49,135 +48,180 @@ func assignmentTaskIDs(tasks []model.Task) []string {
 	return ids
 }
 
-func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	alice, bob := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	prerequisite := createAssignedTask(t, tasks, admin, project.ID, &bob.UserID)
-	inventory := []model.Task{prerequisite}
-	for _, assigned := range []*string{nil, &alice.UserID, &admin.UserID} {
-		for _, required := range []*model.TaskPlatform{nil, pointer(model.PlatformLinux), pointer(model.PlatformWindows)} {
-			for _, allowed := range []bool{false, true} {
-				for _, status := range []string{"todo", "blocked", "in_progress", "done"} {
-					input := taskcore.CreateTask{Title: "Assignment filter candidate", AssignedTo: assigned, RequiredPlatform: required}
-					if status == "blocked" {
-						input.DependsOn = []string{prerequisite.ID}
-					}
-					current, err := tasks.Create(ctx, admin, project.ID, input)
-					if err != nil {
-						t.Fatal(err)
-					}
-					current = updateTask(t, tasks, admin, current, taskcore.UpdateTask{AllowAgents: &allowed})
-					if status == "in_progress" || status == "done" {
-						current = setStatusTask(t, tasks, admin, current, model.TaskStatus(status))
-					}
-					inventory = append(inventory, current)
-				}
-			}
+func assignmentListFixture(t *testing.T, wanted store.TaskQuery, rows []model.Task) (*taskservice.Tasks, *taskReaderMock, model.Project, model.Principal) {
+	t.Helper()
+	project, _, principal := assignmentTaskModels()
+	return assignmentListFixtureFor(t, wanted, rows, project, principal)
+}
+
+func assignmentListFixtureFor(t *testing.T, wanted store.TaskQuery, rows []model.Task, project model.Project, principal model.Principal) (*taskservice.Tasks, *taskReaderMock, model.Project, model.Principal) {
+	t.Helper()
+	ctx := t.Context()
+	base := newTaskMockBase(t, "selection")
+	projects := &projectReaderMock{taskMockBase: base.withLabel("project"), ProjectAccessFn: func(actual context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		if actual != ctx || p != principal || id != project.ID {
+			t.Fatal("selection authorization scope")
 		}
+		return taskMockAccess(project, principal), nil
+	}}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("task")}
+	calls, returned := 0, 0
+	reader.TasksFn = func(actual context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
+		expected := wanted
+		expected.Page.Limit = q.Page.Limit
+		if returned > 0 {
+			expected.Page.After = &store.Position{ID: rows[returned-1].ID, CreatedAt: rows[returned-1].CreatedAt}
+		}
+		if actual != ctx || id != project.ID || q.Page.Limit < 1 || !reflect.DeepEqual(q, expected) {
+			t.Fatalf("selection query=%#v want=%#v", q, expected)
+		}
+		calls++
+		end := min(returned+q.Page.Limit, len(rows))
+		items := append([]model.Task{}, rows[returned:end]...)
+		returned = end
+		return store.TaskPage{Items: items, HasMore: returned < len(rows)}, nil
 	}
-	for _, selector := range []*string{nil, pointer("unassigned"), pointer("me"), pointer(strings.ToUpper(alice.UserID)), &bob.UserID} {
+	scope := &taskSnapshotScopeMock{taskMockBase: base.withLabel("snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	database := &taskStoreMock{taskMockBase: base.withLabel("store"), ReadSnapshotFn: func(actual context.Context, work func(store.SnapshotScope) error) error {
+		if actual != ctx {
+			t.Fatal("selection snapshot context")
+		}
+		return work(scope)
+	}}
+	t.Cleanup(func() {
+		if returned != len(rows) || calls < 1 {
+			t.Errorf("selection returned=%d want=%d calls=%d", returned, len(rows), calls)
+		}
+	})
+	return taskservice.NewTasks(database), reader, project, principal
+}
+func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
+	_, row, admin := assignmentTaskModels()
+	alice, bob := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	for _, selector := range []*string{nil, pointer("unassigned"), pointer("me"), pointer(strings.ToUpper(alice)), &bob} {
 		for _, status := range []*model.TaskStatus{nil, pointer(model.TaskTodo), pointer(model.TaskInProgress), pointer(model.TaskDone)} {
 			for _, allowed := range []*bool{nil, pointer(false), pointer(true)} {
 				for _, ready := range []*bool{nil, pointer(false), pointer(true)} {
 					for _, platform := range []*model.TaskPlatform{nil, pointer(model.PlatformLinux)} {
-						request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: selector, Status: status, Ready: ready, AllowAgents: allowed, CompatiblePlatform: platform}
-						page, err := tasks.List(ctx, admin, project.ID, request)
-						if err != nil {
-							t.Fatal(err)
-						}
-						want := []string{}
-						for _, task := range inventory {
-							matchesAssignment := selector == nil
-							if selector != nil {
-								switch *selector {
-								case "unassigned":
-									matchesAssignment = task.AssignedTo == nil
-								case "me":
-									matchesAssignment = model.EqualOptional(task.AssignedTo, &admin.UserID)
-								default:
-									matchesAssignment = task.AssignedTo != nil && *task.AssignedTo == strings.ToLower(*selector)
-								}
-							}
-							if matchesAssignment && (status == nil || task.Status == *status) && (allowed == nil || task.AllowAgents == *allowed) && (ready == nil || task.Ready == *ready) &&
-								(platform == nil || task.RequiredPlatform == nil || *task.RequiredPlatform == *platform) {
-								want = append(want, task.ID)
+						assignment := model.TaskAssignmentFilter{}
+						if selector != nil {
+							switch *selector {
+							case "unassigned":
+								assignment.Mode = model.TaskAssignmentUnassigned
+							case "me":
+								assignment = model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: admin.UserID}
+							default:
+								assignment = model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: strings.ToLower(*selector)}
 							}
 						}
-						if !slices.Equal(assignmentTaskIDs(page.Items), want) || page.NextCursor != nil {
-							t.Fatalf("combined assignment filters: got %v want %v", assignmentTaskIDs(page.Items), want)
+						tasks, _, project, principal := assignmentListFixture(t, store.TaskQuery{AssignedTo: assignment, Status: status, AllowAgents: allowed, Ready: ready, CompatiblePlatform: platform}, []model.Task{row})
+						page, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: selector, Status: status, AllowAgents: allowed, Ready: ready, CompatiblePlatform: platform})
+						if err != nil || !reflect.DeepEqual(page.Items, []model.Task{row}) || page.NextCursor != nil {
+							t.Fatalf("composed selection result: %#v %v", page, err)
 						}
 					}
 				}
 			}
 		}
 	}
-	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &alice.UserID, Status: pointer(model.TaskTodo), Ready: pointer(true), AllowAgents: pointer(true), CompatiblePlatform: pointer(model.PlatformLinux)}
-	var got []string
+	first, second := row, row
+	first.AssignedTo = &alice
+	second.AssignedTo = &alice
+	second.ID = "88888888-8888-4888-8888-888888888888"
+	second.CreatedAt = first.CreatedAt.Add(1)
+	q := store.TaskQuery{AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: alice}, Status: pointer(model.TaskTodo), Ready: pointer(true), AllowAgents: pointer(true), CompatiblePlatform: pointer(model.PlatformLinux)}
+	tasks, _, project, principal := assignmentListFixture(t, q, []model.Task{first, second})
+	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &alice, Status: q.Status, Ready: q.Ready, AllowAgents: q.AllowAgents, CompatiblePlatform: q.CompatiblePlatform}
+	var ids []string
 	for {
-		page, err := tasks.List(ctx, admin, project.ID, request)
+		page, err := tasks.List(t.Context(), principal, project.ID, request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got = append(got, assignmentTaskIDs(page.Items)...)
+		ids = append(ids, assignmentTaskIDs(page.Items)...)
 		if page.NextCursor == nil {
 			break
 		}
-		if len(page.Items) != 1 {
-			t.Fatal("an early nonmatching task consumed the filtered page")
-		}
 		request.Cursor = page.NextCursor
 	}
-	if len(got) != 2 {
-		t.Fatalf("filtered pagination hid matching tasks: %v", got)
+	if !slices.Equal(ids, []string{first.ID, second.ID}) {
+		t.Fatalf("assignment pagination: %v", ids)
 	}
-	if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error { return tx.ProjectDAO().RemoveMember(ctx, alice.UserID) }); err != nil {
-		t.Fatal(err)
+	// Historical responsibility selects stored Task facts without requalifying membership.
+	tasks, _, project, principal = assignmentListFixture(t, store.TaskQuery{AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: alice}}, []model.Task{first})
+	page, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: &alice})
+	if err != nil || len(page.Items) != 1 || page.Items[0].AssignedTo == nil || *page.Items[0].AssignedTo != alice {
+		t.Fatalf("former assignee selection: %#v %v", page, err)
 	}
-	former, err := tasks.List(ctx, admin, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: &alice.UserID})
-	if err != nil || len(former.Items) != 24 {
-		t.Fatalf("former assignee could not be queried: %d %v", len(former.Items), err)
+}
+func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
+	_, base, actor := assignmentTaskModels()
+	alice, bob, workerID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777", "99999999-9999-4999-8999-999999999999"
+	active := []model.Task{base, base, base}
+	for i := range active {
+		active[i].ID = []string{base.ID, "88888888-8888-4888-8888-888888888888", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}[i]
+		active[i].CreatedAt = base.CreatedAt.Add(time.Duration(i))
+		active[i].AssignedTo = []*string{&bob, nil, &alice}[i]
+	}
+	worker := &store.WorkerQuery{UserID: actor.UserID, WorkerID: workerID}
+	tasks, _, project, principal := assignmentListFixture(t, store.TaskQuery{Worker: worker}, active)
+	all, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, WorkerID: &workerID})
+	if err != nil || !reflect.DeepEqual(assignmentTaskIDs(all.Items), assignmentTaskIDs(active)) {
+		t.Fatalf("default worker inventory: %#v %v", all, err)
+	}
+	tasks, _, project, principal = assignmentListFixture(t, store.TaskQuery{Worker: worker, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: alice}}, []model.Task{active[2]})
+	filtered, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID, AssignedTo: &alice})
+	if err != nil || len(filtered.Items) != 1 || filtered.Items[0].ID != active[2].ID || filtered.NextCursor != nil {
+		t.Fatalf("explicit worker assignment: %#v %v", filtered, err)
+	}
+	tasks, _, project, principal = assignmentListFixture(t, store.TaskQuery{Ready: pointer(true), AllowAgents: pointer(true)}, active)
+	candidates, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, Ready: pointer(true), AllowAgents: pointer(true)})
+	if err != nil || len(candidates.Items) != 3 {
+		t.Fatalf("implicit responsibility filter: %#v %v", candidates, err)
 	}
 }
 
-func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	alice, bob, owner := workerMember(t, database, project.ID), workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	workerID := uuid.NewString()
-	var active []model.Task
-	for _, assigned := range []*string{&bob.UserID, nil, &alice.UserID} {
-		task := claimableTask(t, tasks, owner, project.ID)
-		descriptor := workerDescriptor()
-		descriptor.WorkerID = workerID
-		task = claimWorkerTask(t, tasks, owner, task, descriptor)
-		task, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{AssignedTo: assignmentChange(assigned)})
-		next := workerDescriptor()
-		next.WorkerID = workerID
-		task, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		active = append(active, task)
+func TestTaskAssignedToCursorScopeAndVersion(t *testing.T) {
+	project, first, principal := assignmentTaskModels()
+	project.ID = "abcdef22-2222-4222-8222-222222222222"
+	principal.UserID = "abcdef11-1111-4111-8111-111111111111"
+	first.ID, first.ProjectID, first.AssignedTo = "abcdef33-3333-4333-8333-333333333333", project.ID, &principal.UserID
+	second := first
+	second.ID = "abcdef44-4444-4444-8444-444444444444"
+	second.CreatedAt = first.CreatedAt.Add(time.Second)
+	selection := store.TaskQuery{AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: principal.UserID}}
+	tasks, _, project, actor := assignmentListFixtureFor(t, selection, []model.Task{first, second}, project, principal)
+	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: pointer("me")}
+	page, err := tasks.List(t.Context(), actor, project.ID, request)
+	if err != nil || page.NextCursor == nil || len(page.Items) != 1 {
+		t.Fatalf("self-filtered cursor: %#v %v", page, err)
 	}
-	all, err := tasks.List(ctx, owner, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, WorkerID: &workerID})
-	if err != nil || !reflect.DeepEqual(assignmentTaskIDs(all.Items), assignmentTaskIDs(active)) {
-		t.Fatal("default worker inventory imposed caller assignment", err)
+	fields := assignmentCursorFields(t, *page.NextCursor)
+	if fields["version"] != float64(2) || fields["kind"] != "tasks" {
+		t.Fatalf("task cursor version/kind: %#v", fields)
 	}
-	filtered, err := tasks.List(ctx, owner, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID, AssignedTo: &alice.UserID})
-	if err != nil || len(filtered.Items) != 1 || filtered.Items[0].ID != active[2].ID || filtered.NextCursor != nil {
-		t.Fatalf("worker lookahead preceded assignment selection: %#v %v", filtered, err)
+	request.Cursor, request.AssignedTo = page.NextCursor, pointer(strings.ToUpper(actor.UserID))
+	continued, err := tasks.List(t.Context(), actor, project.ID, request)
+	if err != nil || len(continued.Items) != 1 || continued.Items[0].ID == page.Items[0].ID {
+		t.Fatalf("canonical UUID and me cursor scope differ: %#v %v", continued, err)
 	}
-	for _, assigned := range []*string{&alice.UserID, &bob.UserID, nil} {
-		task := createAssignedTask(t, tasks, admin, project.ID, assigned)
-		updateTask(t, tasks, admin, task, taskcore.UpdateTask{AllowAgents: pointer(true)})
+	for _, changed := range []*string{nil, pointer("unassigned"), pointer("66666666-6666-4666-8666-666666666666")} {
+		invalid := request
+		invalid.AssignedTo = changed
+		_, err := tasks.List(t.Context(), actor, project.ID, invalid)
+		requireFault(t, err, "invalid_input")
 	}
-	candidates, err := tasks.List(ctx, owner, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, Ready: pointer(true), AllowAgents: pointer(true)})
-	if err != nil || len(candidates.Items) != 3 {
-		t.Fatalf("unfiltered task list implicitly filtered responsibility: %#v %v", candidates, err)
+	other := actor
+	other.UserID = "66666666-6666-4666-8666-666666666666"
+	request.AssignedTo = pointer("me")
+	_, err = tasks.List(t.Context(), other, project.ID, request)
+	requireFault(t, err, "invalid_input")
+	old := assignmentCursorMutation(t, *page.NextCursor, func(value map[string]any) { value["version"] = 1 })
+	request.Cursor = &old
+	_, err = tasks.List(t.Context(), actor, project.ID, request)
+	requireFault(t, err, "invalid_input")
+	for _, invalid := range []string{"", "ME", "Unassigned", " me", "null", "bad", strings.Repeat("a", 36)} {
+		_, err := tasks.List(t.Context(), actor, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &invalid})
+		requireFault(t, err, "invalid_input")
 	}
 }

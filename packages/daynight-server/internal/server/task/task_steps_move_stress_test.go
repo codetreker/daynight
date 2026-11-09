@@ -18,7 +18,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,7 +80,7 @@ func TestStressStepsHTTPMoveCapacityStress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	handler := projectTestHandler(t, &store.Store{Pool: pool}, io.Discard)
+	handler := projectTestHandler(t, &postgres.Store{Pool: pool}, io.Discard)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	client := &http.Client{Timeout: 60 * time.Second}

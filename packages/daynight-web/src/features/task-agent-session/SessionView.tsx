@@ -1,3 +1,4 @@
+import { operationErrorText } from './operation-error';
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
 import { selectSessionPresentation } from './presentation';
@@ -5,11 +6,12 @@ import type { TaskSessionClient } from './client';
 import type { SessionPresentationSlots } from './session-presentation-slots';
 import { useSessionDisplayPreference } from './useSessionDisplayPreference';
 import { useSessionFullscreen } from './useSessionFullscreen';
+import { useSessionColumnLayout } from './useSessionColumnLayout';
 import { SessionDisplayMenu } from './SessionDisplayMenu';
 import { SessionComposer } from './SessionComposer';
 import { SessionTimeline, type SessionTimelineReading } from './SessionTimeline';
 import { sessionRespondGate } from './state';
-import { operationPresentation } from './operation-presentation';
+import { operationNeedsAttention, operationPresentation } from './operation-presentation';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import '../../styles/task-session.css';
 
@@ -30,7 +32,16 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     const timer = setTimeout(() => setNow(Date.now()), Math.min(remaining, 90_001));
     return () => clearTimeout(timer);
   }, [view.startupReport]);
-  const [checkError, setCheckError] = useState<string | null>(null);
+  const [checkErrors, setCheckErrors] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    setCheckErrors(previous => {
+      const next = new Map([...previous].filter(([id]) => {
+        const operation = view.state.operations.get(id);
+        return operation && operationNeedsAttention(operation, view.operationProgress);
+      }));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [view.state.operations, view.operationProgress]);
   const s = view.state.snapshot;
   const display = useSessionDisplayPreference(s && view.status !== 'unavailable' ? { userId, sessionId: s.sessionId } : null);
   const [displayOpen, setDisplayOpen] = useState(false);
@@ -38,9 +49,10 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   const fullscreen = useSessionFullscreen({ client, userId, active, identity: s?.sessionId ?? null, ...(fullscreenBoundary ? { fullscreenBoundary } : {}) });
   const connected = current && view.connected;
   const available = s !== null && view.status !== 'unavailable';
-  // Provider acceptance completes input delivery, but controls still need confirmation.
-  const operations = [...view.state.operations.values()].filter(operation => operation.error !== null || !(operation.state === 'confirmed' || operation.state === 'provider_accepted' && ['send_message', 'execute_command'].includes(operation.kind))).slice(-12);
+  const operations = [...view.state.operations.values()].filter(operation => operationNeedsAttention(operation, view.operationProgress));
   const readOnly = s?.lifecycle !== 'active';
+  const canInteract = client.canInteract();
+  useSessionColumnLayout(fullscreen.sectionRef, available && !readOnly ? `${userId}/${sessionFenceKey(s)}` : null);
   const archiveLabel = view.archiveState === 'ready' ? m.archived : view.archiveState === 'failed' ? m.archiveFailed : view.archiveState === 'unavailable' ? (s?.lifecycle === 'draining' ? m.archivePreparing : m.archiveUnavailable) : view.archiveState === 'pending' ? m.archivePending : m.archiveLoading;
   const presentation = s ? selectSessionPresentation({ snapshot: s, report: view.startupReport, connected, error: view.error, errorCode: view.errorCode, now: Math.max(now, Date.now()), previouslyConnected: view.environmentConnected }) : null;
   const runtimeReady = presentation?.operational === true;
@@ -61,13 +73,13 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     <svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>
     <span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
   </button> : <button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button>;
-  const emptyReady = available && view.status === 'ready' && active && current && runtimeReady && !readOnly && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
+  const emptyReady = canInteract && available && view.status === 'ready' && active && current && runtimeReady && !readOnly && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
   const empty = emptyReady && slots?.renderEmpty ? slots.renderEmpty({ draft: view.draft, setDraftAndFocus: text => {
     const latest = client.snapshot();
     if (!mounted.current || !admission.current.active || !admission.current.current || admission.current.userId !== userId || !inputRef.current || latest.status !== 'ready' || !latest.state.snapshot || !s || sessionFenceKey(latest.state.snapshot) !== sessionFenceKey(s) || latest.state.snapshot.lifecycle !== 'active') return;
     client.setDraft(text); inputRef.current?.focus({ preventScroll: true });
   } }) : null;
-  const timeline = available && (!readOnly || view.archiveState === 'ready') ? <SessionTimeline key={`${userId}/${s.sessionId}`} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={!readOnly && !runtimeReady || empty != null && empty !== false} state={view.state} active={active} canRespond={sessionRespondGate(view.state, active && runtimeReady && !view.authPaused)} onRespond={client.respond} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client.loadOlder()} historyError={view.historyError} onLoadResource={client.resource} /> : null;
+  const timeline = available && (!readOnly || view.archiveState === 'ready') ? <SessionTimeline key={`${userId}/${s.sessionId}`} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={!readOnly && !runtimeReady || empty != null && empty !== false} state={view.state} active={active} actionAdmitted={view.actionAdmitted} canRespond={sessionRespondGate(view.state, canInteract && active && runtimeReady && !view.authPaused)} onRespond={client.respond} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client.loadOlder()} historyError={view.historyError} onLoadResource={client.resource} /> : null;
   return <section className={`task-agent-session${defaultHeader ? ' session-default-header-layout' : ''}${slots?.variant === 'assistant' ? ' session-presentation-assistant' : ''}${fullscreen.fullscreen && !fullscreenBoundary ? ' session-fullscreen' : ''}`} aria-label={m.title} ref={fullscreen.sectionRef} tabIndex={-1} onKeyDown={fullscreen.onKeyDown}>
     <header className={`session-header${defaultHeader ? ' session-header-default' : ''}`}>{slots?.renderHeader ? slots.renderHeader({ snapshot: available ? s : null, startupReport: available ? presentation?.report ?? null : null, active, current, available, readOnly, runtimeReady: available && runtimeReady, authPaused: view.authPaused, status: view.status, fullscreen: fullscreen.fullscreen, displayMode: display.mode, statusDescriptionId: statusId, provider, activity, display: displayControl, focus: focusControl, refresh: refreshControl }) : <><div className="session-header-identity">{provider}{activity}</div><div className="session-header-actions">{displayControl}{focusControl}{refreshControl}</div></>}</header>
     {!available ? <div className="session-empty" role="status"><p>{view.status === 'loading' ? m.loading : view.status === 'not_registered' ? m.notRegistered : view.status === 'unavailable' ? view.error ?? m.unavailable : view.error}</p></div> : <>
@@ -81,15 +93,13 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     {!readOnly || view.archiveState === 'ready' ? (slots?.renderEmpty ? <div className="session-timeline-shell session-presentation-timeline">{timeline}{empty != null && empty !== false ? <div className="session-presentation-empty">{empty}</div> : null}</div> : timeline) : null}
     {!readOnly && operations.length > 0 ? <div className="session-receipts" aria-live="polite">{operations.map(operation => {
       const receipt = operationPresentation(operation, view.operationProgress);
-      const progressing = receipt !== 'unknown' && view.operationProgress.has(operation.operationId);
       return <div key={operation.operationId} className={`session-receipt ${receipt}`}>
-        {progressing ? <span className="session-receipt-progress" aria-hidden="true" /> : null}
-        <span>{m[receipt]}</span>{operation.error ? <span>{operation.error.message}</span> : null}
-        {receipt === 'unknown' || receipt === 'waiting' ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { setCheckError(null); void client.checkOperation(operation.operationId).catch((error: unknown) => setCheckError(error instanceof Error ? error.message : m.failure)); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}
+        {operation.error ? <span>{operationErrorText(operation.error.message, m.operationFailed)}</span> : <span>{receipt === 'failed' ? m.operationFailed : receipt === 'rejected' ? m.operationRejected : receipt === 'expired' ? m.operationExpired : m.operationUnconfirmed}</span>}
+        {checkErrors.has(operation.operationId) ? <span className="session-error" role="alert">{operationErrorText(checkErrors.get(operation.operationId)!, m.operationFailed)}</span> : null}
+        {receipt === 'unknown' ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { void client.checkOperation(operation.operationId).then(() => setCheckErrors(previous => { const next = new Map(previous); next.delete(operation.operationId); return next; }), (error: unknown) => setCheckErrors(previous => new Map(previous).set(operation.operationId, error instanceof Error ? error.message : m.failure))); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}
       </div>;
     })}</div> : null}
-    {checkError ? <p className="session-error" role="alert">{checkError}</p> : null}
-    {!readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen} key={sessionFenceKey(s)} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : null}
+    {!readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} canInteract={canInteract} actionAdmitted={view.actionAdmitted} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen} key={sessionFenceKey(s)} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : null}
     </>}
   </section>;
 }

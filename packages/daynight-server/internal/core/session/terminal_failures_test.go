@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -19,26 +20,46 @@ func TestTerminalMessagesRejectMalformedAndForeignFences(t *testing.T) {
 	ctx := context.Background()
 	browser := f.p
 	browser.Kind = model.SessionCredential
-	if _, err := f.s.RegisterTerminal(ctx, browser, f.project, f.task, m); err == nil {
+	if _, err := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
+		phase := f.dao.ContextPhase(ctx, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.RegisterTerminal(phase, browser, f.project, f.task, m)
+	}); err == nil {
 		t.Fatal("browser registered Worker session")
 	}
 	foreign := m
 	registration := m.Payload.(v2.Registration)
 	registration.Owner.ServerOrigin = "https://other.example"
 	foreign.Payload = registration
-	if _, err := f.s.RegisterTerminal(ctx, f.p, f.project, f.task, foreign); err == nil {
+	if _, err := terminalRegistrationStep(t, f, foreign.SessionID, func() (v2.Message, error) {
+		phase := f.dao.ContextPhase(ctx, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.RegisterTerminal(phase, f.p, f.project, f.task, foreign)
+	}); err == nil {
 		t.Fatal("foreign server origin registered")
 	}
 	foreign.Payload = nil
-	if _, err := f.s.RegisterTerminal(ctx, f.p, f.project, f.task, foreign); err == nil {
+	if _, err := terminalRegistrationStep(t, f, foreign.SessionID, func() (v2.Message, error) {
+		phase := f.dao.ContextPhase(ctx, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.RegisterTerminal(phase, f.p, f.project, f.task, foreign)
+	}); err == nil {
 		t.Fatal("malformed registration accepted")
 	}
-	if err := f.s.BindTerminalConnection(ctx, browser, f.project, f.task, m.SessionID, m.Envelope, "1"); err == nil {
+	if err := terminalErrorStep(t, f, func() error {
+		phase := f.dao.ContextPhase(ctx, map[string]int{"LockTask": 1, "LockCredential": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.BindTerminalConnection(phase, browser, f.project, f.task, m.SessionID, m.Envelope, "1")
+	}); err == nil {
 		t.Fatal("browser bound Worker channel")
 	}
 	fence := m.Envelope
 	fence.ExecutionGeneration = "2"
-	if err := f.s.BindTerminalConnection(ctx, f.p, f.project, f.task, m.SessionID, fence, "1"); err == nil {
+	if err := terminalErrorStep(t, f, func() error {
+		phase := f.TerminalPhase(ctx, false, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.BindTerminalConnection(phase, f.p, f.project, f.task, m.SessionID, fence, "1")
+	}); err == nil {
 		t.Fatal("unregistered run bound Worker channel")
 	}
 	ledger := m
@@ -55,55 +76,78 @@ func TestTerminalMessagesRejectMalformedAndForeignFences(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		message v2.Message
-		call    func(model.Principal, v2.Message) error
+		call    func(context.Context, model.Principal, v2.Message) error
 	}{
-		{"ledger", ledger, func(p model.Principal, in v2.Message) error {
-			_, err := f.s.UpdateTerminalLedger(ctx, p, f.project, f.task, m.SessionID, "1", in)
+		{"ledger", ledger, func(phase context.Context, p model.Principal, in v2.Message) error {
+			_, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+				return f.s.UpdateTerminalLedger(phase, p, f.project, f.task, m.SessionID, "1", in)
+			})
 			return err
 		}},
-		{"finalization", final, func(p model.Principal, in v2.Message) error {
-			_, err := f.s.FinalizeTerminal(ctx, p, f.project, f.task, m.SessionID, "1", in)
+		{"finalization", final, func(phase context.Context, p model.Principal, in v2.Message) error {
+			_, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+				return f.s.FinalizeTerminal(phase, p, f.project, f.task, m.SessionID, "1", in)
+			})
 			return err
 		}},
-		{"recording", recording, func(p model.Principal, in v2.Message) error {
-			_, err := f.s.UpdateTerminalRecording(ctx, p, f.project, f.task, m.SessionID, "1", in)
+		{"recording", recording, func(phase context.Context, p model.Principal, in v2.Message) error {
+			_, err := terminalRecordingStep(t, f, in, func() (v2.Message, error) {
+				return f.s.UpdateTerminalRecording(phase, p, f.project, f.task, m.SessionID, "1", in)
+			})
 			return err
 		}},
-		{"archive", status, func(p model.Principal, in v2.Message) error {
-			_, err := f.s.UpdateTerminalArchive(ctx, p, f.project, f.task, m.SessionID, in)
+		{"archive", status, func(phase context.Context, p model.Principal, in v2.Message) error {
+			_, err := f.s.UpdateTerminalArchive(phase, p, f.project, f.task, m.SessionID, in)
 			return err
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			browser := f.p
 			browser.Kind = model.SessionCredential
-			if err := tc.call(browser, tc.message); err == nil {
+			browserPhase := f.dao.ContextPhase(ctx, map[string]int{"LockArchiveTask": 1, "LockCredential": 1})
+			if err := tc.call(browserPhase, browser, tc.message); err == nil {
 				t.Fatal("browser accepted as Worker")
 			}
-			for _, change := range []func(*v2.Message){
-				func(in *v2.Message) { in.Type = "registration" },
-				func(in *v2.Message) { in.Payload = nil },
-				func(in *v2.Message) { in.SchemaVersion = 99 },
-				func(in *v2.Message) { in.ClaimID = uuid.NewString() },
-				func(in *v2.Message) { in.SessionID = uuid.NewString() },
+			f.dao.FinishContext(browserPhase)
+			for _, change := range []struct {
+				edit   func(*v2.Message)
+				counts map[string]int
+			}{
+				{func(in *v2.Message) { in.Type = "registration" }, nil},
+				{func(in *v2.Message) { in.Payload = nil }, nil},
+				{func(in *v2.Message) { in.SchemaVersion = 99 }, nil},
+				{func(in *v2.Message) { in.ClaimID = uuid.NewString() }, map[string]int{"LockArchiveTask": 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1}},
+				{func(in *v2.Message) { in.SessionID = uuid.NewString() }, map[string]int{"LockArchiveTask": 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1}},
 			} {
 				in := tc.message
-				change(&in)
-				if err := tc.call(f.p, in); err == nil {
+				change.edit(&in)
+				phase := f.dao.ContextPhase(ctx, change.counts)
+				if err := tc.call(phase, f.p, in); err == nil {
 					t.Fatal("invalid message accepted", in)
 				}
+				f.dao.FinishContext(phase)
 			}
 		})
 	}
-	if _, err := f.s.FinalizeTerminal(ctx, f.p, f.project, f.task, m.SessionID, "9", final); err == nil {
+	if _, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "9", final)
+	}); err == nil {
 		t.Fatal("stale finalization connection")
 	}
-	if _, err := f.s.FinalizeTerminal(ctx, f.p, f.project, f.task, m.SessionID, "1", final); err == nil {
+	if _, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "1", final)
+	}); err == nil {
 		t.Fatal("active claim finalized")
 	}
-	if _, err := f.s.TerminalReceipt(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+	receiptPhase := f.TerminalPhase(ctx, true, map[string]int{"TerminalArchive": 1})
+	if _, err := f.s.TerminalReceipt(receiptPhase, f.p, f.project, f.task, m.SessionID); err == nil {
 		t.Fatal("receipt appeared before archive")
 	}
+	f.dao.FinishContext(receiptPhase)
 }
 
 func TestTerminalLedgerPreservesRegisteredRunIdentity(t *testing.T) {
@@ -124,7 +168,11 @@ func TestTerminalLedgerPreservesRegisteredRunIdentity(t *testing.T) {
 			in := m
 			in.Type = "generation_ledger"
 			in.Payload = v2.GenerationLedger{Runs: []v2.Run{next}}
-			if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", in); err == nil {
+			if _, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+				phase := f.TerminalPhase(ctx, true, nil)
+				defer f.dao.FinishContext(phase)
+				return f.s.UpdateTerminalLedger(phase, f.p, f.project, f.task, m.SessionID, "1", in)
+			}); err == nil {
 				t.Fatal("run identity replaced")
 			}
 		})
@@ -147,7 +195,11 @@ func TestTerminalLedgerPreservesRegisteredRunIdentity(t *testing.T) {
 	if err := validRunProgression(stopped, next); err == nil {
 		t.Fatal("stopped run gained a segment")
 	}
-	state, err := f.s.TerminalState(ctx, f.p, f.project, f.task, m.SessionID)
+	state, err := terminalStateStep(t, f, func() (map[string]any, error) {
+		phase := f.TerminalPhase(ctx, false, map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.TerminalState(phase, f.p, f.project, f.task, m.SessionID)
+	})
 	if err != nil || len(state["ledger"].(v2.GenerationLedger).Runs) != 1 {
 		t.Fatal(state, err)
 	}
@@ -159,12 +211,20 @@ func TestTerminalRecordingResponsibilityCannotBeReplacedOrInventContent(t *testi
 	responsibility := m
 	responsibility.Type = "recording_responsibility"
 	responsibility.Payload = v2.RecordingResponsibility{ResponsibilityID: rid, RecordingEnabled: false}
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", responsibility); err != nil {
+	if _, err := terminalRecordingStep(t, f, responsibility, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", responsibility)
+	}); err != nil {
 		t.Fatal("idempotent responsibility", err)
 	}
 	changed := responsibility
 	changed.Payload = v2.RecordingResponsibility{ResponsibilityID: rid, RecordingEnabled: true}
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", changed); err == nil {
+	if _, err := terminalRecordingStep(t, f, changed, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", changed)
+	}); err == nil {
 		t.Fatal("recording policy changed")
 	}
 	message := zeroEvidence(m, rid)
@@ -172,28 +232,48 @@ func TestTerminalRecordingResponsibilityCannotBeReplacedOrInventContent(t *testi
 	ev.Closed = false
 	ev.SelectedFrameCount = "1"
 	message.Payload = ev
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", message); err == nil {
+	if _, err := terminalRecordingStep(t, f, message, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"TerminalRecordingEvidence": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", message)
+	}); err == nil {
 		t.Fatal("disabled recorder submitted content")
 	}
 	message = zeroEvidence(m, uuid.NewString())
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", message); err == nil {
+	if _, err := terminalRecordingStep(t, f, message, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", message)
+	}); err == nil {
 		t.Fatal("foreign recording responsibility")
 	}
 	message = zeroEvidence(m, rid)
 	message.ExecutionGeneration = "2"
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", message); err == nil {
+	if _, err := terminalRecordingStep(t, f, message, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", message)
+	}); err == nil {
 		t.Fatal("unregistered generation recording")
 	}
 	stopTerminalRun(t, f, m, run)
 	message = zeroEvidence(m, rid)
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", message); err != nil {
+	if _, err := terminalRecordingStep(t, f, message, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"TerminalRecordingEvidence": 1, "InsertRecordingEvidence": 1, "SaveTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", message)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	ev = message.Payload.(v2.RecordingEvidence)
 	ev.EvidenceID = uuid.NewString()
 	ev.Revision = "2"
 	message.Payload = ev
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", message); err == nil {
+	if _, err := terminalRecordingStep(t, f, message, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"TerminalRecordingEvidence": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", message)
+	}); err == nil {
 		t.Fatal("closed checkpoint was replaced")
 	}
 }
@@ -243,56 +323,103 @@ func TestTerminalStorageFailuresNeverPublishReceipts(t *testing.T) {
 			if mode == "unavailable" {
 				f.s.files = nil
 			}
-			if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(doc)); err == nil {
+			f.terminal.ProposedReceipt = nil
+			f.dao.Expect("SaveTerminalReceipt", 0)
+			counts := map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 1}
+			if mode != "unavailable" {
+				counts["ProjectAccess"] = 2
+				counts["LockArchiveTask"], counts["LockCredential"], counts["LockTerminal"], counts["TerminalArchive"] = 1, 1, 1, 1
+			}
+			phase := f.dao.ContextPhase(ctx, counts)
+			if _, err := f.s.PutTerminalArchive(phase, f.p, f.project, f.task, m.SessionID, encode(doc)); err == nil {
 				t.Fatal("storage failure reported success")
 			}
-			if _, err := f.s.TerminalReceipt(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+			f.dao.FinishContext(phase)
+			if f.terminal.ProposedReceipt != nil {
+				t.Fatal("storage failure attempted to publish a receipt")
+			}
+			receiptPhase := f.TerminalPhase(ctx, true, map[string]int{"TerminalArchive": 1})
+			if _, err := f.s.TerminalReceipt(receiptPhase, f.p, f.project, f.task, m.SessionID); err == nil {
 				t.Fatal("unverified object has receipt")
 			}
+			f.dao.FinishContext(receiptPhase)
 		})
 	}
 	f.s.files = storage
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, []byte("{}")); err == nil {
+	invalidPhase := f.dao.ContextPhase(ctx, map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 1})
+	if _, err := f.s.PutTerminalArchive(invalidPhase, f.p, f.project, f.task, m.SessionID, []byte("{}")); err == nil {
 		t.Fatal("invalid archive accepted")
 	}
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(doc)); err != nil {
+	f.dao.FinishContext(invalidPhase)
+	f.dao.Expect("SaveTerminalReceipt", 1)
+	uploadPhase := f.dao.ContextPhase(ctx, map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2, "LockArchiveTask": 1, "LockCredential": 1, "LockTerminal": 1, "TerminalArchive": 1, "SaveTerminalReceipt": 1})
+	if _, err := f.s.PutTerminalArchive(uploadPhase, f.p, f.project, f.task, m.SessionID, encode(doc)); err != nil {
 		t.Fatal("retry after storage recovery", err)
 	}
+	f.dao.FinishContext(uploadPhase)
 	f.s.files = nil
-	if _, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+	readPhase := f.dao.ContextPhase(ctx, map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 1})
+	if _, err := f.s.TerminalArchiveContent(readPhase, f.p, f.project, f.task, m.SessionID); err == nil {
 		t.Fatal("missing storage returned content")
 	}
+	f.dao.FinishContext(readPhase)
 }
 
 func TestTerminalCurrentRejectsCorruptStateAndMissingAuthority(t *testing.T) {
 	f, m := terminalFixture(t)
 	ctx := context.Background()
-	if _, err := f.s.CurrentTerminal(ctx, f.p, f.project, uuid.NewString()); err == nil {
+	if _, err := terminalStateStep(t, f, func() (map[string]any, error) {
+		phase := f.TaskPhase(ctx, map[string]int{"LockCredential": 0, "ProjectAccess": 0})
+		defer f.dao.FinishContext(phase)
+		return f.s.CurrentTerminal(phase, f.p, f.project, uuid.NewString())
+	}); err == nil {
 		t.Fatal("unknown task current")
 	}
-	if _, err := f.s.RegisterTerminal(ctx, f.p, f.project, f.task, m); err != nil {
+	if _, err := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
+		phase := f.TerminalRegistrationPhase(ctx, map[string]int{"InsertTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET terminal_state='[]'::jsonb WHERE id=$1`, m.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.CurrentTerminal(ctx, f.p, f.project, f.task); err == nil {
+	f.terminal.Raw = []byte(`[]`)
+	if _, err := terminalStateStep(t, f, func() (map[string]any, error) {
+		phase := f.TaskPhase(ctx, map[string]int{"CurrentTerminalSession": 1, "LockTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.CurrentTerminal(phase, f.p, f.project, f.task)
+	}); err == nil {
 		t.Fatal("corrupt terminal state accepted")
 	}
-	if _, err := f.s.TerminalState(ctx, f.p, f.project, f.task, uuid.NewString()); err == nil {
+	missing := uuid.NewString()
+	priorRead := f.dao.LockTerminalFn
+	f.dao.LockTerminalFn = func(ctx context.Context, id string) ([]byte, error) {
+		if id == missing {
+			return nil, model.ErrNotFound
+		}
+		return priorRead(ctx, id)
+	}
+	if _, err := terminalStateStep(t, f, func() (map[string]any, error) {
+		phase := f.TerminalPhase(ctx, false, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.TerminalState(phase, f.p, f.project, f.task, missing)
+	}); err == nil {
 		t.Fatal("missing session accepted")
 	}
-	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM task_properties WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
-		t.Fatal(err)
-	}
-	state, err := f.s.CurrentTerminal(ctx, f.p, f.project, f.task)
+	f.data.Task.Worker = nil
+	state, err := terminalStateStep(t, f, func() (map[string]any, error) {
+		phase := f.TaskPhase(ctx, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.CurrentTerminal(phase, f.p, f.project, f.task)
+	})
 	if err != nil || state["status"] != "not_applicable" {
 		t.Fatal(state, err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.CurrentTerminal(ctx, f.p, f.project, f.task); err == nil {
+	denyFixtureProject(t, f, f.p)
+	if _, err := terminalStateStep(t, f, func() (map[string]any, error) {
+		phase := f.TaskPhase(ctx, nil)
+		defer f.dao.FinishContext(phase)
+		return f.s.CurrentTerminal(phase, f.p, f.project, f.task)
+	}); err == nil {
 		t.Fatal("revoked member current")
 	}
 }
@@ -347,24 +474,42 @@ func TestTerminalArchiveChecksEachRunsCaptureAndZeroContentProof(t *testing.T) {
 func TestTerminalHistoryPreservesWebAndHerdrContentAcrossClaims(t *testing.T) {
 	f, terminal := terminalFixture(t)
 	ctx := context.Background()
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{agentControlMode}','"web"')::text WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
-		t.Fatal(err)
-	}
-	web, err := f.s.Register(ctx, f.p, f.project, f.task, f.r)
+	f.data.Task.Worker.AgentControlMode = model.AgentControlModeWeb
+	registrationPhase := f.RegistrationPhase(ctx, map[string]int{"InsertTaskSession": 1})
+	web, err := f.s.Register(registrationPhase, f.p, f.project, f.task, f.r)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.dao.FinishContext(registrationPhase)
+	f.SelectRegistrationWrite(t)
 	terminal.ClaimID = uuid.NewString()
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(jsonb_set(value::jsonb,'{agentControlMode}','"herdr"'),'{claimId}',to_jsonb($2::text))::text WHERE task_id=$1 AND name='worker'`, f.task, terminal.ClaimID); err != nil {
+	f.data.Task.Worker.AgentControlMode = model.AgentControlModeHerdr
+	f.data.Task.Worker.ClaimID = terminal.ClaimID
+	configureTerminalFixture(t, &f, terminal)
+	if _, err = terminalRegistrationStep(t, f, terminal.SessionID, func() (v2.Message, error) {
+		phase := f.TerminalRegistrationPhase(ctx, map[string]int{"InsertTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.RegisterTerminal(phase, f.p, f.project, f.task, terminal)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.s.RegisterTerminal(ctx, f.p, f.project, f.task, terminal); err != nil {
-		t.Fatal(err)
+	rows := []store.TerminalHistoryRow{
+		{ID: web.SessionID, Claim: web.ClaimID, Backend: "web", Created: time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC), Snapshot: encode(web)},
+		{ID: terminal.SessionID, Claim: terminal.ClaimID, Backend: "herdr", Created: time.Date(2026, 11, 1, 11, 0, 0, 0, time.UTC), Terminal: append([]byte(nil), f.terminal.Raw...)},
 	}
-	page, err := f.s.TerminalHistory(ctx, f.p, f.project, f.task, "", 20)
+	f.dao.TerminalHistoryFn = func(_ context.Context, project, taskID string, before *time.Time, beforeID *string, limit int) ([]store.TerminalHistoryRow, error) {
+		if project != f.project || taskID != f.task || before != nil || beforeID != nil || limit != 21 {
+			t.Fatal("mixed history changed its DAO query")
+		}
+		return rows, nil
+	}
+	f.dao.Expect("TerminalHistory", 2)
+	historyPhase := f.TaskPhase(ctx, map[string]int{"TerminalHistory": 1})
+	page, err := f.s.TerminalHistory(historyPhase, f.p, f.project, f.task, "", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.dao.FinishContext(historyPhase)
 	items := page["items"].([]map[string]any)
 	if len(items) != 2 {
 		t.Fatalf("mixed Session history lost an earlier backend: %#v", items)
@@ -381,10 +526,10 @@ func TestTerminalHistoryPreservesWebAndHerdrContentAcrossClaims(t *testing.T) {
 	if herdr["claimId"] != terminal.ClaimID || herdr["executionGeneration"] != "1" || herdr["agentControlMode"] != "herdr" || herdr["contentKind"] != "terminal_recording" || herdr["archive"].(map[string]any)["state"] != "pending" {
 		t.Fatalf("terminal history lost its native content type: %#v", herdr)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot='[]'::jsonb WHERE id=$1`, web.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.s.TerminalHistory(ctx, f.p, f.project, f.task, "", 20); err == nil {
+	rows[0].Snapshot = []byte(`[]`)
+	corruptPhase := f.TaskPhase(ctx, map[string]int{"TerminalHistory": 1})
+	if _, err = f.s.TerminalHistory(corruptPhase, f.p, f.project, f.task, "", 20); err == nil {
 		t.Fatal("corrupt web history was silently omitted from the mixed result")
 	}
+	f.dao.FinishContext(corruptPhase)
 }

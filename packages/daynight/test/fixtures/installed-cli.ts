@@ -139,7 +139,7 @@ export const createInstalledCli = async (options: InstalledCliOptions = {}): Pro
     };
     const tarballPath = path.join(root, "daynight.tgz");
     await pnpm(["pack", "--out", tarballPath], packageDirectory);
-    await writeFile(path.join(consumer, "package.json"), `${JSON.stringify({ name: "daynight-project-task-acceptance", private: true, dependencies: { "@codetreker/daynight": `file:${tarballPath.replaceAll("\\", "/")}` } })}\n`);
+    await writeFile(path.join(consumer, "package.json"), `${JSON.stringify({ name: "daynight-installed-validation", private: true, dependencies: { "@codetreker/daynight": `file:${tarballPath.replaceAll("\\", "/")}` } })}\n`);
     check();
     // Standalone consumers avoid repeated whole-file shim inspection; shared acceptance prepares default shims once.
     // https://github.com/pnpm/pnpm/blob/fe4a0c232384289de82be3d502896ca7e070050c/pnpm11/bins/cmd-shim/src/index.ts#L236-L252

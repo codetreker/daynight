@@ -2,115 +2,103 @@ package server
 
 import (
 	"bytes"
-	"context"
-	"io"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
-
-func moveHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task, string) {
-	t.Helper()
-	database, handler, task := stepsHTTPFixture(t, logs)
-	for index, id := range []string{"00000000", "abcdef01", "12345678", "fedcba98"} {
-		seedHTTPStep(t, database, task.ID, id, index, "same", "# private-move-markdown")
-	}
-	return database, handler, task, taskPath(task) + "/steps"
-}
-
-func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task) {
-	t.Helper()
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, logs)
-	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Steps", RepoURL: "https://example.com/steps", ExpectedUserID: handler.principal.UserID})), 201)
-	task := decodeResponse[api.Task](t, projectRequest(handler, "POST", "/api/v1/projects/"+project.ID+"/tasks", `{"title":"Parent"}`), 201)
-	return database, handler, task
-}
-
-func seedHTTPStep(t *testing.T, database *store.Store, taskID, id string, position int, title, description string) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,$2,$3,$4,$5,'done','2026-11-03T10:11:12.123456Z','2026-11-03T11:12:13.654321Z')`, taskID, id, position, title, description); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestStepsHTTPDeleteLifecycleReferencesAndIDReuse(t *testing.T) {
 	var logs bytes.Buffer
-	database, handler, task, path := moveHTTPFixture(t, &logs)
-	for index, status := range []string{"todo", "in_progress", "done", "skipped"} {
-		if _, err := database.Pool.Exec(context.Background(), `UPDATE task_steps SET status=$2 WHERE task_id=$1 AND position=$3`, task.ID, status, index); err != nil {
-			t.Fatal(err)
-		}
+	f, handler, task := stepsHTTPFixture(t, &logs)
+	f.target.Properties = model.TaskProperties{"pullRequests": []byte(`[{"url":"opaque-pr-reference","title":"Evidence"}]`)}
+	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
+	original := []model.TaskStep{}
+	created := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
+	updated := time.Date(2026, 11, 3, 11, 12, 13, 654321000, time.UTC)
+	for index, id := range []string{"00000000", "abcdef01", "12345678", "fedcba98"} {
+		original = append(original, model.TaskStep{ID: id, Position: int64(index), Title: "same", Description: "# private-move-markdown", Status: []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}[index], CreatedAt: created, UpdatedAt: updated})
 	}
-	property := `[{"url":"opaque-pr-reference","title":"Evidence"}]`
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, task.ID, property); err != nil {
-		t.Fatal(err)
-	}
-	attachmentPath := attachmentFilePath(task, "plan.md")
+	original[1].Description = "[Plan](plan.md) https://reference-secret.invalid token-secret"
 	payload := []byte("# Durable attachment\nReferences survive a Step deletion.\n")
-	metadata := decodeResponse[api.Attachment](t, attachmentRequest(handler, "PUT", attachmentPath, "text/markdown", payload), 201)
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_steps SET description='[Plan](plan.md) https://reference-secret.invalid token-secret' WHERE task_id=$1 AND id='abcdef01'`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	original := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
-	byID := map[string]api.TaskStep{}
-	for _, step := range original.Steps {
-		byID[step.ID] = step
-	}
-	parent := readHTTPTask(t, handler, task)
-	version := int64(1)
-	remaining := []string{"00000000", "abcdef01", "12345678", "fedcba98"}
-	for _, id := range []string{"ABCDEF01", "fedcba98", "00000000", "12345678"} {
-		response := projectRequest(handler, "DELETE", path+"/"+id, jsonBody(t, map[string]any{"version": version}))
-		resource := decodeResponse[api.StepsResource](t, response, 200)
-		version++
+	metadata := f.referencedAttachment("plan.md", "text/markdown", payload)
+	path := taskPath(task) + "/steps"
+	current := append([]model.TaskStep(nil), original...)
+	for index, id := range []string{"ABCDEF01", "fedcba98", "00000000", "12345678"} {
 		canonical := strings.ToLower(id)
-		next := make([]string, 0, len(remaining)-1)
-		for _, existing := range remaining {
-			if existing != canonical {
-				next = append(next, existing)
+		from := 0
+		next := []model.TaskStep{}
+		for position, step := range current {
+			if step.ID == canonical {
+				from = position
+			} else {
+				next = append(next, step)
 			}
 		}
-		remaining = next
-		if resource.ProjectID != task.ProjectID || resource.TaskID != task.ID || resource.Version != version || resource.Steps == nil || len(resource.Steps) != len(remaining) || response.Header().Get("Location") != "" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID {
-			t.Fatal("delete receipt metadata or empty array invalid")
+		for position := range next {
+			next[position].Position = int64(position)
 		}
-		for index, step := range resource.Steps {
-			if step.ID != remaining[index] || step != byID[step.ID] {
+		at := updated.Add(time.Duration(index+1) * time.Minute)
+		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "delete", ID: canonical, From: int64(from), To: int64(len(current) - from - 1), Observed: at})
+		response := projectRequest(handler, "DELETE", path+"/"+id, jsonBody(t, map[string]any{"version": header.Version}))
+		resource := decodeResponse[api.StepsResource](t, response, 200)
+		header.Version++
+		if resource.ProjectID != task.ProjectID || resource.TaskID != task.ID || resource.Version != header.Version || resource.Steps == nil || len(resource.Steps) != len(next) || response.Header().Get("Location") != "" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID {
+			t.Fatal("delete receipt metadata or explicit array invalid")
+		}
+		for position, step := range resource.Steps {
+			expected := next[position]
+			if step.ID != expected.ID || step.Title != expected.Title || step.Description != expected.Description || step.Status != expected.Status || step.CreatedAt != expected.CreatedAt || step.UpdatedAt != expected.UpdatedAt {
 				t.Fatal("deletion changed retained content/time or order")
 			}
 		}
+		f.expectStepsRead(header, next)
 		if !bytes.Equal(response.Body.Bytes(), projectRequest(handler, "GET", path, "").Body.Bytes()) {
 			t.Fatal("DELETE and GET differ from frozen remaining collection")
 		}
+		f.expectMissingStep(header, canonical)
 		assertProjectError(t, projectRequest(handler, "GET", path+"/"+canonical, ""), 404, "not_found")
-		assertProjectError(t, projectRequest(handler, "DELETE", path+"/"+canonical, jsonBody(t, map[string]any{"version": version})), 404, "not_found")
-		assertProjectError(t, projectRequest(handler, "DELETE", path+"/"+canonical, jsonBody(t, map[string]any{"version": version - 1})), 409, "version_conflict")
+		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: next, Refused: true})
+		assertProjectError(t, projectRequest(handler, "DELETE", path+"/"+canonical, jsonBody(t, map[string]any{"version": header.Version})), 404, "not_found")
+		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Stale: true})
+		assertProjectError(t, projectRequest(handler, "DELETE", path+"/"+canonical, jsonBody(t, map[string]any{"version": header.Version - 1})), 409, "version_conflict")
+		current = next
 	}
-	empty := projectRequest(handler, "GET", path, "")
-	if !bytes.Contains(empty.Body.Bytes(), []byte(`"steps":[]`)) {
-		t.Fatal("last deletion did not expose explicit empty array")
+	f.expectStepsRead(header, current)
+	if !bytes.Contains(projectRequest(handler, "GET", path, "").Body.Bytes(), []byte(`"steps":[]`)) {
+		t.Fatal("last deletion omitted empty array")
 	}
-	file := attachmentRequest(handler, "GET", attachmentPath, "", nil)
+	f.expectAttachmentRead(metadata)
+	file := attachmentRequest(handler, "GET", attachmentFilePath(task, "plan.md"), "", nil)
 	if file.Code != 200 || !bytes.Equal(file.Body.Bytes(), payload) {
-		t.Fatal("Step deletion removed or rewrote referenced attachment bytes")
+		t.Fatal("Step deletion removed or rewrote referenced bytes")
 	}
-	attachments := decodeResponse[api.AttachmentPage](t, projectRequest(handler, "GET", taskPath(task)+"/attachments", ""), 200)
-	if len(attachments.Items) != 1 || !reflect.DeepEqual(attachments.Items[0], metadata) {
+	f.expectAttachmentRead(metadata)
+	page := decodeResponse[api.AttachmentPage](t, projectRequest(handler, "GET", taskPath(task)+"/attachments", ""), 200)
+	wantMetadata := api.Attachment{Path: metadata.Path, ContentType: metadata.ContentType, SizeBytes: metadata.SizeBytes, CreatedAt: metadata.CreatedAt, UpdatedAt: metadata.UpdatedAt}
+	if len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], wantMetadata) {
 		t.Fatal("Step deletion changed attachment metadata")
 	}
-	afterParent := readHTTPTask(t, handler, task)
-	afterParent.Version, afterParent.UpdatedAt = parent.Version, parent.UpdatedAt
-	if !reflect.DeepEqual(afterParent, parent) {
+	f.expectRead(f.target)
+	parent := readHTTPTask(t, handler, task)
+	after := f.target
+	after.Version = header.Version
+	after.UpdatedAt = updated.Add(4 * time.Minute)
+	f.expectRead(after)
+	observed := readHTTPTask(t, handler, task)
+	observed.Version, observed.UpdatedAt = parent.Version, parent.UpdatedAt
+	if !reflect.DeepEqual(observed, parent) {
 		t.Fatal("Step deletion changed parent PR/business fields")
 	}
-	recreated := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", path, jsonBody(t, map[string]any{"version": version, "id": "ABCDEF01", "title": "new record"})), 201)
-	if len(recreated.Steps) != 1 || recreated.Version != version+1 || recreated.Steps[0].ID != "abcdef01" || recreated.Steps[0].Title != "new record" || recreated.Steps[0].Description != "" || recreated.Steps[0].Status != "todo" || !recreated.Steps[0].CreatedAt.After(byID["abcdef01"].CreatedAt) || recreated.Steps[0].CreatedAt != recreated.Steps[0].UpdatedAt {
-		t.Fatal("ID reuse restored deleted data rather than creating new record")
+	at := updated.Add(5 * time.Minute)
+	candidate := model.TaskStep{ID: "abcdef01", Position: 0, Title: "new record", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
+	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "add", Candidate: candidate, Observed: at})
+	recreated := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", path, jsonBody(t, map[string]any{"version": header.Version, "id": "ABCDEF01", "title": "new record"})), 201)
+	if len(recreated.Steps) != 1 || recreated.Version != header.Version+1 || recreated.Steps[0].ID != "abcdef01" || recreated.Steps[0].Title != "new record" || recreated.Steps[0].Description != "" || recreated.Steps[0].Status != "todo" || !recreated.Steps[0].CreatedAt.After(original[1].CreatedAt) || recreated.Steps[0].CreatedAt != recreated.Steps[0].UpdatedAt {
+		t.Fatal("ID reuse restored deleted data")
 	}
 	for _, sentinel := range []string{"private-move-markdown", "reference-secret.invalid", "token-secret"} {
 		if strings.Contains(logs.String(), sentinel) {

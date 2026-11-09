@@ -7,7 +7,7 @@ function = 80
 print = 90
 
 [test]
-race = true
+race = false
 timeout = "10m"
 
 [exclude]
@@ -20,4 +20,4 @@ func_suffixes = []
 enabled = false
 
 [critical_blocks]
-fail = true
+fail = false

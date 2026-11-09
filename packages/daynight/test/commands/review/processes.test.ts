@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crossSpawn from "cross-spawn";
+import { createRequire } from "node:module";
+import { createWindowsFixtureObserver, type WindowsFixtureObserver } from "./windows-fixture-observer.js";
 import which from "which";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createProcessSupervisor, processGroupIsExecuting } from "../../../src/commands/review/processes.js";
@@ -66,11 +68,21 @@ const killPosixFixture = async (pid: number, closed: Promise<unknown[]>): Promis
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
   await closed;
 };
-const nativeTree = async (ignoreTerm: boolean, name: string) => {
+const nativeTree = async (ignoreTerm: boolean, name: string, observeWindows = false) => {
   const marker = path.join(directory, `${name}.txt`);
   const termMarker = path.join(directory, `${name}.term`);
   const fixture = path.join(directory, `${name}.cjs`);
-  await writeFile(fixture, `const {spawn}=require('node:child_process');const fs=require('node:fs');\nif(process.argv[2]==='leaf'){setInterval(()=>fs.writeFileSync(process.argv[3],String(Date.now())),15);}else{const leaf=spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'ignore'});process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(termMarker)},'received');${ignoreTerm ? "" : "if(leaf.exitCode!==null||leaf.signalCode!==null)process.exit(0);else leaf.once('close',()=>process.exit(0));"}});setInterval(()=>{},1000);}`);
+  const declaration = process.platform === "win32" && observeWindows ? `
+const ffi=require(${JSON.stringify(createRequire(import.meta.url).resolve("koffi"))});
+const kernel=ffi.load('kernel32.dll');
+const current=kernel.func('void * __stdcall GetCurrentProcess()');
+const times=kernel.func('int __stdcall GetProcessTimes(void *process, void *creation, void *exit, void *kernel, void *user)');
+const creation=Buffer.alloc(8);
+if(!times(current(),creation,Buffer.alloc(8),Buffer.alloc(8),Buffer.alloc(8))) throw Error('Fixture creation identity unavailable');
+const role=process.argv[2]==='leaf'?'leaf':'parent';
+fs.writeFileSync(${JSON.stringify(marker)}+'.'+role+'.json',JSON.stringify({pid:process.pid,parentPid:process.ppid,birth:creation.readBigUInt64LE().toString()}));
+` : "";
+  await writeFile(fixture, `const {spawn}=require('node:child_process');const fs=require('node:fs');\n${declaration}\nif(process.argv[2]==='leaf'){setInterval(()=>fs.writeFileSync(process.argv[3],String(Date.now())),15);}else{const leaf=spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'ignore'});process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(termMarker)},'received');${ignoreTerm ? "" : "if(leaf.exitCode!==null||leaf.signalCode!==null)process.exit(0);else leaf.once('close',()=>process.exit(0));"}});setInterval(()=>{},1000);}`);
   let file = process.execPath;
   let args = [fixture, marker];
   if (process.platform === "win32") {
@@ -84,10 +96,16 @@ const nativeTree = async (ignoreTerm: boolean, name: string) => {
   await once(child, "spawn");
   return { child, closed, marker, termMarker };
 };
-const expectHeartbeatStopped = async (marker: string): Promise<void> => {
+const expectHeartbeatStopped = async (marker: string, observer?: WindowsFixtureObserver): Promise<void> => {
+  observer?.record("read-1-start");
   const stoppedValue = await readFile(marker, "utf8");
-  await new Promise((resolve) => { setTimeout(resolve, 80); });
-  expect(await readFile(marker, "utf8")).toBe(stoppedValue);
+  const observation = new Promise((resolve) => { setTimeout(resolve, 80); });
+  observer?.record("read-1-complete", { value: stoppedValue });
+  await observation;
+  observer?.record("read-2-start");
+  const observedValue = await readFile(marker, "utf8");
+  observer?.record("read-2-complete", { value: observedValue });
+  expect(observedValue).toBe(stoppedValue);
 };
 let directory: string;
 beforeAll(async () => {
@@ -184,34 +202,47 @@ describe("current-run process supervision", () => {
   });
 
   it.each([false, true])("terminates a managed native wrapper tree (ignore TERM=%s)", async (ignoreTerm) => {
-    const { child, closed, marker, termMarker } = await nativeTree(ignoreTerm, `tree-${ignoreTerm}`);
+    const { child, closed, marker, termMarker } = await nativeTree(ignoreTerm, `tree-${ignoreTerm}`, true);
     const supervisor = process.platform === "win32" ? createProcessSupervisor({ graceMs: 3_000 }) : createProcessSupervisor();
     supervisor.onProcess(child, { reviewId: "review", attempt: 1 });
     const originalNow = Date.now.bind(Date);
     let offset = 0;
     const clock = process.platform !== "win32" && ignoreTerm ? vi.spyOn(Date, "now").mockImplementation(() => originalNow() + offset) : undefined;
     let stopping: ReturnType<typeof beginStop> | undefined;
+    let observer: WindowsFixtureObserver | undefined, primaryError: unknown;
     try {
+      if (process.platform === "win32") observer = await createWindowsFixtureObserver(child);
       await waitForFile(marker);
+      if (observer !== undefined) observer.attach(JSON.parse(await waitForFile(marker + ".parent.json")), JSON.parse(await waitForFile(marker + ".leaf.json")));
+      observer?.record("before-stop");
       stopping = beginStop(supervisor, child);
       if (process.platform !== "win32" && ignoreTerm) {
         await observeIgnoredTerm(child, termMarker, stopping);
         offset += 5_000;
       }
       await stopping.finish();
+      observer?.record("stop-return");
       await closed;
+      observer?.record("root-close-awaited");
       if (process.platform !== "win32") expect(await readFile(termMarker, "utf8")).toBe("received");
-      await expectHeartbeatStopped(marker);
+      await expectHeartbeatStopped(marker, observer);
       await expect(supervisor.exclude(review(child.pid!))).resolves.toEqual({ processesExcluded: true });
-    } finally {
+    } catch (error) { primaryError = error; throw error; } finally {
       try {
-        if (stopping?.state.status !== "stopped") {
-          if (process.platform !== "win32") await killPosixFixture(child.pid!, closed);
-          else if (child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+        // A surviving descendant may hold the exited wrapper's output pipes.
+        // The observer terminates its retained identities before joining close.
+        if (observer !== undefined) await observer.finish(primaryError);
+        else {
+          if (stopping?.state.status !== "stopped") {
+            if (process.platform !== "win32") await killPosixFixture(child.pid!, closed);
+            else if (child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+          }
+          await stopping?.settled;
+          await closed;
         }
-        await stopping?.settled;
-        await closed;
-      } finally { clock?.mockRestore(); }
+      } finally {
+        clock?.mockRestore();
+      }
     }
   }, 15_000);
 

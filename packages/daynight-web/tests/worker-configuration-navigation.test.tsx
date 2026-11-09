@@ -200,6 +200,7 @@ describe('Worker configuration navigation', () => {
 
   it.each(['collapsed', 'removed'] as const)('returns to a visible editor when the last edited project field was %s', async (kind) => {
     await mount(false, true);
+    await screen.findByRole('heading', { name: 'Project 3' }, { timeout: 5_000 });
     const summary = screen.getByText(/Agent settings ·/); fireEvent.click(summary);
     const projectArgs = screen.getByRole('textbox', { name: 'Project 3 · Custom arguments' });
     projectArgs.focus(); fireEvent.change(projectArgs, { target: { value: '["--edited"]' } });

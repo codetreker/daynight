@@ -9,6 +9,7 @@ export type SessionHistoryItem = {
   sessionId: string; claimId: string; executionGeneration: string; agentControlMode: 'web' | 'herdr'; contentKind: 'native_timeline' | 'terminal_recording'; createdAt: string; endedAt: string | null;
   archive: { state: 'pending' | 'ready' | 'failed' | 'unavailable'; sha256: string | null; byteLength: string | null; completeness: 'complete' | 'partial' | null };
 };
+export type SessionRecordingReference = Pick<SessionHistoryItem, 'sessionId' | 'claimId' | 'executionGeneration' | 'agentControlMode'> & { readonly archive?: SessionHistoryItem['archive'] };
 export type TerminalSessionState = SessionV2Envelope & {
   status: 'registered'; agentControlMode: 'herdr'; contentKind: 'terminal_recording'; owner: SessionV2Owner; binding: TerminalBinding; connectionEpoch: string; connected: boolean;
   capabilities: { observe: boolean; control: boolean; archive: boolean };
@@ -24,8 +25,8 @@ export type TerminalSessionApi = {
   current(signal: AbortSignal): Promise<TerminalCurrent>;
   state(sessionId: string, signal: AbortSignal): Promise<TerminalSessionState>;
   history(cursor: string | null, signal: AbortSignal): Promise<{ items: SessionHistoryItem[]; nextCursor: string | null }>;
-  archive(item: SessionHistoryItem, signal: AbortSignal): Promise<TerminalArchive>;
-  nativeArchive(item: SessionHistoryItem, signal: AbortSignal): Promise<{ status: SessionArchiveStatus; archive: SessionArchive | null }>;
+  archive(item: SessionRecordingReference, signal: AbortSignal): Promise<TerminalArchive>;
+  nativeArchive(item: SessionRecordingReference, signal: AbortSignal): Promise<{ status: SessionArchiveStatus; archive: SessionArchive | null }>;
   command(sessionId: string, browserClientId: string, message: TerminalCommand, signal: AbortSignal): Promise<TerminalResult>;
   operation(sessionId: string, operationId: string, signal: AbortSignal): Promise<TerminalResult>;
   channel(sessionId: string, browserClientId: string, onState: (state: TerminalSessionState) => void, onClose: (error?: unknown) => void): { close(): void };
@@ -96,7 +97,7 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
     archive: async (item, signal) => {
       if (item.agentControlMode !== 'herdr') invalid();
       const status = await get(`${path(item.sessionId)}/archive`, signal, v => { const m = parseSessionV2Message(v); if (m.type !== 'archive_status') return invalid(); fence(m, item); return m; });
-      if (item.archive.state === 'ready' && (status.payload.state !== 'ready' || status.payload.sha256 !== item.archive.sha256 || status.payload.byteLength !== item.archive.byteLength || status.payload.completeness !== item.archive.completeness)) invalid();
+      if (item.archive?.state === 'ready' && (status.payload.state !== 'ready' || status.payload.sha256 !== item.archive.sha256 || status.payload.byteLength !== item.archive.byteLength || status.payload.completeness !== item.archive.completeness)) invalid();
       if (status.payload.state !== 'ready') return { status, archive: null };
       const response = await request(`${path(item.sessionId)}/archive/content`, signal, { headers: { Accept: 'application/json', [SESSION_PROTOCOL_HEADER]: SESSION_V2_PROTOCOL } });
       assertResponsePrincipal(response, userId, onPrincipalMismatch);
@@ -111,7 +112,7 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
     nativeArchive: async (item, signal) => {
       if (item.agentControlMode !== 'web') invalid();
       const status = await get(`${path(item.sessionId)}/archive`, signal, v => parseSessionArchiveStatus(exact(v, ['archive']).archive), {}, 200, false);
-      if (item.archive.state === 'ready' && (status.state !== 'ready' || status.sha256 !== item.archive.sha256 || status.byteLength !== item.archive.byteLength)) invalid();
+      if (item.archive?.state === 'ready' && (status.state !== 'ready' || status.sha256 !== item.archive.sha256 || status.byteLength !== item.archive.byteLength)) invalid();
       if (status.state !== 'ready') return { status, archive: null };
       // v1 wraps RawMessage through JSON encoding. Its server verifies original bytes;
       // reserializing the envelope cannot reproduce the uploaded byte hash.

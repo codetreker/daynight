@@ -1,10 +1,6 @@
 package attachment
 
 import (
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -16,137 +12,18 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func attachmentService(t *testing.T) (*Attachments, *taskservice.Tasks, *store.Store, *local.Storage, model.Task, model.Principal) {
-	t.Helper()
-	tasks, database, project, _, principal := taskService(t)
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := files.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return NewAttachments(database, files), tasks, database, files, createTask(t, tasks, principal, project.ID, "Attachments"), principal
-}
-
-func putAttachment(t *testing.T, attachments *Attachments, principal model.Principal, task model.Task, path, content string) model.Attachment {
-	t.Helper()
-	attachment, _, err := attachments.Put(context.Background(), principal, task.ProjectID, task.ID, path, "text/plain; charset=utf-8", strings.NewReader(content))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return attachment
-}
-
-func attachmentTestStoragePath(task model.Task, path string) string {
-	return task.ProjectID + "/" + task.ID[:2] + "/" + task.ID + "/" + path
-}
-
-func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
-	attachments, tasks, _, files, task, principal := attachmentService(t)
-	ctx := context.Background()
-	prerequisite := createTask(t, tasks, principal, task.ProjectID, "Prerequisite")
-	task = updateTask(t, tasks, principal, task, taskcore.UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://github.com/example/repository/pull/1"}}...)})
-	empty, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 50})
-	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
-		t.Fatalf("empty page: %#v, %v", empty, err)
-	}
-	content := []byte{0, 1, 255, '\n', 'a'}
-	first, created, err := attachments.Put(ctx, principal, strings.ToUpper(task.ProjectID), strings.ToUpper(task.ID), "设计 文档/a%_?#.bin", "application/octet-stream", bytes.NewReader(content))
-	if err != nil || !created || first.ProjectID != task.ProjectID || first.TaskID != task.ID || first.SizeBytes != int64(len(content)) ||
-		first.Path != "设计 文档/a%_?#.bin" || first.ContentType != "application/octet-stream" || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) {
-		t.Fatalf("new attachment: %#v, created=%v, %v", first, created, err)
-	}
-	metadata, object, err := attachments.Open(ctx, principal, task.ProjectID, task.ID, first.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, readErr := io.ReadAll(object.Body)
-	closeErr := object.Body.Close()
-	if readErr != nil || closeErr != nil || !bytes.Equal(got, content) || object.Info.Size != first.SizeBytes || !reflect.DeepEqual(metadata, first) {
-		t.Fatalf("binary read: %v %#v %v %v", got, metadata, readErr, closeErr)
-	}
-	second, created, err := attachments.Put(ctx, principal, task.ProjectID, task.ID, first.Path, "text/plain; charset=utf-8", strings.NewReader("replacement"))
-	if err != nil || created || !second.CreatedAt.Equal(first.CreatedAt) || !second.UpdatedAt.After(first.UpdatedAt) || second.SizeBytes != 11 || second.ContentType != "text/plain; charset=utf-8" {
-		t.Fatalf("overwrite: %#v, created=%v, %v", second, created, err)
-	}
-	putAttachment(t, attachments, principal, task, "other/a%_?#.bin", "other")
-	zero := putAttachment(t, attachments, principal, task, "empty", "")
-	if zero.SizeBytes != 0 {
-		t.Fatalf("empty size: %d", zero.SizeBytes)
-	}
-	if _, err := files.Put(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, first.Path), strings.NewReader("different physical length")); err != nil {
-		t.Fatal(err)
-	}
-	metadata, object, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, first.Path)
-	if err != nil || object.Info.Size != 25 || metadata.SizeBytes != 11 {
-		t.Fatalf("opened length must be actual: %#v %#v %v", metadata, object.Info, err)
-	}
-	if err := object.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := attachments.Delete(ctx, principal, task.ProjectID, task.ID, first.Path); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, first.Path)
-	requireFault(t, err, "not_found")
-	requireFault(t, attachments.Delete(ctx, principal, task.ProjectID, task.ID, first.Path), "not_found")
-	rebuilt := putAttachment(t, attachments, principal, task, first.Path, "rebuilt")
-	if !rebuilt.CreatedAt.After(first.CreatedAt) || !rebuilt.CreatedAt.Equal(rebuilt.UpdatedAt) {
-		t.Fatalf("recreated timestamps: %#v", rebuilt)
-	}
-	assertTaskUnchanged(t, tasks, principal, task)
-}
-
-func TestAttachmentScopeAndPathConflicts(t *testing.T) {
-	attachments, tasks, database, _, task, principal := attachmentService(t)
-	ctx := context.Background()
-	otherProject, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	other := createTask(t, tasks, principal, otherProject.ID, "Other")
-	putAttachment(t, attachments, principal, task, "docs", "file")
-	putAttachment(t, attachments, principal, task, "literal%_/child", "nested")
-	putAttachment(t, attachments, principal, task, "literalXX/child", "different")
-	for _, path := range []string{"docs/child", "literal%_"} {
-		_, _, err := attachments.Put(ctx, principal, task.ProjectID, task.ID, path, "text/plain", strings.NewReader("conflict"))
-		requireFault(t, err, "path_conflict")
-	}
-	// Wildcards are ordinary filename characters in both prefix directions.
-	putAttachment(t, attachments, principal, task, "literal%", "literal percent")
-	putAttachment(t, attachments, principal, task, "literal_/file", "literal underscore")
-	missing := "00000000-0000-0000-0000-000000000000"
-	for _, scope := range [][2]string{{missing, task.ID}, {task.ProjectID, missing}, {task.ProjectID, other.ID}, {otherProject.ID, task.ID}} {
-		projectID, taskID := scope[0], scope[1]
-		_, err := attachments.List(ctx, principal, projectID, taskID, model.PageRequest{Limit: 10})
-		requireFault(t, err, "not_found")
-		_, _, err = attachments.Put(ctx, principal, projectID, taskID, "file", "text/plain", strings.NewReader("no"))
-		requireFault(t, err, "not_found")
-		_, _, err = attachments.Open(ctx, principal, projectID, taskID, "docs")
-		requireFault(t, err, "not_found")
-		requireFault(t, attachments.Delete(ctx, principal, projectID, taskID, "docs"), "not_found")
-	}
-	_, _, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, "missing")
-	requireFault(t, err, "not_found")
-	assertTaskUnchanged(t, tasks, principal, task)
-}
-
 func TestAttachmentValidation(t *testing.T) {
-	_, _, _, principal := projectService(t)
-	attachments := NewAttachments(nil, nil)
+	principal := model.Principal{Kind: model.SessionCredential,
+		UserID: "00000000-0000-4000-8000-000000000001", CredentialID: "00000000-0000-4000-8000-000000000002"}
+	attachments := NewAttachments(nil, nil, nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	for _, address := range [][3]string{{"invalid", id, "file"}, {id, "invalid", "file"}, {id, id, ""}, {id, id, "/file"},
 		{id, id, "a//b"}, {id, id, "a/../b"}, {id, id, "a/./b"}, {id, id, "a\\b"}, {id, id, "a\x00b"}, {id, id, "\xff"}, {id, id, "C:/file"}} {
@@ -162,77 +39,6 @@ func TestAttachmentValidation(t *testing.T) {
 	}
 	for _, scope := range [][2]string{{"bad", id}, {id, "bad"}} {
 		_, err := attachments.List(context.Background(), principal, scope[0], scope[1], model.PageRequest{Limit: 1})
-		requireFault(t, err, "invalid_input")
-	}
-}
-
-func TestAttachmentPaginationAndCursorScope(t *testing.T) {
-	attachments, tasks, database, _, task, principal := attachmentService(t)
-	ctx := context.Background()
-	want := []string{"a/file", "A/file", "中 文", "emoji-😀", "%literal", "_literal"}
-	// Pagination orders logical metadata paths independently of the host's file
-	// naming capabilities; physical case-distinct writes have separate coverage.
-	for _, path := range want {
-		if _, _, err := database.PutAttachment(ctx, model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID,
-			Path: path, ContentType: "text/plain", SizeBytes: int64(len(path))}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	slices.Sort(want)
-	request := model.PageRequest{Limit: 2}
-	var got []string
-	var firstCursor *string
-	for {
-		page, err := attachments.List(ctx, principal, strings.ToUpper(task.ProjectID), strings.ToUpper(task.ID), request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, attachment := range page.Items {
-			got = append(got, attachment.Path)
-		}
-		if page.NextCursor == nil {
-			break
-		}
-		if firstCursor == nil {
-			firstCursor = page.NextCursor
-		}
-		request.Cursor = page.NextCursor
-	}
-	if !slices.Equal(got, want) || firstCursor == nil {
-		t.Fatalf("path pages: %v, want %v", got, want)
-	}
-	other := createTask(t, tasks, principal, task.ProjectID, "Other")
-	_, err := attachments.List(ctx, principal, task.ProjectID, other.ID, model.PageRequest{Limit: 2, Cursor: firstCursor})
-	requireFault(t, err, "invalid_input")
-	data, err := base64.RawURLEncoding.DecodeString(*firstCursor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var valid testAttachmentCursor
-	if err := json.Unmarshal(data, &valid); err != nil {
-		t.Fatal(err)
-	}
-	invalid := []string{"", "not-base64", base64.RawURLEncoding.EncodeToString([]byte("{")), base64.RawURLEncoding.EncodeToString(append(data, []byte(" true")...)),
-		base64.RawURLEncoding.EncodeToString([]byte(strings.Replace(string(data), `"version":1`, `"unknown":1,"version":1`, 1)))}
-	for _, change := range []func(*testAttachmentCursor){
-		func(c *testAttachmentCursor) { c.Version = 2 }, func(c *testAttachmentCursor) { c.Kind = "tasks" },
-		func(c *testAttachmentCursor) { c.ProjectID = other.ID }, func(c *testAttachmentCursor) { c.TaskID = other.ID },
-		func(c *testAttachmentCursor) { c.Path = "../bad" },
-	} {
-		cursor := valid
-		change(&cursor)
-		data, err := json.Marshal(cursor)
-		if err != nil {
-			t.Fatal(err)
-		}
-		invalid = append(invalid, base64.RawURLEncoding.EncodeToString(data))
-	}
-	for _, cursor := range invalid {
-		_, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 2, Cursor: &cursor})
-		requireFault(t, err, "invalid_input")
-	}
-	for _, limit := range []int{0, -1, 101} {
-		_, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: limit})
 		requireFault(t, err, "invalid_input")
 	}
 }
@@ -283,123 +89,6 @@ func assertAttachmentOperationalError(t *testing.T, err, cause error) {
 	}
 }
 
-func TestAttachmentStorageFailuresAndMissingPhysicalFile(t *testing.T) {
-	attachments, _, database, files, task, principal := attachmentService(t)
-	ctx := context.Background()
-	putAttachment(t, attachments, principal, task, "file", "content")
-	sentinel := errors.New("disk failed")
-	failed := NewAttachments(database, attachmentFaultStorage{Storage: files, put: sentinel, open: sentinel, delete: sentinel})
-	_, _, err := failed.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("new"))
-	assertAttachmentOperationalError(t, err, sentinel)
-	_, _, err = failed.Open(ctx, principal, task.ProjectID, task.ID, "file")
-	assertAttachmentOperationalError(t, err, sentinel)
-	assertAttachmentOperationalError(t, failed.Delete(ctx, principal, task.ProjectID, task.ID, "file"), sentinel)
-	if err := files.Delete(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file")); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, "file")
-	assertAttachmentOperationalError(t, err, fs.ErrNotExist)
-	if err := attachments.Delete(ctx, principal, task.ProjectID, task.ID, "file"); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	cancel()
-	_, _, err = attachments.Put(ctx, principal, task.ProjectID, task.ID, "cancelled", "text/plain", strings.NewReader(""))
-	assertAttachmentOperationalError(t, err, context.Canceled)
-}
-
-func TestAttachmentDatabaseFailures(t *testing.T) {
-	attachments, _, database, _, task, principal := attachmentService(t)
-	ctx := context.Background()
-	putAttachment(t, attachments, principal, task, "file", "content")
-	if _, err := database.Pool.Exec(ctx, `DROP TABLE task_attachments`); err != nil {
-		t.Fatal(err)
-	}
-	for _, operation := range []func() error{
-		func() error {
-			_, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
-			return err
-		},
-		func() error {
-			_, _, err := attachments.Open(ctx, principal, task.ProjectID, task.ID, "file")
-			return err
-		},
-		func() error {
-			_, _, err := attachments.Put(ctx, principal, task.ProjectID, task.ID, "new", "text/plain", strings.NewReader(""))
-			return err
-		},
-		func() error { return attachments.Delete(ctx, principal, task.ProjectID, task.ID, "file") },
-	} {
-		var databaseError *store.Error
-		var fault *model.Fault
-		err := operation()
-		if !errors.As(err, &databaseError) || errors.As(err, &fault) {
-			t.Fatalf("database failure: %v", err)
-		}
-	}
-	database.Close()
-	_, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
-	if err == nil {
-		t.Fatal("closed database read succeeded")
-	}
-}
-
-func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
-	for _, operation := range []string{"put", "delete", "concurrent delete"} {
-		t.Run(operation, func(t *testing.T) {
-			attachments, _, database, files, task, principal := attachmentService(t)
-			ctx := context.Background()
-			putAttachment(t, attachments, principal, task, "file", "before")
-			removeTable := func() {
-				if _, err := database.Pool.Exec(ctx, `DROP TABLE task_attachments`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			faults := attachmentFaultStorage{Storage: files}
-			if operation == "put" {
-				faults.afterPut = removeTable
-				_, _, err := NewAttachments(database, faults).Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
-				var databaseError *store.Error
-				if !errors.As(err, &databaseError) {
-					t.Fatalf("metadata write error: %v", err)
-				}
-				object, err := files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				content, readErr := io.ReadAll(object.Body)
-				closeErr := object.Body.Close()
-				if readErr != nil || closeErr != nil || string(content) != "after" {
-					t.Fatalf("successful file write was hidden: %q, %v, %v", content, readErr, closeErr)
-				}
-				return
-			}
-			if operation == "delete" {
-				faults.afterDelete = removeTable
-			} else {
-				faults.afterDelete = func() {
-					if err := database.DeleteAttachment(ctx, task.ProjectID, task.ID, "file"); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			err := NewAttachments(database, faults).Delete(ctx, principal, task.ProjectID, task.ID, "file")
-			if operation == "concurrent delete" {
-				requireFault(t, err, "not_found")
-			} else {
-				var databaseError *store.Error
-				if !errors.As(err, &databaseError) {
-					t.Fatalf("metadata delete error: %v", err)
-				}
-			}
-			_, err = files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
-			if !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("successful file deletion was hidden: %v", err)
-			}
-		})
-	}
-}
-
 // Cursor fields mirror the public v1 wire format for invalid-input tests.
 type testAttachmentCursor struct {
 	Version   int    `json:"version"`
@@ -407,4 +96,346 @@ type testAttachmentCursor struct {
 	ProjectID string `json:"projectId"`
 	TaskID    string `json:"taskId"`
 	Path      string `json:"path"`
+}
+
+func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
+	subject, m, files, task, p := attachmentUnit(t)
+	ctx := t.Context()
+	m.read(p, task)
+	m.expect("list", task.ProjectID, task.ID, store.AttachmentQuery{Limit: 50}).result = store.AttachmentPage{Items: []model.Attachment{}}
+	empty, err := subject.List(ctx, p, task.ProjectID, task.ID, model.PageRequest{Limit: 50})
+	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
+		t.Fatalf("empty page: %#v %v", empty, err)
+	}
+	content := []byte{0, 1, 255, '\n', 'a'}
+	first := attachmentItem(task, "设计 文档/a%_?#.bin", "application/octet-stream", int64(len(content)))
+	planAttachmentPut(m, p, task, first, true)
+	got, created, err := subject.Put(ctx, p, strings.ToUpper(task.ProjectID), strings.ToUpper(task.ID), first.Path, first.ContentType, bytes.NewReader(content))
+	if err != nil || !created || !reflect.DeepEqual(got, first) {
+		t.Fatalf("new attachment: %#v %v %v", got, created, err)
+	}
+	planAttachmentOpen(m, p, task, first)
+	metadata, object, err := subject.Open(ctx, p, task.ProjectID, task.ID, first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, readErr := io.ReadAll(object.Body)
+	closeErr := object.Body.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(data, content) || object.Info.Size != first.SizeBytes || !reflect.DeepEqual(metadata, first) {
+		t.Fatalf("binary read: %#v %q %v %v", metadata, data, readErr, closeErr)
+	}
+	second := first
+	second.ContentType = "text/plain; charset=utf-8"
+	second.SizeBytes = 11
+	second.UpdatedAt = second.UpdatedAt.Add(time.Second)
+	planAttachmentPut(m, p, task, second, false)
+	got, created, err = subject.Put(ctx, p, task.ProjectID, task.ID, second.Path, second.ContentType, strings.NewReader("replacement"))
+	if err != nil || created || !reflect.DeepEqual(got, second) {
+		t.Fatalf("overwrite result: %#v %v %v", got, created, err)
+	}
+	for _, item := range []model.Attachment{attachmentItem(task, "other/a%_?#.bin", "text/plain", 5), attachmentItem(task, "empty", "text/plain", 0)} {
+		planAttachmentPut(m, p, task, item, true)
+		text := "other"
+		if item.SizeBytes == 0 {
+			text = ""
+		}
+		got, created, err := subject.Put(ctx, p, task.ProjectID, task.ID, item.Path, item.ContentType, strings.NewReader(text))
+		if err != nil || !created || !reflect.DeepEqual(got, item) {
+			t.Fatalf("extra item: %#v %v %v", got, created, err)
+		}
+	}
+	if _, err := files.Put(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, first.Path), strings.NewReader("different physical length")); err != nil {
+		t.Fatal(err)
+	}
+	planAttachmentOpen(m, p, task, second)
+	metadata, object, err = subject.Open(ctx, p, task.ProjectID, task.ID, second.Path)
+	if err != nil || object.Info.Size != 25 || metadata.SizeBytes != 11 {
+		t.Fatalf("actual length: %#v %#v %v", metadata, object.Info, err)
+	}
+	if err := object.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	planAttachmentDelete(m, p, task, second)
+	if err := subject.Delete(ctx, p, task.ProjectID, task.ID, second.Path); err != nil {
+		t.Fatal(err)
+	}
+	m.read(p, task)
+	m.expect("metadata", task.ProjectID, task.ID, second.Path).err = model.ErrNotFound
+	_, _, err = subject.Open(ctx, p, task.ProjectID, task.ID, second.Path)
+	requireFault(t, err, "not_found")
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
+	m.expect("metadata", task.ProjectID, task.ID, second.Path).err = model.ErrNotFound
+	requireFault(t, subject.Delete(ctx, p, task.ProjectID, task.ID, second.Path), "not_found")
+	rebuilt := first
+	rebuilt.CreatedAt = first.CreatedAt.Add(2 * time.Second)
+	rebuilt.UpdatedAt = rebuilt.CreatedAt
+	rebuilt.SizeBytes = 7
+	rebuilt.ContentType = "text/plain"
+	planAttachmentPut(m, p, task, rebuilt, true)
+	got, created, err = subject.Put(ctx, p, task.ProjectID, task.ID, rebuilt.Path, rebuilt.ContentType, strings.NewReader("rebuilt"))
+	if err != nil || !created || !reflect.DeepEqual(got, rebuilt) {
+		t.Fatalf("rebuilt: %#v %v %v", got, created, err)
+	}
+}
+
+func TestAttachmentScopeAndPathConflicts(t *testing.T) {
+	subject, m, _, task, p := attachmentUnit(t)
+	for _, path := range []string{"docs/child", "literal%_"} {
+		m.read(p, task)
+		m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+		m.expect("live", task.ProjectID)
+		m.conflict(task, path, true)
+		_, _, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, path, "text/plain", strings.NewReader("conflict"))
+		requireFault(t, err, "path_conflict")
+	}
+	missing := "00000000-0000-0000-0000-000000000000"
+	other := task
+	other.ID = "ab000000-0000-4000-8000-000000000002"
+	other.ProjectID = "cd000000-0000-4000-8000-000000000002"
+	for _, ids := range [][2]string{{missing, task.ID}, {task.ProjectID, missing}, {task.ProjectID, other.ID}, {other.ProjectID, task.ID}} {
+		addressed := task
+		addressed.ProjectID, addressed.ID = ids[0], ids[1]
+		readMissing := func() {
+			m.expect("snapshot").callback = true
+			m.expect("access", p, addressed.ProjectID).result = model.ProjectAccess{}
+			m.expect("presence", addressed.ProjectID, addressed.ID).result = store.TaskPresence{Found: false}
+		}
+		mutateMissing := func() {
+			e := m.expect("mutation")
+			e.callback = true
+			e.completion = store.Completion{Outcome: store.TransactionNotCommitted}
+			m.expect("lock", addressed.ProjectID, addressed.ID).result = store.TaskPresence{Found: false}
+			m.expect("authorize", p, addressed.ProjectID).result = model.ProjectAccess{}
+		}
+		readMissing()
+		_, err := subject.List(t.Context(), p, ids[0], ids[1], model.PageRequest{Limit: 10})
+		requireFault(t, err, "not_found")
+		readMissing()
+		mutateMissing()
+		_, _, err = subject.Put(t.Context(), p, ids[0], ids[1], "file", "text/plain", strings.NewReader("no"))
+		requireFault(t, err, "not_found")
+		readMissing()
+		_, _, err = subject.Open(t.Context(), p, ids[0], ids[1], "docs")
+		requireFault(t, err, "not_found")
+		mutateMissing()
+		requireFault(t, subject.Delete(t.Context(), p, ids[0], ids[1], "docs"), "not_found")
+	}
+	m.read(p, task)
+	m.expect("metadata", task.ProjectID, task.ID, "missing").err = model.ErrNotFound
+	_, _, err := subject.Open(t.Context(), p, task.ProjectID, task.ID, "missing")
+	requireFault(t, err, "not_found")
+}
+
+func TestAttachmentPaginationAndCursorScope(t *testing.T) {
+	subject, m, _, task, p := attachmentUnit(t)
+	want := []string{"a/file", "A/file", "中 文", "emoji-😀", "%literal", "_literal"}
+	slices.Sort(want)
+	request := model.PageRequest{Limit: 2}
+	var got []string
+	var firstCursor *string
+	for i := 0; i < len(want); i += 2 {
+		q := store.AttachmentQuery{Limit: 2}
+		if i > 0 {
+			q.After = pointer(want[i-1])
+		}
+		items := []model.Attachment{attachmentItem(task, want[i], "text/plain", 1), attachmentItem(task, want[i+1], "text/plain", 2)}
+		m.read(p, task)
+		m.expect("list", task.ProjectID, task.ID, q).result = store.AttachmentPage{Items: items, HasMore: i+2 < len(want)}
+		page, err := subject.List(t.Context(), p, strings.ToUpper(task.ProjectID), strings.ToUpper(task.ID), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(page.Items, items) {
+			t.Fatalf("page projection: %#v", page)
+		}
+		for _, item := range page.Items {
+			got = append(got, item.Path)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		if firstCursor == nil {
+			firstCursor = page.NextCursor
+		}
+		request.Cursor = page.NextCursor
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("page paths: %v", got)
+	}
+	data, err := base64.RawURLEncoding.DecodeString(*firstCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var valid testAttachmentCursor
+	if err := json.Unmarshal(data, &valid); err != nil {
+		t.Fatal(err)
+	}
+	invalid := []string{"", "not-base64", base64.RawURLEncoding.EncodeToString([]byte("{")), base64.RawURLEncoding.EncodeToString(append(data, []byte(" true")...)), base64.RawURLEncoding.EncodeToString([]byte(strings.Replace(string(data), `"version":1`, `"unknown":1,"version":1`, 1)))}
+	for _, change := range []func(*testAttachmentCursor){func(c *testAttachmentCursor) { c.Version = 2 }, func(c *testAttachmentCursor) { c.Kind = "tasks" }, func(c *testAttachmentCursor) { c.ProjectID = "cd000000-0000-4000-8000-000000000002" }, func(c *testAttachmentCursor) { c.TaskID = "ab000000-0000-4000-8000-000000000002" }, func(c *testAttachmentCursor) { c.Path = "../bad" }} {
+		cursor := valid
+		change(&cursor)
+		data, err := json.Marshal(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		invalid = append(invalid, base64.RawURLEncoding.EncodeToString(data))
+	}
+	for _, cursor := range invalid {
+		_, err := subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: 2, Cursor: &cursor})
+		requireFault(t, err, "invalid_input")
+	}
+	for _, limit := range []int{0, -1, 101} {
+		_, err := subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: limit})
+		requireFault(t, err, "invalid_input")
+	}
+}
+
+func TestAttachmentStorageFailuresAndMissingPhysicalFile(t *testing.T) {
+	subject, m, files, task, p := attachmentUnit(t)
+	item := attachmentItem(task, "file", "text/plain", 7)
+	if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, item.Path), strings.NewReader("content")); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("disk failed")
+	failed := NewAttachments(m, m, attachmentFaultStorage{Storage: files, put: sentinel, open: sentinel, delete: sentinel})
+	m.read(p, task)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("live", task.ProjectID)
+	m.conflict(task, "file", false)
+	_, _, err := failed.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("new"))
+	assertAttachmentOperationalError(t, err, sentinel)
+	planAttachmentOpen(m, p, task, item)
+	_, _, err = failed.Open(t.Context(), p, task.ProjectID, task.ID, "file")
+	assertAttachmentOperationalError(t, err, sentinel)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
+	m.metadata(task, item)
+	assertAttachmentOperationalError(t, failed.Delete(t.Context(), p, task.ProjectID, task.ID, "file"), sentinel)
+	if err := files.Delete(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file")); err != nil {
+		t.Fatal(err)
+	}
+	planAttachmentOpen(m, p, task, item)
+	_, _, err = subject.Open(t.Context(), p, task.ProjectID, task.ID, "file")
+	assertAttachmentOperationalError(t, err, fs.ErrNotExist)
+	planAttachmentDelete(m, p, task, item)
+	if err := subject.Delete(t.Context(), p, task.ProjectID, task.ID, "file"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	e := m.expect("snapshot")
+	e.err = context.Canceled
+	e.ctx = ctx
+	_, _, err = subject.Put(ctx, p, task.ProjectID, task.ID, "cancelled", "text/plain", strings.NewReader(""))
+	assertAttachmentOperationalError(t, err, context.Canceled)
+}
+
+func TestAttachmentDatabaseFailures(t *testing.T) {
+	subject, m, _, task, p := attachmentUnit(t)
+	cause := errors.New("query failed")
+	failure := &store.Error{Phase: "attachment fixture", Cause: cause}
+	m.read(p, task)
+	m.expect("list", task.ProjectID, task.ID, store.AttachmentQuery{Limit: 1}).err = failure
+	_, err := subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
+	assertAttachmentDatabaseError(t, err, cause)
+	m.read(p, task)
+	m.expect("metadata", task.ProjectID, task.ID, "file").err = failure
+	_, _, err = subject.Open(t.Context(), p, task.ProjectID, task.ID, "file")
+	assertAttachmentDatabaseError(t, err, cause)
+	m.read(p, task)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("live", task.ProjectID)
+	m.conflict(task, "new", false).err = failure
+	_, _, err = subject.Put(t.Context(), p, task.ProjectID, task.ID, "new", "text/plain", strings.NewReader(""))
+	assertAttachmentDatabaseError(t, err, cause)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
+	m.expect("metadata", task.ProjectID, task.ID, "file").err = failure
+	assertAttachmentDatabaseError(t, subject.Delete(t.Context(), p, task.ProjectID, task.ID, "file"), cause)
+	m.expect("snapshot").err = failure
+	_, err = subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
+	assertAttachmentDatabaseError(t, err, cause)
+}
+
+func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
+	for _, operation := range []string{"put", "delete", "suppressed delete"} {
+		t.Run(operation, func(t *testing.T) {
+			subject, m, files, task, p := attachmentUnit(t)
+			before := attachmentItem(task, "file", "text/plain; charset=utf-8", 6)
+			if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"), strings.NewReader("before")); err != nil {
+				t.Fatal(err)
+			}
+			cause := errors.New("metadata failed")
+			wrap := func(err error) error {
+				return &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: err}
+			}
+			if operation == "put" {
+				m.read(p, task)
+				e := m.expect("mutation")
+				e.callback = true
+				e.completion = store.Completion{Outcome: store.TransactionNotCommitted}
+				e.callbackError = wrap
+				m.expect("lock", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
+				m.expect("live", task.ProjectID)
+				m.conflict(task, "file", false)
+				m.expect("put", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5}).err = &store.Error{Phase: "put", Cause: cause}
+				item, created, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
+				var transaction *store.TransactionError
+				var database *store.Error
+				if item.Path != "" || created || !FileEffectPossible(err) || !errors.Is(err, cause) || !errors.As(err, &database) || !errors.As(err, &transaction) || transaction.Outcome != store.TransactionNotCommitted || transaction.CommitAttempted {
+					t.Fatalf("put metadata failure: %#v %v %v", item, created, err)
+				}
+				object, err := files.Open(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, readErr := io.ReadAll(object.Body)
+				closeErr := object.Body.Close()
+				if readErr != nil || closeErr != nil || string(data) != "after" {
+					t.Fatalf("physical result: %q %v %v", data, readErr, closeErr)
+				}
+			} else {
+				e := m.expect("mutation")
+				e.callback = true
+				e.completion = store.Completion{Outcome: store.TransactionNotCommitted}
+				e.callbackError = wrap
+				m.expect("lock", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
+				m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
+				m.metadata(task, before)
+				deletion := m.expect("delete", task.ProjectID, task.ID, "file")
+				if operation == "suppressed delete" {
+					deletion.err = model.ErrNotFound
+				} else {
+					deletion.err = &store.Error{Phase: "delete", Cause: cause}
+				}
+				err := subject.Delete(t.Context(), p, task.ProjectID, task.ID, "file")
+				if operation == "suppressed delete" {
+					requireFault(t, err, "not_found")
+				} else {
+					var transaction *store.TransactionError
+					var database *store.Error
+					if !errors.Is(err, cause) || !errors.As(err, &database) || !errors.As(err, &transaction) || transaction.Outcome != store.TransactionNotCommitted || transaction.CommitAttempted {
+						t.Fatalf("delete metadata failure: %v", err)
+					}
+				}
+				if !FileEffectPossible(err) {
+					t.Fatal("file deletion fact lost")
+				}
+				_, err = files.Open(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
+				if !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("file deletion hidden: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func assertAttachmentDatabaseError(t *testing.T, err, cause error) {
+	t.Helper()
+	assertAttachmentOperationalError(t, err, cause)
+	var database *store.Error
+	if !errors.As(err, &database) {
+		t.Fatalf("database error type lost: %v", err)
+	}
 }

@@ -12,8 +12,6 @@ import (
 )
 
 const (
-	MaxGraphNodes          = 1000
-	MaxGraphEdges          = 5000
 	TitlePreviewCharacters = 160
 	MaxAssigneeResolution  = 100
 )
@@ -26,13 +24,6 @@ func GraphRoot(found, deleted bool) *model.Fault {
 		return &model.Fault{Code: "task_deleted", Message: "Task was deleted.", Cause: model.ErrTaskDeleted}
 	}
 	return nil
-}
-
-func GraphLimit(nodeCount, edgeCount int64) *model.Fault {
-	if nodeCount <= MaxGraphNodes && edgeCount <= MaxGraphEdges {
-		return nil
-	}
-	return &model.Fault{Code: "graph_limit_exceeded", Message: "Task graph exceeds the supported size.", GraphLimit: &model.GraphLimitDetails{NodeCount: nodeCount, EdgeCount: edgeCount, MaxNodes: MaxGraphNodes, MaxEdges: MaxGraphEdges}}
 }
 
 func SummarizeGraph(tasks []model.GraphTask) model.TaskGraphSummary {
@@ -50,6 +41,8 @@ func SummarizeGraph(tasks []model.GraphTask) model.TaskGraphSummary {
 			summary.InProgress++
 		case model.TaskDone:
 			summary.Done++
+		case model.TaskCancelled:
+			summary.Cancelled++
 		}
 	}
 	return summary

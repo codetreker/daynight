@@ -5,15 +5,29 @@ import (
 	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, error) {
-	fields, err := workerObject(raw, "assistantHost", "protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers")
+	fields, err := jsonobject.Decode(raw, "assistantHost", "protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers", "creationConfigurationVersion")
 	if err != nil {
-		return nil, err
+		return nil, httpx.InvalidInput(err.Error())
+	}
+	for _, key := range []string{"protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers"} {
+		if _, exists := fields[key]; !exists {
+			return nil, httpx.InvalidInput("assistantHost." + key + " is required")
+		}
 	}
 	host := &model.WorkerAssistantHost{}
+	if raw, exists := fields["creationConfigurationVersion"]; exists {
+		value, err := workerIntegerInput(raw)
+		if err != nil || value != 1 {
+			return nil, httpx.InvalidInput("assistantHost.creationConfigurationVersion must be 1")
+		}
+		host.CreationConfigurationVersion = 1
+	}
 	host.ProtocolVersion, err = workerIntegerInput(fields["protocolVersion"])
 	if err != nil {
 		return nil, err
@@ -34,6 +48,9 @@ func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, 
 	var providers []json.RawMessage
 	if json.Unmarshal(fields["providers"], &providers) != nil || providers == nil {
 		return nil, httpx.InvalidInput("assistantHost.providers must be an array")
+	}
+	if len(providers) != 3 {
+		return nil, httpx.InvalidInput("assistantHost.providers must contain exactly three providers")
 	}
 	host.Providers = make([]model.WorkerAssistantProvider, 0, len(providers))
 	for _, raw := range providers {
@@ -73,6 +90,9 @@ func workerAssistantProviderInput(raw json.RawMessage) (model.WorkerAssistantPro
 	var args []json.RawMessage
 	if json.Unmarshal(fields["args"], &args) != nil || args == nil {
 		return provider, httpx.InvalidInput("assistantHost provider args must be an array")
+	}
+	if len(args) > workercore.MaxNativeArgs {
+		return provider, httpx.InvalidInput("assistantHost provider args must contain at most 128 items")
 	}
 	provider.Args = make([]string, 0, len(args))
 	for _, raw := range args {

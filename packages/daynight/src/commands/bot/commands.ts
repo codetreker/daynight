@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
+import { DEFAULT_OPERATION_LIMITS } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import type { CliContext } from "../../cli/context.js";
 import { UsageError } from "../../cli/context.js";
@@ -7,7 +8,7 @@ import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { terminalText } from "../../platform/terminal.js";
 import type { runServerCommand } from "../server/runtime.js";
-import { botCwd, botName, botProvider, botVersion, deletionState } from "./api.js";
+import { botCwd, botName, botNativeChoice, botProvider, botVersion, deletionState } from "./api.js";
 import type { Bot, BotOverrides } from "./api.js";
 import { botDefinition } from "./definition.js";
 
@@ -47,7 +48,7 @@ export const runBotCommand = async (args: readonly string[], context: CliContext
   const option = (name: string) => command.options.get(name) as string | undefined;
   const uuid = (value: string): string => { const parsed = canonicalId(value); if (parsed === null) throw new Error("Expected a hyphenated UUID."); return parsed; };
   let botId: string | undefined, requestId: string | undefined, name: string | undefined, version: string | undefined;
-  const overrides: { workerId?: string; cwd?: string; provider?: NonNullable<BotOverrides["provider"]> } = {};
+  const overrides: { workerId?: string; cwd?: string; provider?: NonNullable<BotOverrides["provider"]>; model?: string; reasoningEffort?: string } = {};
   try {
     if (action === "show" || action === "delete") botId = uuid(command.values[0]!);
     if (action === "create") {
@@ -55,6 +56,8 @@ export const runBotCommand = async (args: readonly string[], context: CliContext
       if (option("--worker") !== undefined) overrides.workerId = uuid(option("--worker")!);
       if (option("--cwd") !== undefined) overrides.cwd = botCwd(option("--cwd"));
       if (option("--agent") !== undefined) overrides.provider = botProvider(option("--agent"));
+      if (option("--model") !== undefined) overrides.model = botNativeChoice(option("--model"), 256);
+      if (option("--reasoning-effort") !== undefined) overrides.reasoningEffort = botNativeChoice(option("--reasoning-effort"), 64);
     }
     if (action === "delete") version = botVersion(option("--if-version"));
     if (action === "create" || action === "delete") requestId = option("--request-id") === undefined ? randomUUID() : uuid(option("--request-id")!);
@@ -63,6 +66,7 @@ export const runBotCommand = async (args: readonly string[], context: CliContext
   const json = command.options.has("--json");
   const reconcile = botId === undefined ? undefined : `daynight bot show ${botId} --json`;
   try {
+    // A count-based Bot page can use the existing aggregate list budget.
     await dependencies.runServerCommand(context, async ({ api, operation }) => {
       if (action === "list") {
         const bots = await api.listBots(); operation.check();
@@ -75,7 +79,7 @@ export const runBotCommand = async (args: readonly string[], context: CliContext
       return { kind: "confirmed-mutation", output: json ? `${JSON.stringify(bot)}\n` : render(bot), failureText: (phase) => json
         ? JSON.stringify({ error: { operation: `bot.${action}`, botId, requestId, phase, outcomeUnconfirmed: false, confirmed: true, reconcile } })
         : `bot.${action} confirmed for Bot ${botId}, request ${requestId}; local ${phase} failed. Reconcile with ${reconcile}.` };
-    });
+    }, action === "list" ? { operationLimits: { responseBytes: DEFAULT_OPERATION_LIMITS.totalBytes } } : {});
   } catch (cause) {
     if (cause instanceof PublicDiagnosticError) throw cause;
     const failure = apiFailure(cause);

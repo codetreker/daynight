@@ -1,0 +1,377 @@
+[
+  {
+    "name": "task_attachment_read",
+    "description": "Inspect attachment metadata by default. Explicit inline/chunk reads default to8KiB; binary bytes require format:base64. Use bounded snapshots for larger data.",
+    "inputSchema": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "inspect",
+              "default": "inspect"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "inline"
+            },
+            "path": {
+              "type": "string"
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "text",
+                "base64"
+              ],
+              "default": "auto"
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 524288,
+              "default": 8192
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "open"
+            },
+            "path": {
+              "type": "string"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "path",
+            "transferId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "chunk"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 524288,
+              "default": 8192
+            },
+            "format": {
+              "enum": [
+                "auto",
+                "text",
+                "base64"
+              ],
+              "default": "auto"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "transferId",
+            "offset"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "close"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "transferId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "enum": [
+                "receiving",
+                "committing",
+                "committed",
+                "unknown",
+                "failed",
+                "readable",
+                "cleanup_pending",
+                "closed",
+                "preparing"
+              ]
+            },
+            "nextOffset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "sizeBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "totalBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "acceptedBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "readBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "operationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "cleanupState": {
+              "enum": [
+                "pending",
+                "complete"
+              ]
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "eof": {
+              "type": "boolean"
+            },
+            "encoding": {
+              "enum": [
+                "utf8",
+                "base64"
+              ]
+            },
+            "contentBase64": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "attachment": {
+              "type": "object"
+            },
+            "created": {
+              "type": "boolean"
+            },
+            "contentIncluded": {
+              "type": "boolean"
+            },
+            "requiresExplicitBinaryRead": {
+              "type": "boolean"
+            },
+            "contentRef": {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "taskId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "transferId": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          }
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

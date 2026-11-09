@@ -1,32 +1,58 @@
 export * from '../../src/api/sessions';
 import type { BotSessionBinding, SessionApi } from '../../src/api/sessions';
 import type { SessionSnapshot } from '../../src/api/types';
+import type { SessionArchive } from '../../../daynight/src/session/archive';
+import { sessionFence } from '../../../daynight/src/session/protocol';
+
+export type BotViewportOptions = {
+  readonly scenario: 'empty' | 'long' | 'error' | 'archive' | 'hot-switch';
+  readonly text?: string;
+};
 
 // Only the Bot transport is controlled. AuthenticatedApp, the cache, client,
 // renderer, composer and pagination hooks are production implementations.
-const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0, bindings: [] as string[] };
-declare global { interface Window { botViewport: { metrics: typeof metrics } } }
+const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0, archives: 0, archiveContents: 0, bindings: [] as string[] };
+declare global { interface Window { botViewport: { metrics: typeof metrics }; botViewportOptions?: BotViewportOptions } }
 window.botViewport = { metrics };
 export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
   metrics.bindings.push(JSON.stringify(binding));
+  const options = window.botViewportOptions;
+  const archived = options?.scenario === 'archive';
   const snapshot: SessionSnapshot = {
     protocol: 'daynight.session.v1', schemaVersion: 1, projectionVersion: 1,
     sessionId: binding.sessionId, testExecutionId: binding.testExecutionId,
     executionGeneration: '1', connectionEpoch: '1',
     identity: { ownerUserId: binding.ownerUserId, controllerId: '00000007-1111-4111-8111-111111111111', controllerInstanceId: '00000008-1111-4111-8111-111111111111', agentControlMode: 'web', provider: 'codex', nativeSessionId: 'viewport-fixture' },
     sessionRevision: '1', historyEpoch: 'viewport-history', lastEventSeq: '0', lastTimelineSeq: '2000',
-    initialInputState: 'not_required', synchronized: true, lifecycle: 'active', connectionState: 'connected', activity: 'idle', currentTurnId: null,
-    capabilities: { send: true, steer: true, cancel: true, respond: true }, operations: { canSend: true, canCancel: false, canRespond: false },
+    initialInputState: 'not_required', synchronized: !archived, lifecycle: archived ? 'archived' : 'active', connectionState: archived ? 'disconnected' : 'connected', activity: 'idle', currentTurnId: null,
+    capabilities: { send: true, steer: true, cancel: true, respond: true }, operations: { canSend: !archived, canCancel: false, canRespond: false },
   };
   const page = (start: number, end: number) => ({
     sessionId: binding.sessionId, historyEpoch: snapshot.historyEpoch,
     items: Array.from({ length: end - start + 1 }, (_, index) => ({ kind: 'assistant_message' as const, entryId: `${binding.botId}-${index + start}`, entrySeq: String(index + start), revision: '1', content: [{ type: 'text' as const, text: `### Message ${index + start}\n\nLong history from ${binding.botId}. Each message has sufficient content to exercise a bounded timeline.\n\nThis paragraph must not push the composer below the window.` }] })),
     resources: [], beforeCursor: start > 1 ? String(start) : null, afterCursor: null, hasMoreBefore: start > 1, hasMoreAfter: false, lastEventSeq: '0',
   });
+  const content = () => ({
+    ...page(1, 1),
+    items: options?.scenario === 'empty' ? [] : [{ kind: 'assistant_message' as const, entryId: `${binding.botId}-content`, entrySeq: '1', revision: '1', content: [{ type: 'text' as const, text: options?.text ?? 'Saved assistant response.' }] }],
+  });
+  const archive = (): SessionArchive => ({
+    schemaVersion: 1, ...sessionFence(snapshot), controllerId: snapshot.identity.controllerId,
+    controllerInstanceId: snapshot.identity.controllerInstanceId, provider: snapshot.identity.provider,
+    nativeSessionId: snapshot.identity.nativeSessionId, entries: content().items, resources: [],
+  });
   return {
     current: async () => ({ status: 'registered', session: snapshot }),
     timeline: async (_id, direction, cursor) => {
-      if (direction === 'tail') { metrics.tail++; return page(1901, 2000); }
+      if (direction === 'tail') {
+        metrics.tail++;
+        if (options?.scenario === 'error') throw new Error('Controlled history unavailable');
+        if (options?.scenario === 'hot-switch') {
+          const tail = page(1901, 2000);
+          return { ...tail, items: tail.items.map(entry => entry.entrySeq === '1950' ? { kind: 'tool_call' as const, callId: 'hot-switch-tool', entryId: entry.entryId, entrySeq: entry.entrySeq, revision: entry.revision, name: 'commandExecution', status: 'completed' as const, input: 'ls -la', output: [{ type: 'text' as const, text: 'Retained tool output' }], truncated: false } : entry) };
+        }
+        return options ? content() : page(1901, 2000);
+      }
       metrics.before++; const end = Number(cursor) - 1; return page(Math.max(1, end - 99), end);
     },
     channel: (_id, _after, receive) => {
@@ -36,8 +62,16 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
     },
     command: async () => { metrics.commands++; throw new Error('No command is expected in viewport acceptance.'); },
     operation: async () => { throw new Error('No operation is expected.'); },
-    archive: async () => { throw new Error('No archive is expected.'); },
-    archiveContent: async () => { throw new Error('No archive is expected.'); },
+    archive: async () => {
+      metrics.archives++;
+      if (!archived) throw new Error('No archive is expected.');
+      return { state: 'ready', sha256: 'a'.repeat(64), byteLength: String(new TextEncoder().encode(JSON.stringify(archive())).length), errorCode: null };
+    },
+    archiveContent: async () => {
+      metrics.archiveContents++;
+      if (!archived) throw new Error('No archive is expected.');
+      return archive();
+    },
     resource: async () => new Blob(), resourceUrl: () => '/unused',
   };
 }

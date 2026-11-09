@@ -39,37 +39,12 @@ func AdmitMessage(ctx context.Context, message model.ThreadMessage) ([]byte, err
 	return normal, nil
 }
 
-func SelectPage(ctx context.Context, candidates []model.ThreadMessage, count int, details, reverse bool) (model.ThreadPage, error) {
-	page := model.ThreadPage{Items: make([]model.ThreadMessage, 0, min(count, len(candidates)))}
-	empty, err := taskcodec.EncodePage(page, details)
-	if err != nil {
+func SelectPage(ctx context.Context, candidates []model.ThreadMessage, count int, reverse bool) (model.ThreadPage, error) {
+	if err := ctx.Err(); err != nil {
 		return model.ThreadPage{}, err
 	}
-	size := len(empty)
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return model.ThreadPage{}, err
-		}
-		if len(page.Items) == count {
-			break
-		}
-		encoded, err := taskcodec.EncodeMessage(candidate, details)
-		if err != nil {
-			return model.ThreadPage{}, err
-		}
-		extra := len(encoded)
-		if len(page.Items) > 0 {
-			extra++
-		}
-		if size+extra > taskcodec.PageLimit {
-			if len(page.Items) == 0 {
-				return model.ThreadPage{}, errors.New("stored thread message cannot fit in a page")
-			}
-			break
-		}
-		size += extra
-		page.Items = append(page.Items, candidate)
-	}
+	page := model.ThreadPage{Items: make([]model.ThreadMessage, min(count, len(candidates)))}
+	copy(page.Items, candidates)
 	if reverse {
 		slices.Reverse(page.Items)
 	}
@@ -180,7 +155,7 @@ func ReadPage(ctx context.Context, dao Reader, taskID string, input PageRequest)
 	if err != nil {
 		return model.ThreadPage{}, nil, err
 	}
-	page, err := SelectPage(ctx, candidates, input.Count, input.Details, before)
+	page, err := SelectPage(ctx, candidates, input.Count, before)
 	if err != nil {
 		return model.ThreadPage{}, nil, err
 	}
@@ -193,9 +168,6 @@ func ReadPage(ctx context.Context, dao Reader, taskID string, input PageRequest)
 	encoded, err := taskcodec.EncodePage(page, input.Details)
 	if err != nil {
 		return model.ThreadPage{}, nil, fmt.Errorf("encode thread page: %w", err)
-	}
-	if len(encoded) > taskcodec.PageLimit {
-		return model.ThreadPage{}, nil, errors.New("encoded thread page exceeds byte budget")
 	}
 	if err := ctx.Err(); err != nil {
 		return model.ThreadPage{}, nil, err

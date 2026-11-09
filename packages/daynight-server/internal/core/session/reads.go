@@ -25,8 +25,11 @@ func EventCursor(v sp.Snapshot, seq string) string {
 }
 func decodeCursor(value string, v sp.Snapshot, kind string) (position, error) {
 	var p position
+	if len(value) > 512 {
+		return p, fault("reset_required", "Cursor does not belong to this session projection.")
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || len(value) > 512 || json.Unmarshal(raw, &p) != nil || p.Session != v.SessionID || p.Epoch != v.HistoryEpoch || p.Kind != kind || number(p.Position) < 0 || number(p.Upper) < 0 || decimal(number(p.Position)) != p.Position || decimal(number(p.Upper)) != p.Upper {
+	if err != nil || json.Unmarshal(raw, &p) != nil || p.Session != v.SessionID || p.Epoch != v.HistoryEpoch || p.Kind != kind || number(p.Position) < 0 || number(p.Upper) < 0 || decimal(number(p.Position)) != p.Position || decimal(number(p.Upper)) != p.Upper {
 		return p, fault("reset_required", "Cursor does not belong to this session projection.")
 	}
 	return p, nil
@@ -41,7 +44,7 @@ func (s *Execution) CurrentWithStartup(ctx context.Context, p model.Principal, p
 
 func (s *Execution) current(ctx context.Context, p model.Principal, project, taskID string, includeStartup bool) (map[string]any, error) {
 	var out map[string]any
-	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, admin bool, load func(string) (*Access, error)) error {
+	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, load func(string) (*Access, error)) error {
 		_, tx := op.scoped(scope)
 		t := task.task
 		w := t.Worker
@@ -69,7 +72,7 @@ func (s *Execution) current(ctx context.Context, p model.Principal, project, tas
 		if err := s.archiveExpired(ctx, tx, r); err != nil {
 			return err
 		}
-		out = map[string]any{"status": "registered", "session": permissions(r, (admin || r.Owner == p.UserID) && active(t, r), s.now())}
+		out = map[string]any{"status": "registered", "session": permissions(r, r.Owner == p.UserID && active(t, r), s.now())}
 		if includeStartup {
 			out["startupReport"] = nil
 			report := t.StartupReport

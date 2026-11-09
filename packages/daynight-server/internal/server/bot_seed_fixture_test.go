@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func seedHTTPBot(t *testing.T, database *store.Store, handler *resourceTestHandler, workerID string) model.Bot {
+func seedHTTPBot(t *testing.T, database store.Transactions, handler *resourceTestHandler, workerID string) model.Bot {
 	t.Helper()
 	bot, err := botservice.New(database).Create(context.Background(), handler.principal, botcore.CreateBot{
 		ID: uuid.NewString(), Name: "  长期助手  ", ResolvedConfiguration: model.BotConfiguration{

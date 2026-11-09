@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react';
 import { authRequestsPaused } from '../../api/client';
+import { browserNavigation } from '../../app/navigation';
+import { parseAuthRoute } from '../../app/router';
 import type { BotSessionBinding } from '../../api/sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { SessionView } from '../task-agent-session/SessionView';
@@ -7,6 +9,7 @@ import type { SessionTimelineReadingHandle } from '../task-agent-session/Session
 import { useSessionMessages } from '../task-agent-session/messages';
 import { BotSessionCache, botSessionKey, type BotSessionPane } from './session-cache';
 import type { SessionPresentationSlots } from '../task-agent-session/session-presentation-slots';
+import { BotConversationEmpty } from './BotConversationEmpty';
 import './bot-session.css';
 
 /** Own this hook above the selected Bot and its details panel. Neither selection nor details recreate it. */
@@ -23,27 +26,55 @@ export function useBotSessionCache(): BotSessionCache {
     if (scope.signal.aborted) abort(); else cache.syncAvailability();
     return () => { scope.signal.removeEventListener('abort', abort); clearInterval(timer); cache.close(); };
   }, [cache, scope]);
+  useLayoutEffect(() => {
+    const navigation = browserNavigation();
+    const target = () => { const route = parseAuthRoute(navigation.snapshot().pathname); return route.kind === 'bot' ? route.botId : null; };
+    let observedBotId = target();
+    // The existing owner notifies only admitted locations. Query/fragment changes
+    // keep the same target; a new target or leaving Bots freezes before commit.
+    const detach = navigation.subscribe(() => {
+      const nextBotId = target();
+      if (nextBotId === observedBotId) return;
+      observedBotId = nextBotId; cache.suspendActions();
+    });
+    return () => { detach(); cache.suspendActions(); };
+  }, [cache]);
   return cache;
 }
 
 /** The caller supplies only an authenticated Bot's real Session binding, or null while it is unknown. */
-export function BotSessionHost({ cache, binding, active = true, fullscreenBoundary, presentation }: {
+export function BotSessionHost({ cache, displayBinding, actionBinding = null, botId = displayBinding?.botId ?? null, active = true, fullscreenBoundary, presentation }: {
   readonly cache: BotSessionCache;
-  readonly binding: BotSessionBinding | null;
+  readonly displayBinding: BotSessionBinding | null;
+  readonly actionBinding?: BotSessionBinding | null;
+  readonly botId?: string | null;
   readonly active?: boolean;
   readonly presentation?: SessionPresentationSlots;
   readonly fullscreenBoundary?: RefObject<HTMLElement | null>;
 }) {
   const panes = useSyncExternalStore(cache.subscribe, cache.snapshot), m = useSessionMessages();
+  const navigation = browserNavigation();
+  const location = useSyncExternalStore(navigation.subscribe, navigation.snapshot);
   const guardRevision = useSyncExternalStore(cache.subscribe, cache.guardSnapshot);
+  const binding = displayBinding?.botId === botId ? displayBinding : null;
   const key = binding ? botSessionKey(binding) : null;
+  const action = actionBinding?.botId === botId && active ? actionBinding : null;
+  const actionKey = action ? botSessionKey(action) : null;
   const current = cache.isCurrent();
-  useLayoutEffect(() => { cache.select(binding); }, [cache, key, current, guardRevision]);
+  const assistantPresentation: SessionPresentationSlots = {
+    ...presentation,
+    variant: 'assistant',
+    renderEmpty: slot => <BotConversationEmpty {...slot} />,
+    composer: { ...presentation?.composer, compactMenus: true },
+  };
+  // Two admitted navigations can return to this same selection in one commit.
+  // The navigation owner's snapshot still changes, so that commit must readmit it.
+  useLayoutEffect(() => { cache.select(binding, current ? action : null); }, [cache, key, actionKey, botId, active, current, guardRevision, location]);
   const selected = current && panes.some(pane => pane.key === key);
   return <section className="bot-session-host" aria-label={m.title}>
     {!selected ? <p className="session-empty" role="status">{current ? m.loading : m.unavailable}</p> : null}
     {panes.map(pane => <div key={pane.key} className="bot-session-pane" data-bot-id={pane.binding.botId} hidden={!active || !current || pane.key !== key} inert={!active || !current || pane.key !== key}>
-      <BotPane {...(presentation ? { presentation } : {})} pane={pane} current={current} active={active && current && pane.key === key} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
+      <BotPane presentation={assistantPresentation} pane={pane} current={current} active={active && current && pane.key === key} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
     </div>)}
   </section>;
 }

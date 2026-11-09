@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -19,7 +17,7 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *authhttp.Authentication, logger *slog.Logger) {
+func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	path := "/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim"
 	mux.HandleFunc("POST "+path, auth.Require(handler.claimWorker))
 	mux.HandleFunc("PATCH "+path, auth.Require(handler.updateWorker))
@@ -74,7 +72,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	logger = logger.With("claim_id", claimID)
 	worker, err := taskproperties.Worker(task.Properties)
 	if err != nil {
-		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
+		committedResponseFailure(w, request, logger, "worker_claim", err)
 		return
 	}
 	if worker != nil {
@@ -82,12 +80,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	}
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
 		"request_id", httpx.RequestID(request.Context()))
-	response, err := taskResponse(task, request)
-	if err != nil {
-		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
-		return
-	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+	writeTaskMutation(w, request, logger, "worker_claim", http.StatusOK, "", task)
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {

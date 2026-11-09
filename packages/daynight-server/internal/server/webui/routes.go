@@ -14,15 +14,24 @@ func (ui *UI) RegisterRoutes(mux *http.ServeMux, logger *slog.Logger) {
 	page := uiHandler(logger, ui.Page)
 	asset := uiHandler(logger, ui.Asset)
 	for _, pattern := range []string{
-		"/{$}", "/login", "/projects", "/teams/{teamId}", "/teams/{teamId}/settings", "/teams/{teamId}/members", "/shared-projects", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
+		"/{$}", "/login", "/webhooks", "/projects", "/teams/{teamId}", "/teams/{teamId}/settings", "/teams/{teamId}/members", "/shared-projects", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
 		"/projects/{projectId}/tasks/{taskId}", "/test-sessions", "/test-sessions/{sessionId}", "/bots", "/bots/{botId}", "/workers", "/workers/{workerId}",
 		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/device", "/setup",
 	} {
 		mux.HandleFunc("GET "+pattern, page)
 		mux.HandleFunc(pattern, httpx.MethodNotAllowed(logger, "GET, HEAD"))
 	}
+	mux.HandleFunc("GET /oauth/consent", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		page(w, r)
+	})
+	mux.HandleFunc("/oauth/consent", httpx.MethodNotAllowed(logger, "GET, HEAD"))
 	mux.HandleFunc("GET /assets/", asset)
 	mux.HandleFunc("/assets/", httpx.MethodNotAllowed(logger, "GET, HEAD"))
+}
+
+func (ui *UI) BadRequestHandler(logger *slog.Logger) http.Handler {
+	return uiHandler(logger, ui.BadRequestPage)
 }
 
 func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {

@@ -1,5 +1,6 @@
 import type { Project, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
 import { readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
+import { isTerminalStatus } from "../../api/task-status";
 import { buildGraphIndex, type GraphIndex } from "../task-graph/model";
 
 export const compareTimestamps = (left: string, right: string): number => {
@@ -26,7 +27,7 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
   sameTaskProperties(left.properties, right.properties) &&
-  sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) &&
+  sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) && sameTime(left.cancelledAt, right.cancelledAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
 export const sameProject = (left: Project, right: Project): boolean =>
@@ -40,13 +41,14 @@ export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphI
 export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
   const nodes = new Map(ordered.map((task) => [task.id, task]));
-  const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordered.length, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 };
+  const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordered.length, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
   const tasks = ordered.map(({ version: _version, properties: _properties, ...task }) => {
-    const blockedBy = task.dependsOn.filter((dependency) => nodes.get(dependency)?.status !== "done");
+    const blockedBy = task.dependsOn.filter((dependency) => !nodes.has(dependency) || !isTerminalStatus(nodes.get(dependency)!.status));
     const ready = task.status === "todo" && blockedBy.length === 0;
     if (task.status === "todo") { summary.todo++; if (ready) summary.ready++; else summary.blocked++; }
     else if (task.status === "in_progress") summary.inProgress++;
-    else summary.done++;
+    else if (task.status === "done") summary.done++;
+    else summary.cancelled++;
     return { ...task, blockedBy, ready };
   });
   const workerMachines = new Map<string, Pick<WorkerClaim, "state" | "machine">>();

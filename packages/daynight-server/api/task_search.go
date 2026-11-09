@@ -22,14 +22,15 @@ type TaskSearchMatch struct {
 	DescriptionSnippet *string  `json:"descriptionSnippet"`
 }
 type TaskSearchItem struct {
-	ID         string             `json:"id"`
-	ProjectID  string             `json:"projectId"`
-	Title      string             `json:"title"`
-	Status     string             `json:"status"`
-	AssignedTo *string            `json:"assignedTo"`
-	UpdatedAt  time.Time          `json:"updatedAt"`
-	Context    *TaskSearchContext `json:"context"`
-	Match      TaskSearchMatch    `json:"match"`
+	ID          string             `json:"id"`
+	ProjectID   string             `json:"projectId"`
+	Title       string             `json:"title"`
+	Status      string             `json:"status"`
+	AssignedTo  *string            `json:"assignedTo"`
+	UpdatedAt   time.Time          `json:"updatedAt"`
+	CancelledAt *time.Time         `json:"cancelledAt"`
+	Context     *TaskSearchContext `json:"context"`
+	Match       TaskSearchMatch    `json:"match"`
 }
 type TaskSearchPage struct {
 	ProjectID  string           `json:"projectId"`

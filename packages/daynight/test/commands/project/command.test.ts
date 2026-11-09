@@ -25,7 +25,7 @@ const fixture = (projects: readonly Project[] = []) => {
     addTaskStep: unavailable,
     deleteTaskStep: unavailable,
     listTaskSteps: unavailable, getTaskStep: unavailable,
-    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable,
+    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable, previewProjectDeletion: unavailable, deleteProject: unavailable,
     readTaskThread: unavailable, postTaskThreadMessage: unavailable,
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
     getTaskPropertySchema: async () => { throw new Error("Unused property API"); },
@@ -49,7 +49,7 @@ const fixture = (projects: readonly Project[] = []) => {
     withdrawWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     createTask: unavailable, getTask: unavailable, listTasks: unavailable, searchTasks: unavailable, listReadyTasks: unavailable, updateTask: unavailable, deleteTask: unavailable, setTaskStatus: unavailable, getTaskGraph: unavailable,
-    putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable,
+    putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable, webhookRequest: unavailable,
   };
   const runServerCommand = vi.fn<ProjectCommandDependencies["runServerCommand"]>(async (current, command) => {
     const operation = createOperation();

@@ -10,15 +10,20 @@ it, reducing the space available to read the conversation.
 
 ## Decision
 
-Only the direct record toolbar inside `.task-session-host` bounds its label and
-select group to 500px. The group grows from a zero flex basis and keeps its
-label text on one line. The native select also grows from zero, with a 96px
-minimum, so record names do not determine the closed control's width.
+The original layout bounded only the direct record toolbar inside
+`.task-session-host` to 500px. Its label and select group grew from a zero flex
+basis, with a single-line label and a 96px select minimum, so record names did
+not determine the closed control's width.
 
-The group's min-content width includes the label and that minimum selection
-width. Refresh stays beside it at supported phone widths. The existing outer
-flex wrapping lets the optional pagination button move down only when it cannot
-fit. Complete record names remain available in the native options.
+The group's min-content width included the label and that minimum selection
+width. Refresh stayed beside it at supported phone widths. Outer flex wrapping
+allowed the optional pagination button to move down when it could not fit.
+Complete record names remained available in the native options.
+
+The [automatic Task Session entry decision](../simplification/2026-11-06-automatic-task-session-entry.md)
+supersedes the main-page selector and its layout. Historical records remain
+available through Attachments; the original reasons for avoiding shared toolbar
+changes remain relevant to the remaining terminal and attachment controls.
 
 ## Alternatives
 
@@ -32,8 +37,9 @@ contents can collide with the buttons instead of wrapping the extra control.
 
 ## Consequences
 
-Phone readers recover one row of conversation space when pagination is absent.
-Wide layouts keep Refresh next to a bounded selector. Closed controls truncate
-long record labels; native option selection retains the full names and existing
-keyboard behavior. History reads, selection persistence, errors and pagination
-retain their existing semantics.
+The bounded layout recovered one row of conversation space on phones when
+pagination was absent and kept Refresh adjacent on wide pages. Closed controls
+truncated long labels while native options retained full names and keyboard
+behavior. That layout change preserved history reads, selection persistence,
+errors and pagination; their current entry semantics belong to the replacement
+decision.

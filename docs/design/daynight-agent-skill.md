@@ -1,9 +1,8 @@
 # using-daynight 项目任务 Skill 设计
 
 [需求](../spec/daynight-agent-skill.md)拥有公开行为，
-[入口隔离决策](../../.agents/notes/implemented/architecture/2026-10-26-managed-task-skill.md)
-拥有普通与 managed 执行的分工；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
-保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/implemented/process/2026-10-25-task-content-handoff.md)
+[入口隔离决策](../../.agents/notes/archived/architecture/2026-10-26-managed-task-skill.md)记录普通与 managed 执行分工的历史取舍；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
+保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/archived/process/2026-10-25-task-content-handoff.md)
 拥有内容单一所有权和审查后启用许可的取舍；[原分发决策](../../.agents/notes/archived/architecture/2026-10-21-public-agent-skill-design.md)
 保留安装机制的原始理由。[Project/Task CLI](daynight-project-task.md)与
 [附件设计](daynight-task-attachments.md)继续拥有服务访问、版本、依赖和文件操作。
@@ -131,11 +130,11 @@ controller。Skill、task、附件和完成规则均不授予合并等额外交�
 | `autopilot-managed-task.md` | 显式 assignment 核验、原 active claim、指定工作区、按类型的必需附件和评审、单任务自主交付循环、交互信号与等待、claim-bound done 与交还 controller |
 | `task-execution.md` | 两种执行入口共用的真实任务输入、按项目规则维护 Steps、阶段资料、范围、交付、成果、验收准备与 session 等待检查点；不拥有开始或最终状态写入 |
 | `goal.md` | Goal 判断、顺序讨论与用户确认、阶段开始授权、交付任务四项内容及其 Goal 一致性、拆分整体质量、恢复和整体验收 |
-| `task-content.md` | 任务定义与成果、持久 Steps 与 session 内容分类、唯一内容所有者、引用读取和阶段适用性 |
-| `handoff.md` | 指定移交授权、内容充分性与适用 Goal 要求、本人负责人检查、许可更新、只读复审、状态与并发结果核对 |
+| `task-content.md` | 任务定义与成果、交付定义和实施设计的就绪标准、持久 Steps 与 session 内容分类、唯一内容所有者、引用读取和阶段适用性 |
+| `handoff.md` | 指定移交授权、交付就绪与适用 Goal 要求的审查、本人负责人检查、许可更新、只读复审、状态与并发结果核对 |
 
 task description 明确当前任务、责任与资料入口。`task-content.md` 统一拥有 task/session
-边界：task 保存目标、交付要求及必需的实施方案，session 保存执行或讨论的组织、命令安排和工具活动。创建、Goal 拆分、
+边界：task 保存目标、交付要求、选定方案、详细设计和必要实施步骤，session 保存执行或讨论的组织、命令安排、工具活动和调试过程。创建、Goal 拆分、
 移交和执行通过既有引用读取同一标准，各模式拥有自身操作协议，不维护相互竞争的分类规则。
 边界覆盖 description、附件和引用任务材料；改名或迁移材料不能改变内容归属。
 
@@ -145,13 +144,14 @@ task description 明确当前任务、责任与资料入口。`task-content.md` 
 只有一个拥有位置。[Delivery task brief](../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#delivery-task-brief) 拥有 Goal 交付任务的目标、scope、实施方案和验收，以及按连贯成果和可审查性形成的拆分边界；Goal 协议核对各任务的 Goal 贡献及方案一致性和整组覆盖、责任与衔接；创建与 handoff 引用各自适用的检查，不复制另套标准。执行必需的进一步引用实际读取，记录资源身份避免循环读取；不足、
 不可读或冲突不能由链接存在掩盖。
 
-单独方案文件、session 命令安排、确认记录和 evidence location 不是通用内容前提。Goal 交付任务仍必须具有具体实施方案，可直接提供或准确引用来源章节；只写“按架构实现”不能通过。普通任务按实际要求决定所需方案，需求和设计阶段仍产出自身设计。系统架构和任务实施方案属于 task，session 的命令日程、工具活动与分工属于 session。用户要求的迁移方案、操作手册或测试策略可以包含方法；检查点不能被执行者自行声明为额外交付物。已接受的成果及必要完成门槛保存在 task，操作授权、确认经过、
+交付任务无论独立存在还是属于 Goal，都以任务定义和实施设计已经完成为移交条件。`task-content.md` 在现有定义与充分性规则中统一拥有具体问题、选定方案、详细设计、有序实施步骤和验收标准的实质要求。材料可由正文与精确可读引用共同提供，正常代码阅读、局部编码选择、调试和验证保留给执行者，缺失需求、方案选择和实质设计决定不能留待实现时补齐。Goal 的四项 brief 继续拥有 Goal 贡献、scope、实施方案和验收的组织与一致性，实施方案展开为已选方案、详细设计和有序步骤，并引用共享标准。
+
+单独方案文件、固定标题、逐行代码指令、Task Steps 资源、session 命令安排、确认记录和 evidence location 不是通用内容前提。明确产出调研、需求或设计的阶段仍形成自身成果，不要求未来设计预先存在。系统架构、任务实施设计及必要实施步骤属于 task，session 的命令日程、工具活动与分工属于 session。用户要求的迁移方案、操作手册或测试策略可以包含方法；检查点不能被执行者自行声明为额外交付物。已接受的成果及必要完成门槛保存在 task，操作授权、确认经过、
 进度、阻塞、CI/review/merge 过程与恢复上下文留在 session。最终 revision 可用于定位
 交付物，独立验收的结论保留所需对象身份、关键观察和限制，不积累工作流水。
 
 create-task 拥有 Markdown 写作示例；入口链接共享标准，两种执行入口通过 task-execution
-读取实际内容并保留更新后的完整 Markdown 和有效引用。task-content 说明原始字符串和路径基准，task-management 与 write-safety 说明完整替换及写入核验，Goal 协议保留各阶段及交付正文的附加入口条件。缺少 agent 执行
-计划不构成 task 不充分；真正必需的上游设计、原型或协议缺失时仍不能实施。
+读取实际内容并保留更新后的完整 Markdown 和有效引用。task-content 说明原始字符串和路径基准，task-management 与 write-safety 说明完整替换及写入核验，Goal 协议保留各阶段及交付正文的附加入口条件。缺少 agent 的 session 命令日程或工作组织不构成 task 不充分；交付所需的方案、详细设计、有序实施步骤，以及真正必需的上游设计、原型或协议缺失时仍不能实施。
 
 Web 复用附件的 CommonMark/GFM 阅读能力；API、CLI 和 Agent 仍读写原始描述字符串，
 不增加格式字段。相对描述链接及图片从当前任务附件根解析，Markdown 附件内部引用
@@ -240,16 +240,15 @@ task-management、project-management 与 write-safety 分别解释任务、项�
 
 ## 移交审查与许可
 
-`handoff.md` 只接受明确指定的移交对象。先读完整 task 和 worker 信息，再按共享内容标准读取真正必要的资料、来源任务和上下游契约，检查当前阶段的内容充分性；Goal 交付任务另按 Goal 协议复查四项内容、拆分边界及与 Goal 和方案的一致性。它能依据已有确认信息整理尚未启用的 todo；没有来源的要求或决定、责任重叠和交付衔接缺口作为具体问题返回。任务群逐项审核；这不重新证明整个 Goal 覆盖，不发现额外工作，也不授权重分任务或修改依赖。
+`handoff.md` 只接受明确指定的移交对象。先读完整 task 和 worker 信息，再按共享内容标准读取真正必要的资料、来源任务和上下游契约，检查当前阶段的内容充分性。每个交付任务必须已定义问题、选定方案、详细设计、实施步骤和验收；缺任一要素或仍需调研以确定方案时不通过。Goal 交付任务另按 Goal 协议复查四项内容、拆分边界及与 Goal 和方案的一致性。它能依据已有确认信息整理尚未启用的 todo，并在许可更新前补齐、读回和重审；需要的实质决定按已有确认要求解决。没有来源的要求或决定、责任重叠和交付衔接缺口作为具体问题返回，不能隐含地交给执行者决定。任务群逐项审核；这不重新证明整个 Goal 覆盖，不发现额外工作，也不授权重分任务或修改依赖。
 
 资料更新和内容核验先于许可更新。最终审查所依据的 task version 传给现有
 `task update --allow-agents true`；可在同一更新提交最终 description，不携带无关字段。
-负责人检查只读取显式目标的 `task show <task-id> --project <project-id> --json`，不枚举项目或账号任务集合。done 在归属检查前直接报告无需移交。其他状态将目标 assignedTo 与 setup 或当前 session 已独立确认的当前认证账号本地 user UUID 比较；未知身份、空值、不符或目标不可读时报告阻塞，不查询其他任务或改派。名称、邮箱、目标负责人和历史 worker 不是本人 UUID 的独立依据。目标版本变化须重读并重新判断，最终许可更新仍受精确版本保护。已启用任务检查失败保持只读并报告实际许可，既有 claim 恢复不重新执行本人候选资格检查。
+负责人检查只读取显式目标的 `task show <task-id> --project <project-id> --json`，不枚举项目或账号任务集合。done/cancelled在归属检查前直接报告实际终态、无需移交；取消不可恢复且不证明交付。其他状态将目标 assignedTo 与 setup 或当前 session 已独立确认的当前认证账号本地 user UUID 比较；未知身份、空值、不符或目标不可读时报告阻塞，不查询其他任务或改派。名称、邮箱、目标负责人和历史 worker 不是本人 UUID 的独立依据。目标版本变化须重读并重新判断，最终许可更新仍受精确版本保护。已启用任务检查失败保持只读并报告实际许可，既有 claim 恢复不重新执行本人候选资格检查。
 
-blocked todo 在设计和接口已清楚时可以预先移交，真实依赖继续阻止执行。已有 true 的
+blocked todo 在已确定的方案、详细设计、接口和集成步骤足以定义当前任务时可以预先移交，真实依赖继续阻止执行；前置仍要决定当前任务如何实现时不能通过内容审查。已有 true 的
 任务只读复审，失败保留许可并报告调度风险；不会把复审假定为暂停。撤销或停止按
-另外明确的授权及现有控制流程执行。in_progress 的 false 不启用，done 按模式策略
-无需移交。Active worker 保留所有权和原资源；released 保留历史，由有权管理者显式 resume 开始新的 claim/worktree/native session，启用许可不代替该操作。
+另外明确的授权及现有控制流程执行。in_progress的false不启用，done/cancelled按模式策略无需移交。Active worker 保留所有权和原资源；released 保留历史，由有权管理者显式 resume 开始新的 claim/worktree/native session，启用许可不代替该操作。
 
 附件和跨任务文档不受目标 task version 保护。开启前核验所依赖的可变内容，执行时
 再次读取；资料变化后重新审查受影响部分。此边界只提供尽力核对，不引入审查令牌、
@@ -275,7 +274,7 @@ in_progress 是合法观察。结果报告实际 assignedTo、本人负责人检
 
 普通 run-task 以一个明确 ID 建立身份并读取共同资料。ready todo 在授权、前置与阶段
 输入齐备后，以观察版本 set-status in_progress 并核验后开始。已有 in_progress 根据
-实际工作与检查点恢复，清单不提供所有权。done 仅在明确重开范围内按依赖保护重开。
+实际工作与检查点恢复，清单不提供所有权。done仅在明确重开范围内按依赖保护重开；cancelled报告终态并返回，不能恢复。
 指定任务不要求 allowAgents=true 或自动平台匹配；已有固定队列授权可作为当前指定
 任务的范围来源，skill 不以此恢复连续调度或自动选择。
 
@@ -344,9 +343,9 @@ PR URL/title 由 properties.pullRequests 拥有，任务材料保存真实成果
 
 ready 默认最多 10 项，必要时使用 1..100 的 --limit。服务按创建时间和 ID 升序排序，
 顺序不表达相关性；空页不证明 backlog 已完成。管理查询按实际范围读取清单、图与详情，
-区分范围完成、依赖阻塞、其他工作进行中及候选不足，不据此启动任务。Graph 读取目标的完整双向普通依赖连通分量及其中任务的一层外部前置，包含全部状态，不递归展开外部任务；完整依赖引用可能指向图外。达到
-1,000 节点 / 5,000 边限制时命令失败而不返回截断图，不等于项目未关联；详情使用 show，但不能替代完整关系核验。task list 穷尽匹配分页，
-默认排除 done，核对完整历史时显式包含已完成任务。状态/readiness 分组保留组内服务
+区分范围完成、依赖阻塞、其他工作进行中及候选不足，不据此启动任务。Graph 读取目标的完整双向普通依赖连通分量及其中任务的一层外部前置，包含全部状态，不递归展开外部任务；完整依赖引用可能指向图外。
+读取按实际保存的图完整返回，不复查存储节点或边容量；传输、取消和自然解码失败不等于项目未关联。详情使用 show，但不能替代完整关系核验。task list 穷尽匹配分页，
+默认排除done/cancelled，核对完整历史时显式包含已结束任务。状态/readiness 分组保留组内服务
 顺序，不表示相关性；文本为摘要，JSON 列表仅省略 description，详情和写入保留完整资源。
 
 在仓库内可省略 --project，由 CLI 按 Git origin URL 匹配；显式项目优先。project-management
@@ -357,7 +356,7 @@ https://daynight.cc，缺凭据或服务 401 提示 daynight login，不自动�
 所有基于已读内容的修改绑定精确 --if-version，保持完整 int64 十进制。默认临提交读取
 不保护较早决定；description、依赖与 PR 列表完整替换，冲突后重读并重新判断，不仅
 更换版本。附件独立核验，不受 task version 原子保护。update 不改状态；set-status
-是版本化状态设置，不提供独占锁、租约或新执行权。todo、in_progress、done 的同状态
+是版本化状态设置，不提供独占锁、租约或新执行权。todo、in_progress、done、cancelled的同状态
 请求 +0，实际改变 +1；未知结果先读实际事实，不自动提交重试。公开 --claim-id API
 继续由既有 CLI 与服务契约保护，普通调用背景不加载 managed 执行规则。
 
@@ -475,7 +474,7 @@ Windows 子进程保留调用者的控制台连接，使继承的标准输入、
 祖先冲突，预检完成后才使用完整替换器。每个结果保留相关 Agent、scope、物理路径、
 包版本和重载说明。失败停止后续目标并报告部分结果；父进程另外说明 npm 包已更新
 或保留，再以非零退出。重试 `update` 能从当前已安装包重新同步。
-[自动同步决策](../../.agents/notes/implemented/feature/2026-10-24-update-installed-agent-skills.md)
+[自动同步决策](../../.agents/notes/archived/feature/2026-10-24-update-installed-agent-skills.md)
 记录范围和失败边界。
 
 ## 调用成本
@@ -510,7 +509,7 @@ sibling 与另一 scope。迁移增加旧名称存在、leaf 链接、清理失�
 parent/leaf 链接、安装/清理路径嵌套、部分失败、监听清理和 completion 回归。Windows
 必须有原生结果；Linux 投影不能替代 `.cmd`、ConPTY 或平台链接证据。
 
-静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/implemented/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
+静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
 作为 bundle 资源链接；打包产物和安装副本保留这些内容，并与源码完整字节比较。既有
 project/task/attachment 套件验证命令语义，创建、更新和 JSON 读取包含中英文、CRLF、
 围栏代码、GFM 与链接的描述，确认原始字符串及精确版本完整替换。独立情境演练另外核对
@@ -520,10 +519,10 @@ project/task/attachment 套件验证命令语义，创建、更新和 JSON 读�
 再完成需求、后继登记失败保持前置 in_progress、已有后继复用、终端任务无后继、确认后覆盖
 附件须重确认、方案正文直接索引需求来源且先读内容、确认后实际拆分、实质修订重确认、讨论与 PR 交付区分、部分登记恢复、Markdown
 自足内容的正文/引用/混合组织、必需引用实际读取、任务定义与成果所有权、前端原型、禁止 merge、阻塞和单任务返回。
-移交情境覆盖本人/未分配/他人负责人、归属查询失败和版本变化、授权启用、已有 true 的只读复审、失败保留许可并报告、blocked todo、运行锁、
-done 策略、worker 连续性、附件独立变化、冲突/未知写入及启用后立即被认领。Goal 拆分情境覆盖交付任务四项内容、缺实施方案或验收不能证明 Goal 贡献、精确来源引用通过与笼统架构链接失败、无关目标混装、机械碎分、范围过大或过碎、缺失或重叠责任、未定义契约，以及集成和整体验收归属；允许有明确结果的基础能力、迁移、独立验收和已定义契约的 blocked todo。所选 Goal 交付任务移交发现拆分缺口时按实际许可状态报告，不扩大为全组重分或关系修改。指定子任务
+移交情境覆盖独立与 Goal 交付任务五项内容、缺详细设计或有序实施步骤、仅有方案方向或待调查根因、正常执行活动与未完成任务设计的区别、本人/未分配/他人负责人、归属查询失败和版本变化、授权启用、已有 true 的只读复审、失败保留许可并报告、blocked todo、运行锁、
+done/cancelled终态策略、worker连续性、附件独立变化、冲突/未知写入及启用后立即被认领。Goal 拆分情境覆盖交付任务四项内容、缺实施方案或验收不能证明 Goal 贡献、精确来源引用通过与笼统架构链接失败、无关目标混装、机械碎分、范围过大或过碎、缺失或重叠责任、未定义契约，以及集成和整体验收归属；允许有明确结果的基础能力、迁移、独立验收和已定义契约的 blocked todo。所选 Goal 交付任务移交发现拆分缺口时按实际许可状态报告，不扩大为全组重分或关系修改。指定子任务
 演练还核对执行与讨论的范围、跨任务阻塞和后续建议、必需共享输入读取，以及 Goal 级
-讨论和整体验收按当前任务已确认范围处理全局内容；managed 情境覆盖显式环境/技能/模式、普通不读取 managed 规则、上下文缺失/不匹配、原 claim 恢复及最终完成和系统工作区边界。任务/session 分类另覆盖混合请求、无 session 执行安排、真实设计输入和成果、操作授权、结果身份、
+讨论和整体验收按当前任务已确认范围处理全局内容；managed 情境覆盖显式环境/技能/模式、普通不读取 managed 规则、上下文缺失/不匹配、原 claim 恢复及最终完成和系统工作区边界。任务/session 分类另覆盖混合请求、无 session 执行安排、真实设计输入、详细设计与必要实施步骤和成果、操作授权、结果身份、
 恢复、用户要求的操作手册以及正文/附件/引用的一致边界。每例保留输入、应保留/排除项、
 允许/禁止操作、实际观察和结论，标明语义审查或 agent 演练及未验证行为；这些记录留在
 实施 session。保留正确规则再追加矛盾指令须由独立语义情境判断。自动化打包检查不包含指令文本变异测试，也不验证指令语义。这些情境是独立指令语义审查，不是自动化文本契约或对模型理解与执行的保证。review bundle 的快照、原生 Copilot 加载与配置隔离继续独立验证。

@@ -11,16 +11,35 @@ const snapshot = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../da
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
 afterEach(() => { clients.forEach((c) => c.close()); clients.length = 0; vi.useRealTimers(); });
-function fixture(storage: Storage | null = null, principal = userId) {
-  const s = snapshot(); let receive!: (message: BrowserMessage) => void; let close!: () => void;
+function fixture(storage: Storage | null = null, principal = userId, ownerUserId = userId, overrides: Partial<TaskSessionSnapshot> = {}) {
+  const s = { ...snapshot(), ...overrides }; let receive!: (message: BrowserMessage) => void; let close!: () => void;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const channel: SessionChannel = { close: vi.fn() };
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; close = onClose; return channel; }) };
-  const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage }); clients.push(client);
+  const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage });
+  client.setCurrentReadVisible(true); clients.push(client);
   return { s, api, client, receive: (message: BrowserMessage) => receive(message), disconnect: () => close() };
 }
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' }); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true)); }
 describe('task session transport lifecycle', () => {
+  it('keeps a non-owner live reader connected while refusing messages, cancellation and responses', async () => {
+    const f = fixture(null, userId, '00000010-1111-4111-8111-111111111111', { operations: { canSend: true, canCancel: true, canRespond: true }, currentTurnId: 'working-turn', activity: 'working' });
+    const interaction = { interactionId: 'approval', revision: '1', state: 'pending' as const, kind: 'approval' as const, title: 'Approve Write', detail: 'notes/review.txt', actions: ['allow_once' as const, 'reject' as const] };
+    vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [
+      { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Shared live output' }] },
+      { kind: 'interaction', entryId: 'request', entrySeq: '2', revision: '1', interaction }
+    ], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    await ready(f);
+    f.client.setDraft('unauthorized draft');
+    await expect(f.client.send('hello')).rejects.toThrow();
+    await expect(f.client.cancel()).rejects.toThrow();
+    await expect(f.client.respond(interaction, { kind: 'approval', action: 'allow_once' })).rejects.toThrow();
+    expect(f.api.command).not.toHaveBeenCalled();
+    expect(f.client.snapshot()).toMatchObject({ status: 'ready', connected: true, draft: { text: '' } });
+    expect(f.client.snapshot().state.entries.map(entry => entry.entryId)).toEqual(['message', 'request']);
+    expect(f.api.channel).toHaveBeenCalledOnce();
+  });
+
   it('discovers a later native registration without bypassing the wait or rebuilding its channel', async () => {
     vi.useFakeTimers();
     const f = fixture();

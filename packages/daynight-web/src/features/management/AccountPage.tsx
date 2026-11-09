@@ -10,6 +10,7 @@ import { useWorkerPrompt } from "../worker-prompts/useWorkerPrompt";
 import { WorkerPromptEditor } from "../worker-prompts/WorkerPromptEditor";
 import { Identity } from "./feedback";
 import { TokensPanel } from "./TokensPanel";
+import { OwnerGrantsPanel } from "./OwnerGrantsPanel";
 
 type AccountPageProps = { readonly user: CurrentUser; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly active?: boolean; readonly onRetentionChange?: (retain: boolean) => void };
 
@@ -59,7 +60,7 @@ const AccountContent = ({ user, onSignOut, onIdentityMismatch, active = true, on
       <button type="button" className={tab === "prompt" ? "active" : ""} aria-current={tab === "prompt" ? "page" : undefined} onClick={() => setTab("prompt")}>{promptMessages(locale).titles.user}</button>
     </nav><div className="settings-main">
       <div hidden={tab !== "profile"} inert={tab !== "profile"}><section className="panel"><div className="panel-body"><div className="profile-info"><Identity user={user} /></div><dl className="info-list"><dt>{m.loginMethod}</dt><dd>{m.viaUniAuth}</dd><dt>{m.profileSource}</dt><dd>{m.profileSourceDescription}</dd></dl></div></section><section className="panel"><div className="panel-heading"><div><h2>{m.sessionTitle}</h2><p>{m.sessionDescription}</p></div><button className="button" type="button" onClick={onSignOut}>{m.signOut}</button></div></section></div>
-      {tokensOpened && <div hidden={tab !== "tokens"} inert={tab !== "tokens"}><TokensPanel user={user} onIdentityMismatch={onIdentityMismatch} /></div>}
+      {tokensOpened && <div hidden={tab !== "tokens"} inert={tab !== "tokens"}><TokensPanel user={user} onIdentityMismatch={onIdentityMismatch} /><OwnerGrantsPanel user={user} onIdentityMismatch={onIdentityMismatch} /></div>}
       <div hidden={tab !== "prompt"} inert={tab !== "prompt"}><WorkerPromptEditor state={prompt} scope="user" /></div>
     </div></div>
     {navigation.confirmation}

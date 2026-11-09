@@ -1,3 +1,4 @@
+import { OperationRequestError } from './operation-error';
 import { sameStartupReport, type SessionStartupReport } from '../../../../daynight/src/session/startup';
 import { liveHistoryAllowed } from './presentation';
 import type { SessionArchive, SessionArchiveStatus } from '../../../../daynight/src/session/archive';
@@ -33,6 +34,7 @@ export function clearIndependentSessionStorage(userId: string, sessionId: string
 export type SessionSettingIntent = { readonly operationId: string; readonly settingId: string; readonly value: string; readonly confirmedValue: string | null };
 type CommandInput = { [K in SessionCommand['kind']]: Pick<Extract<SessionCommand, { kind: K }>, 'kind' | 'payload'> }[SessionCommand['kind']];
 export type SessionViewState = {
+  readonly actionAdmitted: boolean;
   readonly startupReport: SessionStartupReport | null;
   readonly environmentConnected: boolean;
   readonly errorCode: string | null;
@@ -45,8 +47,8 @@ export type SessionViewState = {
   readonly historyError: string | null; readonly checking: ReadonlySet<string>;
   readonly historyReady: boolean; readonly historyRevision: number; readonly connectionGeneration: number;
 };
-type Options = { readonly api: SessionApi; readonly userId: string; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
-  { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly testSessionId?: never; readonly bot?: never } |
+type Options = { readonly api: SessionApi; readonly userId: string; readonly initialActionAdmitted?: boolean; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
+  { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly ownerUserId: string; readonly testSessionId?: never; readonly bot?: never } |
   { readonly testSessionId: string; readonly bot?: BotSessionBinding; readonly projectId?: never; readonly taskId?: never; readonly claimId?: never }
 );
 const errorCode = (error: unknown): string => error instanceof ApiError ? error.code : 'unknown';
@@ -58,9 +60,10 @@ const terminalFailure = (operation: SessionOperation) => ['failed', 'rejected', 
 const accepted = (operation: SessionOperation) => operation.state === 'confirmed' || ['send_message', 'execute_command'].includes(operation.kind) && operation.state === 'provider_accepted';
 const uncertain = (operation: SessionOperation) => !terminalFailure(operation) && !accepted(operation);
 class HistoryCursorError extends Error {}
+type CurrentReadFlight = { readonly kind: 'start' | 'observation' | 'archive'; readonly controller: AbortController; readonly generation: number; readonly archive: { readonly snapshot: SessionSnapshot; readonly generation: number } | null };
 
 export class TaskSessionClient {
-  private view: SessionViewState = { operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
+  private view: SessionViewState = { actionAdmitted: true, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
   private archive: SessionArchive | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
@@ -69,6 +72,10 @@ export class TaskSessionClient {
   private connectionGeneration = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private availabilityRunning = false;
+  private currentReadVisible = false;
+  private currentReadFlight: CurrentReadFlight | null = null;
+  private deferredStart = false;
+  private deferredArchive: { readonly snapshot: SessionSnapshot; readonly generation: number } | null = null;
   private observationTimer: ReturnType<typeof setTimeout> | null = null;
   private observationRequest: AbortController | null = null;
   private lastStartupReport: SessionStartupReport | null = null;
@@ -96,9 +103,12 @@ export class TaskSessionClient {
   private draftKey: string | null = null;
   private operationPolls = new Set<ReturnType<typeof setTimeout>>();
   private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
-  constructor(private readonly options: Options) {}
+  constructor(private readonly options: Options) { this.view = { ...this.view, actionAdmitted: options.initialActionAdmitted ?? true }; }
   snapshot = (): SessionViewState => this.view;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+  setActionAdmission = (admitted: boolean): void => {
+    if (this.view.actionAdmitted !== admitted) this.publish({ actionAdmitted: admitted });
+  };
   private owned = (): boolean => !this.lifetime.signal.aborted && this.options.isCurrent();
   private paused = (): boolean => this.options.isPaused?.() ?? false;
   private live = (): boolean => this.owned() && !this.paused();
@@ -115,9 +125,56 @@ export class TaskSessionClient {
       for (const value of queued) this.receive(value, generation);
       for (const resume of [...this.admissionWaiters]) resume();
       this.reconcile();
+      if (this.options.testSessionId === undefined) this.resumeCurrentReads();
     }
+    if (!this.currentReadsVisible() || this.currentReadFlight !== null) return;
     if (!this.availabilityRunning) void this.start();
   };
+  private currentReadsVisible(): boolean { return this.options.testSessionId !== undefined || this.currentReadVisible; }
+  /** Current reads follow the Task panel's visibility; transport ownership remains independent. */
+  setCurrentReadVisible = (visible: boolean): void => {
+    if (this.options.testSessionId !== undefined || this.currentReadVisible === visible) return;
+    this.currentReadVisible = visible;
+    if (!visible) {
+      if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; this.deferredStart = true; }
+      if (this.observationTimer !== null) clearTimeout(this.observationTimer);
+      this.observationTimer = null;
+      if (this.currentReadFlight !== null) {
+        if (this.currentReadFlight.kind === 'start') this.deferredStart = true;
+        if (this.currentReadFlight.archive !== null) this.deferredArchive = this.currentReadFlight.archive;
+        this.currentReadFlight.controller.abort();
+      }
+      return;
+    }
+    this.resumeCurrentReads();
+  };
+  private beginCurrentRead(kind: CurrentReadFlight['kind'], generation: number, archive: CurrentReadFlight['archive'] = null): CurrentReadFlight {
+    const flight = { kind, generation, archive, controller: new AbortController() };
+    if (this.options.testSessionId === undefined) {
+      if (this.currentReadFlight !== null) throw new Error('A Task current read is already in progress.');
+      this.currentReadFlight = flight;
+    }
+    return flight;
+  }
+  private currentReadCurrent(flight: CurrentReadFlight): boolean {
+    return !flight.controller.signal.aborted && this.currentReadsVisible() && (this.options.testSessionId !== undefined || this.currentReadFlight === flight);
+  }
+  private finishCurrentRead(flight: CurrentReadFlight): void {
+    if (this.currentReadFlight !== flight) return;
+    this.currentReadFlight = null;
+    this.resumeCurrentReads(flight.kind === 'observation' || this.connection !== null);
+  }
+  private resumeCurrentReads(observe = true): void {
+    if (!this.live() || !this.currentReadsVisible() || this.currentReadFlight !== null) return;
+    const archive = this.deferredArchive;
+    if (archive !== null) {
+      this.deferredArchive = null;
+      if (archive.generation === this.connectionGeneration) void this.bindReadyArchive(archive.snapshot, archive.generation);
+      return;
+    }
+    if (this.deferredStart) { this.deferredStart = false; void this.start(); return; }
+    if (observe && this.availabilityRunning && this.view.state.snapshot !== null) this.scheduleObservation(this.connectionGeneration);
+  }
   private clearSuspensionTimer() {
     if (this.suspensionTimer !== null) clearTimeout(this.suspensionTimer);
     this.suspensionTimer = null;
@@ -228,7 +285,7 @@ export class TaskSessionClient {
     try { if (this.view.draft.text || this.view.draft.submission) this.options.storage?.setItem(this.draftKey, JSON.stringify(this.view.draft)); else this.options.storage?.removeItem(this.draftKey); } catch { /* Keep editable text in memory if storage is unavailable. */ }
   }
   setDraft = (text: string): void => {
-    if (this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
+    if (!this.canInteract() || this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
     this.publish({ draft: { ...this.view.draft, text, revision: crypto.randomUUID() } }); this.persistDraft();
   };
   private matches(s: SessionSnapshot): boolean {
@@ -278,14 +335,18 @@ export class TaskSessionClient {
   }
   async start(): Promise<void> {
     if (!this.live()) return;
+    if (!this.currentReadsVisible() || this.currentReadFlight !== null) { this.deferredStart = true; return; }
+    this.deferredStart = false;
     this.disconnect();
     this.availabilityRunning = true;
     const generation = this.connectionGeneration;
+    const flight = this.beginCurrentRead('start', generation), signal = AbortSignal.any([flight.controller.signal, this.lifetime.signal]);
     this.currentReadFailure = null;
     this.publish({ connected: false, error: null, loadingOlder: false });
     try {
-      let current = await this.options.api.current(this.lifetime.signal);
-      if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
+      if (!this.currentReadCurrent(flight)) return;
+      let current = await this.options.api.current(signal);
+      if (!this.currentReadCurrent(flight) || !(this.paused() ? await this.admit(signal) : this.admitted()) || !this.currentReadCurrent(flight) || generation !== this.connectionGeneration) return;
       if (current.status !== 'registered') {
         this.publish({ startupReport: null, status: current.status === 'not_registered' && current.claimId === this.options.claimId ? 'not_registered' : 'unavailable' });
         if (this.view.status === 'not_registered') this.schedule(3000);
@@ -303,7 +364,7 @@ export class TaskSessionClient {
       this.publish({ state: { ...this.view.state, snapshot: current.session }, status: 'ready' });
       this.acceptStartupReport(current.session, current.startupReport);
       this.restoreHistoryFailure(current.session);
-      if (current.session.lifecycle !== 'active') { await this.loadArchive(current.session, generation); return; }
+      if (current.session.lifecycle !== 'active') { this.finishCurrentRead(flight); await this.loadArchive(current.session, generation); return; }
       this.archive = null; this.publish({ archiveState: null });
       this.scheduleObservation(generation);
       this.connection = this.options.api.channel(current.session.sessionId, this.hydrated ? this.cursor : null, (value) => this.receive(value, generation), (error) => {
@@ -317,11 +378,11 @@ export class TaskSessionClient {
         this.schedule();
       });
     } catch (error) {
-      if (generation !== this.connectionGeneration || !this.owned() || isAbortError(error)) return;
+      if (!this.currentReadCurrent(flight) || generation !== this.connectionGeneration || !this.owned() || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
-      if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
+      if (!(this.paused() ? await this.admit(signal) : this.admitted()) || !this.currentReadCurrent(flight) || generation !== this.connectionGeneration) return;
       this.publish({ startupReport: null, connected: false, status: 'error', error: message(error), errorCode: errorCode(error) }); this.schedule();
-    }
+    } finally { this.finishCurrentRead(flight); }
   }
   private restoreHistoryFailure(snapshot: SessionSnapshot): void {
     if (this.historyFailureIdentity === historyIdentity(snapshot) && this.historyFailureError) this.publish({ status: 'error', error: this.historyFailureError.message, errorCode: this.historyFailureError.code });
@@ -342,15 +403,15 @@ export class TaskSessionClient {
   }
   private scheduleObservation(generation: number): void {
     if (this.observationTimer !== null) clearTimeout(this.observationTimer);
-    if (!this.owned() || !this.view.state.snapshot || this.options.testSessionId === undefined && this.view.state.snapshot.lifecycle !== 'active') return;
+    if (!this.owned() || !this.currentReadsVisible() || this.currentReadFlight !== null || !this.view.state.snapshot || this.options.testSessionId === undefined && this.view.state.snapshot.lifecycle !== 'active') return;
     this.observationTimer = setTimeout(() => { this.observationTimer = null; void this.observeCurrent(generation); }, 3000);
   }
   private async observeCurrent(generation: number): Promise<void> {
     const snapshot = this.view.state.snapshot;
-    if (!snapshot || generation !== this.connectionGeneration || !this.owned()) return;
+    if (!snapshot || generation !== this.connectionGeneration || !this.owned() || !this.currentReadsVisible() || this.currentReadFlight !== null) return;
     if (this.paused()) { this.scheduleObservation(generation); return; }
-    const request = new AbortController(); this.observationRequest = request;
-    const currentRequest = () => this.owned() && this.observationRequest === request && generation === this.connectionGeneration && this.view.state.snapshot !== null && sameExecution(snapshot, this.view.state.snapshot);
+    const flight = this.beginCurrentRead('observation', generation), request = flight.controller; this.observationRequest = request;
+    const currentRequest = () => this.currentReadCurrent(flight) && this.owned() && this.observationRequest === request && generation === this.connectionGeneration && this.view.state.snapshot !== null && sameExecution(snapshot, this.view.state.snapshot);
     try {
       const current = await this.options.api.current(AbortSignal.any([request.signal, this.lifetime.signal]));
       if (!currentRequest() || !(await this.admit(request.signal)) || !currentRequest()) return;
@@ -385,7 +446,9 @@ export class TaskSessionClient {
       this.currentReadFailure = { message: message(error), code: errorCode(error) };
       this.publish({ startupReport: null, connected: false, status: 'error', ...(replaceError ? { error: message(error), errorCode: errorCode(error) } : {}) }, 'current');
     } finally {
-      if (this.observationRequest === request) { this.observationRequest = null; if (generation === this.connectionGeneration) this.scheduleObservation(generation); }
+      if (this.observationRequest === request) this.observationRequest = null;
+      this.finishCurrentRead(flight);
+      if (generation === this.connectionGeneration) this.scheduleObservation(generation);
     }
   }
   private startHydration(snapshot: SessionSnapshot, generation: number): void {
@@ -394,6 +457,7 @@ export class TaskSessionClient {
   }
   private schedule(delay = Math.min(1000 * 2 ** this.retries++, 15_000)) {
     if (this.timer !== null) clearTimeout(this.timer);
+    if (!this.currentReadsVisible()) { this.timer = null; this.deferredStart = true; return; }
     this.timer = setTimeout(() => { this.timer = null; this.availabilityRunning = false; void this.start(); }, delay);
   }
   private receive(value: BrowserMessage, generation: number) {
@@ -473,24 +537,7 @@ export class TaskSessionClient {
       this.publish({ archiveState: status.state });
       if (status.state === 'pending' || status.state === 'unavailable' && snapshot.lifecycle === 'draining') { this.schedule(3000); return; }
       if (status.state !== 'ready') return;
-      // A ready receipt is not a loaded archive: keep the placeholder until its
-      // identity and contents have been checked against the current execution.
-      this.publish({ archiveState: 'loading' });
-      // Finalization can establish an ID whose live state was never delivered.
-      // Bind the ready archive to a fresh authenticated terminal snapshot.
-      const current = await this.options.api.current(this.lifetime.signal);
-      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
-      if (current.status !== 'registered' || !this.matches(current.session)) { this.invalidate(); return; }
-      if (sessionFenceKey(current.session) !== sessionFenceKey(snapshot) || current.session.lifecycle === 'active') { void this.start(); return; }
-      const finalSnapshot = current.session;
-      const archive = await this.options.api.archiveContent(snapshot.sessionId, this.lifetime.signal);
-      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
-      assertSessionFence(archive, sessionFence(finalSnapshot));
-      if (archive.provider !== finalSnapshot.identity.provider || archive.controllerId !== finalSnapshot.identity.controllerId || archive.controllerInstanceId !== finalSnapshot.identity.controllerInstanceId || archive.nativeSessionId !== finalSnapshot.identity.nativeSessionId) throw new ApiError('protocol');
-      this.archive = archive;
-      const resources = archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
-      const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
-      this.publish({ archiveState: 'ready', state, status: 'ready', connected: false, error: null });
+      await this.bindReadyArchive(snapshot, generation);
     } catch (error) {
       if (!this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -499,6 +546,38 @@ export class TaskSessionClient {
     } finally {
       if (this.options.testSessionId !== undefined && this.owned() && generation === this.connectionGeneration && this.timer === null) this.scheduleObservation(generation);
     }
+  }
+  private async bindReadyArchive(snapshot: SessionSnapshot, generation: number): Promise<void> {
+    if (!this.owned() || generation !== this.connectionGeneration) return;
+    const binding = { snapshot, generation };
+    if (this.options.testSessionId === undefined && (!this.currentReadsVisible() || this.currentReadFlight !== null || this.paused())) { this.deferredArchive = binding; return; }
+    const flight = this.beginCurrentRead('archive', generation, binding), signal = AbortSignal.any([flight.controller.signal, this.lifetime.signal]);
+    // Finalization can establish an ID whose live state was never delivered.
+    // A ready receipt remains a placeholder until its original execution is verified.
+    this.publish({ archiveState: 'loading' });
+    try {
+      if (!this.currentReadCurrent(flight)) return;
+      const current = await this.options.api.current(signal);
+      if (!this.currentReadCurrent(flight) || !(await this.admit(signal)) || !this.currentReadCurrent(flight) || generation !== this.connectionGeneration) return;
+      if (current.status !== 'registered' || !this.matches(current.session)) { this.invalidate(); return; }
+      if (sessionFenceKey(current.session) !== sessionFenceKey(snapshot) || current.session.lifecycle === 'active') {
+        this.finishCurrentRead(flight); void this.start(); return;
+      }
+      const finalSnapshot = current.session;
+      const archive = await this.options.api.archiveContent(snapshot.sessionId, this.lifetime.signal);
+      if (!this.currentReadCurrent(flight) || !(await this.admit(signal)) || !this.currentReadCurrent(flight) || generation !== this.connectionGeneration) return;
+      assertSessionFence(archive, sessionFence(finalSnapshot));
+      if (archive.provider !== finalSnapshot.identity.provider || archive.controllerId !== finalSnapshot.identity.controllerId || archive.controllerInstanceId !== finalSnapshot.identity.controllerInstanceId || archive.nativeSessionId !== finalSnapshot.identity.nativeSessionId) throw new ApiError('protocol');
+      this.archive = archive;
+      const resources = archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
+      const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
+      this.publish({ archiveState: 'ready', state, status: 'ready', connected: false, error: null });
+    } catch (error) {
+      if (!this.currentReadCurrent(flight) || !this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
+      if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
+      if (!(await this.admit(signal)) || !this.currentReadCurrent(flight) || generation !== this.connectionGeneration) return;
+      this.publish({ archiveState: 'failed', error: message(error), errorCode: errorCode(error), connected: false });
+    } finally { this.finishCurrentRead(flight); }
   }
   private validatePage(page: TimelinePage, snapshot: SessionSnapshot) {
     if (page.sessionId !== snapshot.sessionId || page.historyEpoch !== snapshot.historyEpoch) throw new ApiError('protocol');
@@ -574,38 +653,40 @@ export class TaskSessionClient {
       if (error instanceof ApiError && error.code === 'reset_required') { this.beforeCursors.clear(); this.hydrated = false; this.cursor = null; this.schedule(0); }
     } finally { if (this.olderRequest === request) { this.olderRequest = null; this.publish({ loadingOlder: false }); } }
   }
+  canInteract = (): boolean => this.options.testSessionId !== undefined || this.options.ownerUserId === this.options.userId;
   send = (text: string): Promise<void> => {
     this.admitted();
-    if (!this.live() || !text.trim() || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
+    if (!this.canInteract() || !this.live() || !text.trim() || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
     return this.execute({ kind: 'send_message', payload: { content: [{ type: 'text', text }], expectedTurnId: this.view.state.snapshot!.activity === 'working' ? this.view.state.snapshot!.currentTurnId : null } });
   };
   updateSetting = (settingId: string, value: string, revision: string): Promise<void> => {
     this.admitted();
     const controls = this.view.state.snapshot?.controls, setting = controls?.settings.find(setting => setting.id === settingId);
-    if (!this.live() || !sessionControlGate(this.view.state, this.view.connected) || controls?.revision !== revision || !setting?.mutable || !setting.options.some(option => option.value === value)) return Promise.reject(new Error('This setting changed or is unavailable. Refresh the controls.'));
+    if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || controls?.revision !== revision || !setting?.mutable || !setting.options.some(option => option.value === value)) return Promise.reject(new Error('This setting changed or is unavailable. Refresh the controls.'));
     return this.execute({ kind: 'update_setting', payload: { settingId, value, expectedControlsRevision: revision } });
   };
   executeCommand = (commandId: string, args: string, revision: string, draftText?: string): Promise<void> => {
     this.admitted();
     const s = this.view.state.snapshot, command = s?.controls?.commands.find(command => command.id === commandId);
-    if (!this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));
+    if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));
     return this.execute({ kind: 'execute_command', payload: { commandId, arguments: args, expectedControlsRevision: revision, expectedTurnId: s.currentTurnId } }, draftText);
   };
   refreshControls = (): Promise<void> => {
     this.admitted();
-    if (!this.live() || !sessionControlGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Session controls are unavailable.'));
+    if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Session controls are unavailable.'));
     return this.execute({ kind: 'refresh_controls', payload: {} });
   };
   cancel = (): Promise<void> => {
     this.admitted();
-    if (!this.live() || !sessionCancelGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Cancellation is not currently allowed.'));
+    if (!this.canInteract() || !this.live() || !sessionCancelGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Cancellation is not currently allowed.'));
     return this.execute({ kind: 'cancel', payload: { expectedTurnId: this.view.state.snapshot!.currentTurnId! } });
   };
   respond = (interaction: SessionInteraction, response: InteractionResponse): Promise<void> => {
     this.admitted();
-    if (!this.live() || !sessionRespondGate(this.view.state, this.view.connected, interaction) || interaction.state !== 'pending') return Promise.reject(new Error('This interaction is no longer available.'));
+    if (!this.canInteract() || !this.live() || !sessionRespondGate(this.view.state, this.view.connected, interaction) || interaction.state !== 'pending') return Promise.reject(new Error('This interaction is no longer available.'));
     const current = this.view.state.entries.find((entry) => entry.kind === 'interaction' && entry.interaction.interactionId === interaction.interactionId);
     if (!current || current.kind !== 'interaction' || current.interaction.revision !== interaction.revision || current.interaction.state !== 'pending') return Promise.reject(new Error('This interaction changed. Refresh the session.'));
+    if (!this.view.actionAdmitted) return Promise.reject(new Error('Session actions are not currently admitted.'));
     return this.execute({ kind: 'interaction_response', payload: { interactionId: interaction.interactionId, interactionRevision: interaction.revision, submissionId: crypto.randomUUID(), response } });
   };
   private clearProgressTimers(id: string) {
@@ -631,8 +712,10 @@ export class TaskSessionClient {
   }
   private putOperation(operation: SessionOperation, target?: Pick<SessionInteraction, 'interactionId' | 'revision'>) { this.publish({ state: { ...this.view.state, operations: new Map(this.view.state.operations).set(operation.operationId, operation), responseTargets: target ? new Map(this.view.state.responseTargets).set(operation.operationId, target) : this.view.state.responseTargets } }); this.persist(); }
   private async execute(input: CommandInput, draftText?: string): Promise<void> {
+    if (!this.canInteract()) throw new Error("Only the Session owner can interact.");
     const s = this.view.state.snapshot;
     if (!this.live() || !s || (input.kind === 'interaction_response' ? hasPendingResponse(this.view.state, { interactionId: input.payload.interactionId, revision: input.payload.interactionRevision }) : [...this.view.state.operations.values()].some((op) => op.kind === input.kind && uncertain(op)))) throw new Error('Check the original pending operation before continuing.');
+    if (!this.view.actionAdmitted) throw new Error('Session actions are not currently admitted.');
     const command: SessionCommand = { protocol: SESSION_PROTOCOL, ...sessionFence(s), requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), ...input };
     const pending: SessionOperation = { protocol: SESSION_PROTOCOL, ...sessionFence(s), operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null };
     if ((command.kind === 'send_message' && command.payload.content[0]?.type === 'text' && this.view.draft.text.trim() === command.payload.content[0].text) || (command.kind === 'execute_command' && draftText !== undefined && this.view.draft.text === draftText)) {
@@ -653,21 +736,21 @@ export class TaskSessionClient {
     } catch (error) {
       this.endOperationProgress(command.operationId);
       if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
-      if (!(this.paused() ? await this.admit() : this.admitted())) throw error;
+      if (!(this.paused() ? await this.admit() : this.admitted())) throw new OperationRequestError(command.operationId, error);
       if (this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
-      throw error;
+      throw new OperationRequestError(command.operationId, error);
     }
     const deadline = Date.now() + 30_000;
     while ((this.paused() ? await this.admit() : this.admitted()) && this.sameSession(s)) {
       const operation = this.view.state.operations.get(command.operationId)!;
       if (accepted(operation)) return;
-      if (terminalFailure(operation)) throw new Error(operation.error?.message ?? 'The provider rejected the operation.');
-      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new Error('Delivery outcome is unknown. Check the original operation.'); }
+      if (terminalFailure(operation)) throw new OperationRequestError(command.operationId, new Error(operation.error?.message ?? 'The provider rejected the operation.'));
+      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new OperationRequestError(command.operationId, new Error('Delivery outcome is unknown. Check the original operation.')); }
       await this.delay(750);
       if (!(this.paused() ? await this.admit() : this.admitted())) break;
       try { await this.checkOperation(command.operationId); } catch { /* Only queries are retried; native inputs are never replayed. */ }
     }
-    throw new Error('The active session changed.');
+    throw new OperationRequestError(command.operationId, new Error('The active session changed.'));
   }
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
@@ -711,13 +794,15 @@ export class TaskSessionClient {
     if (!(this.paused() ? await this.admit(combinedSignal) : this.admitted()) || combinedSignal.aborted || !this.sameSession(s)) throw new Error('The active session changed.');
     return blob;
   };
-  refresh = (): void => { if (!this.live()) return; this.historyFailureIdentity = null; this.historyFailureError = null; this.cursor = null; this.hydrated = false; void this.start(); };
+  refresh = (): void => { if (!this.live() || !this.currentReadsVisible()) return; this.historyFailureIdentity = null; this.historyFailureError = null; this.cursor = null; this.hydrated = false; void this.start(); };
   pause = (): void => {
     this.disconnect(); this.clearSuspensionTimer(); this.publish({ connected: false, authPaused: false });
     for (const resume of [...this.admissionWaiters]) resume();
   };
   private disconnect() {
     this.cancelHydration();
+    this.currentReadFlight?.controller.abort();
+    this.deferredStart = false; this.deferredArchive = null;
     this.observationRequest?.abort(); this.observationRequest = null;
     if (this.observationTimer !== null) clearTimeout(this.observationTimer);
     this.observationTimer = null; this.channelAuthenticated = false;

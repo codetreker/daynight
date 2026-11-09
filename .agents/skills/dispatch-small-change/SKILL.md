@@ -38,21 +38,27 @@ dispatch unless the request establishes a distinct remaining problem.
 
 Write an outcome-oriented title and enough content for an implementer without
 the original conversation. Apply the [task content standard](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md)
-using the following information where applicable, without empty template fields:
+including its [delivery handoff threshold](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md#content-sufficiency). Provide the following substance without empty template fields:
 
 | Information | Required substance |
 |---|---|
 | What | Trigger, current behavior, expected behavior and affected consumers. |
 | Why | Actual impact and the reason the behavior needs to change. |
 | Scope | The independently delivered result, affected boundaries and behavior that must remain valid. |
-| How | Confirmed solution direction, existing mechanisms and necessary technical constraints; required designs when the work depends on them. |
+| How | Selected solution and essential rationale, detailed design, and ordered implementation steps with targets, expected results, applicable constraints and integration requirements. |
 | Sources | Readable requirements, code and attachments with their purposes; verified immutable revisions for repository inputs. |
 | Verify | Observable success and failure behavior, important regressions, applicable checks and delivery completion conditions. |
 
-Keep command sequences, tool choices, worktree paths and execution history in
-the Session. An unknown root cause may remain an investigation responsibility
-when the required result and verification are clear; unresolved target behavior
-or acceptance criteria cannot be supplied by guesswork.
+Resolve the research and design questions needed to define the implementation
+before handoff. If an unknown root cause still requires investigation to select
+the fix, the delivery task is not ready for handoff. Missing behavior, solution,
+design, implementation steps or acceptance criteria cannot be left to the
+implementer.
+
+Keep the detailed design and required implementation steps in task content; keep
+Session command schedules, tool choices, worktree paths and execution history in
+the Session. Normal code reading, local coding choices, implementation debugging
+and verification remain the implementer's work within the defined solution.
 
 ## Choose the operating system
 

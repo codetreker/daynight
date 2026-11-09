@@ -10,6 +10,7 @@ import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import { openStore } from "../../../src/commands/review/store.js";
 import type { PreparedReviewSkill } from "../../../src/commands/review/skill.js";
 import type { Store } from "../../../src/commands/review/store.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 
 const fixtures = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-tests");
 const directories: string[] = [];
@@ -98,7 +99,7 @@ const fixture = () => {
       stopProcess: input.stopProcess === undefined ? supervisor.stop : input.stopProcess,
       excludeProcess: input.excludeProcess === undefined ? supervisor.exclude : input.excludeProcess };
   };
-  const store = openStore(paths.databaseFile);
+  const store = openStore(createMemoryDatabase());
   stores.add(store);
   const repository = { host: "github.com", githubId: "42" };
   const pr = { ...repository, number: 101 };
@@ -502,12 +503,21 @@ describe("Copilot skill discovery and phase ownership", () => {
 
   it("rechecks the deadline after discovery exclusion before launching the review", async () => {
     const f = fixture(); const supervisor = createProcessSupervisor({ graceMs: 500 });
-    const outcome = await f.run("success", { timeoutMs: 300 }, { onProcess: supervisor.onProcess,
-      excludeProcess: async (current, evidence) => { const result = await supervisor.exclude(current, evidence); await new Promise((resolve) => { setTimeout(resolve, 350); }); return result; } });
-    expect(outcome).toMatchObject({ completed: false, interruption: "timeout", directProcessClosed: true });
-    expect(f.store.getReview(f.review.id)?.processId).toBeNull();
+    let monotonicTime = 1_000, exclusionCompleted = false;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicTime);
+    const outcome = await f.run("success", { timeoutMs: 10_000 }, { onProcess: supervisor.onProcess,
+      excludeProcess: async (current, evidence) => {
+        expect(evidence).toMatchObject({ directProcessClosed: true, captureComplete: true, exitCode: 0, signal: null, interruption: null, launchFailure: null });
+        const result = await supervisor.exclude(current, evidence);
+        exclusionCompleted = true; monotonicTime += 10_000;
+        return result;
+      } });
+    expect(exclusionCompleted).toBe(true);
+    expect(existsSync(`${f.report}.discovery`)).toBe(true);
+    expect(outcome).toMatchObject({ completed: false, interruption: "timeout", directProcessClosed: true, processExclusionFailure: null });
+    expect(f.store.getReview(f.review.id)).toMatchObject({ processId: null, processIdentity: null });
     expect(existsSync(f.report)).toBe(false);
-  });
+  }, 20_000);
 
   it.skipIf(process.platform === "win32")("excludes real discovery descendants before starting the formal review", async () => {
     const f = fixture();

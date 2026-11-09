@@ -27,6 +27,37 @@ test("Codex catalogs preserve native policy restrictions and revise only changed
   expect(f.controls.store.value.commands.map(c => c.name)).toEqual(["compact", "review"]);
   await expect(f.controls.set("model", "model-b", randomUUID(), "1")).rejects.toThrow("changed");
 });
+test("Codex startup rejects incompatible effort and a failed native catalog read", async () => {
+  const f = codex(); await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "model-a", effort: "high" })).not.toThrow();
+  expect(() => f.controls.validateSelection({ model: "model-b", effort: "high" })).toThrow("model");
+  expect(() => f.controls.validateSelection({ model: null, effort: "medium" })).toThrow("effort");
+  f.request.mockRejectedValue(new Error("catalog unavailable")); await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "model-a" })).toThrow("catalog");
+});
+test("Codex validates hidden models across catalog pages while keeping them out of the picker", async () => {
+  const f = codex();
+  f.controls.seed({ model: "hidden-model", reasoningEffort: "high" });
+  f.request.mockImplementation(async (method, params) => {
+    if (method !== "model/list") return { data: [] };
+    const { cursor, includeHidden } = params as { cursor?: string; includeHidden?: boolean };
+    return cursor === undefined ? { data: [{ model: "visible-model", supportedReasoningEfforts: [{ reasoningEffort: "low" }] }], nextCursor: "second" }
+      : { data: includeHidden ? [{ model: "hidden-model", hidden: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }] }] : [], nextCursor: null };
+  });
+  await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "hidden-model", effort: "high" })).not.toThrow();
+  expect(f.controls.store.value.settings.find(setting => setting.id === "model")?.options.map(option => option.value)).toEqual(["visible-model"]);
+  expect(f.request.mock.calls.filter(([method]) => method === "model/list").every(([, params]) => (params as { includeHidden?: boolean }).includeHidden === true)).toBe(true);
+  f.request.mockRejectedValue(new Error("catalog unavailable")); await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "hidden-model", effort: "high" })).toThrow("catalog");
+});
+test("Codex counts hidden catalog entries toward its bound", async () => {
+  const f = codex(); await f.controls.refresh();
+  f.request.mockImplementation(async method => method === "model/list" ? { data: Array.from({ length: 501 }, (_, index) => ({ model: `hidden-${index}`, hidden: true })), nextCursor: null } : { data: [] });
+  await f.controls.refresh();
+  expect(f.controls.store.value.settingsError).toContain("bound");
+  expect(() => f.controls.validateSelection({ model: "model-a" })).toThrow("catalog");
+});
 test("Codex settings remain unconfirmed until matching native notification, including live model updates", async () => {
   const f = codex(); await f.controls.refresh(); f.setTurn("turn"); const id = randomUUID();
   let done = false; const setting = f.controls.set("model", "model-b", id, f.controls.store.value.revision).then(() => { done = true; });
@@ -71,6 +102,16 @@ test("Claude resume describes native applied effort without a launch override", 
   await f.controls.refresh();
   expect(f.controls.store.value.settings.find(s => s.id === "effort")?.value).toBe("default");
 });
+test("Claude startup does not accept a downgraded effort or an unobserved model", async () => {
+  const f = claude();
+  f.native.supportedModels.mockResolvedValue([{ value: "default", resolvedModel: "native-default", supportsEffort: true, supportedEffortLevels: ["low", "high"] }] as never);
+  f.native.getSettings.mockResolvedValue({ applied: { model: "native-default", effort: "low" } });
+  await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: null, effort: "high" })).toThrow("apply");
+  expect(() => f.controls.validateSelection({ model: null, effort: "low" })).not.toThrow();
+  f.native.getSettings.mockRejectedValue(new Error("settings unavailable")); await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "default" })).toThrow("unknown");
+});
 test("Claude keeps native defaults, filters CLI-only commands, and reads applied effort", async () => {
   const f = claude(); await f.controls.refresh(); expect(f.controls.store.value.settings[0]?.value).toBe("default"); expect(f.controls.store.value.commands.map(c => c.name)).toEqual(["review", "compact"]);
   expect(f.controls.store.value.settings.find(s => s.id === "effort")?.value).toBe("default");
@@ -114,6 +155,16 @@ test("Copilot restored permission and omitted effort remain unknown instead of g
   const f = copilot(); await f.controls.initialize(true); expect(f.rpc.permissions.setApproveAll).not.toHaveBeenCalled();
   expect(f.controls.store.value.settings.find(s => s.id === "tool_approval")?.value).toBeNull(); expect(f.controls.store.value.settings.find(s => s.id === "effort")?.value).toBeNull();
   expect(f.controls.store.value.commands.map(c => c.id)).toEqual(["review"]);
+});
+test("Copilot startup rejects missing readback, unsupported effort and catalog failures", async () => {
+  const f = copilot();
+  await expect(f.controls.validateSelection({ model: null, effort: "high" })).rejects.toThrow("apply");
+  f.rpc.model.getCurrent.mockResolvedValue({ modelId: "model-a", reasoningEffort: "high" });
+  await expect(f.controls.validateSelection({ model: "model-a", effort: "high" })).resolves.toBeUndefined();
+  f.rpc.model.getCurrent.mockResolvedValue({ modelId: "model-b", reasoningEffort: "high" });
+  await expect(f.controls.validateSelection({ model: null, effort: "high" })).rejects.toThrow("support");
+  f.rpc.model.list.mockRejectedValue(new Error("catalog unavailable"));
+  await expect(f.controls.validateSelection({ model: null })).rejects.toThrow("catalog unavailable");
 });
 test("Copilot deferred model selection retains actual value and confirms only after native readback", async () => {
   vi.useFakeTimers(); const f = copilot(); await f.controls.initialize(false); const id = randomUUID(); let done = false;

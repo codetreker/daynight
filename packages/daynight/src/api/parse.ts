@@ -1,9 +1,10 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, TaskSearchField, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
 import { parseTaskProperties, readWorkerClaim } from "./task-properties.js";
+import { isTaskStatus, isTerminalTaskStatus, requiresSatisfiedPrerequisites } from "../task/status.js";
 import type { ProjectInvitationInspection, ProjectInvitationAcceptance, TeamInvitationInspection, TeamInvitationAcceptance, TeamInvitationMember } from "./types.js";
 
 const ids = (value: unknown): string[] => {
@@ -16,7 +17,12 @@ const dependencyIds = (value: unknown): string[] => {
   if (parsed.some((value, index) => index > 0 && parsed[index - 1]! > value)) return malformed();
   return parsed;
 };
-const status = (value: unknown): TaskStatus => value === "todo" || value === "in_progress" || value === "done" ? value : malformed();
+const status = (value: unknown): TaskStatus => isTaskStatus(value) ? value : malformed();
+const cancellationTime = (taskStatus: TaskStatus, value: unknown): string | null => {
+  const parsed = nullableTimestamp(value);
+  if ((taskStatus === "cancelled") !== (parsed !== null)) return malformed();
+  return parsed;
+};
 const requiredPlatform = (value: unknown): TaskPlatform | null => value === null || value === "windows" || value === "linux" || value === "macos" ? value : malformed();
 
 const validAttachmentPath = (value: string): boolean => isText(value) && !/^[A-Za-z]:\//.test(value) && !/[\\\p{Cc}]/u.test(value) && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
@@ -105,10 +111,11 @@ export const parseProject = (value: unknown, expectedId?: string): Project => {
 };
 
 const dependencyState = (data: Record<string, unknown>) => {
-  const parsed = { id: id(data.id), status: status(data.status), allowAgents: bool(data.allowAgents), requiredPlatform: requiredPlatform(data.requiredPlatform), assignedTo: data.assignedTo === null ? null : id(data.assignedTo), startedAt: nullableTimestamp(data.startedAt), completedAt: nullableTimestamp(data.completedAt), dependsOn: dependencyIds(data.dependsOn), externalDependsOn: dependencyIds(data.externalDependsOn), blockedBy: ids(data.blockedBy), ready: bool(data.ready), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  const parsedStatus = status(data.status);
+  const parsed = { id: id(data.id), status: parsedStatus, allowAgents: bool(data.allowAgents), requiredPlatform: requiredPlatform(data.requiredPlatform), assignedTo: data.assignedTo === null ? null : id(data.assignedTo), startedAt: nullableTimestamp(data.startedAt), completedAt: nullableTimestamp(data.completedAt), cancelledAt: cancellationTime(parsedStatus, data.cancelledAt), dependsOn: dependencyIds(data.dependsOn), externalDependsOn: dependencyIds(data.externalDependsOn), blockedBy: ids(data.blockedBy), ready: bool(data.ready), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
   const dependencies = new Set(parsed.dependsOn);
   if (dependencies.has(parsed.id) || parsed.externalDependsOn.some((item) => !dependencies.has(item)) || parsed.blockedBy.some((item) => !dependencies.has(item)) || parsed.ready !== (parsed.status === "todo" && parsed.blockedBy.length === 0)) return malformed();
-  if ((parsed.status === "in_progress" || parsed.status === "done") && parsed.blockedBy.length > 0) return malformed();
+  if (requiresSatisfiedPrerequisites(parsed.status) && parsed.blockedBy.length > 0) return malformed();
   return parsed;
 };
 
@@ -187,6 +194,28 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
   return access;
 };
 const sameTeamRef = (a: TeamRef, b: TeamRef): boolean => a.id === b.id && a.kind === b.kind && a.name === b.name;
+export const parseProjectDeletionPreview = (value: unknown, projectId: string): ProjectDeletionPreview => {
+  const data = fields(value, ["observedAt", "project", "summary", "activeClaims", "nextCursor"]);
+  const project = fields(data.project, ["id", "name", "repoUrl", "ownerTeam"]);
+  const summary = fields(data.summary, ["taskCount", "unfinishedTaskCount", "attachmentCount"]);
+  const parsedSummary = { taskCount: count(summary.taskCount), unfinishedTaskCount: count(summary.unfinishedTaskCount), attachmentCount: count(summary.attachmentCount) };
+  const activeClaims = array(data.activeClaims, (value): ProjectDeletionPreview["activeClaims"][number] => {
+    const claim = fields(value, ["taskId", "title", "worker"]), worker = fields(claim.worker, ["machineName", "platform", "phase", "paused", "connectivity"]);
+    const platform = worker.platform === "windows" || worker.platform === "linux" || worker.platform === "macos" ? worker.platform : malformed();
+    const phase = worker.phase === "preparing" || worker.phase === "executing" || worker.phase === "verifying" || worker.phase === "completing" || worker.phase === "waiting" || worker.phase === "paused" ? worker.phase : malformed();
+    const connectivity = worker.connectivity === "online" || worker.connectivity === "offline" || worker.connectivity === "unknown" ? worker.connectivity : malformed();
+    return { taskId: id(claim.taskId), title: text(claim.title, true), worker: { machineName: text(worker.machineName, true), platform, phase, paused: bool(worker.paused), connectivity } };
+  });
+  const parsed = { observedAt: timestamp(data.observedAt), project: { id: id(project.id), name: text(project.name, true), repoUrl: text(project.repoUrl, true), ownerTeam: parseTeamRef(project.ownerTeam) }, summary: parsedSummary, activeClaims, nextCursor: data.nextCursor === null ? null : text(data.nextCursor, true) };
+  if (parsed.project.id !== projectId || parsedSummary.unfinishedTaskCount > parsedSummary.taskCount || activeClaims.length > 100 || activeClaims.some((claim, index) => index > 0 && activeClaims[index - 1]!.taskId >= claim.taskId)) return malformed();
+  return parsed;
+};
+export const parseProjectDeletionReceipt = (value: unknown, projectId: string): ProjectDeletionReceipt => {
+  const data = fields(value, ["projectId", "deleted"]);
+  if (id(data.projectId) !== projectId || data.deleted !== true) return malformed();
+  return { projectId, deleted: true };
+};
+
 export const parseProjectTransferPreview = (value: unknown, targetTeamId: string): ProjectTransferPreview => {
   const data = fields(value, ["sourceTeam", "targetTeam", "ownership", "actorRole"]);
   const target = fields(data.targetTeam, ["id", "kind", "name", "version"]);
@@ -246,8 +275,19 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
   if (parsed.projectId !== projectId || (taskId !== undefined && parsed.id !== taskId)) return malformed();
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (worker?.state === "released" && parsed.status !== "todo") return malformed();
+  if (worker?.state === "released" && parsed.status !== "todo" && parsed.status !== "cancelled") return malformed();
   return parsed;
+};
+
+const searchFieldOrder = { id: 0, title: 1, description: 2 } satisfies Readonly<Record<TaskSearchField, number>>;
+const parseTaskSearchMatch = (value: unknown): TaskSearchItem["match"] => {
+  const match = record(value);
+  const fields = array(match.fields, (field): TaskSearchField => field === "id" || field === "title" || field === "description" ? field : malformed());
+  if (fields.some((field, index) => index > 0 && searchFieldOrder[fields[index - 1]!] >= searchFieldOrder[field])) return malformed();
+  const descriptionSnippet = match.descriptionSnippet === null ? null : text(match.descriptionSnippet);
+  if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
+  if (fields.includes("description") !== (descriptionSnippet !== null)) return malformed();
+  return { fields, descriptionSnippet };
 };
 
 export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSearchPage => {
@@ -263,13 +303,8 @@ export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSear
     timestamp(item.updatedAt);
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    const rawMatch = record(item.match);
-    const matchFields = array(rawMatch.fields, (field) => field === "title" || field === "description" ? field : malformed());
-    if (matchFields.length > 2 || new Set(matchFields).size !== matchFields.length || matchFields.length === 2 && (matchFields[0] !== "title" || matchFields[1] !== "description")) return malformed();
-    const descriptionSnippet = rawMatch.descriptionSnippet === null ? null : text(rawMatch.descriptionSnippet);
-    if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
-    if (matchFields.includes("description") !== (descriptionSnippet !== null)) return malformed();
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: status(item.status), context, match: { fields: matchFields, descriptionSnippet } };
+    const parsedStatus = status(item.status);
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -298,7 +333,7 @@ const graphTask = (value: unknown): GraphTask => {
 };
 const summary = (value: unknown): TaskGraphSummary => {
   const data = record(value);
-  return { total: count(data.total), todo: count(data.todo), inProgress: count(data.inProgress), done: count(data.done), ready: count(data.ready), blocked: count(data.blocked) };
+  return { total: count(data.total), todo: count(data.todo), inProgress: count(data.inProgress), done: count(data.done), cancelled: count(data.cancelled), ready: count(data.ready), blocked: count(data.blocked) };
 };
 
 const graphChainMembers = (byId: ReadonlyMap<string, GraphTask>, taskId: string): Set<string> => {
@@ -325,7 +360,7 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
   const data = record(value);
   const parsed = { observedAt: timestamp(data.observedAt), project: parseProject(data.project, projectId), summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
   const byId = new Map(parsed.tasks.map((task) => [task.id, task]));
-  if (parsed.tasks.length > 1000 || byId.size !== parsed.tasks.length || parsed.tasks.reduce((sum, task) => sum + task.dependsOn.length, 0) > 5000) return malformed();
+  if (byId.size !== parsed.tasks.length) return malformed();
   const members = graphChainMembers(byId, taskId);
   const selected = new Set(members);
   for (const member of members) {
@@ -334,28 +369,20 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
     task.externalDependsOn.forEach((dependency) => selected.add(dependency));
   }
   if (selected.size !== byId.size || Array.from(selected).some((id) => !byId.has(id))) return malformed();
-  const expected = { total: parsed.tasks.length, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 };
+  const expected = { total: parsed.tasks.length, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
   for (const task of parsed.tasks) {
-    if (task.status === "todo") { expected.todo++; if (task.ready) expected.ready++; else expected.blocked++; }
-    else if (task.status === "in_progress") expected.inProgress++;
-    else expected.done++;
+    switch (task.status) {
+      case "todo": expected.todo++; if (task.ready) expected.ready++; else expected.blocked++; break;
+      case "in_progress": expected.inProgress++; break;
+      case "done": expected.done++; break;
+      case "cancelled": expected.cancelled++; break;
+    }
     for (const dependency of task.dependsOn) {
       const target = byId.get(dependency);
-      if (target !== undefined && task.blockedBy.includes(dependency) !== (target.status !== "done")) return malformed();
+      if (target !== undefined && task.blockedBy.includes(dependency) !== !isTerminalTaskStatus(target.status)) return malformed();
     }
   }
   for (const key of Object.keys(expected) as (keyof TaskGraphSummary)[]) if (expected[key] !== parsed.summary[key]) return malformed();
-  const visited = new Set<string>();
-  const active = new Set<string>();
-  const visit = (taskId: string): void => {
-    if (active.has(taskId)) return malformed();
-    if (visited.has(taskId)) return;
-    active.add(taskId);
-    for (const dependency of byId.get(taskId)!.dependsOn) if (byId.has(dependency)) visit(dependency);
-    active.delete(taskId);
-    visited.add(taskId);
-  };
-  for (const task of parsed.tasks) visit(task.id);
   return parsed;
 };
 
@@ -368,24 +395,28 @@ export const parseServerError = (value: unknown): ServerError => {
   let details: ErrorDetails | undefined;
   if (data.details !== undefined) {
     const raw = record(data.details);
+    if (raw.writeOutcome !== undefined) { fields(raw, ["writeOutcome"]); if (raw.writeOutcome !== "not_committed") return malformed(); }
     if (code === "invalid_search_expression") fields(raw, ["reason", "position", "length"]);
-    if (code === "search_context_limit_exceeded") fields(raw, ["nodeCount", "edgeCount", "maxNodes", "maxEdges"]);
     details = {
+      ...(raw.writeOutcome === undefined ? {} : { writeOutcome: "not_committed" as const }),
       ...(raw.reason === undefined ? {} : { reason: text(raw.reason, true) }),
       ...(raw.position === undefined ? {} : { position: count(raw.position) }),
       ...(raw.length === undefined ? {} : { length: count(raw.length) }),
       ...(raw.taskIds === undefined ? {} : { taskIds: ids(raw.taskIds) }),
       ...(raw.encodedBytes === undefined ? {} : { encodedBytes: count(raw.encodedBytes) }),
       ...(raw.maxEncodedBytes === undefined ? {} : { maxEncodedBytes: count(raw.maxEncodedBytes) }),
-      ...(raw.nodeCount === undefined ? {} : { nodeCount: count(raw.nodeCount) }),
-      ...(raw.edgeCount === undefined ? {} : { edgeCount: count(raw.edgeCount) }),
-      ...(raw.maxNodes === undefined ? {} : { maxNodes: count(raw.maxNodes) }),
-      ...(raw.maxEdges === undefined ? {} : { maxEdges: count(raw.maxEdges) }),
     };
   }
   if (code === "invalid_search_expression" && (details?.reason === undefined || !["empty_phrase", "empty_query", "expected_operand", "field_group_not_supported", "invalid_escape", "missing_field_value", "nesting_too_deep", "query_too_large", "too_many_terms", "unclosed_group", "unclosed_quote", "unexpected_closing_group", "unexpected_token", "unknown_field"].includes(details.reason) || details.position === undefined || details.position < 1 || details.length === undefined)) return malformed();
-  if (code === "search_context_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 20000 || details.maxEdges !== 100000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
-  if (code === "graph_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 1000 || details.maxEdges !== 5000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
   if (code === "steps_limit_exceeded" && (details?.encodedBytes === undefined || details.maxEncodedBytes !== 67_108_864 || details.encodedBytes <= details.maxEncodedBytes)) return malformed();
   return { code, message, requestId, ...(details === undefined ? {} : { details }) };
+};
+
+// Deletion receipts and refusals establish mutation certainty, so reject
+// unrecognized envelope or detail fields rather than guessing their meaning.
+export const parseProjectDeletionError = (value: unknown): ServerError => {
+  const envelope = fields(value, ["error"]);
+  const error = fields(envelope.error, ["code", "message", "requestId", "details"]);
+  if (error.details !== undefined) fields(error.details, ["writeOutcome"]);
+  return parseServerError(value);
 };

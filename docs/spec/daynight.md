@@ -140,7 +140,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 原始内容通过支持背压的字节通道逐段输出，失败可能留下不完整内容。
 `task ready` 默认选择前
 10 个 ready task，`--limit <N>` 接受十进制整数 `1..100`；它只请求一页，不遍历
-后续 cursor。`task list` 读取全部匹配页，默认排除 `done`，通过互斥的 `--all` 或
+后续 cursor。`task list` 读取全部匹配页，默认排除done/cancelled，通过互斥的 `--all` 或
 `--status` 调整所选状态；`--ready` 与所选状态取交集。列表按 `in_progress`、ready、
 其余 `todo`、`done` 稳定分组。文本列表省略描述、版本和时间；所有筛选形式的 JSON
 列表仅省略 `description`，保留其余 API 字段、原始 PR 字符串、精确版本和时间戳。
@@ -210,8 +210,8 @@ npm 替换失败；该失败必须明确报告。
 `review add-repo --path` 的目录候选；zsh 同时展示候选说明。非重复选项使用后不再
 提供，已消耗的位置参数不重复提供候选，remote 不提供远端候选或无关文件候选。
 目录建议不约束运行时合法值，操作者仍能输入尚未创建的目标目录。状态的静态
-列表状态候选为 `todo`、`in_progress`、`done`，分离及内联形式使用同一候选；
-update 不声明 status，set-status 使用 task ID、三状态目标和可选精确版本。重复依赖选项
+列表状态候选为`todo`、`in_progress`、`done`、`cancelled`，分离及内联形式使用同一候选；
+update 不声明 status，set-status 使用 task ID、四状态目标和可选精确版本。重复依赖选项
 使用后仍可继续补全；自由文本、project/task ID 和依赖 ID 不回落文件候选。空描述
 和已完成内联值之后，后续选项按共享语法继续补全。
 

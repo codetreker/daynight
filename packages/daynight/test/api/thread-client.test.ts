@@ -17,8 +17,8 @@ const json = (value: unknown, status = 200, principal: string | null = userId): 
   status, headers: { "Content-Type": "application/json", ...(principal === null ? {} : { "Daynight-User-ID": principal }) },
 });
 const errorResponse = (status: number, code: string): Response => json({ error: { code, message: "The request failed.", requestId: "thread-request" } }, status, null);
-const client = (fetch: typeof globalThis.fetch, options: { signal?: AbortSignal; expectedUserId?: string; requestMs?: number } = {}) => {
-  const operation = createOperation({ ...(options.signal === undefined ? {} : { signal: options.signal }), ...(options.requestMs === undefined ? {} : { limits: { requestMs: options.requestMs } }) });
+const client = (fetch: typeof globalThis.fetch, options: { signal?: AbortSignal; expectedUserId?: string; requestMs?: number; responseBytes?: number } = {}) => {
+  const operation = createOperation({ ...(options.signal === undefined ? {} : { signal: options.signal }), limits: { ...(options.requestMs === undefined ? {} : { requestMs: options.requestMs }), ...(options.responseBytes === undefined ? {} : { responseBytes: options.responseBytes }) } });
   operations.push(operation);
   return createApiClient({ serverUrl: "http://localhost:8787", serverToken: "fixture-token", operation, fetch, ...(options.expectedUserId === undefined ? {} : { expectedUserId: options.expectedUserId }) });
 };
@@ -169,9 +169,9 @@ describe("Thread posting outcome classification", () => {
     expect(fetch.mock.calls[0]![1]!.signal!.aborted).toBe(true);
   });
 
-  it("enforces the Thread success response bound before accepting a message", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ ...message, body: "x".repeat(65536) }, 201));
-    await expect(client(fetch).postTaskThreadMessage(projectId, taskId, { body })).rejects.toMatchObject({ outcomeUnconfirmed: true, cause: { kind: "response_limit" } });
+  it("keeps the existing operation response limit for count-selected pages", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    await expect(client(fetch, { responseBytes: 100 }).readTaskThread(projectId, taskId, { count: 20, details: false })).rejects.toMatchObject({ outcomeUnconfirmed: false, cause: { kind: "response_limit" } });
     expect(fetch).toHaveBeenCalledOnce();
   });
 });

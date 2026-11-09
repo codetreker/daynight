@@ -1,3 +1,4 @@
+import { operationErrorMessage, operationErrorText } from './operation-error';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { SessionControls, SessionSetting } from '../../../../daynight/src/session/controls';
 import type { SessionState } from './state';
@@ -16,7 +17,8 @@ export function SessionControlsPanel({ controls, state, intents, operationProgre
 }) {
   const controlMessages = useSessionControlMessages(state.snapshot?.identity.provider);
   const m = useSessionMessages(), id = useId(), panel = useRef<HTMLDivElement>(null);
-  const [failure, setFailure] = useState<string | null>(null), [busy, setBusy] = useState(false);
+  const [failureCause, setFailure] = useState<string | Error | null>(null), [busy, setBusy] = useState(false);
+  const failure = operationErrorMessage(failureCause, state.operations, m.operationFailed);
   const inFlight = useRef(false);
   useEffect(() => {
     if (view !== 'model' && view !== 'permissions') return;
@@ -30,13 +32,13 @@ export function SessionControlsPanel({ controls, state, intents, operationProgre
     if (disabled || inFlight.current || !controls || !setting.mutable || value === setting.value || !setting.options.some(option => option.value === value) || !onSelect) return;
     inFlight.current = true; setBusy(true); setFailure(null);
     try { await onSelect(setting.id, value, controls.revision); }
-    catch (error) { setFailure(error instanceof Error ? error.message : m.failure); }
+    catch (error) { setFailure(error instanceof Error ? error : m.failure); }
     finally { inFlight.current = false; setBusy(false); }
   }
   async function refresh() {
     if (disabled || inFlight.current || !onRefresh) return;
     inFlight.current = true; setBusy(true); setFailure(null);
-    try { await onRefresh(); } catch (error) { setFailure(error instanceof Error ? error.message : m.failure); }
+    try { await onRefresh(); } catch (error) { setFailure(error instanceof Error ? error : m.failure); }
     finally { inFlight.current = false; setBusy(false); }
   }
   return <div ref={panel} className="session-controls-panel" aria-label={view === 'model' ? m.modelSettings : m.permissionSettings}>
@@ -50,7 +52,7 @@ export function SessionControlsPanel({ controls, state, intents, operationProgre
       const actualOption = setting.options.find(option => option.value === setting.value);
       const actual = actualOption ? controlMessages.optionLabel(setting, actualOption) : setting.value ?? m.unavailableValue;
       const description = controlMessages.settingDescription(setting);
-      const value = pending && intent ? intent.value : setting.value ?? '';
+      const value = setting.value ?? '';
       const failed = operation && ['failed', 'rejected', 'expired'].includes(operation.state);
       return <div className="session-control-setting" key={setting.id} data-setting-state={pending ? 'pending' : undefined}>
         <label htmlFor={`${id}-${setting.id}`}>{controlMessages.settingLabel(setting)}</label>
@@ -58,8 +60,8 @@ export function SessionControlsPanel({ controls, state, intents, operationProgre
           {!setting.options.some(option => option.value === value) ? <option value={value}>{value || m.unavailableValue}</option> : null}
           {setting.options.map(option => <option key={option.value} value={option.value}>{controlMessages.optionLabel(setting, option)}</option>)}
         </select>
-        {pending ? <p className="session-control-note" role="status">{receipt === 'unknown' ? m.settingUnknown : receipt === 'waiting' ? m.waiting : m.settingPending} {m.currentValue}: {actual}</p> : null}
-        {failed ? <p className="session-error" role="alert">{operation.error?.message ?? m.failure}</p> : null}
+        {pending && receipt === 'unknown' ? <p className="session-control-note" role="status">{m.settingUnknown} {m.currentValue}: {actual}</p> : null}
+        {failed ? <p className="session-error" role="alert">{operationErrorText(operation.error?.message ?? '', m.operationFailed)}</p> : null}
         {description ? <p className="session-control-note">{description}</p> : null}
         {setting.scope === 'next_turn' ? <p className="session-control-note">{m.nextTurnSetting}</p> : null}
       </div>;

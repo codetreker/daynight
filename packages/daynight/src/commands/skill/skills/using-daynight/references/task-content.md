@@ -14,11 +14,12 @@ An accepted conclusion in discussion must be incorporated into its effective con
 
 | Store in the task | Store in the session or relevant platform |
 | --- | --- |
-| Objectives, requirements, scope, required implementation approaches, delivery constraints, required inputs, acceptance criteria | Session work schedules, tool choices, agent assignments, operational authorization |
+| Objectives, requirements, scope, selected solutions, detailed designs, required implementation steps, delivery constraints, required inputs, acceptance criteria | Session work schedules, tool choices, agent assignments, operational authorization |
 | Current requirements or architecture, accepted conclusions and essential rationale, substantive open questions | Discussion rounds and confirmation process in Thread; debugging history, CI/review progress and execution context in Session |
 | Deliverables, immutable revisions, acceptance conclusions, key observations and limitations | Worktree, HEAD, claim, blocker, waiting, and recovery context |
 
 Classify by purpose, not by filenames or words such as "plan" or "method".
+Detailed designs and required implementation steps are durable task content. Session command schedules, tool choices, agent assignments and debugging history remain Session content.
 User-requested migration designs, test strategies, and operating manuals can be deliverables; the session steps that produce them do not belong in tasks.
 Do not invent delivery requirements to justify uploading execution logs.
 Operational authorization still constrains current behavior, but does not become task content merely because a later session needs it.
@@ -43,13 +44,18 @@ The description and readable references together provide the following informati
 
 | Information | Content |
 | --- | --- |
-| Objectives and requirements | Specific problem, expected outcome, required behavior, and requirement IDs when needed. |
+| Objectives and requirements | Concrete problem, current and required behavior, affected consumers and impact, expected outcome, and requirement IDs when needed. |
 | Scope and constraints | This task's responsibilities, delivery boundaries, and applicable shared constraints. |
+| Selected solution (delivery tasks) | Chosen mechanism, essential rationale, applicable constraints, and resolved technical choices needed for implementation. |
+| Detailed design (delivery tasks) | Affected components and responsibilities, relevant interfaces and data structures, control or data flow, error behavior, and integration or migration requirements needed to implement the solution. |
+| Implementation steps (delivery tasks) | Ordered, concrete changes with their targets, expected results, and required dependency or integration sequencing. |
 | Inputs and sources | Source identifiers, locations, applicable sections, and purposes of genuinely required material. |
 | Deliverables and contracts | Outputs, read locations, and semantics needed by producers and consumers; state when there is no exchange between tasks. |
-| Acceptance criteria | Observable completion conditions, success and failure behavior, thresholds, and human confirmation points. |
+| Acceptance criteria | Observable success, failure and relevant boundary behavior, verification methods and expected results, applicable thresholds, and human confirmation points. |
 
 The description must identify this task's specific work and where to find its sources.
+Provide the detail the actual work needs without inventing interfaces or empty sections. The selected solution, detailed design and implementation steps must define the delivery task's own work, even when shared detail comes from referenced sources.
+These content requirements do not mandate a separate plan file, line-by-line code instructions, or Task Steps resources.
 When attachment delivery is not specified, complete inline content needs no primary attachment; references or a mix of inline content and references are also valid.
 Do not duplicate complete documents.
 The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment for the requirements stage even when its description is complete. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
@@ -58,7 +64,7 @@ Generic questions, unexplained links, unreadable sources, or "see the previous d
 
 Save stage results promptly: current reviewable artifacts, accepted content and its effective status, actual deliverables, acceptance conclusions, and important limitations.
 Each detailed explanation has one owner; rewrite it coherently when it changes rather than accumulating logs.
-The requirements stage does not require completed requirements in advance, nor does the design stage require a completed design.
+Requirements, research and design tasks produce their own conclusions and designs; their future results are not prerequisites for starting the producing stage. A delivery task with unfinished research or design cannot be treated as such a producing stage merely to bypass delivery handoff requirements.
 Do not present future prerequisite outputs as existing inputs. See the [Goal protocol](goal.md) for stage requirements.
 
 ## Attachments and references
@@ -95,8 +101,11 @@ Citing sources does not create execution dependencies; see [task management](tas
 ## Content sufficiency
 
 Before creation, handoff, or execution, check definitions, source readability and applicability, result ownership, and stage requirements.
-Unknown requirements, interface decisions, design choices, and acceptance thresholds are specific gaps, not details to invent.
-A required architecture or implementation approach, including the Goal delivery brief, is task content and cannot be omitted on the grounds that "session plans do not belong in tasks"; actual session work schedules still follow the content boundary.
+A delivery task is ready for handoff only when its definition and implementation design are complete. Its author must resolve the research and design questions needed to define the work before handing it off. An independent implementer must be able to execute the selected solution from the task and its readable references without further investigation to establish the problem, choose a solution, or complete missing requirements or design.
+A solution direction, a broad architecture link, or an instruction to investigate and decide during implementation is insufficient.
+
+Unknown requirements, interface decisions, design choices, implementation steps, and acceptance thresholds are specific gaps, not details to invent. A required architecture or implementation approach, including the Goal delivery brief, is task content and cannot be omitted on the grounds that "session plans do not belong in tasks"; actual session work schedules still follow the content boundary.
+Normal code reading, local coding choices, debugging and verification remain implementation work; they cannot supply missing requirements, select the solution, or resolve substantive design or contract decisions.
 Handle input gaps in managed tasks through the [user interaction workflow](autopilot-managed-task.md#request-user-interaction).
 
 Organize confirmed information only within the authorized scope; substantive scope or behavior changes require user confirmation.

@@ -3,12 +3,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationManagerOptions, WorkerConfigurationSnapshot } from "../../../src/commands/worker/configuration.js";
+import { parseWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
 import { replaceFileAtomically } from "../../../src/platform/files.js";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
-const desired = (revision = "1", model = "original", projects = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 4, native: { agent: "codex", model, args: [] }, projects: projects ? [{ projectId, nativeOverrides: {} }] : [] } });
+const desired = (revision = "1", model = "original", projects = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model, args: [] }, projects: projects ? [{ projectId, nativeOverrides: {} }] : [] } });
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void, reject!: (reason: unknown) => void;
   const promise = new Promise<T>((accept, fail) => { resolve = accept; reject = fail; });
@@ -42,11 +43,182 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("hot-applies platform preference in both directions and reports false as an applied value", async () => {
+    const { manager } = await fixture();
+    expect(manager.current().effective.preferPlatformSpecificTasks).toBeNull();
+    const first = desired("1", "original", false);
+    await manager.receive({ ...first, value: { ...first.value, preferPlatformSpecificTasks: true } });
+    await manager.settle();
+    expect(manager.current().effective.preferPlatformSpecificTasks).toBe(true);
+    await manager.receive(desired("2", "original", false));
+    await manager.settle();
+    expect(manager.current().effective.preferPlatformSpecificTasks).toBe(false);
+    expect(item(manager.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "applied", appliedValue: false, targetRevision: "2" });
+    expect(parseWorkerCloudReport(manager.report()).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
+  });
+
+  it("atomically migrates a full schema-1 cache without discarding removal or failure ownership", async () => {
+    const first = await fixture(), target = desired("1", "original", false);
+    await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = 1;
+    delete saved.desired.value.preferPlatformSpecificTasks;
+    saved.items = saved.items.filter((entry: { value: WorkerCloudItem }) => entry.value.key.kind !== "preferPlatformSpecificTasks");
+    const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
+    for (let n = 0; n < 1020; n++) saved.items.push({ value: {
+      key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null,
+      state: n === 0 ? "error" : "pending", error: n === 0 ? failure : null, lastFailure: n === 0 ? failure : null, nextAttemptAt: null,
+    }, attempts: n === 0 ? 2 : 0, failureId: n === 0 ? 1 : null, started: n === 0 });
+    saved.nextFailureId = 2;
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    const migrated = JSON.parse(await readFile(first.file, "utf8"));
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.desired).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
+    expect(migrated.nextFailureId).toBe(saved.nextFailureId);
+    expect(migrated.observationRevision).toBe(saved.observationRevision);
+    expect(migrated.items.filter((entry: { value: WorkerCloudItem }) => entry.value.key.kind !== "preferPlatformSpecificTasks")).toEqual(saved.items);
+    expect(item(reopened.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "pending", appliedValue: null });
+    expect(reopened.current().effective.preferPlatformSpecificTasks).toBeNull();
+    await reopened.receive(target); await reopened.settle();
+    expect(reopened.current().effective.preferPlatformSpecificTasks).toBe(false);
+    expect(parseWorkerCloudReport(reopened.report()).observation?.items).toHaveLength(1025);
+    expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "error", lastFailure: failure });
+  });
+
+  it("rejects a missing preference in a current cache without rewriting it", async () => {
+    const first = await fixture();
+    await first.manager.receive(desired("1", "original", false)); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    delete saved.desired.value.preferPlatformSpecificTasks;
+    const source = JSON.stringify(saved);
+    await writeFile(first.file, source);
+    await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} })).rejects.toThrow();
+    expect(await readFile(first.file, "utf8")).toBe(source);
+  });
+  it.each([false, true])("preserves removal ownership when a full cache defers a target reselecting the Project (started=%s)", async started => {
+    const first = await fixture(), target = desired("1", "original", false);
+    await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
+    saved.items.push({ value: { key: { kind: "projectRemoval", projectId }, targetRevision: "1", appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
+    const retryAt = new Date(Date.now() + 60_000).toISOString();
+    for (let n = 0; n < 1019; n++) saved.items.push({ value: { key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null, state: "error", error: failure, lastFailure: failure, nextAttemptAt: retryAt }, attempts: 1, failureId: n + 1, started: true });
+    saved.nextFailureId = 1020;
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    const next = desired("2"), expanded = { ...next, value: { ...next.value, projects: [...next.value.projects, { projectId: "44444444-4444-4444-8444-444444444444", nativeOverrides: {} }] } };
+    await reopened.receive(expanded);
+    const remove = vi.fn(async () => {});
+    await reopened.configureProjectAdapters({ remove }); await reopened.settle();
+    expect(reopened.current().synchronized).toBe(false);
+    if (started) {
+      expect(remove).toHaveBeenCalledExactlyOnceWith(projectId, expect.any(AbortSignal));
+      expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "applied", appliedValue: true });
+    } else {
+      expect(remove).not.toHaveBeenCalled();
+      expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "pending", appliedValue: null });
+    }
+  });
+  it("retains an invalid historical target without executing it and resumes with a valid newer target", async () => {
+    const invalid = { ...desired("1", "original", false), value: { ...desired("1", "original", false).value, maxConcurrent: 65 } };
+    const onInvalidDesired = vi.fn(), applyNative = vi.fn(async () => {});
+    const { manager } = await fixture({ onInvalidDesired, applyNative });
+    await manager.receive(invalid); await manager.settle();
+    expect(manager.current().synchronized).toBe(false);
+    expect(manager.current().desired).toBeNull();
+    expect(applyNative).not.toHaveBeenCalled();
+    const sent = manager.report();
+    await manager.acknowledge(sent, { desired: invalid, observationRevision: "0", observationAccepted: false });
+    expect(onInvalidDesired).toHaveBeenCalledOnce();
+    await manager.receive(desired("2", "original", false)); await manager.settle();
+    expect(manager.current().effective.maxConcurrent).toBe(3);
+    expect(applyNative).toHaveBeenCalled();
+  });
+  it("reloads legacy over-limit cache structurally and applies a valid newer target without discarding failures", async () => {
+    const first = await fixture(), target = desired("1", "original", false);
+    await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.desired.value.maxConcurrent = 65;
+    saved.items.find((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "maxConcurrent").value.appliedValue = 65;
+    const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
+    saved.items.push({ value: { key: { kind: "projectRemoval", projectId }, targetRevision: "1", appliedValue: null, state: "error", error: failure, lastFailure: failure, nextAttemptAt: null }, attempts: 1, failureId: 1, started: true });
+    saved.nextFailureId = 2;
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(desired("2", "original", false)); await reopened.settle();
+    expect(reopened.current().effective.maxConcurrent).toBe(3);
+    expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "error", lastFailure: failure });
+    expect(reopened.report().observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "projectRemoval", projectId }, lastFailure: failure }));
+  });
+  it("cancels obsolete in-flight preparation while a newer target waits for capacity", async () => {
+    const first = await fixture();
+    await first.manager.receive(desired()); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    for (let n = 0; n < 1018; n++) saved.items.push({ value: { key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
+    await writeFile(first.file, JSON.stringify(saved));
+    const entered = deferred(), released = deferred(), cancelled = deferred();
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.configureProjectAdapters({ prepare: async (_id, signal) => { signal.addEventListener("abort", () => cancelled.resolve(), { once: true }); entered.resolve(); await released.promise; } });
+    await reopened.receive(desired()); await entered.promise;
+    const next = desired("2", "original", false);
+    await reopened.receive({ ...next, value: { ...next.value, projects: [{ projectId: "44444444-4444-4444-8444-444444444444", nativeOverrides: {} }] } });
+    await cancelled.promise;
+    released.resolve(); await reopened.settle();
+    expect(reopened.current().synchronized).toBe(false);
+    expect(item(reopened.current(), "projectPreparation")).toMatchObject({ state: "pending", appliedValue: null });
+  });
+  it("retains unacknowledged items at capacity, rejects growth atomically and converges after a matching receipt and restart", async () => {
+    const first = await fixture();
+    const target = desired("1", "original", false);
+    await first.manager.receive(target);
+    await first.manager.settle();
+    await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
+    const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    for (let n = 0; n < 1020; n++) {
+      const state = n === 0 || n === 2 ? "applied" : n === 1 ? "error" : "pending";
+      saved.items.push({ value: { key: { kind: "projectRemoval", projectId: id(n) }, targetRevision: "1", appliedValue: state === "applied" ? true : null, state, error: n === 1 ? failure : null, lastFailure: n === 1 ? failure : null, nextAttemptAt: null }, attempts: 0, failureId: n === 1 ? 1 : null, started: n === 0 || n === 1 });
+    }
+    saved.nextFailureId = 2;
+    await writeFile(first.file, JSON.stringify(saved));
+    const next = { ...desired("2", "original", false), value: { ...target.value, projects: [{ projectId: id(0), nativeOverrides: {} }] } };
+    const onCapacity = vi.fn();
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {}, onCapacity });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(next);
+    await reopened.settle();
+    expect(reopened.current().items).toHaveLength(1025);
+    const before = await readFile(first.file, "utf8");
+    await expect(reopened.ensureProjectRemoval(id(1021))).rejects.toThrow("capacity");
+    await reopened.receive(next);
+    expect(await readFile(first.file, "utf8")).toBe(before);
+    expect(reopened.current().synchronized).toBe(false);
+    expect(reopened.current().desired?.revision).toBe("1");
+    expect(onCapacity).toHaveBeenCalledOnce();
+    const unknown = reopened.report();
+    await reopened.acknowledge(unknown, { desired: next, observationRevision: "0", observationAccepted: false });
+    expect(reopened.current().items).toHaveLength(1025);
+    expect(reopened.current().items.find(item => item.key.kind === "projectRemoval" && item.key.projectId === id(1))?.lastFailure).toEqual(failure);
+    const accepted = reopened.report();
+    await reopened.acknowledge(accepted, { desired: next, observationRevision: "1", observationAccepted: true });
+    expect(reopened.current().items).toHaveLength(1025);
+    expect(reopened.current().desired?.revision).toBe("2");
+    expect(reopened.current().synchronized).toBe(true);
+    expect(reopened.current().items.some(item => item.key.kind === "projectRemoval" && item.key.projectId === id(0))).toBe(false);
+    expect(reopened.current().items.find(item => item.key.kind === "projectRemoval" && item.key.projectId === id(1))).toMatchObject({ state: "error", lastFailure: null });
+    await expect(reopened.ensureProjectRemoval(id(1021))).rejects.toThrow("capacity");
+  });
   it("applies independent values while native failure and unprepared projects remain truthful", async () => {
     const { manager, file, wait } = await fixture({ applyNative: async () => { throw new Error("secret native arguments must not be reported"); } });
     await manager.receive(desired());
     await wait(snapshot => item(snapshot, "native")?.state === "error" && snapshot.effective.maxConcurrent === 2 && snapshot.effective.pollIntervalMs === 1200 && snapshot.effective.recoveryLimit === 4);
-    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, native: null, projects: [{ projectId, ready: false }] });
+    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: null, projects: [{ projectId, ready: false }] });
     expect(item(manager.current(), "projectPreparation")).toMatchObject({ state: "pending", appliedValue: null });
     expect(JSON.stringify(manager.report())).not.toContain("secret native arguments");
     expect(JSON.parse(await readFile(file, "utf8")).desired.revision).toBe("1");
@@ -458,7 +630,7 @@ describe("Worker cloud configuration application", () => {
     const { manager } = await fixture({ applyNative: async () => { throw new TypeError("invalid"); } });
     await manager.receive(desired("1", "invalid", false));
     await manager.settle();
-    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, native: null });
+    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: null });
     expect(item(manager.current(), "native")?.state).toBe("error");
     expect(Date.parse(item(manager.current(), "native")!.nextAttemptAt!)).toBeGreaterThan(Date.now());
   });

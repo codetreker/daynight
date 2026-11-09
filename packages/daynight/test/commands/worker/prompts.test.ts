@@ -39,6 +39,13 @@ describe("worker managed prompts", () => {
     const prompt = build(task, "windows"); expect(prompt).toContain("original native conversation");
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!).nativeSessionId).toBe(uuid(6));
   });
+  it("does not serialize unrelated credential fields from the caller into the assignment", async () => {
+    const { task, build } = await fixture();
+    const withCredential = { ...task, serverToken: "fixture-private-token" };
+    const prompt = build(withCredential, "linux");
+    expect(prompt).not.toContain("fixture-private-token");
+    expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).not.toHaveProperty("serverToken");
+  });
   it.each(["agent", "branch", "claim", "status"])("rejects mismatched %s before input", async (field) => {
     const { task, build } = await fixture();
     if (field === "agent") task.configuration.agent = "copilot";

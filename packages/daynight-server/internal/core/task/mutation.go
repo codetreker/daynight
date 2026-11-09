@@ -90,17 +90,31 @@ func PrepareDelete(ctx context.Context, dao store.TaskWriteDAO, current model.Ta
 	return Mutation{ID: current.ID, Current: current, Changed: true, Delete: true, RemoveDepends: removeDepends}, nil
 }
 
+// MutationResult carries the authoritative row produced by the selected write.
+type MutationResult struct {
+	Task      model.Task
+	Tombstone *model.TaskTombstone
+}
+
 // ApplyMutation performs only the Task write; callers coordinate other domain
 // effects in the same scope before its transaction completes.
-func ApplyMutation(ctx context.Context, dao store.TaskWriteDAO, mutation Mutation) (model.Task, error) {
+func ApplyMutation(ctx context.Context, dao store.TaskWriteDAO, mutation Mutation) (MutationResult, error) {
 	if !mutation.Changed {
-		return mutation.Current, nil
+		return MutationResult{Task: mutation.Current}, nil
 	}
 	if mutation.Delete {
-		return model.Task{}, dao.DeleteTask(ctx, mutation.ID, mutation.RemoveDepends)
+		tombstone, err := dao.DeleteTask(ctx, mutation.ID, mutation.RemoveDepends)
+		if err != nil {
+			return MutationResult{}, err
+		}
+		return MutationResult{Tombstone: &tombstone}, nil
 	}
+	var result model.Task
+	var err error
 	if mutation.Create {
-		return dao.CreateTask(ctx, mutation.ID, mutation.Values)
+		result, err = dao.CreateTask(ctx, mutation.ID, mutation.Values)
+	} else {
+		result, err = dao.UpdateTask(ctx, mutation.ID, mutation.Values)
 	}
-	return dao.UpdateTask(ctx, mutation.ID, mutation.Values)
+	return MutationResult{Task: result}, err
 }

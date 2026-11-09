@@ -2,7 +2,8 @@ package api
 
 import (
 	"encoding/json"
-	"time"
+
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
 type PullRequestProperty struct {
@@ -66,26 +67,7 @@ type TaskStatusUpdateRequest struct {
 	ClaimID *string `json:"claimId,omitempty"`
 }
 
-type Task struct {
-	Properties        TaskProperties `json:"properties"`
-	ID                string         `json:"id"`
-	ProjectID         string         `json:"projectId"`
-	Title             string         `json:"title"`
-	Description       string         `json:"description"`
-	Status            string         `json:"status"`
-	Version           int64          `json:"version"`
-	CreatedAt         time.Time      `json:"createdAt"`
-	UpdatedAt         time.Time      `json:"updatedAt"`
-	StartedAt         *time.Time     `json:"startedAt"`
-	CompletedAt       *time.Time     `json:"completedAt"`
-	DependsOn         []string       `json:"dependsOn"`
-	ExternalDependsOn []string       `json:"externalDependsOn"`
-	BlockedBy         []string       `json:"blockedBy"`
-	RequiredPlatform  *string        `json:"requiredPlatform"`
-	AssignedTo        *string        `json:"assignedTo"`
-	AllowAgents       bool           `json:"allowAgents"`
-	Ready             bool           `json:"ready"`
-}
+type Task = taskprotocol.REST
 
 type TaskPage struct {
 	Items      []Task  `json:"items"`

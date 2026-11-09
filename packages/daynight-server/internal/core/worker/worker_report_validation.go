@@ -13,6 +13,9 @@ const workerSafeInteger = int64(1<<53 - 1)
 var workerProbeCodes = []string{"not_found", "permission_denied", "timeout", "command_failed", "invalid_output", "invalid_sample", "out_of_range", "io_error", "unavailable"}
 
 func ValidateReport(input model.WorkerReport) (model.WorkerReport, error) {
+	if err := AdmitReport(input); err != nil {
+		return model.WorkerReport{}, InputLimit(err)
+	}
 	telemetry := &input.Telemetry
 	machineID, err := model.CanonicalID(telemetry.Machine.ID)
 	if err != nil {
@@ -26,6 +29,7 @@ func ValidateReport(input model.WorkerReport) (model.WorkerReport, error) {
 		return model.WorkerReport{}, invalidInput("Worker platform and sample time are invalid.")
 	}
 	checks := []error{
+		validateWorkerRuntimeConfiguration(telemetry.RuntimeConfiguration),
 		validateWorkerAssistantHost(telemetry.AssistantHost, telemetry.Platform),
 		validateWorkerProbe(telemetry.OS, "", func(value model.WorkerOS) bool {
 			return model.ValidWorkerText(value.Type) && model.ValidWorkerText(value.Release) && model.ValidWorkerText(value.Version) && model.ValidWorkerText(value.Arch)

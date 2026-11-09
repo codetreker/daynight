@@ -59,8 +59,7 @@ server use `start_interval: 250ms` during their existing startup grace periods;
 normal checks remain every two seconds. Probe commands, retries, deadlines,
 `service_healthy` dependencies and Compose readiness waits still determine actual
 readiness. PostgreSQL uses TCP so its temporary initialization socket cannot
-admit the application early. The [startup probe decision](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)
-owns the timing choice. Business endpoints still require a browser session or
+admit the application early. The [startup probe decision](../../.agents/notes/archived/testing/2026-11-04-dev-ci-startup-probes.md) records the rationale for the timing choice. Business endpoints still require a browser session or
 personal access token; the public readiness example does not perform a login.
 Acceptance clients use the shared
 [authentication fixture helper](../../packages/daynight-server/scripts/auth-fixture.mts)
@@ -261,15 +260,6 @@ entrypoint and the ordinary service user. Reads, previews and another nonroot
 upload must succeed after restoration. The
 [localhost backup procedure](../localhost/README.md#persistence-and-backup)
 owns the operator commands and the accepted pre-existing consistency limitation.
-
-The [offline layout upgrade](../localhost/README.md#attachment-layout-upgrade)
-uses explicit plan/apply/resume operations before ordinary HTTP startup. The
-server migration acceptance keeps genuine old task-only bytes, covers a project
-UUID equal to an old task UUID, and checks full directory/content inventories,
-unchanged business rows, failure and interruption continuation. This is separate
-from the deployment check's new-layout restart/restore journey. Maintenance does
-not rotate task_cache_epoch; a historical restore still follows the rotation
-contract above. Source-bound results must identify the actual scenarios run.
 
 Source-bound receipts are written under `.tmp/attachment-deployment-*/` and the
 two normal `.tmp/dev-ci/<run-id>/` directories. They record owned project and

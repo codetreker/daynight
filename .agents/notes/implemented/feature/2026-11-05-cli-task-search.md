@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-Terminal users need to find Tasks by their complete title or description, including
+Terminal users need to find Tasks by their ID, complete title or description, including
 completed work, without mistaking a partial page or a locally reordered list for
 complete search results. The service search projection also contains fields that
 the compact CLI result does not promise to expose.

@@ -88,5 +88,7 @@ The hosting consumer must persist preparation before registration, reconcile
 unknown outcomes, inject the server-frozen text, and release owned aliases only
 after descendants stop. Provider lifecycle, durable Bot inventory and complete
 hosting are separate consumers; this module neither schedules work nor proves
-that a model follows the role. The shared role transport remains owned by the
-[Controller role decision](2026-11-04-controller-role-instructions.md).
+that a model follows the role. Shared role transport retains its existing
+mechanisms; the
+[Controller role decision](../../archived/architecture/2026-11-04-controller-role-instructions.md)
+records their original rationale.

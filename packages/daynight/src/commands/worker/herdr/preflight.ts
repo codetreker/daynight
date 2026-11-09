@@ -8,11 +8,12 @@ import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import { probeNativeAgentVersion } from "./version-probe.js";
 import type { HerdrRpcClient } from "./rpc.js";
 import { assertCodexInstallConfigurationSafe } from "./codex-install-safety.js";
+import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
 
 type NativeAgent = "codex" | "copilot" | "claude";
 export type HerdrNativeStart = {
   context: { cwd: string };
-  configuration: { agent: NativeAgent; model: string | null; args: readonly string[] };
+  configuration: { agent: NativeAgent; model: string | null; args: readonly string[]; validateNativeSelection?: true };
   resumeSessionId?: string;
 };
 export type HerdrNativePreflight = {
@@ -253,10 +254,13 @@ export const createHerdrPreflight = (options: {
   homeDirectory: string;
   platform?: NodeJS.Platform;
   runCommand?: NativePrerequisiteCommandRunner;
+  selectionVerifier?: NativeSelectionVerifier;
 }) => {
   const home = absolute(options.homeDirectory, "Native user home");
   const environment = { ...options.environment };
+  const selection = options.selectionVerifier ?? createNativeSelectionVerifier();
   return {
+    close: options.selectionVerifier ? selection.settle : selection.close,
     verifyStart: async (input: HerdrNativeStart, operation: Operation): Promise<HerdrNativePreflight> => {
       operation.check();
       const agent = input.configuration.agent;
@@ -296,6 +300,7 @@ export const createHerdrPreflight = (options: {
         if (integrationState(refreshed, agent) !== "current") throw new Error(`The official ${agent} Herdr integration is not current after installation; inspect herdr integration status.`);
       }
       for (const check of checks) await check.verify(operation);
+      if (input.configuration.validateNativeSelection && input.resumeSessionId === undefined) await selection.verify({ native: input.configuration, cwd: input.context.cwd, environment }, operation);
       operation.check();
       return { agent, version, nativeHome: root, integrationConfigured: true };
     },

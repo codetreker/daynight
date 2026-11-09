@@ -16,6 +16,9 @@ import (
 
 const MaxEncodedBytes = 64 * 1024 * 1024
 
+// MaxMCPStepCursorBytes is the existing encoded Step list cursor limit.
+const MaxMCPStepCursorBytes = 2048
+
 type Step struct {
 	ID          string               `json:"id"`
 	Title       string               `json:"title"`
@@ -134,6 +137,19 @@ func publicStep(step model.TaskStep) Step {
 		CreatedAt: step.CreatedAt.UTC(), UpdatedAt: step.UpdatedAt.UTC()}
 }
 
+// Reads trust canonical stored Steps; validation and capacity checks belong to write admission.
+func ProjectCollection(header model.TaskHeader, steps []model.TaskStep) StepsResource {
+	resource := StepsResource{ProjectID: header.ProjectID, TaskID: header.ID, Version: header.Version, Steps: make([]Step, len(steps))}
+	for index, step := range steps {
+		resource.Steps[index] = publicStep(step)
+	}
+	return resource
+}
+
+func ProjectItem(header model.TaskHeader, step model.TaskStep) StepResource {
+	return StepResource{ProjectID: header.ProjectID, TaskID: header.ID, Version: header.Version, Step: publicStep(step)}
+}
+
 func Collection(header model.TaskHeader, steps []model.TaskStep) (StepsResource, error) {
 	if err := ValidateHeader(header); err != nil {
 		return StepsResource{}, err
@@ -141,7 +157,6 @@ func Collection(header model.TaskHeader, steps []model.TaskStep) (StepsResource,
 	if steps == nil {
 		return StepsResource{}, errors.New("task steps collection is absent")
 	}
-	resource := StepsResource{ProjectID: header.ProjectID, TaskID: header.ID, Version: header.Version, Steps: make([]Step, len(steps))}
 	ids := make(map[string]struct{}, len(steps))
 	for index, step := range steps {
 		if err := ValidateStep(step); err != nil {
@@ -154,9 +169,8 @@ func Collection(header model.TaskHeader, steps []model.TaskStep) (StepsResource,
 			return StepsResource{}, errors.New("stored step IDs are not unique")
 		}
 		ids[step.ID] = struct{}{}
-		resource.Steps[index] = publicStep(step)
 	}
-	return resource, nil
+	return ProjectCollection(header, steps), nil
 }
 
 func Item(header model.TaskHeader, step model.TaskStep) (StepResource, error) {
@@ -166,12 +180,11 @@ func Item(header model.TaskHeader, step model.TaskStep) (StepResource, error) {
 	if err := ValidateStep(step); err != nil {
 		return StepResource{}, err
 	}
-	return StepResource{ProjectID: header.ProjectID, TaskID: header.ID, Version: header.Version, Step: publicStep(step)}, nil
+	return ProjectItem(header, step), nil
 }
 
-// The same Encoder settings and terminal newline define both admission size and
-// HTTP output. Reserving 19 version digits keeps valid content readable after
-// an unrelated parent update increases the version's decimal width.
+// Admission uses the HTTP receipt encoding and reserves 19 version digits so
+// unrelated parent updates cannot make an admitted collection exceed its limit.
 func encode(value any, version int64) ([]byte, error) {
 	var output bytes.Buffer
 	if err := json.NewEncoder(&output).Encode(value); err != nil {

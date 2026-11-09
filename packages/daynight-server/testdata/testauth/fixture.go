@@ -26,7 +26,17 @@ type Fixture struct {
 	command   *exec.Cmd
 	exited    chan struct{}
 	waitError error
+	started   bool
+	directory string
+	canStop   func() bool
 	closeOnce sync.Once
+}
+
+// GatewayResources distinguishes a prepared private directory from a started process.
+type GatewayResources struct {
+	Directory string
+	PID       int
+	State     string
 }
 
 func StartGateway(t testing.TB, callbackURL string) *Fixture {
@@ -36,21 +46,57 @@ func StartGateway(t testing.TB, callbackURL string) *Fixture {
 
 func StartGatewayWithOutput(t testing.TB, callbackURL string, output io.Writer) *Fixture {
 	t.Helper()
+	return startGateway(t, callbackURL, output, func() bool { return true }, nil)
+}
+
+// StartGatewayGuarded retains the gateway when its owning service has not stopped.
+func StartGatewayGuarded(t testing.TB, callbackURL string, canStop func() bool) *Fixture {
+	t.Helper()
+	if canStop == nil {
+		t.Fatal("authentication fixture requires a cleanup guard")
+	}
+	return startGateway(t, callbackURL, io.Discard, canStop, nil)
+}
+
+// StartGatewayWithResources publishes ownership before Start and the process ID
+// after Start, so cleanup can reconcile an interrupted owning test process.
+func StartGatewayWithResources(t testing.TB, callbackURL string, canStop func() bool, observe func(GatewayResources) error) *Fixture {
+	t.Helper()
+	if canStop == nil || observe == nil {
+		t.Fatal("authentication resource observation requires its cleanup guard and observer")
+	}
+	return startGateway(t, callbackURL, io.Discard, canStop, observe)
+}
+
+func startGateway(t testing.TB, callbackURL string, output io.Writer, canStop func() bool, observe func(GatewayResources) error) *Fixture {
+	t.Helper()
 	binary := os.Getenv("DAYNIGHT_TEST_UNIAUTH_FIXTURE")
 	if binary == "" {
 		t.Fatal("DAYNIGHT_TEST_UNIAUTH_FIXTURE is required")
 	}
-	directory := Directory(t)
+	f := &Fixture{exited: make(chan struct{}), canStop: canStop}
+	directory := fixtureDirectory(t, f.canRemoveDirectory)
+	f.directory = directory
 	ready := filepath.Join(directory, "ready.json")
-	f := &Fixture{exited: make(chan struct{})}
 	f.command = exec.Command(binary)
 	f.command.Env = append(os.Environ(), "DAYNIGHT_FIXTURE_CALLBACK_URL="+callbackURL, "DAYNIGHT_FIXTURE_DATABASE_PATH="+filepath.Join(directory, "apps.db"), "DAYNIGHT_FIXTURE_READY_FILE="+ready, "DAYNIGHT_FIXTURE_LISTEN_ADDRESS=127.0.0.1:0", "DAYNIGHT_FIXTURE_PUBLIC_URL=")
 	f.command.Stdout, f.command.Stderr = output, output
+	if observe != nil {
+		if err := observe(GatewayResources{Directory: directory, State: "prepared"}); err != nil {
+			t.Fatalf("record authentication directory ownership: %v", err)
+		}
+	}
 	if err := f.command.Start(); err != nil {
 		t.Fatal("start real UniAuth fixture failed")
 	}
+	f.started = true
 	go func() { f.waitError = f.command.Wait(); close(f.exited) }()
 	t.Cleanup(func() { f.Close(t) })
+	if observe != nil {
+		if err := observe(GatewayResources{Directory: directory, PID: f.command.Process.Pid, State: "started"}); err != nil {
+			t.Fatalf("record authentication process ownership: %v", err)
+		}
+	}
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
 	poll := time.NewTicker(10 * time.Millisecond)
@@ -85,6 +131,21 @@ func StartGatewayWithOutput(t testing.TB, callbackURL string, output io.Writer) 
 
 func Directory(t testing.TB) string {
 	t.Helper()
+	return fixtureDirectory(t, func() bool { return true })
+}
+
+func removeFixtureDirectory(directory string, stopped bool) error {
+	if !stopped {
+		return errors.New("authentication fixture directory retained because process exit is unconfirmed")
+	}
+	if err := os.RemoveAll(directory); err != nil {
+		return errors.New("remove authentication fixture directory failed")
+	}
+	return nil
+}
+
+func fixtureDirectory(t testing.TB, stopped func() bool) string {
+	t.Helper()
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatal("locate fixture module failed")
@@ -110,36 +171,91 @@ func Directory(t testing.TB) string {
 		t.Fatal("create project fixture directory failed")
 	}
 	t.Cleanup(func() {
-		if os.RemoveAll(directory) != nil {
-			t.Error("remove authentication fixture directory failed")
+		if err := removeFixtureDirectory(directory, stopped()); err != nil {
+			t.Error(err)
 		}
 	})
 	return directory
 }
 
+type fixtureProcess interface {
+	Signal(os.Signal) error
+	Kill() error
+}
+
+func stopFixtureProcess(process fixtureProcess, exited <-chan struct{}, allowed bool, graceful, forced time.Duration) (bool, error) {
+	if !allowed {
+		return false, errors.New("authentication fixture retained because owning service exit is unconfirmed")
+	}
+	select {
+	case <-exited:
+		return true, nil
+	default:
+	}
+	signalErr := process.Signal(syscall.SIGTERM)
+	if errors.Is(signalErr, os.ErrProcessDone) {
+		signalErr = nil
+	}
+	timer := time.NewTimer(graceful)
+	defer timer.Stop()
+	select {
+	case <-exited:
+		return true, signalErr
+	case <-timer.C:
+	}
+	killErr := process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	deadline := time.NewTimer(forced)
+	defer deadline.Stop()
+	select {
+	case <-exited:
+		return true, errors.Join(signalErr, killErr, errors.New("real UniAuth fixture exceeded graceful shutdown deadline"))
+	case <-deadline.C:
+		return false, errors.Join(signalErr, killErr, errors.New("real UniAuth fixture could not be reaped within the deadline"))
+	}
+}
+
 func (f *Fixture) Close(t testing.TB) {
 	t.Helper()
 	f.closeOnce.Do(func() {
-		select {
-		case <-f.exited:
-		default:
-			if err := f.command.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-				t.Error("signal real UniAuth fixture shutdown failed")
-			}
-			select {
-			case <-f.exited:
-			case <-time.After(5 * time.Second):
-				if err := f.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-					t.Error("kill real UniAuth fixture failed")
-				}
-				<-f.exited
-				t.Error("real UniAuth fixture exceeded graceful shutdown deadline")
+		stopped, err := stopFixtureProcess(f.command.Process, f.exited, f.canStop(), 5*time.Second, 2*time.Second)
+		if err != nil {
+			if !stopped {
+				t.Errorf("%v: pid=%d directory=%s", err, f.command.Process.Pid, f.directory)
+			} else {
+				t.Error(err)
 			}
 		}
-		if f.waitError != nil {
+		if stopped && f.waitError != nil {
 			t.Error("real UniAuth fixture did not exit successfully")
 		}
 	})
+}
+
+func (f *Fixture) canRemoveDirectory() bool {
+	if !f.canStop() {
+		return false
+	}
+	if !f.started {
+		return true
+	}
+	select {
+	case <-f.exited:
+		return true
+	default:
+		return false
+	}
+}
+
+// CleanupConfirmed reports only a stopped process whose private directory is gone.
+func (f *Fixture) CleanupConfirmed() bool {
+	if !f.started || !f.canRemoveDirectory() {
+		return false
+	}
+	_, err := os.Stat(f.directory)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func Browser(t testing.TB) *http.Client {
@@ -197,7 +313,11 @@ func location(t testing.TB, response *http.Response) *url.URL {
 
 func Login(t testing.TB, browser *http.Client, origin, persona string) {
 	t.Helper()
-	authorize := location(t, request(t, browser, http.MethodGet, origin+"/api/v1/auth/login?provider=github", "", http.StatusSeeOther))
+	loginURL := origin + "/api/v1/auth/login?provider=github"
+	authorize := location(t, request(t, browser, http.MethodGet, loginURL, "", http.StatusSeeOther))
+	if authorize.String() == loginURL {
+		authorize = location(t, request(t, browser, http.MethodGet, loginURL, "", http.StatusSeeOther))
+	}
 	provider := location(t, request(t, browser, http.MethodGet, authorize.String(), "", http.StatusFound))
 	if provider.Scheme != "https" || provider.Host != "github.com" || provider.Path != "/login/oauth/authorize" || provider.Query().Get("code_challenge_method") != "S256" || provider.Query().Get("code_challenge") == "" {
 		t.Fatal("real GitHub provider authorization or PKCE challenge changed")

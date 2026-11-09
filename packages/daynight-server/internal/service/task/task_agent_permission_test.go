@@ -1,151 +1,231 @@
 package task_test
 
 import (
+	"context"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
-	"context"
 	"reflect"
 	"slices"
 	"testing"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"time"
 )
 
+func assignmentStatus(t *testing.T, before model.Task, to model.TaskStatus) model.Task {
+	t.Helper()
+	f := newAssignmentFixture(t, before, nil)
+	if before.Status == model.TaskDone && to != model.TaskDone {
+		f.writer.ActiveDependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
+			if ctx != f.ctx || id != before.ID {
+				t.Fatal("status dependent scope")
+			}
+			return []string{}, nil
+		}
+	}
+	after := before
+	if before.Status != to {
+		v := taskcore.CurrentWrite(before)
+		v.Status = to
+		after = assignmentResult(before, v)
+		switch to {
+		case model.TaskTodo:
+			after.StartedAt = nil
+			after.CompletedAt = nil
+		case model.TaskInProgress:
+			after.StartedAt = &after.UpdatedAt
+			after.CompletedAt = nil
+		case model.TaskDone:
+			after.CompletedAt = &after.UpdatedAt
+		}
+		f.expectUpdate(v, after)
+	}
+	got, err := f.tasks.SetStatus(f.ctx, f.principal, f.project.ID, before.ID, taskcore.SetTaskStatus{Version: before.Version, Status: to})
+	if err != nil || !reflect.DeepEqual(got, after) {
+		t.Fatalf("status preserved metadata: got %#v want %#v err %v", got, after, err)
+	}
+	return got
+}
+func assignmentGraph(t *testing.T, row model.Task) model.TaskGraph {
+	t.Helper()
+	project, _, principal := assignmentTaskModels()
+	ctx := t.Context()
+	base := newTaskMockBase(t, "metadata-graph")
+	projects := &projectReaderMock{taskMockBase: base.withLabel("project"), ProjectAccessFn: func(actual context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		if actual != ctx || p != principal || id != project.ID {
+			t.Fatal("graph authorization scope")
+		}
+		return taskMockAccess(project, principal), nil
+	}, ProjectFn: func(actual context.Context, id string) (model.Project, error) {
+		if actual != ctx || id != project.ID {
+			t.Fatal("graph Project scope")
+		}
+		return project, nil
+	}}
+	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("task"), TaskPresenceFn: func(actual context.Context, pid, id string) (store.TaskPresence, error) {
+		if actual != ctx || pid != project.ID || id != row.ID {
+			t.Fatal("graph root scope")
+		}
+		return store.TaskPresence{Found: true}, nil
+	}, TaskGraphTasksFn: func(actual context.Context, pid, id string, s store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
+		if actual != ctx || pid != project.ID || id != row.ID || s != selection || preview != 160 {
+			t.Fatal("graph projection selection")
+		}
+		return []model.GraphTask{{ID: row.ID, Status: row.Status, AllowAgents: row.AllowAgents, RequiredPlatform: row.RequiredPlatform, AssignedTo: row.AssignedTo, Ready: row.Ready}}, nil
+	}}
+	scope := &taskSnapshotScopeMock{taskMockBase: base.withLabel("snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }, ObservedAtFn: func(actual context.Context) (time.Time, error) {
+		if actual != ctx {
+			t.Fatal("graph clock scope")
+		}
+		return row.UpdatedAt, nil
+	}}
+	database := &taskStoreMock{taskMockBase: base.withLabel("store"), ReadSnapshotFn: func(actual context.Context, work func(store.SnapshotScope) error) error {
+		if actual != ctx {
+			t.Fatal("graph snapshot scope")
+		}
+		return work(scope)
+	}}
+	graph, err := taskservice.NewTasks(database).Graph(ctx, principal, project.ID, row.ID)
+	if err != nil || len(graph.Tasks) != 1 || graph.Tasks[0].ID != row.ID || graph.Tasks[0].AllowAgents != row.AllowAgents || !model.EqualOptional(graph.Tasks[0].RequiredPlatform, row.RequiredPlatform) {
+		t.Fatalf("graph metadata: %#v %v", graph, err)
+	}
+	return graph
+}
 func TestTaskAgentPermissionUpdatesAndStatusRemainIndependent(t *testing.T) {
-	tasks, _, project, _, principal := taskService(t)
-	ctx := context.Background()
+	_, base, actor := assignmentTaskModels()
 	for _, allowed := range []bool{false, true} {
-		task := createTask(t, tasks, principal, project.ID, "Permission status")
-		if task.AllowAgents {
-			t.Fatal("new task permits automatic execution")
-		}
-		task = updateTask(t, tasks, principal, task, taskcore.UpdateTask{AllowAgents: &allowed})
-		if task.AllowAgents != allowed || task.Status != model.TaskTodo || !task.Ready {
-			t.Fatalf("permission changed status: %#v", task)
-		}
-		noOp := updateTask(t, tasks, principal, task, taskcore.UpdateTask{AllowAgents: &allowed})
-		if !reflect.DeepEqual(noOp, task) {
-			t.Fatal("same-value permission changed resource")
-		}
-		_, err := tasks.Update(ctx, principal, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version + 1, AllowAgents: &allowed})
-		requireFault(t, err, "version_conflict")
-		task = updateTask(t, tasks, principal, task, taskcore.UpdateTask{Description: pointer("Preserved metadata"), Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
-
-		if !task.Ready || task.AllowAgents != allowed {
-			t.Fatal("metadata edit changed permission or readiness")
-		}
-		task = setStatusTask(t, tasks, principal, task, model.TaskTodo)
-		if task.AllowAgents != allowed {
-			t.Fatal("same-status request changed permission")
-		}
-		task = startTask(t, tasks, principal, task)
-		if task.AllowAgents != allowed || task.StartedAt == nil {
-			t.Fatal("explicit manual start must preserve either permission")
-		}
-		if noOp := updateTask(t, tasks, principal, task, taskcore.UpdateTask{AllowAgents: &allowed}); !reflect.DeepEqual(noOp, task) {
-			t.Fatal("active same-value request changed resource")
-		}
-		toggle := !allowed
-		_, err = tasks.Update(ctx, principal, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version, AllowAgents: &toggle, Title: pointer("Must not partly save")})
-		requireFault(t, err, "invalid_transition")
-		assertTaskUnchanged(t, tasks, principal, task)
-		edited := updateTask(t, tasks, principal, task, taskcore.UpdateTask{Description: pointer("Running metadata")})
-		if edited.AllowAgents != allowed || !reflect.DeepEqual(edited.StartedAt, task.StartedAt) || edited.CompletedAt != nil {
-			t.Fatal("ordinary metadata changed permission/timing")
-		}
-		task = finishTask(t, tasks, principal, edited)
-		changed := updateTask(t, tasks, principal, task, taskcore.UpdateTask{AllowAgents: &toggle})
-		if changed.AllowAgents != toggle || !reflect.DeepEqual(changed.StartedAt, task.StartedAt) || !reflect.DeepEqual(changed.CompletedAt, task.CompletedAt) || !reflect.DeepEqual(changed.Properties, task.Properties) {
-			t.Fatal("completed permission edit changed historical execution or properties")
-		}
+		t.Run(map[bool]string{false: "manual", true: "automatic"}[allowed], func(t *testing.T) {
+			before := base
+			before.AllowAgents = false
+			if allowed {
+				v := taskcore.CurrentWrite(before)
+				v.AllowAgents = true
+				after := assignmentResult(before, v)
+				f := newAssignmentFixture(t, before, nil)
+				f.expectUpdate(v, after)
+				got, err := f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: &allowed})
+				if err != nil || !reflect.DeepEqual(got, after) {
+					t.Fatalf("permission update: %#v %v", got, err)
+				}
+				before = after
+			}
+			f := newAssignmentFixture(t, before, nil)
+			got, err := f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: &allowed})
+			if err != nil || !reflect.DeepEqual(got, before) {
+				t.Fatalf("same permission: %#v %v", got, err)
+			}
+			f = newAssignmentFixture(t, before, nil)
+			_, err = f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version + 1, AllowAgents: &allowed})
+			requireFault(t, err, "version_conflict")
+			v := taskcore.CurrentWrite(before)
+			v.Description = "Preserved metadata"
+			after := assignmentResult(before, v)
+			f = newAssignmentFixture(t, before, nil)
+			f.expectUpdate(v, after)
+			got, err = f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, Description: &v.Description})
+			if err != nil || !reflect.DeepEqual(got, after) {
+				t.Fatalf("ordinary metadata: %#v %v", got, err)
+			}
+			before = assignmentStatus(t, after, model.TaskTodo)
+			before = assignmentStatus(t, before, model.TaskInProgress)
+			f = newAssignmentFixture(t, before, nil)
+			got, err = f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: &allowed})
+			if err != nil || !reflect.DeepEqual(got, before) {
+				t.Fatalf("active same permission: %#v %v", got, err)
+			}
+			toggle := !allowed
+			f = newAssignmentFixture(t, before, nil)
+			_, err = f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: &toggle, Title: pointer("Must not partly save")})
+			requireFault(t, err, "invalid_transition")
+			v = taskcore.CurrentWrite(before)
+			v.Description = "Running metadata"
+			after = assignmentResult(before, v)
+			f = newAssignmentFixture(t, before, nil)
+			f.expectUpdate(v, after)
+			got, err = f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, Description: &v.Description})
+			if err != nil || !reflect.DeepEqual(got, after) {
+				t.Fatalf("running metadata: %#v %v", got, err)
+			}
+			before = assignmentStatus(t, after, model.TaskDone)
+			v = taskcore.CurrentWrite(before)
+			v.AllowAgents = toggle
+			after = assignmentResult(before, v)
+			f = newAssignmentFixture(t, before, nil)
+			f.expectUpdate(v, after)
+			got, err = f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: &toggle})
+			if err != nil || !reflect.DeepEqual(got, after) || !reflect.DeepEqual(got.StartedAt, before.StartedAt) || !reflect.DeepEqual(got.CompletedAt, before.CompletedAt) {
+				t.Fatalf("completed permission: %#v %v", got, err)
+			}
+		})
 	}
 }
-
 func TestTaskAgentPermissionFilterPrecedesLimitAndBindsCursor(t *testing.T) {
-	tasks, _, project, _, principal := taskService(t)
-	ctx := context.Background()
-	var permitted, manual []string
-	for index := range 6 {
-		task := createTask(t, tasks, principal, project.ID, "Permission candidate")
-		if index >= 3 {
-			task = updateTask(t, tasks, principal, task, taskcore.UpdateTask{AllowAgents: pointer(true)})
-			permitted = append(permitted, task.ID)
-		} else {
-			manual = append(manual, task.ID)
-		}
-	}
+	_, base, _ := assignmentTaskModels()
+	var all []model.Task
 	for _, allowed := range []bool{false, true} {
+		rows := []model.Task{base, base, base}
+		for i := range rows {
+			rows[i].ID = []string{"55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"}[i]
+			if allowed {
+				rows[i].ID = []string{"88888888-8888-4888-8888-888888888888", "99999999-9999-4999-8999-999999999999", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}[i]
+			}
+			rows[i].CreatedAt = base.CreatedAt.Add(time.Duration(len(all) + i))
+			rows[i].AllowAgents = allowed
+		}
+		all = append(all, rows...)
+		tasks, _, project, principal := assignmentListFixture(t, store.TaskQuery{Ready: pointer(true), AllowAgents: &allowed}, rows)
 		request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, Ready: pointer(true), AllowAgents: &allowed}
 		var ids []string
 		for {
-			page, err := tasks.List(ctx, principal, project.ID, request)
+			page, err := tasks.List(t.Context(), principal, project.ID, request)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, task := range page.Items {
-				if task.AllowAgents != allowed || !task.Ready {
-					t.Fatalf("permission filter mismatch: %#v", task)
-				}
-				ids = append(ids, task.ID)
-			}
+			ids = append(ids, assignmentTaskIDs(page.Items)...)
 			if page.NextCursor == nil {
 				break
 			}
 			changed := request
 			changed.Cursor = page.NextCursor
 			changed.AllowAgents = nil
-			_, err = tasks.List(ctx, principal, project.ID, changed)
+			_, err = tasks.List(t.Context(), principal, project.ID, changed)
 			requireFault(t, err, "invalid_input")
 			changed.AllowAgents = pointer(!allowed)
-			_, err = tasks.List(ctx, principal, project.ID, changed)
+			_, err = tasks.List(t.Context(), principal, project.ID, changed)
 			requireFault(t, err, "invalid_input")
 			request.Cursor = page.NextCursor
 		}
-		want := manual
-		if allowed {
-			want = permitted
-		}
-		if !slices.Equal(ids, want) {
-			t.Fatalf("bounded filter hid candidates: got %v want %v", ids, want)
+		if !slices.Equal(ids, assignmentTaskIDs(rows)) {
+			t.Fatalf("permission page: %v", ids)
 		}
 	}
-	all, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
-	if err != nil || len(all.Items) != 6 {
-		t.Fatalf("omitted permission filter changed full inventory: %v", err)
+	tasks, _, project, principal := assignmentListFixture(t, store.TaskQuery{}, all)
+	page, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
+	if err != nil || len(page.Items) != 6 {
+		t.Fatalf("omitted permission: %#v %v", page, err)
 	}
-	for _, original := range all.Items {
-		graph, err := tasks.Graph(ctx, principal, project.ID, original.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(graph.Tasks) != 1 || graph.Tasks[0].ID != original.ID || graph.Tasks[0].AllowAgents != original.AllowAgents {
-			t.Fatalf("graph lost permission: %#v", graph)
-		}
+	for _, row := range all {
+		assignmentGraph(t, row)
 	}
-
 }
-
 func TestTaskAgentPermissionAndStartRaceHasOneMutationWinner(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	before := createTask(t, tasks, principal, project.ID, "Permission race")
-	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: pointer(true)})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.SetStatus(ctx, principal, project.ID, before.ID, taskcore.SetTaskStatus{Version: before.Version, Status: model.TaskInProgress})
-		})
-	assertOneTaskWinner(t, results, "version_conflict")
-	after, err := tasks.Get(context.Background(), principal, project.ID, before.ID)
-	if err != nil || after.Version != before.Version+1 {
-		t.Fatalf("race committed incorrectly: %#v %v", after, err)
-	}
-	if after.Status == model.TaskInProgress {
-		if after.AllowAgents || after.StartedAt == nil {
-			t.Fatal("start winner changed permission or omitted timing")
+	_, before, actor := assignmentTaskModels()
+	for _, started := range []bool{false, true} {
+		current := before
+		current.Version++
+		if started {
+			current.Status = model.TaskInProgress
+		} else {
+			current.AllowAgents = true
 		}
-	} else if after.Status != model.TaskTodo || !after.AllowAgents || after.StartedAt != nil {
-		t.Fatalf("permission winner changed status: %#v", after)
+		f := newAssignmentFixture(t, current, nil)
+		var err error
+		if started {
+			_, err = f.tasks.Update(f.ctx, actor, f.project.ID, current.ID, taskcore.UpdateTask{Version: before.Version, AllowAgents: pointer(true)})
+		} else {
+			_, err = f.tasks.SetStatus(f.ctx, actor, f.project.ID, current.ID, taskcore.SetTaskStatus{Version: before.Version, Status: model.TaskInProgress})
+		}
+		requireFault(t, err, "version_conflict")
 	}
 }

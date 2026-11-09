@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -10,11 +11,14 @@ import * as executionStores from "../../../src/commands/worker/bots/execution-st
 
 const mocks = vi.hoisted(() => ({ collector: vi.fn() }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.collector }));
+const openStore = botStores.openBotStore, openExecutions = executionStores.openBotExecutionStore;
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-host"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); cleanups.push(() => rm(home, { recursive: true, force: true }));
+  vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => openStore(createMemoryDatabase(), options));
+  vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation((_file, options) => openExecutions(createMemoryDatabase(), options));
   const paths = resolveWorkerPaths(home); await mkdir(paths.workerDirectory, { recursive: true });
   let configuration: ExecutionConfiguration | null = null;
   const options = { homeDirectory: home, packageDirectory: home, workingDirectory: home, paths,
@@ -40,10 +44,9 @@ it("omits unsupported configuration and discards a capability probe spanning a c
 
 it("closes both actual SQLite handles when a later host constructor fails", async () => {
   const f = await fixture();
-  const openStore = botStores.openBotStore, openExecutions = executionStores.openBotExecutionStore;
   let store!: ReturnType<typeof openStore>, executions!: ReturnType<typeof openExecutions>;
-  vi.spyOn(botStores, "openBotStore").mockImplementation((...args) => store = openStore(...args));
-  vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation((...args) => executions = openExecutions(...args));
+  vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => store = openStore(createMemoryDatabase(), options));
+  vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation((_file, options) => executions = openExecutions(createMemoryDatabase(), options));
   mocks.collector.mockImplementationOnce(() => { throw new Error("Host observation setup failed"); });
   expect(() => createWorkerBotHost(f.options)).toThrow("Host observation setup failed");
   expect(() => store.list(f.options.owner)).toThrow(/not open|closed/i);
@@ -52,9 +55,9 @@ it("closes both actual SQLite handles when a later host constructor fails", asyn
 });
 
 it("closes the first store if opening the execution store fails", async () => {
-  const f = await fixture(), open = botStores.openBotStore;
-  let store!: ReturnType<typeof open>;
-  vi.spyOn(botStores, "openBotStore").mockImplementation((...args) => store = open(...args));
+  const f = await fixture();
+  let store!: ReturnType<typeof openStore>;
+  vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => store = openStore(createMemoryDatabase(), options));
   vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation(() => { throw new Error("Execution store unavailable"); });
   expect(() => createWorkerBotHost(f.options)).toThrow("Execution store unavailable");
   expect(() => store.list(f.options.owner)).toThrow(/not open|closed/i);

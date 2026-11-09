@@ -9,6 +9,7 @@ import { projectDefinition } from "../commands/project/definition.js";
 import { taskDefinition } from "../commands/task/definition.js";
 import { invitationDefinition } from "../commands/invitation/definition.js";
 import { teamDefinition } from "../commands/team/definition.js";
+import { webhookDefinition } from "../commands/webhook/definition.js";
 import { updateDefinition } from "../commands/update/definition.js";
 import { skillDefinition } from "../commands/skill/definition.js";
 import { loginDefinition, logoutDefinition } from "../commands/auth/definition.js";
@@ -42,6 +43,7 @@ export const commands: readonly CommandRegistration[] = [
   },
   { ...invitationDefinition, load: async () => ({ run: (await import("../commands/invitation/command.js")).runInvitationCommand }) },
   { ...teamDefinition, load: async () => ({ run: (await import("../commands/team/command.js")).runTeamCommand }) },
+  { ...webhookDefinition, load: async () => ({ run: (await import("../commands/webhook/command.js")).runWebhookCommand }) },
   {
     ...taskDefinition,
     load: async () => ({ run: (await import("../commands/task/command.js")).runTaskCommand }),

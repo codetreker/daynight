@@ -1,104 +1,230 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"net/http"
-	"net/url"
+	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
+type workerHTTPCredential struct {
+	principal model.Principal
+	value     string
+}
+
 func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
-	integration := newIdentityIntegration(t)
-	admin, member, outsider, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t), identityBrowser(t)
-	adminUser := integration.login(t, admin, "alice")
-	memberUser := integration.login(t, member, "bob")
-	integration.login(t, outsider, "nullable")
-	origin := map[string]string{"Origin": integration.server.URL}
-	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Worker authorization", RepoURL: "https://example.com/worker", ExpectedUserID: adminUser.ID}), origin, http.StatusCreated)
-	project := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
-	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
-	link, err := url.Parse(invitation.Link)
-	if err != nil || link.Fragment == "" {
-		t.Fatal("project invitation did not contain an acceptance token")
-	}
-	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, http.StatusOK)
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Worker owner","expiresAt":null}`, origin, http.StatusCreated)
-	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
-	integration.secrets = append(integration.secrets, token.Token)
-	bearer := map[string]string{"Authorization": "Bearer " + token.Token}
-	request := func(browser *http.Client, method, path string, body any, headers map[string]string, status int, code string) []byte {
+	database := newHTTPTestStore(t)
+	var logs bytes.Buffer
+	handler := resourceTestServer(t, database, attachmentTestFiles(t), &logs)
+	origin := configuredTestConfig().PublicOrigin
+	admin := workerHTTPCredential{principal: model.Principal{UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CredentialID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
+	member := workerHTTPCredential{principal: model.Principal{UserID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", CredentialID: "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
+	outsider := workerHTTPCredential{principal: model.Principal{UserID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", CredentialID: "cccccccc-1111-4111-8111-cccccccccccc", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
+	bearer := workerHTTPCredential{principal: model.Principal{UserID: member.principal.UserID, CredentialID: "dddddddd-1111-4111-8111-dddddddddddd", Kind: model.PATCredential}, value: secret.Random("dnpat_")}
+	request := func(actor *workerHTTPCredential, plan *workerHTTPWritePlan, method, path string, body any, requestOrigin string, status int, code string) *httptest.ResponseRecorder {
 		t.Helper()
-		response, data := identityRequest(t, browser, method, integration.server.URL+path, jsonBody(t, body), headers, status)
-		if response.Header.Get("Cache-Control") != "no-store" {
-			t.Fatal("worker action response can be cached")
+		authentications := 0
+		database.WriteIdentityCall = nil
+		if actor != nil {
+			database.WriteIdentityCall = func(ctx context.Context, work func(store.IdentityScope) error) (store.Completion, error) {
+				authentications++
+				if authentications != 1 || work == nil {
+					t.Fatal("worker request authenticated more than once")
+				}
+				dao := &httpAuthenticationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: actor.principal, hash: secret.Hash(actor.value)}
+				err := work(httpAuthenticationScope{t: t, dao: dao})
+				if dao.calls != 1 {
+					t.Fatalf("worker authentication calls=%d", dao.calls)
+				}
+				return store.Completion{Outcome: store.TransactionCommitted}, err
+			}
 		}
-		if code != "" && identityDecode[api.ErrorResponse](t, data).Error.Code != code {
-			t.Fatalf("unexpected worker refusal code: %s", data)
+		if plan == nil {
+			database.WriteProjectCall = nil
 		}
-		return data
+		req := httptest.NewRequest(method, origin+path, strings.NewReader(jsonBody(t, body)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", "worker-owner-test")
+		if requestOrigin != "" {
+			req.Header.Set("Origin", requestOrigin)
+		}
+		if actor != nil {
+			if actor.principal.Kind == model.PATCredential {
+				req.Header.Set("Authorization", "Bearer "+actor.value)
+			} else {
+				req.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: actor.value})
+			}
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != status || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("worker response status/cache=%d/%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body)
+		}
+		if code != "" && decodeResponse[api.ErrorResponse](t, response, status).Error.Code != code {
+			t.Fatalf("unexpected worker refusal code: %s", response.Body)
+		}
+		if code == "" && response.Header().Get("Daynight-User-ID") != actor.principal.UserID {
+			t.Fatal("worker response lost its authenticated identity")
+		}
+		wantAuth := 0
+		if actor != nil {
+			wantAuth = 1
+		}
+		if authentications != wantAuth {
+			t.Fatalf("worker authentication calls=%d want=%d", authentications, wantAuth)
+		}
+		if plan != nil {
+			plan.check()
+		}
+		database.WriteProjectCall = nil
+		database.WriteIdentityCall = nil
+		return response
 	}
-	data = request(member, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Owned execution", "assignedTo": memberUser.ID}, origin, http.StatusCreated, "")
-	task := identityDecode[api.Task](t, data)
-	data = request(member, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true, "requiredPlatform": "linux"}, origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	body := workerClaimBody(task.Version)
-	path := taskPath(task) + "/worker-claim"
-	request(anonymous, http.MethodPost, path, body, nil, http.StatusUnauthorized, "unauthenticated")
-	request(outsider, http.MethodPost, path, body, origin, http.StatusNotFound, "not_found")
-	request(member, http.MethodPost, path, body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
-	data = request(anonymous, http.MethodPost, path, body, bearer, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	claim := apiWorker(t, task.Properties)
-	if claim == nil || claim.UserID == adminUser.ID {
+	current := workerHTTPTask(t)
+	current.Title, current.AssignedTo = "Owned execution", &member.principal.UserID
+	platform := model.TaskPlatform("linux")
+	current.RequiredPlatform = &platform
+	taskPath := "/api/v1/projects/" + current.ProjectID + "/tasks/" + current.ID
+	path := taskPath + "/worker-claim"
+	refusal := func(actor workerHTTPCredential, role model.ProjectRole, accessCalls int, method, path string, body any, status int, code string) {
+		t.Helper()
+		plan := expectWorkerHTTPWrite(t, database, current, actor.principal, role, nil, model.Task{}, nil)
+		plan.AccessCalls = accessCalls
+		if actor.principal == outsider.principal {
+			plan.AccessError, plan.TaskReads = model.ErrNotFound, 0
+		}
+		request(&actor, plan, method, path, body, origin, status, code)
+	}
+	assertAuthenticationRefusals := func(method, actionPath string, body any) {
+		t.Helper()
+		request(nil, nil, method, actionPath, body, "", http.StatusUnauthorized, "unauthenticated")
+		refusal(outsider, model.ProjectMemberRole, 1, method, actionPath, body, http.StatusNotFound, "not_found")
+		request(&member, nil, method, actionPath, body, "https://foreign.example", http.StatusForbidden, "forbidden")
+	}
+	claimedAt := current.UpdatedAt.Add(time.Minute)
+	claimResult := func(before model.Task, body map[string]any, owner string) (model.Task, model.WorkerClaim) {
+		t.Helper()
+		machine := body["machine"].(map[string]any)
+		claim := model.WorkerClaim{ClaimID: body["claimId"].(string), State: model.WorkerActive, UserID: owner, WorkerID: body["workerId"].(string), Machine: model.WorkerMachine{ID: machine["id"].(string), Name: machine["name"].(string)}, Platform: "linux", Agent: "codex", AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string), Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+		after := before
+		after.Status, after.Ready, after.Version = model.TaskInProgress, false, before.Version+1
+		startedAt := claimedAt
+		after.UpdatedAt, after.StartedAt = claimedAt, &startedAt
+		after.Properties = workerHTTPProperties(t, before.Properties, &claim)
+		return after, claim
+	}
+	apply := func(actor workerHTTPCredential, role model.ProjectRole, accesses int, method, actionPath string, body any, after model.Task, clock *time.Time) api.Task {
+		t.Helper()
+		expected := workerHTTPWriteValues(after)
+		plan := expectWorkerHTTPWrite(t, database, current, actor.principal, role, &expected, after, clock)
+		plan.AccessCalls = accesses
+		requestOrigin := origin
+		if actor.principal.Kind == model.PATCredential {
+			requestOrigin = ""
+		}
+		response := request(&actor, plan, method, actionPath, body, requestOrigin, http.StatusOK, "")
+		task := decodeResponse[api.Task](t, response, http.StatusOK)
+		if task.Version != after.Version || task.Status != string(after.Status) || task.AssignedTo == nil || *task.AssignedTo != member.principal.UserID {
+			t.Fatalf("worker resource did not reflect the supplied authoritative row: %#v", task)
+		}
+		return task
+	}
+	body := workerClaimBody(current.Version)
+	assertAuthenticationRefusals(http.MethodPost, path, body)
+	after, firstClaim := claimResult(current, body, member.principal.UserID)
+	task := apply(bearer, model.ProjectMemberRole, 1, http.MethodPost, path, body, after, &claimedAt)
+	current = after
+	if claim := apiWorker(t, task.Properties); claim == nil || claim.UserID != member.principal.UserID || claim.UserID == admin.principal.UserID {
 		t.Fatal("PAT claim did not derive its execution owner from authentication")
 	}
 	for _, action := range []struct {
-		method string
-		path   string
-		body   map[string]any
+		method, path string
+		body         map[string]any
 	}{
-		{http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}},
-		{http.MethodPost, path + "/release", map[string]any{"version": task.Version, "claimId": claim.ClaimID, "stoppedConfirmed": true}},
-		{http.MethodPost, path + "/withdraw", map[string]any{"version": task.Version, "claimId": claim.ClaimID}},
+		{http.MethodPatch, path, map[string]any{"version": current.Version, "claimId": firstClaim.ClaimID, "phase": "executing"}},
+		{http.MethodPost, path + "/release", map[string]any{"version": current.Version, "claimId": firstClaim.ClaimID, "stoppedConfirmed": true}},
+		{http.MethodPost, path + "/withdraw", map[string]any{"version": current.Version, "claimId": firstClaim.ClaimID}},
 	} {
-		request(anonymous, action.method, action.path, action.body, nil, http.StatusUnauthorized, "unauthenticated")
-		request(outsider, action.method, action.path, action.body, origin, http.StatusNotFound, "not_found")
-		request(member, action.method, action.path, action.body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
+		assertAuthenticationRefusals(action.method, action.path, action.body)
 	}
-	request(admin, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusForbidden, "forbidden")
-	withdraw := map[string]any{"version": task.Version, "claimId": claim.ClaimID}
-	data = request(anonymous, http.MethodPost, path+"/withdraw", withdraw, bearer, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
+	refusal(admin, model.ProjectAdmin, 1, http.MethodPatch, path, map[string]any{"version": current.Version, "claimId": firstClaim.ClaimID, "phase": "executing"}, http.StatusForbidden, "forbidden")
+	withdrawn := current
+	withdrawn.Status, withdrawn.AllowAgents, withdrawn.Ready = model.TaskTodo, false, true
+	withdrawn.StartedAt, withdrawn.CompletedAt = nil, nil
+	withdrawn.Version, withdrawn.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Microsecond)
+	withdrawn.Properties = workerHTTPProperties(t, current.Properties, nil)
+	task = apply(bearer, model.ProjectMemberRole, 1, http.MethodPost, path+"/withdraw", map[string]any{"version": current.Version, "claimId": firstClaim.ClaimID}, withdrawn, nil)
+	current = withdrawn
 	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
 		t.Fatal("owner withdrawal did not reset execution and disable automatic claims")
 	}
-	request(member, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusConflict, "claim_conflict")
-	data = request(member, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	body = workerClaimBody(task.Version)
-	data = request(member, http.MethodPost, path, body, origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	data = request(admin, http.MethodPost, path+"/release", map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "stoppedConfirmed": true}, origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	resume := workerClaimBody(task.Version)
-	resume["previousClaimId"] = apiWorker(t, task.Properties).ClaimID
-	request(outsider, http.MethodPost, path+"/resume", resume, origin, http.StatusNotFound, "not_found")
-	request(anonymous, http.MethodPost, path+"/resume", resume, nil, http.StatusUnauthorized, "unauthenticated")
-	data = request(admin, http.MethodPost, path+"/resume", resume, origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	if apiWorker(t, task.Properties).UserID != adminUser.ID || apiWorker(t, task.Properties).ClaimID != resume["claimId"] {
+	refusal(member, model.ProjectMemberRole, 1, http.MethodPatch, path, map[string]any{"version": current.Version, "claimId": firstClaim.ClaimID, "phase": "executing"}, http.StatusConflict, "claim_conflict")
+	enabled := current
+	enabled.AllowAgents, enabled.Version, enabled.UpdatedAt = true, current.Version+1, current.UpdatedAt.Add(time.Microsecond)
+	expected := workerHTTPWriteValues(enabled)
+	enabledPlan := expectWorkerHTTPWrite(t, database, current, member.principal, model.ProjectMemberRole, &expected, enabled, nil)
+	dependencyReads := 0
+	enabledPlan.TaskDAO.TasksByIDFn = func(ctx context.Context, ids []string) ([]model.Task, error) {
+		dependencyReads++
+		if !enabledPlan.active || ctx != enabledPlan.ctx || dependencyReads != 1 || len(ids) != 0 {
+			t.Fatal("worker permission update changed its prerequisite read")
+		}
+		return []model.Task{}, nil
+	}
+	request(&member, enabledPlan, http.MethodPatch, taskPath, map[string]any{"version": current.Version, "allowAgents": true}, origin, http.StatusOK, "")
+	if dependencyReads != 1 {
+		t.Fatal("worker permission update omitted its prerequisite read")
+	}
+	current = enabled
+	claimedAt = current.UpdatedAt.Add(time.Minute)
+	body = workerClaimBody(current.Version)
+	after, secondClaim := claimResult(current, body, member.principal.UserID)
+	apply(member, model.ProjectMemberRole, 1, http.MethodPost, path, body, after, &claimedAt)
+	current = after
+	released := secondClaim
+	released.State = model.WorkerReleased
+	after = current
+	after.Status, after.Ready, after.StartedAt = model.TaskTodo, true, nil
+	after.Version, after.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Microsecond)
+	after.Properties = workerHTTPProperties(t, current.Properties, &released)
+	apply(admin, model.ProjectAdmin, 2, http.MethodPost, path+"/release", map[string]any{"version": current.Version, "claimId": secondClaim.ClaimID, "stoppedConfirmed": true}, after, nil)
+	current = after
+	claimedAt = current.UpdatedAt.Add(time.Minute)
+	resume := workerClaimBody(current.Version)
+	resume["previousClaimId"] = released.ClaimID
+	refusal(outsider, model.ProjectMemberRole, 1, http.MethodPost, path+"/resume", resume, http.StatusNotFound, "not_found")
+	request(nil, nil, http.MethodPost, path+"/resume", resume, "", http.StatusUnauthorized, "unauthenticated")
+	after, resumedClaim := claimResult(current, resume, admin.principal.UserID)
+	task = apply(admin, model.ProjectAdmin, 2, http.MethodPost, path+"/resume", resume, after, &claimedAt)
+	current = after
+	if claim := apiWorker(t, task.Properties); claim == nil || claim.UserID != admin.principal.UserID || claim.ClaimID != resume["claimId"] {
 		t.Fatal("manual resume did not establish the authorized caller's new claim")
 	}
-	withdraw = map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID}
-	request(member, http.MethodPost, path+"/withdraw", withdraw, origin, http.StatusForbidden, "forbidden")
-	data = request(admin, http.MethodPost, path+"/withdraw", withdraw, origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
+	withdraw := map[string]any{"version": current.Version, "claimId": resumedClaim.ClaimID}
+	refusal(member, model.ProjectMemberRole, 2, http.MethodPost, path+"/withdraw", withdraw, http.StatusForbidden, "forbidden")
+	after = current
+	after.Status, after.AllowAgents, after.Ready, after.StartedAt, after.CompletedAt = model.TaskTodo, false, true, nil, nil
+	after.Version, after.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Microsecond)
+	after.Properties = workerHTTPProperties(t, current.Properties, nil)
+	task = apply(admin, model.ProjectAdmin, 1, http.MethodPost, path+"/withdraw", withdraw, after, nil)
 	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" {
 		t.Fatal("administrator withdrawal retained ownership")
 	}
-	if integration.logs.contains(token.Token) || integration.logs.contains("Owned execution") || integration.logs.contains("Worker machine") {
-		t.Fatal("worker authentication or execution content leaked to logs")
+	for _, value := range []string{bearer.value, member.value, admin.value, outsider.value, "Owned execution", "Worker machine"} {
+		if strings.Contains(logs.String(), value) {
+			t.Fatal("worker authentication or execution content leaked to logs")
+		}
+	}
+	if !reflect.DeepEqual(current.AssignedTo, after.AssignedTo) {
+		t.Fatal("worker withdrawal changed the assignee")
 	}
 }

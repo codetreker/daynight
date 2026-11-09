@@ -81,11 +81,21 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	}
 	observed := workerSnapshotReportBody()
 	observed["assistantHost"] = assistantHostBody()
+	observed["runtimeConfiguration"] = runtimeConfigurationBody()
 	check(request("POST", path+"/report", jsonBody(t, observed)), 200, "")
 	w = request("GET", path, "")
 	detail = testsupport.DecodeResponse[api.WorkerDetailResponse](t, w, 200)
 	if detail.Worker.ActiveTaskCount == nil || *detail.Worker.ActiveTaskCount != 0 || detail.Worker.Telemetry.AssistantHost == nil {
 		t.Fatalf("observed worker: %+v", detail.Worker)
+	}
+	if detail.Worker.Telemetry.RuntimeConfiguration == nil || detail.Worker.Telemetry.RuntimeConfiguration.Native.Model.Source != "local" {
+		t.Fatalf("runtime configuration not persisted: %+v", detail.Worker.Telemetry)
+	}
+	delete(observed, "runtimeConfiguration")
+	check(request("POST", path+"/report", jsonBody(t, observed)), 200, "")
+	detail = testsupport.DecodeResponse[api.WorkerDetailResponse](t, request("GET", path, ""), 200)
+	if detail.Worker.Telemetry.RuntimeConfiguration != nil {
+		t.Fatal("omitted runtime configuration retained stale sources")
 	}
 	page := testsupport.DecodeResponse[api.WorkerPage](t, request("GET", "/api/v1/me/workers", ""), 200)
 	if len(page.Items) != 1 || page.Items[0].WorkerID != id {
@@ -93,7 +103,7 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	}
 	check(request("PUT", path+"/configuration", `{}`), 400, "invalid_input")
 	check(request("PUT", path+"/configuration", `{"revision":"1","value":null}`), 400, "invalid_input")
-	config := map[string]any{"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{}}
+	config := map[string]any{"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false, "native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{}}
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": 1, "value": config})), 400, "invalid_input")
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": "1", "value": config})), 409, "configuration_not_initialized")
 	observed["configuration"] = map[string]any{"bootstrap": config, "observation": nil}

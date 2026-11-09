@@ -20,12 +20,6 @@ type completionBotDAO struct {
 func (d completionBotDAO) Credential(context.Context, model.Principal) error { return nil }
 func (d completionBotDAO) LockCreation(context.Context, string) error        { return nil }
 func (d completionBotDAO) Bot(context.Context, string) (model.Bot, error)    { return d.bot, nil }
-func (d completionBotDAO) DeleteBot(_ context.Context, _ string, _ int64, deletion model.BotDeletion) (model.Bot, error) {
-	result := d.bot
-	result.Version++
-	result.Deletion = &deletion
-	return result, nil
-}
 
 type completionBotScope struct{ dao completionBotDAO }
 
@@ -58,10 +52,9 @@ func TestBotWriteCompletionControlsVisibleResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	initial := model.Bot{ID: input.ID, OwnerUserID: principal.UserID, Name: input.Name, Version: 1, RequestFingerprint: fingerprint}
-	request := store.DeleteBot{Version: 1, DeletionID: uuid.NewString()}
 	cleanup := errors.New("cleanup failed")
 	commit := errors.New("commit outcome unknown")
-	for _, operation := range []string{"create", "delete"} {
+	for _, operation := range []string{"create"} {
 		for _, tc := range []struct {
 			name       string
 			outcome    store.TransactionOutcome
@@ -98,13 +91,7 @@ func TestBotWriteCompletionControlsVisibleResults(t *testing.T) {
 				}
 				db := &completionBotStore{dao: completionBotDAO{bot: bot}, completion: store.Completion{Outcome: tc.outcome}, finish: tc.finish}
 				service := New(db)
-				var got model.Bot
-				var err error
-				if operation == "create" {
-					got, err = service.Create(ctx, principal, input)
-				} else {
-					got, err = service.Delete(ctx, principal, input.ID, request)
-				}
+				got, err := service.Create(ctx, principal, input)
 				if !db.called {
 					t.Fatal("writer was not called")
 				}
@@ -117,7 +104,7 @@ func TestBotWriteCompletionControlsVisibleResults(t *testing.T) {
 					t.Fatalf("unexpected operation failure: %v", db.operationErr)
 				}
 				if tc.wantResult {
-					if err != nil || got.ID != input.ID || (operation == "delete" && got.Deletion == nil) {
+					if err != nil || got.ID != input.ID {
 						t.Fatalf("committed result: %+v %v", got, err)
 					}
 					return

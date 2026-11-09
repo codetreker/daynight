@@ -8,8 +8,9 @@ import { parseAuthRoute } from '../src/app/router';
 import * as router from '../src/app/router';
 import { pauseAuthRequests } from '../src/api/client';
 import { assistantCreateSubmit, assistantDetailsOpener, expandAssistantAdvancedSettings, mockWideAssistantWorkspace, openAssistantCreation } from './helpers/assistant-ui';
-vi.mock('../src/features/bots/BotSessionHost', () => ({ useBotSessionCache: () => cache, BotSessionHost: ({ binding }: {binding: {botId:string}|null}) => <section data-testid="host">{binding?.botId ?? 'no binding'}</section> }));
-const cache = { invalidateBot: vi.fn(), blockBot: vi.fn(), unblockBot: vi.fn(), isBlocked: () => false, isRevoked: () => false, subscribe: () => () => {}, guardSnapshot: () => 0 };
+vi.mock('../src/features/bots/BotSessionHost', () => ({ useBotSessionCache: () => cache, BotSessionHost: ({ displayBinding }: {displayBinding: {botId:string}|null}) => <section data-testid="host">{displayBinding?.botId ?? 'no binding'}</section> }));
+const emptyPanes = Object.freeze([]);
+const cache = { snapshot: () => emptyPanes, suspendActions: vi.fn(), invalidateBot: vi.fn(), blockBot: vi.fn(), unblockBot: vi.fn(), isBlocked: () => false, isRevoked: () => false, subscribe: () => () => {}, guardSnapshot: () => 0 };
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
 beforeEach(mockWideAssistantWorkspace);
 afterEach(() => scopes.splice(0).forEach(scope => scope.dispose()));
@@ -151,7 +152,7 @@ it('keeps the creation form and its local selections mounted throughout an admis
  expect(screen.getByLabelText('Name')).toBe(name); expect(name).toHaveValue('My assistant'); expect(cwd).toHaveValue('/custom/place');
  await act(async()=>{for(const {url,request} of pending) request.resolve(botResponse(url.includes('/defaults')?botDefaults():{items:f.bots,nextCursor:null}));});
  expect(screen.getByLabelText('Name')).toBe(name); expect(name).toHaveValue('My assistant');
- expect(f.fetch.mock.calls.every(([, options])=>!options?.method || options.method==='GET')).toBe(true);
+ expect(f.fetch.mock.calls.every(([url, options])=>!options?.method || options.method==='GET' || String(url).endsWith('/readonly/requests'))).toBe(true);
 });
 it('retains the open details and delete confirmation when admission pauses', async () => {
  const f=fixture(), view=mount(botId(1));

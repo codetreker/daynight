@@ -2,7 +2,7 @@ import type { ProjectAccess, ProjectOwnership, ProjectPersonVersion } from "./au
 
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
-export type TaskStatus = "todo" | "in_progress" | "done";
+export type TaskStatus = "todo" | "in_progress" | "done" | "cancelled";
 
 export type Project = {
   readonly ownership: ProjectOwnership;
@@ -38,6 +38,7 @@ export type GraphTask = {
   readonly requiredPlatform: ExecutionPlatform | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly cancelledAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 };
@@ -47,6 +48,7 @@ export type TaskGraphSummary = {
   readonly todo: number;
   readonly inProgress: number;
   readonly done: number;
+  readonly cancelled: number;
   readonly ready: number;
   readonly blocked: number;
 };
@@ -104,15 +106,9 @@ export type TaskDetail = {
   readonly requiredPlatform: ExecutionPlatform | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly cancelledAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
-};
-
-export type GraphLimitDetails = {
-  readonly nodeCount: number;
-  readonly edgeCount: number;
-  readonly maxNodes: number;
-  readonly maxEdges: number;
 };
 
 export type Attachment = {
@@ -133,6 +129,8 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
   readonly properties: TaskProperties;
 };
 
+export type TaskListSessionState = "working" | "notice" | "warning" | "pending";
+
 export type TaskSync = {
   readonly assigneeVersions: readonly ProjectPersonVersion[];
   readonly actorAccess: ProjectAccess;
@@ -141,6 +139,12 @@ export type TaskSync = {
   readonly project: Project;
   readonly observedAt: string;
   readonly tasks: readonly TaskSummary[];
+  readonly sessions: Readonly<Record<string, TaskListSessionState>>;
+};
+
+export type TaskSyncRead = {
+  readonly sync: TaskSync;
+  readonly receivedMonotonic: number;
 };
 
 export type {

@@ -16,7 +16,7 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
 		if err != nil {
 			return err
@@ -25,7 +25,7 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 			if err = op.LockCredential(ctx, scope, principal); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, principal, project); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 				return err
 			}
 		}
@@ -51,7 +51,7 @@ func (s *Service) terminal(ctx context.Context, principal model.Principal, proje
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
 		if err != nil {
 			return err
@@ -59,15 +59,14 @@ func (s *Service) terminal(ctx context.Context, principal model.Principal, proje
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		access, err := op.LoadTerminal(ctx, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTerminal(access, task, principal, project, taskID, deleted, admin); err != nil {
+		if err = op.BindTerminal(access, task, principal, project, taskID, deleted); err != nil {
 			return err
 		}
 		return work(access)

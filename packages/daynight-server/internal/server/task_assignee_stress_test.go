@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -98,8 +98,8 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	database := &store.Store{Pool: pool}
-	handler := projectTestHandler(t, database, io.Discard)
+	database := &postgres.Store{Pool: pool}
+	handler := projectDatabaseTestHandler(t, database, io.Discard)
 	project := taskProject(t, handler)
 	ids := []string{handler.principal.UserID}
 	for len(ids) < 100 {
@@ -201,7 +201,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	evidence := map[string]any{
 		"tasks": 10000, "people": 100, "scope": "isolated PostgreSQL, actual HTTP resources and traced production SQL",
 		"sourceGitSha": source("rev-parse", "HEAD"), "sourceDirty": source("status", "--porcelain") != "",
-		"measurements": measurements, "limit": "Source-bound sample; no latency threshold or production capacity claim; task graph limits are unchanged.",
+		"measurements": measurements, "limit": "Source-bound sample; no latency threshold or production capacity claim.",
 	}
 	data, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {

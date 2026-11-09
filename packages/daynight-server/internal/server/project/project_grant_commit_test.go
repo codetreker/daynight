@@ -15,7 +15,7 @@ import (
 
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -93,7 +93,7 @@ func TestGrantHTTPCommitLossReportsUnknownAfterRealCommit(t *testing.T) {
 	t.Cleanup(pool.Close)
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	NewMembershipRoutes(projectservice.NewMemberships(&store.Store{Pool: pool}), h.Auth, logger).RegisterRoutes(mux)
+	NewMembershipRoutes(projectservice.NewMemberships(&postgres.Store{Pool: pool}), h.Auth, logger).RegisterRoutes(mux)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	armed.Store(true)
 	body := `{"version":null,"role":"admin","expectedUserId":"` + h.adminID + `"}`

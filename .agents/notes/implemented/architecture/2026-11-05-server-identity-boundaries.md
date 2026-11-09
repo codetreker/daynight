@@ -41,8 +41,8 @@ existing clients.
 
 Identity and the shared helpers can be consumed without importing the root
 service or server packages. Existing cookie, credential, cursor and error
-semantics remain part of their respective adapters and codecs. PostgreSQL
-implementation details and the remaining domain writers retain their existing
-owners until their own migrations; this decision does not change application
-lifecycle or the rest of Team behavior. The [snapshot reader decision](2026-11-05-server-snapshot-readers.md)
+semantics remain part of their respective adapters and codecs. The
+[PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns database
+implementation details. This decision does not change application lifecycle or
+the rest of Team behavior. The [snapshot reader decision](2026-11-05-server-snapshot-readers.md)
 continues to govern shared reads and completion facts.

@@ -1,5 +1,7 @@
 import { array, canonicalId, id, malformed, record, text as plainText, timestamp } from "../../api/validation.js";
+import { parseWorkerRuntimeConfiguration } from "../../api/worker-runtime-configuration.js";
 import type { TaskPlatform, TaskStatus, WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerMachine, WorkerPhase, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
+import { taskStatuses } from "../../task/status.js";
 
 const executionPlatform = (value: unknown): TaskPlatform => value === "macos" || value === "linux" || value === "windows" ? value : malformed();
 export type WorkerTaskSnapshot = {
@@ -61,7 +63,7 @@ const software = <T extends "not_installed" | "not_running">(value: unknown, abs
   return { state: absent, checkedAt: timestamp(data.checkedAt) };
 };
 const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantHost => {
-  const data = fields(value, ["protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers"]);
+  const data = fields(value, ["protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers", ...["creationConfigurationVersion"].filter(key => Object.hasOwn(record(value), key))]);
   const boundedText = (value: unknown, maxBytes: number): string => {
     const parsed = text(value);
     if (/\p{Cc}/u.test(parsed) || Buffer.byteLength(parsed, "utf8") > maxBytes) return malformed();
@@ -73,6 +75,7 @@ const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantH
   if (data.protocolVersion !== 1 || !(platform === "windows"
     ? /^[a-z]:\//i.test(windowsPath) || unc.length >= 2 && !!unc[0] && unc[0] !== "." && unc[0] !== "?" && !!unc[1]
     : defaultCwd.startsWith("/"))) return malformed();
+  if (Object.hasOwn(data, "creationConfigurationVersion") && data.creationConfigurationVersion !== 1) return malformed();
   const providerNames = ["codex", "claude", "copilot"] as const;
   const providers = array(data.providers, value => {
     const entry = fields(value, ["provider", "available", "reason", "model", "args"]);
@@ -85,14 +88,15 @@ const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantH
     return { provider: choice(entry.provider, providerNames), available: entry.available, reason, model, args };
   });
   if (providers.length !== 3 || new Set(providers.map(entry => entry.provider)).size !== 3) return malformed();
-  return { protocolVersion: 1, observedAt: timestamp(data.observedAt), defaultCwd,
+  return { protocolVersion: 1, ...(data.creationConfigurationVersion === undefined ? {} : { creationConfigurationVersion: 1 }), observedAt: timestamp(data.observedAt), defaultCwd,
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
 const telemetry = (value: unknown): WorkerTelemetry => {
-  const data = fields(value, ["machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", ...(Object.hasOwn(record(value), "assistantHost") ? ["assistantHost"] : [])]);
+  const data = fields(value, ["machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", ...["assistantHost", "runtimeConfiguration"].filter(key => Object.hasOwn(record(value), key))]);
   const versions = fields(data.versions, ["daynight", "herdr", "codex", "copilot"]);
   return {
     ...(Object.hasOwn(data, "assistantHost") ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
+    ...(Object.hasOwn(data, "runtimeConfiguration") ? { runtimeConfiguration: parseWorkerRuntimeConfiguration(data.runtimeConfiguration) } : {}),
     machine: machine(data.machine), platform: executionPlatform(data.platform), workingDirectory: text(data.workingDirectory), sampledAt: timestamp(data.sampledAt),
     os: probe(data.os, value => {
       const os = fields(value, ["type", "release", "version", "arch"]);
@@ -143,7 +147,7 @@ export const parseWorkerPage = (value: unknown): WorkerPage => {
 const task = (value: unknown): WorkerTaskSnapshot => {
   const data = fields(value, ["projectId", "taskId", "claimId", "title", "projectName", "status", "phase", "agent"]);
   return { projectId: id(data.projectId), taskId: id(data.taskId), claimId: id(data.claimId), title: text(data.title), projectName: text(data.projectName),
-    status: choice<TaskStatus>(data.status, ["todo", "in_progress", "done"]), phase: choice<WorkerPhase>(data.phase, ["preparing", "executing", "verifying", "completing", "waiting", "paused"]), agent: choice<WorkerAgent>(data.agent, ["codex", "copilot", "claude"]) };
+    status: choice<TaskStatus>(data.status, taskStatuses), phase: choice<WorkerPhase>(data.phase, ["preparing", "executing", "verifying", "completing", "waiting", "paused"]), agent: choice<WorkerAgent>(data.agent, ["codex", "copilot", "claude"]) };
 };
 export const parseWorkerDetail = (value: unknown, workerId: string): WorkerDetailResponse => {
   const data = fields(value, ["observedAt", "worker"]);

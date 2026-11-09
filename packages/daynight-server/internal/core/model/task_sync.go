@@ -2,6 +2,15 @@ package model
 
 import "time"
 
+type SessionListState string
+
+const (
+	SessionListWorking SessionListState = "working"
+	SessionListNotice  SessionListState = "notice"
+	SessionListWarning SessionListState = "warning"
+	SessionListPending SessionListState = "pending"
+)
+
 type TaskViewRecord struct {
 	Properties        TaskProperties
 	ID                string
@@ -18,6 +27,7 @@ type TaskViewRecord struct {
 	UpdatedAt         time.Time
 	StartedAt         *time.Time
 	CompletedAt       *time.Time
+	CancelledAt       *time.Time
 }
 
 type TaskSync struct {
@@ -28,4 +38,5 @@ type TaskSync struct {
 	ObservedAt       time.Time
 	Tasks            []TaskViewRecord
 	AssigneeVersions []TaskAssigneeVersion
+	Sessions         map[string]SessionListState
 }

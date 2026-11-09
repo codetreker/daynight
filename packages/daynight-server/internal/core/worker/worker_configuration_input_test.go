@@ -16,7 +16,7 @@ const configurationInputProjectB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 func configurationInputDocument() map[string]any {
 	return map[string]any{
-		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3,
+		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3, "preferPlatformSpecificTasks": false,
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []any{}},
 		"projects": []any{},
 	}
@@ -33,9 +33,10 @@ func configurationInputJSON(t *testing.T, value any) json.RawMessage {
 
 func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *testing.T) {
 	document := configurationInputDocument()
-	document["maxConcurrent"] = int64(9007199254740991)
-	document["pollIntervalMs"] = int64(2147483647)
+	document["maxConcurrent"] = int64(64)
+	document["pollIntervalMs"] = int64(60000)
 	document["recoveryLimit"] = int64(0)
+	document["preferPlatformSpecificTasks"] = true
 	document["native"] = map[string]any{"agent": "copilot", "model": "provider/model", "args": []any{"--flag", "a b"}}
 	document["projects"] = []any{
 		map[string]any{"projectId": strings.ToUpper(configurationInputProjectB), "nativeOverrides": map[string]any{"agent": "claude", "model": nil, "args": []any{}}},
@@ -45,7 +46,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaxConcurrent != 9007199254740991 || value.PollIntervalMs != 2147483647 || value.RecoveryLimit != 0 || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
+	if value.MaxConcurrent != 64 || value.PollIntervalMs != 60000 || value.RecoveryLimit != 0 || !value.PreferPlatformSpecificTasks || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
 		t.Fatalf("invalid parsed settings: %+v", value)
 	}
 	if len(value.Projects) != 2 || value.Projects[0].ProjectID != configurationInputProjectA || value.Projects[1].ProjectID != configurationInputProjectB || len(value.Projects[0].NativeOverrides) != 0 {
@@ -59,7 +60,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 		document := configurationInputDocument()
 		document["native"].(map[string]any)["agent"] = agent
 		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
-		if err != nil || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
+		if err != nil || parsed.PreferPlatformSpecificTasks || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
 			t.Fatalf("explicit empty settings rejected: %+v %v", parsed, err)
 		}
 	}
@@ -67,6 +68,10 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 
 func TestWorkerConfigurationInputRejectsMalformedConfiguration(t *testing.T) {
 	cases := map[string]func(map[string]any){
+		"preference missing":    func(v map[string]any) { delete(v, "preferPlatformSpecificTasks") },
+		"preference null":       func(v map[string]any) { v["preferPlatformSpecificTasks"] = nil },
+		"preference number":     func(v map[string]any) { v["preferPlatformSpecificTasks"] = 1 },
+		"preference string":     func(v map[string]any) { v["preferPlatformSpecificTasks"] = "false" },
 		"missing scalar":        func(v map[string]any) { delete(v, "maxConcurrent") },
 		"unknown field":         func(v map[string]any) { v["repositoryRoot"] = "/private" },
 		"max zero":              func(v map[string]any) { v["maxConcurrent"] = 0 },
@@ -171,7 +176,7 @@ func configurationInputExchange(item map[string]any) map[string]any {
 func TestWorkerConfigurationInputParsesCompleteApplicationOutcomes(t *testing.T) {
 	native := map[string]any{"agent": "claude", "model": nil, "args": []any{}}
 	items := []any{
-		configurationInputItem("maxConcurrent", 3), configurationInputItem("pollIntervalMs", 1), configurationInputItem("recoveryLimit", 0),
+		configurationInputItem("maxConcurrent", 3), configurationInputItem("pollIntervalMs", 1000), configurationInputItem("recoveryLimit", 0),
 		configurationInputItem("native", native), configurationInputItem("projectPreparation", true), configurationInputItem("projectRemoval", true), configurationInputItem("projectNative", native),
 	}
 	failure := configurationInputItem("projectPreparation", nil)
@@ -210,6 +215,23 @@ func TestWorkerConfigurationInputParsesCompleteApplicationOutcomes(t *testing.T)
 		if err != nil || parsed == nil {
 			t.Fatalf("empty exchange: %+v %v", parsed, err)
 		}
+	}
+}
+
+func TestWorkerConfigurationPreferenceApplicationAcceptsBothBooleanValues(t *testing.T) {
+	for _, value := range []any{false, true, nil} {
+		item := configurationInputItem("preferPlatformSpecificTasks", value)
+		if value == nil {
+			item["state"] = "pending"
+		}
+		parsed, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item)))
+		if err != nil || !reflect.DeepEqual(parsed.Observation.Items[0].AppliedValue, configurationInputJSON(t, value)) {
+			t.Fatalf("preference application %v was not preserved: %+v %v", value, parsed, err)
+		}
+	}
+	for _, value := range []any{1, "false", []any{}, map[string]any{}} {
+		_, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(configurationInputItem("preferPlatformSpecificTasks", value))))
+		requireFault(t, err, "invalid_input")
 	}
 }
 

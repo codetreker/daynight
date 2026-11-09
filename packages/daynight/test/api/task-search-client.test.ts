@@ -4,8 +4,9 @@ import { createApiClient, createOperation } from "../../src/api/index.js";
 import type { Operation, OperationLimits } from "../../src/api/index.js";
 import { parseServerError } from "../../src/api/parse.js";
 
-// Captured from the server's real HTTP contract test, including its cursor and errors.
-const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../../daynight-server/testdata/task-search/${name}.json`, import.meta.url), "utf8"));
+// This corpus mirrors the server HTTP fixtures; its original cursor/error capture is retained.
+// https://github.com/codetreker/daynight/tree/4da0b3c005688eae5c873d4ba62d4595a878a670/packages/daynight-server/testdata/task-search
+const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../fixtures/task-search/${name}.json`, import.meta.url), "utf8"));
 const first = fixture("first-page"), next = fixture("next-page"), empty = fixture("empty-page");
 const projectId = first.projectId as string;
 const userId = "459052e2-186f-4a52-8a58-55425ce43631";
@@ -26,7 +27,7 @@ describe("task search HTTP contract", () => {
     const page = (value: any) => ({ ...value, items: value.items.map((item: any) => ({ ...item, status: "done", assignedTo: userId, futureField: "not projected" })) });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(page(first))).mockResolvedValueOnce(json(page(next)));
     const result = await api(fetch).searchTasks(projectId.toUpperCase(), { query, status: "done", assignedTo: "me", ready: true, allowAgents: false, compatiblePlatform: "linux" });
-    expect(result).toEqual([first.items[0], next.items[0]].map(({ id, projectId, title, context, match }: any) => ({ id, projectId, title, status: "done", context, match })));
+    expect(result).toEqual([first.items[0], next.items[0]].map(({ id, projectId, title, cancelledAt, context, match }: any) => ({ id, projectId, title, status: "done", cancelledAt, context, match })));
     const requests = fetch.mock.calls.map(([url, init]) => ({ url: String(url), method: init!.method, cache: init!.cache, body: JSON.parse(String(init!.body)) }));
     expect(requests).toEqual([first, next].map((_, index) => ({ url: `http://localhost:8787/api/v1/projects/${projectId}/tasks/search`, method: "POST", cache: "no-store", body: { query, assignedTo: "me", status: "done", ready: true, allowAgents: false, compatiblePlatform: "linux", limit: 100, ...(index === 0 ? {} : { cursor: first.nextCursor }) } })));
   });
@@ -34,6 +35,17 @@ describe("task search HTTP contract", () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(empty));
     expect(await api(fetch).searchTasks(projectId, { query: "absent" })).toEqual([]);
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ query: "absent", limit: 100 });
+  });
+  it("reads cancelled search results and rejects inconsistent or missing cancellation time", async () => {
+    const cancelledAt = "2026-11-07T00:00:00.123456789Z";
+    const item = { ...first.items[0], status: "cancelled", cancelledAt };
+    const page = { ...first, total: 1, items: [item], nextCursor: null };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    expect(await api(fetch).searchTasks(projectId, { query: "cache", status: "cancelled" })).toEqual([{ id: item.id, projectId, title: item.title, status: "cancelled", cancelledAt, context: item.context, match: item.match }]);
+    for (const invalid of [null, undefined, "invalid"]) {
+      const broken = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ ...page, items: [{ ...item, cancelledAt: invalid }] }));
+      await expect(api(broken).searchTasks(projectId, { query: "cache" })).rejects.toMatchObject({ phase: "protocol" });
+    }
   });
   const syntaxCases = [
     ["expected_operand", "中文 AND"], ["unexpected_token", 'x"y"'], ["unexpected_closing_group", "中文 )"],
@@ -50,7 +62,7 @@ describe("task search HTTP contract", () => {
   it("decodes the captured empty-query error even though this client rejects blank input locally", () => {
     expect(parseServerError(fixture("syntax-empty_query")).details).toEqual({ reason: "empty_query", position: 1, length: 0 });
   });
-  it.each([["search-changed", 409, "search_changed"], ["context-limit", 400, "search_context_limit_exceeded"], ["timeout", 504, "search_timeout"], ["invalid-input", 400, "invalid_input"]] as const)("exposes captured %s as a read failure", async (name, status, code) => {
+  it.each([["search-changed", 409, "search_changed"], ["timeout", 504, "search_timeout"], ["invalid-input", 400, "invalid_input"]] as const)("exposes captured %s as a read failure", async (name, status, code) => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(fixture(name), status));
     await expect(api(fetch).searchTasks(projectId, { query: "cache" })).rejects.toMatchObject({ status, code, outcomeUnconfirmed: false });
     expect(fetch).toHaveBeenCalledOnce();
@@ -83,13 +95,10 @@ describe("task search HTTP contract", () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(bad, 400));
     await expect(api(fetch).searchTasks(projectId, { query: "缓存 AND (" })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
-  it("rejects extra capacity details and non-integer syntax positions", async () => {
-    const limit = fixture("context-limit"); limit.error.details.extra = 1;
+  it("rejects non-integer syntax positions", async () => {
     const badPosition = JSON.stringify(fixture("invalid-expression")).replace('"position":8', '"position":8.0');
-    for (const response of [json(limit, 400), source(badPosition, 400)]) {
-      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
-      await expect(api(fetch).searchTasks(projectId, { query: "缓存 AND (" })).rejects.toMatchObject({ phase: "protocol" });
-    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(source(badPosition, 400));
+    await expect(api(fetch).searchTasks(projectId, { query: "缓存 AND (" })).rejects.toMatchObject({ phase: "protocol" });
   });
   it.each([
     { ...next, items: [{ ...next.items[0], id: first.items[0].id }] },
@@ -149,4 +158,40 @@ describe("task search HTTP contract", () => {
     await expect(api(totalLimit, { limits: { totalBytes: firstBytes + nextBytes - 1 } }).searchTasks(projectId, { query: "cache" })).rejects.toMatchObject({ cause: { kind: "total_limit" } });
     expect(totalLimit).toHaveBeenCalledTimes(2);
   });
+});
+
+it("accepts each ordered field subsequence and preserves the raw ID expression", async () => {
+  const cases = [[], ["id"], ["title"], ["description"], ["id", "title"], ["id", "description"], ["title", "description"], ["id", "title", "description"]];
+  for (const fields of cases) {
+    const match = { fields, descriptionSnippet: fields.includes("description") ? "摘录😀" : null };
+    const page = { ...first, total: 1, items: [{ ...first.items[0], match }], nextCursor: null };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    const query = '  id:"50E2-4aaf" OR title:cache  ';
+    const result = await api(fetch).searchTasks(projectId, { query });
+    expect(result[0]!.match).toEqual(match);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).query).toBe(query);
+  }
+});
+
+it("rejects malformed ID search evidence", async () => {
+  for (const match of [
+    { fields: ["unknown"], descriptionSnippet: null }, { fields: ["id", "id"], descriptionSnippet: null },
+    { fields: ["title", "id"], descriptionSnippet: null }, { fields: ["description", "id"], descriptionSnippet: "x" },
+    { fields: ["id"], descriptionSnippet: "x" }, { fields: ["description"], descriptionSnippet: "" },
+    { fields: ["description"], descriptionSnippet: "😀".repeat(163) }, { fields: ["id"] },
+    { descriptionSnippet: null }, { fields: ["description"], descriptionSnippet: "\ud800" },
+  ]) {
+    const page = { ...first, total: 1, items: [{ ...first.items[0], match }], nextCursor: null };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    await expect(api(fetch).searchTasks(projectId, { query: "id:abc" })).rejects.toMatchObject({ phase: "protocol" });
+  }
+});
+
+it.each(["id-only", "mixed-fields"])("consumes captured %s evidence without reordering", async (name) => {
+  const page = fixture(name);
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+  const query = `id:${page.items[0].id}`;
+  const result = await api(fetch).searchTasks(page.projectId, { query });
+  expect(result[0]!.match).toEqual(page.items[0].match);
+  expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).query).toBe(query);
 });

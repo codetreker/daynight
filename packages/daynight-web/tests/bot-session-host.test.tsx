@@ -2,6 +2,10 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotSessionCache } from '../src/features/bots/session-cache';
 import { BotSessionHost } from '../src/features/bots/BotSessionHost';
+import { BotsPage } from '../src/features/bots/BotsPage';
+import * as sessions from '../src/api/sessions';
+import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import { botDefaults, botDefinition, botResponse } from './helpers/bots';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 import { sessionFence, sessionFenceKey } from '../../daynight/src/session/protocol';
@@ -12,17 +16,28 @@ afterEach(() => { caches.splice(0).forEach(cache => cache.close()); });
 function fixture() {
   const bots = [1, 2, 3, 4].map(n => botFixture(botBinding(n)));
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api }); caches.push(cache);
-  const view = render(<BotSessionHost cache={cache} binding={botBinding(1)} />);
-  const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} binding={botBinding(n)} />); await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()); };
+  const view = render(<BotSessionHost cache={cache} displayBinding={botBinding(1)} actionBinding={botBinding(1)} />);
+  const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />); await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()); };
   return { bots, cache, view, select };
 }
 it('retains the actual shared Session DOM and independent drafts across A/B/A and releases a fourth pane', async () => {
   const f = fixture(); await f.select(1);
   const shell = f.view.container.firstElementChild, a = screen.getByRole('textbox', { name: 'Message' });
   fireEvent.change(a, { target: { value: 'draft A' } }); const session = a.closest('.task-agent-session');
+  const pane = f.cache.snapshot()[0]!, client = pane.client, reading = pane.reading.current;
+  const timeline = session!.querySelector('.session-timeline');
+  expect(reading).not.toBeNull();
+  const bookmark = reading!.captureBookmark();
+  expect(bookmark).not.toBeNull();
   await f.select(2); const b = screen.getByRole('textbox', { name: 'Message' }); fireEvent.change(b, { target: { value: 'draft B' } });
   expect(a.closest('[data-bot-id]')).toHaveAttribute('hidden'); expect(a.closest('[data-bot-id]')).toHaveAttribute('inert');
   await f.select(1); expect(screen.getByRole('textbox', { name: 'Message' })).toBe(a); expect(a).toHaveValue('draft A'); expect(a.closest('.task-agent-session')).toBe(session);
+  expect(f.cache.snapshot().find(item => item.key === pane.key)).toBe(pane);
+  expect(pane.client).toBe(client); expect(pane.reading.current).toBe(reading);
+  expect(pane.reading.current!.captureBookmark()).toEqual(bookmark);
+  expect(session!.querySelector('.session-timeline')).toBe(timeline);
+  expect(f.bots[0]!.api.current).toHaveBeenCalledOnce();
+  expect(f.bots[0]!.api.channel).toHaveBeenCalledOnce();
   expect(f.view.container.firstElementChild).toBe(shell);
   await f.select(3); await f.select(4); expect(f.view.container.querySelectorAll('[data-bot-id]')).toHaveLength(3); expect(b.isConnected).toBe(false); expect(a.isConnected).toBe(true);
   await f.select(2); expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('draft B');
@@ -37,9 +52,21 @@ it('removes all private content on access loss, including hidden panes', async (
 });
 it('shows no old target while the new binding is unavailable and restores it without a restart', async () => {
   const f = fixture(); await f.select(1); const a = screen.getByRole('textbox');
-  f.view.rerender(<BotSessionHost cache={f.cache} binding={null} />);
+  f.view.rerender(<BotSessionHost cache={f.cache} displayBinding={null} actionBinding={null} />);
   expect(screen.queryByRole('textbox')).toBeNull(); expect(a.isConnected).toBe(true);
   await f.select(1); expect(screen.getByRole('textbox')).toBe(a); expect(f.bots[0]!.api.current).toHaveBeenCalledOnce();
+});
+
+it('revokes old callbacks when the committed target or active state no longer admits the binding', async () => {
+  const f = fixture(); await f.select(1); const a = screen.getByRole('textbox'), pane = f.cache.snapshot()[0]!;
+  f.view.rerender(<BotSessionHost cache={f.cache} botId={botBinding(2).botId} displayBinding={pane.binding} actionBinding={pane.binding} />);
+  expect(screen.queryByRole('textbox')).toBeNull(); expect(a.isConnected).toBe(true);
+  await expect(pane.client.send('wrong committed target')).rejects.toThrow();
+  f.view.rerender(<BotSessionHost cache={f.cache} displayBinding={pane.binding} actionBinding={pane.binding} active={false} />);
+  await expect(pane.client.send('inactive callback')).rejects.toThrow();
+  expect(f.bots[0]!.api.command).not.toHaveBeenCalled(); expect(f.bots[0]!.channel.close).not.toHaveBeenCalled();
+  f.view.rerender(<BotSessionHost cache={f.cache} displayBinding={pane.binding} actionBinding={pane.binding} />);
+  expect(screen.getByRole('textbox')).toBe(a); expect(pane.client.snapshot().actionAdmitted).toBe(true);
 });
 
 it.each(['deadline', 'buffer', 'transport'] as const)('retains the pane and client while %s forces a paused channel to reconnect', async reason => {
@@ -47,15 +74,17 @@ it.each(['deadline', 'buffer', 'transport'] as const)('retains the pane and clie
   const original=vi.mocked(bot.api.channel).getMockImplementation()!;
   vi.mocked(bot.api.channel).mockImplementation((id,after,onMessage,close)=>{onClose=close;return original(id,after,onMessage,close);});
   const cache=new BotSessionCache({userId:botOwner,isCurrent:()=>true,isPaused:()=>paused,storage:null,onPrincipalMismatch:vi.fn(),createApi:()=>bot.api}); caches.push(cache);
-  const view=render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  const view=render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   const input=await screen.findByRole('textbox',{name:'Message'}); await waitFor(()=>expect(input).toBeEnabled());
   const pane=cache.snapshot()[0]!, client=pane.client, timeline=view.container.querySelector('.session-timeline');
   fireEvent.change(input,{target:{value:'kept draft'}}); const firstGeneration=client.snapshot().connectionGeneration;
   const now=Date.now(); let clock: ReturnType<typeof vi.spyOn>|undefined;
   try {
+    // Anchor suspension and expiry to the same clock, independent of render time.
+    if(reason==='deadline') clock=vi.spyOn(Date,'now').mockReturnValue(now);
     act(()=>{paused=true;cache.syncAvailability();});
     expect(client.snapshot().authPaused).toBe(true);
-    if(reason==='deadline') { clock=vi.spyOn(Date,'now').mockReturnValue(now+60_001); }
+    if(reason==='deadline') clock!.mockReturnValue(now+60_001);
     if(reason==='buffer') act(()=>{for(let n=0;n<1001;n++)bot.receive({protocol:bot.snapshot().protocol,type:'snapshot',userId:botOwner,snapshot:bot.snapshot(),cursor:'queued'});});
     if(reason==='transport') act(()=>onClose(new Error('transport interrupted')));
     expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(input).toHaveValue('kept draft');
@@ -88,7 +117,7 @@ it('retains a cold bookmark on failed history and resumes the same target throug
     if (++older === 1) throw Error('older history unavailable');
     return { ...bot.page, items: [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Original reading target' }] }] };
   });
-  render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   await screen.findByText('older history unavailable');
   expect(cache.snapshot()[0]!.reading.current?.captureBookmark()).toEqual(bookmark);
   expect(older).toBe(1);
@@ -116,7 +145,7 @@ it.each([false, true])('resumes canceled cold history after Controller replaceme
     });
     return { ...bot.page, items: [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Recovered Controller reading target' }] }] };
   });
-  render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   await waitFor(() => expect(older).toBe(1));
   const pane = cache.snapshot()[0]!, generation = pane.client.snapshot().connectionGeneration;
   // Keep the viewport away from its automatic top-edge paginator.
@@ -151,7 +180,7 @@ it('does not consume a cold-history attempt while auth admission is paused befor
   const { sessionFenceKey } = await import('../../daynight/src/session/protocol');
   pane.retained.bookmark = { identity: JSON.stringify([pane.key, sessionFenceKey(bot.snapshot())]), historyEpoch: bot.snapshot().historyEpoch, following: false, anchor: { key: 'early', top: 0 } };
   paused = true;
-  render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   const timeline = document.querySelector<HTMLElement>('.session-timeline')!;
   timeline.scrollTop = 800;
   expect(older).toBe(0);
@@ -184,14 +213,14 @@ async function coldArchiveFixture(historyFailure = false) {
   let finish!: (archive: SessionArchive) => void;
   vi.mocked(bot.api.archive).mockResolvedValue({ state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null });
   vi.mocked(bot.api.archiveContent).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-  const view = render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  const view = render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   const pane = cache.snapshot()[0]!;
   await waitFor(() => expect(pane.reading.current?.getRestoreStatus()).toBe('pending'));
   if (historyFailure) await screen.findByText('Live history unavailable');
   const liveHandle = pane.reading.current!;
-  const show = (active: boolean) => view.rerender(<BotSessionHost cache={cache} binding={bot.binding} active={active} />);
+  const show = (active: boolean) => view.rerender(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} active={active} />);
   const select = async (n: number) => {
-    view.rerender(<BotSessionHost cache={cache} binding={botBinding(n)} />);
+    view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />);
     await waitFor(() => {
       const state = cache.snapshot().find(candidate => candidate.binding.botId === botBinding(n).botId)?.client.snapshot();
       expect(state?.connected || state?.archiveState === 'ready').toBe(true);
@@ -286,13 +315,13 @@ it('retains a cold bookmark through closing a replacement Timeline before its ta
   const f = await coldArchiveFixture();
   act(() => f.cache.close()); f.view.unmount();
   vi.mocked(f.bot.api.timeline).mockImplementation((_id, _direction, _cursor, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Canceled', 'AbortError')), { once: true })));
-  const loading = render(<BotSessionHost cache={f.cache} binding={f.bot.binding} />);
+  const loading = render(<BotSessionHost cache={f.cache} displayBinding={f.bot.binding} actionBinding={f.bot.binding} />);
   const pending = f.cache.snapshot()[0]!;
   await waitFor(() => expect(pending.reading.current).not.toBeNull());
   expect(pending.client.snapshot().historyReady).toBe(false);
   act(() => f.cache.close()); loading.unmount();
   vi.mocked(f.bot.api.timeline).mockResolvedValue({ ...f.bot.page, items: [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Restored after pending hydration' }] }] });
-  const final = render(<BotSessionHost cache={f.cache} binding={f.bot.binding} />);
+  const final = render(<BotSessionHost cache={f.cache} displayBinding={f.bot.binding} actionBinding={f.bot.binding} />);
   await screen.findByText('Restored after pending hydration');
   expect(f.cache.snapshot()[0]!.reading.current?.captureBookmark()).toMatchObject({ following: false, anchor: { key: 'early', top: 15 } });
   expect(final.container.querySelector('.session-timeline')!.scrollTop).toBe(385);
@@ -308,4 +337,107 @@ it('does not start older-page requests for a hidden pending bookmark after recon
   expect(olderRequests()).toBe(1);
   f.show(true);
   await waitFor(() => expect(olderRequests()).toBe(2));
+});
+
+
+it('preserves a nonfollowing reading anchor through details, fullscreen and responsive reflow', async () => {
+  const observers = new Set<LayoutObserver>();
+  class LayoutObserver {
+    readonly targets = new Set<Element>();
+    constructor(readonly callback: ResizeObserverCallback) { observers.add(this); }
+    observe(target: Element) { this.targets.add(target); }
+    unobserve(target: Element) { this.targets.delete(target); }
+    disconnect() { this.targets.clear(); observers.delete(this); }
+    deliver() {
+      const entries = [...this.targets].filter(target => target.isConnected).map(target => ({ target, contentRect: target.getBoundingClientRect(), borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [] }));
+      if (entries.length) this.callback(entries, this);
+    }
+  }
+  vi.stubGlobal('ResizeObserver', LayoutObserver);
+  let workspaceWidth = 1040;
+  vi.stubGlobal('innerWidth', 1440);
+  // JSDOM has no layout. Reflow moves the same row when production panels and
+  // fullscreen change; the original reading handle must compensate scrollTop.
+  const rowOffset = () => {
+    const details = document.querySelector('.bot-details-panel');
+    return 500 + (details && !details.classList.contains('bot-details-drawer') ? 300 : 0)
+      + (window.innerWidth < 1280 ? 600 : 0)
+      - (document.querySelector('[data-session-fullscreen="true"]') ? 150 : 0);
+  };
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains('bot-conversation') ? workspaceWidth : 1040;
+  });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains('session-timeline') ? 200 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2600);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const key = this.dataset.entryKey;
+    const top = key ? (key === 'before' ? 0 : rowOffset() + (key === 'after' ? 700 : 0)) - this.closest('.session-timeline')!.scrollTop : 0;
+    return new DOMRect(0, top, workspaceWidth, key ? 300 : 200);
+  });
+  const bot = botFixture();
+  vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, items: ['before', 'reading', 'after'].map((key, index) => ({
+    kind: 'assistant_message' as const, entryId: key, entrySeq: String(index + 1), revision: '1', content: [{ type: 'text' as const, text: `Retained ${key} message` }],
+  })) });
+  const definition = { ...botDefinition(), id: bot.binding.botId, ownerUserId: botOwner, sessionId: bot.binding.sessionId, testExecutionId: bot.binding.testExecutionId, roleConfiguration: { instructions: 'role', revision: 'v1', digest: 'a'.repeat(64) }, startupResult: { state: 'ready' as const, code: null } };
+  vi.spyOn(sessions, 'createBotSessionApi').mockReturnValue(bot.api);
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => botResponse(String(url).includes('/defaults') ? botDefaults() : String(url).includes('?') ? { items: [definition], nextCursor: null } : definition, botOwner)));
+  // Observe the real cache instance without replacing its selection behavior.
+  const selections = vi.spyOn(BotSessionCache.prototype, 'select');
+  const scope = createTaskCacheScope({ userId: botOwner, onIdentityMismatch: vi.fn() });
+  const view = render(<TaskCacheProvider scope={scope}><BotsPage botId={definition.id} readEnabled /></TaskCacheProvider>);
+  try {
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(input).toBeEnabled());
+    await screen.findByText('Retained reading message');
+    fireEvent.change(input, { target: { value: 'Draft while reading earlier content' } });
+    const cache = selections.mock.contexts.find(candidate => candidate instanceof BotSessionCache)!;
+    const pane = cache.snapshot()[0]!, client = pane.client, reading = pane.reading.current!;
+    const timeline = view.container.querySelector<HTMLElement>('.session-timeline')!;
+    const session = input.closest('.task-agent-session');
+    timeline.scrollTop = 470;
+    fireEvent.wheel(timeline, { deltaY: -120 });
+    fireEvent.scroll(timeline);
+    const bookmark = reading.captureBookmark();
+    const restores = vi.spyOn(reading, 'restoreBookmark');
+    expect(bookmark).toMatchObject({ following: false, anchor: { key: 'reading', top: 30 } });
+    const assertReading = async () => {
+      // Native ResizeObserver runs after the panel's layout effects choose its
+      // final mode. Deliver that browser notification without invoking reading methods.
+      act(() => { for (const observer of [...observers]) observer.deliver(); });
+      await waitFor(() => expect(timeline.scrollTop).toBe(rowOffset() - 30));
+      expect(pane.reading.current).toBe(reading);
+      expect(reading.captureBookmark()).toEqual(bookmark);
+      expect(cache.snapshot()[0]).toBe(pane);
+      expect(pane.client).toBe(client);
+      expect(view.container.querySelector('.session-timeline')).toBe(timeline);
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBe(input);
+      expect(input.closest('.task-agent-session')).toBe(session);
+      expect(input).toHaveValue('Draft while reading earlier content');
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Assistant details' }));
+    expect(screen.getByRole('complementary', { name: 'Assistant details' })).toBeVisible();
+    await assertReading();
+    fireEvent.click(screen.getByRole('button', { name: 'Close assistant details' }));
+    await assertReading();
+    fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+    await assertReading();
+    fireEvent.click(screen.getByRole('button', { name: 'Assistant details' }));
+    await assertReading();
+    act(() => { workspaceWidth = 620; vi.stubGlobal('innerWidth', 390); window.dispatchEvent(new Event('resize')); });
+    expect(screen.getByRole('dialog', { name: 'Assistant details' })).toBeVisible();
+    await assertReading();
+    act(() => { workspaceWidth = 1040; vi.stubGlobal('innerWidth', 1440); window.dispatchEvent(new Event('resize')); });
+    expect(screen.getByRole('complementary', { name: 'Assistant details' })).toBeVisible();
+    await assertReading();
+    fireEvent.click(screen.getByRole('button', { name: 'Close assistant details' }));
+    await assertReading();
+    fireEvent.click(screen.getByRole('button', { name: 'Exit Session fullscreen' }));
+    await assertReading();
+    expect(restores).toHaveBeenCalledWith(bookmark);
+    expect(bot.api.current).toHaveBeenCalledOnce();
+    expect(bot.api.channel).toHaveBeenCalledOnce();
+    expect(bot.api.command).not.toHaveBeenCalled();
+  } finally { view.unmount(); scope.dispose(); }
 });

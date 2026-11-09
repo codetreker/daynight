@@ -14,7 +14,8 @@ After an interruption, verify existing resources before creating anything again.
 
 ## Prepare content
 
-Write an outcome-oriented title and a task-specific Markdown description that meet the content standard and current stage requirements. For each Goal delivery task, prepare the required [delivery task brief](goal.md#delivery-task-brief), including its implementation approach and contribution to the Goal.
+Write an outcome-oriented title and a task-specific Markdown description that meet the content standard and current stage requirements. Prepare each delivery task's problem, selected solution, detailed design, ordered implementation steps and acceptance criteria under [definitions and results](task-content.md#definitions-and-results). For each Goal delivery task, also prepare its [delivery task brief](goal.md#delivery-task-brief), including its contribution to the Goal.
+Registration and handoff remain separate operations; incomplete task definition prevents passing the [delivery handoff threshold](task-content.md#content-sufficiency).
 Genuinely required sources must be readable, and future outputs must be explicitly assigned to prerequisite tasks.
 Keep shared inputs in their owning tasks; do not copy the full set of material.
 
@@ -33,7 +34,7 @@ Platform requirements must come only from confirmed task needs. Do not add depen
 
 1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](task-management.md).
 2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](write-safety.md) for all writes.
-3. Read back the full task, required attachments, and shared inputs to verify sufficient content and valid resources.
+3. Read back the full task, required attachments, and shared inputs to verify sufficient content and valid resources. For delivery tasks, check the selected solution, detailed design, implementation steps and acceptance against the content standard; report concrete gaps before handoff.
    Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
    For Goal delivery items, verify the [four-part brief](goal.md#delivery-task-brief) against the confirmed Goal and accepted solution, and apply the [whole-breakdown checks and architecture source index](goal.md#register-the-delivery-breakdown).
 4. Report the task ID, registration result, and specific gaps.
