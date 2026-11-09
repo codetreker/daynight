@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
