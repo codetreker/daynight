@@ -193,7 +193,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks, app.TaskObservations) },
 		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks, app.TaskObservations) },
 		func() error { return mcphttp.RegisterTaskWorkTools(entry, app.TaskObservations) },
-		func() error { return mcphttp.RegisterSessionTools(entry) },
+		func() error { return mcphttp.RegisterSessionTools(entry, mcphttp.SessionSendModule(app.Sessions)) },
 		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterAttachmentTools(entry, app.Attachments) },

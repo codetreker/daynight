@@ -35,6 +35,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Manage Webhooks and inspect deliveries | `webhook` | [Webhook management](webhooks.md) |
 | Query tasks | `task list`, `task search`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
 | Observe Task and chain Sessions | `task list`, `task show`, `task graph` | [Session observations](task-management.md#session-observations) |
+| Send to a Task Session and inspect the original operation | `task session send`, `task session operation` | [Session intervention](session-intervention.md) |
 | Page through a user's in-progress chains and independent tasks | `task list --status in_progress --group-by chain` | [Grouped work](task-management.md#grouped-work) |
 | Read or maintain Task Steps | `task step list/show/add/update/set-status/move/delete` | [Task Steps](task-management.md#task-steps) |
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |

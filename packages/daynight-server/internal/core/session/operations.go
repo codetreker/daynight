@@ -327,7 +327,12 @@ func formMatches(f map[string]any, v any) bool {
 }
 func (s *Execution) Submit(ctx context.Context, p model.Principal, project, taskID, id string, c sp.Command) (sp.Operation, error) {
 	var result sp.Operation
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, t task, write bool) error {
+	purpose := BrowserAccess
+	if project != "" && taskID != "" && c.Kind == "send_message" {
+		purpose = TaskMessageAccess
+	}
+	err := s.browserRun(ctx, p, project, taskID, id, purpose, func(a *Access) error {
+		tx, r, t, write := a.tx, a.record, a.task, a.write
 		if !write {
 			return denied()
 		}
@@ -387,8 +392,15 @@ func (s *Execution) Operation(ctx context.Context, p model.Principal, project, t
 	})
 	return out, err
 }
+func (s *Execution) authorizeOperationActor(ctx context.Context, tx *operationTx, r *record, o operationRecord) error {
+	authority := (&Access{record: r}).Authority()
+	if !authority.Test && r.BotID == nil && o.Command.Kind == "send_message" {
+		authority.Purpose = TaskMessageAccess
+	}
+	return s.authorizationRun(ctx, tx.op, tx.scope, o.Actor, authority)
+}
 func (s *Execution) operationAuthorized(ctx context.Context, tx *operationTx, r *record, t task, o operationRecord) error {
-	err := s.scopePermission(ctx, tx, o.Actor, r)
+	err := s.authorizeOperationActor(ctx, tx, r, o)
 	if err != nil {
 		return err
 	}
@@ -544,7 +556,7 @@ func (s *Execution) reconcile(ctx context.Context, tx *operationTx, r *record, t
 			if o.Receipt.State == "provider_accepted" && (state == "not_submitted" || state == "dispatching" || state == "unknown" || state == "rejected" || state == "expired") {
 				// An incomplete journal cannot erase a known native acceptance.
 			} else if state == "not_submitted" {
-				authorization := s.scopePermission(ctx, tx, o.Actor, r)
+				authorization := s.authorizeOperationActor(ctx, tx, r, o)
 				if authorization != nil {
 					var refusal *model.Fault
 					if !errors.As(authorization, &refusal) {

@@ -27,12 +27,15 @@ import (
 
 // ToolResult carries only completion facts established by the operation.
 type ToolResult struct {
-	Data         any
-	Outcome      string
-	WriteOutcome string
-	Phase        string
-	Refs         map[string]any
-	Observation  *ReadObservation
+	// SuccessMetadata exposes completion fields and references on successful
+	// results whose published schema includes them. Observation metadata is independent.
+	SuccessMetadata bool
+	Data            any
+	Outcome         string
+	WriteOutcome    string
+	Phase           string
+	Refs            map[string]any
+	Observation     *ReadObservation
 }
 
 // ReadObservation describes a read's freshness and completeness independently
@@ -44,11 +47,13 @@ type ReadObservation struct {
 type ToolHandler func(context.Context, RequestActor, json.RawMessage) (ToolResult, error)
 
 type envelopeMeta struct {
-	RequestID  string         `json:"requestId"`
-	Outcome    string         `json:"outcome,omitempty"`
-	ObservedAt *time.Time     `json:"observedAt,omitempty"`
-	Partial    *bool          `json:"partial,omitempty"`
-	Refs       map[string]any `json:"refs,omitempty"`
+	WriteOutcome string         `json:"writeOutcome,omitempty"`
+	Phase        string         `json:"phase,omitempty"`
+	RequestID    string         `json:"requestId"`
+	Outcome      string         `json:"outcome,omitempty"`
+	ObservedAt   *time.Time     `json:"observedAt,omitempty"`
+	Partial      *bool          `json:"partial,omitempty"`
+	Refs         map[string]any `json:"refs,omitempty"`
 }
 type envelopeError struct {
 	Code         string         `json:"code"`
@@ -455,6 +460,9 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
+		if result.SuccessMetadata {
+			value.Meta.WriteOutcome, value.Meta.Phase, value.Meta.Refs = result.WriteOutcome, result.Phase, result.Refs
+		}
 		if result.Observation != nil {
 			stamp := result.Observation.ObservedAt.UTC()
 			value.Meta.ObservedAt = &stamp

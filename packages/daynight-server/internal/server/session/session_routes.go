@@ -279,6 +279,11 @@ func (h *Routes) operation(w http.ResponseWriter, r *http.Request, p model.Princ
 		h.Failure(w, r, err)
 		return
 	}
+	if r.PathValue("projectId") != "" {
+		result, err := h.service.TaskOperation(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), r.PathValue("operationId"))
+		h.Result(w, r, http.StatusOK, result, err)
+		return
+	}
 	result, err := h.service.Operation(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), r.PathValue("operationId"))
 	h.Result(w, r, http.StatusOK, map[string]any{"operation": result}, err)
 }

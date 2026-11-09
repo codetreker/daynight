@@ -20,10 +20,14 @@ scope and absolute expiry. Access authentication checks its resource and scope;
 the principal identifies the access credential while the MCP authority reference
 identifies the stable grant.
 
-Business credential checks lock the access row rather than acquiring a grant
-lock in reverse order. Family revocation locks the grant and invalidates access
-rows in the same transaction, so it serializes with those checks. The existing
-business checks re-evaluate expiry after waiting. REST and private Worker
+The initial business adapters locked the access row without acquiring a grant
+lock in reverse order. Thread and Bot checks retain that protocol, and family
+revocation locks the grant and invalidates access rows in one transaction. Task
+Session send and receipt checks use the later
+[grant-before-token protocol](../bug-fix/2026-11-10-task-oauth-family-locks.md):
+their dispatch path reauthorizes an original Actor after acquiring the Session,
+so token-only locking can deadlock with partial deletion of a rotated family.
+Business checks re-evaluate expiry after waiting. REST and private Worker
 admission retain their existing credential boundaries.
 
 ## Alternatives

@@ -12,6 +12,11 @@ import (
 
 type sessionHTTPRejectedDAO struct{ t *testing.T }
 
+func (d sessionHTTPRejectedDAO) LockOAuthCredential(context.Context, model.Principal, string, string, time.Time) error {
+	unexpectedHTTPCall(d.t, "SessionDAO.LockOAuthCredential")
+	panic("unconfigured SessionDAO.LockOAuthCredential")
+}
+
 func (d sessionHTTPRejectedDAO) LockCredential(a0 context.Context, a1 model.Principal, a2 time.Time) error {
 	unexpectedHTTPCall(d.t, "SessionDAO.LockCredential")
 	panic("unconfigured SessionDAO.LockCredential")

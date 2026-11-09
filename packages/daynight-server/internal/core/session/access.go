@@ -29,6 +29,7 @@ type TerminalAccess struct {
 }
 
 type Authority struct {
+	Purpose                                                        BrowserPurpose
 	Test                                                           bool
 	ProjectID, OwnerID, ParentCredentialID, ConnectionCredentialID string
 }
