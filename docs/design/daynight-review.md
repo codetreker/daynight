@@ -701,6 +701,16 @@ Linux/macOS 为直接子进程建立独立进程组，同时保留引用、pipes
 保留原权限错误，状态读取或解析失败也保留不确定状态。Windows 在根进程仍存活时使用 `taskkill /PID ... /T /F` 停止普通进程树，避免
 先杀包装脚本而丢失树根。正常、未被强制的退出及排空的 stdio 按前台契约处理。
 
+Windows 停止前持有可归属的进程对象，并在 `taskkill` 后等待这些对象 signaled，
+再确认直接子进程及输出流关闭。无法确认祖先的存活候选保留失败；原错误链中的
+`Windows review ancestry` 诊断最多记录八个候选的分类、snapshot PID/parent PID、
+持有的进程身份及未 signaled 事实，并给出总数与省略数。创建时间以十进制字符串保留，
+不收集命令行、环境值或 handle 地址。分类区分父身份缺失、snapshot 与当前父 PID 不同、
+以及候选早于持有的父进程；记录上限不截断后续盘点、失败判定及 handle 释放。
+旧 parent PID 被复用而形成的无关分支仍可能导致拒绝；在验证终止边界不会影响该分支前，
+仅忽略它的等待不能建立安全排除证明。机制及取舍见
+[Windows 终止确认](../../.agents/notes/implemented/bug-fix/2026-11-07-windows-review-termination-completion.md)。
+
 取消时根已消失、进程终止失败、输出被强制放弃或其他执行证据不确定时，阻止该 PR
 复用和清理，并保留实例锁及状态供人工确认。系统只操作本次运行实时持有的进程，
 不根据持久化 PID 杀旧进程，也不重建已消失的任意进程树。Windows 包装脚本、后代进程
