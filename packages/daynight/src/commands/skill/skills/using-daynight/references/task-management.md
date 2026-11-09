@@ -11,7 +11,7 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | --- | --- |
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
 | `task list` | Traverse all matching pages. Excludes `done` and `cancelled` by default; explicitly include terminal tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
-| `task search <expression>` | Search full titles and Markdown descriptions in one project, including done and cancelled tasks. Traverses all pages in server relevance order; returns a compact match and chain context, not complete tasks. |
+| `task search <expression>` | Search Task IDs, full titles and Markdown descriptions in one project, including done and cancelled tasks. Traverses all pages in server relevance order; returns a compact match and chain context, not complete tasks. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
@@ -20,7 +20,7 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 
 For search, pass the complete expression as one argument; `--` supports a leading dash.
 Use uppercase `AND`, `OR`, `NOT`, parentheses, quoted phrases, and `title:` or
-`description:` fields. Adjacent terms imply `AND`; matching is literal substring
+`description:` or `id:` fields. Adjacent terms imply `AND`; matching is literal substring
 with ASCII case folding. Search accepts the list filters `--status`, `--assigned-to`,
 `--ready`, `--allow-agents`, and `--compatible-platform`, but not `--all`.
 Its text and JSON omit assignee and update time; JSON entries contain only

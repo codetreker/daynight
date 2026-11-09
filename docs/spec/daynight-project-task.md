@@ -454,7 +454,7 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 
 ### 项目任务搜索
 
-`task search <expression>` 在选定项目中搜索完整标题和 Markdown 描述，默认包含
+`task search <expression>` 在选定项目中搜索任务自身 ID、完整标题和 Markdown 描述，默认包含
 `done`；表达式、筛选、排序及服务错误由[搜索接口需求](daynight-task-search.md)拥有。
 表达式作为一个原样位置参数传递，支持 `--`，空白表达式在读取前拒绝。可组合
 `--status`、`--assigned-to`、`--ready`、`--allow-agents` 和 `--compatible-platform`，

@@ -49,6 +49,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if actual := expectID(t, items, second.ID, func(task api.TaskSearchItem) string { return task.ID }); actual.Match.DescriptionSnippet == nil || *actual.Match.DescriptionSnippet != second.Description {
 			t.Fatal("search lost description content")
 		}
+		idPage := requestJSON[api.TaskSearchPage](t, f, http.MethodPost, taskCollection(project.ID)+"/search", map[string]any{"query": "id:" + first.ID}, http.StatusOK)
+		if idPage.ProjectID != project.ID || idPage.Total != 1 || len(idPage.Items) != 1 || idPage.Items[0].ID != first.ID || idPage.Items[0].Title != first.Title || !reflect.DeepEqual(idPage.Items[0].Match.Fields, []string{"id"}) || idPage.Items[0].Match.DescriptionSnippet != nil || idPage.NextCursor != nil {
+			t.Fatalf("ID search differs: %+v", idPage)
+		}
 		graph := requestJSON[api.TaskGraph](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+first.ID, nil, http.StatusOK)
 		if graph.Project.ID != project.ID || graph.Summary.Total != 2 || len(graph.Tasks) != 2 {
 			t.Fatalf("graph identity/count differs: %+v", graph)

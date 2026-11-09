@@ -1,15 +1,12 @@
 # Task search HTTP fixtures
 
-These are response bodies captured from the search HTTP handler. `first-page`,
-`next-page`, `empty-page`, `invalid-expression`, `invalid-input`, and
-`search-changed` and all `syntax-*` reasons come from `TestTaskSearchHTTPContract` against isolated
-PostgreSQL 18.6. The test creates a Goal, its title-matching child, and an
-independent description match; it requests one result per page and updates the
-second task before reusing the cursor. Set `DAYNIGHT_SEARCH_FIXTURE_CAPTURE` to
-a temporary directory when running the test to capture a new run.
+These response bodies are captured from the search HTTP handler with a mocked
+search operation. `TestTaskSearchHTTPContract` captures pagination, empty,
+syntax, invalid-input and search-changed responses. `TestTaskSearchIDFixtureContract`
+captures `id-only` and `mixed-fields`, including the raw query and field order.
+Set `DAYNIGHT_SEARCH_FIXTURE_CAPTURE` to an absolute temporary directory when
+running these tests to capture their responses.
 
-`context-limit` and `timeout` were captured through the HTTP handler using
-controlled snapshot and deadline failures. They illustrate the error response;
-their counts and request IDs are observations from that test. The captured cursor
-is opaque and belongs to the original database snapshot and identity, so it is
-not a reusable credential or a continuation for another test run.
+`context-limit` and `timeout` illustrate controlled error responses. Request IDs
+are observations from capture. The pagination cursor is an opaque sample and is
+not a reusable continuation for a different request or server version.

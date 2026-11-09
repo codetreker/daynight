@@ -5,11 +5,12 @@ import { array, count, id, malformed, nonemptyString, nullableId, record, taskSt
 import type { TaskStatus } from './types';
 
 export type TaskSearchFilters = { readonly status: TaskStatus | ''; readonly assignedTo: string };
+export type TaskSearchField = 'id' | 'title' | 'description';
 export type TaskSearchItem = {
   readonly id: string; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
   readonly assignedTo: string | null; readonly updatedAt: string; readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
-  readonly match: { readonly fields: readonly ('title' | 'description')[]; readonly descriptionSnippet: string | null };
+  readonly match: { readonly fields: readonly TaskSearchField[]; readonly descriptionSnippet: string | null };
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type SearchSyntax = { readonly reason: string; readonly position: number; readonly length: number };
@@ -25,6 +26,16 @@ const text = (value: unknown, nonempty = false): string => {
   if (!result.isWellFormed() || result.includes('\0')) return malformed();
   return result;
 };
+const searchFieldOrder = { id: 0, title: 1, description: 2 } satisfies Readonly<Record<TaskSearchField, number>>;
+const parseTaskSearchMatch = (value: unknown): TaskSearchItem['match'] => {
+  const match = record(value);
+  const fields = array(match.fields, (field): TaskSearchField => field === 'id' || field === 'title' || field === 'description' ? field : malformed());
+  if (fields.some((field, index) => index > 0 && searchFieldOrder[fields[index - 1]!] >= searchFieldOrder[field])) return malformed();
+  const descriptionSnippet = match.descriptionSnippet === null ? null : text(match.descriptionSnippet);
+  if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
+  if (fields.includes('description') !== (descriptionSnippet !== null)) return malformed();
+  return { fields, descriptionSnippet };
+};
 export const parseTaskSearchPage = (value: unknown, projectId: string, filters: TaskSearchFilters, userId: string, limit = 15): TaskSearchPage => {
   const data = record(value);
   if (id(data.projectId) !== projectId) return malformed();
@@ -36,12 +47,7 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
     if (assignment !== undefined && assignedTo !== assignment) return malformed();
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    const rawMatch = record(item.match);
-    const fields = array(rawMatch.fields, (field) => field === 'title' || field === 'description' ? field : malformed());
-    if (fields.length > 2 || new Set(fields).size !== fields.length || fields.length === 2 && (fields[0] !== 'title' || fields[1] !== 'description')) return malformed();
-    const descriptionSnippet = rawMatch.descriptionSnippet === null ? null : text(rawMatch.descriptionSnippet);
-    if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162) || fields.includes('description') !== (descriptionSnippet !== null)) return malformed();
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, context, match: { fields, descriptionSnippet } };
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > limit || items.length > total || new Set(items.map(item => item.id)).size !== items.length) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);

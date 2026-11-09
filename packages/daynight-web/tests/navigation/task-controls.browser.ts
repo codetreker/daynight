@@ -39,6 +39,10 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => row.id === taskId ? task.version : previous.version, propertiesForTask: row => row.id === taskId ? task.properties : previous.properties }));
+    if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
+      expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, limit: 15 });
+      return send({ projectId, total: 1, items: [{ id: task.id, projectId, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
+    }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
       const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: true };
@@ -101,6 +105,29 @@ async function openDialog(page: Page) {
   await expect(dialog).toHaveAccessibleName('Target task');
   return dialog;
 }
+
+test('ID search keeps long results readable and opens the correct task on narrow screens', async ({ page }) => {
+  const title = 'Long search title '.repeat(12) + 'end';
+  const writes = await install(page, false, false, false, false, false, undefined, { title, description: 'Full task details' });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
+  await input.fill(`id:${taskId}`); await input.press('Enter');
+  const result = page.getByRole('button', { name: `Open task: ${title}` });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect(result).toContainText(taskId);
+    await expect(result).toContainText('ID match · Description match');
+    await expect(result).toContainText('A long matching description');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await result.click();
+    const dialog = page.locator('.task-detail-dialog');
+    await expect(dialog).toHaveAccessibleName(title);
+    await expect(dialog).toContainText('Full task details');
+    await page.keyboard.press('Escape'); await expect(result).toBeFocused();
+  }
+  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+});
 
 test('Step status and position menus stay in a short viewport and return keyboard focus', async ({ page }) => {
   const writes = await install(page);

@@ -267,6 +267,8 @@ func (p *parser) parsePrimary() (*tasksearch.Node, error) {
 	start := t
 	if t.kind == tWord && p.current().kind == tColon && !p.current().space {
 		switch t.value {
+		case "id":
+			field = tasksearch.IDField
 		case "title":
 			field = tasksearch.TitleField
 		case "description":

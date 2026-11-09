@@ -17,9 +17,9 @@ type atomKey struct {
 	term  string
 }
 type sqlCompiler struct {
-	atoms              map[atomKey]int
-	ordered            []atomKey
-	title, description bool
+	atoms                  map[atomKey]int
+	ordered                []atomKey
+	id, title, description bool
 }
 
 func (c *sqlCompiler) collect(n *tasksearch.Node) error {
@@ -28,7 +28,7 @@ func (c *sqlCompiler) collect(n *tasksearch.Node) error {
 	}
 	switch n.Kind {
 	case tasksearch.Leaf:
-		if n.Atom.Term == "" || n.Atom.Field > tasksearch.DescriptionField {
+		if n.Atom.Term == "" || !n.Atom.Field.Valid() {
 			return fmt.Errorf("invalid search atom")
 		}
 		key := atomKey{n.Atom.Field, n.Atom.Term}
@@ -36,8 +36,9 @@ func (c *sqlCompiler) collect(n *tasksearch.Node) error {
 			c.atoms[key] = len(c.ordered)
 			c.ordered = append(c.ordered, key)
 		}
-		c.title = c.title || n.Atom.Field != tasksearch.DescriptionField
-		c.description = c.description || n.Atom.Field != tasksearch.TitleField
+		c.id = c.id || n.Atom.Field.Includes(tasksearch.IDField)
+		c.title = c.title || n.Atom.Field.Includes(tasksearch.TitleField)
+		c.description = c.description || n.Atom.Field.Includes(tasksearch.DescriptionField)
 		return nil
 	case tasksearch.And, tasksearch.Or:
 		if err := c.collect(n.Left); err != nil {
@@ -49,32 +50,24 @@ func (c *sqlCompiler) collect(n *tasksearch.Node) error {
 	}
 }
 
-// expression returns truth and positive title evidence, both over materialized hits.
-func (c *sqlCompiler) expression(n *tasksearch.Node) (string, string) {
+type sqlEvidence struct{ matches, titlePriority, exactIDPriority string }
+
+// expression reduces truth and positive ranking evidence over materialized hits.
+func (c *sqlCompiler) expression(n *tasksearch.Node) sqlEvidence {
 	if n.Kind == tasksearch.Leaf {
-		index := c.atoms[atomKey{n.Atom.Field, n.Atom.Term}]
-		t, d := fmt.Sprintf("h.t%d", index), fmt.Sprintf("h.d%d", index)
-		match := t
-		if n.Atom.Field == tasksearch.DescriptionField {
-			match = d
-		} else if n.Atom.Field == tasksearch.AnyField {
-			match = "(" + t + " OR " + d + ")"
-		}
+		i := c.atoms[atomKey{n.Atom.Field, n.Atom.Term}]
+		match := fmt.Sprintf("(h.i%d OR h.t%d OR h.d%d)", i, i, i)
 		if n.Negated {
-			return "(NOT " + match + ")", "false"
+			return sqlEvidence{"(NOT " + match + ")", "false", "false"}
 		}
-		if n.Atom.Field == tasksearch.DescriptionField {
-			return match, "false"
-		}
-		return match, t
+		return sqlEvidence{match, fmt.Sprintf("h.t%d", i), fmt.Sprintf("h.e%d", i)}
 	}
-	lm, lp := c.expression(n.Left)
-	rm, rp := c.expression(n.Right)
+	l, r := c.expression(n.Left), c.expression(n.Right)
 	if n.Kind == tasksearch.And {
-		match := "(" + lm + " AND " + rm + ")"
-		return match, "(" + match + " AND (" + lp + " OR " + rp + "))"
+		m := "(" + l.matches + " AND " + r.matches + ")"
+		return sqlEvidence{m, "(" + m + " AND (" + l.titlePriority + " OR " + r.titlePriority + "))", "(" + m + " AND (" + l.exactIDPriority + " OR " + r.exactIDPriority + "))"}
 	}
-	return "(" + lm + " OR " + rm + ")", "(" + lp + " OR " + rp + ")"
+	return sqlEvidence{"(" + l.matches + " OR " + r.matches + ")", "(" + l.titlePriority + " OR " + r.titlePriority + ")", "(" + l.exactIDPriority + " OR " + r.exactIDPriority + ")"}
 }
 
 func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input store.TaskSearchQuery) (store.TaskSearchPage, error) {
@@ -98,9 +91,9 @@ func (s *searchSnapshot) MatchesEach(ctx context.Context, projectID string, inpu
 	if input.Limit < 1 || input.Limit > 100 {
 		return 0, false, fmt.Errorf("invalid task search limit")
 	}
-	var afterPriority, afterTime, afterID any
+	var afterExact, afterPriority, afterTime, afterID any
 	if input.After != nil {
-		afterPriority, afterTime, afterID = input.After.TitlePriority, input.After.UpdatedAt, input.After.ID
+		afterExact, afterPriority, afterTime, afterID = input.After.ExactIDPriority, input.After.TitlePriority, input.After.UpdatedAt, input.After.ID
 	}
 	var assignee any
 	if input.AssignedTo.Mode == model.TaskAssignmentUser {
@@ -109,8 +102,11 @@ func (s *searchSnapshot) MatchesEach(ctx context.Context, projectID string, inpu
 	if input.AssignedTo.Mode != model.TaskAssignmentAll && input.AssignedTo.Mode != model.TaskAssignmentUnassigned && input.AssignedTo.Mode != model.TaskAssignmentUser {
 		return 0, false, fmt.Errorf("invalid task search assignee")
 	}
-	args := []any{projectID, input.Status, input.Ready, input.AllowAgents, input.CompatiblePlatform, string(input.AssignedTo.Mode), assignee, afterPriority, afterTime, afterID, input.Limit + 1}
+	args := []any{projectID, input.Status, input.Ready, input.AllowAgents, input.CompatiblePlatform, string(input.AssignedTo.Mode), assignee, afterExact, afterPriority, afterTime, afterID, input.Limit + 1}
 	folded := []string{"t.id", "t.updated_at"}
+	if c.id {
+		folded = append(folded, `t.id::text AS id_text`)
+	}
 	if c.title {
 		folded = append(folded, `lower(t.title COLLATE "C") AS title_folded`)
 	}
@@ -118,39 +114,35 @@ func (s *searchSnapshot) MatchesEach(ctx context.Context, projectID string, inpu
 		folded = append(folded, `lower(t.description COLLATE "C") AS description_folded`)
 	}
 	hits := []string{"f.id", "f.updated_at"}
-	var titleHits, positions, snippets []string
+	var idHits, titleHits, positions, snippets []string
 	for i, atom := range c.ordered {
-		titleHit, descriptionHit, descriptionPosition := "false", "false", "0"
-		// PostgreSQL text cannot contain NUL, so no stored field can contain it.
+		idHit, exactHit, titleHit, descriptionHit, descriptionPosition := "false", "false", "false", "false", "0"
 		if !strings.ContainsRune(atom.term, '\x00') {
 			args = append(args, atom.term)
 			placeholder := fmt.Sprintf("$%d", len(args))
-			titleHit = fmt.Sprintf("(strpos(f.title_folded, %s)>0)", placeholder)
-			descriptionPosition = fmt.Sprintf("strpos(f.description_folded, %s)", placeholder)
-			descriptionHit = "(" + descriptionPosition + ">0)"
+			if atom.field.Includes(tasksearch.IDField) {
+				idHit = fmt.Sprintf("(strpos(f.id_text, %s)>0)", placeholder)
+				exactHit = fmt.Sprintf("(f.id_text=%s)", placeholder)
+			}
+			if atom.field.Includes(tasksearch.TitleField) {
+				titleHit = fmt.Sprintf("(strpos(f.title_folded, %s)>0)", placeholder)
+			}
+			if atom.field.Includes(tasksearch.DescriptionField) {
+				descriptionPosition = fmt.Sprintf("strpos(f.description_folded, %s)", placeholder)
+				descriptionHit = "(" + descriptionPosition + ">0)"
+			}
 		}
-		if atom.field != tasksearch.DescriptionField {
-			hits = append(hits, fmt.Sprintf("%s AS t%d", titleHit, i))
-		}
-		if atom.field != tasksearch.TitleField {
-			hits = append(hits, fmt.Sprintf("%s AS d%d", descriptionHit, i))
-			hits = append(hits, fmt.Sprintf("%s AS p%d", descriptionPosition, i))
-			positions = append(positions, fmt.Sprintf("h.p%d", i))
-		} else {
-			positions = append(positions, "0")
-		}
-		if atom.field != tasksearch.DescriptionField {
-			titleHits = append(titleHits, fmt.Sprintf("h.t%d", i))
-		} else {
-			titleHits = append(titleHits, "false")
-		}
+		hits = append(hits, fmt.Sprintf("%s AS i%d", idHit, i), fmt.Sprintf("%s AS e%d", exactHit, i), fmt.Sprintf("%s AS t%d", titleHit, i), fmt.Sprintf("%s AS d%d", descriptionHit, i), fmt.Sprintf("%s AS p%d", descriptionPosition, i))
+		idHits = append(idHits, fmt.Sprintf("h.i%d", i))
+		titleHits = append(titleHits, fmt.Sprintf("h.t%d", i))
+		positions = append(positions, fmt.Sprintf("h.p%d", i))
 		pos := fmt.Sprintf("p.positions[%d]", i+1)
 		start := "GREATEST(1, LEAST(" + pos + "-80, GREATEST(char_length(t.description)-159, 1)))"
-		snippets = append(snippets, "CASE WHEN p.page_index > $11 - 1 OR "+pos+"=0 THEN NULL ELSE "+
+		snippets = append(snippets, "CASE WHEN p.page_index > $12 - 1 OR "+pos+"=0 THEN NULL ELSE "+
 			"(CASE WHEN "+start+">1 THEN '…' ELSE '' END) || substring(t.description FROM "+start+" FOR 160) || "+
 			"(CASE WHEN "+start+"+159<char_length(t.description) THEN '…' ELSE '' END) END")
 	}
-	match, priority := c.expression(input.Expression)
+	expr := c.expression(input.Expression)
 	sql := `WITH folded AS MATERIALIZED (SELECT ` + strings.Join(folded, ", ") + ` FROM tasks t
  WHERE t.project_id=$1 AND t.deleted_at IS NULL AND ($2::text IS NULL OR t.status=$2)
  AND ($3::boolean IS NULL OR ` + pg.TaskReady + `=$3)
@@ -158,18 +150,18 @@ func (s *searchSnapshot) MatchesEach(ctx context.Context, projectID string, inpu
  AND ($5::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$5)
  AND ($6::text='' OR ($6='unassigned' AND t.assigned_to IS NULL) OR ($6='user' AND t.assigned_to=$7::uuid))),
  atom_hits AS MATERIALIZED (SELECT ` + strings.Join(hits, ", ") + ` FROM folded f),
- matched AS MATERIALIZED (SELECT h.id,h.updated_at,` + priority + ` AS title_priority,
- ARRAY[` + strings.Join(titleHits, ",") + `] AS title_hits, ARRAY[` + strings.Join(positions, ",") + `] AS positions FROM atom_hits h WHERE ` + match + `),
+ matched AS MATERIALIZED (SELECT h.id,h.updated_at,` + expr.exactIDPriority + ` AS exact_id_priority,` + expr.titlePriority + ` AS title_priority,
+ ARRAY[` + strings.Join(idHits, ",") + `] AS id_hits, ARRAY[` + strings.Join(titleHits, ",") + `] AS title_hits, ARRAY[` + strings.Join(positions, ",") + `] AS positions FROM atom_hits h WHERE ` + expr.matches + `),
  total AS (SELECT count(*) AS total FROM matched),
- page AS (SELECT *, row_number() OVER (ORDER BY title_priority DESC,updated_at DESC,id ASC) AS page_index FROM matched WHERE $8::boolean IS NULL OR title_priority < $8 OR
- (title_priority=$8 AND (updated_at < $9::timestamptz OR (updated_at=$9 AND id > $10::uuid)))
- ORDER BY title_priority DESC,updated_at DESC,id ASC LIMIT $11)
+ page AS (SELECT *, row_number() OVER (ORDER BY exact_id_priority DESC,title_priority DESC,updated_at DESC,id ASC) AS page_index FROM matched WHERE $8::boolean IS NULL OR exact_id_priority < $8 OR
+ (exact_id_priority=$8 AND (title_priority < $9::boolean OR (title_priority=$9 AND (updated_at < $10::timestamptz OR (updated_at=$10 AND id > $11::uuid)))))
+ ORDER BY exact_id_priority DESC,title_priority DESC,updated_at DESC,id ASC LIMIT $12)
  SELECT total.total,t.id::text,
- CASE WHEN p.page_index > $11 - 1 OR octet_length(t.title)>2097152 THEN NULL ELSE t.title END,
- t.status,t.assigned_to::text,t.cancelled_at,p.updated_at,p.title_priority,
- octet_length(t.title)>2097152,p.title_hits,p.positions,ARRAY[` + strings.Join(snippets, ",") + `]
+ CASE WHEN p.page_index > $12 - 1 OR octet_length(t.title)>2097152 THEN NULL ELSE t.title END,
+ t.status,t.assigned_to::text,t.cancelled_at,p.updated_at,p.exact_id_priority,p.title_priority,
+ octet_length(t.title)>2097152,p.id_hits,p.title_hits,p.positions,ARRAY[` + strings.Join(snippets, ",") + `]
  FROM total LEFT JOIN page p ON true LEFT JOIN tasks t ON t.id=p.id AND t.project_id=$1
- ORDER BY p.title_priority DESC,p.updated_at DESC,p.id ASC`
+ ORDER BY p.exact_id_priority DESC,p.title_priority DESC,p.updated_at DESC,p.id ASC`
 	rows, err := s.tx.Query(ctx, sql, args...)
 	if err != nil {
 		return 0, false, searchError("query task search", err)
@@ -181,11 +173,11 @@ func (s *searchSnapshot) MatchesEach(ctx context.Context, projectID string, inpu
 		var id, title, status *string
 		var assigned *string
 		var updated, cancelled *time.Time
-		var titlePriority, titleOversized *bool
-		var titleHits []bool
+		var exactPriority, titlePriority, titleOversized *bool
+		var idHits, titleHits []bool
 		var positions []int32
 		var snippets []*string
-		if err := rows.Scan(&total, &id, &title, &status, &assigned, &cancelled, &updated, &titlePriority, &titleOversized, &titleHits, &positions, &snippets); err != nil {
+		if err := rows.Scan(&total, &id, &title, &status, &assigned, &cancelled, &updated, &exactPriority, &titlePriority, &titleOversized, &idHits, &titleHits, &positions, &snippets); err != nil {
 			return 0, false, searchError("read task search", err)
 		}
 		if id == nil {
@@ -194,15 +186,15 @@ func (s *searchSnapshot) MatchesEach(ctx context.Context, projectID string, inpu
 		if count == input.Limit {
 			return total, true, nil
 		}
-		if status == nil || updated == nil || titlePriority == nil || titleOversized == nil || (!*titleOversized && (title == nil || len(titleHits) != len(c.ordered) || len(positions) != len(c.ordered) || len(snippets) != len(c.ordered))) {
+		if status == nil || updated == nil || exactPriority == nil || titlePriority == nil || titleOversized == nil || (!*titleOversized && (title == nil || len(idHits) != len(c.ordered) || len(titleHits) != len(c.ordered) || len(positions) != len(c.ordered) || len(snippets) != len(c.ordered))) {
 			return 0, false, fmt.Errorf("incomplete task search row")
 		}
-		row := store.TaskSearchRow{ID: *id, Status: model.TaskStatus(*status), AssignedTo: assigned, CancelledAt: pg.UTCTime(cancelled), UpdatedAt: updated.UTC(), TitlePriority: *titlePriority, TitleOversized: *titleOversized}
+		row := store.TaskSearchRow{ID: *id, Status: model.TaskStatus(*status), AssignedTo: assigned, CancelledAt: pg.UTCTime(cancelled), UpdatedAt: updated.UTC(), ExactIDPriority: *exactPriority, TitlePriority: *titlePriority, TitleOversized: *titleOversized}
 		if !row.TitleOversized {
 			row.Title = *title
 			row.Hits = make([]store.TaskSearchHit, len(c.ordered))
 			for i, atom := range c.ordered {
-				row.Hits[i] = store.TaskSearchHit{Atom: tasksearch.Atom{Field: atom.field, Term: atom.term}, Title: titleHits[i], Description: positions[i] > 0, Snippet: snippets[i]}
+				row.Hits[i] = store.TaskSearchHit{Atom: tasksearch.Atom{Field: atom.field, Term: atom.term}, ID: idHits[i], Title: titleHits[i], Description: positions[i] > 0, Snippet: snippets[i]}
 			}
 		}
 		if !row.Status.Valid() {

@@ -73,3 +73,38 @@ it('requires cancellation time on search items and retains cancelled results', a
     await expect(read('cancelled')).rejects.toMatchObject({ kind: 'protocol' });
   }
 });
+
+it('accepts all ordered field subsequences and preserves the raw ID expression', async () => {
+  const original = JSON.parse(fixture('first-page'));
+  const cases = [[], ['id'], ['title'], ['description'], ['id', 'title'], ['id', 'description'], ['title', 'description'], ['id', 'title', 'description']];
+  for (const fields of cases) {
+    const match = { fields, descriptionSnippet: fields.includes('description') ? '摘录😀' : null };
+    const page = { ...original, total: 1, items: [{ ...original.items[0], match }], nextCursor: null };
+    const fetch = vi.fn().mockResolvedValue(response(JSON.stringify(page))); vi.stubGlobal('fetch', fetch);
+    const query = '  id:"50E2-4aaf" OR title:cache  ';
+    expect((await read(query)).items[0]?.match).toEqual(match);
+    expect(JSON.parse(fetch.mock.calls[0]![1].body).query).toBe(query);
+  }
+});
+it('rejects malformed ID search evidence', async () => {
+  const original = JSON.parse(fixture('first-page'));
+  for (const match of [
+    { fields: ['unknown'], descriptionSnippet: null }, { fields: ['id', 'id'], descriptionSnippet: null },
+    { fields: ['title', 'id'], descriptionSnippet: null }, { fields: ['description', 'id'], descriptionSnippet: 'x' },
+    { fields: ['id'], descriptionSnippet: 'x' }, { fields: ['description'], descriptionSnippet: '' },
+    { fields: ['description'], descriptionSnippet: '😀'.repeat(163) }, { fields: ['id'] },
+    { descriptionSnippet: null }, { fields: ['description'], descriptionSnippet: '\ud800' },
+  ]) {
+    const page = { ...original, total: 1, items: [{ ...original.items[0], match }], nextCursor: null };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(JSON.stringify(page))));
+    await expect(read('id:abc')).rejects.toMatchObject({ kind: 'protocol' });
+  }
+});
+
+it.each(['id-only', 'mixed-fields'])('consumes captured %s evidence without reordering', async name => {
+  const body = fixture(name), page = JSON.parse(body), query = `id:${page.items[0].id}`;
+  const fetch = vi.fn().mockResolvedValue(response(body)); vi.stubGlobal('fetch', fetch);
+  const result = await searchTasks(page.projectId, query, filters, null, new AbortController().signal, admission);
+  expect(result.items[0]?.match).toEqual(page.items[0].match);
+  expect(JSON.parse(fetch.mock.calls[0]![1].body).query).toBe(query);
+});
