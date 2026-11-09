@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,54 +19,53 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func graphPath(projectID, taskID string) string {
 	return "/api/v1/projects/" + projectID + "/task-graph?taskId=" + taskID
 }
 
+func graphModel() model.TaskGraph {
+	task := testTask("Graph task")
+	return model.TaskGraph{Project: testProject(), ObservedAt: task.UpdatedAt, Summary: model.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1}, Tasks: []model.GraphTask{{ID: task.ID, TitlePreview: task.Title, Status: task.Status, Ready: true, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}}}
+}
+
 func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	root := createHTTPTask(t, handler, project.ID, "root-private-title")
-	root = setHTTPTask(t, handler, root, "in_progress")
-	root = setHTTPTask(t, handler, root, "done")
-	active := createHTTPTask(t, handler, project.ID, "active-private-title", root.ID)
-	active = setHTTPTask(t, handler, active, "in_progress")
-	ready := createHTTPTask(t, handler, project.ID, strings.Repeat("🙂", 161), root.ID)
-	blocked := createHTTPTask(t, handler, project.ID, "blocked-private-title", active.ID, root.ID)
-	done := createHTTPTask(t, handler, project.ID, "done-private-title", root.ID)
-	done = setHTTPTask(t, handler, done, "in_progress")
-	done = setHTTPTask(t, handler, done, "done")
-	other := taskProject(t, handler)
-	createHTTPTask(t, handler, other.ID, "foreign-private-title")
-	response := projectRequest(handler, http.MethodGet, graphPath(strings.ToUpper(project.ID), strings.ToUpper(root.ID)), "")
+	handler := newHTTPFixture(t, &logs)
+	stamp := testTime.Add(time.Hour)
+	platform := model.TaskPlatform("linux")
+	project := testProject()
+	project.ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	root := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	result := model.TaskGraph{Project: project, ObservedAt: stamp, Summary: model.TaskGraphSummary{Total: 5, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}, Tasks: []model.GraphTask{
+		{ID: root, TitlePreview: "root-private-title", Status: model.TaskDone, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "55555555-5555-4555-8555-555555555555", TitlePreview: "active-private-title", Status: model.TaskInProgress, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp},
+		{ID: "66666666-6666-4666-8666-666666666666", TitlePreview: strings.Repeat("🙂", 160), TitleTruncated: true, Status: model.TaskTodo, Ready: true, DependsOn: []string{root}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
+		{ID: "77777777-7777-4777-8777-777777777777", TitlePreview: "blocked-private-title", Status: model.TaskTodo, DependsOn: []string{"55555555-5555-4555-8555-555555555555", root}, BlockedBy: []string{"55555555-5555-4555-8555-555555555555"}, CreatedAt: stamp, UpdatedAt: stamp},
+		{ID: "88888888-8888-4888-8888-888888888888", TitlePreview: "done-private-title", Status: model.TaskDone, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+	}}
+	handler.Tasks.GraphFunc = func(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
+		if principal != handler.principal || projectID != project.ID || taskID != strings.ToUpper(root) || ctx.Err() != nil {
+			t.Fatalf("graph arguments: %+v %s %s", principal, projectID, taskID)
+		}
+		return result, nil
+	}
+	response := projectRequest(handler, http.MethodGet, graphPath(strings.ToUpper(project.ID), strings.ToUpper(root)), "")
 	graph := decodeResponse[api.TaskGraph](t, response, http.StatusOK)
-	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Request-ID") != "project-test" {
-		t.Fatalf("unsafe caching or missing request identity: %+v", response.Header())
+	if graph.Project.ID != project.ID || graph.Project.Name != project.Name || graph.Project.RepoURL != project.RepoURL || graph.Project.CreatedAt != project.CreatedAt || graph.Project.UpdatedAt != project.UpdatedAt || graph.ObservedAt != stamp || graph.Summary != (api.TaskGraphSummary{Total: 5, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}) || len(graph.Tasks) != 5 || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Request-ID") != "project-test" {
+		t.Fatalf("graph=%+v headers=%+v", graph, response.Header())
 	}
-	if graph.ObservedAt.IsZero() || graph.ObservedAt.Location() != time.UTC || graph.ObservedAt.Before(done.UpdatedAt) || graph.Project != project || graph.Summary != (api.TaskGraphSummary{Total: 5, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}) || len(graph.Tasks) != 5 {
-		t.Fatalf("incorrect complete graph: %+v", graph)
+	for i, task := range graph.Tasks {
+		expected := result.Tasks[i]
+		if task.ID != expected.ID || task.TitlePreview != expected.TitlePreview || task.TitleTruncated != expected.TitleTruncated || task.Status != string(expected.Status) || task.Ready != expected.Ready || task.AllowAgents != expected.AllowAgents || !slices.Equal(task.DependsOn, expected.DependsOn) || !slices.Equal(task.ExternalDependsOn, expected.ExternalDependsOn) || !slices.Equal(task.BlockedBy, expected.BlockedBy) || task.DependsOn == nil || task.BlockedBy == nil || task.CreatedAt != expected.CreatedAt || task.UpdatedAt != expected.UpdatedAt || !reflect.DeepEqual(task.StartedAt, expected.StartedAt) || !reflect.DeepEqual(task.CompletedAt, expected.CompletedAt) || !reflect.DeepEqual(task.CancelledAt, expected.CancelledAt) {
+			t.Fatalf("projection %d=%+v want=%+v", i, task, expected)
+		}
 	}
-	want := []api.Task{root, active, ready, blocked, done}
-	for index, task := range graph.Tasks {
-		expected := want[index]
-		if task.ID != expected.ID || task.Status != expected.Status || task.Ready != expected.Ready || task.AllowAgents != expected.AllowAgents || !reflect.DeepEqual(task.RequiredPlatform, expected.RequiredPlatform) ||
-			!slices.Equal(task.DependsOn, expected.DependsOn) || !slices.Equal(task.ExternalDependsOn, expected.ExternalDependsOn) || !slices.Equal(task.BlockedBy, expected.BlockedBy) ||
-			task.DependsOn == nil || task.BlockedBy == nil || task.CreatedAt != expected.CreatedAt || task.UpdatedAt != expected.UpdatedAt ||
-			task.CreatedAt.Location() != time.UTC || task.UpdatedAt.Location() != time.UTC ||
-			!reflect.DeepEqual(task.StartedAt, expected.StartedAt) || !reflect.DeepEqual(task.CompletedAt, expected.CompletedAt) || !reflect.DeepEqual(task.CancelledAt, expected.CancelledAt) {
-			t.Fatalf("task projection %d differs: %+v want %+v", index, task, expected)
-		}
-		if task.ID == ready.ID {
-			if task.TitlePreview != strings.Repeat("🙂", 160) || !task.TitleTruncated {
-				t.Fatalf("Unicode title preview: %+v", task)
-			}
-		} else if task.TitlePreview != expected.Title || task.TitleTruncated {
-			t.Fatalf("short title preview: %+v", task)
-		}
+	if graph.Tasks[2].RequiredPlatform == nil || *graph.Tasks[2].RequiredPlatform != "linux" {
+		t.Fatalf("platform=%+v", graph.Tasks[2])
 	}
 	var raw struct {
 		Summary map[string]json.RawMessage   `json:"summary"`
@@ -77,68 +75,68 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(raw.Summary) != 7 {
-		t.Fatalf("summary must expose exactly seven four-state counts: %+v", raw.Summary)
+		t.Fatalf("summary=%+v", raw.Summary)
 	}
 	for _, task := range raw.Tasks {
 		if len(task) != 16 {
-			t.Fatalf("graph task exposes unexpected fields: %+v", task)
+			t.Fatalf("fields=%+v", task)
 		}
-		for _, field := range []string{"title", "description", "version", "projectId"} {
+		for _, field := range []string{"title", "description", "version", "projectId", "properties", "pullRequests"} {
 			if _, exists := task[field]; exists {
-				t.Fatalf("graph exposes detail field %s", field)
+				t.Fatalf("unexpected detail %s", field)
 			}
 		}
 	}
 	for _, fragment := range []string{`"component":"task_graph"`, `"project_id":"` + project.ID + `"`, `"node_count":5`, `"edge_count":5`, `"duration":`, `"request_id":"project-test"`} {
 		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("missing graph diagnostic %s: %s", fragment, &logs)
+			t.Fatalf("missing %s: %s", fragment, &logs)
 		}
 	}
 	for _, secret := range []string{"private-title", "initial description", "github.com", "🙂"} {
 		if strings.Contains(logs.String(), secret) {
-			t.Fatalf("unsafe graph diagnostic: %s", &logs)
+			t.Fatalf("graph leaked %q: %s", secret, &logs)
 		}
 	}
 }
 
 func TestTaskGraphHTTPEmptyMissingQueryAndMethods(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, projectTestStore(t), &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Isolated root")
-	response := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", "")
-	assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID), ""), http.StatusOK)
-	if graph.Project != project || graph.Summary != (api.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1}) || len(graph.Tasks) != 1 || graph.Tasks[0].ID != task.ID {
-		t.Fatalf("isolated task graph contract: %#v", graph)
-	}
-	for _, query := range []string{"limit=50", "cursor=token-secret", "status=todo", "ready=true", "unknown=secret", "limit=", "%xx", "x=%xx", ";", "=", "x=1&x=2", "taskId=", "taskId=invalid", "taskId=" + task.ID, "taskId=%xx"} {
-		t.Run(query, func(t *testing.T) {
-			response := projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID)+"&"+query, "")
-			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-			if response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatal("query error may be cached")
-			}
-		})
-	}
-	for _, projectID := range []string{"invalid-private-secret", "00000000-0000-4000-8000-00000000000z"} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, graphPath(projectID, task.ID), ""), http.StatusBadRequest, "invalid_input")
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, graphPath("00000000-0000-4000-8000-000000000099", task.ID), ""), http.StatusNotFound, "not_found")
-	for _, taskID := range []string{"invalid", "00000000-0000-4000-8000-00000000000z"} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, graphPath(project.ID, taskID), ""), http.StatusBadRequest, "invalid_input")
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, graphPath(project.ID, "00000000-0000-4000-8000-000000000099"), ""), http.StatusNotFound, "not_found")
-	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-		response := projectRequest(handler, method, graphPath(project.ID, task.ID), "private-body-secret")
-		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
-		if response.Header().Get("Allow") != "GET, HEAD" || response.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("incorrect graph method headers: %+v", response.Header())
+	handler := newHTTPFixture(t, &logs)
+	assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+testProjectID+"/task-graph", ""), http.StatusBadRequest, "invalid_input")
+	for _, query := range []string{"limit=50", "cursor=token-secret", "status=todo", "ready=true", "unknown=secret", "limit=", "%xx", "x=%xx", ";", "=", "x=1&x=2", "taskId=", "taskId=" + testTaskID, "taskId=%xx"} {
+		response := projectRequest(handler, http.MethodGet, graphPath(testProjectID, testTaskID)+"&"+query, "")
+		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+		if response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("query error cacheable")
 		}
 	}
+	for _, projectID := range []string{"invalid-private-secret", "00000000-0000-4000-8000-00000000000z"} {
+		assertProjectError(t, projectRequest(handler, http.MethodGet, graphPath(projectID, testTaskID), ""), http.StatusBadRequest, "invalid_input")
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
+		response := projectRequest(handler, method, graphPath(testProjectID, testTaskID), "private-body-secret")
+		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
+		if response.Header().Get("Allow") != "GET, HEAD" || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("headers=%+v", response.Header())
+		}
+	}
+	if handler.Tasks.TotalCalls() != 0 {
+		t.Fatalf("protocol rejection reached service: %d calls", handler.Tasks.TotalCalls())
+	}
+	handler.Tasks.GraphFunc = func(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
+		if projectID != testProjectID || taskID != testTaskID || principal != handler.principal {
+			t.Fatalf("arguments=%s %s %+v", projectID, taskID, principal)
+		}
+		return graphModel(), nil
+	}
+	handler.Tasks.ExpectCalls("Graph", 2)
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(testProjectID, testTaskID), ""), http.StatusOK)
+	if graph.Summary != (api.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1}) || len(graph.Tasks) != 1 || graph.Tasks[0].ID != testTaskID {
+		t.Fatalf("isolated graph=%+v", graph)
+	}
 	server := httptest.NewServer(handler)
-	defer server.Close()
-	request, err := http.NewRequest(http.MethodHead, server.URL+graphPath(project.ID, task.ID), nil)
+	t.Cleanup(server.Close)
+	request, err := http.NewRequest(http.MethodHead, server.URL+graphPath(testProjectID, testTaskID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,121 +149,98 @@ func TestTaskGraphHTTPEmptyMissingQueryAndMethods(t *testing.T) {
 	body, readErr := io.ReadAll(head.Body)
 	head.Body.Close()
 	if readErr != nil || len(body) != 0 || head.StatusCode != http.StatusOK || head.Header.Get("Content-Type") != "application/json" || head.Header.Get("Cache-Control") != "no-store" || head.Header.Get("X-Request-ID") != "project-test" {
-		t.Fatalf("HEAD graph response: %+v %s %v", head, body, readErr)
+		t.Fatalf("HEAD=%+v body=%q err=%v", head, body, readErr)
 	}
 	if strings.Contains(logs.String(), "secret") {
-		t.Fatalf("graph input leaked: %s", &logs)
+		t.Fatalf("input leaked: %s", &logs)
+	}
+	for _, tc := range []struct {
+		projectID, taskID, code string
+		status                  int
+	}{
+		{"00000000-0000-4000-8000-000000000099", testTaskID, "not_found", 404},
+		{testProjectID, "00000000-0000-4000-8000-000000000099", "not_found", 404},
+		{testProjectID, "invalid", "invalid_input", 400}, {testProjectID, "00000000-0000-4000-8000-00000000000z", "invalid_input", 400},
+	} {
+		t.Run(tc.projectID+"/"+tc.taskID, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			h.Tasks.GraphFunc = func(ctx context.Context, p model.Principal, pid, tid string) (model.TaskGraph, error) {
+				if pid != tc.projectID || tid != tc.taskID {
+					t.Fatalf("ids=%s %s", pid, tid)
+				}
+				return model.TaskGraph{}, &model.Fault{Code: tc.code, Message: "Domain refusal."}
+			}
+			assertProjectError(t, projectRequest(h, http.MethodGet, graphPath(tc.projectID, tc.taskID), ""), tc.status, tc.code)
+		})
 	}
 }
 
 func TestTaskGraphHTTPLimitDetailsAndDomainClassification(t *testing.T) {
-	for _, edges := range []bool{false, true} {
-		t.Run(map[bool]string{false: "nodes", true: "edges"}[edges], func(t *testing.T) {
-			database := projectTestStore(t)
+	for _, tc := range []struct {
+		name         string
+		nodes, edges int64
+	}{{"nodes", 1001, 1000}, {"edges", 102, 5001}} {
+		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			handler := projectTestHandler(t, database, &logs)
-			project := taskProject(t, handler)
-			count := 1001
-			if edges {
-				count = 102
+			handler := newHTTPFixture(t, &logs)
+			handler.Tasks.GraphFunc = func(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
+				return model.TaskGraph{}, &model.Fault{Code: "graph_limit_exceeded", Message: "Graph limit exceeded.", GraphLimit: &model.GraphLimitDetails{NodeCount: tc.nodes, EdgeCount: tc.edges, MaxNodes: 1000, MaxEdges: 5000}}
 			}
-			if _, err := database.Pool.Exec(context.Background(), `INSERT INTO tasks(id, project_id, title)
-				SELECT ('00000000-0000-4000-8000-' || lpad(to_hex(i),12,'0'))::uuid, $1, 'private-limit-title'
-				FROM generate_series(1,$2::int) i`, project.ID, count); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_dependencies(project_id, task_id, depends_on_task_id)
-    SELECT $1, ('00000000-0000-4000-8000-' || lpad(to_hex(i),12,'0'))::uuid,
-     ('00000000-0000-4000-8000-' || lpad(to_hex(i-1),12,'0'))::uuid
-    FROM generate_series(2,$2::int) i`, project.ID, count); err != nil {
-				t.Fatal(err)
-			}
-			edgeCount := int64(count - 1)
-			if edges {
-				if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id)
-					SELECT $1, task.id, predecessor.id FROM tasks task JOIN tasks predecessor ON predecessor.id < task.id
-     WHERE NOT EXISTS (SELECT 1 FROM task_dependencies d WHERE d.project_id=$1 AND d.task_id=task.id AND d.depends_on_task_id=predecessor.id)
-     ORDER BY task.id, predecessor.id LIMIT $2`, project.ID, 5001-(count-1)); err != nil {
-					t.Fatal(err)
-				}
-				edgeCount = 5001
-			}
-			// Bulk graph queries need statistics before autovacuum analyzes the fixture.
-			if _, err := database.Pool.Exec(context.Background(), `ANALYZE tasks, task_dependencies`); err != nil {
-				t.Fatal(err)
-			}
-			response := projectRequest(handler, http.MethodGet, graphPath(project.ID, "00000000-0000-4000-8000-000000000001"), "")
-			assertProjectError(t, response, http.StatusConflict, "graph_limit_exceeded")
-			value := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
+			response := projectRequest(handler, http.MethodGet, graphPath(testProjectID, testTaskID), "")
+			value := decodeResponse[api.ErrorResponse](t, response, 409)
 			limits := value.Error.Details
-			if limits == nil || limits.NodeCount == nil || *limits.NodeCount != int64(count) || limits.EdgeCount == nil || *limits.EdgeCount != edgeCount ||
-				limits.MaxNodes == nil || *limits.MaxNodes != 1000 || limits.MaxEdges == nil || *limits.MaxEdges != 5000 ||
-				strings.Contains(response.Body.String(), "taskIds") || strings.Contains(response.Body.String(), "private") || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("limit details must contain only exact numeric fields: %s", response.Body)
+			if value.Error.Code != "graph_limit_exceeded" || limits == nil || limits.NodeCount == nil || *limits.NodeCount != tc.nodes || limits.EdgeCount == nil || *limits.EdgeCount != tc.edges || limits.MaxNodes == nil || *limits.MaxNodes != 1000 || limits.MaxEdges == nil || *limits.MaxEdges != 5000 || strings.Contains(response.Body.String(), "taskIds") || response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("numeric limits=%s", response.Body)
 			}
-			if !strings.Contains(logs.String(), `"cause":"graph_limit_exceeded"`) || !strings.Contains(logs.String(), `"error_code":"graph_limit_exceeded"`) ||
-				!strings.Contains(logs.String(), `"node_count":`) || !strings.Contains(logs.String(), `"edge_count":`) || strings.Contains(logs.String(), "private") {
-				t.Fatalf("limit fault classification or logs: %s", &logs)
+			for _, fragment := range []string{`"cause":"graph_limit_exceeded"`, `"error_code":"graph_limit_exceeded"`, `"node_count":`, `"edge_count":`} {
+				if !strings.Contains(logs.String(), fragment) {
+					t.Fatalf("missing %s: %s", fragment, &logs)
+				}
 			}
 		})
 	}
 }
 
 func TestTaskGraphHTTPDatabaseFailureAndCancellation(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	root := createHTTPTask(t, handler, project.ID, "Cancellation root")
-	transaction, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, &logs)
+	started, finished := make(chan struct{}), make(chan struct{})
+	handler.Tasks.GraphFunc = func(ctx context.Context, principal model.Principal, pid, tid string) (model.TaskGraph, error) {
+		if principal != handler.principal || pid != testProjectID || tid != testTaskID {
+			t.Errorf("graph arguments=%+v %s %s", principal, pid, tid)
+		}
+		close(started)
+		<-ctx.Done()
+		close(finished)
+		return model.TaskGraph{}, ctx.Err()
 	}
-	defer transaction.Rollback(context.Background())
-	if _, err := transaction.Exec(context.Background(), "LOCK TABLE projects IN ACCESS EXCLUSIVE MODE"); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	request := httptest.NewRequest(http.MethodGet, graphPath(project.ID, root.ID), nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodGet, graphPath(testProjectID, testTaskID), nil).WithContext(ctx)
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("X-Request-ID", "project-test")
-	response, finished := httptest.NewRecorder(), make(chan struct{})
-	go func() { handler.ServeHTTP(response, request); close(finished) }()
-	for {
-		var waiting bool
-		if err := database.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE pid <> pg_backend_pid() AND application_name=current_setting('application_name')
-			AND wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid)))`, int32(transaction.Conn().PgConn().PID())).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		select {
-		case <-finished:
-			t.Fatal("graph query completed before cancellation")
-		case <-ctx.Done():
-			t.Fatal("graph query did not wait for project lock")
-		case <-time.After(5 * time.Millisecond):
-		}
+	response := httptest.NewRecorder()
+	served := make(chan struct{})
+	go func() { handler.ServeHTTP(response, request); close(served) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("graph operation did not start")
 	}
 	cancel()
 	await(t, finished)
+	await(t, served)
 	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"cause":"canceled"`) {
-		t.Fatalf("canceled graph query wrote response or lost cause: %s %s", response.Body, &logs)
+		t.Fatalf("canceled response=%s logs=%s", response.Body, &logs)
 	}
-	if err := transaction.Rollback(context.Background()); err != nil {
-		t.Fatal(err)
+	failure := newHTTPFixture(t, &logs)
+	failure.Tasks.GraphFunc = func(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
+		return model.TaskGraph{}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private_sql_secret")}
 	}
-	if _, err := database.Pool.Exec(context.Background(), "ALTER TABLE tasks RENAME TO private_sql_secret"); err != nil {
-		t.Fatal(err)
-	}
-	response = projectRequest(handler, http.MethodGet, graphPath(project.ID, root.ID), "")
-	assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
-	if strings.Contains(response.Body.String(), "secret") || strings.Contains(response.Body.String(), "SQL") ||
-		strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"cause":"database"`) || response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("database graph error leaked or lost cause: %s %s", response.Body, &logs)
+	result := projectRequest(failure, http.MethodGet, graphPath(testProjectID, testTaskID), "")
+	assertProjectError(t, result, 500, "internal_error")
+	if strings.Contains(result.Body.String(), "secret") || strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"cause":"database"`) {
+		t.Fatalf("database failure=%s logs=%s", result.Body, &logs)
 	}
 }
 
@@ -301,50 +276,73 @@ func TestTaskGraphHTTPErrorPrecedenceAndDTOUTC(t *testing.T) {
 }
 
 func TestTaskHTTPTodoReadContractWithoutGenericStatusWrites(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	pending := createHTTPTask(t, handler, project.ID, "Pending")
-	done := createHTTPTask(t, handler, project.ID, "Done")
-	done = setHTTPTask(t, handler, done, "in_progress")
-	done = setHTTPTask(t, handler, done, "done")
-	ready := createHTTPTask(t, handler, project.ID, "Ready", done.ID)
-	ready = updateHTTPTask(t, handler, ready, map[string]any{"description": "Complete ready description"})
-	blocked := createHTTPTask(t, handler, project.ID, "Ready with prerequisite", pending.ID)
-	for _, original := range []api.Task{ready, blocked} {
-		read := readHTTPTask(t, handler, api.Task{ProjectID: project.ID, ID: original.ID})
-		if read.Status != "todo" || read.Ready != original.Ready || read.Description != original.Description || read.Version != original.Version ||
-			!read.CreatedAt.Equal(original.CreatedAt) || !read.UpdatedAt.Equal(original.UpdatedAt) || !slices.Equal(read.BlockedBy, original.BlockedBy) {
-			t.Fatalf("ready GET changed stored projection: %#v", read)
+	handler := newHTTPFixture(t, io.Discard)
+	ready := testTask("Ready")
+	ready.Description = "Complete ready description"
+	ready.Ready = true
+	blocked := testTask("Blocked")
+	blocked.ID = "55555555-5555-4555-8555-555555555555"
+	blocked.Ready = false
+	blocked.BlockedBy = []string{testTaskID}
+	values := []model.Task{ready, blocked}
+	handler.Tasks.ExpectCalls("ObserveREST", 2)
+	handler.Tasks.ObserveRESTFunc = func(ctx context.Context, principal model.Principal, pid, id string, extended bool) (taskservice.TaskObservation, error) {
+		for _, value := range values {
+			if value.ID == id {
+				return taskservice.TaskObservation{Task: value, Epoch: testEpoch}, nil
+			}
+		}
+		t.Fatalf("unexpected id %s", id)
+		return taskservice.TaskObservation{}, nil
+	}
+	for _, value := range values {
+		got := decodeResponse[api.Task](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"/"+value.ID, ""), 200)
+		if got.ID != value.ID || got.Status != "todo" || got.Ready != value.Ready || got.Description != value.Description || got.Version != value.Version || !slices.Equal(got.BlockedBy, value.BlockedBy) {
+			t.Fatalf("projection=%+v want=%+v", got, value)
 		}
 	}
-	var listed []string
-	path := taskCollection(project.ID) + "?limit=1"
-	for {
-		page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
-		for _, task := range page.Items {
-			listed = append(listed, task.ID)
+	cursor := "next-private-cursor"
+	calls := 0
+	handler.Tasks.ExpectCalls("List", 3)
+	handler.Tasks.ListFunc = func(ctx context.Context, principal model.Principal, pid string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		calls++
+		if principal != handler.principal || pid != testProjectID {
+			t.Fatalf("list identity=%+v %s", principal, pid)
 		}
-		if page.NextCursor == nil {
-			break
+		switch calls {
+		case 1:
+			if input.Limit != 1 || input.Cursor != nil {
+				t.Fatalf("first input=%+v", input)
+			}
+			return taskservice.TaskPage{Items: []model.Task{ready}, NextCursor: &cursor}, nil
+		case 2:
+			if input.Limit != 1 || input.Cursor == nil || *input.Cursor != cursor {
+				t.Fatalf("continuation=%+v", input)
+			}
+			return taskservice.TaskPage{Items: []model.Task{blocked}}, nil
+		default:
+			if input.Status == nil || *input.Status != model.TaskTodo {
+				t.Fatalf("status=%+v", input)
+			}
+			return taskservice.TaskPage{Items: values}, nil
 		}
-		path = taskCollection(project.ID) + "?limit=1&cursor=" + *page.NextCursor
 	}
-	if !slices.Equal(listed, []string{pending.ID, done.ID, ready.ID, blocked.ID}) {
-		t.Fatalf("HTTP paginated list omitted ready: %#v", listed)
+	first := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?limit=1", ""), 200)
+	next := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?limit=1&cursor="+*first.NextCursor, ""), 200)
+	if len(first.Items) != 1 || first.Items[0].ID != ready.ID || len(next.Items) != 1 || next.Items[0].ID != blocked.ID || next.NextCursor != nil {
+		t.Fatalf("pages=%+v %+v", first, next)
 	}
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, ready.ID), ""), http.StatusOK)
-	if graph.Summary != (api.TaskGraphSummary{Total: 2, Todo: 1, Done: 1, Ready: 1}) ||
-		len(graph.Tasks) != 2 || !graph.Tasks[1].Ready || len(graph.Tasks[1].BlockedBy) != 0 {
-		t.Fatalf("HTTP ready graph: %#v", graph)
+	filtered := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"?status=todo", ""), 200)
+	if len(filtered.Items) != 2 {
+		t.Fatalf("filtered=%+v", filtered)
 	}
-	filtered := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"?status=todo", ""), http.StatusOK)
-	if len(filtered.Items) != 3 || filtered.Items[0].ID != pending.ID || filtered.Items[1].ID != ready.ID || filtered.Items[2].ID != blocked.ID {
-		t.Fatalf("ready status filter: %+v", filtered)
+	handler.Tasks.GraphFunc = func(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
+		result := graphModel()
+		result.Tasks[0].Ready = true
+		return result, nil
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(pending), jsonBody(t, map[string]any{"version": pending.Version, "status": "todo"})), http.StatusBadRequest, "invalid_input")
-	if read := readHTTPTask(t, handler, pending); !reflect.DeepEqual(read, pending) {
-		t.Fatalf("rejected ready write changed existing task: %#v", read)
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(testProjectID, ready.ID), ""), 200)
+	if len(graph.Tasks) != 1 || !graph.Tasks[0].Ready || len(graph.Tasks[0].BlockedBy) != 0 {
+		t.Fatalf("ready graph=%+v", graph)
 	}
 }

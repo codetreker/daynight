@@ -56,7 +56,7 @@ List 使用现有只读 Repeatable Read，在同一快照重验 credential、Req
 
 ## 验证与可观测性
 
-分层测试使用现有随机 schema 和真实 PostgreSQL/认证 handler。store 测试检验迁移与索引、复合身份、快照和锁、数据库 UUID 的一次生成、时钟/清理与 commit 应答丢失；service 测试检验准入、来源、名称快照、期限、分页、容量和 Task 不变量；server 测试检验严格 HTTP、身份/Origin、错误优先级及实际响应字节。
+分层测试按 [测试编写规则](../writing_tests.md) 隔离被测职责之外的依赖。store 使用隔离真实 PostgreSQL，检验迁移与索引、复合身份、快照和锁、数据库 UUID 的一次生成、时钟/清理与 commit 应答丢失。service 通过可控 DAO、scope 和 transaction 结果验证准入、来源、名称快照、期限、分页、容量和 Task 不变量。server 使用直接 Thread service mock、真实路由与 credential middleware，检验严格 HTTP、身份/Origin、错误优先级，以及 service Document 字节的发送、短写和取消。Document 的字节生成与页面准入由 service/协议所有者验证。正常发帖、回复和读回由显式 API 集成入口验证完整组装链路。
 
 时钟循环以私有逐调用 sampler/wait seam 确定性复现回拨、恢复及预算；生产 SQL 另以锁后采样集成证明。commit 测试在真实底层提交后注入返回错误，新连接确认持久记录，服务仍分类未知；它不模拟所有网络故障。锁观察按本测试 schema/连接定位，过期证明直接观察数据库消息与 head，而非只看过期主体读失败。
 

@@ -533,15 +533,37 @@ describes the actual check. The complete module check requires an isolated
 PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
-Non-Store unit tests must use domain facts and DAO, scope and transaction mocks
-without PostgreSQL. Store tests own SQL, locking, persistence, transaction and
-database recheck mechanisms; API integration tests cover normal assembled
-Server flows. The [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns the scope and failure expectations. The complete `internal/core/session`
-and `internal/service/webhook` suites execute without a database URL. Their
-producer, service, HTTP/protocol and PostgreSQL owners retain distinct proofs.
-The server guide owns the standalone commands; the full module check still
+The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
+tests mock the directly called service/use-case operations while exercising real
+routing, credential middleware, parsing, responses and request lifecycle. Core
+rules use domain facts and required DAO, scope and transaction mocks; service
+tests control lower operations and completion results. These unit selections
+execute without PostgreSQL. Store tests retain actual SQL, locking, transaction,
+persistence and database recheck mechanisms. The
+[server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
+owns focused commands and failure expectations. The complete
+`internal/core/session` and `internal/service/webhook` suites execute without a
+database URL. Their producer, service, HTTP/protocol and PostgreSQL owners retain
+distinct proofs. Task HTTP's `!stress` TestMain clears the database and UniAuth
+fixture variables in its test binary even when the complete module check supplies
+them to other packages. It executes the whole regular suite with that boundary;
+stress workloads use their separate fixture. The complete module check still
 includes isolated real PostgreSQL.
+
+The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
+a production Server process and Go HTTP client. Build production Web resources
+once, then run `bash scripts/integration.sh` from the Go module. The runner owns
+a fresh PostgreSQL container when `DAYNIGHT_TEST_DATABASE_URL` is unset; an
+explicit URL must identify the invoking test environment's isolated instance.
+It also prepares real authentication, records the source and binary identity,
+and bounds startup, execution and cleanup. `bash scripts/integration.sh --cleanup`
+independently reconciles saved runs after interruption and preserves their
+original failure or unknown command outcome. Safe build/result JSON and streamed
+logs remain in `.tmp/integration-results/<run-id>/`; private ownership receipts,
+credentials, databases and copied binaries are not uploaded. The
+[API integration guide](../packages/daynight-server/README.md#go-api-integration)
+owns exact preparation, evidence fields and cleanup semantics. The suite does
+not run CLI or Web tests.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
@@ -786,7 +808,12 @@ Deletions and both sides of renames count. The
 [selector](../.github/scripts/ci-modules.mts) assigns module tests by directory
 and product E2E by its framework and production build inputs; the
 [root routing table](../README.md#ci-selection) owns the summary map. Mixed
-changes select their union, and unknown paths select all jobs.
+changes select their union, and unknown paths select all jobs. Selected jobs
+validate the source and tests in their ordinary event checkout. Remote test PRs
+do not replace test files or produce an additional composed checkout commit.
+The [checkout-source decision](../.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
+owns this input boundary; each runner retains its own source/artifact receipts,
+validation commands, coverage and resource-cleanup obligations.
 
 Implementations, fixtures and test tooling select their containing module.
 Production CLI, Web and Go inputs additionally select product E2E; module-only
@@ -802,8 +829,10 @@ final gate still run; publication validates its frozen artifact separately.
 Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
-Windows and macOS ARM64, plus Node compatibility and shell checks. Go has its
-own PostgreSQL-backed module gate and coverage artifact. Web quality owns full
+Windows and macOS ARM64, plus Node compatibility and shell checks. The Go job
+prepares production Web resources, runs its PostgreSQL-backed module gate and
+explicit normal API suite, then independently reconciles API resources. Coverage
+and safe API build/result/log evidence use separate artifacts. Web quality owns full
 typechecking, harness, production Docker Web build and coverage; its separate
 browser job owns frontend fixtures. Product E2E waits only for detection and
 prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.

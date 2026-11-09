@@ -13,18 +13,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type searchHandler struct {
-	reader           store.TaskSearchReader
+	run              SearchOperation
 	logger           *slog.Logger
 	operationTimeout time.Duration
 }
 
-func TaskSearchRoutes(mux *http.ServeMux, reader store.TaskSearchReader, auth *authhttp.Authentication, logger *slog.Logger) {
-	h := &searchHandler{reader: reader, logger: logger, operationTimeout: 5 * time.Second}
+func TaskSearchRoutes(mux *http.ServeMux, search SearchOperation, auth RouteAuthentication, logger *slog.Logger) {
+	h := &searchHandler{run: search, logger: logger, operationTimeout: 5 * time.Second}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", auth.Require(h.search))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tasks/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
@@ -109,7 +108,7 @@ func (h *searchHandler) search(w http.ResponseWriter, request *http.Request, pri
 	started := time.Now()
 	operation, cancel := context.WithTimeout(request.Context(), h.operationTimeout)
 	defer cancel()
-	page, err := tasksearch.Search(operation, h.reader, principal, projectID, input)
+	page, err := h.run(operation, principal, projectID, input)
 	var response []byte
 	if err == nil {
 		response, err = json.Marshal(searchResponse(page))
