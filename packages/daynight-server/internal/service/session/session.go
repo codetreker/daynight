@@ -19,7 +19,9 @@ type Service struct {
 
 func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	s := &Service{engine: engine, writer: writer}
-	botRuntime := botruntime.NewRuntime(engine, s.write)
+	botRuntime := botruntime.NewRuntime(engine, func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
+		return s.write(ctx, op.Finish, fn)
+	})
 	s.Execution = sessioncore.NewExecution(engine, s.browser, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
 	s.Execution.SetArchivePreflight(s.archivePreflight)
 	return s
@@ -27,9 +29,9 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 
 func (s *Service) SetOrigin(origin string) { s.engine.Origin = origin }
 
-func (s *Service) write(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
+func (s *Service) write(ctx context.Context, finish func(store.TransactionOutcome), fn func(store.SessionScope) error) error {
 	completion, err := s.writer.WriteSession(ctx, fn)
-	op.Finish(completion.Outcome)
+	finish(completion.Outcome)
 	if err != nil {
 		var transaction *store.TransactionError
 		if completion.Outcome == store.TransactionNotCommitted && errors.As(err, &transaction) && !transaction.CommitAttempted && !transaction.CleanupFailed {
@@ -56,7 +58,7 @@ func (s *Service) archivePreflight(ctx context.Context, principal model.Principa
 		return "", err
 	}
 	defer op.Close()
-	err = s.write(ctx, op, func(scope store.SessionScope) error {
+	err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		var e error
 		owner, e = op.ArchivePreflight(ctx, scope, principal, project, taskID, id, mode)
 		return e

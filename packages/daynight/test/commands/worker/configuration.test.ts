@@ -3,12 +3,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationManagerOptions, WorkerConfigurationSnapshot } from "../../../src/commands/worker/configuration.js";
+import { parseWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
 import { replaceFileAtomically } from "../../../src/platform/files.js";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
-const desired = (revision = "1", model = "original", projects = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 4, native: { agent: "codex", model, args: [] }, projects: projects ? [{ projectId, nativeOverrides: {} }] : [] } });
+const desired = (revision = "1", model = "original", projects = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model, args: [] }, projects: projects ? [{ projectId, nativeOverrides: {} }] : [] } });
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void, reject!: (reason: unknown) => void;
   const promise = new Promise<T>((accept, fail) => { resolve = accept; reject = fail; });
@@ -42,6 +43,60 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("hot-applies platform preference in both directions and reports false as an applied value", async () => {
+    const { manager } = await fixture();
+    expect(manager.current().effective.preferPlatformSpecificTasks).toBeNull();
+    const first = desired("1", "original", false);
+    await manager.receive({ ...first, value: { ...first.value, preferPlatformSpecificTasks: true } });
+    await manager.settle();
+    expect(manager.current().effective.preferPlatformSpecificTasks).toBe(true);
+    await manager.receive(desired("2", "original", false));
+    await manager.settle();
+    expect(manager.current().effective.preferPlatformSpecificTasks).toBe(false);
+    expect(item(manager.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "applied", appliedValue: false, targetRevision: "2" });
+    expect(parseWorkerCloudReport(manager.report()).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
+  });
+
+  it("atomically migrates a full schema-1 cache without discarding removal or failure ownership", async () => {
+    const first = await fixture(), target = desired("1", "original", false);
+    await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = 1;
+    delete saved.desired.value.preferPlatformSpecificTasks;
+    saved.items = saved.items.filter((entry: { value: WorkerCloudItem }) => entry.value.key.kind !== "preferPlatformSpecificTasks");
+    const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
+    for (let n = 0; n < 1020; n++) saved.items.push({ value: {
+      key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null,
+      state: n === 0 ? "error" : "pending", error: n === 0 ? failure : null, lastFailure: n === 0 ? failure : null, nextAttemptAt: null,
+    }, attempts: n === 0 ? 2 : 0, failureId: n === 0 ? 1 : null, started: n === 0 });
+    saved.nextFailureId = 2;
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    const migrated = JSON.parse(await readFile(first.file, "utf8"));
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.desired).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
+    expect(migrated.nextFailureId).toBe(saved.nextFailureId);
+    expect(migrated.observationRevision).toBe(saved.observationRevision);
+    expect(migrated.items.filter((entry: { value: WorkerCloudItem }) => entry.value.key.kind !== "preferPlatformSpecificTasks")).toEqual(saved.items);
+    expect(item(reopened.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "pending", appliedValue: null });
+    expect(reopened.current().effective.preferPlatformSpecificTasks).toBeNull();
+    await reopened.receive(target); await reopened.settle();
+    expect(reopened.current().effective.preferPlatformSpecificTasks).toBe(false);
+    expect(parseWorkerCloudReport(reopened.report()).observation?.items).toHaveLength(1025);
+    expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "error", lastFailure: failure });
+  });
+
+  it("rejects a missing preference in a current cache without rewriting it", async () => {
+    const first = await fixture();
+    await first.manager.receive(desired("1", "original", false)); await first.manager.settle(); await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    delete saved.desired.value.preferPlatformSpecificTasks;
+    const source = JSON.stringify(saved);
+    await writeFile(first.file, source);
+    await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} })).rejects.toThrow();
+    expect(await readFile(first.file, "utf8")).toBe(source);
+  });
   it.each([false, true])("preserves removal ownership when a full cache defers a target reselecting the Project (started=%s)", async started => {
     const first = await fixture(), target = desired("1", "original", false);
     await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
@@ -138,7 +193,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     await reopened.receive(next);
     await reopened.settle();
-    expect(reopened.current().items).toHaveLength(1024);
+    expect(reopened.current().items).toHaveLength(1025);
     const before = await readFile(first.file, "utf8");
     await expect(reopened.ensureProjectRemoval(id(1021))).rejects.toThrow("capacity");
     await reopened.receive(next);
@@ -148,11 +203,11 @@ describe("Worker cloud configuration application", () => {
     expect(onCapacity).toHaveBeenCalledOnce();
     const unknown = reopened.report();
     await reopened.acknowledge(unknown, { desired: next, observationRevision: "0", observationAccepted: false });
-    expect(reopened.current().items).toHaveLength(1024);
+    expect(reopened.current().items).toHaveLength(1025);
     expect(reopened.current().items.find(item => item.key.kind === "projectRemoval" && item.key.projectId === id(1))?.lastFailure).toEqual(failure);
     const accepted = reopened.report();
     await reopened.acknowledge(accepted, { desired: next, observationRevision: "1", observationAccepted: true });
-    expect(reopened.current().items).toHaveLength(1024);
+    expect(reopened.current().items).toHaveLength(1025);
     expect(reopened.current().desired?.revision).toBe("2");
     expect(reopened.current().synchronized).toBe(true);
     expect(reopened.current().items.some(item => item.key.kind === "projectRemoval" && item.key.projectId === id(0))).toBe(false);
@@ -163,7 +218,7 @@ describe("Worker cloud configuration application", () => {
     const { manager, file, wait } = await fixture({ applyNative: async () => { throw new Error("secret native arguments must not be reported"); } });
     await manager.receive(desired());
     await wait(snapshot => item(snapshot, "native")?.state === "error" && snapshot.effective.maxConcurrent === 2 && snapshot.effective.pollIntervalMs === 1200 && snapshot.effective.recoveryLimit === 4);
-    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, native: null, projects: [{ projectId, ready: false }] });
+    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: null, projects: [{ projectId, ready: false }] });
     expect(item(manager.current(), "projectPreparation")).toMatchObject({ state: "pending", appliedValue: null });
     expect(JSON.stringify(manager.report())).not.toContain("secret native arguments");
     expect(JSON.parse(await readFile(file, "utf8")).desired.revision).toBe("1");
@@ -575,7 +630,7 @@ describe("Worker cloud configuration application", () => {
     const { manager } = await fixture({ applyNative: async () => { throw new TypeError("invalid"); } });
     await manager.receive(desired("1", "invalid", false));
     await manager.settle();
-    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, native: null });
+    expect(manager.current().effective).toMatchObject({ maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: null });
     expect(item(manager.current(), "native")?.state).toBe("error");
     expect(Date.parse(item(manager.current(), "native")!.nextAttemptAt!)).toBeGreaterThan(Date.now());
   });

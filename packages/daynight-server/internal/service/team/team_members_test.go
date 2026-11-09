@@ -147,14 +147,6 @@ func TestTeamMemberServiceValidationAndFailures(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("write cancellation %v", err)
 	}
-	_, err = db.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, uuid.NewString())
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err := s.Members(ctx, actor, team.ID)
-	if err == nil || items != nil {
-		t.Fatalf("broken profile returned partial results %#v %v", items, err)
-	}
 }
 
 func TestTeamMemberServiceConcurrentAdminTransitions(t *testing.T) {

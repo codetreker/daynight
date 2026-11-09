@@ -20,7 +20,7 @@ The [requirements](../../../../docs/spec/daynight-task-sync.md) and [design](../
 
 ## Alternatives
 
-**Require a successful project graph.** This makes valid tasks inaccessible while synchronization fails, exceeds graph limits or has not yet included a new task.
+**Require a successful project graph.** This makes valid tasks inaccessible while synchronization fails or has not yet included a new Task. At the original decision, graph-size limits added another refusal; the [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md) removes that capacity check while direct detail observation remains independent of graph availability.
 
 **Treat search hits or fabricated summaries as admission.** Neither proves the complete current Task or its history; relaxing persistent summary validation would also weaken normal cached details.
 

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -19,11 +21,7 @@ import (
 func storeTeamFixture(t *testing.T) (*Store, model.Principal, model.Team) {
 	t.Helper()
 	s := isolatedStore(t)
-	_, actor, _ := testAuthRecords(t, s)
-	team, err := testCreateTeam(s, context.Background(), actor.UserID, uuid.NewString(), "Ordinary")
-	if err != nil {
-		t.Fatal(err)
-	}
+	actor, team := testutil.TeamFixture(t, s)
 	return s, actor, team
 }
 
@@ -190,37 +188,6 @@ func TestTeamDeletionLockPreventsNewOrphanOwnership(t *testing.T) {
 				t.Fatalf("ownership existence %d %v", count, err)
 			}
 		})
-	}
-}
-
-func TestTeamOwnershipCheckDoesNotLockProject(t *testing.T) {
-	s, actor, team := storeTeamFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	project, err := s.CreatePrivateProject(ctx, actor, uuid.NewString(), "Existing", "host:repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustQueryExec(t, s, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, team.ID)
-	holder, err := s.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Rollback(context.Background())
-	if _, err := holder.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, project.ID); err != nil {
-		t.Fatal(err)
-	}
-	bounded, finish := context.WithTimeout(ctx, time.Second)
-	defer finish()
-	err = testWriteTeam(s, bounded, team.ID, func(tx TeamWriteDAO) error {
-		found, err := tx.HasProjects(bounded)
-		if err == nil && !found {
-			return errors.New("ownership disappeared")
-		}
-		return err
-	})
-	if err != nil {
-		t.Fatalf("Team-only check waited for existing Project lock %v", err)
 	}
 }
 

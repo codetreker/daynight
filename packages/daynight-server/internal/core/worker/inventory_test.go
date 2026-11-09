@@ -47,7 +47,7 @@ func TestMatchTaskSnapshotsUsesActiveOwnedClaimsInInventoryOrder(t *testing.T) {
 	}
 }
 
-func TestMatchTaskSnapshotsHandlesMissingAndCorruptSources(t *testing.T) {
+func TestMatchTaskSnapshotsHandlesMissingSourcesAndJSONErrors(t *testing.T) {
 	ref := model.WorkerTaskReference{TaskID: "task", ProjectID: "project", ClaimID: "claim"}
 	inventory := model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{ref}}
 	items, err := MatchTaskSnapshots(nil, inventory, "user", "worker")
@@ -55,9 +55,9 @@ func TestMatchTaskSnapshotsHandlesMissingAndCorruptSources(t *testing.T) {
 		t.Fatalf("missing source was not omitted: %+v %v", items, err)
 	}
 	source := store.WorkerTaskSource{Task: model.Task{ID: ref.TaskID, ProjectID: ref.ProjectID, Status: model.TaskInProgress,
-		Properties: model.TaskProperties{"worker": json.RawMessage(`{"bad":true}`)}}}
+		Properties: model.TaskProperties{"worker": json.RawMessage(`{"claimId":1}`)}}}
 	if _, err := MatchTaskSnapshots([]store.WorkerTaskSource{source}, inventory, "user", "worker"); err == nil {
-		t.Fatal("corrupt stored claim was silently ignored")
+		t.Fatal("worker JSON type error was silently ignored")
 	}
 }
 

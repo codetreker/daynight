@@ -7,9 +7,11 @@ import (
 	"io/fs"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type mutationCountingStorage struct {
@@ -29,38 +31,36 @@ func (s *mutationCountingStorage) Delete(ctx context.Context, bucket, path strin
 
 func TestAttachmentHTTPMutationsAfterTaskDeletionPreserveFiles(t *testing.T) {
 	ctx := context.Background()
-	database, files := projectTestStore(t), attachmentTestFiles(t)
+	files := attachmentTestFiles(t)
 	storage := &mutationCountingStorage{Storage: files}
-	handler := attachmentTestHandler(t, database, storage, io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Retained attachment")
+	f := newAttachmentFixture(t, storage, io.Discard)
+	handler, task := f.handler, f.task
 	const retained, content = "docs/retained.txt", "original bytes"
+	item := f.item(task, retained, "text/plain", int64(len(content)))
+	f.expectPut(task, item.Path, item.ContentType, item.SizeBytes, item, true)
 	decodeResponse[api.Attachment](t, attachmentRequest(handler, http.MethodPut, attachmentFilePath(task, retained), "text/plain", []byte(content)), http.StatusCreated)
-
-	var before string
-	if err := database.Pool.QueryRow(ctx, `SELECT to_jsonb(a)::text FROM task_attachments a WHERE project_id=$1 AND task_id=$2 AND path=$3`, project.ID, task.ID, retained).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	deleted := projectRequest(handler, http.MethodDelete, taskPath(task), jsonBody(t, api.TaskDeleteRequest{Version: task.Version}))
-	if deleted.Code != http.StatusNoContent {
-		t.Fatalf("delete Task: %d %s", deleted.Code, deleted.Body)
-	}
+	f.verify()
+	deletedAt := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	presence := store.TaskPresence{Found: true, DeletedAt: &deletedAt}
 	storage.puts, storage.deletes = 0, 0
 	for _, call := range []struct{ method, path, body string }{
 		{http.MethodPut, "docs/new.txt", "new bytes"},
 		{http.MethodPut, retained, "replacement"},
 		{http.MethodDelete, retained, ""},
 	} {
+		if call.method == http.MethodPut {
+			f.expectReadFailure(task, nil, presence)
+			f.expectMutationFailure(task, true, presence, nil)
+		} else {
+			f.begin()
+			f.expectMutationFailure(task, true, presence, nil)
+		}
 		response := attachmentRequest(handler, call.method, attachmentFilePath(task, call.path), "text/plain", []byte(call.body))
 		assertProjectError(t, response, http.StatusGone, "task_deleted")
+		f.verify()
 	}
 	if storage.puts != 0 || storage.deletes != 0 {
 		t.Fatalf("deleted Task reached file mutation: puts=%d deletes=%d", storage.puts, storage.deletes)
-	}
-	var after string
-	var count int
-	if err := database.Pool.QueryRow(ctx, `SELECT to_jsonb(a)::text, (SELECT count(*) FROM task_attachments WHERE task_id=$2) FROM task_attachments a WHERE project_id=$1 AND task_id=$2 AND path=$3`, project.ID, task.ID, retained).Scan(&after, &count); err != nil || after != before || count != 1 {
-		t.Fatalf("retained metadata changed: before=%s after=%s count=%d err=%v", before, after, count, err)
 	}
 	physical := task.ProjectID + "/" + task.ID[:2] + "/" + task.ID + "/"
 	object, err := files.Open(ctx, "task-attachments", physical+retained)

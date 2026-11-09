@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,24 +15,14 @@ import (
 	"testing"
 	"time"
 
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-
-	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
-func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
-
-func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer) *resourceTestHandler {
+func projectTestHandler(t *testing.T, database store.Transactions, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	return resourceTestServer(t, database, attachmentTestFiles(t), output)
 }
@@ -56,14 +45,16 @@ func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, statu
 }
 
 func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{}, false)
 	empty := projectRequest(handler, http.MethodGet, "/api/v1/projects", "")
 	page := decodeResponse[api.ProjectPage](t, empty, http.StatusOK)
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
 		t.Fatalf("empty list shape: %s", empty.Body)
 	}
+	expected := projectHTTPCreate(t, database, handler.principal, "API work", "git@github.com:example/repository.git", projectHTTPPersonalTeam, false)
 	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "API work", RepoURL: "git@github.com:example/repository.git", ExpectedUserID: handler.principal.UserID}))
 	project := decodeResponse[api.Project](t, response, http.StatusCreated)
 	if project.Name != "API work" || project.RepoURL != "git@github.com:example/repository.git" || project.ID == "" || project.CreatedAt.IsZero() || project.CreatedAt.Location() != time.UTC || project.UpdatedAt != project.CreatedAt {
@@ -81,13 +72,15 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 			t.Fatalf("missing DTO field %s: %s", key, response.Body)
 		}
 	}
+	projectHTTPGet(t, database, handler.principal, *expected)
 	read := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+strings.ToUpper(project.ID), ""), http.StatusOK)
 	if read != project {
 		t.Fatalf("read differs from create: %+v %+v", read, project)
 	}
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{*expected}, false)
 	page = decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
 	if len(page.Items) != 1 || page.Items[0] != project || page.NextCursor != nil {
-		t.Fatalf("persisted list: %+v", page)
+		t.Fatalf("project list projection: %+v", page)
 	}
 	if !strings.Contains(logs.String(), `"project_id":"`+project.ID+`"`) || !strings.Contains(logs.String(), `"route":"POST /api/v1/projects"`) || strings.Contains(logs.String(), project.RepoURL) {
 		t.Fatalf("missing resource correlation or unsafe logs: %s", &logs)
@@ -95,7 +88,7 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 }
 
 func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
 	for _, body := range []string{
@@ -137,46 +130,27 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "github.com") {
 		t.Fatalf("request content leaked: %s", &logs)
 	}
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{}, false)
 	page := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
 	if len(page.Items) != 0 {
 		t.Fatal("invalid request created a project")
 	}
 }
 
-func createPrivateProjectFixture(database *postgres.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
-	var project model.Project
-	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
-		var err error
-		project, _, err = coreproject.Create(ctx, dao, principal.UserID, id, coreproject.CreateProject{Name: name, RepoURL: repoURL, ExpectedUserID: principal.UserID})
-		return err
-	})
-	if err != nil {
-		return model.Project{}, err
-	}
-	if completion.Outcome != store.TransactionCommitted {
-		return model.Project{}, fmt.Errorf("project fixture not committed: %s", completion.Outcome)
-	}
-	return project, nil
-}
-
 func TestProjectHTTPPaginationWithTiedTimestamps(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"}
-	for _, id := range ids {
-		if _, err := createPrivateProjectFixture(database, context.Background(), handler.principal, id, "same time", "https://github.com/example/repo"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := database.Pool.Exec(context.Background(), "UPDATE projects SET created_at='2026-01-01T00:00:00Z', updated_at='2026-01-01T00:00:00Z'"); err != nil {
-		t.Fatal(err)
-	}
 	path := "/api/v1/projects?limit=1"
+	var after *store.Position
 	for index, id := range ids {
+		record := projectHTTPRecord(id, "same time", "https://github.com/example/repo", projectHTTPPersonalTeam)
+		projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 1, After: after}, []model.Project{record}, index < len(ids)-1)
 		page := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
 		if len(page.Items) != 1 || page.Items[0].ID != id || (page.NextCursor != nil) != (index < len(ids)-1) {
 			t.Fatalf("incorrect keyset page %d: %+v", index, page)
 		}
+		after = &store.Position{CreatedAt: record.CreatedAt, ID: id}
 		if page.NextCursor != nil {
 			path = "/api/v1/projects?limit=1&cursor=" + url.QueryEscape(*page.NextCursor)
 			data, err := base64.RawURLEncoding.DecodeString(*page.NextCursor)
@@ -192,14 +166,14 @@ func TestProjectHTTPPaginationWithTiedTimestamps(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tampered := base64.RawURLEncoding.EncodeToString(wrongScope)
-			assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+url.QueryEscape(tampered), ""), http.StatusBadRequest, "invalid_input")
+			assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+url.QueryEscape(base64.RawURLEncoding.EncodeToString(wrongScope)), ""), http.StatusBadRequest, "invalid_input")
 		}
 	}
 }
 
 func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	database := newHTTPTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
 	for _, query := range []string{
 		"limit=", "limit=0", "limit=101", "limit=-1", "limit=1.5", "limit=invalid", "limit=1&limit=2",
 		"cursor=", "cursor=bad", "cursor=one&cursor=two", "status=todo", "limit=%xx", "limit=1;cursor=x",
@@ -211,8 +185,22 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 	for _, path := range []string{"not-a-uuid", "00000000-0000-4000-8000-00000000000z"} {
 		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+path, ""), http.StatusBadRequest, "invalid_input")
 	}
+	called := projectHTTPCount(t, 1)
+	projectHTTPRead(t, database, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		called()
+		projectHTTPCheck(t, p, handler.principal)
+		projectHTTPCheck(t, id, "00000000-0000-4000-8000-000000000099")
+		return model.ProjectAccess{}, model.ErrNotFound
+	}})
 	assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""), http.StatusNotFound, "not_found")
 	assertProjectError(t, projectRequest(handler, http.MethodGet, "/unknown-secret-path?query=secret", ""), http.StatusNotFound, "not_found")
+	deletedRead := projectHTTPCount(t, 1)
+	projectHTTPRead(t, database, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		deletedRead()
+		projectHTTPCheck(t, p, handler.principal)
+		projectHTTPCheck(t, id, "00000000-0000-4000-8000-000000000099")
+		return model.ProjectAccess{}, model.ErrNotFound
+	}})
 	assertProjectError(t, projectRequest(handler, http.MethodDelete, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""), http.StatusNotFound, "not_found")
 	response := projectRequest(handler, http.MethodDelete, "/api/v1/projects", "")
 	assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -222,28 +210,27 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 }
 
 func TestProjectHTTPScopedPagination(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
-	ctx := context.Background()
-	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
-	var teamID string
-	for _, id := range ids {
-		project, err := createPrivateProjectFixture(database, ctx, handler.principal, id, "project", "https://github.com/example/repo")
-		if err != nil {
-			t.Fatal(err)
-		}
-		teamID = project.Ownership.TeamID
+	firstRecord := projectHTTPRecord("00000000-0000-4000-8000-000000000001", "project", "https://github.com/example/repo", projectHTTPPersonalTeam)
+	secondRecord := projectHTTPRecord("00000000-0000-4000-8000-000000000002", "project", "https://github.com/example/repo", projectHTTPPersonalTeam)
+	teamID := firstRecord.Ownership.TeamID
+	if strings.ToUpper(teamID) == teamID {
+		t.Fatal("team cursor fixture must have a distinct uppercase alias")
 	}
 	query := "teamId=" + strings.ToUpper(teamID)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeTeam, teamID), store.Page{Limit: 1}, []model.Project{firstRecord}, true)
 	first := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&"+query, ""), http.StatusOK)
 	if len(first.Items) != 1 || first.NextCursor == nil {
 		t.Fatalf("first team page: %+v", first)
 	}
 	cursor := url.QueryEscape(*first.NextCursor)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeTeam, teamID), store.Page{Limit: 1, After: &store.Position{CreatedAt: firstRecord.CreatedAt, ID: firstRecord.ID}}, []model.Project{secondRecord}, false)
 	second := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&teamId="+teamID+"&cursor="+cursor, ""), http.StatusOK)
 	if len(second.Items) != 1 || second.Items[0].ID == first.Items[0].ID || second.NextCursor != nil {
 		t.Fatalf("second team page: %+v", second)
 	}
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 50}, []model.Project{}, false)
 	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
 	if len(shared.Items) != 0 || shared.Items == nil || shared.NextCursor != nil {
 		t.Fatalf("shared scope included team projects: %+v", shared)
@@ -251,6 +238,7 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 	for _, scope := range []string{"", "&shared=true", "&teamId=00000000-0000-4000-8000-000000000099"} {
 		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+cursor+scope, ""), http.StatusBadRequest, "invalid_input")
 	}
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 1}, []model.Project{firstRecord}, true)
 	all := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1", ""), http.StatusOK)
 	if all.NextCursor == nil {
 		t.Fatal("all-accessible cursor missing")
@@ -259,79 +247,71 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 }
 
 func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T) {
-	h := membershipTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
-	ctx := context.Background()
-	admin, err := h.Identity.Authenticate(ctx, model.SessionCredential, h.admin.Value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := projectservice.NewProjects(h.Database).Create(ctx, admin, coreproject.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	other := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.outsider), http.StatusOK)
-	member := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.member), http.StatusOK)
-	for index, project := range []model.Project{h.project, second} {
-		if _, err := h.Database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
-			t.Fatal(err)
-		}
-		for _, userID := range []string{h.memberID, other.ID} {
-			if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	first := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=1&shared=true", "", h.member), http.StatusOK)
-	if len(first.Items) != 1 || first.Items[0].ID != h.project.ID || first.NextCursor == nil {
+	principal := defaultHTTPPrincipal()
+	principal.UserID = "00000000-0000-4000-8000-000000000040"
+	database := newHTTPTestStoreForPrincipal(t, principal)
+	handler := resourceTestServerForPrincipal(t, database, attachmentTestFiles(t), io.Discard, principal)
+	firstRecord := projectHTTPRecord("00000000-0000-4000-8000-000000000001", "First shared", "https://example.com/first.git", projectHTTPPersonalTeam)
+	secondRecord := projectHTTPRecord("00000000-0000-4000-8000-000000000002", "Second shared", "https://example.com/second.git", projectHTTPPersonalTeam)
+	secondRecord.CreatedAt = firstRecord.CreatedAt.Add(time.Second)
+	secondRecord.UpdatedAt = secondRecord.CreatedAt
+	projectHTTPPage(t, database, principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 1}, []model.Project{firstRecord}, true)
+	first := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&shared=true", ""), http.StatusOK)
+	if len(first.Items) != 1 || first.Items[0].ID != firstRecord.ID || first.NextCursor == nil {
 		t.Fatalf("first shared page: %+v", first)
 	}
 	cursor := url.QueryEscape(*first.NextCursor)
-	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=1&shared=true&cursor="+cursor, "", h.member), http.StatusOK)
-	if len(next.Items) != 1 || next.Items[0].ID != second.ID || next.NextCursor != nil {
+	projectHTTPPage(t, database, principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 1, After: &store.Position{CreatedAt: firstRecord.CreatedAt, ID: firstRecord.ID}}, []model.Project{secondRecord}, false)
+	next := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&shared=true&cursor="+cursor, ""), http.StatusOK)
+	if len(next.Items) != 1 || next.Items[0].ID != secondRecord.ID || next.NextCursor != nil {
 		t.Fatalf("second shared page: %+v", next)
 	}
-	for _, query := range []string{"cursor=" + cursor, "teamId=" + member.PersonalTeam.ID + "&cursor=" + cursor} {
-		assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?"+query, "", h.member), http.StatusBadRequest, "invalid_input")
+	for _, query := range []string{"cursor=" + cursor, "teamId=" + projectHTTPPersonalTeam + "&cursor=" + cursor} {
+		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
-	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?shared=true&cursor="+cursor, "", h.outsider), http.StatusBadRequest, "invalid_input")
+	outsider := defaultHTTPPrincipal()
+	outsider.UserID = "00000000-0000-4000-8000-000000000041"
+	other := resourceTestServerForPrincipal(t, newHTTPTestStoreForPrincipal(t, outsider), attachmentTestFiles(t), io.Discard, outsider)
+	assertProjectError(t, projectRequest(other, http.MethodGet, "/api/v1/projects?shared=true&cursor="+cursor, ""), http.StatusBadRequest, "invalid_input")
 }
 
 func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
-	ctx := context.Background()
-	project, err := createPrivateProjectFixture(database, ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
-	if err != nil {
-		t.Fatal(err)
-	}
 	const externalTeam = "00000000-0000-4000-8000-000000000190"
 	const missingTeam = "00000000-0000-4000-8000-000000000191"
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'External team')`, externalTeam); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, externalTeam); err != nil {
-		t.Fatal(err)
-	}
+	record := projectHTTPRecord("00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo", externalTeam)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 50}, []model.Project{record}, false)
 	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
-	if len(shared.Items) != 1 || shared.Items[0].ID != project.ID {
+	if len(shared.Items) != 1 || shared.Items[0].ID != record.ID {
 		t.Fatalf("direct grant should permit the shared project: %+v", shared)
 	}
-	nonmember := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
-	missing := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+missingTeam, "")
+	refusal := func(team string) *httptest.ResponseRecorder {
+		called := projectHTTPCount(t, 1)
+		projectHTTPRead(t, database, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+			called()
+			projectHTTPCheck(t, p, handler.principal)
+			projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeTeam, team))
+			projectHTTPCheck(t, page, store.Page{Limit: 50})
+			return store.ProjectPage{}, model.ErrNotFound
+		}})
+		return projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+team, "")
+	}
+	nonmember, missing := refusal(externalTeam), refusal(missingTeam)
 	assertProjectError(t, nonmember, http.StatusNotFound, "not_found")
 	assertProjectError(t, missing, http.StatusNotFound, "not_found")
 	if nonmember.Body.String() != missing.Body.String() {
 		t.Fatalf("nonmember and missing Team refusals differ: %s vs %s", nonmember.Body, missing.Body)
 	}
-	if _, err := database.Pool.Exec(ctx, `ALTER TABLE team_members RENAME TO private_membership_secret`); err != nil {
-		t.Fatal(err)
-	}
+	called := projectHTTPCount(t, 1)
+	projectHTTPRead(t, database, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+		called()
+		projectHTTPCheck(t, p, handler.principal)
+		projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeTeam, externalTeam))
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
+		return store.ProjectPage{}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private_membership_secret")}
+	}})
 	failed := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
 	assertProjectError(t, failed, http.StatusInternalServerError, "internal_error")
 	if strings.Contains(failed.Body.String(), "secret") || strings.Contains(logs.String(), "private_membership_secret") || !strings.Contains(logs.String(), `"cause":"database"`) {
@@ -340,18 +320,35 @@ func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testi
 }
 
 func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
-	if _, err := database.Pool.Exec(context.Background(), "ALTER TABLE projects RENAME TO private_sql_secret"); err != nil {
-		t.Fatal(err)
+	failure := &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private_sql_secret relation missing")}
+	list := projectHTTPCount(t, 1)
+	projectHTTPRead(t, database, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+		list()
+		projectHTTPCheck(t, p, handler.principal)
+		projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeAll, ""))
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
+		return store.ProjectPage{}, failure
+	}})
+	responses := []*httptest.ResponseRecorder{projectRequest(handler, http.MethodGet, "/api/v1/projects", "")}
+	get := projectHTTPCount(t, 1)
+	projectHTTPRead(t, database, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		get()
+		projectHTTPCheck(t, p, handler.principal)
+		projectHTTPCheck(t, id, "00000000-0000-4000-8000-000000000099")
+		return model.ProjectAccess{}, failure
+	}})
+	responses = append(responses, projectRequest(handler, http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""))
+	create := projectHTTPCount(t, 1)
+	database.WriteProjectCreationCall = func(ctx context.Context, user string, op func(store.ProjectCreationDAO) error) (store.Completion, error) {
+		create()
+		projectHTTPCheck(t, user, handler.principal.UserID)
+		return store.Completion{Outcome: store.TransactionNotCommitted}, failure
 	}
-	for _, request := range []struct{ method, path, body string }{
-		{http.MethodGet, "/api/v1/projects", ""},
-		{http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""},
-		{http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "secret-body", RepoURL: "https://github.com/example/private-secret", ExpectedUserID: handler.principal.UserID})},
-	} {
-		response := projectRequest(handler, request.method, request.path, request.body)
+	responses = append(responses, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "secret-body", RepoURL: "https://github.com/example/private-secret", ExpectedUserID: handler.principal.UserID})))
+	for _, response := range responses {
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 		if strings.Contains(response.Body.String(), "database") || strings.Contains(response.Body.String(), "SQL") || strings.Contains(response.Body.String(), "secret") {
 			t.Fatalf("unsafe server response: %s", response.Body)
@@ -362,43 +359,41 @@ func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
 	}
 }
 
-func TestProjectHTTPCanceledDatabaseRequestDoesNotWrite(t *testing.T) {
-	database := projectTestStore(t)
+func TestProjectHTTPCanceledReadDoesNotWrite(t *testing.T) {
+	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
-	transaction, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer transaction.Rollback(context.Background())
-	if _, err := transaction.Exec(context.Background(), "LOCK TABLE projects IN ACCESS EXCLUSIVE MODE"); err != nil {
-		t.Fatal(err)
-	}
+	reached, finished := make(chan struct{}), make(chan struct{})
+	called := projectHTTPCount(t, 1)
+	projectHTTPRead(t, database, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+		called()
+		projectHTTPCheck(t, p, handler.principal)
+		projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeAll, ""))
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
+		close(reached)
+		<-ctx.Done()
+		return store.ProjectPage{}, &store.Error{Phase: "query", Cause: ctx.Err()}
+	}})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil).WithContext(ctx)
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("X-Request-ID", "project-test")
-	response, finished := httptest.NewRecorder(), make(chan struct{})
-	go func() { handler.ServeHTTP(response, request); close(finished) }()
-	for {
-		var waiting bool
-		err := database.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE pid <> pg_backend_pid() AND application_name=current_setting('application_name')
-			AND wait_event_type='Lock' AND query LIKE '%FROM projects%')`).Scan(&waiting)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
+	response := httptest.NewRecorder()
+	go func() { defer close(finished); handler.ServeHTTP(response, request) }()
+	t.Cleanup(func() {
+		cancel()
 		select {
 		case <-finished:
-			t.Fatal("blocked request completed before cancellation")
-		case <-ctx.Done():
-			t.Fatal("query did not wait for table lock")
-		case <-time.After(5 * time.Millisecond):
+		case <-time.After(5 * time.Second):
+			t.Error("canceled HTTP handler did not drain")
 		}
+	})
+	await(t, reached)
+	select {
+	case <-finished:
+		t.Fatal("request completed before cancellation")
+	default:
 	}
 	cancel()
 	await(t, finished)
@@ -453,11 +448,28 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 	}
 }
 
-func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "private-health-project", RepoURL: "https://example.test/private.git", ExpectedUserID: handler.principal.UserID}))
-	decodeResponse[api.Project](t, created, http.StatusCreated)
+func TestPublicHealthAndReadinessUseConfiguredProbe(t *testing.T) {
+	database := newHTTPTestStore(t)
+	ready := true
+	readyCalls := 0
+	application, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t), Ready: func(ctx context.Context) error {
+		readyCalls++
+		if !ready {
+			return &store.Error{Phase: "ping", DatabaseFailure: true, Cause: errors.New("private-health-project database unavailable")}
+		}
+		return nil
+	}}, configuredTestConfig(), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := application.(*sessionApplication).Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	handler := &resourceTestHandler{Handler: httpx.RequestLogging(testLogger(), application), token: defaultHTTPToken(), principal: defaultHTTPPrincipal()}
 	request := func(method, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, path, nil)
@@ -479,57 +491,48 @@ func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 			t.Fatalf("health method boundary: %+v", unsupported.Header())
 		}
 	}
-	database.Close()
+	ready = false
 	response := request(http.MethodGet, "/readyz")
 	assertProjectError(t, response, http.StatusServiceUnavailable, "service_unavailable")
 	if strings.Contains(response.Body.String(), "private-health-project") || strings.Contains(response.Body.String(), "database") || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("readiness failure exposed data or cached state: %s %+v", response.Body, response.Header())
 	}
 	decodeResponse[map[string]string](t, request(http.MethodGet, "/healthz"), http.StatusOK)
+	if readyCalls != 2 {
+		t.Fatalf("readiness callback calls: %d", readyCalls)
+	}
 }
 
 func TestProjectCreateIdentityTargetAndAccess(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
-	ctx := context.Background()
 	actor := handler.principal
-	team, err := teamservice.NewTeams(database).Create(ctx, actor, coreteam.CreateTeam{Name: "Team", ExpectedUserID: actor.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := api.CreateProjectRequest{Name: " 原文 ", RepoURL: "git@example.com:Org/Repo.git", TeamID: &team.ID, ExpectedUserID: actor.UserID}
+	teamID := "00000000-0000-4000-8000-000000000090"
+	input := api.CreateProjectRequest{Name: " 原文 ", RepoURL: "git@example.com:Org/Repo.git", TeamID: &teamID, ExpectedUserID: actor.UserID}
+	projectHTTPCreate(t, database, actor, input.Name, input.RepoURL, teamID, true)
 	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input))
 	doc := decodeResponse[api.ProjectDocument](t, response, http.StatusCreated)
-	if doc.Name != input.Name || doc.RepoURL != input.RepoURL || doc.Ownership.TeamID != team.ID || doc.Access.Ownership != doc.Ownership || doc.Access.ProjectID != doc.ID || doc.Access.DirectGrant == nil || doc.Access.DirectGrant.UserID != actor.UserID || doc.Access.DirectGrant.Role != "admin" || doc.Access.EffectiveRole != "admin" {
+	if doc.Name != input.Name || doc.RepoURL != input.RepoURL || doc.Ownership.TeamID != teamID || doc.Access.Ownership != doc.Ownership || doc.Access.ProjectID != doc.ID || doc.Access.DirectGrant == nil || doc.Access.DirectGrant.UserID != actor.UserID || doc.Access.DirectGrant.Role != "admin" || doc.Access.EffectiveRole != "admin" {
 		t.Fatalf("created document: %+v", doc)
 	}
-	snapshot := func() string {
-		var state string
-		err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY team_id,user_id) FROM team_members m),'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),'ownership',(SELECT jsonb_agg(to_jsonb(o) ORDER BY project_id) FROM project_ownership o),'grants',(SELECT jsonb_agg(to_jsonb(g) ORDER BY project_id,user_id) FROM project_grants g))::text`).Scan(&state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return state
-	}
-	before := snapshot()
 	input.ExpectedUserID = "00000000-0000-4000-8000-000000000001"
 	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusConflict, "identity_mismatch")
-	for _, body := range []string{
-		`{"name":"x","repoUrl":"host:repo"}`,
-		`{"name":"x","repoUrl":"host:repo","expectedUserId":null}`,
-		`{"name":"\ud800","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `"}`,
-		`{"name":"x","repoUrl":"host:\udfff","expectedUserId":"` + actor.UserID + `"}`,
-		`{"name":"x","repoUrl":"host:repo","expectedUserId":"bad"}`,
-		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":null}`,
-		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":"bad"}`,
-	} {
+	for _, body := range []string{`{"name":"x","repoUrl":"host:repo"}`, `{"name":"x","repoUrl":"host:repo","expectedUserId":null}`, `{"name":"\ud800","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `"}`, `{"name":"x","repoUrl":"host:\udfff","expectedUserId":"` + actor.UserID + `"}`, `{"name":"x","repoUrl":"host:repo","expectedUserId":"bad"}`, `{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":null}`, `{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":"bad"}`} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
 	}
 	input.ExpectedUserID = actor.UserID
 	missing := "00000000-0000-4000-8000-000000000002"
 	input.TeamID = &missing
-	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusNotFound, "not_found")
-	if after := snapshot(); before != after {
-		t.Fatal("rejected writes changed domain rows or versions")
+	called, lookup := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	database.WriteProjectCreationCall = func(ctx context.Context, user string, op func(store.ProjectCreationDAO) error) (store.Completion, error) {
+		called()
+		projectHTTPCheck(t, user, actor.UserID)
+		err := op(projectHTTPCreateDAO{TeamCall: func(ctx context.Context, id string) (store.ProjectCreationTeam, error) {
+			lookup()
+			projectHTTPCheck(t, id, missing)
+			return store.ProjectCreationTeam{}, model.ErrNotFound
+		}})
+		return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Cause: err, Outcome: store.TransactionNotCommitted}
 	}
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusNotFound, "not_found")
 }

@@ -2,6 +2,7 @@
 package measure
 
 import (
+	"bufio"
 	"encoding"
 	"encoding/json"
 	"fmt"
@@ -57,13 +58,15 @@ func JSON(w io.Writer, field string, max int64, value any, newline bool) (int64,
 var rawType = reflect.TypeOf(json.RawMessage{})
 var timeType = reflect.TypeOf(time.Time{})
 
+const jsonChunkBytes = 4096
+
 func write(w io.Writer, s string) error { _, err := io.WriteString(w, s); return err }
 func str(w io.Writer, s string) error {
 	if err := write(w, "\""); err != nil {
 		return err
 	}
 	for len(s) > 0 {
-		n := 4096
+		n := jsonChunkBytes
 		if n >= len(s) {
 			n = len(s)
 		} else {
@@ -89,27 +92,50 @@ func raw(w io.Writer, b []byte) error {
 	if !json.Valid(b) {
 		return fmt.Errorf("invalid JSON value")
 	}
+	output := bufio.NewWriterSize(w, min(len(b), jsonChunkBytes))
+	start := 0
 	in, escaped := false, false
 	for i := 0; i < len(b); i++ {
 		c := b[i]
 		if !in && (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-			continue
-		}
-		if in && !escaped && (c == '<' || c == '>' || c == '&') {
-			if err := write(w, fmt.Sprintf("\\u%04x", c)); err != nil {
+			if err := rawSpan(output, b[start:i]); err != nil {
 				return err
 			}
+			start = i + 1
 			continue
 		}
-		if in && !escaped && i+2 < len(b) && c == 0xe2 && b[i+1] == 0x80 && (b[i+2] == 0xa8 || b[i+2] == 0xa9) {
-			if err := write(w, fmt.Sprintf("\\u202%x", b[i+2]-0xa0)); err != nil {
+		replacement, size := "", 1
+		if in && !escaped {
+			switch c {
+			case '<':
+				replacement = "\\u003c"
+			case '>':
+				replacement = "\\u003e"
+			case '&':
+				replacement = "\\u0026"
+			case 0xe2:
+				if i+2 < len(b) && b[i+1] == 0x80 {
+					switch b[i+2] {
+					case 0xa8:
+						replacement, size = "\\u2028", 3
+					case 0xa9:
+						replacement, size = "\\u2029", 3
+					}
+				}
+			}
+		}
+		if replacement != "" {
+			if start < i {
+				if err := rawSpan(output, b[start:i]); err != nil {
+					return err
+				}
+			}
+			if _, err := output.WriteString(replacement); err != nil {
 				return err
 			}
-			i += 2
+			i += size - 1
+			start = i + 1
 			continue
-		}
-		if _, err := w.Write(b[i : i+1]); err != nil {
-			return err
 		}
 		if in {
 			if escaped {
@@ -122,6 +148,22 @@ func raw(w io.Writer, b []byte) error {
 		} else if c == '"' {
 			in = true
 		}
+	}
+	if err := rawSpan(output, b[start:]); err != nil {
+		return err
+	}
+	return output.Flush()
+}
+
+// Empty buffered writers can forward a large write directly; spans retain the
+// chunk bound on that path as well as when the buffer is partially filled.
+func rawSpan(w *bufio.Writer, b []byte) error {
+	for len(b) > 0 {
+		n := min(len(b), jsonChunkBytes)
+		if _, err := w.Write(b[:n]); err != nil {
+			return err
+		}
+		b = b[n:]
 	}
 	return nil
 }

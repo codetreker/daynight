@@ -8,624 +8,605 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
-	servicesupport "github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
-	"github.com/google/uuid"
-
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	"github.com/google/uuid"
 )
 
-func terminalRequest(h http.Handler, method, path, body, protocol string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, path, strings.NewReader(body))
-	authorizeResourceRequest(h, r)
-	r.Header.Set("Content-Type", "application/json")
-	if protocol != "" {
-		r.Header.Set(v2.ProtocolHeader, protocol)
+func terminalAwait(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(3 * time.Second):
+		t.Fatal(message)
 	}
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	return w
+}
+
+func terminalReleaseContext(t *testing.T, ctx context.Context) {
+	t.Helper()
+	deadline, ok := ctx.Deadline()
+	if !ok || ctx.Err() != nil || time.Until(deadline) <= 0 || time.Until(deadline) > 5*time.Second {
+		t.Error("terminal release did not receive a live, bounded cleanup context")
+	}
+}
+
+func terminalCaller(t *testing.T, f *terminalHTTPFixture, ctx context.Context, principal, expected model.Principal, project, task, id string) {
+	t.Helper()
+	owner := f.message.Payload.(v2.Registration).Owner
+	if ctx.Err() != nil || principal != expected || project != owner.ProjectID || task != owner.TaskID || id != f.message.SessionID {
+		t.Errorf("terminal call changed principal, IDs or context: %v %v %s/%s/%s", ctx.Err(), principal, project, task, id)
+	}
 }
 
 func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
-	a, err := appsupport.NewHandler(configuredTestConfig(), f.db, f.db.Ready, attachmentTestFiles(t), testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherApp := a.(sessionApplication)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := otherApp.Shutdown(ctx); err != nil {
-			t.Error(err)
+	var currentCalls, stateCalls atomic.Int32
+	routing := &model.Fault{Code: "relay_instance_unavailable", Message: "The live terminal belongs to another relay."}
+	f.calls.ExpectCalls("CurrentTerminal", 2)
+	f.calls.ExpectCalls("TerminalState", 2)
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.CurrentTerminal = func(ctx context.Context, p model.Principal, project, task string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, f.message.SessionID)
+			if currentCalls.Add(1) == 1 {
+				return nil, routing
+			}
+			return f.knownState("1"), nil
+		}
+		calls.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if stateCalls.Add(1) == 1 {
+				return nil, routing
+			}
+			return f.knownState("1"), nil
 		}
 	})
-	other := *f.h
-	other.Handler = httpx.RequestLogging(testLogger(), otherApp)
 	for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
-		response := terminalRequest(&other, http.MethodGet, path, "", v2.Protocol)
-		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"relay_instance_unavailable"`) {
-			t.Fatalf("foreign relay state: %d %s", response.Code, response.Body.String())
-		}
+		response := terminalRequest(f.h, http.MethodGet, path, "", v2.Protocol)
+		assertProjectError(t, response, http.StatusServiceUnavailable, routing.Code)
 		response = terminalRequest(f.h, http.MethodGet, path, "", v2.Protocol)
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"connected":true`) {
-			t.Fatalf("owning relay state: %d %s", response.Code, response.Body.String())
+			t.Fatalf("provided owner state: %d %s", response.Code, response.Body.String())
 		}
 	}
 }
 
 func TestTerminalViewerClosesWhenWorkerConnectionIsReplaced(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	browserID := uuid.NewString()
+	replace, released := make(chan struct{}), make(chan struct{})
+	var states atomic.Int32
+	f.calls.ExpectCalls("TerminalState", 2)
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if states.Add(1) == 1 {
+				return f.knownState("1"), nil
+			}
+			select {
+			case <-replace:
+				return f.knownState("2"), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		calls.DisconnectTerminalViewer = func(ctx context.Context, p model.Principal, project, task, id, browser, claim, epoch string) error {
+			f.scope(t, ctx, p, project, task, id)
+			terminalReleaseContext(t, ctx)
+			if browser != browserID || claim != f.message.ClaimID || epoch != "1" {
+				t.Error("replacement cleanup lost its admitted identity")
+			}
+			close(released)
+			return nil
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	path := f.base + "/" + f.message.SessionID
-	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+uuid.NewString(), &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
+	conn, _, err := websocket.Dial(ctx, f.server.URL+f.base+"/"+f.message.SessionID+"/channel?browserClientId="+browserID, &websocket.DialOptions{HTTPHeader: f.viewerHeaders(f.h), Subprotocols: []string{v2.Protocol}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer browser.CloseNow()
-	initial := sessionWSRead(t, browser)
-	if string(initial["connectionEpoch"]) != `"1"` {
+	defer conn.CloseNow()
+	if initial := sessionWSRead(t, conn); string(initial["connectionEpoch"]) != `"1"` {
 		t.Fatal(initial)
 	}
-	reg := f.message.Payload.(v2.Registration)
-	reg.Mode = "reconnect"
-	epoch := "1"
-	reg.ConnectionEpoch = &epoch
-	m := f.message
-	m.Payload = reg
-	ack := terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, m), v2.Protocol))
-	if ack.Payload.(v2.RegistrationAck).ConnectionEpoch != "2" {
-		t.Fatal(ack)
+	close(replace)
+	if _, _, err = conn.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("old viewer followed the supplied replacement connection")
 	}
-	if _, _, err := browser.Read(ctx); err == nil {
-		t.Fatal("old viewer followed the replacement Worker connection")
-	}
-	current := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
-	if current.Code != http.StatusOK || !strings.Contains(current.Body.String(), `"connectionEpoch":"2"`) || !strings.Contains(current.Body.String(), `"connected":true`) {
-		t.Fatal(current.Code, current.Body.String())
-	}
+	terminalAwait(t, released, "replacement viewer did not release its admitted identity")
+	f.waitConnections(t, 0)
 }
 
-func TestTerminalCapabilitiesAreExplicit(t *testing.T) {
-	h := projectTestHandler(t, projectTestStore(t), io.Discard)
-	r := httptest.NewRequest(http.MethodGet, "/api/v1/session-capabilities", nil)
-	r.Header.Set(v2.ProtocolHeader, v2.Protocol)
-	// Use the authenticated fixture identity rather than bypassing authentication.
-	authorizeResourceRequest(h, r)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"recordingResponsibilityVersion":1`) || !strings.Contains(w.Body.String(), v2.Protocol) {
-		t.Fatal(w.Body.String())
-	}
-}
-
-type terminalHTTPFixture struct {
-	sessionHTTPShutdown
-	h       *resourceTestHandler
-	app     sessionApplication
-	db      *postgres.Store
-	server  *httptest.Server
-	base    string
-	message v2.Message
-}
-
-func terminalHTTPSetup(t *testing.T) *terminalHTTPFixture {
-	t.Helper()
-	db := projectTestStore(t)
-	h := projectTestHandler(t, db, io.Discard)
-	extendedWorkerTestHandler(h)
-	project := taskProject(t, h)
-	task := updateHTTPTask(t, h, createHTTPWorkerTask(t, h, project.ID, "Terminal"), map[string]any{"allowAgents": true})
-	claim := workerClaimBody(task.Version)
-	claim["agentControlMode"] = "herdr"
-	task = claimHTTPWorker(t, h, task, claim)
-	w := apiWorker(t, task.Properties)
-	cfg := configuredTestConfig()
-	a, e := appsupport.NewHandler(cfg, db, db.Ready, attachmentTestFiles(t), testLogger())
-	if e != nil {
-		t.Fatal(e)
-	}
-	app := a.(sessionApplication)
-	h.Handler = httpx.RequestLogging(testLogger(), app)
-	server := httptest.NewServer(app)
-	t.Cleanup(server.Close)
-
-	pane := "pane_1"
-	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: project.ID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: cfg.PublicOrigin, Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	f := &terminalHTTPFixture{h: h, app: app, db: db, server: server, base: taskPath(task) + "/sessions", message: m}
-	f.sessionHTTPShutdown.register(t, f.app.Shutdown)
-	return f
-}
-func terminalMessage(t *testing.T, w *httptest.ResponseRecorder) v2.Message {
-	t.Helper()
-	if w.Code != http.StatusOK && w.Code != http.StatusAccepted {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
-	m, e := v2.DecodeMessage(w.Body.Bytes())
-	if e != nil {
-		t.Fatalf("%s: %v", w.Body.String(), e)
-	}
-	return m
-}
-func (f *terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v2.Payload) v2.Message {
-	t.Helper()
-	m := f.message
-	m.Type = kind
-	m.Payload = payload
-	r := httptest.NewRequest(http.MethodPost, f.base+"/"+m.SessionID+"/worker-messages", strings.NewReader(jsonBody(t, m)))
-	authorizeResourceRequest(f.h, r)
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set(v2.ProtocolHeader, v2.Protocol)
-	r.Header.Set("Daynight-Connection-Epoch", "1")
-	w := httptest.NewRecorder()
-	f.h.ServeHTTP(w, r)
-	return terminalMessage(t, w)
-}
-
-func TestTerminalHTTPRegistrationLedgerAndClosedUnavailable(t *testing.T) {
+func TestTerminalHTTPDispatchesMessagesAndProvidedReadbacks(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	m := f.message
-	ack := terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, m), v2.Protocol))
-	if ack.Payload.(v2.RegistrationAck).ConnectionEpoch != "1" {
-		t.Fatal(ack)
-	}
-	for _, protocol := range []string{"", sp.Protocol} {
-		w := terminalRequest(f.h, http.MethodGet, f.base+"/current", "", protocol)
-		if w.Code != 200 || !strings.Contains(w.Body.String(), `"not_applicable"`) {
-			t.Fatal(w.Code, w.Body.String())
-		}
-	}
-	w := terminalRequest(f.h, http.MethodGet, f.base+"/current", "", v2.Protocol)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), m.SessionID) {
-		t.Fatal(w.Code, w.Body.String())
-	}
-	reg := m.Payload.(v2.Registration)
-	run := v2.Run{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{}}
-	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run}})
-	responsibility := v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
-	f.messageRequest(t, "recording_responsibility", responsibility)
-	evidence := v2.RecordingEvidence{ResponsibilityID: responsibility.ResponsibilityID, EvidenceID: uuid.NewString(), Revision: "1", SelectedFrameCount: "0", RegisteredFrameCount: "0", Closed: true, JournalSHA256: v2.HashBytes([]byte("trusted closed journal")), SourceSHA256: v2.EmptySourceDigest()}
-	stopped := "2026-01-01T00:00:01Z"
-	run.StoppedAt = &stopped
-	run.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: run.Binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
-	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run}})
-	f.messageRequest(t, "recording_evidence", evidence)
-	readback := terminalRequest(f.h, http.MethodGet, f.base+"/"+m.SessionID+"/recording-evidence/"+evidence.EvidenceID+"?generation=1", "", v2.Protocol)
-	if readback.Code != 200 || !strings.Contains(readback.Body.String(), evidence.EvidenceID) || !strings.Contains(readback.Body.String(), `"bodyHash"`) {
-		t.Fatal(readback.Code, readback.Body.String())
-	}
-	// The fixture has no native process; close only this test task's authority.
-	_, e := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID)
-	if e != nil {
-		t.Fatal(e)
-	}
-	seal := uuid.NewString()
-	f.messageRequest(t, "finalization", v2.Finalization{FinalizationID: seal, ClaimTerminal: true, Runs: []v2.Run{run}})
+	f.register(t)
+	registration := f.message.Payload.(v2.Registration)
+	run := v2.Run{ExecutionGeneration: "1", Owner: registration.Owner, Binding: registration.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{}}
+	ledger := f.message
+	ledger.Type, ledger.Payload = "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run}}
+	responsibility := f.message
+	responsibility.Type, responsibility.Payload = "recording_responsibility", v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
+	evidence := f.message
+	evidenceID := uuid.NewString()
+	evidence.Type, evidence.Payload = "recording_evidence", v2.RecordingEvidence{ResponsibilityID: responsibility.Payload.(v2.RecordingResponsibility).ResponsibilityID, EvidenceID: evidenceID, Revision: "1", SelectedFrameCount: "0", RegisteredFrameCount: "0", Closed: true, JournalSHA256: v2.HashBytes([]byte("closed journal")), SourceSHA256: v2.EmptySourceDigest()}
 	reason := "ended_before_first_sample"
-	receipt := v2.Receipt{FinalizationID: seal, Disposition: "unavailable", Reason: &reason, Evidence: &v2.NoRecordingEvidence{RecordingEnabled: true, SelectedFrameCount: "0", RegisteredFrameCount: "0"}}
-	request := m
-	request.Type = "receipt"
-	request.Payload = receipt
-	digest, e := v2.ReceiptDigest(request)
-	if e != nil {
-		t.Fatal(e)
+	receipt := f.message
+	receipt.Type, receipt.Payload = "receipt", v2.Receipt{FinalizationID: uuid.NewString(), Disposition: "unavailable", Reason: &reason, Evidence: &v2.NoRecordingEvidence{RecordingEnabled: true, SelectedFrameCount: "0", RegisteredFrameCount: "0"}}
+	digest, err := v2.ReceiptDigest(receipt)
+	if err != nil {
+		t.Fatal(err)
 	}
-	receipt.DispositionDigest = digest
-	request.Payload = receipt
-	path := f.base + "/" + m.SessionID + "/archive"
-	result := terminalMessage(t, terminalRequest(f.h, http.MethodPost, path, jsonBody(t, request), v2.Protocol))
-	if result.Payload.(v2.Receipt).DispositionDigest != digest {
-		t.Fatal(result)
-	}
-	got := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path+"/receipt", "", v2.Protocol))
-	if got.Payload.(v2.Receipt).DispositionDigest != digest {
-		t.Fatal(got)
-	}
-	history := terminalRequest(f.h, http.MethodGet, f.base+"?limit=1", "", v2.Protocol)
-	if history.Code != 200 || !strings.Contains(history.Body.String(), m.ClaimID) {
-		t.Fatal(history.Code, history.Body.String())
-	}
-	bad := terminalRequest(f.h, http.MethodGet, f.base+"?limit=0", "", v2.Protocol)
-	if bad.Code != 400 {
-		t.Fatal(bad.Code, bad.Body.String())
-	}
-}
-func TestTerminalHTTPRefusesMalformedAndCrossRouteMessages(t *testing.T) {
-	f := terminalHTTPSetup(t)
-	for _, protocol := range []string{"future", " "} {
-		w := terminalRequest(f.h, http.MethodGet, f.base+"/current", "", protocol)
-		if w.Code != 400 || !strings.Contains(w.Body.String(), "unsupported_protocol") {
-			t.Fatal(w.Code, w.Body.String())
+	value := receipt.Payload.(v2.Receipt)
+	value.DispositionDigest = digest
+	receipt.Payload = value
+	stoppedAt := "2026-01-01T00:00:01Z"
+	stoppedRun := run
+	stoppedRun.StoppedAt = &stoppedAt
+	stoppedRun.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: run.Binding, BootID: "boot", StoppedAt: stoppedAt, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
+	finalization := f.message
+	finalization.Type, finalization.Payload = "finalization", v2.Finalization{FinalizationID: value.FinalizationID, ClaimTerminal: true, Runs: []v2.Run{stoppedRun}}
+	browserID := uuid.NewString()
+	command := f.message
+	operationID := uuid.NewString()
+	command.Type, command.Payload = "control_request", v2.ControlRequest{OperationID: operationID, ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: browserID}
+	queued := f.message
+	queued.Type, queued.Payload = "operation_result", v2.OperationResult{OperationID: operationID, State: "queued"}
+	var recordingCalls, historyCalls atomic.Int32
+	f.calls.ExpectCalls("Current", 2)
+	f.calls.ExpectCalls("UpdateTerminalRecording", 2)
+	f.calls.ExpectCalls("TerminalHistory", 2)
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.Current = func(ctx context.Context, p model.Principal, project, task string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, f.message.SessionID)
+			return map[string]any{"status": "not_applicable", "protocol": sp.Protocol}, nil
+		}
+		calls.CurrentTerminal = func(ctx context.Context, p model.Principal, project, task string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, f.message.SessionID)
+			return f.knownState("1"), nil
+		}
+		calls.UpdateTerminalLedger = func(ctx context.Context, p model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if epoch != "1" || !reflect.DeepEqual(message, ledger) {
+				t.Error("ledger handler changed the parsed message or epoch")
+			}
+			return ledger, nil
+		}
+		calls.UpdateTerminalRecording = func(ctx context.Context, p model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			expected := responsibility
+			if recordingCalls.Add(1) == 2 {
+				expected = evidence
+			}
+			if epoch != "1" || !reflect.DeepEqual(message, expected) {
+				t.Error("recording handler changed its selected responsibility/evidence message")
+			}
+			return expected, nil
+		}
+		calls.TerminalRecordingEvidence = func(ctx context.Context, p model.Principal, project, task, id, generation, requested string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if generation != "1" || requested != evidenceID {
+				t.Error("evidence query changed generation or identity")
+			}
+			return map[string]any{"evidence": evidence.Payload, "bodyHash": v2.HashBytes([]byte("provided evidence"))}, nil
+		}
+		calls.UpdateTerminalArchive = func(ctx context.Context, p model.Principal, project, task, id string, message v2.Message) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if !reflect.DeepEqual(message, receipt) {
+				t.Error("receipt handler changed its parsed message")
+			}
+			return receipt, nil
+		}
+		calls.TerminalReceipt = func(ctx context.Context, p model.Principal, project, task, id string) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			return receipt, nil
+		}
+		calls.FinalizeTerminal = func(ctx context.Context, p model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if epoch != "1" || !reflect.DeepEqual(message, finalization) {
+				t.Error("finalization handler changed its selected message or epoch")
+			}
+			return finalization, nil
+		}
+		calls.SubmitTerminal = func(ctx context.Context, p model.Principal, project, task, id, browser string, message v2.Message) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if browser != browserID || !reflect.DeepEqual(message, command) {
+				t.Error("command handler changed browser header or parsed intent")
+			}
+			return queued, nil
+		}
+		calls.TerminalOperation = func(ctx context.Context, p model.Principal, project, task, id, requestedOperation string) (v2.Message, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if requestedOperation != operationID {
+				t.Error("operation readback changed the route identity")
+			}
+			return queued, nil
+		}
+		calls.TerminalHistory = func(ctx context.Context, p model.Principal, project, task, cursor string, limit int) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, f.message.SessionID)
+			if cursor != "" {
+				t.Error("history request introduced a cursor")
+			}
+			if historyCalls.Add(1) == 2 {
+				if limit != 0 {
+					t.Error("history request changed the supplied zero limit")
+				}
+				return nil, &model.Fault{Code: "invalid_input", Message: "History limit is outside the supported range."}
+			}
+			if limit != 1 {
+				t.Error("history request changed the supplied limit")
+			}
+			return map[string]any{"items": []any{map[string]any{"sessionId": f.message.SessionID, "claimId": f.message.ClaimID, "archive": value}}, "nextCursor": nil}, nil
+		}
+	})
+	for _, protocol := range []string{"", sp.Protocol} {
+		response := terminalRequest(f.h, http.MethodGet, f.base+"/current", "", protocol)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"not_applicable"`) {
+			t.Fatal(response.Code, response.Body.String())
 		}
 	}
-	for _, body := range []string{"{}", `{"protocol":"daynight.session.v2","protocol":"daynight.session.v2"}`} {
-		w := terminalRequest(f.h, http.MethodPost, f.base, body, v2.Protocol)
-		if w.Code != 400 {
-			t.Fatal(w.Code, w.Body.String())
+	if response := terminalRequest(f.h, http.MethodGet, f.base+"/current", "", v2.Protocol); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), f.message.SessionID) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	for _, message := range []v2.Message{ledger, responsibility, evidence, finalization} {
+		request := httptest.NewRequest(http.MethodPost, f.base+"/"+f.message.SessionID+"/worker-messages", strings.NewReader(jsonBody(t, message)))
+		authorizeResourceRequest(f.h, request)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(v2.ProtocolHeader, v2.Protocol)
+		request.Header.Set("Daynight-Connection-Epoch", "1")
+		response := httptest.NewRecorder()
+		f.h.ServeHTTP(response, request)
+		if actual := terminalMessage(t, response); !reflect.DeepEqual(actual, message) {
+			t.Fatal("HTTP response changed the supplied result", actual)
 		}
 	}
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
 	path := f.base + "/" + f.message.SessionID
-	w := terminalRequest(f.h, http.MethodGet, path+"/timeline", "", v2.Protocol)
-	if w.Code != 400 || !strings.Contains(w.Body.String(), "unsupported_content_kind") {
-		t.Fatal(w.Code, w.Body.String())
+	commandRequest := httptest.NewRequest(http.MethodPost, path+"/commands", strings.NewReader(jsonBody(t, command)))
+	authorizeResourceRequest(f.h, commandRequest)
+	commandRequest.Header.Set("Content-Type", "application/json")
+	commandRequest.Header.Set(v2.ProtocolHeader, v2.Protocol)
+	commandRequest.Header.Set("Daynight-Browser-Client", browserID)
+	commandResponse := httptest.NewRecorder()
+	f.h.ServeHTTP(commandResponse, commandRequest)
+	if commandResponse.Code != http.StatusAccepted || !reflect.DeepEqual(terminalMessage(t, commandResponse), queued) {
+		t.Fatal("command response changed service result or accepted status", commandResponse.Code, commandResponse.Body.String())
 	}
-	w = terminalRequest(f.h, http.MethodPost, path+"/worker-messages", jsonBody(t, f.message), v2.Protocol)
-	if w.Code != 400 {
-		t.Fatal(w.Code, w.Body.String())
+	if result := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path+"/operations/"+operationID, "", v2.Protocol)); !reflect.DeepEqual(result, queued) {
+		t.Fatal("operation readback changed the supplied result", result)
 	}
-	w = terminalRequest(f.h, http.MethodGet, path+"/channel", "", v2.Protocol)
-	if w.Code != 400 {
-		t.Fatal(w.Code, w.Body.String())
+	if response := terminalRequest(f.h, http.MethodGet, path+"/recording-evidence/"+evidenceID+"?generation=1", "", v2.Protocol); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), evidenceID) {
+		t.Fatal(response.Code, response.Body.String())
 	}
-	w = terminalRequest(f.h, http.MethodGet, path+"/archive/receipt", "", v2.Protocol)
-	if w.Code != 409 {
-		t.Fatal(w.Code, w.Body.String())
+	if actual := terminalMessage(t, terminalRequest(f.h, http.MethodPost, path+"/archive", jsonBody(t, receipt), v2.Protocol)); !reflect.DeepEqual(actual, receipt) {
+		t.Fatal(actual)
 	}
+	if actual := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path+"/archive/receipt", "", v2.Protocol)); !reflect.DeepEqual(actual, receipt) {
+		t.Fatal(actual)
+	}
+	if response := terminalRequest(f.h, http.MethodGet, f.base+"?limit=1", "", v2.Protocol); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), f.message.ClaimID) {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	assertProjectError(t, terminalRequest(f.h, http.MethodGet, f.base+"?limit=0", "", v2.Protocol), http.StatusBadRequest, "invalid_input")
 }
+
 func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	path := f.base + "/" + f.message.SessionID
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	viewer := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	viewerBrowserID := uuid.NewString()
+	viewerHandler := &resourceTestHandler{Handler: f.h.Handler, principal: viewer, token: f.authentication.Credential(viewer)}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	header := http.Header{"Authorization": []string{"Bearer " + f.h.token}}
-	worker, _, err := websocket.Dial(ctx, f.server.URL+path+"/worker-channel", &websocket.DialOptions{HTTPHeader: header, Subprotocols: []string{v2.Protocol}})
+	path := f.base + "/" + f.message.SessionID
+	registration := f.message.Payload.(v2.Registration)
+	run := v2.Run{ExecutionGeneration: "1", Owner: registration.Owner, Binding: registration.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
+	ledger := f.message
+	ledger.Type, ledger.Payload = "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run}}
+	snapshot := f.message
+	snapshot.Type, snapshot.Payload = "snapshot", v2.Snapshot{ConnectionEpoch: "1", SegmentID: run.SegmentIDs[0], SegmentOrdinal: "1", Binding: run.Binding, Frame: v2.Frame{FrameSeq: "1", CapturedAt: "2026-01-01T00:00:00Z", ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "terminal screen"}}}}}
+	request := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: viewerBrowserID}
+	requestDigest, err := v2.ControlRequestDigest(f.h.principal.UserID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer := f.message
+	offer.Type, offer.Payload = "control_dispatch", v2.ControlDispatch{ActorUserID: f.h.principal.UserID, RequestDigest: requestDigest, Request: request}
+	offerReady := make(chan struct{})
+	var offerSent atomic.Bool
+	snapshotSeen, revoke, revokePoll, workerReleased, viewerReleased := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var revokeOnce sync.Once
+	t.Cleanup(func() { revokeOnce.Do(func() { close(revoke) }) })
+	var viewerStates atomic.Int32
+	f.calls.RequireCalls("PollTerminal", 1)
+	f.calls.ExpectCalls("TerminalState", 5)
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.RegisterTerminal = func(call context.Context, p model.Principal, project, task string, message v2.Message) (v2.Message, error) {
+			f.scope(t, call, p, project, task, message.SessionID)
+			if !reflect.DeepEqual(message, f.message) {
+				t.Error("worker registration text changed")
+			}
+			return f.ack("1"), nil
+		}
+		calls.BindTerminalConnection = func(call context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
+			f.scope(t, call, p, project, task, id)
+			if fence != f.message.Envelope || epoch != "1" {
+				t.Error("worker bind changed the admitted fence")
+			}
+			return nil
+		}
+		calls.UpdateTerminalLedger = func(call context.Context, p model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+			f.scope(t, call, p, project, task, id)
+			if epoch != "1" || !reflect.DeepEqual(message, ledger) {
+				t.Error("worker ledger text changed")
+			}
+			return ledger, nil
+		}
+		calls.HandleTerminalControl = func(call context.Context, p model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+			f.scope(t, call, p, project, task, id)
+			if epoch != "1" || !reflect.DeepEqual(message, snapshot) {
+				t.Error("worker snapshot text changed")
+			}
+			close(snapshotSeen)
+			return snapshot, nil
+		}
+		calls.PollTerminal = func(call context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) ([]v2.Message, error) {
+			if err := call.Err(); err != nil {
+				return nil, err
+			}
+			f.scope(t, call, p, project, task, id)
+			if fence.SessionID != f.message.SessionID || fence.ClaimID != f.message.ClaimID || fence.ExecutionGeneration != "1" || epoch != "1" {
+				t.Error("worker poll changed the granted identity")
+			}
+			select {
+			case <-offerReady:
+				if offerSent.CompareAndSwap(false, true) {
+					return []v2.Message{offer}, nil
+				}
+			default:
+			}
+			return []v2.Message{}, nil
+		}
+		calls.TerminalState = func(call context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+			if p == f.h.principal {
+				f.scope(t, call, p, project, task, id)
+				return f.knownState("1"), nil
+			}
+			terminalCaller(t, f, call, p, viewer, project, task, id)
+			switch viewerStates.Add(1) {
+			case 1:
+				return f.knownState("1"), nil
+			case 2:
+				select {
+				case <-snapshotSeen:
+				case <-call.Done():
+					return nil, call.Err()
+				}
+				state := f.knownState("1")
+				state["snapshot"] = snapshot.Payload
+				return state, nil
+			case 3:
+				close(revokePoll)
+				select {
+				case <-revoke:
+				case <-call.Done():
+					return nil, call.Err()
+				}
+			}
+			return nil, &model.Fault{Code: "forbidden", Message: "Viewer access was revoked."}
+		}
+		calls.DisconnectTerminal = func(call context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
+			f.scope(t, call, p, project, task, id)
+			terminalReleaseContext(t, call)
+			if fence != ledger.Envelope || epoch != "1" {
+				t.Error("worker cleanup changed the last granted fence")
+			}
+			close(workerReleased)
+			return nil
+		}
+		calls.DisconnectTerminalViewer = func(call context.Context, p model.Principal, project, task, id, browser, claim, epoch string) error {
+			terminalCaller(t, f, call, p, viewer, project, task, id)
+			terminalReleaseContext(t, call)
+			if browser != viewerBrowserID || claim != f.message.ClaimID || epoch != "1" {
+				t.Error("viewer cleanup changed its admitted identity")
+			}
+			close(viewerReleased)
+			return nil
+		}
+	})
+	worker, _, err := websocket.Dial(ctx, f.server.URL+path+"/worker-channel", &websocket.DialOptions{HTTPHeader: f.workerHeaders(), Subprotocols: []string{v2.Protocol}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer worker.CloseNow()
-	sessionWSWrite(t, worker, f.message)
-	ack := sessionWSRead(t, worker)
-	if string(ack["type"]) != `"registration_ack"` || worker.Subprotocol() != v2.Protocol {
-		t.Fatal(ack)
+	f.handshake(t, worker)
+	if worker.Subprotocol() != v2.Protocol {
+		t.Fatal("worker negotiated a different protocol")
 	}
-	reg := f.message.Payload.(v2.Registration)
-	viewer := servicesupport.ServicePrincipal(t, f.db)
-	var viewerPAT identitycore.MintedPAT
-	completion, err := f.db.WriteIdentity(ctx, func(scope store.IdentityScope) error {
-		var err error
-		viewerPAT, err = identitycore.NewIdentity(configuredTestConfig().UniAuthCallbackURL).CreatePAT(ctx, scope.IdentityDAO(), viewer, identitycore.CreatePAT{Name: "Terminal viewer"}, time.Now())
-		return err
-	})
-	if err != nil || completion.Outcome != store.TransactionCommitted {
-		t.Fatalf("viewer token creation: completion=%+v error=%v", completion, err)
-	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, reg.Owner.ProjectID, viewer.UserID); err != nil {
-		t.Fatal(err)
-	}
-	viewerHandler := &resourceTestHandler{Handler: f.h.Handler, token: viewerPAT.Secret, principal: viewer}
-	run := v2.Run{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
-	ledger := f.message
-	ledger.Type = "generation_ledger"
-	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{run}}
-	sessionWSWrite(t, worker, ledger)
-	sessionWSKind(t, worker, "generation_ledger")
-	viewerHeader := http.Header{"Authorization": []string{"Bearer " + viewerPAT.Secret}}
-	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+uuid.NewString(), &websocket.DialOptions{HTTPHeader: viewerHeader, Subprotocols: []string{v2.Protocol}})
+	f.workerMessage(t, worker, ledger)
+	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+viewerBrowserID, &websocket.DialOptions{HTTPHeader: f.viewerHeaders(viewerHandler), Subprotocols: []string{v2.Protocol}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer browser.CloseNow()
-	initial := sessionWSRead(t, browser)
-	if string(initial["sessionId"]) != `"`+f.message.SessionID+`"` {
+	if initial := sessionWSRead(t, browser); string(initial["sessionId"]) != `"`+f.message.SessionID+`"` {
 		t.Fatal(initial)
 	}
-	snapshot := f.message
-	snapshot.Type = "snapshot"
-	snapshot.Payload = v2.Snapshot{ConnectionEpoch: "1", SegmentID: run.SegmentIDs[0], SegmentOrdinal: "1", Binding: run.Binding, Frame: v2.Frame{FrameSeq: "1", CapturedAt: "2026-01-01T00:00:00Z", ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{}}}}
-	sessionWSWrite(t, worker, snapshot)
-	sessionWSRead(t, worker)
+	if ack := f.workerMessage(t, worker, snapshot); !reflect.DeepEqual(ack, snapshot) {
+		t.Fatal(ack)
+	}
 	update := sessionWSRead(t, browser)
-	if string(update["snapshot"]) == "null" {
-		t.Fatal(update)
+	var actual v2.Snapshot
+	if err := json.Unmarshal(update["snapshot"], &actual); err != nil || !reflect.DeepEqual(actual, snapshot.Payload) {
+		t.Fatal("browser snapshot encoding changed", update, err)
 	}
-	_, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, viewer.UserID)
-	if err != nil {
-		t.Fatal(err)
+	close(offerReady)
+	frameKind, frame, err := worker.Read(ctx)
+	if err != nil || frameKind != websocket.MessageText {
+		t.Fatal("Worker offer was not a text frame", frameKind, err)
 	}
-	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "forbidden") }
-	revoked := terminalRequest(viewerHandler, http.MethodGet, path+"/state", "", v2.Protocol)
-	failure := decodeResponse[api.ErrorResponse](t, revoked, http.StatusForbidden)
-	if failure.Error.Code != "forbidden" || failure.Error.RequestID != revoked.Header().Get("X-Request-ID") {
-		t.Fatalf("viewer revocation response: %+v", failure)
+	dispatched, err := v2.DecodeMessage(frame)
+	if err != nil || !reflect.DeepEqual(dispatched, offer) {
+		t.Fatal("Worker dispatch changed the supplied offer", string(frame), err)
+	}
+	terminalAwait(t, revokePoll, "viewer did not start its next controlled state read")
+	revokeOnce.Do(func() { close(revoke) })
+	if _, _, err = browser.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("provided viewer refusal did not close the socket", err)
+	}
+	terminalAwait(t, viewerReleased, "viewer release did not finish")
+	refused := terminalRequest(viewerHandler, http.MethodGet, path+"/state", "", v2.Protocol)
+	failure := decodeResponse[api.ErrorResponse](t, refused, http.StatusForbidden)
+	if failure.Error.Code != "forbidden" || failure.Error.RequestID != refused.Header().Get("X-Request-ID") {
+		t.Fatal(failure)
 	}
 	if response := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol); response.Code != http.StatusOK {
-		t.Fatalf("viewer revocation affected the worker owner: %d %s", response.Code, response.Body)
+		t.Fatal(response.Code, response.Body.String())
 	}
-	closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancelClose()
-	for i := 0; i < 4; i++ {
-		_, _, err = browser.Read(closeCtx)
-		if err != nil {
-			if closeCtx.Err() != nil {
-				t.Fatalf("revoked browser did not close before the deadline: %v", err)
-			}
-			return
-		}
-	}
-	t.Fatal("revoked browser remained connected")
+	_ = worker.CloseNow()
+	terminalAwait(t, workerReleased, "worker release did not finish")
+	f.waitConnections(t, 0)
 }
 
-func terminalInitialInputChannel(t *testing.T) (*terminalHTTPFixture, *websocket.Conn) {
-	t.Helper()
+func TestTerminalDuplicateChannelsPreserveAdmittedConnections(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	reg := f.message.Payload.(v2.Registration)
-	reg.Capabilities = v2.Capabilities{}
-	f.message.Payload = reg
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	worker, _, err := websocket.Dial(ctx, f.server.URL+f.base+"/"+f.message.SessionID+"/worker-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = worker.CloseNow() })
-	sessionWSWrite(t, worker, f.message)
-	sessionWSKind(t, worker, "registration_ack")
-	ledger := f.message
-	ledger.Type = "generation_ledger"
-	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}}
-	sessionWSWrite(t, worker, ledger)
-	sessionWSKind(t, worker, "generation_ledger")
-	return f, worker
-}
-
-func TestTerminalWorkerChannelRetainsDefinitelyUnsentInitialRetry(t *testing.T) {
-	f, worker := terminalInitialInputChannel(t)
-	// These are Worker observations of one initial assignment. A rejected
-	// zero-write attempt returns to pending before a new admitted attempt starts.
-	for index, initial := range []string{"pending", "dispatching", "pending", "dispatching", "transport_completed"} {
-		message := f.message
-		message.Type = "control_state"
-		message.Payload = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: initial, AvailableActions: []string{"acquire_control"}}
-		sessionWSWrite(t, worker, message)
-		ack := sessionWSKind(t, worker, "control_state")
-		var control v2.ControlState
-		if err := json.Unmarshal(ack["payload"], &control); err != nil {
-			t.Fatal(err)
-		}
-		if control.InitialAssignment != initial || control.State != "automation" || control.ConnectionEpoch != "1" || control.ControlEpoch != "1" {
-			t.Fatalf("initial observation %d was not acknowledged on the original channel: %+v", index, control)
-		}
-	}
-	response := terminalRequest(f.h, http.MethodGet, f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
-	var state struct {
-		Connected bool            `json:"connected"`
-		Control   v2.ControlState `json:"control"`
-	}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil || !state.Connected || state.Control.InitialAssignment != "transport_completed" {
-		t.Fatal("initial retry closed the Worker channel or lost its durable result", response.Code, response.Body.String())
-	}
-}
-
-func TestTerminalWorkerChannelRejectsInitialReplayAfterUncertainOrFinalResult(t *testing.T) {
-	for _, initial := range []string{"unknown", "unconfirmed", "transport_completed"} {
-		t.Run(initial, func(t *testing.T) {
-			f, worker := terminalInitialInputChannel(t)
-			message := f.message
-			message.Type = "control_state"
-			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "suspended", InitialAssignment: initial, AvailableActions: []string{}}
-			message.Payload = state
-			sessionWSWrite(t, worker, message)
-			sessionWSKind(t, worker, "control_state")
-			state.InitialAssignment = "pending"
-			message.Payload = state
-			sessionWSWrite(t, worker, message)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, _, err := worker.Read(ctx); err == nil || ctx.Err() != nil {
-				t.Fatalf("Worker channel did not reject %s to pending: %v", initial, err)
-			}
-			response := terminalRequest(f.h, http.MethodGet, f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
-			var observed struct {
-				Control v2.ControlState `json:"control"`
-			}
-			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &observed) != nil || observed.Control.InitialAssignment != initial {
-				t.Fatal("rejected replay replaced the original initial result", response.Code, response.Body.String())
-			}
-		})
-	}
-}
-
-func TestTerminalDuplicateChannelsPreserveOriginalLease(t *testing.T) {
-	f := terminalHTTPSetup(t)
 	path := f.base + "/" + f.message.SessionID
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	header := http.Header{"Authorization": []string{"Bearer " + f.h.token}}
-	dial := func(suffix string) *websocket.Conn {
-		t.Helper()
-		c, _, err := websocket.Dial(ctx, f.server.URL+path+suffix, &websocket.DialOptions{HTTPHeader: header, Subprotocols: []string{v2.Protocol}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = c.CloseNow() })
-		return c
-	}
-	worker := dial("/worker-channel")
-	sessionWSWrite(t, worker, f.message)
-	sessionWSKind(t, worker, "registration_ack")
-	duplicate := dial("/worker-channel")
-	sessionWSWrite(t, duplicate, f.message)
-	if _, _, err := duplicate.Read(ctx); err == nil {
-		t.Fatal("duplicate worker channel accepted")
-	}
-	reg := f.message.Payload.(v2.Registration)
-	run := v2.Run{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
-	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run}})
-	f.messageRequest(t, "recording_responsibility", v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true})
-	f.messageRequest(t, "control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}})
 	browserID := uuid.NewString()
-	browser := dial("/channel?browserClientId=" + browserID)
-	sessionWSRead(t, browser)
-	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: browserID}
-	message := f.message
-	message.Type = "control_request"
-	message.Payload = req
-	r := httptest.NewRequest(http.MethodPost, path+"/commands", strings.NewReader(jsonBody(t, message)))
-	authorizeResourceRequest(f.h, r)
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set(v2.ProtocolHeader, v2.Protocol)
-	r.Header.Set("Daynight-Browser-Client", browserID)
-	w := httptest.NewRecorder()
-	f.h.ServeHTTP(w, r)
-	if terminalMessage(t, w).Payload.(v2.OperationResult).State != "queued" {
-		t.Fatal(w.Body.String())
-	}
-	dispatch := sessionWSKind(t, worker, "control_dispatch")
-	var payload v2.ControlDispatch
-	if err := json.Unmarshal(dispatch["payload"], &payload); err != nil {
-		t.Fatal(err)
-	}
-	lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: reg.Owner.OwnerUserID, BrowserClientID: browserID, ControlEpoch: "2", ExpiresAt: time.Now().Add(29 * time.Second).UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)}
-	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "release_control", "renew_control"}}
-	f.messageRequest(t, "control_ack", v2.ControlAck{RequestDigest: payload.RequestDigest, Durable: true, ControlState: state, Result: v2.OperationResult{OperationID: req.OperationID, State: "transport_completed"}})
-	dupeBrowser := dial("/channel?browserClientId=" + browserID)
-	if _, _, err := dupeBrowser.Read(ctx); err == nil {
-		t.Fatal("duplicate browser channel accepted")
-	}
-	got := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
-	if got.Code != 200 || !strings.Contains(got.Body.String(), lease.LeaseID) {
-		t.Fatal(got.Code, got.Body.String())
-	}
-	op := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path+"/operations/"+req.OperationID, "", v2.Protocol))
-	if op.Payload.(v2.OperationResult).State != "transport_completed" {
-		t.Fatal(op)
-	}
-	// An actual original disconnect releases the lease and frees the browser key.
-	_ = browser.CloseNow()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		got = terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
-		if !strings.Contains(got.Body.String(), lease.LeaseID) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("original disconnect retained lease")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	replacement := dial("/channel?browserClientId=" + browserID)
-	sessionWSRead(t, replacement)
-}
-
-func TestTerminalHTTPBoundaryAndReadbackErrors(t *testing.T) {
-	f := terminalHTTPSetup(t)
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
-	path := f.base + "/" + f.message.SessionID
-	for _, tc := range []struct {
-		method, suffix, body, protocol string
-		code                           int
-	}{
-		{"GET", "/state", "", v2.Protocol, 200},
-		{"GET", "/archive/state", "", v2.Protocol, 200},
-		{"GET", "/archive/state", "", "", 400},
-		{"GET", "/archive/state", "", sp.Protocol, 400},
-		{"GET", "/archive/state", "", "future", 400},
-		{"GET", "/archive/state?extra=1", "", v2.Protocol, 400},
-		{"GET", "/archive/state?generation=1&generation=2", "", v2.Protocol, 400},
-		{"HEAD", "/archive/state", "", v2.Protocol, 405},
-		{"POST", "/archive/state", "{}", v2.Protocol, 405},
-		{"DELETE", "/archive/state", "", v2.Protocol, 405},
-		{"GET", "/state", "", "", 400},
-		{"HEAD", "/state", "", v2.Protocol, 405},
-		{"DELETE", "/state", "", v2.Protocol, 405},
-		{"HEAD", "/worker-messages", "", v2.Protocol, 405},
-		{"GET", "/archive", "", v2.Protocol, 200},
-		{"GET", "/archive/content", "", v2.Protocol, 409},
-		{"PUT", "/archive", "{}", v2.Protocol, 409},
-		{"GET", "/recording-evidence/" + uuid.NewString() + "?generation=1", "", v2.Protocol, 404},
-		{"GET", "/recording-evidence/" + uuid.NewString() + "?extra=1", "", v2.Protocol, 400},
-		{"GET", "/automation-recovery/" + uuid.NewString(), "", v2.Protocol, 404},
-		{"GET", "/automation-recovery/" + uuid.NewString() + "?extra=1", "", v2.Protocol, 400},
-		{"GET", "/automation-recovery/" + uuid.NewString(), "", sp.Protocol, 400},
-		{"GET", "/state?extra=1", "", v2.Protocol, 400},
-		{"GET", "/operations/" + uuid.NewString(), "", v2.Protocol, 404},
-		{"POST", "/commands", jsonBody(t, f.message), v2.Protocol, 400},
-		{"POST", "/worker-messages?extra=1", jsonBody(t, f.message), v2.Protocol, 400},
-		{"GET", "/worker-channel?extra=1", "", v2.Protocol, 400},
-		{"GET", "/worker-channel", "", v2.Protocol, 400},
-		{"GET", "/channel?extra=1", "", v2.Protocol, 400},
-	} {
-		t.Run(tc.method+tc.suffix+tc.protocol, func(t *testing.T) {
-			w := terminalRequest(f.h, tc.method, path+tc.suffix, tc.body, tc.protocol)
-			if w.Code != tc.code {
-				t.Fatal(w.Code, w.Body.String())
+	releaseEntered, releaseDone, workerDone, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var binds, viewerReleases atomic.Int32
+	f.calls.ExpectCalls("RegisterTerminal", 2)
+	f.calls.ExpectCalls("BindTerminalConnection", 2)
+	f.calls.ExpectCalls("DisconnectTerminalViewer", 2)
+	f.calls.AllowRepeated("TerminalState")
+	f.calls.AllowRepeated("PollTerminal")
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.RegisterTerminal = func(call context.Context, p model.Principal, project, task string, message v2.Message) (v2.Message, error) {
+			f.scope(t, call, p, project, task, message.SessionID)
+			if !reflect.DeepEqual(message, f.message) {
+				t.Error("duplicate registration changed the parsed intent")
 			}
-		})
-	}
-	for _, query := range []string{"?limit=no", "?extra=1"} {
-		w := terminalRequest(f.h, "GET", f.base+query, "", v2.Protocol)
-		if w.Code != 400 {
-			t.Fatal(w.Code, w.Body.String())
+			return f.ack("1"), nil
 		}
-	}
-	for _, contentType := range []string{"text/plain", "application/json; charset=latin1"} {
-		r := httptest.NewRequest("POST", f.base, strings.NewReader(jsonBody(t, f.message)))
-		authorizeResourceRequest(f.h, r)
-		r.Header.Set(v2.ProtocolHeader, v2.Protocol)
-		r.Header.Set("Content-Type", contentType)
-		w := httptest.NewRecorder()
-		f.h.ServeHTTP(w, r)
-		if w.Code != 400 {
-			t.Fatal(w.Code, w.Body.String())
+		calls.BindTerminalConnection = func(call context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
+			f.scope(t, call, p, project, task, id)
+			if fence != f.message.Envelope || epoch != "1" {
+				t.Error("duplicate binding changed its supplied identity")
+			}
+			if binds.Add(1) == 2 {
+				return &model.Fault{Code: "input_busy", Message: "The connection epoch is already bound."}
+			}
+			return nil
 		}
-	}
-	other := f.message
-	other.SessionID = uuid.NewString()
-	w := terminalRequest(f.h, "POST", path+"/worker-messages", jsonBody(t, other), v2.Protocol)
-	if w.Code != 409 {
-		t.Fatal(w.Code, w.Body.String())
-	}
-	for _, epoch := range []string{"0", "01", "no"} {
-		r := httptest.NewRequest("POST", path+"/worker-messages", strings.NewReader(jsonBody(t, f.message)))
-		authorizeResourceRequest(f.h, r)
-		r.Header.Set(v2.ProtocolHeader, v2.Protocol)
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Daynight-Connection-Epoch", epoch)
-		w := httptest.NewRecorder()
-		f.h.ServeHTTP(w, r)
-		if w.Code != 400 {
-			t.Fatal(w.Code, w.Body.String())
+		calls.PollTerminal = func(call context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) ([]v2.Message, error) {
+			if err := call.Err(); err != nil {
+				return nil, err
+			}
+			f.scope(t, call, p, project, task, id)
+			if fence != f.message.Envelope || epoch != "1" {
+				t.Error("polling left the admitted Worker")
+			}
+			return []v2.Message{}, nil
 		}
+		calls.TerminalState = func(call context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+			if err := call.Err(); err != nil {
+				return nil, err
+			}
+			f.scope(t, call, p, project, task, id)
+			return f.knownState("1"), nil
+		}
+		calls.DisconnectTerminal = func(call context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
+			f.scope(t, call, p, project, task, id)
+			terminalReleaseContext(t, call)
+			if fence != f.message.Envelope || epoch != "1" {
+				t.Error("Worker cleanup changed its admitted connection")
+			}
+			close(workerDone)
+			return nil
+		}
+		calls.DisconnectTerminalViewer = func(call context.Context, p model.Principal, project, task, id, browser, claim, epoch string) error {
+			f.scope(t, call, p, project, task, id)
+			terminalReleaseContext(t, call)
+			if browser != browserID || claim != f.message.ClaimID || epoch != "1" {
+				t.Error("viewer release changed its reservation identity")
+			}
+			if viewerReleases.Add(1) == 1 {
+				close(releaseEntered)
+				select {
+				case <-release:
+				case <-call.Done():
+					return call.Err()
+				}
+				close(releaseDone)
+			}
+			return nil
+		}
+	})
+	dial := func(suffix string, headers http.Header) *websocket.Conn {
+		t.Helper()
+		conn, _, err := websocket.Dial(ctx, f.server.URL+path+suffix, &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{v2.Protocol}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.CloseNow() })
+		return conn
 	}
+	worker := dial("/worker-channel", f.workerHeaders())
+	f.handshake(t, worker)
+	duplicate := dial("/worker-channel", f.workerHeaders())
+	sessionWSWrite(t, duplicate, f.message)
+	if _, _, err := duplicate.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("refused duplicate Worker did not close", err)
+	}
+	f.waitConnections(t, 1)
+	if f.calls.Called("DisconnectTerminal") != 0 {
+		t.Fatal("failed duplicate admission disconnected the original Worker")
+	}
+	browser := dial("/channel?browserClientId="+browserID, f.viewerHeaders(f.h))
+	sessionWSRead(t, browser)
+	duplicateViewer := dial("/channel?browserClientId="+browserID, f.viewerHeaders(f.h))
+	if _, _, err := duplicateViewer.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("duplicate browser did not close", err)
+	}
+	if f.calls.Called("DisconnectTerminalViewer") != 0 {
+		t.Fatal("duplicate viewer released the original reservation")
+	}
+	_ = browser.CloseNow()
+	terminalAwait(t, releaseEntered, "original viewer cleanup did not start")
+	blockedReplacement := dial("/channel?browserClientId="+browserID, f.viewerHeaders(f.h))
+	if _, _, err := blockedReplacement.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatal("viewer identity reopened before cleanup finished", err)
+	}
+	if f.calls.Called("DisconnectTerminalViewer") != 1 {
+		t.Fatal("rejected replacement ran an unrelated release")
+	}
+	releaseOnce.Do(func() { close(release) })
+	terminalAwait(t, releaseDone, "viewer cleanup did not finish")
+	f.waitConnections(t, 1)
+	replacement := dial("/channel?browserClientId="+browserID, f.viewerHeaders(f.h))
+	sessionWSRead(t, replacement)
+	_ = replacement.CloseNow()
+	f.waitConnections(t, 1)
+	_ = worker.CloseNow()
+	terminalAwait(t, workerDone, "original Worker did not disconnect")
+	f.waitConnections(t, 0)
 }
 
-func TestTerminalWorkerChannelRejectsBinaryRegistration(t *testing.T) {
-	f := terminalHTTPSetup(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	c, _, err := websocket.Dial(ctx, f.server.URL+f.base+"/"+f.message.SessionID+"/worker-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.CloseNow()
-	if err = c.Write(ctx, websocket.MessageBinary, []byte(jsonBody(t, f.message))); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = c.Read(ctx); err == nil {
-		t.Fatal("binary registration accepted")
-	}
-}
+type terminalArchiveLease struct{ calls atomic.Int32 }
+
+func (lease *terminalArchiveLease) Close() error { lease.calls.Add(1); return nil }
 
 func terminalArchiveReady(t *testing.T) (*terminalHTTPFixture, string, []byte, v2.Receipt) {
 	t.Helper()
@@ -634,194 +615,120 @@ func terminalArchiveReady(t *testing.T) (*terminalHTTPFixture, string, []byte, v
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := v2.DecodeArchive(raw)
+	document, err := v2.DecodeArchive(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg := f.message.Payload.(v2.Registration)
-	reg.Binding = doc.Runs[0].Binding
-	f.message.Payload = reg
-	doc.SessionID = f.message.SessionID
-	doc.ClaimID = f.message.ClaimID
-	doc.Owner = reg.Owner
-	doc.FinalizationID = uuid.NewString()
-	for i := range doc.Runs {
-		doc.Runs[i].Owner = reg.Owner
+	document.SessionID, document.ClaimID, document.Owner = f.message.SessionID, f.message.ClaimID, f.message.Payload.(v2.Registration).Owner
+	for index := range document.Runs {
+		document.Runs[index].Owner = document.Owner
 	}
-	terminalMessage(t, terminalRequest(f.h, "POST", f.base, jsonBody(t, f.message), v2.Protocol))
-	active := doc.Runs[0]
-	active.StopProof = nil
-	active.StoppedAt = nil
-	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{active}})
-	responsibility := v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
-	f.messageRequest(t, "recording_responsibility", responsibility)
-	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: doc.Runs})
-	digest, err := v2.SourceDigest(doc, "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.messageRequest(t, "recording_evidence", v2.RecordingEvidence{ResponsibilityID: responsibility.ResponsibilityID, EvidenceID: uuid.NewString(), Revision: "1", SelectedFrameCount: "1", RegisteredFrameCount: "1", Closed: true, JournalSHA256: v2.HashBytes([]byte("durable test journal")), SourceSHA256: digest})
-	if _, err = f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID); err != nil {
-		t.Fatal(err)
-	}
-	f.messageRequest(t, "finalization", v2.Finalization{FinalizationID: doc.FinalizationID, ClaimTerminal: true, Runs: doc.Runs})
-	data, err := json.MarshalIndent(doc, "", "  ")
+	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	data = append(data, []byte("\n \t\n")...)
-	path := f.base + "/" + doc.SessionID + "/archive"
-	receipt := terminalMessage(t, terminalRequest(f.h, "PUT", path, string(data), v2.Protocol)).Payload.(v2.Receipt)
-	return f, path, data, receipt
+	hash, size, complete := v2.HashBytes(data), strconv.Itoa(len(data)), "complete"
+	receipt := v2.Receipt{FinalizationID: document.FinalizationID, Disposition: "ready", SHA256: &hash, ByteLength: &size, Completeness: &complete}
+	message := f.message
+	message.Type, message.Payload = "receipt", receipt
+	receipt.DispositionDigest, err = v2.ReceiptDigest(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.TryReserveArchivePreflight = func() (io.Closer, error) {
+			lease := &terminalArchiveLease{}
+			t.Cleanup(func() {
+				if lease.calls.Load() != 1 {
+					t.Errorf("archive reservation closes = %d, want 1", lease.calls.Load())
+				}
+			})
+			return lease, nil
+		}
+		calls.TerminalArchiveContentReserved = func(ctx context.Context, p model.Principal, project, task, id string, reservation io.Closer) (sessionhttp.ArchiveContentForTest, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if reservation == nil {
+				t.Error("archive read lost its admission reservation")
+			}
+			lease := &terminalArchiveLease{}
+			t.Cleanup(func() {
+				if lease.calls.Load() != 1 {
+					t.Errorf("archive content closes = %d, want 1", lease.calls.Load())
+				}
+			})
+			return sessionhttp.ArchiveContentForTest{Data: data, Closer: lease}, nil
+		}
+	})
+	return f, f.base + "/" + f.message.SessionID + "/archive", data, receipt
 }
 
 func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
 	f, path, data, receipt := terminalArchiveReady(t)
-	got := terminalRequest(f.h, "GET", path+"/content", "", v2.Protocol)
-	if got.Code != 200 {
-		t.Fatal(got.Code, got.Body.String())
+	response := terminalRequest(f.h, http.MethodGet, path+"/content", "", v2.Protocol)
+	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), data) {
+		t.Fatal("archive content bytes changed", response.Code, response.Body.String())
 	}
-	if !bytes.Equal(got.Body.Bytes(), data) {
-		t.Fatalf("archive bytes changed: uploaded %d bytes, downloaded %d", len(data), got.Body.Len())
+	if receipt.SHA256 == nil || *receipt.SHA256 != v2.HashBytes(response.Body.Bytes()) || receipt.ByteLength == nil || *receipt.ByteLength != strconv.Itoa(response.Body.Len()) {
+		t.Fatal("provided receipt no longer describes the sent bytes", receipt)
 	}
-	if receipt.SHA256 == nil || *receipt.SHA256 != v2.HashBytes(got.Body.Bytes()) || receipt.ByteLength == nil || *receipt.ByteLength != strconv.Itoa(got.Body.Len()) {
-		t.Fatal("download differs from immutable receipt", receipt)
-	}
-	if got.Header().Get("Content-Type") != "application/json" {
-		t.Fatal(got.Header())
+	if response.Header().Get("Content-Type") != "application/json" {
+		t.Fatal(response.Header())
 	}
 }
 
-func TestTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T) {
-	testTerminalWorkerChannelAdvancesStoppedGeneration(t, false)
-}
-
-func TestTerminalWorkerChannelRecoversNativeIdentityLearnedAtStop(t *testing.T) {
-	testTerminalWorkerChannelAdvancesStoppedGeneration(t, true)
-}
-
-func testTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T, learnedAtStop bool) {
-	t.Helper()
+func TestTerminalArchiveStateHTTPPreservesProvidedReadbackAndFaults(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	native := "native-conversation"
-	reg := f.message.Payload.(v2.Registration)
-	if !learnedAtStop {
-		reg.Binding.NativeSessionID = &native
-	}
-	f.message.Payload = reg
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	path := f.base + "/" + f.message.SessionID
-	worker, _, err := websocket.Dial(ctx, f.server.URL+path+"/worker-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.CloseNow()
-	sessionWSWrite(t, worker, f.message)
-	sessionWSKind(t, worker, "registration_ack")
-	send := func(generation, kind string, payload v2.Payload) map[string]json.RawMessage {
-		t.Helper()
-		m := f.message
-		m.ExecutionGeneration = generation
-		m.Type = kind
-		m.Payload = payload
-		sessionWSWrite(t, worker, m)
-		return sessionWSKind(t, worker, kind)
-	}
-	first := v2.Run{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
-	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}})
-	stopped := "2026-01-01T00:00:01Z"
-	first.StoppedAt = &stopped
-	first.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: first.Binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
-	first.StopProof.Binding.NativeSessionID = &native
-	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}})
-	next := v2.Run{ExecutionGeneration: "2", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:02Z", SegmentIDs: []string{uuid.NewString()}}
-	next.Binding.TerminalID = "term_recovered"
-	next.Binding.NativeSessionID = &native
-	ack := send("2", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first, next}})
-	if string(ack["executionGeneration"]) != `"2"` {
-		t.Fatal(ack)
-	}
-	waitConnected := func(want bool) {
-		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			w := terminalRequest(f.h, "GET", path+"/state", "", v2.Protocol)
-			var state struct {
-				Connected bool `json:"connected"`
+	before, archived := f.knownState("1"), f.knownState("1")
+	archived["connected"] = false
+	var states, archives atomic.Int32
+	foreignID := uuid.NewString()
+	f.calls.ExpectCalls("TerminalState", 2)
+	f.calls.ExpectCalls("TerminalArchiveState", 2)
+	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+		calls.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, id)
+			if states.Add(1) == 1 {
+				return before, nil
 			}
-			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil {
-				t.Fatal(w.Code, w.Body.String())
-			}
-			if state.Connected == want {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("connected=%t after generation transition, want %t", state.Connected, want)
-			}
-			time.Sleep(10 * time.Millisecond)
+			return nil, &model.Fault{Code: "not_found", Message: "The ordinary Session is unavailable."}
 		}
-	}
-	// Polling must use the newly committed generation, not the handshake fence.
-	waitConnected(true)
-	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: next.SegmentIDs[0], SegmentOrdinal: "2", Binding: next.Binding, Frame: v2.Frame{FrameSeq: "1", CapturedAt: "2026-01-01T00:00:02Z", ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{}}}}
-	send("2", "snapshot", snapshot)
-	// Other message types cannot use the old generation after the ledger grant.
-	stale := f.message
-	stale.Type = "snapshot"
-	stale.Payload = snapshot
-	sessionWSWrite(t, worker, stale)
-	if _, _, err = worker.Read(ctx); err == nil {
-		t.Fatal("old-generation snapshot accepted")
-	}
-	// Cleanup must also use the current generation to revoke this connection.
-	waitConnected(false)
-}
-
-func TestTerminalArchiveStateHTTPRetainsDeletedOwnerReadback(t *testing.T) {
-	f := terminalHTTPSetup(t)
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+		calls.TerminalArchiveState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+			if archives.Add(1) == 1 {
+				f.scope(t, ctx, p, project, task, id)
+				return archived, nil
+			}
+			owner := f.message.Payload.(v2.Registration).Owner
+			if ctx.Err() != nil || p != f.h.principal || id != foreignID || project != owner.ProjectID || task != owner.TaskID {
+				t.Error("foreign archive read changed its route arguments")
+			}
+			return nil, &model.Fault{Code: "not_found", Message: "The requested Session does not exist."}
+		}
+		calls.TerminalHistory = func(ctx context.Context, p model.Principal, project, task, cursor string, limit int) (map[string]any, error) {
+			f.scope(t, ctx, p, project, task, f.message.SessionID)
+			if cursor != "" || limit != 50 {
+				t.Error("default history query changed")
+			}
+			return nil, &model.Fault{Code: "not_found", Message: "The Task is unavailable."}
+		}
+	})
 	path := f.base + "/" + f.message.SessionID
-	initial := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
-	if initial.Code != http.StatusOK {
-		t.Fatal(initial.Code, initial.Body.String())
-	}
-	var before map[string]any
-	if err := json.Unmarshal(initial.Body.Bytes(), &before); err != nil {
-		t.Fatal(err)
-	}
-	owner := f.message.Payload.(v2.Registration).Owner
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done',deleted_at=now() WHERE id=$1`, owner.TaskID); err != nil {
-		t.Fatal(err)
-	}
-	response := terminalRequest(f.h, http.MethodGet, path+"/archive/state", "", v2.Protocol)
-	if response.Code != http.StatusOK {
-		t.Fatal(response.Code, response.Body.String())
-	}
-	var after map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &after); err != nil {
-		t.Fatal(err)
-	}
-	if len(before) != len(after) || after["connected"] != false {
+	initial := decodeResponse[map[string]any](t, terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol), http.StatusOK)
+	after := decodeResponse[map[string]any](t, terminalRequest(f.h, http.MethodGet, path+"/archive/state", "", v2.Protocol), http.StatusOK)
+	if after["connected"] != false || len(after) != len(initial) {
 		t.Fatal(after)
 	}
 	for _, key := range []string{"protocol", "schemaVersion", "projectionVersion", "sessionId", "claimId", "executionGeneration", "owner", "binding", "ledger", "recording", "archive"} {
-		if jsonBody(t, before[key]) != jsonBody(t, after[key]) {
-			t.Fatalf("%s changed: %#v != %#v", key, before[key], after[key])
+		if !reflect.DeepEqual(after[key], initial[key]) {
+			t.Fatal("archive response changed provided field", key, after[key], initial[key])
 		}
 	}
-	for _, suffix := range []string{"/state", "/archive/content"} {
-		if ordinary := terminalRequest(f.h, http.MethodGet, path+suffix, "", v2.Protocol); ordinary.Code != http.StatusNotFound {
-			t.Fatal("ordinary deleted session reopened", ordinary.Code, ordinary.Body.String())
-		}
-	}
-	if history := terminalRequest(f.h, http.MethodGet, f.base, "", v2.Protocol); history.Code != http.StatusNotFound {
-		t.Fatal(history.Code, history.Body.String())
-	}
-	for _, suffix := range []string{"/not-a-uuid/archive/state", "/" + uuid.NewString() + "/archive/state"} {
-		if result := terminalRequest(f.h, http.MethodGet, f.base+suffix, "", v2.Protocol); result.Code == http.StatusOK {
-			t.Fatal("invalid or foreign session accepted")
-		}
+	assertProjectError(t, terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol), http.StatusNotFound, "not_found")
+	assertProjectError(t, terminalRequest(f.h, http.MethodGet, f.base, "", v2.Protocol), http.StatusNotFound, "not_found")
+	assertProjectError(t, terminalRequest(f.h, http.MethodGet, f.base+"/"+foreignID+"/archive/state", "", v2.Protocol), http.StatusNotFound, "not_found")
+	invalid := terminalRequest(f.h, http.MethodGet, f.base+"/not-a-uuid/archive/state", "", v2.Protocol)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatal(invalid.Code, invalid.Body.String())
 	}
 	request := httptest.NewRequest(http.MethodGet, path+"/archive/state", nil)
 	authorizeResourceRequest(f.h, request)

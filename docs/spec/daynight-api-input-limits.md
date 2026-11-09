@@ -28,7 +28,7 @@
 | Worker workingDirectory、native arg | 各 4 KiB |
 | Worker OS type、arch、release、version | 分别 64、64、256、1024 bytes |
 | Worker CPU model | 512 bytes |
-| Worker native args、projects、claims、observation items | 分别 128、128、256、1024 项 |
+| Worker native args、projects、claims、observation items | 分别 128、128、256、1025 项 |
 | Worker telemetry、configuration、完整单项编码 | 各 4 MiB |
 | Worker maxConcurrent、pollIntervalMs、recoveryLimit | 分别 1–64、1000–60000、0–10 |
 
@@ -40,6 +40,6 @@
 
 ## 输出与剩余范围
 
-普通 Task 单项响应预算为 512 KiB，写入时在提交前按实际协议编码检查；只读接线由读取入口负责。Task 同步候选预算为 64 MiB。已有分页响应预算分别为 Team/Project/Task 4 MiB、Worker/Bot 8 MiB、附件 metadata 2 MiB、邀请/PAT 256 KiB、Search 2 MiB。预算包括实际协议外壳与必要换行。现有完整目录保持完整；本合同不新增目录分页或累计存储配额。目录和历史记录仍可能增长。
+普通 Task 写入的成功单项响应预算为 512 KiB，在提交前按实际协议编码检查；Step 写入保留完整候选集合的 64 MiB 准入，两者不作为读取容量复查。普通资源读取直接消费规范存储数据，不复查结构、字段或容量，不设置领域或共享 MCP 读取响应字节预算；可分页资源继续按请求条数分页，现有完整目录保持完整。报告和其他写入入口继续执行各自现有规则，不增加项目或全服务累计配额。MCP 保留输入 schema、请求大小、并发和期限规则；写入响应的 schema 与容量准入继续适用。客户端传输、缓存和附件 I/O 的请求范围限制分别由其所属合同维护，不作为服务端存储读取准入。目录和历史记录仍可能增长。
 
-容量失败应包含字段、实际计量、上限和单位，不包含原值或秘密。业务在线拒绝、事务时序和占用控制由各自业务实现及其合同决定。
+写入容量失败应包含字段、实际计量、上限和单位，不包含原值或秘密。业务在线拒绝、事务时序和占用控制由各自业务实现及其合同决定。

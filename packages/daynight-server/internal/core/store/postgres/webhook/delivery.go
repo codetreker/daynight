@@ -24,9 +24,10 @@ func (d *DAO) ObservedAt(ctx context.Context) (time.Time, error) {
 	return now, nil
 }
 
-func scanDelivery(row pgx.Row) (store.WebhookDelivery, error) {
+func scanDelivery(row pgx.Row, trailing ...any) (store.WebhookDelivery, error) {
 	var d store.WebhookDelivery
-	err := row.Scan(&d.ID, &d.EventID, &d.EndpointID, &d.EventType, &d.ProjectID, &d.Owner.Kind, &d.Owner.ID, &d.OccurredAt, &d.OriginalMatchCount, &d.OriginalMatchSHA256, &d.PolicyVersion, &d.DestinationRevision, &d.AdapterVersion, &d.DestinationKind, &d.DestinationOrigin, &d.RenderVersion, &d.ConfigurationSchemaVersion, &d.DestinationConfiguration, &d.RequestMethod, &d.RequestMediaType, &d.DeterministicHeadersJSON, &d.Body, &d.BodySHA256, &d.OriginalBodyBytes, &d.PayloadRemovedAt, &d.PayloadRemovedReason, &d.AutomaticScheduleAt, &d.AutomaticExpiresAt, &d.PayloadExpiresAt, &d.AutomaticPlanCursor, &d.AutomaticAttemptCount, &d.ManualOperationCount, &d.AttemptSequence, &d.AutomaticOpen, &d.Generation, &d.State, &d.Trigger, &d.ExpiresAt, &d.NextAttemptAt, &d.ManualOperationID, &d.LeaseToken, &d.LeaseClaimedAt, &d.LeaseUntil, &d.LeaseGeneration, &d.LeasePlanSlot, &d.CurrentAttemptID, &d.TerminalAt, &d.LastActivityAt, &d.MetadataExpiresAt, &d.PreparationErrorCode, &d.QueueOrder, &d.PurgingAt)
+	dest := []any{&d.ID, &d.EventID, &d.EndpointID, &d.EventType, &d.ProjectID, &d.Owner.Kind, &d.Owner.ID, &d.OccurredAt, &d.OriginalMatchCount, &d.OriginalMatchSHA256, &d.PolicyVersion, &d.DestinationRevision, &d.AdapterVersion, &d.DestinationKind, &d.DestinationOrigin, &d.RenderVersion, &d.ConfigurationSchemaVersion, &d.DestinationConfiguration, &d.RequestMethod, &d.RequestMediaType, &d.DeterministicHeadersJSON, &d.Body, &d.BodySHA256, &d.OriginalBodyBytes, &d.PayloadRemovedAt, &d.PayloadRemovedReason, &d.AutomaticScheduleAt, &d.AutomaticExpiresAt, &d.PayloadExpiresAt, &d.AutomaticPlanCursor, &d.AutomaticAttemptCount, &d.ManualOperationCount, &d.AttemptSequence, &d.AutomaticOpen, &d.Generation, &d.State, &d.Trigger, &d.ExpiresAt, &d.NextAttemptAt, &d.ManualOperationID, &d.LeaseToken, &d.LeaseClaimedAt, &d.LeaseUntil, &d.LeaseGeneration, &d.LeasePlanSlot, &d.CurrentAttemptID, &d.TerminalAt, &d.LastActivityAt, &d.MetadataExpiresAt, &d.PreparationErrorCode, &d.QueueOrder, &d.PurgingAt}
+	err := row.Scan(append(dest, trailing...)...)
 	if err != nil {
 		return d, pg.QueryError("read webhook delivery", err)
 	}

@@ -1,52 +1,9 @@
 package session_test
 
 import (
-	"bytes"
 	"context"
 	"io"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strings"
-	"testing"
-
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 )
-
-func attachmentTestFiles(t *testing.T) *local.Storage {
-	t.Helper()
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := files.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return files
-}
-
-func attachmentRequest(handler http.Handler, method, target, contentType string, content []byte) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(method, target, bytes.NewReader(content))
-	authorizeResourceRequest(handler, request)
-	if contentType != "" {
-		request.Header.Set("Content-Type", contentType)
-	}
-	request.Header.Set("X-Request-ID", "project-test")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
-}
-
-func attachmentFilePath(task api.Task, file string) string {
-	segments := strings.Split(file, "/")
-	for index, segment := range segments {
-		segments[index] = url.PathEscape(segment)
-	}
-	return taskPath(task) + "/attachments/files/" + strings.Join(segments, "/")
-}
 
 type attachmentFailingBody struct {
 	data     []byte

@@ -12,6 +12,7 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -71,6 +72,85 @@ func TestQueryCancellationReleasesConnection(t *testing.T) {
 	}
 	if err := database.Pool.Ping(context.Background()); err != nil {
 		t.Fatalf("pool unusable after cancellation: %v", err)
+	}
+	observer, err := pgx.Connect(t.Context(), databaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closeContext, closeCancel := context.WithTimeout(context.Background(), time.Second)
+		defer closeCancel()
+		if err := observer.Close(closeContext); err != nil {
+			t.Error(err)
+		}
+	}()
+	query := "select pg_sleep(10) /* cancellation-" + uuid.NewString() + " */"
+	operation, cancelOperation := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	var queryError error
+	go func() {
+		_, queryError = database.Pool.Exec(operation, query)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancelOperation()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("canceled database query did not drain")
+		}
+	})
+	observation, cancelObservation := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelObservation()
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		var sleeping bool
+		if err := observer.QueryRow(observation, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname=current_database() AND pid<>pg_backend_pid() AND query=$1
+			AND state='active' AND wait_event_type='Timeout' AND wait_event='PgSleep')`, query).Scan(&sleeping); err != nil {
+			t.Fatal(err)
+		}
+		if sleeping {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatalf("query finished before the cancellation barrier: %v", queryError)
+		case <-observation.Done():
+			t.Fatal("query did not enter PostgreSQL sleep")
+		case <-poll.C:
+		}
+	}
+	cancelOperation()
+	select {
+	case <-done:
+	case <-observation.Done():
+		t.Fatal("observed PostgreSQL query did not accept cancellation")
+	}
+	if !errors.Is(queryError, context.Canceled) {
+		t.Fatalf("explicit cancellation lost its cause: %v", queryError)
+	}
+	if err := database.Pool.Ping(observation); err != nil {
+		t.Fatalf("pool unusable after observed cancellation: %v", err)
+	}
+	closed := make(chan struct{})
+	go func() {
+		database.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-observation.Done():
+		t.Fatal("database close did not join canceled query connections")
+	}
+	if _, err := observer.Exec(observation, `SELECT pg_stat_clear_snapshot()`); err != nil {
+		t.Fatal(err)
+	}
+	var active int
+	if err := observer.QueryRow(observation, `SELECT count(*) FROM pg_stat_activity
+		WHERE datname=current_database() AND pid<>pg_backend_pid() AND query=$1 AND state='active'`, query).Scan(&active); err != nil || active != 0 {
+		t.Fatalf("canceled SQL remains active after database close: %d %v", active, err)
 	}
 }
 

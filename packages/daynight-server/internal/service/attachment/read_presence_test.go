@@ -50,17 +50,9 @@ func (r taskPresenceReader) TaskPresence(ctx context.Context, project, task stri
 	}
 	return r.TaskReader.TaskPresence(ctx, project, task)
 }
-func TestAttachmentReadsUseBoundedTaskPresence(t *testing.T) {
+func TestAttachmentReadsUseTaskPresence(t *testing.T) {
 	service, _, database, _, task, principal := attachmentService(t)
 	putAttachment(t, service, principal, task, "file", "content")
-	// Large persisted fields make the distinction observable without constructing
-	// any full task in the attachment read path.
-	if _, err := database.Pool.Exec(t.Context(), `UPDATE tasks SET description=repeat('x', 8388608) WHERE id=$1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(t.Context(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'large',to_json(repeat('y',4194304))::text)`, task.ID); err != nil {
-		t.Fatal(err)
-	}
 	observed := &taskPresenceSnapshot{SnapshotReader: database}
 	service.store = observed
 	page, err := service.List(t.Context(), principal, task.ProjectID, task.ID, model.PageRequest{Limit: 10})
@@ -76,12 +68,7 @@ func TestAttachmentReadsUseBoundedTaskPresence(t *testing.T) {
 	if err != nil || string(content) != "content" {
 		t.Fatalf("open: %q %v", content, err)
 	}
-	_, obj, err = service.OpenBounded(t.Context(), principal, task.ProjectID, task.ID, "file", 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = obj.Body.Close()
-	if observed.taskReads != 0 || observed.presenceReads != 3 {
+	if observed.taskReads != 0 || observed.presenceReads != 2 {
 		t.Fatalf("full task reads=%d presence reads=%d", observed.taskReads, observed.presenceReads)
 	}
 }

@@ -62,3 +62,20 @@ it("preserves search_changed on a failed second page without publishing the firs
   expect(fetch).toHaveBeenCalledTimes(2);
   expect(JSON.parse(String(fetch.mock.calls[1]![1]!.body))).toEqual({ query: "x", limit: 100, cursor: first.nextCursor });
 });
+
+it("renders ID-only and mixed evidence, keeping JSON projection and server order", async () => {
+  const idOnly = { ...first.items[0], match: { fields: ["id"], descriptionSnippet: null } };
+  const mixed = { ...idOnly, id: "05d609a8-50e2-4aaf-a31d-82466dca2a36", match: { fields: ["id", "title", "description"], descriptionSnippet: "match\u001b[31m" } };
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response({ ...first, total: 2, items: [idOnly, mixed], nextCursor: null }));
+  const f = fixture(fetch);
+  expect(await f.run(["id:05d609a8"])).toBe(0);
+  const text = f.context.stdout.mock.calls[0]![0];
+  expect(text).toContain("Match: id\n");
+  expect(text).toContain("Match: id, title, description\nSnippet: match\\u001b[31m");
+  expect(text.match(/Snippet:/g)).toHaveLength(1);
+  f.context.stdout.mockClear();
+  expect(await f.run(["id:05d609a8", "--json"])).toBe(0);
+  const output = f.context.stdout.mock.calls[0]![0];
+  expect(output.endsWith("\n")).toBe(true);
+  expect(JSON.parse(output)).toEqual([idOnly, mixed].map(({ id, projectId, title, status, cancelledAt, context, match }) => ({ id, projectId, title, status, cancelledAt, context, match })));
+});

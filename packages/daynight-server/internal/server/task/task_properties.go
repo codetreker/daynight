@@ -4,8 +4,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -13,7 +11,7 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth *authhttp.Authentication, logger *slog.Logger) {
+func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	const schemaPath = "/api/v1/task-properties/schema"
 	mux.HandleFunc("GET "+schemaPath, auth.Require(handler.propertySchema))
 	mux.HandleFunc(schemaPath, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))

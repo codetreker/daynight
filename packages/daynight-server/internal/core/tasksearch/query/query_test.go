@@ -46,7 +46,7 @@ func TestExpressionsAndEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
-			e := query.Evaluate(root, tc.title, tc.description)
+			e := query.Evaluate(root, query.Text{Title: tc.title, Description: tc.description})
 			if e.Matches != tc.matches || e.Title != tc.titleHit || e.Description != tc.descriptionHit {
 				t.Fatalf("evidence = %+v, want matches/title/description %v/%v/%v", e, tc.matches, tc.titleHit, tc.descriptionHit)
 			}
@@ -137,7 +137,7 @@ func TestSnippetUsesFirstSuccessfulDescriptionBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	description := "first" + strings.Repeat("中", 100) + "SECOND" + strings.Repeat("文", 100)
-	e := query.Evaluate(root, "other", description)
+	e := query.Evaluate(root, query.Text{Title: "other", Description: description})
 	snippet := query.Snippet(description, e)
 	if snippet == nil || !strings.Contains(*snippet, "SECOND") || strings.Contains(*snippet, "first") || !strings.HasPrefix(*snippet, "…") || !strings.HasSuffix(*snippet, "…") {
 		t.Fatalf("unexpected snippet %v", snippet)
@@ -149,7 +149,7 @@ func TestSnippetUsesFirstSuccessfulDescriptionBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := query.Snippet(description, query.Evaluate(negative, "", description)); got != nil {
+	if got := query.Snippet(description, query.Evaluate(negative, query.Text{Description: description})); got != nil {
 		t.Fatalf("negative snippet = %q", *got)
 	}
 }
@@ -160,7 +160,7 @@ func TestContextCancellationAndWindowBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	description := strings.Repeat("a", 65535) + "缓存刷新" + strings.Repeat("b", 65536)
-	e, err := query.EvaluateContext(context.Background(), root, "", description)
+	e, err := query.EvaluateContext(context.Background(), root, query.Text{Description: description})
 	if err != nil || !e.Matches || !e.Description {
 		t.Fatalf("boundary evidence: %+v, %v", e, err)
 	}
@@ -170,7 +170,7 @@ func TestContextCancellationAndWindowBoundary(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := query.EvaluateContext(ctx, root, "", description); !errors.Is(err, context.Canceled) {
+	if _, err := query.EvaluateContext(ctx, root, query.Text{Description: description}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("evaluation cancellation: %v", err)
 	}
 	if _, err := query.SnippetContext(ctx, description, e); !errors.Is(err, context.Canceled) {
@@ -202,7 +202,7 @@ func TestCancellationDuringSubstringScan(t *testing.T) {
 	defer cancel()
 	// The first window is scanned before cancellation at the next window.
 	ctx := &cancelAfterChecks{Context: base, cancel: cancel, after: 8}
-	_, err = query.EvaluateContext(ctx, root, strings.Repeat("a", 150000), "")
+	_, err = query.EvaluateContext(ctx, root, query.Text{Title: strings.Repeat("a", 150000)})
 	if !errors.Is(err, context.Canceled) || ctx.checks != 8 {
 		t.Fatalf("expected scan cancellation, got %v after %d checks", err, ctx.checks)
 	}
@@ -212,5 +212,51 @@ func TestSyntaxErrorStringDoesNotExposeInput(t *testing.T) {
 	_, err := query.Parse("private-search-text AND (")
 	if err == nil || err.Error() != "invalid search expression: unclosed_group" {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestIDEvidenceAndProjectedHits(t *testing.T) {
+	const id = "05d609a8-50e2-4aaf-a31d-82466dca2a36"
+	text := query.Text{ID: id, Title: "ok " + id, Description: "mentions " + id}
+	cases := []struct {
+		expression                             string
+		matches, id, exact, title, description bool
+	}{
+		{id, true, true, true, true, true},
+		{"id:" + id, true, true, true, false, false},
+		{"id:05D609A8", true, true, false, false, false},
+		{`id:"50e2-4aaf"`, true, true, false, false, false},
+		{"id:05d609a850e2", false, false, false, false, false},
+		{"id:xyz", false, false, false, false, false},
+		{"id:*", false, false, false, false, false},
+		{"title:" + id, true, false, false, true, false},
+		{"description:" + id, true, false, false, false, true},
+		{"(id:" + id + " AND title:missing) OR title:ok", true, false, false, true, false},
+		{"NOT id:05d609a8", false, false, false, false, false},
+		{"NOT NOT id:" + id, true, true, true, false, false},
+		{"NOT (NOT id:" + id + " OR title:missing)", true, true, true, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.expression, func(t *testing.T) {
+			root, err := query.Parse(tc.expression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := query.Evaluate(root, text)
+			if got.Matches != tc.matches || got.ID != tc.id || got.ExactID != tc.exact || got.Title != tc.title || got.Description != tc.description {
+				t.Fatalf("got %+v", got)
+			}
+
+		})
+	}
+	for _, field := range []tasksearch.Field{tasksearch.AnyField, tasksearch.IDField, tasksearch.TitleField, tasksearch.DescriptionField} {
+		for _, target := range []tasksearch.Field{tasksearch.IDField, tasksearch.TitleField, tasksearch.DescriptionField} {
+			if field.Includes(target) != (field == tasksearch.AnyField || field == target) {
+				t.Fatalf("field %v target %v", field, target)
+			}
+		}
+	}
+	if tasksearch.Field(255).Valid() || tasksearch.AnyField.Includes(tasksearch.AnyField) {
+		t.Fatal("invalid field accepted")
 	}
 }

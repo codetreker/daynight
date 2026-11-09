@@ -59,8 +59,8 @@ func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func archiveReservation(r *http.Request) *sessioncore.ArchivePreflightReservation {
-	reservation, _ := r.Context().Value(archiveReservationKey{}).(*sessioncore.ArchivePreflightReservation)
+func archiveReservation(r *http.Request) io.Closer {
+	reservation, _ := r.Context().Value(archiveReservationKey{}).(io.Closer)
 	return reservation
 }
 func (h *Routes) archiveStatus(w http.ResponseWriter, r *http.Request, p model.Principal) {

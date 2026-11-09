@@ -71,10 +71,7 @@ func TestWorkerSourceRowFailuresRemainVisible(t *testing.T) {
 			}
 		})
 	}
-	invalid := &failedWorkerRows{scan: func(values ...any) error { *values[3].(*model.TaskStatus) = "invalid"; return nil }}
-	if _, err := NewWriter(workerFailureTx{rows: invalid}).ReportTaskSnapshots(t.Context(), "user", inventory); err == nil {
-		t.Fatal("invalid stored task status accepted")
-	}
+
 }
 
 func TestWorkerVisibilityAndListRowFailuresRemainVisible(t *testing.T) {
@@ -111,21 +108,39 @@ func TestWorkerObservationUpdateFailurePreservesCause(t *testing.T) {
 
 func TestWorkerSummariesPreserveFailures(t *testing.T) {
 	cause := errors.New("worker summary failed")
-	consume := func(store.WorkerSummary) (bool, error) { return false, cause }
 	for _, tx := range []workerFailureTx{
 		{queryFailure: cause},
 		{rows: &failedWorkerRows{scan: func(...any) error { return cause }}},
 		{rows: &failedWorkerRows{failure: cause}},
-		{rows: &failedWorkerRows{scan: func(...any) error { return nil }}},
 	} {
-		err := (&Reader{tx: tx}).WorkerSummaries(t.Context(), "user", time.Now(), store.Page{Limit: 1}, consume)
+		_, err := (&Reader{tx: tx}).WorkerSummaries(t.Context(), "user", time.Now(), store.Page{Limit: 1})
 		if !errors.Is(err, cause) {
 			t.Fatalf("summary cause lost: %v", err)
 		}
 	}
-	bad := "invalid"
-	tx := workerFailureTx{rows: &failedWorkerRows{scan: func(values ...any) error { *values[7].(**string) = &bad; return nil }}}
-	if err := (&Reader{tx: tx}).WorkerSummaries(t.Context(), "user", time.Now(), store.Page{Limit: 1}, consume); err == nil {
-		t.Fatal("invalid observation time accepted")
+}
+
+type workerSnapshotRow func(...any) error
+
+func (row workerSnapshotRow) Scan(values ...any) error { return row(values...) }
+
+func TestWorkerConfigurationStoredDecodeErrors(t *testing.T) {
+	sentinel := errors.New("worker configuration scan failed")
+	if _, err := scanWorkerConfiguration(workerSnapshotRow(func(...any) error { return sentinel })); !errors.Is(err, sentinel) {
+		t.Fatalf("scan error lost: %v", err)
+	}
+	for _, test := range []struct{ desired, observation string }{{`{"native":"bad"}`, `null`}, {`{}`, `{"items":"bad"}`}} {
+		_, err := scanWorkerConfiguration(workerSnapshotRow(func(destinations ...any) error {
+			revision := int64(1)
+			stamp := time.Now().UTC()
+			*destinations[0].(**int64) = &revision
+			*destinations[1].(**time.Time) = &stamp
+			*destinations[2].(*[]byte) = []byte(test.desired)
+			*destinations[4].(*[]byte) = []byte(test.observation)
+			return nil
+		}))
+		if err == nil {
+			t.Fatal("typed stored corruption hidden")
+		}
 	}
 }

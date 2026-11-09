@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	pgfamily "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
@@ -22,94 +25,113 @@ import (
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestOAuthAccessBusinessAdmission(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	db := projectTestStore(t)
-	handler := projectTestHandler(t, db, io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPWorkerTask(t, handler, project.ID, "OAuth Thread")
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	grantID, accessID := uuid.NewString(), uuid.NewString()
-	token, refresh := secret.Random(model.OAuthAccessPrefix), secret.Random("dnmcr_")
-	issue := store.OAuthFamilyIssue{Grant: store.OAuthGrant{ID: grantID, UserID: handler.principal.UserID, ClientID: "client", ClientSnapshot: json.RawMessage(`{"name":"client"}`), Resource: "https://daynight.test/mcp", Scope: "daynight:mcp", CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}, AccessID: accessID, AccessHash: secret.Hash(token), RefreshHash: secret.Hash(refresh), AccessExpiresAt: now.Add(time.Hour)}
-	completion, err := db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
-		return scope.CredentialFamilyDAO().IssueFamily(ctx, issue)
-	})
-	if err != nil || completion.Outcome != store.TransactionCommitted {
-		t.Fatalf("issue: %v %v", completion, err)
-	}
-	auth := oauthservice.NewAuthenticator(db)
-	identity, err := auth.AuthenticateAccess(ctx, token, issue.Grant.Resource)
-	if err != nil || identity.GrantID != grantID || identity.Principal.CredentialID != accessID {
+	f := newOAuthHTTPFixture(t)
+	f.Origin = "https://daynight.test"
+	const grantID = "e5555555-5555-4555-8555-555555555555"
+	const accessID = "f6666666-6666-4666-8666-666666666666"
+	const replacementID = "a7777777-7777-4777-8777-777777777777"
+	token := httpTestToken(model.OAuthCredential)
+	replacement := "dnmcp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"
+	p := model.Principal{Kind: model.OAuthCredential, UserID: f.Principal.UserID, CredentialID: accessID}
+	replacementPrincipal := p
+	replacementPrincipal.CredentialID = replacementID
+	resource := f.Origin + "/mcp"
+	auth := oauthservice.NewAuthenticator(f.Store)
+	oauthHTTPExpectAccess(t, f, token, resource, p, grantID, nil)
+	identity, err := auth.AuthenticateAccess(ctx, token, resource)
+	if err != nil || identity.GrantID != grantID || identity.Principal != p {
 		t.Fatalf("authenticate: %+v %v", identity, err)
 	}
+	oauthHTTPExpectAccess(t, f, token, "https://other.test/mcp", model.Principal{}, "", model.ErrNotFound)
 	if _, err = auth.AuthenticateAccess(ctx, token, "https://other.test/mcp"); err == nil {
 		t.Fatal("wrong resource accepted")
 	}
-	p := identity.Principal
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// Exercise the production composition, which constructs OAuth admission
-	// from the same store as the business services.
+	var authentications atomic.Int32
+	configureAccess := func(refused bool) {
+		f.Store.WriteCredentialFamilyCall = func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
+			plan := newHTTPCallPlan(t, map[string]int{"authenticate": 1})
+			dao := &oauthHTTPFamilyDAO{t: t, plan: plan, authenticate: func(hash []byte, actualResource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
+				authentications.Add(1)
+				if actualResource != resource || scope != "daynight:mcp" || now.IsZero() || now.Location() != time.UTC {
+					unexpectedHTTPCall(t, "MCP OAuth credential scope")
+				}
+				if !bytes.Equal(hash, secret.Hash(token)) && !bytes.Equal(hash, secret.Hash(replacement)) {
+					unexpectedHTTPCall(t, "MCP OAuth token hash")
+				}
+				if refused {
+					return store.OAuthAccessIdentity{}, model.ErrNotFound
+				}
+				actor := p
+				if bytes.Equal(hash, secret.Hash(replacement)) {
+					actor = replacementPrincipal
+				}
+				return store.OAuthAccessIdentity{Principal: actor, GrantID: grantID}, nil
+			}}
+			e := fn(oauthHTTPFamilyScope{families: dao})
+			return oauthHTTPCompletion(e), e
+		}
+	}
+	configureAccess(false)
 	config := configuredTestConfig()
-	config.PublicOrigin = "https://daynight.test"
-	config.UniAuthCallbackURL = config.PublicOrigin + "/api/v1/auth/callback"
-	production, err := newTestHandler(Dependencies{Store: db, Ready: db.Ready, Files: attachmentTestFiles(t)}, config, logger)
+	config.PublicOrigin = f.Origin
+	config.UniAuthCallbackURL = f.Origin + "/api/v1/auth/callback"
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	production, err := newTestHandler(Dependencies{Store: f.Store, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer production.(Handler).Shutdown(context.Background())
 	productionServer := httptest.NewServer(httpx.RequestLogging(logger, production))
 	defer productionServer.Close()
-	defer production.(Handler).Shutdown(context.Background())
 	productionClient := mcpPATClient(t, productionServer.URL, token)
 	if _, err = productionClient.ListTools(ctx, nil); err != nil {
 		t.Fatalf("production MCP OAuth: %v", err)
 	}
-	otherUser, privateTeam := assignmentHTTPUser(t, db), uuid.NewString()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Private')`, privateTeam); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, privateTeam, otherUser); err != nil {
-		t.Fatal(err)
-	}
+	const personalTeam = "b8888888-8888-4888-8888-888888888888"
+	const privateTeam = "c9999999-9999-4999-8999-999999999999"
+	f.PersonalTeamID = personalTeam
 	for _, tc := range []struct {
-		team      string
-		wantError bool
+		team   string
+		denied bool
 	}{{"personal", false}, {privateTeam, true}} {
-		result, err := productionClient.CallTool(ctx, &sdk.CallToolParams{Name: "team_show", Arguments: map[string]any{"team": tc.team}})
-		if err != nil || result.IsError != tc.wantError {
-			t.Fatalf("OAuth Team read %s: %#v %v", tc.team, result, err)
+		plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "team": 1})
+		snapshot := newHTTPTestSnapshot(t)
+		snapshot.Teams = &oauthMCPTeamReader{t: t, plan: plan, actor: p.UserID, selector: tc.team, id: personalTeam, denied: tc.denied}
+		f.Store.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
+			plan.Called("snapshot")
+			return fn(snapshot)
 		}
-		raw, err := json.Marshal(result.StructuredContent)
-		if err != nil {
-			t.Fatal(err)
+		result, e := productionClient.CallTool(ctx, &sdk.CallToolParams{Name: "team_show", Arguments: map[string]any{"team": tc.team}})
+		if e != nil || result.IsError != tc.denied {
+			t.Fatalf("OAuth Team read %s: %#v %v", tc.team, result, e)
+		}
+		raw, e := json.Marshal(result.StructuredContent)
+		if e != nil {
+			t.Fatal(e)
 		}
 		var envelope struct {
 			Data struct {
 				Membership struct {
 					UserID string `json:"userId"`
-				} `json:"membership"`
-			} `json:"data"`
-			Error struct {
-				Code string `json:"code"`
-			} `json:"error"`
+				}
+			}
+			Error struct{ Code string }
 		}
-		if err := json.Unmarshal(raw, &envelope); err != nil {
-			t.Fatal(err)
-		}
-		if (!tc.wantError && envelope.Data.Membership.UserID != p.UserID) || (tc.wantError && envelope.Error.Code != "not_found") {
+		if json.Unmarshal(raw, &envelope) != nil || (!tc.denied && envelope.Data.Membership.UserID != p.UserID) || (tc.denied && envelope.Error.Code != "not_found") {
 			t.Fatalf("OAuth Team read: %s", raw)
 		}
 	}
-	entry, err := mcphttp.New(identityservice.New(db, nil, ""), "https://daynight.test", nil, logger, auth)
+	entry, err := mcphttp.New(identityservice.New(f.Store, nil, ""), f.Origin, nil, logger, auth)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := entry.RegisterTool(&sdk.Tool{Name: "actor", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"}}, mcphttp.BudgetControl, func(_ context.Context, actor mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
+	if err = entry.RegisterTool(&sdk.Tool{Name: "actor", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"}}, mcphttp.BudgetControl, func(_ context.Context, actor mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
 		return mcphttp.ToolResult{Data: map[string]any{"user": actor.Principal.UserID, "access": actor.Principal.CredentialID, "authority": actor.AuthorityRef.ID, "kind": actor.AuthorityRef.Kind}}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -118,252 +140,497 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	defer httpServer.Close()
 	defer entry.Shutdown(context.Background())
 	client := sdk.NewClient(&sdk.Implementation{Name: "oauth-test", Version: "1"}, nil)
-	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: mcpPATTransport{token: token}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
-	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}})
-	if err != nil || result.IsError {
-		t.Fatalf("MCP call: %v %+v", err, result)
-	}
-	bytes, _ := json.Marshal(result.StructuredContent)
-	var envelope struct {
-		Data struct{ User, Access, Authority, Kind string }
-	}
-	if err := json.Unmarshal(bytes, &envelope); err != nil || envelope.Data.User != p.UserID || envelope.Data.Access != accessID || envelope.Data.Authority != grantID || envelope.Data.Kind != "oauth" {
-		t.Fatalf("MCP actor: %s %v", bytes, err)
-	}
-	// A replacement access token retains the same authorization identity.
-	replacement := secret.Random(model.OAuthAccessPrefix)
-	replacementID := uuid.NewString()
-	if _, err = db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, replacementID, grantID, p.UserID, secret.Hash(replacement), now, issue.AccessExpiresAt); err != nil {
-		t.Fatal(err)
-	}
-	replacementSession, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: mcpPATTransport{token: replacement}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer replacementSession.Close()
-	replacementResult, err := replacementSession.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}})
-	if err != nil || replacementResult.IsError {
-		t.Fatalf("replacement access: %v", err)
-	}
-	replacementBytes, _ := json.Marshal(replacementResult.StructuredContent)
-	var replacementActor struct {
-		Data struct{ User, Access, Authority, Kind string }
-	}
-	if err := json.Unmarshal(replacementBytes, &replacementActor); err != nil || replacementActor.Data.Access != replacementID || replacementActor.Data.Authority != grantID {
-		t.Fatalf("replacement actor: %s %v", replacementBytes, err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("OAuth on REST: %d", response.Code)
-	}
-	request = httptest.NewRequest(http.MethodPost, taskPath(task)+"/worker-claim", nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("OAuth on worker endpoint: %d", response.Code)
-	}
-	threads := taskservice.NewTaskThreads(db)
-	if _, err = threads.Post(ctx, p, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "OAuth author"}); err != nil {
-		t.Fatalf("thread post: %v", err)
-	}
-	forged := p
-	forged.CredentialID = uuid.NewString()
-	if _, err = threads.Post(ctx, forged, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "forged"}); err == nil {
-		t.Fatal("forged access ID accepted")
-	}
-	worker := uuid.NewString()
-	if _, err = db.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now(),'{}','{}')`, p.UserID, worker); err != nil {
-		t.Fatal(err)
-	}
-	bots := botservice.New(db)
-	bot, err := bots.Create(ctx, p, botcore.CreateBot{ID: uuid.NewString(), Name: "OAuth Bot", ResolvedConfiguration: model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "codex", Args: []string{}}})
-	if err != nil {
-		t.Fatalf("bot create: %v", err)
-	}
-	if _, err = bots.Get(ctx, p, bot.ID); err != nil {
-		t.Fatalf("bot read: %v", err)
-	}
-	if _, err = bots.Get(ctx, forged, bot.ID); err == nil {
-		t.Fatal("forged bot credential accepted")
-	}
-	// The Thread call first waits on the task row. Expiry during that wait
-	// must be checked before any message is committed.
-	lock, err := db.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Rollback(context.Background())
-	if _, err = lock.Exec(ctx, `SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1`, accessID); err != nil {
-		t.Fatal(err)
-	}
-	resultCh := make(chan error, 1)
-	go func() {
-		_, err := threads.Post(ctx, p, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "expired while waiting"})
-		resultCh <- err
-	}()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	wait := func(query string, args ...any) {
+	connect := func(raw string) *sdk.ClientSession {
 		t.Helper()
-		for {
-			var ready bool
-			if err := db.Pool.QueryRow(ctx, query, args...).Scan(&ready); err != nil {
-				t.Fatal(err)
-			}
-			if ready {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			case <-ticker.C:
-			}
+		s, e := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: mcpPATTransport{token: raw}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return s
+	}
+	session := connect(token)
+	defer session.Close()
+	replacementSession := connect(replacement)
+	defer replacementSession.Close()
+	for _, tc := range []struct {
+		session *sdk.ClientSession
+		access  string
+	}{{session, accessID}, {replacementSession, replacementID}} {
+		result, e := tc.session.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}})
+		if e != nil || result.IsError {
+			t.Fatalf("MCP actor: %v", e)
+		}
+		raw, e := json.Marshal(result.StructuredContent)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var envelope struct {
+			Data struct{ User, Access, Authority, Kind string }
+		}
+		if json.Unmarshal(raw, &envelope) != nil || envelope.Data.User != p.UserID || envelope.Data.Access != tc.access || envelope.Data.Authority != grantID || envelope.Data.Kind != "oauth" {
+			t.Fatalf("MCP actor: %s", raw)
 		}
 	}
-	wait(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid)))`, int32(lock.Conn().PgConn().PID()))
-	wait(`SELECT expires_at<=clock_timestamp() FROM oauth_access_tokens WHERE id=$1`, accessID)
-	if err = lock.Commit(ctx); err != nil {
-		t.Fatal(err)
+	const projectID = "d1111111-1111-4111-8111-111111111111"
+	const taskID = "e2222222-2222-4222-8222-222222222222"
+	for _, path := range []string{"/api/v1/projects", "/api/v1/projects/" + projectID + "/tasks/" + taskID + "/worker-claim"} {
+		r := httptest.NewRequest(http.MethodPost, path, nil)
+		if path == "/api/v1/projects" {
+			r.Method = http.MethodGet
+		}
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		production.ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("OAuth on REST %s: %d", path, w.Code)
+		}
 	}
+	capturePlan := newHTTPCallPlan(t, map[string]int{"capture": 1})
+	threads := taskservice.NewTaskThreads(f.Store, oauthMCPThreadCapture{t: t, project: projectID, task: taskID, plan: capturePlan})
+	oauthMCPThreadPlan(t, f, p, projectID, taskID, "OAuth author", nil, nil)
+	if _, err = threads.Post(ctx, p, projectID, taskID, taskservice.CreateThreadMessage{Body: "OAuth author"}); err != nil {
+		t.Fatalf("Thread post: %v", err)
+	}
+	forged := p
+	forged.CredentialID = "f3333333-3333-4333-8333-333333333333"
+	oauthMCPThreadPlan(t, f, forged, projectID, taskID, "forged", model.ErrNotFound, nil)
+	if _, err = threads.Post(ctx, forged, projectID, taskID, taskservice.CreateThreadMessage{Body: "forged"}); err == nil {
+		t.Fatal("forged access ID accepted")
+	}
+	bot := model.Bot{ID: "a4444444-4444-4444-8444-444444444444", OwnerUserID: p.UserID, WorkerID: "b5555555-5555-4555-8555-555555555555", Name: "OAuth Bot", Version: 1, CreatedAt: f.Now, UpdatedAt: f.Now, ResolvedConfiguration: model.BotConfiguration{WorkerID: "b5555555-5555-4555-8555-555555555555", Cwd: "/workspace", Provider: "codex", Args: []string{}}}
+	bots := botservice.New(f.Store)
+	input := botcore.CreateBot{ID: bot.ID, Name: bot.Name, ResolvedConfiguration: oauthHTTPCloneBot(bot).ResolvedConfiguration}
+	_, fingerprint, normalizeErr := botcore.NormalizeBotRequest(input)
+	if normalizeErr != nil {
+		t.Fatal(normalizeErr)
+	}
+	bot.RequestFingerprint = fingerprint
+	oauthMCPCreateBot(t, f, p, bot)
+	created, createErr := bots.Create(ctx, p, input)
+	if createErr != nil || !reflect.DeepEqual(created, bot) {
+		t.Fatalf("OAuth Bot create: %+v %v", created, createErr)
+	}
+	oauthMCPBotRead(t, f, p, bot, nil)
+	if _, err = bots.Get(ctx, p, bot.ID); err != nil {
+		t.Fatalf("Bot read: %v", err)
+	}
+	oauthMCPBotRead(t, f, forged, bot, model.ErrNotFound)
+	if _, err = bots.Get(ctx, forged, bot.ID); err == nil {
+		t.Fatal("forged Bot credential accepted")
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	resultCh := make(chan error, 1)
+	oauthMCPThreadPlan(t, f, p, projectID, taskID, "expired while waiting", model.ErrNotFound, func(ctx context.Context) error {
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	go func() {
+		_, e := threads.Post(ctx, p, projectID, taskID, taskservice.CreateThreadMessage{Body: "expired while waiting"})
+		resultCh <- e
+	}()
 	select {
-	case err = <-resultCh:
-		if err == nil {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	close(release)
+	select {
+	case e := <-resultCh:
+		if e == nil {
 			t.Fatal("expired Thread write accepted")
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, accessID, issue.AccessExpiresAt); err != nil {
-		t.Fatal(err)
+	deletions := botservice.NewDeletions(f.Store, nil, sessioncore.NewEngine(nil))
+	deletion := store.DeleteBot{Version: bot.Version, DeletionID: "c6666666-6666-4666-8666-666666666666"}
+	oauthMCPDeleteRefused(t, f, p, bot, deletion, true)
+	if _, err = deletions.DeleteBot(ctx, p, bot.ID, deletion); err == nil {
+		t.Fatal("expired Bot deletion accepted")
 	}
-	// Bot deletion holds the access lock while waiting for the Bot row.
-	// Its final admission must reject an access token that expires in that wait.
-	botLock, err := db.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer botLock.Rollback(context.Background())
-	if _, err = botLock.Exec(ctx, `SELECT id FROM bots WHERE id=$1 FOR UPDATE`, bot.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1`, accessID); err != nil {
-		t.Fatal(err)
-	}
-	deletions := botservice.NewDeletions(db, nil, sessioncore.NewEngine(nil))
-	deletion := store.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
-	go func() { _, err := deletions.DeleteBot(ctx, p, bot.ID, deletion); resultCh <- err }()
-	wait(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid)))`, int32(botLock.Conn().PgConn().PID()))
-	wait(`SELECT expires_at<=clock_timestamp() FROM oauth_access_tokens WHERE id=$1`, accessID)
-	if err = botLock.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err = <-resultCh:
-		if err == nil {
-			t.Fatal("expired Bot deletion accepted")
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, accessID, issue.AccessExpiresAt); err != nil {
-		t.Fatal(err)
-	}
-
-	// A business-held shared access lock prevents family revocation from
-	// committing until the business transaction has finished.
-	held := make(chan struct{})
-	release := make(chan struct{})
+	configureAccess(true)
+	oauthMCPThreadPlan(t, f, p, projectID, taskID, "revoke wait", model.ErrNotFound, nil)
+	oauthMCPDeleteRefused(t, f, p, bot, deletion, false)
+	var threadError, botError error
+	done := make(chan struct{}, 2)
 	go func() {
-		_, e := db.WriteThread(ctx, func(scope store.ThreadScope) error {
-			if _, e := scope.CredentialDAO().Credential(ctx, p); e != nil {
-				return e
-			}
-			close(held)
-			select {
-			case <-release:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		})
-		resultCh <- e
+		_, threadError = threads.Post(ctx, p, projectID, taskID, taskservice.CreateThreadMessage{Body: "revoke wait"})
+		done <- struct{}{}
 	}()
-	select {
-	case <-held:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	revokeTx, err := db.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer revokeTx.Rollback(context.Background())
-	revoked := make(chan error, 1)
-	go func() { _, e := pgfamily.NewDAO(revokeTx).RevokeFamily(ctx, grantID, time.Now()); revoked <- e }()
-	wait(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')`, int32(revokeTx.Conn().PgConn().PID()))
-	close(release)
-	select {
-	case err = <-resultCh:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	select {
-	case err = <-revoked:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-
-	// Both Thread and Bot wait on the uncommitted revocation. After commit
-	// their stale principal cannot pass the shared credential lock.
-	go func() {
-		_, e := threads.Post(ctx, p, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "revoke wait"})
-		resultCh <- e
-	}()
-	go func() { _, e := deletions.DeleteBot(ctx, p, bot.ID, deletion); resultCh <- e }()
-	wait(`SELECT count(*) >= 2 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid))`, int32(revokeTx.Conn().PgConn().PID()))
-	if err = revokeTx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
+	go func() { _, botError = deletions.DeleteBot(ctx, p, bot.ID, deletion); done <- struct{}{} }()
 	for range 2 {
 		select {
-		case e := <-resultCh:
-			if e == nil {
-				t.Fatal("revoked waiting business call accepted")
-			}
+		case <-done:
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
 	}
-	if _, err = auth.AuthenticateAccess(ctx, token, issue.Grant.Resource); err == nil {
+	if threadError == nil || botError == nil {
+		t.Fatal("revoked business waiters accepted")
+	}
+	if _, err = auth.AuthenticateAccess(ctx, token, resource); err == nil {
 		t.Fatal("revoked authentication accepted")
 	}
-	if _, err = threads.Post(ctx, p, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "revoked"}); err == nil {
-		t.Fatal("revoked thread accepted")
+	oauthMCPThreadPlan(t, f, p, projectID, taskID, "revoked", model.ErrNotFound, nil)
+	if _, err = threads.Post(ctx, p, projectID, taskID, taskservice.CreateThreadMessage{Body: "revoked"}); err == nil {
+		t.Fatal("revoked Thread accepted")
 	}
+	oauthMCPBotRead(t, f, p, bot, model.ErrNotFound)
 	if _, err = bots.Get(ctx, p, bot.ID); err == nil {
-		t.Fatal("revoked bot accepted")
+		t.Fatal("revoked Bot accepted")
 	}
 	if _, err = productionClient.ListTools(ctx, nil); err == nil {
 		t.Fatal("production MCP accepted revoked access")
 	}
 	if _, err = session.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}}); err == nil {
 		t.Fatal("revoked MCP accepted")
+	}
+	if authentications.Load() == 0 {
+		t.Fatal("MCP authentication did not execute")
+	}
+}
+
+type oauthMCPTeamReader struct {
+	store.TeamReader
+	t                   *testing.T
+	plan                *httpCallPlan
+	actor, selector, id string
+	denied              bool
+}
+
+func (d *oauthMCPTeamReader) Team(_ context.Context, user, id string) (model.Team, error) {
+	d.plan.Called("team")
+	expected := d.selector
+	if expected == "personal" {
+		expected = d.id
+	}
+	if user != d.actor || id != expected {
+		unexpectedHTTPCall(d.t, "OAuth Team read arguments")
+	}
+	if d.denied {
+		return model.Team{}, model.ErrNotFound
+	}
+	return model.Team{TeamRef: model.TeamRef{ID: d.id, Kind: "personal"}, Version: 1, Membership: model.TeamMember{TeamID: d.id, UserID: user, Role: model.ProjectAdmin, Version: 1}}, nil
+}
+
+type oauthMCPThreadScope struct {
+	store.ThreadScope
+	dao *oauthMCPThreadDAO
+}
+
+func (s oauthMCPThreadScope) TaskDAO() store.ThreadTaskDAO             { return s.dao }
+func (s oauthMCPThreadScope) CredentialDAO() store.ThreadCredentialDAO { return s.dao }
+func (s oauthMCPThreadScope) ProjectDAO() store.ThreadProjectDAO       { return s.dao }
+func (s oauthMCPThreadScope) ThreadDAO() store.ThreadDAO               { return s.dao }
+func (s oauthMCPThreadScope) CaptureDAO() store.WebhookCaptureDAO      { return nil }
+
+type oauthMCPThreadDAO struct {
+	store.ThreadDAO
+	t                   *testing.T
+	plan                *httpCallPlan
+	actor               model.Principal
+	project, task, body string
+	expiry              time.Time
+	credentialError     error
+	barrier             func(context.Context) error
+	now                 time.Time
+}
+
+func (d *oauthMCPThreadDAO) LockTaskPresence(ctx context.Context, project, task string) (store.TaskPresence, error) {
+	d.plan.Called("task")
+	if project != d.project || task != d.task {
+		unexpectedHTTPCall(d.t, "OAuth Thread Task scope")
+	}
+	if d.barrier != nil {
+		if e := d.barrier(ctx); e != nil {
+			return store.TaskPresence{}, e
+		}
+	}
+	return store.TaskPresence{Found: true}, nil
+}
+func (d *oauthMCPThreadDAO) SourceTask(context.Context, string, string) (model.Task, error) {
+	unexpectedHTTPCall(d.t, "OAuth Thread SourceTask")
+	return model.Task{}, nil
+}
+func (d *oauthMCPThreadDAO) Credential(_ context.Context, p model.Principal) (store.ThreadCredential, error) {
+	d.plan.Called("credential")
+	if p != d.actor {
+		unexpectedHTTPCall(d.t, "OAuth Thread principal")
+	}
+	expiry := d.expiry
+	return store.ThreadCredential{ExpiresAt: &expiry}, d.credentialError
+}
+func (d *oauthMCPThreadDAO) CredentialValid(_ context.Context, c store.ThreadCredential) (bool, error) {
+	d.plan.Called("valid")
+	if c.ExpiresAt == nil || !c.ExpiresAt.Equal(d.expiry) {
+		unexpectedHTTPCall(d.t, "OAuth Thread credential recheck")
+	}
+	return true, nil
+}
+func (d *oauthMCPThreadDAO) AuthorName(_ context.Context, user string) (*string, error) {
+	d.plan.Called("author")
+	if user != d.actor.UserID {
+		unexpectedHTTPCall(d.t, "OAuth Thread author")
+	}
+	name := "OAuth author"
+	return &name, nil
+}
+func (d *oauthMCPThreadDAO) LockProjectAuthorization(_ context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+	d.plan.Called("project")
+	if p != d.actor || project != d.project {
+		unexpectedHTTPCall(d.t, "OAuth Thread Project access")
+	}
+	return model.ProjectAccess{Role: model.ProjectAdmin}, nil
+}
+func (d *oauthMCPThreadDAO) LockHead(_ context.Context, task string) (*model.ThreadPosition, error) {
+	d.plan.Called("head")
+	if task != d.task {
+		unexpectedHTTPCall(d.t, "OAuth Thread head")
+	}
+	return nil, nil
+}
+func (d *oauthMCPThreadDAO) InsertMessage(_ context.Context, m model.ThreadMessage) (model.ThreadMessage, error) {
+	d.plan.Called("insert")
+	name := "OAuth author"
+	expected := model.ThreadMessage{TaskID: d.task, Author: model.ThreadAuthor{UserID: d.actor.UserID, DisplayName: &name}, Body: d.body}
+	if !reflect.DeepEqual(m, expected) {
+		d.t.Errorf("OAuth Thread insertion: %+v", m)
+	}
+	m.ID = "d7777777-7777-4777-8777-777777777777"
+	return m, nil
+}
+func (d *oauthMCPThreadDAO) PrepareTimestamp(_ context.Context, m *model.ThreadMessage, head *model.ThreadPosition) error {
+	d.plan.Called("time")
+	if m.ID != "d7777777-7777-4777-8777-777777777777" || head != nil {
+		unexpectedHTTPCall(d.t, "OAuth Thread timestamp")
+	}
+	m.CreatedAt = d.now
+	return nil
+}
+func (d *oauthMCPThreadDAO) AdvanceHead(_ context.Context, task string, p model.ThreadPosition) error {
+	d.plan.Called("advance")
+	if task != d.task || p.ID != "d7777777-7777-4777-8777-777777777777" || !p.CreatedAt.Equal(d.now) {
+		unexpectedHTTPCall(d.t, "OAuth Thread head advancement")
+	}
+	return nil
+}
+func oauthMCPThreadPlan(t *testing.T, f *oauthHTTPFixture, p model.Principal, project, task, body string, credentialError error, barrier func(context.Context) error) {
+	want := map[string]int{"transaction": 1, "task": 1, "credential": 1}
+	if credentialError == nil {
+		for _, name := range []string{"project", "author", "head", "insert", "time", "valid", "advance"} {
+			want[name] = 1
+		}
+	}
+	plan := newHTTPCallPlan(t, want)
+	dao := &oauthMCPThreadDAO{t: t, plan: plan, actor: p, project: project, task: task, body: body, credentialError: credentialError, expiry: f.Now.Add(time.Hour), barrier: barrier, now: f.Now}
+	f.Store.WriteThreadCall = func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error) {
+		plan.Called("transaction")
+		e := fn(oauthMCPThreadScope{dao: dao})
+		return oauthHTTPCompletion(e), e
+	}
+}
+
+type oauthMCPThreadCapture struct {
+	plan          *httpCallPlan
+	t             *testing.T
+	project, task string
+}
+
+func (c oauthMCPThreadCapture) CaptureBatch(_ context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
+	c.plan.Called("capture")
+	if len(facts) != 1 || facts[0].Type != protocol.ThreadPosted || facts[0].ProjectID != c.project || facts[0].TaskID != c.task || facts[0].MessageID != "d7777777-7777-4777-8777-777777777777" {
+		unexpectedHTTPCall(c.t, "OAuth Thread capture")
+	}
+	return nil
+}
+
+type oauthMCPBotReader struct {
+	store.BotReader
+	t    *testing.T
+	plan *httpCallPlan
+	bot  model.Bot
+}
+
+func (d *oauthMCPBotReader) Bot(_ context.Context, id string) (model.Bot, error) {
+	d.plan.Called("bot")
+	if id != d.bot.ID {
+		unexpectedHTTPCall(d.t, "OAuth Bot read address")
+	}
+	return oauthHTTPCloneBot(d.bot), nil
+}
+
+type oauthMCPCredentialReader struct {
+	t     *testing.T
+	plan  *httpCallPlan
+	actor model.Principal
+	err   error
+}
+
+func (d oauthMCPCredentialReader) Credential(_ context.Context, p model.Principal) (store.ThreadCredential, error) {
+	d.plan.Called("credential")
+	if p != d.actor {
+		unexpectedHTTPCall(d.t, "OAuth Bot credential")
+	}
+	return store.ThreadCredential{}, d.err
+}
+func oauthMCPBotRead(t *testing.T, f *oauthHTTPFixture, p model.Principal, bot model.Bot, err error) {
+	want := map[string]int{"snapshot": 1, "credential": 1}
+	if err == nil {
+		want["bot"] = 1
+	}
+	plan := newHTTPCallPlan(t, want)
+	snapshot := newHTTPTestSnapshot(t)
+	snapshot.Credentials = oauthMCPCredentialReader{t: t, plan: plan, actor: p, err: err}
+	snapshot.Bots = &oauthMCPBotReader{t: t, plan: plan, bot: bot}
+	f.Store.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
+		plan.Called("snapshot")
+		return fn(snapshot)
+	}
+}
+
+type oauthMCPDeleteScope struct {
+	store.SessionScope
+	dao *oauthMCPDeleteDAO
+}
+
+func (s oauthMCPDeleteScope) SessionDAO() store.SessionDAO { return s.dao }
+func (s oauthMCPDeleteScope) BotDAO() store.BotWriteDAO    { return s.dao }
+
+type oauthMCPDeleteDAO struct {
+	store.SessionDAO
+	store.BotWriteDAO
+	t           *testing.T
+	plan        *httpCallPlan
+	p           model.Principal
+	bot         model.Bot
+	deletion    store.DeleteBot
+	afterBot    bool
+	credentials int
+}
+
+func (d *oauthMCPDeleteDAO) LockCredential(_ context.Context, p model.Principal, now time.Time) error {
+	d.plan.Called("credential")
+	d.credentials++
+	if p != d.p || now.IsZero() {
+		unexpectedHTTPCall(d.t, "OAuth deletion credential")
+	}
+	if d.afterBot && d.credentials == 1 {
+		return nil
+	}
+	return model.ErrNotFound
+}
+func (d *oauthMCPDeleteDAO) Bot(_ context.Context, id string) (model.Bot, error) {
+	d.plan.Called("bot")
+	if id != d.bot.ID {
+		unexpectedHTTPCall(d.t, "OAuth deletion Bot address")
+	}
+	return oauthHTTPCloneBot(d.bot), nil
+}
+func (d *oauthMCPDeleteDAO) LockBotSessions(_ context.Context, id string) ([]store.BotSession, error) {
+	d.plan.Called("sessions")
+	if id != d.bot.ID {
+		unexpectedHTTPCall(d.t, "OAuth deletion session lock")
+	}
+	return []store.BotSession{}, nil
+}
+func (d *oauthMCPDeleteDAO) RevokeBotSessions(_ context.Context, id string) error {
+	d.plan.Called("revoke")
+	if id != d.bot.ID {
+		unexpectedHTTPCall(d.t, "OAuth deletion session revoke")
+	}
+	return nil
+}
+func (d *oauthMCPDeleteDAO) SaveBotDeletion(_ context.Context, id string, deletion *model.BotDeletion) (model.Bot, error) {
+	d.plan.Called("save")
+	if id != d.bot.ID || deletion == nil || deletion.DeletionID != d.deletion.DeletionID || deletion.RequestedVersion != d.deletion.Version {
+		unexpectedHTTPCall(d.t, "OAuth deletion candidate")
+	}
+	out := d.bot
+	out.Deletion = deletion
+	out.Version++
+	return out, nil
+}
+func oauthMCPDeleteRefused(t *testing.T, f *oauthHTTPFixture, p model.Principal, bot model.Bot, input store.DeleteBot, afterBot bool) {
+	want := map[string]int{"transaction": 1, "credential": 1}
+	if afterBot {
+		want["credential"] = 2
+		for _, name := range []string{"bot", "sessions", "revoke", "save"} {
+			want[name] = 1
+		}
+	}
+	plan := newHTTPCallPlan(t, want)
+	dao := &oauthMCPDeleteDAO{t: t, plan: plan, p: p, bot: bot, deletion: input, afterBot: afterBot}
+	f.Store.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+		plan.Called("transaction")
+		e := fn(oauthMCPDeleteScope{dao: dao})
+		return oauthHTTPCompletion(e), e
+	}
+}
+
+type oauthMCPBotCreationDAO struct {
+	store.BotWriteDAO
+	t     *testing.T
+	plan  *httpCallPlan
+	p     model.Principal
+	bot   model.Bot
+	reads int
+}
+
+func (d *oauthMCPBotCreationDAO) Credential(_ context.Context, p model.Principal) error {
+	d.plan.Called("credential")
+	if p != d.p {
+		unexpectedHTTPCall(d.t, "OAuth Bot creation principal")
+	}
+	return nil
+}
+func (d *oauthMCPBotCreationDAO) LockCreation(_ context.Context, id string) error {
+	d.plan.Called("lock")
+	if id != d.bot.ID {
+		unexpectedHTTPCall(d.t, "OAuth Bot creation lock")
+	}
+	return nil
+}
+func (d *oauthMCPBotCreationDAO) Bot(_ context.Context, id string) (model.Bot, error) {
+	d.plan.Called("read")
+	if id != d.bot.ID {
+		unexpectedHTTPCall(d.t, "OAuth Bot creation read")
+	}
+	d.reads++
+	if d.reads == 1 {
+		return model.Bot{}, model.ErrNotFound
+	}
+	return oauthHTTPCloneBot(d.bot), nil
+}
+func (d *oauthMCPBotCreationDAO) Worker(_ context.Context, user, worker string) error {
+	d.plan.Called("worker")
+	if user != d.p.UserID || worker != d.bot.WorkerID {
+		unexpectedHTTPCall(d.t, "OAuth Bot creation Worker")
+	}
+	return nil
+}
+func (d *oauthMCPBotCreationDAO) InsertBot(_ context.Context, bot model.Bot) error {
+	d.plan.Called("insert")
+	expected := model.Bot{ID: d.bot.ID, OwnerUserID: d.p.UserID, WorkerID: d.bot.WorkerID, Name: d.bot.Name, RequestFingerprint: d.bot.RequestFingerprint, ResolvedConfiguration: d.bot.ResolvedConfiguration}
+	if !reflect.DeepEqual(bot, expected) {
+		d.t.Errorf("OAuth Bot creation candidate: %+v", bot)
+	}
+	return nil
+}
+
+type oauthMCPBotCreationScope struct{ dao store.BotWriteDAO }
+
+func (s oauthMCPBotCreationScope) BotDAO() store.BotWriteDAO { return s.dao }
+func oauthMCPCreateBot(t *testing.T, f *oauthHTTPFixture, p model.Principal, bot model.Bot) {
+	plan := newHTTPCallPlan(t, map[string]int{"transaction": 1, "credential": 2, "lock": 1, "read": 2, "worker": 1, "insert": 1})
+	dao := &oauthMCPBotCreationDAO{t: t, plan: plan, p: p, bot: bot}
+	f.Store.WriteBotCall = func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error) {
+		plan.Called("transaction")
+		e := fn(oauthMCPBotCreationScope{dao: dao})
+		return oauthHTTPCompletion(e), e
 	}
 }

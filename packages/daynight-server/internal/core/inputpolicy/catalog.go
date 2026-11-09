@@ -11,7 +11,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
@@ -35,15 +34,11 @@ type Entry struct {
 // Catalog returns an independent copy so callers cannot mutate the policy source.
 func Catalog() []Entry {
 	return []Entry{
-		{ID: "attachment.metadataPage", Max: attachment.MaxMetadataPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "bot.candidatePage", Max: bot.MaxCandidatePageResponseJSONBytes, Unit: "bytes"},
 		{ID: "bot.name", Max: bot.MaxNameCodePoints, Unit: "code points", Min: 1, HasMin: true},
 		{ID: "bot.cwd", Max: bot.MaxCwdBytes, Unit: "bytes"},
 		{ID: "attachment.content", Max: attachment.MaxContentBytes, Unit: "bytes", Min: 0, HasMin: true},
 		{ID: "attachment.contentType", Max: attachment.MaxContentTypeBytes, Unit: "bytes"},
 		{ID: "attachment.path", Max: attachment.MaxPathCharacters, Unit: "code points"},
-		{ID: "identity.invitation.page", Max: identity.MaxPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "identity.pat.page", Max: identity.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "identity.pat.name", Max: identity.MaxPATNameCodePoints, Unit: "code points", Min: 1, HasMin: true},
 		{ID: "identity.avatarUrl", Max: identity.MaxAvatarURLBytes, Unit: "bytes"},
 		{ID: "identity.field", Max: identity.MaxProfileFieldBytes, Unit: "bytes"},
@@ -54,24 +49,18 @@ func Catalog() []Entry {
 		{ID: "login.browser", Max: identity.MaxPendingLoginsPerBrowser, Unit: "items"},
 		{ID: "login.global", Max: identity.MaxPendingLoginsGlobal, Unit: "items"},
 		{ID: "login.lifetime", Max: int64(identity.LoginLifetime.Seconds()), Unit: "seconds", UpperExclusive: true},
-		{ID: "project.page", Max: project.MaxPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "project.member.page", Max: project.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "project.name.bytes", Max: project.MaxNameBytes, Unit: "bytes"},
 		{ID: "project.name.codePoints", Max: project.MaxNameCodePoints, Unit: "code points"},
 		{ID: "project.repoUrl", Max: project.MaxRepoURLBytes, Unit: "bytes"},
 		{ID: "search.expression", Max: query.MaxBytes, Unit: "bytes"},
 		{ID: "search.terms", Max: query.MaxTerms, Unit: "items"},
 		{ID: "search.depth", Max: query.MaxDepth, Unit: "levels"},
-		{ID: "search.page", Max: tasksearch.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "step.title", Max: text.MaxTitleBytes, Unit: "bytes"},
 		{ID: "step.description", Max: text.MaxDescriptionBytes, Unit: "bytes"},
 		{ID: "step.collection", Max: codec.MaxEncodedBytes, Unit: "bytes"},
 		{ID: "step.mcp.cursor", Max: codec.MaxMCPStepCursorBytes, Unit: "bytes"},
 		{ID: "terminal.history.cursor", Max: sessionv2.MaxHistoryCursorBytes, Unit: "bytes"},
 		{ID: "task.resource", Max: task.MaxTaskResponseJSONBytes, Unit: "bytes"},
-		{ID: "task.sync", Max: task.MaxSyncResponseJSONBytes, Unit: "bytes"},
-		{ID: "task.page", Max: task.MaxPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "task.assignee.page", Max: task.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "task.dependencies", Max: task.MaxDependencies, Unit: "items"},
 		{ID: "task.description", Max: text.MaxDescriptionBytes, Unit: "bytes"},
 		{ID: "task.property", Max: taskproperty.MaxValueBytes, Unit: "bytes"},
@@ -81,12 +70,9 @@ func Catalog() []Entry {
 		{ID: "task.property.worker.machineName", Max: taskproperty.MaxWorkerMachineNameBytes, Unit: "bytes"},
 		{ID: "task.property.worker.nativeSessionId", Max: taskproperty.MaxWorkerNativeSessionIDBytes, Unit: "bytes"},
 		{ID: "task.title", Max: text.MaxTitleBytes, Unit: "bytes"},
-		{ID: "team.page", Max: team.MaxPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "team.member.page", Max: team.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "team.name.bytes", Max: team.MaxNameBytes, Unit: "bytes"},
 		{ID: "team.name.codePoints", Max: team.MaxNameCodePoints, Unit: "code points"},
 		{ID: "thread.message", Max: codec.MessageLimit, Unit: "bytes"},
-		{ID: "thread.page", Max: codec.PageLimit, Unit: "bytes"},
 		{ID: "transport.rest.body", Max: transport.MaxRESTJSONBodyBytes, Unit: "bytes"},
 		{ID: "transport.mcp.body", Max: transport.MaxMCPJSONBodyBytes, Unit: "bytes"},
 		{ID: "transport.mcp.inputOperations", Max: transport.MaxMCPInputOperations, Unit: "items"},
@@ -98,7 +84,6 @@ func Catalog() []Entry {
 		{ID: "transport.attachment.readTimeout", Max: int64(transport.AttachmentBodyReadTimeout.Seconds()), Unit: "seconds"},
 		{ID: "transport.archive.readTimeout", Max: int64(transport.ArchiveBodyReadTimeout.Seconds()), Unit: "seconds"},
 		{ID: "worker.active.window", Max: int64(worker.ActiveWindow.Seconds()), Unit: "seconds", Min: 0, HasMin: true, UpperExclusive: true},
-		{ID: "worker.page", Max: worker.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "worker.active", Max: worker.MaxActiveWorkers, Unit: "items"},
 		{ID: "worker.configuration", Max: worker.MaxConfigurationJSONBytes, Unit: "bytes"},
 		{ID: "worker.cpu.model", Max: worker.MaxCPUModelBytes, Unit: "bytes"},

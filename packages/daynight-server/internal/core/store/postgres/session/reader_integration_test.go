@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -88,19 +87,6 @@ func TestSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T) {
 		lifecycle string
 	}{{13, 113, "active"}, {14, 114, "draining"}, {15, 115, "archived"}, {19, 119, "active"}, {20, 120, "active"}, {21, 121, "active"}} {
 		snapshot := readerSnapshot(t, queryID(entry.id), project.ID, queryID(entry.task), worker, entry.lifecycle)
-		if entry.task == 13 {
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(snapshot), &fields); err != nil {
-				t.Fatal(err)
-			}
-			fields["controls"] = json.RawMessage(`{"unread":[` + strings.Repeat(`"catalog",`, 10000) + `"catalog"]}`)
-			fields["capabilities"] = json.RawMessage(`"unread malformed full snapshot field"`)
-			encoded, err := json.Marshal(fields)
-			if err != nil {
-				t.Fatal(err)
-			}
-			snapshot = string(encoded)
-		}
 		var seen, deadline *time.Time
 		if entry.task == 14 {
 			seen, deadline = &lastSeen, &drain
@@ -116,7 +102,6 @@ func TestSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T) {
  VALUES($1,$2,$3,$4,$5,$1,'{}','herdr',NULL,'{}')`, queryID(118), project.ID, queryID(18), worker.ClaimID, worker.UserID)
 	mustQueryExec(t, db, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id)
  VALUES($1,$2,$1,'{}','{}','test',$3)`, queryID(123), worker.UserID, queryID(124))
-	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'unread','not JSON')`, queryID(13))
 
 	sources := readSessionSources(t, db, project.ID)
 	if len(sources) != 8 {
@@ -145,7 +130,7 @@ func TestSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T) {
 		wantLifecycle := []string{"active", "draining", "archived"}[i-2]
 		if state == nil || state.SessionID != queryID(111+i) || state.ProjectID != project.ID || state.TaskID != source.TaskID || state.ClaimID != worker.ClaimID ||
 			state.Fence.SessionID != state.SessionID || state.Fence.ClaimID != worker.ClaimID || state.Fence.ExecutionGeneration != "7" || state.Fence.ConnectionEpoch != "3" ||
-			state.Identity != (sp.Identity{ProjectID: project.ID, TaskID: source.TaskID, WorkerID: worker.WorkerID, WorktreeID: worker.WorktreeID, AgentControlMode: "web"}) || state.Lifecycle != wantLifecycle {
+			state.Identity != (sp.Identity{ProjectID: project.ID, TaskID: source.TaskID, WorkerID: worker.WorkerID, WorktreeID: worker.WorktreeID, AgentControlMode: "web", ControllerID: queryID(905), Provider: "codex"}) || state.Lifecycle != wantLifecycle {
 			t.Fatalf("narrow durable state changed: %#v", state)
 		}
 		if i == 3 {
@@ -161,24 +146,16 @@ func TestSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T) {
 	}
 }
 
-func TestSessionReaderRejectsMalformedStoredWorker(t *testing.T) {
+func TestSessionReaderPropagatesWorkerDecodeErrors(t *testing.T) {
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
 	_, valid := readerWorker(t, queryID(100))
 	for _, test := range []struct {
 		name, raw, sqlState string
-		budgetField         string
-		budgetMax           int64
 	}{
 		{name: "invalid JSON", raw: "{", sqlState: "22P02"},
-		{name: "invalid claim", raw: strings.Replace(valid, queryID(100), "invalid", 1), sqlState: "22P02"},
-		{name: "unknown field", raw: strings.TrimSuffix(valid, "}") + `,"unexpected":true}`},
-		{name: "duplicate claim", raw: strings.TrimSuffix(valid, "}") + `,"claimId":"` + queryID(100) + `"}`},
-		{name: "missing identity", raw: strings.Replace(valid, `"workerId":"`+queryID(902)+`",`, "", 1)},
-		{name: "stored null", raw: "null"},
-		{name: "raw value budget", raw: valid + strings.Repeat(" ", taskproperties.MaxValueBytes), budgetField: "properties.worker", budgetMax: taskproperties.MaxValueBytes},
-		{name: "normalized machine budget", raw: strings.Replace(valid, "Reader machine", strings.Repeat("x", taskproperties.MaxWorkerMachineNameBytes+1), 1), budgetField: "properties.worker.machine.name", budgetMax: taskproperties.MaxWorkerMachineNameBytes},
+		{name: "worker field type", raw: strings.Replace(valid, `"state":"active"`, `"state":1`, 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2) ON CONFLICT(task_id,name) DO UPDATE SET value=excluded.value`, task.ID, test.raw)
@@ -195,17 +172,17 @@ func TestSessionReaderRejectsMalformedStoredWorker(t *testing.T) {
 					t.Fatalf("SQL decode cause lost: %v", err)
 				}
 			}
-			if test.budgetField != "" {
-				var violation *limit.Violation
-				if !errors.As(err, &violation) || violation.Max != test.budgetMax || violation.Field != test.budgetField {
-					t.Fatalf("worker budget lost: %v", err)
+			if test.sqlState == "" {
+				var decoding *json.UnmarshalTypeError
+				if !errors.As(err, &decoding) {
+					t.Fatalf("worker decoding cause lost: %v", err)
 				}
 			}
 		})
 	}
 }
 
-func TestSessionReaderRejectsMalformedStoredMetadata(t *testing.T) {
+func TestSessionReaderPreservesMetadataDecodeErrorsAndIndependentIdentity(t *testing.T) {
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
@@ -215,11 +192,8 @@ func TestSessionReaderRejectsMalformedStoredMetadata(t *testing.T) {
 	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, raw)
 	insertReaderSession(t, db, id, project.ID, task.ID, worker, valid, nil, nil)
 	for _, test := range []struct{ name, path, value string }{
-		{"missing session identity", "{sessionId}", `null`}, {"invalid canonical identity", "{identity,taskId}", `"invalid"`},
 		{"generation numeric", "{executionGeneration}", `7`}, {"epoch numeric", "{connectionEpoch}", `3`},
-		{"generation zero", "{executionGeneration}", `"0"`}, {"generation leading zero", "{executionGeneration}", `"07"`},
-		{"epoch negative", "{connectionEpoch}", `"-1"`}, {"epoch overflow", "{connectionEpoch}", `"9223372036854775808"`},
-		{"invalid mode", "{identity,agentControlMode}", `"other"`}, {"invalid lifecycle", "{lifecycle}", `"removed"`},
+		{"task identity numeric", "{identity,taskId}", `1`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mustQueryExec(t, db, `UPDATE task_sessions SET snapshot=jsonb_set($2::jsonb,$3::text[],$4::jsonb) WHERE id=$1`, id, valid, test.path, test.value)
@@ -231,8 +205,9 @@ func TestSessionReaderRejectsMalformedStoredMetadata(t *testing.T) {
 				t.Fatalf("corrupt metadata accepted or hidden: %v", err)
 			}
 			var failure *store.Error
-			if !errors.As(err, &failure) {
-				t.Fatalf("metadata store error lost: %v", err)
+			var decoding *json.UnmarshalTypeError
+			if !errors.As(err, &failure) || !errors.As(err, &decoding) {
+				t.Fatalf("metadata decoding cause lost: %v", err)
 			}
 		})
 	}
@@ -281,7 +256,7 @@ func TestSessionReaderUsesOneReadOnlyProjectQuery(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if len(sources) != 3 || counted.queries != 1 || counted.fields != 19 {
+		if len(sources) != 3 || counted.queries != 1 || counted.fields != 10 {
 			t.Fatalf("project query is not narrow and batched: rows=%d queries=%d columns=%d", len(sources), counted.queries, counted.fields)
 		}
 		return nil

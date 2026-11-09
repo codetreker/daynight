@@ -126,8 +126,11 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", false, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "native", "projects")
+	fields, err := configurationObject(raw, "configuration", false, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects")
 	if err != nil {
+		return value, err
+	}
+	if err := configurationDecode(fields["preferPlatformSpecificTasks"], &value.PreferPlatformSpecificTasks); err != nil {
 		return value, err
 	}
 	value.MaxConcurrent, err = configurationInteger(fields["maxConcurrent"], 1, workerSafeInteger)
@@ -274,7 +277,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "native"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -301,6 +304,9 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
+			case "preferPlatformSpecificTasks":
+				var enabled bool
+				err = configurationDecode(item.AppliedValue, &enabled)
 			case "native", "projectNative":
 				_, _, err = configurationNative(item.AppliedValue, false, true)
 			case "projectPreparation", "projectRemoval":

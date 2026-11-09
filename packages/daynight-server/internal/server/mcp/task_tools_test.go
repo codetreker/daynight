@@ -33,7 +33,7 @@ func (s *queryStub) MCPList(_ context.Context, principal model.Principal, _ stri
 	if s.err != nil {
 		return s.err
 	}
-	for i, item := range s.items {
+	for i, item := range s.items[:min(len(s.items), request.Limit)] {
 		if !visit(item, fmt.Sprintf("cursor-%d", i), i+1 < len(s.items)) {
 			break
 		}
@@ -49,7 +49,7 @@ func (s *queryStub) MCPReady(_ context.Context, principal model.Principal, _ str
 	return s.items[:min(len(s.items), request.Limit)], nil
 }
 
-func TestTaskListProjectionAndContinuationBudget(t *testing.T) {
+func TestTaskListProjectionAndCountContinuation(t *testing.T) {
 	s := &queryStub{}
 	for i := 0; i < 70; i++ {
 		task := model.Task{ID: fmt.Sprint(i), ProjectID: "project", Title: strings.Repeat("a", 512), Description: "private description", Version: 1, CreatedAt: time.Now(), Properties: model.TaskProperties{}}
@@ -61,15 +61,12 @@ func TestTaskListProjectionAndContinuationBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := result.Data.(listData)
-	if len(data.Items) == 0 || len(data.Items) == len(s.items) || data.NextCursor == nil {
+	if len(data.Items) != len(s.items) || data.NextCursor != nil {
 		t.Fatalf("continuation: %#v", data)
 	}
-	if *data.NextCursor != fmt.Sprintf("cursor-%d", len(data.Items)-1) {
-		t.Fatalf("invalid continuation: %q", *data.NextCursor)
-	}
 	encoded, err := json.Marshal(envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-	if err != nil || len(encoded) > 16<<10 {
-		t.Fatalf("budget=%d err=%v", len(encoded), err)
+	if err != nil || len(encoded) <= 16<<10 {
+		t.Fatalf("complete page=%d err=%v", len(encoded), err)
 	}
 	var item map[string]any
 	if err := json.Unmarshal(data.Items[0], &item); err != nil {
@@ -284,32 +281,25 @@ func TestTaskReadyCountLimitAndCompleteViews(t *testing.T) {
 	}
 }
 
-func TestTaskListFullBudgetKeepsLastReturnedCursor(t *testing.T) {
+func TestTaskListFullProjectionPreservesCountCursorAndEncodingErrors(t *testing.T) {
 	stub := &queryStub{}
 	for i := 0; i < 3; i++ {
-		stub.items = append(stub.items, store.TaskPriorityItem{Task: model.Task{
-			ID: fmt.Sprint(i), ProjectID: "project", Title: strings.Repeat("t", 600), Description: "omitted",
-			Version: 1, CreatedAt: time.Now(), Properties: model.TaskProperties{},
-		}})
+		stub.items = append(stub.items, store.TaskPriorityItem{Task: model.Task{ID: fmt.Sprint(i), ProjectID: "project", Title: strings.Repeat("t", 600), Description: "omitted", Version: 1, CreatedAt: time.Now(), Properties: model.TaskProperties{}}})
 	}
 	actor := RequestActor{RequestID: "request"}
-	const budget = 1900
-	result, err := listToolWithBudget(context.Background(), actor, listInput{ProjectID: "project", View: "full", Limit: 3}, stub, budget)
+	result, err := listTool(context.Background(), actor, listInput{ProjectID: "project", View: "full", Limit: 2}, stub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := result.Data.(listData)
-	if len(data.Items) == 0 || len(data.Items) >= len(stub.items) || data.NextCursor == nil || *data.NextCursor != fmt.Sprintf("cursor-%d", len(data.Items)-1) {
-		t.Fatalf("bounded continuation: %#v", data)
+	if len(data.Items) != 2 || data.NextCursor == nil || *data.NextCursor != "cursor-1" {
+		t.Fatalf("complete page: %#v", data)
 	}
-	encoded, err := json.Marshal(envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-	if err != nil || len(encoded) > budget {
-		t.Fatalf("encoded length=%d, err=%v", len(encoded), err)
-	}
-	failure, err := listToolWithBudget(context.Background(), actor, listInput{ProjectID: "project", View: "full", Limit: 3}, stub, 200)
-	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "payload_too_large" || failure.Refs["taskId"] != "0" || failure.Refs["readWith"] != "task_show" {
-		t.Fatalf("first item failure: %#v, %v", failure, err)
+	stub.items[0].Task.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`not JSON`)}
+	result, err = listTool(context.Background(), actor, listInput{ProjectID: "project", View: "full", Limit: 2}, stub)
+	var marshaler *json.MarshalerError
+	if !errors.As(err, &marshaler) || result.Data != nil {
+		t.Fatalf("encoding cause lost: %#v, %v", result, err)
 	}
 }
 

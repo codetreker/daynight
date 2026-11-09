@@ -31,7 +31,7 @@ properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组�
 
 JSON 对象的重复键与未知字段在普通 unmarshal 前被拒绝。PR 字符串只使用原有 JSON 字符串解码，不复用标题、仓库 URL 或 Worker 文本限制；空值、控制字符、NUL、顺序和重复项均保留。规范化只统一值的 JSON 表示，保留旧系统已经解码的字符串语义，包括错误 surrogate 的既有替换行为。
 
-写入先按定义执行结构规范化，再对每个完整值独立执行 8 KiB 准入；PR 的 url/title 和 worker 自由文本另有各自字节上限。公共与生命周期写入使用相同策略，但不改变只读权限。存储读取同样通过定义的 native decoder/normalizer，语义比较和 DTO 输出使用规范值；读取不执行写入额度或截断旧值。不能把旧 JSON 原始片段直接透传，从而改变客户端看到的字符。属性名和结构非法产生可识别的属性校验错误；数据库故障保持原错误链。
+写入先按定义执行结构规范化，再对每个完整值独立执行 8 KiB 准入；PR 的 url/title 和 worker 自由文本另有各自字节上限。公共与生命周期写入使用相同策略，但不改变只读权限。存储读取直接将已规范化的完整 JSON 文本装入 `json.RawMessage` map，不调用 registry 的 Normalize/Validate/Admit，也不执行容量复查、substring 分块解析或历史格式解释。领域消费者仅在需要身份或状态比较时普通解码相应属性；自然解码及输出错误和数据库故障保持原错误链。写入候选的语义比较仍使用写入规范化规则。
 
 TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更值，不原地修改当前任务或共享快照。属性 map 的存在键参与比较，缺失与 [] 不相等；对象键序、缩进和等价转义不构成值变化，有序数组仍按顺序比较。
 
@@ -39,7 +39,7 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示周期 ping 未暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在实际周期输入递交前读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 
@@ -56,7 +56,7 @@ task ID 已是全局 UUID 主键，属性行不重复 project_id。授权先定�
 
 value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；存储和读取都不对既有 opaque 字符串做 SQL JSON 转换。
 
-完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，非法值使整个读取失败。
+完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，查询、扫描或正常编码失败使整个读取失败。一次任务页使用一次属性批量查询，查询次数不随该页任务或属性数量线性增长。
 
 Worker inventory 在原 keyset 顺序中读取唯一 worker 属性并匹配 active/userId/workerId，之后才应用最终 page limit/lookahead；选中任务再批量载入完整属性。Worker reporting 对其引用的 task IDs 批量读取 worker 值并核对项目、当前 owner、worker、claim 和状态，不扫描其他项目，也不把观察快照当作认领权威。
 
@@ -106,7 +106,7 @@ CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、pau
 
 CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/archived/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
-Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。新写入的完整规范化数组受 8 KiB 属性值上限约束；历史数组不因写入额度在读取时截断，完整响应仍受输出预算约束。Web 对返回的完整数组每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；原生前后页与页码控件使返回的全部项可访问，不依赖可变行高或额外请求。
+Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。新写入的完整规范化数组受 8 KiB 属性值上限约束；服务端读取完整保存的数组，不重复结构或写入额度检查，不设置领域读取响应字节预算；客户端传输与缓存限制仍由各自所有者维护。Web 对返回的完整数组每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；原生前后页与页码控件使返回的全部项可访问，不依赖可变行高或额外请求。
 
 task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一只读快照中取得完整 properties。每条摘要携带当前完整对象，按任务 version 替换；缺失键自然删除，无独立属性水位或 tombstone。Web 以通用 JSON 比较覆盖全部属性，schema 2→3 及直接 1→3 重建项目/摘要/详情、轮换 user fence 并清掉旧水位，避免把旧摘要缺字段解释为 {}。
 
@@ -114,7 +114,7 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 ## 错误与观测
 
-非法输入与非法存储属性值统一映射为 400 invalid_input；数据库连接、查询、事务和其他内部故障为 500 internal_error。服务层通过可识别的属性校验错误区分两类原因，store 包装保留错误链。批量读取不返回部分结果，修改不因坏值部分提交，迁移错误则中止启动迁移。
+写入输入校验失败映射为 400 invalid_input；读取保存的属性不新增校验分类。正常解码或输出失败、数据库连接、查询、事务和其他内部故障保留原错误链。批量读取不返回部分结果，修改的既有校验与原子提交保持；既有迁移错误仍中止启动迁移。本次读取职责不新增历史扫描或迁移。
 
 复用 request context 与 slog JSON 的 request_id/user_id/project_id/task_id、route pattern 和阶段。属性操作记录 component=task_property、phase=schema|get|set|remove；写成功的 outcome 为 changed/unchanged。property_name 只在定义匹配后记录，错误包含固定分类和受限的路径/规则，不记录值、PR 内容或令牌。
 

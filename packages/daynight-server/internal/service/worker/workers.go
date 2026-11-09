@@ -9,10 +9,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
@@ -136,72 +134,29 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 		return WorkerPage{}, err
 	}
 	result := WorkerPage{Items: []workerprotocol.WorkerSummary{}}
-	var cursors []string
-	pendingLast := false
-	limitError := func() error {
-		return &model.Fault{Code: "resource_limit_exceeded", Message: "Worker summary exceeds the encoded page limit."}
-	}
+	var records store.WorkerSummaryPage
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		return snapshot.WorkerDAO().WorkerSummaries(ctx, principal.UserID, result.ObservedAt, page, func(item store.WorkerSummary) (bool, error) {
-			// An item which only fits without a cursor is valid only at the end.
-			if pendingLast {
-				if len(result.Items) == 1 {
-					return false, limitError()
-				}
-				result.Items = result.Items[:len(result.Items)-1]
-				cursor := cursors[len(cursors)-2]
-				result.NextCursor = &cursor
-				return false, nil
-			}
-			if len(result.Items) == page.Limit || item.Oversized {
-				if len(result.Items) == 0 {
-					return false, limitError()
-				}
-				cursor := cursors[len(cursors)-1]
-				result.NextCursor = &cursor
-				return false, nil
-			}
-			cursor, err := workercore.ListCursor(principal.UserID, item.CreatedAt, item.WorkerID)
-			if err != nil {
-				return false, err
-			}
-			summary := workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, Platform: string(item.Platform), LastReportedAt: item.LastReportedAt, TaskObservationState: string(item.TaskObservationState), TaskObservedAt: item.TaskObservedAt, ActiveTaskCount: item.ActiveTaskCount}
-			result.Items = append(result.Items, summary)
-			cursors = append(cursors, cursor)
-			wire := workerprotocol.WorkerPage{ObservedAt: result.ObservedAt.UTC(), Items: result.Items, NextCursor: &cursor}
-			_, err = measure.JSON(io.Discard, "worker.page", workercore.MaxPageResponseJSONBytes, wire, true)
-			if err == nil {
-				return true, nil
-			}
-			var violation *limit.Violation
-			if !errors.As(err, &violation) {
-				return false, err
-			}
-			wire.NextCursor = nil
-			_, noCursorErr := measure.JSON(io.Discard, "worker.page", workercore.MaxPageResponseJSONBytes, wire, true)
-			if noCursorErr == nil {
-				pendingLast = true
-				return true, nil
-			}
-			if !errors.As(noCursorErr, &violation) {
-				return false, noCursorErr
-			}
-			result.Items = result.Items[:len(result.Items)-1]
-			if len(result.Items) == 0 {
-				return false, limitError()
-			}
-			previous := cursors[len(cursors)-2]
-			result.NextCursor = &previous
-			return false, nil
-		})
+		records, err = snapshot.WorkerDAO().WorkerSummaries(ctx, principal.UserID, result.ObservedAt, page)
+		return err
 	})
 	if err != nil {
 		return WorkerPage{}, fmt.Errorf("list workers: %w", err)
+	}
+	for _, item := range records.Items {
+		result.Items = append(result.Items, workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, Platform: string(item.Platform), LastReportedAt: item.LastReportedAt, TaskObservationState: string(item.TaskObservationState), TaskObservedAt: item.TaskObservedAt, ActiveTaskCount: item.ActiveTaskCount})
+	}
+	if records.HasMore {
+		last := records.Items[len(records.Items)-1]
+		cursor, err := workercore.ListCursor(principal.UserID, last.CreatedAt, last.WorkerID)
+		if err != nil {
+			return WorkerPage{}, fmt.Errorf("list workers: %w", err)
+		}
+		result.NextCursor = &cursor
 	}
 	return result, nil
 }

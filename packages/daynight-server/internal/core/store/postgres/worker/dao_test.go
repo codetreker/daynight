@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/worker"
 	"github.com/google/uuid"
@@ -18,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -114,6 +111,14 @@ func TestWorkerDAOSnapshotRetentionVisibilityAndPagination(t *testing.T) {
 	page, err = reader.Workers(ctx, user, stamp, store.Page{Limit: 1, After: &store.Position{CreatedAt: page.Items[0].CreatedAt, ID: page.Items[0].WorkerID}})
 	if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != another.WorkerID || page.HasMore {
 		t.Fatalf("last page: %+v %v", page, err)
+	}
+	summaries, err := reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1})
+	if err != nil || len(summaries.Items) != 1 || summaries.Items[0].WorkerID != original.WorkerID || !summaries.HasMore || summaries.Items[0].TaskObservationState != model.WorkerTasksStale || summaries.Items[0].ActiveTaskCount == nil || *summaries.Items[0].ActiveTaskCount != 1 {
+		t.Fatalf("first summary page: %+v %v: %v", summaries, err, errors.Unwrap(err))
+	}
+	summaries, err = reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1, After: &store.Position{CreatedAt: summaries.Items[0].CreatedAt, ID: summaries.Items[0].WorkerID}})
+	if err != nil || len(summaries.Items) != 1 || summaries.Items[0].WorkerID != another.WorkerID || summaries.HasMore || summaries.Items[0].TaskObservationState != model.WorkerTasksUnavailable || summaries.Items[0].ActiveTaskCount != nil || summaries.Items[0].TaskObservedAt != nil {
+		t.Fatalf("last summary page: %+v %v: %v", summaries, err, errors.Unwrap(err))
 	}
 	for _, id := range []string{expired.WorkerID, foreign.WorkerID, uuid.NewString()} {
 		if _, err := reader.Worker(ctx, user, id, stamp); !errors.Is(err, model.ErrNotFound) {
@@ -239,8 +244,12 @@ func TestWorkerDAOReportedTaskSourcesAndStoredCorruption(t *testing.T) {
 		t.Fatalf("private sources: %+v %v", items, err)
 	}
 	execute(t, tx, `UPDATE task_properties SET value='invalid JSON' WHERE task_id=$1 AND name='worker'`, task)
-	if _, err := writer.ReportTaskSnapshots(ctx, user, inventory); err == nil || errors.Unwrap(err) == nil {
-		t.Fatalf("corrupt worker property accepted: %v", err)
+	items, err = writer.ReportTaskSnapshots(ctx, user, inventory)
+	if err != nil || len(items) != 1 || string(items[0].Task.Properties["worker"]) != "invalid JSON" {
+		t.Fatalf("reported property bytes changed: %+v %v", items, err)
+	}
+	if _, err := taskproperty.Worker(items[0].Task.Properties); err == nil {
+		t.Fatal("worker JSON decode failure was hidden")
 	}
 	workerID := uuid.NewString()
 	stamp := time.Now().UTC()
@@ -301,39 +310,33 @@ func TestWorkerSummariesProjectOnlyVisibleTasksWithoutDecodingSnapshots(t *testi
 	execute(t, tx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, hidden)
 	execute(t, tx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
 		SELECT $1, gen_random_uuid(), statement_timestamp() + n * interval '1 millisecond', statement_timestamp(),
-		jsonb_build_object('machine',jsonb_build_object('id',$2::text,'name','Summary'),'platform','linux','cpu', jsonb_build_object('unused','Unprojected probe')),
+		jsonb_build_object('machine',jsonb_build_object('ID',$2::text,'Name','Summary'),'platform','linux','cpu', jsonb_build_object('state','ok','checkedAt','2026-01-01T00:00:00Z','value',jsonb_build_object('model','Unprojected probe','logicalProcessors',4,'usagePercent',1))),
 		jsonb_build_object('state','observed','observedAt','2026-01-01T00:00:00Z','items',jsonb_build_array(
 		jsonb_build_object('taskId',$3::text,'projectId',$4::text,'title','Unprojected title'),
 		jsonb_build_object('taskId',$5::text,'projectId',$4::text))) FROM generate_series(1,100) n`, user, uuid.NewString(), visible, project, hidden)
 	projection := &summaryProjectionTransaction{Tx: tx, t: t}
 	reader := worker.NewReader(projection)
-	var got []store.WorkerSummary
-	err := reader.WorkerSummaries(ctx, user, time.Now(), store.Page{Limit: 100}, func(item store.WorkerSummary) (bool, error) {
-		got = append(got, item)
-		return true, nil
-	})
-	if err != nil || len(got) != 100 {
-		t.Fatalf("summaries: %d %v", len(got), err)
+	page, err := reader.WorkerSummaries(ctx, user, time.Now(), store.Page{Limit: 100})
+	if err != nil || len(page.Items) != 100 || page.HasMore {
+		t.Fatalf("summaries: %d %v", len(page.Items), err)
 	}
-	for _, item := range got {
-		if item.Oversized || item.Machine.Name != "Summary" || item.ActiveTaskCount == nil || *item.ActiveTaskCount != 1 || item.TaskObservedAt == nil {
+	for _, item := range page.Items {
+		if item.Machine.Name != "Summary" || item.ActiveTaskCount == nil || *item.ActiveTaskCount != 1 || item.TaskObservedAt == nil {
 			t.Fatalf("summary: %+v", item)
 		}
 	}
 	execute(t, tx, `DELETE FROM project_grants WHERE project_id=$1`, project)
-	count := 0
-	err = reader.WorkerSummaries(ctx, user, time.Now(), store.Page{Limit: 1}, func(item store.WorkerSummary) (bool, error) {
-		count++
-		if item.ActiveTaskCount == nil || *item.ActiveTaskCount != 0 {
-			t.Fatalf("revoked visibility: %+v", item)
-		}
-		return false, nil
-	})
-	if err != nil || count != 1 {
-		t.Fatalf("early stop: %d %v", count, err)
+	page, err = reader.WorkerSummaries(ctx, user, time.Now(), store.Page{Limit: 1})
+	if err != nil || len(page.Items) != 1 || !page.HasMore || page.Items[0].ActiveTaskCount == nil || *page.Items[0].ActiveTaskCount != 0 {
+		t.Fatalf("revoked visibility: %+v %v", page, err)
 	}
-	if projection.queries != 2 {
-		t.Fatalf("summary streams used %d queries instead of one each", projection.queries)
+	after := &store.Position{CreatedAt: page.Items[0].CreatedAt, ID: page.Items[0].WorkerID}
+	page, err = reader.WorkerSummaries(ctx, user, time.Now(), store.Page{Limit: 100, After: after})
+	if err != nil || len(page.Items) != 99 || page.HasMore {
+		t.Fatalf("continuation: %+v %v", page, err)
+	}
+	if projection.queries != 3 {
+		t.Fatalf("summary pages used %d queries instead of one each", projection.queries)
 	}
 }
 
@@ -353,7 +356,7 @@ func (tx *summaryProjectionTransaction) Query(ctx context.Context, sql string, a
 	// PostgreSQL result types expose full JSON payload reads without requiring
 	// large stored bodies or assumptions about the query's spelling.
 	for _, field := range rows.FieldDescriptions() {
-		if field.DataTypeOID == pgtype.JSONOID || field.DataTypeOID == pgtype.JSONBOID {
+		if (field.DataTypeOID == pgtype.JSONOID || field.DataTypeOID == pgtype.JSONBOID) && field.Name != "task_observed_at" {
 			rows.Close()
 			tx.t.Fatalf("summary query returned JSON payload column %q", field.Name)
 		}
@@ -363,185 +366,6 @@ func (tx *summaryProjectionTransaction) Query(ctx context.Context, sql string, a
 
 func (tx *summaryProjectionTransaction) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	tx.t.Helper()
-	tx.t.Fatal("summary stream fetched an individual record")
+	tx.t.Fatal("summary page fetched an individual record")
 	return tx.Tx.QueryRow(ctx, sql, args...)
-}
-
-func TestWorkerSummaryRejectsMalformedProjectedFields(t *testing.T) {
-	tx := workerTransaction(t)
-	user, id := uuid.NewString(), uuid.NewString()
-	item := snapshot(user, id, time.Now())
-	if _, err := worker.NewWriter(tx).UpsertWorker(t.Context(), item); err != nil {
-		t.Fatal(err)
-	}
-	for _, mutation := range []string{
-		`UPDATE workers SET task_snapshot='{"state":"observed","items":{}}' WHERE worker_id=$1`,
-		`UPDATE workers SET task_snapshot='{"state":"observed","items":[{"taskId":1}]}' WHERE worker_id=$1`,
-		`UPDATE workers SET task_snapshot='{"state":"observed","items":[{"taskId":"not-a-uuid"}]}' WHERE worker_id=$1`,
-		`UPDATE workers SET task_snapshot='{"state":"unavailable","items":[]}', telemetry=jsonb_set(telemetry,'{machine,name}','42') WHERE worker_id=$1`,
-	} {
-		execute(t, tx, mutation, id)
-		err := worker.NewReader(tx).WorkerSummaries(t.Context(), user, time.Now(), store.Page{Limit: 1}, func(store.WorkerSummary) (bool, error) { return true, nil })
-		if err == nil {
-			t.Fatalf("malformed summary accepted: %s", mutation)
-		}
-	}
-}
-
-func TestJSONTimestampValidationMatchesGo(t *testing.T) {
-	tx := workerTransaction(t)
-	cases := []string{"2026-01-02T03:04:05Z", "2026-01-02T3:04:05Z", "2026-01-02T03:04:05,123Z", "2026-01-02T03:04:05+24:60", "2026-01-02T03:04:05-00:00", "0000-02-29T00:00:00Z", "1900-02-29T00:00:00Z", "2000-02-29T00:00:00Z", "2026-02-30T00:00:00Z", "2026-01-02 03:04:05Z", "2026-01-02t03:04:05Z", "2026-01-02T03:04:05z", "2026-01-02T03:04:05+25:00", "2026-01-02T03:04:05+00:61", "2026-01-02T03:04:60Z", "2026-01-02T24:00:00Z", "2026-01-02T03:04:05.123456789" + strings.Repeat("1", 1000) + "Z", "2026-01-02T3:04:05," + strings.Repeat("1", 1000) + "+24:60", "2026-01-02T03:04:05." + strings.Repeat("1", 1000) + "x"}
-	for _, value := range cases {
-		raw, _ := json.Marshal(value)
-		var decoded time.Time
-		goErr := json.Unmarshal(raw, &decoded)
-		var invalid bool
-		if err := tx.QueryRow(t.Context(), `SELECT `+pg.JSONTimestampInvalid("v")+` FROM (SELECT $1::jsonb AS v) x`, string(raw)).Scan(&invalid); err != nil {
-			t.Fatal(err)
-		}
-		if invalid != (goErr != nil) {
-			t.Fatalf("timestamp %q Go=%v SQL invalid=%v", value, goErr, invalid)
-		}
-		if goErr == nil {
-			var compact string
-			if err := tx.QueryRow(t.Context(), `SELECT `+pg.CompactJSONTime("v")+` FROM (SELECT $1::text AS v) x`, value).Scan(&compact); err != nil {
-				t.Fatal(err)
-			}
-			parsed, err := time.Parse(time.RFC3339Nano, compact)
-			if err != nil || !parsed.Equal(decoded) {
-				t.Fatalf("compact timestamp %q: %v", value, err)
-			}
-		}
-	}
-}
-
-func TestWorkerSummaryAliasesAndNestedDecoderErrors(t *testing.T) {
-	tx := workerTransaction(t)
-	ctx := t.Context()
-	user, id, project, task := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	stamp := time.Now().UTC()
-	if _, err := worker.NewWriter(tx).UpsertWorker(ctx, snapshot(user, id, stamp)); err != nil {
-		t.Fatal(err)
-	}
-	execute(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'P','host:repo')`, project)
-	execute(t, tx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project, user)
-	execute(t, tx, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'T','todo')`, task, project)
-	execute(t, tx, `UPDATE workers SET telemetry=jsonb_build_object('MACHINE',jsonb_build_object('ID',$2::text,'NAME','first'),'machine',jsonb_build_object('Name','second'),'PLATFORM','linux'),
-		task_snapshot=jsonb_build_object('STATE','observed','ITEMS',jsonb_build_array(jsonb_build_object('TaſkId',$3::text,'PROJECTID',$4::text)),'OBSERVEDAT','2026-01-02T03:04:05Z') WHERE worker_id=$1`, id, uuid.NewString(), task, project)
-	reader := worker.NewReader(tx)
-	full, err := reader.Worker(ctx, user, id, stamp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got store.WorkerSummary
-	err = reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1}, func(value store.WorkerSummary) (bool, error) { got = value; return true, nil })
-	if err != nil || got.Machine != full.Telemetry.Machine || got.Platform != full.Telemetry.Platform || got.TaskObservationState != full.TaskSnapshot.State || got.ActiveTaskCount == nil || *got.ActiveTaskCount != len(full.TaskSnapshot.Items) || got.TaskObservedAt == nil || !got.TaskObservedAt.Equal(*full.TaskSnapshot.ObservedAt) {
-		t.Fatalf("alias projection: %+v %v", got, err)
-	}
-	// A second array alias reuses existing slice elements during Go decoding.
-	execute(t, tx, `UPDATE workers SET task_snapshot=jsonb_build_object('state','observed','Items',jsonb_build_array(jsonb_build_object('taskId',$2::text)), 'items',jsonb_build_array(jsonb_build_object('projectId',$3::text))) WHERE worker_id=$1`, id, task, project)
-	merged, err := reader.Worker(ctx, user, id, stamp)
-	if err != nil || len(merged.TaskSnapshot.Items) != 1 {
-		t.Fatalf("full alias merge: %+v %v", merged.TaskSnapshot, err)
-	}
-	got = store.WorkerSummary{}
-	err = reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1}, func(value store.WorkerSummary) (bool, error) { got = value; return true, nil })
-	if err != nil || got.ActiveTaskCount == nil || *got.ActiveTaskCount != 1 {
-		t.Fatalf("summary alias merge: %+v %v", got, err)
-	}
-	for _, telemetry := range []string{
-		`{"CPU":"bad","cpu":{}}`,
-		`{"cpu":{"value":{"logicalProcessors":1.5}}}`,
-		`{"cpu":{"value":{"usagePercent":1e400}}}`,
-		`{"assistantHost":{"providers":[{"args":[false]}]}}`,
-		`{"runtimeConfiguration":{"projects":[{"native":{"model":{"source":42}}}]}}`,
-		`{"versions":{"herdr":{"checkedAt":"2026-02-30T00:00:00Z"}}}`,
-	} {
-		execute(t, tx, `UPDATE workers SET telemetry=$2::jsonb WHERE worker_id=$1`, id, telemetry)
-		if _, err := reader.Worker(ctx, user, id, stamp); err == nil {
-			t.Fatalf("full read accepted %s", telemetry)
-		}
-		err := reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1}, func(store.WorkerSummary) (bool, error) { return true, nil })
-		if err == nil {
-			t.Fatalf("summary accepted %s", telemetry)
-		}
-	}
-}
-
-func TestWorkerSummaryLookaheadTaskIDValidation(t *testing.T) {
-	tx := workerTransaction(t)
-	ctx := t.Context()
-	user := uuid.NewString()
-	stamp := time.Now().UTC()
-	first, second := snapshot(user, uuid.NewString(), stamp), snapshot(user, uuid.NewString(), stamp.Add(time.Second))
-	for _, item := range []model.WorkerSnapshot{first, second} {
-		if _, err := worker.NewWriter(tx).UpsertWorker(ctx, item); err != nil {
-			t.Fatal(err)
-		}
-	}
-	execute(t, tx, `UPDATE workers SET task_snapshot='{"state":"observed","items":[{"taskId":"bad"}]}' WHERE worker_id=$1`, second.WorkerID)
-	reader := worker.NewReader(tx)
-	if _, err := reader.Workers(ctx, user, stamp, store.Page{Limit: 1}); err != nil {
-		t.Fatalf("old first page: %v", err)
-	}
-	seen := 0
-	err := reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1}, func(store.WorkerSummary) (bool, error) { seen++; return seen < 2, nil })
-	if err != nil || seen != 2 {
-		t.Fatalf("lookahead: %d %v", seen, err)
-	}
-	after := &store.Position{CreatedAt: first.CreatedAt, ID: first.WorkerID}
-	err = reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1, After: after}, func(store.WorkerSummary) (bool, error) { return true, nil })
-	if err == nil {
-		t.Fatal("invalid returned task ID accepted")
-	}
-}
-
-func TestWorkerSummaryLongFractionNormalizes(t *testing.T) {
-	tx := workerTransaction(t)
-	ctx := t.Context()
-	user, id := uuid.NewString(), uuid.NewString()
-	stamp := time.Now().UTC()
-	if _, err := worker.NewWriter(tx).UpsertWorker(ctx, snapshot(user, id, stamp)); err != nil {
-		t.Fatal(err)
-	}
-	execute(t, tx, `UPDATE workers SET task_snapshot=jsonb_build_object('state','observed','items','[]'::jsonb,'observedAt','2026-01-02T3:04:05.'||repeat('1',8388610)||'+24:60','inventoryObservedAt','2026-01-02T03:04:05,'||repeat('2',1000)||'Z') WHERE worker_id=$1`, id)
-	var got store.WorkerSummary
-	err := worker.NewReader(tx).WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1}, func(value store.WorkerSummary) (bool, error) { got = value; return true, nil })
-	want, parseErr := time.Parse(time.RFC3339Nano, "2026-01-02T3:04:05.111111111+24:60")
-	if err != nil || parseErr != nil || got.Oversized || got.TaskObservedAt == nil || !got.TaskObservedAt.Equal(want) {
-		t.Fatalf("long timestamp: %v %v", err, parseErr)
-	}
-}
-
-func TestWorkerSummaryItemsAliasSliceReuseAndReset(t *testing.T) {
-	tx := workerTransaction(t)
-	ctx := t.Context()
-	user, id, project, first, second := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	stamp := time.Now().UTC()
-	if _, err := worker.NewWriter(tx).UpsertWorker(ctx, snapshot(user, id, stamp)); err != nil {
-		t.Fatal(err)
-	}
-	execute(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'P','host:repo')`, project)
-	execute(t, tx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project, user)
-	execute(t, tx, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$3,'A','todo'),($2,$3,'B','todo')`, first, second, project)
-	for _, mid := range []string{`[{}]`, `[]`, `null`} {
-		execute(t, tx, `SAVEPOINT item_alias`)
-		raw := fmt.Sprintf(`{"state":"observed","ITEMS":[{"taskId":%q,"projectId":%q},{"taskId":%q,"projectId":%q}],"Items":%s,"items":[{},{}]}`, first, project, second, project, mid)
-		execute(t, tx, `UPDATE workers SET task_snapshot=$2::jsonb WHERE worker_id=$1`, id, raw)
-		reader := worker.NewReader(tx)
-		full, fullErr := reader.Worker(ctx, user, id, stamp)
-		if fullErr != nil {
-			execute(t, tx, `ROLLBACK TO SAVEPOINT item_alias`)
-			execute(t, tx, `UPDATE workers SET task_snapshot=$2::jsonb WHERE worker_id=$1`, id, raw)
-		}
-		var got store.WorkerSummary
-		summaryErr := reader.WorkerSummaries(ctx, user, stamp, store.Page{Limit: 1}, func(value store.WorkerSummary) (bool, error) { got = value; return true, nil })
-		if (fullErr == nil) != (summaryErr == nil) {
-			t.Fatalf("middle %s: full=%v summary=%v", mid, fullErr, summaryErr)
-		}
-		if fullErr == nil && (got.ActiveTaskCount == nil || *got.ActiveTaskCount != len(full.TaskSnapshot.Items)) {
-			t.Fatalf("middle %s: full=%d summary=%v", mid, len(full.TaskSnapshot.Items), got.ActiveTaskCount)
-		}
-		execute(t, tx, `ROLLBACK TO SAVEPOINT item_alias`)
-	}
 }

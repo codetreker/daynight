@@ -49,10 +49,10 @@ review:
 # Worker local settings and first-import seed. Optional daynight worker setup
 # inspects prerequisites and selects an agent and existing Projects before the
 # first connection. The seed is imported only when the cloud target is absent.
-# Afterwards, My Workers owns concurrency, polling/recovery limits, Project
-# selection and global/per-Project agent/model/args. Local managed values cannot
-# overwrite that target. Normal worker run accepts an empty selection and does
-# not open a Project picker.
+# Afterwards, My Workers owns concurrency, polling/recovery limits, platform
+# preference, Project selection and global/per-Project agent/model/args. Local
+# managed values cannot overwrite that target. Normal worker run accepts an empty
+# selection and does not open a Project picker.
 # Paths, identity, service credentials, agentControlMode and the optional
 # agentModel/agentReasoningEffort overrides remain local. Native
 # credentials and the official Herdr integration must be configured explicitly.
@@ -68,6 +68,9 @@ worker:
   maxConcurrent: 1
   pollIntervalMs: 60000
   recoveryLimit: 3
+  # Initial acquisition policy; later edits belong to this Worker in My Workers.
+  # Prefer tasks requiring this host platform across all selected Projects.
+  preferPlatformSpecificTasks: false
   # Local choice: herdr for terminal control or web for the Task Session page.
   # The service freezes this mode per claim; it is not a cloud-managed setting.
   agentControlMode: herdr

@@ -1,5 +1,5 @@
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
-import { array, id, malformed, parseProjectPage, record, string, timestamp } from './parse';
+import { array, boolean, id, malformed, parseProjectPage, record, string, timestamp } from './parse';
 import { decodeProjectPageJson } from './project-json';
 import type { ProjectPage, WorkerAgent } from './types';
 import type { WorkerReadAdmission } from './workers';
@@ -7,7 +7,7 @@ import type { WorkerReadAdmission } from './workers';
 export type WorkerConfigurationNative = { readonly agent: WorkerAgent; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerConfigurationOverrides = { readonly agent?: WorkerAgent; readonly model?: string | null; readonly args?: readonly string[] };
 export type WorkerConfigurationValue = {
-  readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number;
+  readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean;
   readonly native: WorkerConfigurationNative;
   readonly projects: readonly { readonly projectId: string; readonly nativeOverrides: WorkerConfigurationOverrides }[];
 };
@@ -18,11 +18,11 @@ export type WorkerConfigurationFailure = {
   readonly phase: 'validate' | 'prepare' | 'apply' | 'stop' | 'persist'; readonly occurredAt: string;
 };
 export type WorkerConfigurationKey =
-  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'native' }
+  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'native' }
   | { readonly kind: 'projectPreparation' | 'projectRemoval' | 'projectNative'; readonly projectId: string };
 export type WorkerConfigurationOutcome = {
   readonly key: WorkerConfigurationKey; readonly targetRevision: string;
-  readonly appliedValue: number | WorkerConfigurationNative | true | null;
+  readonly appliedValue: number | WorkerConfigurationNative | boolean | null;
   readonly state: 'pending' | 'applying' | 'applied' | 'error';
   readonly error: WorkerConfigurationFailure | null; readonly lastFailure: WorkerConfigurationFailure | null; readonly nextAttemptAt: string | null;
 };
@@ -68,13 +68,13 @@ const overrides = (value: unknown): WorkerConfigurationOverrides => {
   };
 };
 export const parseWorkerConfigurationValue = (value: unknown): WorkerConfigurationValue => {
-  const data = fields(value, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'native', 'projects']);
+  const data = fields(value, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'projects']);
   const projects = array(data.projects, value => {
     const project = fields(value, ['projectId', 'nativeOverrides']);
     return { projectId: id(project.projectId), nativeOverrides: overrides(project.nativeOverrides) };
   }).sort((a, b) => a.projectId.localeCompare(b.projectId));
   if (new Set(projects.map(project => project.projectId)).size !== projects.length) return malformed();
-  return { maxConcurrent: integer(data.maxConcurrent, 1), pollIntervalMs: integer(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: integer(data.recoveryLimit, 0), native: parseConfigurationNative(data.native), projects };
+  return { maxConcurrent: integer(data.maxConcurrent, 1), pollIntervalMs: integer(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: integer(data.recoveryLimit, 0), preferPlatformSpecificTasks: boolean(data.preferPlatformSpecificTasks), native: parseConfigurationNative(data.native), projects };
 };
 const failure = (value: unknown): WorkerConfigurationFailure | null => {
   if (value === null) return null;
@@ -89,13 +89,14 @@ const outcome = (value: unknown): WorkerConfigurationOutcome => {
   fields(rawKey, projectKind ? ['kind', 'projectId'] : ['kind']);
   const key: WorkerConfigurationKey = projectKind
     ? { kind: choice(rawKey.kind, ['projectPreparation', 'projectRemoval', 'projectNative']), projectId: id(rawKey.projectId) }
-    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'native']) };
+    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native']) };
   let appliedValue: WorkerConfigurationOutcome['appliedValue'] = null;
   if (data.appliedValue !== null) {
     switch (key.kind) {
       case 'maxConcurrent': appliedValue = integer(data.appliedValue, 1); break;
       case 'pollIntervalMs': appliedValue = integer(data.appliedValue, 1, 2_147_483_647); break;
       case 'recoveryLimit': appliedValue = integer(data.appliedValue, 0); break;
+      case 'preferPlatformSpecificTasks': appliedValue = boolean(data.appliedValue); break;
       case 'native': case 'projectNative': appliedValue = parseConfigurationNative(data.appliedValue); break;
       case 'projectPreparation': case 'projectRemoval': if (data.appliedValue !== true) return malformed(); appliedValue = true;
     }

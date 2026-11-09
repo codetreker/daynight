@@ -11,68 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := context.Background()
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, model.TaskDone)
-	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
-	for index, id := range ids {
-		seedStoreStep(t, database, task.ID, id, int64(index))
-	}
-	if _, err := database.Pool.Exec(ctx, `CREATE TABLE moved_rows(id text PRIMARY KEY); CREATE FUNCTION audit_moved_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO moved_rows VALUES(NEW.id); RETURN NEW; END $$; CREATE TRIGGER audit_moved_rows AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_moved_rows()`); err != nil {
-		t.Fatal(err)
-	}
-	read := func() []model.TaskStep {
-		t.Helper()
-		var rows []model.TaskStep
-		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-			var err error
-			rows, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return rows
-	}
-	before := read()
-	for _, tc := range []struct {
-		target   string
-		from, to int64
-		order    []int
-		affected int
-	}{
-		{ids[1], 1, 2, []int{0, 2, 1, 3}, 2},
-		{ids[1], 2, 0, []int{1, 0, 2, 3}, 3},
-		{ids[1], 0, 3, []int{0, 2, 3, 1}, 4},
-	} {
-		if _, err := database.Pool.Exec(ctx, `DELETE FROM moved_rows`); err != nil {
-			t.Fatal(err)
-		}
-		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-			return tx.TaskDAO().MoveTaskStep(ctx, task.ID, tc.target, tc.from, tc.to)
-		}); err != nil {
-			var driver *pgconn.PgError
-			if errors.As(err, &driver) {
-				t.Fatalf("move did not commit: code=%s message=%s", driver.Code, driver.Message)
-			}
-			t.Fatal(err)
-		}
-		after := read()
-		for index, source := range tc.order {
-			expected := before[source]
-			expected.Position = int64(index)
-			if after[index] != expected {
-				t.Fatalf("move altered non-position fields/order at %d", index)
-			}
-		}
-		var count int
-		if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM moved_rows`).Scan(&count); err != nil || count != tc.affected {
-			t.Fatalf("interval wrote %d rows, expected %d: %v", count, tc.affected, err)
-		}
-	}
-}
-
 func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()

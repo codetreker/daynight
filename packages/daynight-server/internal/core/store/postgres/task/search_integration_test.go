@@ -44,7 +44,7 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 		}
 	}
 	last := page.Items[2]
-	page, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 3, After: &store.TaskSearchPosition{ID: last.ID, UpdatedAt: last.UpdatedAt, TitlePriority: last.TitlePriority}})
+	page, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 3, After: &store.TaskSearchPosition{ID: last.ID, UpdatedAt: last.UpdatedAt, ExactIDPriority: last.ExactIDPriority, TitlePriority: last.TitlePriority}})
 	mustOK(t, e)
 	if page.Total != 4 || len(page.Items) != 1 || page.Items[0].ID != b.ID || page.Items[0].TitlePriority || page.HasMore {
 		t.Fatalf("continuation: %+v", page)
@@ -97,11 +97,6 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 	if p.Total != 1 || p.Items[0].ID != a.ID {
 		t.Fatalf("ready search: %+v", p)
 	}
-	size, e := s.ContextSize(ctx, f.project, []string{a.ID})
-	mustOK(t, e)
-	if size.NodeCount != 2 || size.EdgeCount != 1 {
-		t.Fatalf("ordinary closure: %+v", size)
-	}
 	graph, e := s.ContextGraph(ctx, f.project, []string{a.ID})
 	mustOK(t, e)
 	if len(graph.Nodes) != 2 || len(graph.Edges) != 1 || graph.Edges[0].TaskID != b.ID || graph.Edges[0].DependsOnID != a.ID {
@@ -114,12 +109,14 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 	}
 	_, e = w.DeleteTask(ctx, a.ID, false)
 	mustOK(t, e)
-	if _, e = s.Titles(ctx, f.project, []string{a.ID}); e == nil {
-		t.Fatal("deleted context title accepted")
-	}
-	size, e = s.ContextSize(ctx, f.project, []string{a.ID})
+	titles, e = s.Titles(ctx, f.project, []string{a.ID})
 	mustOK(t, e)
-	if size.NodeCount != 0 {
+	if len(titles) != 0 {
+		t.Fatal("deleted context title retained")
+	}
+	graph, e = s.ContextGraph(ctx, f.project, []string{a.ID})
+	mustOK(t, e)
+	if len(graph.Nodes) != 0 {
 		t.Fatal("deleted root retained")
 	}
 	for _, bad := range []*tasksearch.Node{nil, atom(tasksearch.AnyField, ""), atom(tasksearch.Field(9), "a"), {Kind: tasksearch.Kind(9)}, {Kind: tasksearch.And, Left: nil, Right: atom(tasksearch.AnyField, "a")}} {

@@ -6,6 +6,7 @@ import { parseApiJson, stringifyApiJson } from "../../../src/api/json.js";
 import * as operations from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Project, Task, WorkerClaim, WorkerClaimDescriptor } from "../../../src/api/types.js";
+import type { WorkerCloudDesired } from "../../../src/api/worker-configuration.js";
 import { createWorkerRemote } from "../../../src/commands/worker/remote.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
@@ -64,7 +65,7 @@ afterEach(async () => {
 
 it("retains identity and request order through two-project inventory, claim and report", async () => {
   const second = uuid(8), token = "fixture-worker-token";
-  const desired = { revision: "1", updatedAt: time, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
+  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
   const account = { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(90), kind: "personal" as const, name: null } };
   const candidate = { ...task(), assignedTo: worker.userId };
   const claimed = { ...task(taskId, worker), assignedTo: worker.userId, version: 2n };

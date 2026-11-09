@@ -2,8 +2,6 @@ package team
 
 import (
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -97,11 +95,7 @@ func (h *teamHandler) list(w http.ResponseWriter, r *http.Request, p model.Princ
 		httpx.WriteError(w, r, logger, "team", "list", err)
 		return
 	}
-	result, err := h.teams.ListAdmitted(r.Context(), p, page, func(items []model.Team, cursor *string) error {
-		response := teamPageResponse(items, cursor)
-		_, err := measure.JSON(io.Discard, "team.page", coreteam.MaxPageResponseJSONBytes, response, true)
-		return err
-	})
+	result, err := h.teams.List(r.Context(), p, page)
 	if err != nil {
 		httpx.WriteError(w, r, logger, "team", "list", err)
 		return

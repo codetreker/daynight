@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -140,39 +139,6 @@ func TestDeletionServiceRechecksAuthorization(t *testing.T) {
 	if err = db.Pool.QueryRow(ctx, `SELECT deleted_at IS NULL FROM projects WHERE id=$1`, project.ID).Scan(&live); err != nil || !live {
 		t.Fatalf("project changed: %t %v", live, err)
 	}
-}
-
-func TestDeletionServicePreviewBudget(t *testing.T) {
-	s, db, actor, project := createDeletionFixture(t)
-	ctx := context.Background()
-	claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: actor.UserID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(), Phase: model.WorkerWaiting, State: model.WorkerActive, ClaimedAt: time.Now().UTC()}
-	raw, err := taskproperty.EncodeWorker(&claim)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
-	for _, id := range ids {
-		if _, err = db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,$3)`, id, project.ID, strings.Repeat("<", 100000)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = db.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	page, err := s.DeletionPreview(ctx, actor, project.ID, model.PageRequest{Limit: 100})
-	if err != nil || len(page.ActiveClaims) != 1 || page.NextCursor == nil {
-		t.Fatalf("budget page %+v %v", page, err)
-	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE tasks SET title=$2 WHERE project_id=$1`, project.ID, strings.Repeat("<", 200000)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = s.DeletionPreview(ctx, actor, project.ID, model.PageRequest{Limit: 100})
-	transferFault(t, err, "payload_too_large")
-	if _, err = db.Pool.Exec(ctx, `UPDATE projects SET name=$2 WHERE id=$1`, project.ID, strings.Repeat("<", 200000)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = s.DeletionPreview(ctx, actor, project.ID, model.PageRequest{Limit: 1})
-	transferFault(t, err, "payload_too_large")
 }
 
 type deletionFaultScope struct {

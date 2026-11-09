@@ -19,14 +19,14 @@ func TestStoredValueReadersAndCopies(t *testing.T) {
 	if claim, err := taskproperty.Worker(nil); err != nil || claim != nil {
 		t.Fatalf("absent worker: %#v %v", claim, err)
 	}
-	if _, err := taskproperty.Worker(model.TaskProperties{"worker": json.RawMessage(`null`)}); err == nil {
-		t.Fatal("invalid worker accepted")
+	if _, err := taskproperty.Worker(model.TaskProperties{"worker": json.RawMessage(`{"claimId":1}`)}); err == nil {
+		t.Fatal("worker decoding error was hidden")
 	}
 	if requests, err := taskproperty.PullRequests(nil); err != nil || requests != nil {
 		t.Fatalf("absent requests: %#v %v", requests, err)
 	}
-	if _, err := taskproperty.PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`null`)}); err == nil {
-		t.Fatal("invalid requests accepted")
+	if _, err := taskproperty.PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":1}]`)}); err == nil {
+		t.Fatal("pull request decoding error was hidden")
 	}
 	copy := taskproperty.Clone(values)
 	copy["pullRequests"][0] = 'X'

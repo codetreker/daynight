@@ -5,18 +5,13 @@ import (
 )
 
 type TeamPage struct {
-	Items           []model.Team
-	HasMore         bool
-	OversizedTeamID string
+	Items   []model.Team
+	HasMore bool
 }
 
-// TeamMemberProfileByteLimit bounds the profile data materialized for each paged member.
-const TeamMemberProfileByteLimit = 4 << 20
-
 type TeamMemberPage struct {
-	Items           []model.TeamMemberProfile
-	HasMore         bool
-	OversizedUserID string
+	Items   []model.TeamMemberProfile
+	HasMore bool
 }
 
 // TeamInvitationPage is bounded by the requested page size.

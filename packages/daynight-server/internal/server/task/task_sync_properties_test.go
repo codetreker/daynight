@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -13,104 +14,93 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskSyncHTTPPropertiesSnapshotDeltaAndRemoval(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Private sync task")
-	baseline := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-	if len(baseline.Tasks) != 1 || baseline.Tasks[0].Properties == nil || len(baseline.Tasks[0].Properties) != 0 {
-		t.Fatalf("new task properties: %#v", baseline)
-	}
-	query := "?epoch=" + baseline.Epoch + "&since=" + url.QueryEscape(baseline.ObservedAt.Format(time.RFC3339Nano))
-	propertyPath := taskPath(task) + "/properties/pullRequests"
-	changed := propertyResource(t, handler, http.MethodPut, propertyPath, map[string]any{"version": task.Version, "valueText": `[{"url":"sync-private-value\u0000中文","title":"second"},{"url":"same","title":"second"}]`})
-	check := func(expected api.PropertyResource) {
-		t.Helper()
-		for _, suffix := range []string{"", query} {
-			response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+suffix, "")
-			actual := decodeResponse[api.TaskSync](t, response, http.StatusOK)
-			if actual.Epoch != baseline.Epoch || len(actual.Tasks) != 1 || actual.Tasks[0].Version != strconv.FormatInt(expected.Version, 10) || actual.Tasks[0].Properties == nil || !reflect.DeepEqual(actual.Tasks[0].Properties, expected.Properties) {
-				t.Fatalf("properties not synchronized: %#v want %#v", actual, expected)
-			}
-			var raw struct {
-				Tasks []map[string]json.RawMessage `json:"tasks"`
-			}
-			if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
-				t.Fatal(err)
-			}
-			if len(raw.Tasks) != 1 || raw.Tasks[0]["properties"] == nil || bytes.Equal(raw.Tasks[0]["properties"], []byte("null")) {
-				t.Fatalf("missing property object: %s", response.Body)
-			}
-		}
-	}
-	check(changed)
-	empty := propertyResource(t, handler, http.MethodPut, propertyPath, map[string]any{"version": changed.Version, "valueText": "[]"})
-	check(empty)
-	if _, exists := empty.Properties["pullRequests"]; !exists {
-		t.Fatal("explicit [] lost presence")
-	}
-	removed := propertyResource(t, handler, http.MethodDelete, propertyPath, map[string]any{"version": empty.Version})
-	check(removed)
-	if _, exists := removed.Properties["pullRequests"]; exists {
-		t.Fatal("remove retained key")
-	}
-	if strings.Contains(logs.String(), "sync-private-value") || strings.Contains(logs.String(), "Private sync task") {
-		t.Fatalf("sync logs leaked values: %s", &logs)
-	}
-}
-
-func TestTaskSyncHTTPRejectsIllegalStoredPropertiesWithoutPartialTasks(t *testing.T) {
-	for _, test := range []struct{ name, property, value string }{
-		{"json", "pullRequests", "["},
-		{"shape", "pullRequests", `{"private-value":"hidden"}`},
-		{"unknown", "private-unknown-property", `[]`},
-		{"worker null", "worker", `null`},
+	for _, tc := range []struct {
+		name       string
+		properties model.TaskProperties
+	}{
+		{"new", model.TaskProperties{}},
+		{"set", model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"sync-private-value\u0000中文","title":"second"},{"url":"same","title":"second"}]`)}},
+		{"explicit empty", model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}},
+		{"removed", model.TaskProperties{}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			database := projectTestStore(t)
+		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			handler := projectTestHandler(t, database, &logs)
-			project := taskProject(t, handler)
-			createHTTPTask(t, handler, project.ID, "Valid sibling")
-			corrupt := createHTTPTask(t, handler, project.ID, "Corrupt sibling")
-			base := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-			if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, corrupt.ID, test.property, test.value); err != nil {
-				t.Fatal(err)
+			handler := newHTTPFixture(t, &logs)
+			result := syncModel()
+			result.Tasks = []model.TaskViewRecord{{ID: testTaskID, TitlePreview: "Private sync task", Status: model.TaskTodo, Version: 9007199254740993, Properties: tc.properties, CreatedAt: testTime, UpdatedAt: testTime}}
+			calls := 0
+			handler.ExpectCalls("Sync", 2)
+			handler.Sync = func(ctx context.Context, principal model.Principal, pid string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+				calls++
+				if principal != handler.principal || pid != testProjectID {
+					t.Fatalf("sync identity=%+v %s", principal, pid)
+				}
+				if calls == 1 {
+					if input.Epoch != "" || input.Since != nil {
+						t.Fatalf("snapshot=%+v", input)
+					}
+					result.Mode = "snapshot"
+				} else {
+					if input.Epoch != testEpoch || input.Since == nil || !input.Since.Equal(result.ObservedAt) {
+						t.Fatalf("delta=%+v", input)
+					}
+					result.Mode = "delta"
+				}
+				return result, nil
 			}
-			for _, query := range []string{"", "?epoch=" + base.Epoch} {
-				response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+query, "")
-				assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-				var result map[string]json.RawMessage
-				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			for _, suffix := range []string{"", "?epoch=" + testEpoch + "&since=" + url.QueryEscape(result.ObservedAt.Format(time.RFC3339Nano))} {
+				response := projectRequest(handler, http.MethodGet, syncPath(testProjectID)+suffix, "")
+				actual := decodeResponse[api.TaskSync](t, response, 200)
+				if actual.Epoch != testEpoch || len(actual.Tasks) != 1 || actual.Tasks[0].Version != strconv.FormatInt(result.Tasks[0].Version, 10) || actual.Tasks[0].Properties == nil || !reflect.DeepEqual(actual.Tasks[0].Properties, api.TaskProperties(tc.properties)) {
+					t.Fatalf("properties=%+v want=%+v", actual, tc.properties)
+				}
+				var raw struct {
+					Tasks []map[string]json.RawMessage `json:"tasks"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 					t.Fatal(err)
 				}
-				if _, present := result["tasks"]; present {
-					t.Fatalf("partial task list escaped: %s", response.Body)
+				if len(raw.Tasks) != 1 || raw.Tasks[0]["properties"] == nil || bytes.Equal(raw.Tasks[0]["properties"], []byte("null")) {
+					t.Fatalf("missing object=%s", response.Body)
 				}
 			}
-			if strings.Contains(logs.String(), "private-value") || strings.Contains(logs.String(), "private-unknown-property") || strings.Contains(logs.String(), "Corrupt sibling") {
-				t.Fatalf("invalid property contents logged: %s", &logs)
+			if calls != 2 || strings.Contains(logs.String(), "sync-private-value") || strings.Contains(logs.String(), "Private sync task") {
+				t.Fatalf("calls=%d logs=%s", calls, &logs)
 			}
 		})
 	}
 }
 
-func TestTaskSyncHTTPPropertyStorageFailureRemainsInternal(t *testing.T) {
-	database := projectTestStore(t)
+func TestTaskSyncHTTPPropertyEncodingFailureDoesNotSendPartialTasks(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	createHTTPTask(t, handler, project.ID, "Target")
-	if _, err := database.Pool.Exec(context.Background(), "DROP TABLE task_properties"); err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, &logs)
+	result := syncModel()
+	result.Tasks = []model.TaskViewRecord{{ID: testTaskID, TitlePreview: "Private sync task", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`not JSON`)}, CreatedAt: testTime, UpdatedAt: testTime}}
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		return result, nil
 	}
-	response := projectRequest(handler, http.MethodGet, syncPath(project.ID), "")
+	response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
 	assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
-	if strings.Contains(logs.String(), "SELECT task_id") {
-		t.Fatalf("SQL leaked: %s", &logs)
+	if strings.Contains(response.Body.String(), `"tasks"`) || strings.Contains(logs.String(), "not JSON") || strings.Contains(logs.String(), "Private sync task") {
+		t.Fatalf("partial tasks or values escaped: body=%s logs=%s", response.Body, &logs)
+	}
+}
+
+func TestTaskSyncHTTPPropertyStorageFailureRemainsInternal(t *testing.T) {
+	var logs bytes.Buffer
+	handler := newHTTPFixture(t, &logs)
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		return model.TaskSync{}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("SELECT task_id FROM private_task_properties")}
+	}
+	response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+	assertProjectError(t, response, 500, "internal_error")
+	if strings.Contains(response.Body.String(), "SELECT task_id") || strings.Contains(logs.String(), "SELECT task_id") {
+		t.Fatalf("SQL leaked body=%s logs=%s", response.Body, &logs)
 	}
 }

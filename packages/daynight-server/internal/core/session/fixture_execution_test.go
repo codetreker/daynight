@@ -10,8 +10,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// New constructs the test execution against the fixture's isolated store.
-func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
+// New binds the Engine to the configured DAO scope and completion callback.
+func New(writer store.SessionWriter, files ...filestorage.Storage) *Execution {
 	var storage filestorage.Storage
 	if len(files) > 0 {
 		storage = files[0]
@@ -19,7 +19,7 @@ func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
 	engine := NewEngine(storage)
 	c := &fixtureCoordinator{engine: engine}
 	c.write = func(ctx context.Context, op *Operation, fn func(store.SessionScope) error) error {
-		completion, err := db.WriteSession(ctx, fn)
+		completion, err := writer.WriteSession(ctx, fn)
 		op.Finish(completion.Outcome)
 		if err != nil {
 			var transaction *store.TransactionError
@@ -507,13 +507,13 @@ func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope
 	return nil
 }
 
-func testTransact(s *Execution, db store.SessionWriter, ctx context.Context, fn func(*operationTx) error) error {
+func testTransact(s *Execution, writer store.SessionWriter, ctx context.Context, fn func(*operationTx) error) error {
 	op, err := s.BeginOperation()
 	if err != nil {
 		return err
 	}
 	defer op.Close()
-	completion, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+	completion, err := writer.WriteSession(ctx, func(scope store.SessionScope) error {
 		return fn(&operationTx{scope: scope, dao: scope.SessionDAO(), bot: scope.BotDAO(), op: op})
 	})
 	op.Finish(completion.Outcome)

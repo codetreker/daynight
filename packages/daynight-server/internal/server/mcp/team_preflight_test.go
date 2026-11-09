@@ -6,36 +6,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type failedTeamPreflightDB struct {
-	*failedTeamReadDB
-	writes int
-}
-
-func (d *failedTeamPreflightDB) WriteTeam(context.Context, string, func(store.TeamWriteScope) error) (store.Completion, error) {
-	d.writes++
-	return store.Completion{}, errors.New("unexpected write")
-}
-
-type failedPersonalRead struct{}
-
-func (failedPersonalRead) WriteIdentity(context.Context, func(store.IdentityScope) error) (store.Completion, error) {
-	return store.Completion{Outcome: store.TransactionUnknown}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("read completion failed")}
-}
-
 func TestTeamWritePreflightFailuresAreNotCommitted(t *testing.T) {
-	f := newEntryFixture(t)
-	f.entry.auth = validTeamAuth{}
-	db := &failedTeamPreflightDB{failedTeamReadDB: &failedTeamReadDB{outcome: store.TransactionUnknown}}
-	if err := RegisterTeamTools(f.entry, teamservice.NewTeams(db), projectservice.NewProjects(db), identity.New(failedPersonalRead{}, nil, "")); err != nil {
-		t.Fatal(err)
-	}
+	mocks := newTeamToolMocks(t)
+	f := registerTeamToolMocks(t, mocks)
 	c := f.client(t, "2025-11-25", "alice")
 	cases := []struct {
 		name string
@@ -50,6 +28,32 @@ func TestTeamWritePreflightFailuresAreNotCommitted(t *testing.T) {
 	for _, selection := range []string{unknownTeam, "personal"} {
 		for _, tc := range cases {
 			t.Run(selection+"/"+tc.name, func(t *testing.T) {
+				failure := &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("read completion failed")}
+				if selection == "personal" {
+					mocks.expect("Identity.PersonalTeamID")
+					mocks.identities.PersonalTeamIDFunc = func(context.Context, model.Principal) (string, error) { return "", failure }
+				} else if tc.name == "team_rename" || tc.name == "team_delete" {
+					mocks.expect("Teams.Get")
+					mocks.teams.GetFunc = func(_ context.Context, _ model.Principal, id string) (model.Team, error) {
+						if id != unknownTeam {
+							t.Errorf("Get(%s)", id)
+						}
+						return model.Team{}, failure
+					}
+				} else {
+					mocks.expect("Teams.Member")
+					mocks.teams.MemberFunc = func(_ context.Context, _ model.Principal, id, user string) (model.TeamMember, error) {
+						target := unknownTarget
+						if tc.name == "team_leave" {
+							target = unknownActor
+						}
+						if id != unknownTeam || user != target {
+							t.Errorf("Member(%s, %s)", id, user)
+						}
+						return model.TeamMember{}, failure
+					}
+				}
+
 				args := make(map[string]any, len(tc.args)+1)
 				for k, v := range tc.args {
 					args[k] = v
@@ -70,9 +74,10 @@ func TestTeamWritePreflightFailuresAreNotCommitted(t *testing.T) {
 				if err := json.Unmarshal(raw, &env); err != nil {
 					t.Fatal(err)
 				}
-				if env.Error["writeOutcome"] != "not_committed" || env.Error["phase"] != "commit" || len(env.Data) != 0 || db.writes != 0 {
-					t.Fatalf("invalid preflight failure: %s writes=%d", raw, db.writes)
+				if env.Error["writeOutcome"] != "not_committed" || env.Error["phase"] != "commit" || len(env.Data) != 0 {
+					t.Fatalf("invalid preflight failure: %s", raw)
 				}
+				mocks.verify()
 			})
 		}
 	}

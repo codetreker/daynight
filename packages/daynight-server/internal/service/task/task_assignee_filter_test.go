@@ -60,28 +60,21 @@ func assignmentListFixture(t *testing.T, wanted store.TaskQuery, rows []model.Ta
 		return taskMockAccess(project, principal), nil
 	}}
 	reader := &taskReaderMock{taskMockBase: base.withLabel("task")}
-	calls := 0
+	calls, returned := 0, 0
 	reader.TasksFn = func(actual context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
 		expected := wanted
-		expected.Page.Limit = 1
-		expected.BoundedText = true
-		expected.LegacyProjection = true
-		if calls > 0 {
-			expected.Page.After = &store.Position{ID: rows[calls-1].ID, CreatedAt: rows[calls-1].CreatedAt}
+		expected.Page.Limit = q.Page.Limit
+		if returned > 0 {
+			expected.Page.After = &store.Position{ID: rows[returned-1].ID, CreatedAt: rows[returned-1].CreatedAt}
 		}
-		if actual != ctx || id != project.ID || !reflect.DeepEqual(q, expected) {
+		if actual != ctx || id != project.ID || q.Page.Limit < 1 || !reflect.DeepEqual(q, expected) {
 			t.Fatalf("selection query=%#v want=%#v", q, expected)
 		}
-		if len(rows) == 0 {
-			calls++
-			return store.TaskPage{Items: []model.Task{}}, nil
-		}
-		if calls >= len(rows) {
-			t.Fatal("unexpected extra candidate query")
-		}
-		row := rows[calls]
 		calls++
-		return store.TaskPage{Items: []model.Task{row}, HasMore: calls < len(rows)}, nil
+		end := min(returned+q.Page.Limit, len(rows))
+		items := append([]model.Task{}, rows[returned:end]...)
+		returned = end
+		return store.TaskPage{Items: items, HasMore: returned < len(rows)}, nil
 	}
 	scope := &taskSnapshotScopeMock{taskMockBase: base.withLabel("snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
 	database := &taskStoreMock{taskMockBase: base.withLabel("store"), ReadSnapshotFn: func(actual context.Context, work func(store.SnapshotScope) error) error {
@@ -91,12 +84,8 @@ func assignmentListFixture(t *testing.T, wanted store.TaskQuery, rows []model.Ta
 		return work(scope)
 	}}
 	t.Cleanup(func() {
-		expected := len(rows)
-		if expected == 0 {
-			expected = 1
-		}
-		if calls != expected {
-			t.Errorf("candidate calls=%d want=%d", calls, expected)
+		if returned != len(rows) || calls < 1 {
+			t.Errorf("selection returned=%d want=%d calls=%d", returned, len(rows), calls)
 		}
 	})
 	return taskservice.NewTasks(database), reader, project, principal

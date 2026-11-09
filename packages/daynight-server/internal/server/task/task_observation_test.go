@@ -2,51 +2,54 @@ package task_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskGETReturnsAuthorizedSnapshotEpoch(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Observed")
-	other := createHTTPTask(t, handler, project.ID, "Epoch failure")
-	var epoch string
-	if err := database.Pool.QueryRow(context.Background(), `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil {
-		t.Fatal(err)
+	handler := newHTTPFixture(t, io.Discard)
+	task := testTask("Observed")
+	handler.Tasks.ObserveFunc = func(ctx context.Context, principal model.Principal, pid, id string) (taskservice.TaskObservation, error) {
+		if principal != handler.principal || pid != testProjectID || id != testTaskID || ctx.Err() != nil {
+			t.Fatalf("observation input=%+v %s %s", principal, pid, id)
+		}
+		return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
 	}
-	response := projectRequest(handler, http.MethodGet, taskPath(task), "")
-	got := decodeResponse[api.Task](t, response, http.StatusOK)
-	if got.ID != task.ID || got.ProjectID != project.ID || got.Description != task.Description || response.Header().Get("Daynight-Task-Epoch") != epoch || response.Header().Get("Daynight-User-ID") != handler.principal.UserID || response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("incomplete observation: %#v, %v", got, response.Header())
+	response := projectRequest(handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")
+	got := decodeResponse[api.Task](t, response, 200)
+	if got.ID != task.ID || got.ProjectID != task.ProjectID || got.Description != task.Description || response.Header().Get("Daynight-Task-Epoch") != testEpoch || response.Header().Get("Daynight-User-ID") != handler.principal.UserID || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("observation=%+v headers=%+v", got, response.Header())
 	}
-	missing := projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"/00000000-0000-4000-8000-000000000099", "")
-	assertProjectError(t, missing, http.StatusNotFound, "not_found")
-	if missing.Header().Get("Daynight-Task-Epoch") != "" {
-		t.Fatal("missing task exposed an epoch")
+	unauthorized := projectRequest(handler.Handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")
+	if unauthorized.Code != 401 || unauthorized.Header().Get("Daynight-Task-Epoch") != "" || handler.Tasks.Calls("Observe") != 1 {
+		t.Fatalf("unauthorized=%d headers=%+v", unauthorized.Code, unauthorized.Header())
 	}
-	unauthorized := projectRequest(handler.Handler, http.MethodGet, taskPath(task), "")
-	if unauthorized.Code != http.StatusUnauthorized || unauthorized.Header().Get("Daynight-Task-Epoch") != "" {
-		t.Fatalf("unauthenticated response exposed history: %d %v", unauthorized.Code, unauthorized.Header())
-	}
-	deleted := projectRequest(handler, http.MethodDelete, taskPath(task), jsonBody(t, map[string]any{"version": task.Version}))
-	if deleted.Code != http.StatusNoContent {
-		t.Fatalf("delete: %d %s", deleted.Code, deleted.Body)
-	}
-	gone := projectRequest(handler, http.MethodGet, taskPath(task), "")
-	assertProjectError(t, gone, http.StatusGone, "task_deleted")
-	if gone.Header().Get("Daynight-Task-Epoch") != "" {
-		t.Fatal("deleted task unexpectedly exposed an epoch")
-	}
-	if _, err := database.Pool.Exec(context.Background(), `ALTER TABLE projects DROP COLUMN task_cache_epoch`); err != nil {
-		t.Fatal(err)
-	}
-	failure := projectRequest(handler, http.MethodGet, taskPath(other), "")
-	if failure.Code != http.StatusInternalServerError || failure.Header().Get("Daynight-Task-Epoch") != "" {
-		t.Fatalf("epoch failure published success: %d %v", failure.Code, failure.Header())
+	for _, tc := range []struct {
+		name, code string
+		status     int
+		cause      error
+	}{
+		{"missing", "not_found", 404, &model.Fault{Code: "not_found", Message: "Task not found."}},
+		{"deleted", "task_deleted", 410, &model.Fault{Code: "task_deleted", Message: "Task is deleted."}},
+		{"epoch failure", "internal_error", 500, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("task_cache_epoch is unavailable")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newHTTPFixture(t, io.Discard)
+			fixture.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
+				return taskservice.TaskObservation{}, tc.cause
+			}
+			response := projectRequest(fixture, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")
+			assertProjectError(t, response, tc.status, tc.code)
+			if response.Header().Get("Daynight-Task-Epoch") != "" {
+				t.Fatalf("error exposed epoch: %+v", response.Header())
+			}
+		})
 	}
 }

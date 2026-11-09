@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import { ThreadPostError, type getThreadPage, type postThreadMessage } from '../src/features/task-thread/api';
-import { encodedMessageBytes, type ThreadMessage, type ThreadPage } from '../src/features/task-thread/contract';
+import { type ThreadMessage, type ThreadPage } from '../src/features/task-thread/contract';
 import { createThreadController, THREAD_LIMITS, type ThreadController, type ThreadControllerOptions } from '../src/features/task-thread/controller';
 
 const id = (number: number): string => `00000000-0000-0000-0000-${number.toString(16).padStart(12, '0')}`;
@@ -59,6 +59,24 @@ describe('Thread controller continuous reading', () => {
     expect(list.mock.calls.at(-1)![1]).toEqual({ afterId: a.id, count: 50 });
     expect(controller.snapshot().visible.map(item => item.id)).toEqual([a.id, b.id, c.id]);
     expect(controller.snapshot().consumedAfterId).toBe(c.id);
+  });
+
+  it.each([true, false])('accepts complete large pages within count windows while following=%s', async (following) => {
+    const { controller, list } = make();
+    const large = Array.from({ length: 40 }, (_, index) => {
+      const item = message(index + 10, '');
+      return { ...item, body: 'a'.repeat(65_536 - new TextEncoder().encode(JSON.stringify(item)).byteLength) };
+    });
+    list.mockResolvedValueOnce(page(large.slice(0, 20)));
+    await start(controller);
+    controller.setFollowing(following);
+    if (!following) controller.setReadingAnchor(large[0]!.id);
+    list.mockResolvedValueOnce(page(large.slice(20)));
+    await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ consumedAfterId: large[39]!.id, catchupPaused: false, readError: null, incomingCount: following ? 0 : 20 });
+    if (!following) controller.revealIncoming();
+    for (const item of large.slice(20)) expect(controller.snapshot().visible).toContainEqual(item);
+    expect(controller.snapshot().visible.length).toBeLessThanOrEqual(THREAD_LIMITS.visibleCount);
   });
 
   it('uses fromBeginning after the initial empty page and consumes every returned page', async () => {
@@ -267,7 +285,7 @@ describe('Thread sending', () => {
 });
 
 it('bounds own-receipt pins and releases a full incoming buffer for the next forward page', async () => {
-  const { controller, list, post } = make({ limits: { ...THREAD_LIMITS, visibleCount: 8, visibleBytes: 600_000, incomingCount: 3, incomingBytes: 150_000 } });
+  const { controller, list, post } = make({ limits: { ...THREAD_LIMITS, visibleCount: 8, incomingCount: 3 } });
   const a = message(10), body = 'x'.repeat(59_000), b = [message(11, body), message(12, body)], later = [message(13, body), message(14, body)];
   list.mockImplementation(async (_scope, query) => query.afterId === a.id ? page(b, false, true) : query.afterId === id(12) ? page(later) : page([a]));
   await start(controller); controller.setFollowing(false); controller.setReadingAnchor(a.id); await controller.refresh();
@@ -279,7 +297,6 @@ it('bounds own-receipt pins and releases a full incoming buffer for the next for
   controller.revealIncoming(); await controller.refresh();
   expect(controller.snapshot().incomingCount).toBe(0); expect(controller.snapshot().consumedAfterId).toBe(id(14));
   expect(controller.snapshot().visible.map(item => item.id)).toEqual([a.id, ...b.map(item => item.id), ...later.map(item => item.id), id(106)]);
-  expect(controller.snapshot().visible.reduce((sum, item) => sum + encodedMessageBytes(item), 0)).toBeLessThan(600_000);
   expect(controller.snapshot().visible.length).toBeLessThanOrEqual(8);
   expect(post).toHaveBeenCalledTimes(7);
 });

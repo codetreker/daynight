@@ -192,7 +192,7 @@ func TestTaskCreateReadAndDerivedState(t *testing.T) {
 	ctx := t.Context()
 	f.read(ctx)
 	f.reader.TasksFn = func(actual context.Context, id string, input store.TaskQuery) (store.TaskPage, error) {
-		if actual != ctx || id != f.project.ID || input.Page.Limit != 1 {
+		if actual != ctx || id != f.project.ID || input.Page.Limit != 50 {
 			t.Fatal("empty list changed query")
 		}
 		return store.TaskPage{Items: []model.Task{}}, nil
@@ -772,9 +772,10 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 	third := ruleTask("c1111111-1111-4111-8111-111111111111", "Third")
 	expectedPages := []struct {
 		after *store.Position
-		item  model.Task
+		limit int
+		items []model.Task
 		more  bool
-	}{{nil, first, true}, {&store.Position{ID: first.ID, CreatedAt: first.CreatedAt}, second, true}, {&store.Position{ID: second.ID, CreatedAt: second.CreatedAt}, third, false}}
+	}{{nil, 2, []model.Task{first, second}, true}, {&store.Position{ID: second.ID, CreatedAt: second.CreatedAt}, 1, []model.Task{third}, false}}
 	calls := 0
 	f.reader.TasksFn = func(actual context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
 		if calls >= len(expectedPages) {
@@ -782,10 +783,10 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 		}
 		want := expectedPages[calls]
 		calls++
-		if actual != ctx || id != f.project.ID || q.Page.Limit != 1 || !q.BoundedText || !q.LegacyProjection || !reflect.DeepEqual(q.Page.After, want.after) {
-			t.Fatalf("keyset query: %#v want %#v", q, want.after)
+		if actual != ctx || id != f.project.ID || q.Page.Limit != want.limit || !reflect.DeepEqual(q.Page.After, want.after) {
+			t.Fatalf("keyset query: %#v want %#v", q, want)
 		}
-		return store.TaskPage{Items: []model.Task{want.item}, HasMore: want.more}, nil
+		return store.TaskPage{Items: want.items, HasMore: want.more}, nil
 	}
 	page, err := f.tasks.List(ctx, f.principal, strings.ToUpper(f.project.ID), taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 2}})
 	if err != nil || len(page.Items) != 2 || page.NextCursor == nil {
@@ -793,7 +794,7 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 	}
 	firstCursor := page.NextCursor
 	final, err := f.tasks.List(ctx, f.principal, f.project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: firstCursor}})
-	if err != nil || len(final.Items) != 1 || final.Items[0].ID != third.ID || final.NextCursor != nil || calls != 3 {
+	if err != nil || len(final.Items) != 1 || final.Items[0].ID != third.ID || final.NextCursor != nil || calls != 2 {
 		t.Fatalf("final keyset page: %#v %v calls%d", final, err, calls)
 	}
 	for _, input := range []struct {

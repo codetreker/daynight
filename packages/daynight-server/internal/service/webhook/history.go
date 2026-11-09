@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -125,11 +126,8 @@ func historySources(ctx context.Context, sc store.WebhookReadScope, h store.Webh
 	if err != nil {
 		return src, false, false, err
 	}
-	if now.Before(d.PayloadExpiresAt) {
-		sum := sha256.Sum256(src.Event.FactBytes)
-		if src.FactRemovedAt != nil || src.Event.FactBytes == nil || len(src.Event.FactBytes) != src.OriginalFactBytes || len(src.Event.FactBytes) > 65536 || !bytes.Equal(sum[:], src.Event.FactSHA256) {
-			return src, false, false, fault("internal_error", "Webhook event fact integrity failure.")
-		}
+	if err = validateHistoryFact(d, src, now); err != nil {
+		return src, false, false, err
 	}
 	e, err := sc.EligibilityDAO().ReadEligibility(ctx, d.Owner, d.ProjectID, p.UserID)
 	if err != nil {
@@ -143,6 +141,54 @@ func historySources(ctx context.Context, sc store.WebhookReadScope, h store.Webh
 	}
 	eligible := e.Status == "eligible" && (d.EventType == protocol.Deleted || src.TaskPresent) && continuous(src.Matches) && endpointPresent && ep.DeletedAt == nil && ep.DestinationRevision == d.DestinationRevision
 	return src, full, eligible, nil
+}
+
+func validateHistoryFact(d store.WebhookDelivery, src store.WebhookHistorySources, now time.Time) error {
+	if now.Before(d.PayloadExpiresAt) {
+		sum := sha256.Sum256(src.Event.FactBytes)
+		if src.FactRemovedAt != nil || src.Event.FactBytes == nil || len(src.Event.FactBytes) != src.OriginalFactBytes || len(src.Event.FactBytes) > 65536 || !bytes.Equal(sum[:], src.Event.FactSHA256) {
+			return fault("internal_error", "Webhook event fact integrity failure.")
+		}
+	}
+	return nil
+}
+
+func validateHistoryBody(d store.WebhookDelivery, now time.Time) error {
+	if now.Before(d.PayloadExpiresAt) {
+		sum := sha256.Sum256(d.Body)
+		if d.PayloadRemovedAt != nil || d.Body == nil || len(d.Body) > 65536 || len(d.Body) != d.OriginalBodyBytes || !bytes.Equal(sum[:], d.BodySHA256) {
+			return fault("internal_error", "Webhook payload integrity failure.")
+		}
+	}
+	return nil
+}
+
+func batchDeliveryView(item store.WebhookHistoryItem, matches []store.WebhookAdmissionMatch, attempts []store.WebhookAttempt, manage bool, now time.Time) (map[string]any, bool, error) {
+	if !item.EventPresent {
+		return nil, false, fault("internal_error", "Webhook original event missing.")
+	}
+	d, src := item.Delivery, item.Sources
+	src.Matches = matches
+	if err := verifyProof(d, store.WebhookAdmissionSources{Event: src.Event, Matches: matches}); err != nil {
+		return nil, false, fault("internal_error", "Webhook original proof integrity failure.")
+	}
+	if err := validateHistoryFact(d, src, now); err != nil {
+		return nil, false, err
+	}
+	eligibility, err := wm.EvaluateEligibility(d.Owner, item.Eligibility)
+	if err != nil {
+		return nil, false, err
+	}
+	if item.EndpointPresent && item.EndpointRevision == nil {
+		return nil, false, fmt.Errorf("stored webhook endpoint revision missing")
+	}
+	full := src.ProjectReadable && (d.EventType == protocol.Deleted || src.TaskPresent)
+	eligible := eligibility.Status == "eligible" && (d.EventType == protocol.Deleted || src.TaskPresent) && continuous(matches) &&
+		item.EndpointPresent && item.EndpointDeletedAt == nil && *item.EndpointRevision == d.DestinationRevision
+	if err = validateHistoryBody(d, now); err != nil {
+		return nil, false, err
+	}
+	return projectHistoryDelivery(d, src, attempts, full, eligible, manage, now)
 }
 
 // AttemptResult projects the latest actual observation without discarding recovery history.
@@ -176,16 +222,17 @@ func (s *Service) makeDeliveryView(ctx context.Context, sc store.WebhookReadScop
 	if err != nil {
 		return nil, false, err
 	}
-	if now.Before(d.PayloadExpiresAt) {
-		sum := sha256.Sum256(d.Body)
-		if d.PayloadRemovedAt != nil || d.Body == nil || len(d.Body) > 65536 || len(d.Body) != d.OriginalBodyBytes || !bytes.Equal(sum[:], d.BodySHA256) {
-			return nil, false, fault("internal_error", "Webhook payload integrity failure.")
-		}
+	if err = validateHistoryBody(d, now); err != nil {
+		return nil, false, err
 	}
 	attempts, err := h.HistoryAttempts(ctx, d.ID)
 	if err != nil {
 		return nil, false, err
 	}
+	return projectHistoryDelivery(d, src, attempts, full, eligible, manage, now)
+}
+
+func projectHistoryDelivery(d store.WebhookDelivery, src store.WebhookHistorySources, attempts []store.WebhookAttempt, full, eligible, manage bool, now time.Time) (map[string]any, bool, error) {
 	var last, ack *time.Time
 	var result any
 	for _, a := range attempts {
@@ -347,16 +394,37 @@ func (s *Service) ListDeliveries(ctx context.Context, p model.Principal, o Owner
 		more := false
 		at, id := c.Time, c.ID
 		for !more {
-			rows, e := h.HistoryDeliveries(ctx, o, endpoint, at, id, 100)
+			batch, e := h.HistoryBatch(ctx, o, endpoint, p.UserID, at, id, 100)
 			if e != nil {
 				return e
 			}
-			if len(rows) == 0 {
+			if len(batch.Items) == 0 {
 				break
 			}
-			for _, d := range rows {
+			ids := make([]string, len(batch.Items))
+			for i, item := range batch.Items {
+				ids[i] = item.Delivery.ID
+			}
+			matches, e := h.HistoryMatches(ctx, ids)
+			if e != nil {
+				return e
+			}
+			attempts, e := h.HistoryBatchAttempts(ctx, ids)
+			if e != nil {
+				return e
+			}
+			matchesByDelivery := map[string][]store.WebhookAdmissionMatch{}
+			for _, match := range matches {
+				matchesByDelivery[match.DeliveryID] = append(matchesByDelivery[match.DeliveryID], match.WebhookAdmissionMatch)
+			}
+			attemptsByDelivery := map[string][]store.WebhookAttempt{}
+			for _, attempt := range attempts {
+				attemptsByDelivery[attempt.DeliveryID] = append(attemptsByDelivery[attempt.DeliveryID], attempt)
+			}
+			for _, item := range batch.Items {
+				d := item.Delivery
 				at, id = d.OccurredAt, d.ID
-				v, full, e := s.makeDeliveryView(ctx, sc, h, p, d, manage)
+				v, full, e := batchDeliveryView(item, matchesByDelivery[d.ID], attemptsByDelivery[d.ID], manage, batch.ObservedAt)
 				if e != nil {
 					return e
 				}
@@ -372,7 +440,7 @@ func (s *Service) ListDeliveries(ctx context.Context, p model.Principal, o Owner
 				last.Time = d.OccurredAt
 				last.ID = d.ID
 			}
-			if len(rows) < 100 {
+			if len(batch.Items) < 100 {
 				break
 			}
 		}

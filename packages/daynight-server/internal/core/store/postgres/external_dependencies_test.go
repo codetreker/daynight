@@ -138,10 +138,6 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 		if err != nil || len(graph) != 3 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatalf("scoped graph lost classification: %#v, %v", graph, err)
 		}
-		size, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID)
-		if err != nil || size != (TaskGraphSize{NodeCount: 4, EdgeCount: 4}) {
-			t.Fatalf("external edges changed graph budget: %#v, %v", size, err)
-		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -153,38 +149,5 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 	var constraint *pgconn.PgError
 	if !errors.As(err, &constraint) || constraint.Code != "23514" || !reflect.DeepEqual(snapshotTask(t, database, project.ID, target.ID), target) {
 		t.Fatalf("failed edge replacement lost metadata/classification rollback: %v", err)
-	}
-}
-
-func TestExternalDependencyStoreReadFailuresPreserveCauses(t *testing.T) {
-	for _, canceled := range []bool{true, false} {
-		t.Run(map[bool]string{true: "cancellation", false: "missing marker column"}[canceled], func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			predecessor := queryTask(t, database, project.ID, 10, model.TaskDone)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo, predecessor.ID)
-			if !canceled {
-				mustQueryExec(t, database, "ALTER TABLE task_dependencies DROP COLUMN external")
-			}
-			err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				if canceled {
-					cancel()
-				}
-				_, err := snapshot.TaskDAO().Task(ctx, project.ID, target.ID)
-				return err
-			})
-			if canceled {
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("classification read lost cancellation: %v", err)
-				}
-			} else {
-				var cause *pgconn.PgError
-				if !errors.As(err, &cause) || cause.Code != "42703" {
-					t.Fatalf("classification read lost native cause: %v", err)
-				}
-			}
-		})
 	}
 }

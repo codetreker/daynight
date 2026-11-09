@@ -67,10 +67,7 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 			rows.Close()
 			return store.TaskPriorityPage{}, pg.QueryError("list priority tasks", err)
 		}
-		if !t.Status.Valid() {
-			rows.Close()
-			return store.TaskPriorityPage{}, pg.QueryError("list priority tasks", fmt.Errorf("stored task status is invalid"))
-		}
+
 		t.CreatedAt = t.CreatedAt.UTC()
 		items = append(items, item)
 	}

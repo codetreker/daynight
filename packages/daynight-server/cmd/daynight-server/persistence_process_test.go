@@ -317,6 +317,62 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		return processPersistenceDecode[api.Task](t, response, body, http.StatusCreated)
 	}
 	first := createTask("Prerequisite", "Persistent description", []string{}, []string{})
+	completed := createTask("Completed dependent", "Completed chain", []string{first.ID}, []string{})
+	completedPath := projectPath + "/tasks/" + completed.ID
+	completedReferences := []api.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Implementation"}}
+	response, body = jsonRequest(http.MethodPatch, completedPath, map[string]any{"version": completed.Version, "properties": map[string]any{"pullRequests": completedReferences}})
+	completed = processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
+	var actualCompletedReferences []api.PullRequestProperty
+	if err := json.Unmarshal(completed.Properties["pullRequests"], &actualCompletedReferences); err != nil || !reflect.DeepEqual(actualCompletedReferences, completedReferences) {
+		t.Fatalf("completed task PR fixture: %+v %v", actualCompletedReferences, err)
+	}
+	contents := []struct {
+		path string
+		data []byte
+	}{
+		{path: "plan.md", data: []byte("persistence\n")},
+		{path: "nested/data.bin", data: []byte{0, 1, 255, 13, 10, 'a'}},
+	}
+	for _, content := range contents {
+		response, body = request(http.MethodPut, completedPath+"/attachments/files/"+content.path, "application/octet-stream", content.data)
+		processPersistenceDecode[api.Attachment](t, response, body, http.StatusCreated)
+	}
+	response, body = request(http.MethodGet, completedPath, "", nil)
+	if actual := processPersistenceDecode[api.Task](t, response, body, http.StatusOK); !reflect.DeepEqual(actual, completed) || actual.Status != "todo" || actual.Ready || !slices.Equal(actual.BlockedBy, []string{first.ID}) {
+		t.Fatalf("upload changed blocked task or its prerequisite: %+v", actual)
+	}
+	response, body = request(http.MethodGet, projectPath+"/tasks/"+first.ID, "", nil)
+	if actual := processPersistenceDecode[api.Task](t, response, body, http.StatusOK); !reflect.DeepEqual(actual, first) {
+		t.Fatalf("upload changed prerequisite: %+v", actual)
+	}
+	readAttachments := func() api.AttachmentPage {
+		t.Helper()
+		response, body := request(http.MethodGet, completedPath+"/attachments", "", nil)
+		return processPersistenceDecode[api.AttachmentPage](t, response, body, http.StatusOK)
+	}
+	attachments := readAttachments()
+	if len(attachments.Items) != len(contents) || attachments.NextCursor != nil {
+		t.Fatalf("initial attachment metadata: %+v", attachments)
+	}
+	for _, content := range contents {
+		if !slices.ContainsFunc(attachments.Items, func(item api.Attachment) bool {
+			return item.Path == content.path && item.ContentType == "application/octet-stream" && item.SizeBytes == int64(len(content.data))
+		}) {
+			t.Fatalf("attachment %s metadata fixture incomplete: %+v", content.path, attachments)
+		}
+	}
+	checkAttachmentContents := func() {
+		t.Helper()
+		if actual := readAttachments(); !reflect.DeepEqual(actual, attachments) {
+			t.Fatalf("attachment metadata changed: before=%+v after=%+v", attachments, actual)
+		}
+		for _, content := range contents {
+			response, body := request(http.MethodGet, completedPath+"/attachments/files/"+content.path, "", nil)
+			if response.StatusCode != http.StatusOK || !bytes.Equal(body, content.data) {
+				t.Fatalf("attachment %s bytes changed: %d", content.path, response.StatusCode)
+			}
+		}
+	}
 	response, body = jsonRequest(http.MethodPut, projectPath+"/tasks/"+first.ID+"/status", api.TaskStatusUpdateRequest{Version: first.Version, Status: "in_progress"})
 	first = processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
@@ -330,10 +386,20 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	if first.Status != "done" || first.Version != math.MaxInt64 || !bytes.Contains(body, []byte(`"version":9223372036854775807`)) {
 		t.Fatalf("maximum version completion: %#v", first)
 	}
-	completed := createTask("Completed dependent", "Completed chain", []string{first.ID}, []string{})
-	for _, status := range []string{"in_progress", "done"} {
+	response, body = request(http.MethodGet, completedPath, "", nil)
+	completed = processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
+	checkAttachmentContents()
+	for _, status := range []string{"in_progress", "todo", "done"} {
+		before := completed
 		response, body = jsonRequest(http.MethodPut, projectPath+"/tasks/"+completed.ID+"/status", api.TaskStatusUpdateRequest{Version: completed.Version, Status: status})
 		completed = processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
+		preserved := completed
+		preserved.StartedAt, preserved.CompletedAt = before.StartedAt, before.CompletedAt
+		preserved.Status, preserved.Ready, preserved.Version, preserved.UpdatedAt = before.Status, before.Ready, before.Version, before.UpdatedAt
+		if completed.Status != status || completed.Version != before.Version+1 || !completed.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) {
+			t.Fatalf("%s changed unrelated task data: before=%+v after=%+v", status, before, completed)
+		}
+		checkAttachmentContents()
 	}
 	if completed.Status != "done" || !slices.Equal(completed.DependsOn, []string{first.ID}) {
 		t.Fatalf("completed dependent lost prerequisite: %#v", completed)
@@ -389,10 +455,6 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	if maxAdded.Version != maxTask.Version+1 || len(maxAdded.Steps) != 1 || maxAdded.Steps[0].ID != "fedcba98" {
 		t.Fatalf("maximum Step fixture: %+v", maxAdded)
 	}
-	attachmentPath := projectPath + "/tasks/" + target.ID + "/attachments/files/nested/data.bin"
-	content := []byte{0, 1, 255, 13, 10, 'a'}
-	response, body = request(http.MethodPut, attachmentPath, "application/octet-stream", content)
-	processPersistenceDecode[api.Attachment](t, response, body, http.StatusCreated)
 	const exact int64 = 9_007_199_254_740_993
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	_, err = admin.Exec(ctx, "UPDATE projects SET settings_version=$1 WHERE id=$2", exact, project.ID)
@@ -418,10 +480,6 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		response, body := request(http.MethodGet, projectPath+"/task-graph?taskId="+url.QueryEscape(target.ID), "", nil)
 		return processPersistenceDecode[api.TaskGraph](t, response, body, http.StatusOK)
 	}
-	readAttachments := func() api.AttachmentPage {
-		response, body := request(http.MethodGet, projectPath+"/tasks/"+target.ID+"/attachments", "", nil)
-		return processPersistenceDecode[api.AttachmentPage](t, response, body, http.StatusOK)
-	}
 	project = readProject()
 	first, second, target, completed, maxTask = readTask(first.ID), readTask(second.ID), readTask(target.ID), readTask(completed.ID), readTask(maxTask.ID)
 	if current := readTask(legacyDone.ID); !reflect.DeepEqual(current, legacyDone) {
@@ -441,8 +499,8 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
 		t.Fatalf("Steps read changed parent before restart: %+v", actual)
 	}
-	graph, attachments := readGraph(), readAttachments()
-	if project.Settings.Version != exact || project.Settings.ExecutionWarningMinutes != 90 || target.Version != exact || first.Version != math.MaxInt64 || first.Description != "Persistent description" || first.Status != "done" || second.Status != "todo" || target.Ready || !reflect.DeepEqual(target.ExternalDependsOn, []string{second.ID}) || len(target.DependsOn) != 2 || !slices.Contains(target.DependsOn, first.ID) || !slices.Contains(target.DependsOn, second.ID) || len(attachments.Items) != 1 || attachments.Items[0].Path != "nested/data.bin" || attachments.Items[0].ContentType != "application/octet-stream" || attachments.Items[0].SizeBytes != int64(len(content)) || graph.Project != project || graph.ObservedAt.IsZero() || !slices.ContainsFunc(graph.Tasks, func(item api.GraphTask) bool {
+	graph := readGraph()
+	if project.Settings.Version != exact || project.Settings.ExecutionWarningMinutes != 90 || target.Version != exact || first.Version != math.MaxInt64 || first.Description != "Persistent description" || first.Status != "done" || second.Status != "todo" || target.Ready || !reflect.DeepEqual(target.ExternalDependsOn, []string{second.ID}) || len(target.DependsOn) != 2 || !slices.Contains(target.DependsOn, first.ID) || !slices.Contains(target.DependsOn, second.ID) || graph.Project != project || graph.ObservedAt.IsZero() || !slices.ContainsFunc(graph.Tasks, func(item api.GraphTask) bool {
 		return item.ID == target.ID && reflect.DeepEqual(item.ExternalDependsOn, []string{second.ID})
 	}) {
 		t.Fatalf("persistence fixture incomplete: project=%#v first=%#v second=%#v target=%#v attachments=%#v", project, first, second, target, attachments)
@@ -508,13 +566,7 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
 		t.Fatalf("Steps read changed parent after restart: %+v", actual)
 	}
-	if actual := readAttachments(); !reflect.DeepEqual(actual, attachments) {
-		t.Fatalf("attachment metadata changed across restart: %#v", actual)
-	}
-	response, body = request(http.MethodGet, attachmentPath, "", nil)
-	if response.StatusCode != http.StatusOK || !bytes.Equal(body, content) {
-		t.Fatalf("attachment bytes changed across restart: %d", response.StatusCode)
-	}
+	checkAttachmentContents()
 	after := readGraph()
 	if !after.ObservedAt.After(graph.ObservedAt) {
 		t.Fatalf("restarted graph did not observe a fresh database time: %v then %v", graph.ObservedAt, after.ObservedAt)

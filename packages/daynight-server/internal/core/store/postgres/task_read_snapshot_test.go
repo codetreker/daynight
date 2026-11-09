@@ -2,14 +2,12 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -220,7 +218,7 @@ func TestTaskSyncAssigneeFactsUseTheTaskSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		if _, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID); err != nil {
+		if _, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160); err != nil {
 			return err
 		}
 		if err := writeProjectForTest(database, ctx, project.ID, func(write ProjectWriteScope) error {
@@ -269,35 +267,12 @@ func TestTaskSyncAssigneeFactsUseTheTaskSnapshot(t *testing.T) {
 	}
 }
 
-func TestTaskSyncWindowOnlyValidatesReturnedProperties(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	old := queryTask(t, database, project.ID, 11, model.TaskTodo)
-	recent := queryTask(t, database, project.ID, 12, model.TaskTodo)
-	mustQueryExec(t, database, `UPDATE tasks SET updated_at=$2 WHERE id=$1`, old.ID, recent.UpdatedAt.Add(-time.Hour))
-	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'unknown-property','[]')`, old.ID)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &recent.UpdatedAt, 160)
-		if err != nil {
-			return err
-		}
-		if len(tasks) != 1 || tasks[0].ID != recent.ID || tasks[0].Properties == nil || len(tasks[0].Properties) != 0 {
-			return fmt.Errorf("delta read materialized unrelated properties: %#v", tasks)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+func storeAssigneeUser(t *testing.T, database *Store, projectID string, number int, member bool) string {
+	t.Helper()
+	id := queryID(number)
+	mustQueryExec(t, database, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,$1::uuid::text,now(),now())`, id)
+	if member {
+		mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, projectID, id)
 	}
-	var full []model.TaskViewRecord
-	err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		var err error
-		full, err = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-		return err
-	})
-	var invalid *taskproperties.ValidationError
-	if !errors.As(err, &invalid) || full != nil {
-		t.Fatalf("full snapshot accepted corrupt sibling or returned partial rows: %#v %v", full, err)
-	}
+	return id
 }

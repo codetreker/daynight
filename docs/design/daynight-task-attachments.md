@@ -116,7 +116,7 @@ project 和 task 使用服务已有的规范 UUID 写法。附件业务层的私
 task ID，校验原始附件相对路径，再精确拼接地址。规范化后才取 task UUID 前两个字符，最多 256 个分片；
 同一分片内每个 task 仍有完整 UUID 目录。原始路径校验必须在添加前缀之前，避免前缀掩盖 `C:/file` 等
 原本非法输入；不使用会清理路径的 join。用户文件名保留大小写和合法 Unicode 原貌，不静默改名或归一化。
-拒绝绝对路径、空路径段、`.`、`..`、反斜杠及控制字符。新建和覆盖前，附件业务层还按 Unicode 字符计数，拒绝超过 1024 个字符的相对路径；包含分隔符且不改变通用文件存储的地址规则。已有更长路径仍可沿用原有读取、删除和分页路径。
+拒绝绝对路径、空路径段、`.`、`..`、反斜杠及控制字符。新建和覆盖前，附件业务层还按 Unicode 字符计数，拒绝超过 1024 个字符的相对路径；包含分隔符且不改变通用文件存储的地址规则。读取、删除和分页使用原路径 I/O 安全规则，不复查写入字段容量。
 
 Put/Open/Delete 共用业务地址值中的规范化 ID、原始相对路径和派生存储路径。principal 与原始输入校验后，
 读取快照或变更事务检查项目成员、task 归属和逻辑冲突或元数据；通过准入后才执行文件 I/O。List 仅查询元数据，
@@ -235,11 +235,11 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 并绑定 project、task 与附件列表类型；沿用既有 opaque cursor 和 `items/nextCursor`
 形式。附件游标单独保存 version/kind/projectId/taskId/path，严格拒绝未知字段、
 尾随 JSON 和跨作用域重用；不伪造既有 task 列表所需的 UUID/time 游标。每页使用
-当前数据，不提供跨页快照。REST 在同一快照中逐项读取并按实际 JSON 编码计入 2 MiB，含 cursor 和换行；下一项超限时从最后返回路径继续，首项无法装入时返回 409 `resource_limit_exceeded`。
+当前数据，不提供跨页快照。REST 与 MCP 调用普通 `List`，在同一快照一次取得请求条数加一项 lookahead；cursor 指向最后返回路径。读取完整规范元数据，不按字节裁页或复查字段容量。
 
 ## 上传、覆盖、读取与删除
 
-共享附件写入用例在取得目标 gate 和发布文件之前，校验原始 `contentType` 不超过 2048 字节并符合既有 MIME 语法；所有复用该用例的入口使用相同限制。历史超限元数据不迁移，读取、列表和删除不执行新写入校验。
+共享附件写入用例在取得目标 gate 和发布文件之前，校验原始 `contentType` 不超过 2048 字节并符合既有 MIME 语法；所有复用该用例的入口使用相同限制。读取、列表和删除直接消费规范存储元数据，不执行写入字段或容量校验，也不增加历史扫描或迁移。
 
 附件领域拥有 5242880 字节的文件上限。共享 Put 和已准入的 PutFrom 将实际输入包装为限长 reader；越过上限显式失败而非以截断 EOF 成功。local 临时文件完整复制、同步并关闭后才发布，因此超限在发布前失败，不改变目标与元数据。结果转换保留存储发布事实和数据库完成事实，不能把确定未发布的超限归为未知，也不能把发布后的数据库或响应故障当作回滚。
 
@@ -389,6 +389,8 @@ T = /api/v1/projects/{projectId}/tasks/{taskId}
 合法 MIME，无法识别时使用 `application/octet-stream`；服务拒绝非法 header 值。
 缺失 Content-Type 时使用 application/octet-stream。服务不使用 JSON 解码器接收文件，
 也不将完整文件载入内存。从首次读取开始设置 60 秒实际 socket 读取期限；完整读取后清除 deadline，超时或未读完的请求关闭连接。超限返回 `413 payload_too_large`，读取超时在可写时返回 `408 request_timeout`，资源名额满立即返回 `429 resource_busy`。
+
+共享 `BoundedContent` 以 `ContentOverflowError` 标识实际读到第 5242881 字节，保留 `payload_too_large` 领域 Fault 的 unwrap 语义；一般容量 Fault 不代表这个流式终止事实。HTTP 的既有正文错误分类器只在错误树中的文件发布为 `not_published`、事务为未尝试提交的 operation 拒绝且回滚和清理无失败时，将该类型映射为终止 413。关闭原生 chunked body 对剩余 framing 或 trailer 的读取可能因立即读取期限取消原请求 context；拒绝复用[服务端传输响应机制](daynight-server.md#http-传输准入)的一秒 socket 写入期限、独立有界响应 context、flush 与错误日志，业务继续使用原 context。未知或已发布的文件结果、事务完成失败、附带取消及清理失败保留普通错误分类。
 
 附件 I/O 在相应授权后依次获取实例、用户和 Task 名额；失败时释放已取得的名额。实例容量是 `min(4,max(1,floor(P/2)))`，P 是连接池最大连接数；用户两个槽、Task 一个槽通过共享存储的 ResidencyGate 跨实例协调。REST 持有至结果发送及清理完成。MCP 的 inline、chunk、commit 每次实际 I/O 与结果发送持有名额，begin 和空闲 ticket 不占用；私有传输账本仍管理空闲 ticket 与暂存容量。
 
@@ -781,7 +783,7 @@ Web 的受控浏览器 fixture 使用完整 Chromium 检查 PDF iframe composito
 数据库或部署行为，也不能代替安装 CLI 的同数据组合验证。[历史决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
 记录了旧跨产品验收的选择理由，其结果只属于实际测试的源码。
 
-MCP 附件列表使用有界数据库投影及完整项边界分页。首项超过摘要预算时返回路径、续页游标及 REST 附件列表的读取指引；REST 需要 PAT 或浏览器会话，MCP OAuth 凭据不能用于 REST。列表保留对已有长路径的有界处理。删除沿用共享附件用例的授权与副作用语义，并区分文件副作用开始前的拒绝与可能发生的副作用。上传提供有界 inline 内容和下述分块提交。
+MCP 附件列表使用普通批量数据库读取及完整项的条数分页；cursor 指向最后返回路径，不使用元数据字段或编码响应字节准入。REST 需要 PAT 或浏览器会话，MCP OAuth 凭据不能用于 REST。删除沿用共享附件用例的授权与副作用语义，并区分文件副作用开始前的拒绝与可能发生的副作用。上传提供有界 inline 内容和下述分块提交。
 
 ## MCP 私有传输内容
 
@@ -797,9 +799,9 @@ MCP 附件列表使用有界数据库投影及完整项边界分页。首项超�
 
 `core/mcptransfer` 拥有传输状态、操作身份和准入规则；service 在同一事务中协调凭据、任务及账本，并管理文件 permit 和清理生命周期。DAO 执行锁定与数据操作。
 
-附件读取默认只返回元数据和后续调用所需的引用，并在编码后限制 inspect 和 open 的结果为 16 KiB。读取准入只查询父任务是否存在和删除，不加载完整任务或属性；MIME 使用有界数据库投影，超过 2048 字节时明确拒绝。MCP 读取路径超过 4096 字节或结果超出预算时也明确拒绝，不在错误中重复超长路径。已有超限记录不被修改，MCP 不提供超长 MIME 的分片读取。显式 inline 和 chunk 默认最多读取 8 KiB，单次上限为 512 KiB；自动格式遇到二进制时只返回引用，调用方须显式选择 base64 才能取得原字节。文本分块在 UTF-8 字符边界结束，偏移与长度始终按原始字节计算。inline 只返回完整内容，超过选择的上限时要求调用方使用快照。
+附件读取默认返回完整元数据和后续调用所需的引用，不对 inspect 或 open 结果执行字段、schema 或字节准入。授权只查询父任务是否存在和删除，不加载完整任务或属性；普通 `Open` 读取保存的 metadata，不复查 MIME 容量。调用方提供的 MCP 输入路径仍不超过 4096 字节，并遵守原路径 I/O 安全规则；输入拒绝不回显超长路径。显式 inline 和 chunk 默认最多读取 8 KiB，单次上限为 512 KiB；自动格式遇到二进制时只返回引用，调用方须显式选择 base64 才能取得原字节。文本分块在 UTF-8 字符边界结束，偏移与长度始终按原始字节计算。inline 只返回完整内容，超过选择的上限时要求调用方使用快照。
 
-inspect 打开稳定文件并使用内容 I/O 预算。open 查询已登记状态时使用控制预算；新快照在任何文件等待前切换到独立的内容 I/O 预算，资源饱和时明确拒绝，避免阻塞状态与取消调用。服务登记调用方 UUID 后，使用受目标 gate 保护的稳定附件句柄流式创建私有快照并记录完整大小及 SHA-256。重复 open 只返回已登记状态，不重新复制；preparing 不提供可读内容。chunk 在私有 permit 下直接定位快照偏移，每次重新检查当前凭据、稳定授权主体和任务访问权限。覆盖原路径不会改变快照，close 只请求清理私有命名空间。设计权衡见[不可变下载决策](../../.agents/notes/implemented/architecture/2026-11-06-mcp-attachment-download.md)。
+inspect 打开稳定文件并使用内容 I/O 预算。open 查询已登记状态时使用控制预算；新快照在任何文件等待前切换到独立的内容 I/O 预算，资源饱和时明确拒绝，避免阻塞状态与取消调用。服务登记调用方 UUID 后，使用受目标 gate 保护的稳定附件句柄流式创建私有快照并记录完整大小及 SHA-256。重复 open 只返回已登记状态，不重新复制；preparing 不提供可读内容。chunk 在私有 permit 下直接定位快照偏移，每次重新检查当前凭据、稳定授权主体和任务访问权限。覆盖原路径不会改变快照，close 只请求清理私有命名空间。设计权衡见[不可变下载决策](../../.agents/notes/implemented/architecture/2026-11-06-mcp-attachment-download.md)，普通元数据和页面职责见[读取简化决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)。
 
 各实现任务运行所影响模块的既有检查；CLI 使用 `pnpm typecheck`、`pnpm test`、
 `pnpm build` 及相关安装验收，Web 使用 README 拥有的 `web:*` 验证，Go 服务使用

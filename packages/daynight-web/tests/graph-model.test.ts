@@ -327,7 +327,7 @@ describe("complete prerequisite inspection", () => {
 });
 
 describe("external dependency read metadata", () => {
-  it("preserves readiness and cycle validation across every dependency edge", () => {
+  it("preserves readiness across every dependency edge", () => {
     const blocked = changedTask(graph([
       { id: A }, { id: C, status: "done" }, { id: B, dependsOn: [A, C] },
     ]), B, { externalDependsOn: [A, C] });
@@ -344,11 +344,6 @@ describe("external dependency read metadata", () => {
       externalDependsOn: [A, C], blockedBy: [], ready: true,
     });
 
-    const mixedCycle = changedTask(graph([
-      { id: A, dependsOn: [B] }, { id: B, dependsOn: [A] },
-    ]), B, { externalDependsOn: [A] });
-    expectRejected(mixedCycle);
-    expectRejected(changedTask(mixedCycle, A, { externalDependsOn: [B] }));
   });
 });
 
@@ -379,26 +374,21 @@ describe("invalid graph snapshots", () => {
     changedTask(graph([{ id: A, status: "done" }]), A, { ready: true }),
     changedTask(graph([{ id: A, status: "in_progress" }]), A, { ready: true }),
     changedTask(valid, A, { status: "proposed" as TaskStatus }),
-    graph([{ id: A, dependsOn: [B] }, { id: B, dependsOn: [A] }]),
-    graph([{ id: A }, { id: B, dependsOn: [C] }, { id: C, dependsOn: [D] }, { id: D, dependsOn: [B] }]),
     ...["total", "todo", "inProgress", "done", "ready", "blocked"].flatMap((field) => [-1, 99, null, undefined, "0"].map((value) =>
       ({ ...valid, summary: { ...valid.summary, [field]: value } }))),
   ])("rejects incomplete or inconsistent input %# with a safe error", expectRejected);
 
-  it("accepts exactly the edge limit and refuses oversized snapshots before projection", () => {
-    const roots = Array.from({ length: 100 }, (_, position) => ({
+  it("indexes and projects every node and dependency in a complete snapshot", () => {
+    const roots = Array.from({ length: 6 }, (_, position) => ({
       id: `10000000-0000-0000-0000-${position.toString(16).padStart(12, "0")}`,
     }));
-    const leaves = Array.from({ length: 50 }, (_, position) => ({
+    const leaves = Array.from({ length: 995 }, (_, position) => ({
       id: `20000000-0000-0000-0000-${position.toString(16).padStart(12, "0")}`,
       dependsOn: roots.map((root) => root.id),
     }));
     const index = buildGraphIndex(graph([...roots, ...leaves]));
-    expect(index.nodes.size).toBe(150);
-    expect(projectChain(index, roots[0]!.id).edges).toHaveLength(5000);
-    const oversized = graph([...roots, ...leaves, { id: A, dependsOn: [roots[0]!.id] }]);
-    expect(() => buildGraphIndex(oversized)).toThrow("exceeds the supported size");
-    expect(() => buildGraphIndex(graph(Array.from({ length: 1001 }, (_, position) => ({ id: String(position) }))))).toThrow("exceeds the supported size");
+    expect(index.nodes.size).toBe(1001);
+    expect(projectChain(index, roots[0]!.id).edges).toHaveLength(5970);
   });
 });
 

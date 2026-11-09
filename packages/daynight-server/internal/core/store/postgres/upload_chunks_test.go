@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -78,6 +79,19 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 		t.Fatalf("wrong accounting: %+v", r)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		current, e := d.Get(ctx, r.ID)
+		if e != nil {
+			return e
+		}
+		var progress struct {
+			NextOffset string `json:"nextOffset"`
+		}
+		if err := json.Unmarshal(current.Data, &progress); err != nil {
+			return err
+		}
+		if progress.NextOffset != "10" || current.Version != r.Version || current.ReservedBytes != 10 || current.OutstandingBytes != 0 {
+			t.Fatalf("persisted chunk progress: %+v", current)
+		}
 		byID, e := d.UploadChunk(ctx, r.ID, chunk.ChunkID)
 		if e != nil || byID != chunk {
 			t.Fatalf("receipt by ID: %+v, %v", byID, e)

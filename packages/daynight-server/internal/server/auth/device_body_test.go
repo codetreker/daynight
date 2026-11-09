@@ -17,7 +17,7 @@ func (timedOutDeviceBody) Timeout() bool            { return true }
 func (timedOutDeviceBody) Temporary() bool          { return true }
 
 func TestDeviceBodyReadTimeoutUsesSafeResponse(t *testing.T) {
-	h := &Authentication{logger: slog.Default()}
+	h := &Authentication{RequestAuthentication: &RequestAuthentication{logger: slog.Default()}}
 	for _, handler := range []http.HandlerFunc{h.deviceCode, h.deviceToken} {
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/device", nil)
 		r.Body, r.ContentLength = timedOutDeviceBody{}, 1

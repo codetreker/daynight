@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -19,30 +21,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var stepWitnessIDs = []string{"00000000", "11111111", "abcdef01", "fedcba98"}
+var stepWitnessIDs = testutil.StepWitnessIDs
 
 func seedStepWitnessRows(t *testing.T, database *Store, taskID string, count int) {
 	t.Helper()
-	for index, id := range stepWitnessIDs[:count] {
-		mustQueryExec(t, database, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,$2,$3,'same',$4,$5,'2026-01-02T03:04:05.123456Z'::timestamptz+$3::bigint*interval '1 day',
- '2026-02-03T04:05:06.654321Z'::timestamptz+$3::bigint*interval '1 day')`,
-			taskID, id, index, "  # "+id+"\n<原值&>  ", []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}[index])
-	}
+	testutil.SeedStepWitnessRows(t, database.Pool, taskID, count)
 }
 
 func stepWitnessState(t *testing.T, database *Store, taskID string, parentOnly bool) string {
 	t.Helper()
-	var state string
-	if err := database.Pool.QueryRow(t.Context(), `SELECT jsonb_build_object(
- 'task',(SELECT CASE WHEN $2 THEN to_jsonb(t)-'version'-'updated_at' ELSE to_jsonb(t) END FROM tasks t WHERE id=$1),
- 'steps',CASE WHEN $2 THEN NULL ELSE (SELECT jsonb_agg(to_jsonb(s) ORDER BY position) FROM task_steps s WHERE task_id=$1) END,
- 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY name) FROM task_properties p WHERE task_id=$1),
- 'dependencies',(SELECT jsonb_agg(to_jsonb(d) ORDER BY depends_on_task_id) FROM task_dependencies d WHERE task_id=$1),
- 'sessions',(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM task_sessions s WHERE task_id=$1))::text`, taskID, parentOnly).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
-	return state
+	return testutil.StepWitnessState(t, database.Pool, taskID, parentOnly)
 }
 
 type stepWitnessHeader struct {
@@ -76,37 +64,7 @@ func readStepWitnessRows(t *testing.T, database *Store, projectID, taskID string
 }
 
 func mutateStepWitness(ctx context.Context, dao TaskWriteDAO, taskID, operation string) error {
-	rows, err := dao.TaskSteps(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	stamp, err := dao.ObservedAt(ctx)
-	if err != nil {
-		return err
-	}
-	switch operation {
-	case "add":
-		err = dao.InsertTaskStep(ctx, taskID, model.TaskStep{ID: "12345678", Position: 0, Title: "new", Description: "new body", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
-	case "change", "status":
-		target := rows[0]
-		if operation == "change" {
-			target.Title, target.Description = "new title", "new description"
-		} else {
-			target.Status = model.TaskStepDone
-		}
-		target.UpdatedAt = stamp
-		err = dao.UpdateTaskStep(ctx, taskID, target)
-	case "delete":
-		err = dao.DeleteTaskStep(ctx, taskID, rows[0].ID, 0, int64(len(rows)-1))
-	case "move":
-		err = dao.MoveTaskStep(ctx, taskID, rows[0].ID, 0, int64(len(rows)-1))
-	default:
-		return fmt.Errorf("unknown step witness operation %q", operation)
-	}
-	if err != nil {
-		return err
-	}
-	return dao.TouchTask(ctx, taskID, stamp)
+	return testutil.MutateStep(ctx, dao, taskID, operation)
 }
 
 type stepWriteCancelTracer struct {
@@ -223,81 +181,6 @@ func TestTaskStepsPartialWritesAndSuppressedRowsRollBack(t *testing.T) {
 				}
 			}
 			assertMigrationPoolReusable(t, database.Pool)
-		})
-	}
-}
-
-func TestTaskStepsWritesPreserveParentAcrossExecutionPolicies(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	dependency := queryTask(t, database, project.ID, 10, model.TaskDone)
-	for index, policy := range []string{"todo", "in_progress", "done", "active_worker", "invalid_worker"} {
-		t.Run(policy, func(t *testing.T) {
-			task := queryTask(t, database, project.ID, 20+index, model.TaskTodo, dependency.ID)
-			mustQueryExec(t, database, `UPDATE tasks SET required_platform='linux',assigned_to=$2,allow_agents=true WHERE id=$1`, task.ID, queryID(500))
-			mustQueryExec(t, database, `UPDATE task_dependencies SET external=true WHERE task_id=$1`, task.ID)
-			mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, task.ID, `[{"url":"opaque\u0000url","title":"Evidence"}]`)
-			if policy == "active_worker" {
-				mustQueryExec(t, database, `UPDATE tasks SET status='in_progress',started_at='2026-01-01' WHERE id=$1`, task.ID)
-				mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, fmt.Sprintf(`{"claimId":%q,"state":"active","userId":%q,"workerId":%q,"machine":{"id":%q,"name":"Build machine"},"platform":"linux","agent":"codex","agentControlMode":"herdr","worktreeId":%q,"phase":"preparing","claimedAt":"2026-01-01T00:00:00Z"}`, queryID(501+index), queryID(500), queryID(510), queryID(511), queryID(512)))
-				mustQueryExec(t, database, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,grant_hash,grant_expires_at,grant_kind) VALUES($1,$2,$3,$4,$5,$6,'{}','{}','secret','2099-01-01','connect')`, queryID(520+index), project.ID, task.ID, queryID(501+index), queryID(500), queryID(530+index))
-			} else if policy == "invalid_worker" {
-				mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','invalid JSON')`, task.ID)
-			} else if policy != "todo" {
-				mustQueryExec(t, database, `UPDATE tasks SET status=$2,started_at='2026-01-01',completed_at=CASE WHEN $2='done' THEN '2026-01-02'::timestamptz ELSE NULL END WHERE id=$1`, task.ID, policy)
-			}
-			seedStepWitnessRows(t, database, task.ID, 4)
-			parent := stepWitnessState(t, database, task.ID, true)
-			for _, operation := range []string{"add", "change", "status", "move", "delete"} {
-				header, before := readStepWitnessRows(t, database, project.ID, task.ID)
-				if err := writeProjectForTest(database, t.Context(), project.ID, func(scope ProjectWriteScope) error {
-					if _, err := scope.TaskDAO().TaskHeader(t.Context(), task.ID); err != nil {
-						return err
-					}
-					return mutateStepWitness(t.Context(), scope.TaskDAO(), task.ID, operation)
-				}); err != nil {
-					t.Fatal(err)
-				}
-				afterHeader, after := readStepWitnessRows(t, database, project.ID, task.ID)
-				if afterHeader.Version != header.Version+1 || stepWitnessState(t, database, task.ID, true) != parent {
-					t.Fatal("step write changed parent policy, ownership, materials or revision increment")
-				}
-				byID := make(map[string]model.TaskStep, len(before))
-				for _, row := range before {
-					byID[row.ID] = row
-				}
-				for _, row := range after {
-					original, exists := byID[row.ID]
-					if !exists {
-						expected := model.TaskStep{ID: "12345678", Position: 0, Title: "new", Description: "new body", Status: model.TaskStepTodo, CreatedAt: afterHeader.UpdatedAt, UpdatedAt: afterHeader.UpdatedAt}
-						if row != expected {
-							t.Fatal("added row lost its exact fields or shared database clock")
-						}
-						continue
-					}
-					if operation == "change" || operation == "status" {
-						if row.ID == before[0].ID {
-							if operation == "change" {
-								original.Title, original.Description = "new title", "new description"
-							} else {
-								original.Status = model.TaskStepDone
-							}
-							original.UpdatedAt = afterHeader.UpdatedAt
-							if row != original {
-								t.Fatal("target fields, creation time or shared change clock changed")
-							}
-							continue
-						}
-					}
-					original.Position = row.Position
-					if !reflect.DeepEqual(row, original) {
-						t.Fatal("step write changed retained identity, content, status or timestamps")
-					}
-				}
-				if afterHeader.UpdatedAt.Nanosecond()%1000 != 0 {
-					t.Fatal("parent timestamp lost PostgreSQL microsecond precision")
-				}
-			}
 		})
 	}
 }

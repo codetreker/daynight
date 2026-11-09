@@ -8,10 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -61,47 +58,9 @@ func TestStepAddAllocatesCanonicalIDAndForwardsOptionalFields(t *testing.T) {
 	}
 }
 
-type confirmedTeamDB struct{ unknownTeamDB }
-
-type confirmedTeamSnapshot struct{ unknownSnapshot }
-
-type confirmedTeamReader struct{ unknownReader }
-
-func (d *confirmedTeamDB) CreateTeam(_ context.Context, _ string, operation func(store.TeamCreationDAO) error) (store.Completion, error) {
-	d.writes++
-	if err := operation(unknownCreator{db: &d.unknownTeamDB}); err != nil {
-		return store.Completion{}, err
-	}
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
-}
-
-func (d *confirmedTeamDB) WriteTeam(_ context.Context, _ string, operation func(store.TeamWriteScope) error) (store.Completion, error) {
-	d.writes++
-	if err := operation(unknownTeamScope{}); err != nil {
-		return store.Completion{}, err
-	}
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
-}
-
-func (*confirmedTeamDB) ReadSnapshot(_ context.Context, operation func(store.SnapshotScope) error) error {
-	return operation(confirmedTeamSnapshot{})
-}
-
-func (confirmedTeamSnapshot) TeamDAO() store.TeamReader { return confirmedTeamReader{} }
-
-func (confirmedTeamReader) TeamMembersPage(context.Context, string, store.Page) (store.TeamMemberPage, error) {
-	name := "Member"
-	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.FixedZone("local", 7200))
-	return store.TeamMemberPage{Items: []model.TeamMemberProfile{{Membership: model.TeamMember{TeamID: unknownTeam, UserID: unknownTarget, Role: model.ProjectMemberRole, Version: 9007199254740993, CreatedAt: now, UpdatedAt: now}, Profile: model.ProjectParticipantProfile{Name: &name}}}}, nil
-}
-
 func TestTeamToolsReturnConfirmedReceiptsAndMemberProfiles(t *testing.T) {
-	f := newEntryFixture(t)
-	f.entry.auth = validTeamAuth{}
-	database := &confirmedTeamDB{}
-	if err := RegisterTeamTools(f.entry, teamservice.NewTeams(database), projectservice.NewProjects(&failedTeamReadDB{}), identity.New(nil, nil, "")); err != nil {
-		t.Fatal(err)
-	}
+	mocks := newTeamToolMocks(t)
+	f := registerTeamToolMocks(t, mocks)
 	client := f.client(t, "2026-07-28", "alice")
 	cases := []struct {
 		name    string
@@ -119,20 +78,20 @@ func TestTeamToolsReturnConfirmedReceiptsAndMemberProfiles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+"/"+tc.outcome, func(t *testing.T) {
-			before := database.writes
+			configureTeamMutation(t, mocks, tc.name, tc.args, nil)
 			result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: tc.name, Arguments: tc.args})
 			if err != nil || result.IsError {
 				t.Fatalf("%s: %+v, %v", tc.name, result, err)
 			}
 			env := structured(t, result)
 			meta := object(t, env["meta"])
-			if meta["outcome"] != tc.outcome || database.writes != before+1 {
-				t.Fatalf("incorrect receipt: %#v; writes = %d", env, database.writes-before)
+			if meta["outcome"] != tc.outcome {
+				t.Fatalf("incorrect receipt: %#v", env)
 			}
 			data := object(t, env["data"])
 			switch tc.name {
 			case "team_create":
-				if data["id"] != database.created || data["name"] != "Created" {
+				if data["id"] != createdTeamID || data["name"] != "Created" {
 					t.Fatalf("created team: %#v", data)
 				}
 			case "team_rename":
@@ -158,6 +117,17 @@ func TestTeamToolsReturnConfirmedReceiptsAndMemberProfiles(t *testing.T) {
 				}
 			}
 		})
+	}
+	mocks.verify()
+	mocks.expect("Teams.MembersPage")
+	name := "Member"
+	stamp := time.Date(2026, 8, 1, 12, 0, 0, 0, time.FixedZone("local", 7200))
+	members := []model.TeamMemberProfile{{Membership: model.TeamMember{TeamID: unknownTeam, UserID: unknownTarget, Role: model.ProjectMemberRole, Version: 9007199254740993, CreatedAt: stamp, UpdatedAt: stamp}, Profile: model.ProjectParticipantProfile{Name: &name}}}
+	mocks.teams.MembersPageFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest) (coreteam.MemberPage, error) {
+		if id != unknownTeam || request.Limit != 50 || request.Cursor != nil {
+			t.Errorf("MembersPage(%s, %+v)", id, request)
+		}
+		return coreteam.MemberPage{Items: members}, nil
 	}
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "team_member_list", Arguments: map[string]any{"team": unknownTeam}})
 	if err != nil || result.IsError {

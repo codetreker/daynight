@@ -19,8 +19,6 @@ import (
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/puddle/v2"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -103,8 +101,8 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	}
 	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
 	defer stopProbe()
-	if err := deps.Store.Pool.Ping(probe); err != nil {
-		t.Fatalf("database closed while MCP work remained active: %v", err)
+	if err := deps.Store.Ready(probe); err != nil {
+		t.Fatalf("application dependency closed while MCP work remained active: %v", err)
 	}
 	if _, err := deps.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
 		t.Fatalf("files closed while MCP work remained active: %v", err)
@@ -139,7 +137,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 		}
 		engineClosed := operationErr != nil
 		probe, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		databaseClosed := errors.Is(deps.Store.Pool.Ping(probe), puddle.ErrClosedPool)
+		databaseClosed := errors.Is(deps.Store.Ready(probe), os.ErrClosed)
 		object, openErr := deps.Files.Open(probe, "runtime", "shutdown.txt")
 		if openErr == nil {
 			_ = object.Body.Close()
@@ -156,16 +154,13 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	}
 }
 
-// A canceled database query may finish locally before pgx's asynchronous
-// CancelRequest reaches PostgreSQL. After the shared budget expires, an
-// explicit cleanup retry must join the pool before reporting it released.
-func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
+func TestForcedShutdownJoinsSnapshotCancellationWithIdleMCP(t *testing.T) {
 	config := testConfig(t)
 	config.ShutdownTimeout = 30 * time.Millisecond
-	query := "select pg_sleep(30) /* " + uuid.NewString() + " */"
+	entered := make(chan struct{})
 	queryDone := make(chan error, 1)
 	var application *sessionApplication
-	runtime, _ := startRuntimeTest(t, config, func(deps *runtimeTestResources) http.Handler {
+	runtime, dependencies := startRuntimeTest(t, config, func(deps *runtimeTestResources) http.Handler {
 		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -175,10 +170,7 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 		relay := sessionhttp.NewRoutes(sessions, nil, testLogger())
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", endpoint)
-		mux.HandleFunc("/wait", func(w http.ResponseWriter, r *http.Request) {
-			_, err := deps.Store.Pool.Exec(r.Context(), query)
-			queryDone <- err
-		})
+		mux.Handle("/wait", runtimeWaitOperation(t, deps.Store, entered, queryDone))
 		application = &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}
 		return application
 	})
@@ -197,32 +189,21 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 		}
 	}()
 	t.Cleanup(func() { cancel(); await(t, clientDone) })
-	awaitSleepingQuery(t, config.DatabaseURL, query)
+	await(t, entered)
 	cancel()
 	if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected forced shutdown deadline, got %v", err)
 	}
 	if err := await(t, queryDone); !errors.Is(err, context.Canceled) {
-		t.Fatalf("database operation did not observe cancellation: %v", err)
+		t.Fatalf("snapshot operation did not observe cancellation: %v", err)
 	}
 	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelCleanup()
 	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
 	}
-	probe, stop := context.WithTimeout(context.Background(), 3*time.Second)
-	defer stop()
-	observer, err := pgx.Connect(probe, config.DatabaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = observer.Close(context.Background()) }()
-	var active int
-	if err := observer.QueryRow(probe, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND query=$1 AND state='active'`, query).Scan(&active); err != nil {
-		t.Fatal(err)
-	}
-	if active != 0 {
-		t.Fatal("cleanup released the pool before PostgreSQL stopped the canceled query")
+	if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("cleanup retained the application dependency: %v", err)
 	}
 	await(t, clientDone)
 }

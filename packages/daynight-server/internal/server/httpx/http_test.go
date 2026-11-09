@@ -199,7 +199,6 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	}{
 		{&model.Fault{Code: "version_conflict", Message: "conflict", TaskIDs: []string{"task"}}, `{"taskIds":["task"]}`},
 		{&model.Fault{Code: "steps_limit_exceeded", Message: "limit", StepsLimit: &model.StepsLimitDetails{EncodedBytes: 123, MaxEncodedBytes: 100}}, `{"encodedBytes":123,"maxEncodedBytes":100}`},
-		{&model.Fault{Code: "graph_limit_exceeded", Message: "limit", GraphLimit: &model.GraphLimitDetails{NodeCount: 1, EdgeCount: 2, MaxNodes: 3, MaxEdges: 4}}, `{"nodeCount":1,"edgeCount":2,"maxNodes":3,"maxEdges":4}`},
 	} {
 		w := httptest.NewRecorder()
 		WriteError(w, httptest.NewRequest("GET", "/", nil), quietLogger(), "test", "write", tc.fault)
@@ -324,6 +323,7 @@ func TestBodyFailureDoesNotHideTransactionOutcome(t *testing.T) {
 		{body, 413},
 		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: body}, 413},
 		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: body}, 500},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CommitAttempted: true, Cause: body}, 500},
 		{&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: body}, 500},
 		{errors.Join(body, errors.New("cleanup failed")), 500},
 		{errors.Join(errors.Join(timeout, context.Canceled)), 408},

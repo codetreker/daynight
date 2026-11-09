@@ -12,7 +12,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
@@ -21,7 +20,8 @@ import (
 type definitions interface {
 	CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error)
 	Defaults(context.Context, model.Principal, *string) (botcore.BotDefaults, error)
-	ListAdmitted(context.Context, model.Principal, *string, model.PageRequest, func([]model.Bot, *string) error) (botcore.BotPage, error)
+	List(context.Context, model.Principal, model.PageRequest) (botcore.BotPage, error)
+	ListWorker(context.Context, model.Principal, string, model.PageRequest) (botcore.BotPage, error)
 	Get(context.Context, model.Principal, string) (model.Bot, error)
 }
 
@@ -172,33 +172,21 @@ func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, princip
 		httpx.WriteError(w, request, logger, "bot", "list", err)
 		return
 	}
-	var workerID *string
-	if raw := request.PathValue("workerId"); raw != "" {
-		workerID = &raw
+	var result botcore.BotPage
+	if workerID := request.PathValue("workerId"); workerID != "" {
+		result, err = h.bots.ListWorker(request.Context(), principal, workerID, page)
+	} else {
+		result, err = h.bots.List(request.Context(), principal, page)
 	}
-	project := func(items []model.Bot, cursor *string) api.BotPage {
-		out := api.BotPage{Items: make([]api.Bot, 0, len(items)), NextCursor: cursor}
-		for _, item := range items {
-			out.Items = append(out.Items, Response(item))
-		}
-		return out
-	}
-	result, err := h.bots.ListAdmitted(request.Context(), principal, workerID, page, func(items []model.Bot, cursor *string) error {
-		raw, err := json.Marshal(project(items, cursor))
-		if err != nil {
-			return err
-		}
-		if len(raw)+1 > botcore.MaxCandidatePageResponseJSONBytes {
-			return &limit.Violation{Field: "bot.page", Actual: int64(len(raw) + 1), Max: botcore.MaxCandidatePageResponseJSONBytes, Unit: "bytes"}
-		}
-		return nil
-	})
 	if err != nil {
 		httpx.WriteError(w, request, logger, "bot", "list", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, project(result.Items, result.NextCursor))
-
+	response := api.BotPage{Items: make([]api.Bot, 0, len(result.Items)), NextCursor: result.NextCursor}
+	for _, item := range result.Items {
+		response.Items = append(response.Items, Response(item))
+	}
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func botResource(request *http.Request) (string, error) {

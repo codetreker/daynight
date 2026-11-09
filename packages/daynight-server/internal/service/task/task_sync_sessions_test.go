@@ -30,16 +30,12 @@ func (r syncProjectReader) Project(ctx context.Context, id string) (model.Projec
 type syncTaskReader struct {
 	store.TaskReader
 	epoch  func(context.Context, string) (string, error)
-	size   func(context.Context, string) (store.TaskGraphSize, error)
 	tasks  func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
 	people func(context.Context, string) ([]model.TaskAssigneeFact, error)
 }
 
 func (r syncTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, error) {
 	return r.epoch(ctx, id)
-}
-func (r syncTaskReader) TaskGraphSize(ctx context.Context, id string) (store.TaskGraphSize, error) {
-	return r.size(ctx, id)
 }
 func (r syncTaskReader) TaskSyncTasks(ctx context.Context, id string, since *time.Time, limit int) ([]model.TaskViewRecord, error) {
 	return r.tasks(ctx, id, since, limit)
@@ -85,13 +81,13 @@ func (s syncStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScop
 	return s.read(ctx, run)
 }
 
-func TestTaskSyncSessionReadFollowsAdmissionAndSnapshotCompletion(t *testing.T) {
+func TestTaskSyncSessionReadFollowsTaskReadAndSnapshotCompletion(t *testing.T) {
 	projectID := "33333333-3333-4333-8333-333333333333"
 	epoch := "44444444-4444-4444-8444-444444444444"
 	principal := model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}
 	cause := errors.New("read failed")
 	completion := errors.New("snapshot commit failed")
-	full := []string{"access", "project", "epoch", "size", "tasks", "people", "clock", "sessions", "completion"}
+	full := []string{"access", "project", "epoch", "tasks", "people", "clock", "sessions", "completion"}
 	for _, test := range []struct {
 		name, stage, code string
 		wantErr           error
@@ -106,15 +102,12 @@ func TestTaskSyncSessionReadFollowsAdmissionAndSnapshotCompletion(t *testing.T) 
 		{name: "missing project", stage: "project", code: "not_found", want: []string{"access", "project", "completion"}},
 		{name: "project error", stage: "project", wantErr: cause, want: []string{"access", "project"}},
 		{name: "epoch error", stage: "epoch", wantErr: cause, want: full[:3]},
-		{name: "graph read error", stage: "size", wantErr: cause, want: full[:4]},
-		{name: "graph limit", stage: "size", code: "graph_limit_exceeded", want: []string{"access", "project", "epoch", "size", "completion"}},
-		{name: "task read error", stage: "tasks", wantErr: cause, want: full[:5]},
-		{name: "response refusal", stage: "tasks", code: "resource_limit_exceeded", want: []string{"access", "project", "epoch", "size", "tasks", "completion"}},
-		{name: "people read error", stage: "people", wantErr: cause, want: full[:6]},
-		{name: "clock read error", stage: "clock", wantErr: cause, want: full[:7]},
-		{name: "session read error", stage: "sessions", wantErr: cause, want: full[:8]},
-		{name: "engine read cause", engineFailure: true, wantErr: cause, want: full[:8]},
-		{name: "shared engine stopped", stopEngine: true, code: "service_unavailable", want: full[:8]},
+		{name: "task read error", stage: "tasks", wantErr: cause, want: full[:4]},
+		{name: "people read error", stage: "people", wantErr: cause, want: full[:5]},
+		{name: "clock read error", stage: "clock", wantErr: cause, want: full[:6]},
+		{name: "session read error", stage: "sessions", wantErr: cause, want: full[:7]},
+		{name: "engine read cause", engineFailure: true, wantErr: cause, want: full[:7]},
+		{name: "shared engine stopped", stopEngine: true, code: "service_unavailable", want: full[:7]},
 		{name: "success commit error", completionErr: completion, wantErr: completion, want: full},
 		{name: "refusal commit error", stage: "access", code: "not_found", completionErr: completion, wantErr: completion, want: []string{"access", "completion"}},
 	} {
@@ -150,13 +143,6 @@ func TestTaskSyncSessionReadFollowsAdmissionAndSnapshotCompletion(t *testing.T) 
 				},
 				task: syncTaskReader{
 					epoch: func(context.Context, string) (string, error) { return epoch, phase("epoch") },
-					size: func(context.Context, string) (store.TaskGraphSize, error) {
-						if test.stage == "size" && test.code == "graph_limit_exceeded" {
-							calls = append(calls, "size")
-							return store.TaskGraphSize{NodeCount: 1001}, nil
-						}
-						return store.TaskGraphSize{}, phase("size")
-					},
 					tasks: func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 						return []model.TaskViewRecord{}, phase("tasks")
 					},
@@ -232,9 +218,7 @@ func TestTaskSyncReplacesWholeSessionCollectionWhenTaskDeltaIsEmpty(t *testing.T
 		project: syncProjectReader{access: func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
 			return model.ProjectAccess{Role: model.ProjectMemberRole}, nil
 		}, project: func(context.Context, string) (model.Project, error) { return model.Project{ID: projectID}, nil }},
-		task: syncTaskReader{epoch: func(context.Context, string) (string, error) { return projectID, nil }, size: func(context.Context, string) (store.TaskGraphSize, error) {
-			return store.TaskGraphSize{NodeCount: 1}, nil
-		}, tasks: func(_ context.Context, _ string, lower *time.Time, _ int) ([]model.TaskViewRecord, error) {
+		task: syncTaskReader{epoch: func(context.Context, string) (string, error) { return projectID, nil }, tasks: func(_ context.Context, _ string, lower *time.Time, _ int) ([]model.TaskViewRecord, error) {
 			if lower == nil {
 				t.Fatal("delta lost lower boundary")
 			}

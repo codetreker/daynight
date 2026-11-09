@@ -87,7 +87,7 @@ type failedSourceThenDelete struct {
 	sourceErr error
 }
 
-func (s *failedSourceThenDelete) OpenBounded(ctx context.Context, p model.Principal, project, task, path string, _ int) (model.Attachment, filestorage.Object, error) {
+func (s *failedSourceThenDelete) Open(ctx context.Context, p model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
 	s.sourceErr = s.db.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, p, project); err != nil {
 			return err

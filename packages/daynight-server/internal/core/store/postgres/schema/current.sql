@@ -1,4 +1,4 @@
--- Schema snapshot version: 52
+-- Schema snapshot version: 54
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1383,6 +1383,8 @@ CREATE INDEX "webhook_operations_delivery" ON "webhook_operations" USING "btree"
 CREATE INDEX "webhook_operations_endpoint" ON "webhook_operations" USING "btree" ("endpoint_id", "expires_at", "operation_id");
 
 CREATE INDEX "webhook_operations_expiry" ON "webhook_operations" USING "btree" ("expires_at", "owner_kind", "owner_id", "operation_id");
+
+CREATE INDEX "webhook_signing_keys_overlap_expiry" ON "webhook_signing_keys" USING "btree" ("overlap_until", "endpoint_id", "id") WHERE ("slot" = 'overlap'::"text");
 
 CREATE INDEX "webhook_subscriptions_acl" ON "webhook_subscriptions" USING "btree" ("project_id", "owner_kind", "owner_id", "id") WHERE ("deleted_at" IS NULL);
 

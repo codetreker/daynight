@@ -68,8 +68,8 @@ describe('automatic execution presentation', () => {
   });
 
   it('keeps both write and reconciliation errors visible until the actual task is confirmed', () => {
-    const writeError = new ApiError('network', null, 'network', 'permission-write', undefined, new Error('connection reset'));
-    const readError = new ApiError('protocol', 200, 'protocol', 'permission-read', undefined, new Error('malformed response'));
+    const writeError = new ApiError('network', null, 'network', 'permission-write', new Error('connection reset'));
+    const readError = new ApiError('protocol', 200, 'protocol', 'permission-read', new Error('malformed response'));
     const failed: TaskMutationState = { ...permission, phase: 'unknown', error: writeError, reconciliationError: readError };
     const view = mount(failed, detail, true);
     expect(screen.getByText('permission-write')).toBeVisible();

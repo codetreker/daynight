@@ -73,22 +73,12 @@ func (d *DAO) HistorySources(ctx context.Context, delivery store.WebhookDelivery
 	if err != nil {
 		return s, pg.QueryError("read webhook history permission", err)
 	}
-	rows, err := d.tx.Query(ctx, `SELECT m.subscription_id::text,m.binding_id::text,m.project_id::text,m.event_type,m.authorization_epoch,
-        COALESCE(s.endpoint_id=$2 AND s.project_id=m.project_id AND s.owner_kind=$3 AND s.owner_id=$4 AND s.authorization_state='active' AND s.authorization_epoch=m.authorization_epoch AND s.deleted_at IS NULL AND b.subscription_id=m.subscription_id AND b.event_type=m.event_type AND b.deleted_at IS NULL,false)
-        FROM webhook_delivery_matches m LEFT JOIN webhook_subscriptions s ON s.id=m.subscription_id LEFT JOIN webhook_bindings b ON b.id=m.binding_id WHERE m.delivery_id=$1 ORDER BY m.subscription_id,m.binding_id`, delivery.ID, delivery.EndpointID, delivery.Owner.Kind, delivery.Owner.ID)
+	matches, err := d.HistoryMatches(ctx, []string{delivery.ID})
 	if err != nil {
-		return s, pg.QueryError("read webhook history proof", err)
+		return s, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var m store.WebhookAdmissionMatch
-		if err = rows.Scan(&m.SubscriptionID, &m.BindingID, &m.ProjectID, &m.EventType, &m.AuthorizationEpoch, &m.Continuous); err != nil {
-			return s, pg.QueryError("read webhook history proof", err)
-		}
-		s.Matches = append(s.Matches, m)
-	}
-	if err = rows.Err(); err != nil {
-		return s, pg.QueryError("read webhook history proof", err)
+	for _, match := range matches {
+		s.Matches = append(s.Matches, match.WebhookAdmissionMatch)
 	}
 	return s, nil
 }

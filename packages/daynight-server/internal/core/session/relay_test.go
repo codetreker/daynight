@@ -2,30 +2,23 @@ package session
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"net/url"
-	"os"
-	"strings"
 	"testing"
 	"time"
 )
 
 type fixture struct {
 	s             *Execution
-	db            *postgres.Store
+	writer        *fixtureWriter
+	dao           *fixtureDAO
+	data          *fixtureData
+	writes        *fixtureWrites
+	terminal      *terminalFixtureData
 	p             model.Principal
 	project, task string
 	r             sp.Registration
@@ -34,70 +27,92 @@ type fixture struct {
 func connectFixture(t *testing.T) (fixture, sp.Snapshot) {
 	t.Helper()
 	f := setup(t)
-	ctx := context.Background()
-	v, e := f.s.Register(ctx, f.p, f.project, f.task, f.r)
-	if e != nil {
-		t.Fatal(e)
-	}
-	g, e := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	v, e = f.s.Connect(ctx, g.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
-	if e != nil {
-		t.Fatal(e)
-	}
-	synchronizeFixture(t, f, v)
-	return f, v
+	now, source := f.s.now(), uuid.NewString()
+	expiry := now.Add(2 * time.Minute)
+	snapshot := sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), ClaimID: f.r.ClaimID, ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{ProjectID: f.project, TaskID: f.task, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, AgentControlMode: "web", Provider: "codex"}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_submitted", Lifecycle: "active", ConnectionState: "synchronizing", Activity: "initializing"}
+	f.data.Session = &store.SessionRecord{Snapshot: snapshot, Owner: f.p.UserID, Parent: f.p.CredentialID, ConnectionParent: f.p.CredentialID, Registration: encode(f.r), ServerInstance: &f.s.instance, SourceEpoch: &source, SourceEpochs: []string{source}, LastSeen: &now, ConnectionExpiry: &expiry, Consumed: true}
+	f.data.Location = store.SessionLocation{SessionID: snapshot.SessionID, ProjectID: f.project, TaskID: f.task}
+	f.data.LocationError = nil
+	f.data.RegistrationID = snapshot.SessionID
+	f.data.RegistrationError = nil
+	f.data.CurrentSessionID = snapshot.SessionID
+	f.data.CurrentSessionError = nil
+	live := newLive(snapshot)
+	live.LastSeen = &now
+	f.s.live[snapshot.SessionID] = &liveCell{value: live}
+	synchronizeFixture(t, f, snapshot)
+	return f, snapshot
 }
-func TestDurableEventsDeduplicationAndOperationDispatch(t *testing.T) {
+
+func TestSourceEventsDeduplicateAndDispatchStableOperations(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
-	var epoch string
-	if e := f.db.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&epoch); e != nil {
-		t.Fatal(e)
-	}
+	epoch := *f.data.Session.SourceEpoch
 	native := "native"
 	state := sp.State{NativeSessionID: &native, InitialInputState: "confirmed", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
-	msg := sp.ControllerMessage{Type: "events", ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: encode(state)}}}
-	if _, e := f.s.Handle(ctx, msg); e != nil {
-		t.Fatal(e)
-	}
-	if _, e := f.s.Handle(ctx, msg); e != nil {
-		t.Fatal(e)
+	message := sp.ControllerMessage{Type: "events", ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: encode(state)}}}
+	for range 2 {
+		if _, err := fixtureHandle(f, ctx, message, map[string]int{"TouchSession": 1, "SaveSession": 1}); err != nil {
+			t.Fatal(err)
+		}
+		if f.writes.Session.SourceSeq != 1 {
+			t.Fatal("source ACK capture changed deduplicated sequence")
+		}
+		f.SelectSessionWrite(t)
+		f.SelectTouchWrite(t)
 	}
 	state.Activity = "working"
-	changed := msg
+	changed := message
 	changed.Events = []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: encode(state)}}
-	if _, e := f.s.Handle(ctx, changed); e == nil {
+	if _, err := fixtureHandle(f, ctx, changed, nil); err == nil {
 		t.Fatal("source sequence collision accepted")
 	}
 	command := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"hello"}],"expectedTurnId":null}`)}
-	receipt, e := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command)
-	if e != nil || receipt.State != "accepted" {
-		t.Fatalf("submit %#v %v", receipt, e)
+	receipt, err := fixtureSubmit(f, ctx, f.p, v, command, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1})
+	if err != nil || receipt.State != "accepted" {
+		t.Fatalf("submit %#v %v", receipt, err)
 	}
+	f.SelectOperationWrite(t)
+	f.SelectSessionWrite(t)
+	f.data.PendingCount = 1
+	f.data.AcceptedIDs = []string{command.OperationID}
 	command.RequestID = "retry"
-	if _, e = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); e != nil {
-		t.Fatal("request ID changed stable intent", e)
+	if _, err = fixtureSubmit(f, ctx, f.p, v, command, map[string]int{"SessionOperation": 1}); err != nil {
+		t.Fatal("request ID changed stable intent", err)
 	}
-	offers, e := f.s.Poll(ctx, v.ControllerFence)
-	if e != nil || len(offers) != 1 {
-		t.Fatalf("offer %#v %v", offers, e)
+	offers, err := fixturePoll(f, ctx, v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1})
+	if err != nil || len(offers) != 1 {
+		t.Fatalf("offer %#v %v", offers, err)
 	}
-	if again, e := f.s.Poll(ctx, v.ControllerFence); e != nil || len(again) != 0 {
-		t.Fatal("offered operation replayed", e)
+	if f.writes.Receipt.State != "offered" {
+		t.Fatal("offer did not capture offered receipt")
 	}
-	if _, e = f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID}); e != nil {
-		t.Fatal(e)
+	f.SelectReceiptWrite(t)
+	f.SelectEpochWrite(t)
+	f.SelectSessionWrite(t)
+	f.data.AcceptedIDs = nil
+	if again, err := fixturePoll(f, ctx, v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1}); err != nil || len(again) != 0 {
+		t.Fatal("offered operation replayed", err)
 	}
+	if _, err = fixtureHandle(f, ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID}, map[string]int{"SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if f.writes.Receipt.State != "dispatching" {
+		t.Fatal("native admission did not capture dispatch state")
+	}
+	f.SelectReceiptWrite(t)
+	f.SelectSessionWrite(t)
+	f.SelectTouchWrite(t)
 	receipt.State = "confirmed"
-	if _, e = f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); e != nil {
-		t.Fatal(e)
+	if _, err = fixtureHandle(f, ctx, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}, map[string]int{"SessionOperation": 1, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1}); err != nil {
+		t.Fatal(err)
 	}
-	got, e := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, command.OperationID)
-	if e != nil || got.State != "confirmed" {
-		t.Fatalf("receipt %#v %v", got, e)
+	f.SelectReceiptWrite(t)
+	f.SelectSessionWrite(t)
+	f.SelectTouchWrite(t)
+	got, err := fixtureOperation(f, ctx, v, command.OperationID)
+	if err != nil || got.State != "confirmed" {
+		t.Fatalf("receipt %#v %v", got, err)
 	}
 }
 
@@ -105,15 +120,14 @@ func TestHistoryResourceReadsRemainBoundToTheCurrentClaim(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	syncContent(t, f, v)
-	var epoch string
-	if err := f.db.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&epoch); err != nil {
-		t.Fatal(err)
-	}
+	epoch := *f.data.Session.SourceEpoch
 	entry := map[string]any{"entryId": uuid.NewString(), "revision": "1", "kind": "assistant_message", "content": []any{map[string]any{"type": "text", "text": "Saved history"}}}
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "events", ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: encode(entry)}}}); err != nil {
+	if _, err := fixtureHandle(f, ctx, sp.ControllerMessage{Type: "events", ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: encode(entry)}}}, map[string]int{"TouchSession": 1, "SaveSession": 1}); err != nil {
 		t.Fatal(err)
 	}
-	read := readPage(ctx, f, v, "tail", "", 10)
+	f.SelectSessionWrite(t)
+	f.SelectTouchWrite(t)
+	read := readPage(contentReadPhase(f, ctx, 2), f, v, "tail", "", 10)
 	request := nextContent(t, f, v)
 	replyContent(t, f, v, request, pageResult(request["historyEpoch"].(string), localEntry(t, "1")), nil)
 	got := <-read
@@ -121,7 +135,7 @@ func TestHistoryResourceReadsRemainBoundToTheCurrentClaim(t *testing.T) {
 		t.Fatalf("local history %#v %v", got.page, got.err)
 	}
 
-	snapshot, events, cursor, err := f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, "")
+	snapshot, events, cursor, err := f.s.BrowserPoll(f.BrowserPhase(ctx, nil), f.p, f.project, f.task, v.SessionID, "")
 	if err != nil || len(events) != 0 || cursor == "" {
 		t.Fatalf("initial stream %v", err)
 	}
@@ -130,158 +144,138 @@ func TestHistoryResourceReadsRemainBoundToTheCurrentClaim(t *testing.T) {
 	}
 	bad := snapshot
 	bad.HistoryEpoch = uuid.NewString()
-	if _, _, _, err = f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, EventCursor(bad, "0")); err == nil {
+	if _, _, _, err = f.s.BrowserPoll(f.BrowserPhase(ctx, nil), f.p, f.project, f.task, v.SessionID, EventCursor(bad, "0")); err == nil {
 		t.Fatal("foreign cursor accepted")
 	}
-	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err = f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, cursor); err == nil {
+	denyFixtureProject(t, f, f.p)
+	if _, _, _, err = f.s.BrowserPoll(f.BrowserPhase(ctx, map[string]int{"SessionBotID": 0, "LockSession": 0}), f.p, f.project, f.task, v.SessionID, cursor); err == nil {
 		t.Fatal("revoked member retained event access")
 	}
 }
 
 func setup(t *testing.T) fixture {
 	t.Helper()
-	ctx := context.Background()
-	raw := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Fatal("isolated database required")
-	}
-	pool, err := pgxpool.New(ctx, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := "relay_" + strings.ToLower(rand.Text())
-	if _, err = pool.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, e := pool.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
-		if e != nil {
-			t.Error(e)
-		}
-		pool.Close()
-	})
-	u, _ := url.Parse(raw)
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	db, err := postgres.Open(ctx, u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.Close)
-	f := fixture{s: New(db), db: db, p: model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}, project: uuid.NewString(), task: uuid.NewString()}
+	f := fixture{p: model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}, project: uuid.NewString(), task: uuid.NewString()}
 	f.r = sp.Registration{Protocol: sp.Protocol, RegistrationID: uuid.NewString(), ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), WorktreeID: uuid.NewString(), Provider: "codex", ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString()}
-	properties, err := taskprops.WithWorker(model.TaskProperties{}, &model.WorkerClaim{ClaimID: f.r.ClaimID, UserID: f.p.UserID, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, State: model.WorkerActive, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "test"}, Platform: model.PlatformLinux, Phase: model.WorkerExecuting, ClaimedAt: time.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ownerID, ownerTeamID, personalTeamID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	hash := sha256.Sum256([]byte("fixture"))
-	for _, statement := range []struct {
-		sql  string
-		args []any
-	}{
-		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{f.p.UserID}},
-		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{ownerID}},
-		{`INSERT INTO teams(id,personal_user_id,name,version,created_at,updated_at) VALUES($1,$2,NULL,1,now(),now()),($3,$4,NULL,1,now(),now())`, []any{ownerTeamID, ownerID, personalTeamID, f.p.UserID}},
-		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin'),($3,$4,'admin')`, []any{ownerTeamID, ownerID, personalTeamID, f.p.UserID}},
-		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'relay',now(),now()+interval '1 day')`, []any{f.p.CredentialID, f.p.UserID, hash[:]}},
-		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'Relay','https://github.com/example/relay.git')`, []any{f.project}},
-		{`INSERT INTO project_ownership(project_id,team_id,version,updated_at) VALUES($1,$2,1,now())`, []any{f.project, ownerTeamID}},
-		{`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, f.p.UserID}},
-		{`INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Relay','in_progress')`, []any{f.task, f.project}},
-		{`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, []any{f.task, string(properties["worker"])}},
-	} {
-		if _, err = db.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
-			t.Fatal(err)
+	f.data = &fixtureData{Task: store.SessionTask{Status: "in_progress", Worker: &model.WorkerClaim{ClaimID: f.r.ClaimID, UserID: f.p.UserID, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, State: model.WorkerActive, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, Platform: model.PlatformLinux, Phase: model.WorkerExecuting, ClaimedAt: time.Now()}}}
+	f.writes = &fixtureWrites{}
+	f.data.RegistrationError = model.ErrNotFound
+	f.data.CurrentSessionError = model.ErrNotFound
+	f.data.LocationError = model.ErrNotFound
+	f.data.OperationDeadline = time.Now().Add(30 * time.Second)
+	f.dao = newFixtureDAO(t)
+	f.writer = &fixtureWriter{dao: f.dao}
+	f.writer.WriteFn = f.writer.runFixtureScope
+	f.s = New(f.writer)
+	configureFixtureData(t, f)
+	t.Cleanup(func() {
+		if err := f.s.Stop(context.Background()); err != nil {
+			t.Error(err)
 		}
-	}
+	})
 	return f
 }
+
 func TestRegistrationIsIdempotentAndGrantCannotCreateAnotherNativeIdentity(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	a, err := f.s.Register(ctx, f.p, f.project, f.task, f.r)
+	initialCtx := f.RegistrationPhase(ctx, map[string]int{"InsertTaskSession": 1})
+	a, err := f.s.Register(initialCtx, f.p, f.project, f.task, f.r)
+	f.dao.FinishContext(initialCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := f.s.Register(ctx, f.p, f.project, f.task, f.r)
+	if f.writes.Registration == nil || f.writes.Registration.RegistrationID != f.r.RegistrationID || f.writes.Registration.ClaimID != f.r.ClaimID {
+		t.Fatal("registration did not preserve claim and retry identity")
+	}
+	f.SelectRegistrationWrite(t)
+	retryCtx := f.RegistrationPhase(ctx, map[string]int{"SessionBotID": 1, "LockSession": 1})
+	b, err := f.s.Register(retryCtx, f.p, f.project, f.task, f.r)
+	f.dao.FinishContext(retryCtx)
 	if err != nil || a.SessionID != b.SessionID || a.ConnectionEpoch != "0" || a.Operations.CanSend {
-		t.Fatalf("registration: %#v %v", b, err)
+		t.Fatalf("registration %#v %v", b, err)
 	}
 	changed := f.r
 	changed.ControllerID = uuid.NewString()
-	if _, err = f.s.Register(ctx, f.p, f.project, f.task, changed); err == nil {
+	collisionCtx := f.RegistrationPhase(ctx, map[string]int{"SessionBotID": 1, "LockSession": 1})
+	_, err = f.s.Register(collisionCtx, f.p, f.project, f.task, changed)
+	f.dao.FinishContext(collisionCtx)
+	if err == nil {
 		t.Fatal("conflicting registration accepted")
 	}
-	grant, err := f.s.Grant(ctx, f.p, f.project, f.task, a.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: a.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
+	grantCtx := f.BrowserPhase(ctx, map[string]int{"SetSessionGrant": 1, "SaveSession": 1})
+	grant, err := f.s.Grant(grantCtx, f.p, f.project, f.task, a.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: a.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
+	f.dao.FinishContext(grantCtx)
 	if err != nil || grant.Token == "" {
-		t.Fatalf("grant: %v", err)
+		t.Fatalf("grant %v", err)
 	}
+	f.SelectGrantWrite(t)
+	f.SelectSessionWrite(t)
 	hello := sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: sp.ControllerFence{Fence: a.Fence}, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}
-	connected, err := f.s.Connect(ctx, grant.Token, hello, uuid.NewString())
+	connectCtx := f.GrantPhase(ctx, map[string]int{"ConnectSession": 1, "SaveSession": 1})
+	connected, err := f.s.Connect(connectCtx, grant.Token, hello, uuid.NewString())
+	f.dao.FinishContext(connectCtx)
 	if err != nil || connected.ConnectionEpoch != "1" {
-		t.Fatalf("connect: %#v %v", connected, err)
+		t.Fatalf("connect %#v %v", connected, err)
 	}
-	if _, err = f.s.Connect(ctx, grant.Token, hello, uuid.NewString()); err == nil {
+	f.SelectConnectionWrite(t)
+	replayCtx := f.GrantPhase(ctx, nil)
+	_, err = f.s.Connect(replayCtx, grant.Token, hello, uuid.NewString())
+	f.dao.FinishContext(replayCtx)
+	if err == nil {
 		t.Fatal("bootstrap replay")
 	}
 }
 
-func TestClaimCompletionFreezesSessionInTheTaskTransaction(t *testing.T) {
+func TestCompletedClaimProjectsFrozenSessionAndExpiresDrain(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
-	claim := v.ClaimID
-	if _, err := taskservice.NewTasks(f.db).SetStatus(ctx, f.p, f.project, f.task, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &claim}); err != nil {
-		for errors.Unwrap(err) != nil {
-			err = errors.Unwrap(err)
-		}
-		t.Fatal(err)
-	}
-	current, err := f.s.Current(ctx, f.p, f.project, f.task)
+	f.data.Task.Status = "done"
+	f.data.Task.Worker.State = model.WorkerCompleted
+	f.data.Session.Snapshot.Lifecycle = "draining"
+	until := f.s.now().Add(time.Minute)
+	f.data.Session.DrainUntil = &until
+	f.data.Operation.Receipt.State = "rejected"
+	current, err := f.s.Current(f.TaskPhase(ctx, map[string]int{"CurrentTaskSession": 1, "SessionBotID": 1, "LockSession": 1}), f.p, f.project, f.task)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := current["session"].(sp.Snapshot)
 	if snapshot.Lifecycle != "draining" || snapshot.Operations.CanSend {
-		t.Fatalf("claim ended without freezing session: %#v", snapshot)
+		t.Fatalf("ended claim did not freeze Session: %#v", snapshot)
 	}
-	operation, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, command.OperationID)
+	operation, err := fixtureOperation(f, ctx, v, command.OperationID)
 	if err != nil || operation.State != "rejected" {
 		t.Fatal("undispatched operation survived ended claim", operation.State, err)
 	}
-	if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}); err != nil {
-		t.Fatal("draining final upload window rejected", err)
-	}
-	f.s.now = func() time.Time { return time.Now().Add(61 * time.Second) }
-	if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}); err == nil {
-		t.Fatal("expired draining connection accepted")
-	}
-	if _, err = f.s.Current(ctx, f.p, f.project, f.task); err != nil {
+	if _, err = fixtureHandle(f, ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}, map[string]int{"TouchSession": 1, "SaveSession": 1}); err != nil {
 		t.Fatal(err)
 	}
-	var lifecycle string
-	if err = f.db.Pool.QueryRow(ctx, `SELECT snapshot->>'lifecycle' FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&lifecycle); err != nil || lifecycle != "archived" {
-		t.Fatal("expired drain was not durably archived", lifecycle, err)
+	now := f.s.now()
+	f.s.now = func() time.Time { return now.Add(61 * time.Second) }
+	if _, err = fixtureHandle(f, ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}, nil); err == nil {
+		t.Fatal("expired draining connection accepted")
+	}
+	if _, err = f.s.Current(f.TaskPhase(ctx, map[string]int{"CurrentTaskSession": 1, "SessionBotID": 1, "LockSession": 1, "SaveSession": 1}), f.p, f.project, f.task); err != nil {
+		t.Fatal(err)
+	}
+	if f.writes.Session == nil || f.writes.Session.Snapshot.Lifecycle != "archived" {
+		t.Fatal("expired drain was not proposed for archival")
 	}
 }
 
 func publishState(t *testing.T, f fixture, v sp.Snapshot, state sp.State) {
 	t.Helper()
-	ctx := context.Background()
-	var epoch string
-	var seq int64
-	if err := f.db.Pool.QueryRow(ctx, `SELECT source_epoch::text,last_source_seq FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&epoch, &seq); err != nil {
-		t.Fatal(err)
-	}
+	ctx := f.ControllerPhase(context.Background(), map[string]int{"TouchSession": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(ctx)
+	epoch, seq := *f.data.Session.SourceEpoch, f.data.Session.SourceSeq
 	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "events", ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: decimal(seq + 1), Kind: "state", Payload: encode(state)}}}); err != nil {
 		t.Fatal(err)
 	}
+	f.SelectSessionWrite(t)
+	f.SelectTouchWrite(t)
 }
 func idleState() sp.State {
 	native := "native"
@@ -290,26 +284,36 @@ func idleState() sp.State {
 func submitText(t *testing.T, f fixture, v sp.Snapshot) sp.Command {
 	t.Helper()
 	c := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "test", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"hi"}],"expectedTurnId":null}`)}
-	if _, err := f.s.Submit(context.Background(), f.p, f.project, f.task, v.SessionID, c); err != nil {
+	ctx := f.BrowserPhase(context.Background(), map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(ctx)
+	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
 		t.Fatal(err)
 	}
+	f.SelectOperationWrite(t)
+	f.SelectSessionWrite(t)
+	f.data.PendingCount = 1
+	f.data.AcceptedIDs = []string{c.OperationID}
 	return c
 }
 func reconnect(t *testing.T, f fixture, v sp.Snapshot) sp.Snapshot {
 	t.Helper()
 	ctx := context.Background()
-	g, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "reconnect"})
+	grantCtx := f.BrowserPhase(ctx, map[string]int{"SetSessionGrant": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(grantCtx)
+	g, err := f.s.Grant(grantCtx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "reconnect"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var epoch string
-	if err = f.db.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&epoch); err != nil {
-		t.Fatal(err)
-	}
-	out, err := f.s.Connect(ctx, g.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: epoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
+	f.SelectGrantWrite(t)
+	f.SelectSessionWrite(t)
+	epoch := *f.data.Session.SourceEpoch
+	connectCtx := f.GrantPhase(ctx, map[string]int{"ConnectSession": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(connectCtx)
+	out, err := f.s.Connect(connectCtx, g.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: epoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.SelectConnectionWrite(t)
 	return out
 }
 func TestReconnectNeverReplaysAnOfferWithoutJournalEvidence(t *testing.T) {
@@ -318,103 +322,106 @@ func TestReconnectNeverReplaysAnOfferWithoutJournalEvidence(t *testing.T) {
 			f, v := connectFixture(t)
 			ctx := context.Background()
 			publishState(t, f, v, idleState())
-			c := submitText(t, f, v)
-			if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
-				t.Fatal(err)
+			command := submitText(t, f, v)
+			if offers, err := fixturePoll(f, ctx, v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}); err != nil || len(offers) != 1 {
+				t.Fatal("initial offer", offers, err)
 			}
-			newV := reconnect(t, f, v)
-			if _, err := f.s.Poll(ctx, v.ControllerFence); err == nil {
+			f.SelectReceiptWrite(t)
+			f.SelectEpochWrite(t)
+			f.SelectSessionWrite(t)
+			f.data.AcceptedIDs = nil
+			next := reconnect(t, f, v)
+			if _, err := fixturePoll(f, ctx, v.ControllerFence, nil); err == nil {
 				t.Fatal("old connection survived CAS")
 			}
 			items := []sp.Reconciliation{}
+			counts := map[string]int{"UnreconciledSessionOperations": 1, "SessionOperation": 1, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1}
 			if journal {
-				items = append(items, sp.Reconciliation{OperationID: c.OperationID, State: "not_submitted"})
+				items = append(items, sp.Reconciliation{OperationID: command.OperationID, State: "not_submitted"})
+				counts["LockCredential"], counts["ProjectAccess"], counts["SetSessionOperationEpoch"] = 2, 2, 1
+				f.data.UnreconciledIDs = nil
+			} else {
+				f.data.UnreconciledIDs = []string{command.OperationID}
 			}
-			if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "reconcile", Final: true, ControllerFence: newV.ControllerFence, Operations: items}); err != nil {
-				t.Fatal(err)
-			}
-			receipt, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, c.OperationID)
-			if err != nil {
+			if _, err := fixtureHandle(f, ctx, sp.ControllerMessage{Type: "reconcile", Final: true, ControllerFence: next.ControllerFence, Operations: items}, counts); err != nil {
 				t.Fatal(err)
 			}
 			want := "unknown"
 			if journal {
 				want = "rejected"
 			}
-			if receipt.State != want {
-				t.Fatalf("reconciled %s, expected %s", receipt.State, want)
+			if f.writes.Receipt == nil || f.writes.Receipt.State != want {
+				t.Fatalf("reconciliation capture %#v, expected %s", f.writes.Receipt, want)
 			}
-			publishState(t, f, newV, idleState())
-			offers, err := f.s.Poll(ctx, newV.ControllerFence)
-			if err != nil {
-				t.Fatal(err)
+			f.SelectReceiptWrite(t)
+			f.SelectSessionWrite(t)
+			f.SelectTouchWrite(t)
+			if journal {
+				f.SelectEpochWrite(t)
 			}
-			if len(offers) != 0 {
-				t.Fatal("unsafe replay or lost proven unsubmitted operation")
+			f.data.UnreconciledIDs = nil
+			f.data.UnreconciledCount = 0
+			receipt, err := fixtureOperation(f, ctx, v, command.OperationID)
+			if err != nil || receipt.State != want {
+				t.Fatalf("reconciled %s, expected %s: %v", receipt.State, want, err)
+			}
+			synchronizeFixture(t, f, next)
+			publishState(t, f, next, idleState())
+			offers, err := fixturePoll(f, ctx, next.ControllerFence, map[string]int{"AcceptedSessionOperations": 1})
+			if err != nil || len(offers) != 0 {
+				t.Fatal("unsafe operation replay after reconnect", offers, err)
 			}
 		})
 	}
 }
 
-func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
+func TestWithdrawnClaimKeepsFinalObservationWithoutBrowserControl(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
-	task, err := taskservice.NewTasks(f.db).WithdrawWorker(ctx, f.p, f.project, f.task, taskcore.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
-	if _, present := task.Properties["worker"]; err != nil || present || task.AllowAgents || task.Status != model.TaskTodo {
-		t.Fatal("withdrawal retained ownership", task, err)
+	f.data.Task.Worker = nil
+	f.data.Task.Status = "todo"
+	f.data.Session.Snapshot.Lifecycle = "draining"
+	until := f.s.now().Add(time.Minute)
+	f.data.Session.DrainUntil = &until
+	phase := f.TaskPhase(ctx, nil)
+	current, err := f.s.Current(phase, f.p, f.project, f.task)
+	f.dao.FinishContext(phase)
+	if err != nil || current["status"] != "not_applicable" {
+		t.Fatal("withdrawn claim remained current", current, err)
 	}
-	var raw []byte
-	if err = f.db.Pool.QueryRow(ctx, `SELECT snapshot FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var snapshot sp.Snapshot
-	err = json.Unmarshal(raw, &snapshot)
-	if err != nil || snapshot.Lifecycle != "draining" || snapshot.Activity == "stopped" {
-		t.Fatal("withdrawal did not fence without claiming stop", snapshot, err)
-	}
-	var receiptState string
-	if err = f.db.Pool.QueryRow(ctx, `SELECT receipt->>'state' FROM session_operations WHERE session_id=$1 AND operation_id=$2`, v.SessionID, command.OperationID).Scan(&receiptState); err != nil || receiptState != "rejected" {
-		t.Fatal("undispatched operation survived withdrawal", receiptState, err)
-	}
-	if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); err == nil {
+	if _, err := fixtureSubmit(f, ctx, f.p, v, command, nil); err == nil {
 		t.Fatal("withdrawn claim accepted input")
 	}
-	if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}); err != nil {
-		t.Fatal("withdrawal discarded final observation window", err)
+	output, err := fixtureHandle(f, ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}, map[string]int{"TouchSession": 1, "SaveSession": 1})
+	if err != nil || output["type"] != "heartbeat_ack" {
+		t.Fatal("withdrawal discarded final observation window", output, err)
+	}
+	if f.writes.Session == nil || f.writes.Session.Snapshot.Lifecycle != "draining" {
+		t.Fatal("final observation claimed a native stop")
 	}
 }
 
 func synchronizeFixture(t *testing.T, f fixture, v sp.Snapshot) {
 	t.Helper()
 	state := sp.State{NativeSessionID: v.Identity.NativeSessionID, InitialInputState: v.InitialInputState, Synchronized: true, Activity: "initializing"}
-	if _, err := f.s.Handle(context.Background(), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+	ctx := f.ControllerPhase(context.Background(), map[string]int{"UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1})
+	defer f.dao.FinishContext(ctx)
+	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
 	}
+	f.SelectSessionWrite(t)
+	f.SelectTouchWrite(t)
 }
 
-func TestSessionReadsRejectInvalidStoredProperties(t *testing.T) {
-	for _, input := range []struct {
-		name  string
-		value string
-	}{
-		{name: "worker", value: "null"},
-		{name: "pullRequests", value: "["},
-		{name: "pullRequests", value: "null"},
-		{name: "unknown", value: "{}"},
-	} {
-		t.Run(input.name+"/"+input.value, func(t *testing.T) {
-			f := setup(t)
-			ctx := context.Background()
-			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3) ON CONFLICT(task_id,name) DO UPDATE SET value=excluded.value`, f.task, input.name, input.value); err != nil {
-				t.Fatal(err)
-			}
-			_, err := f.s.Current(ctx, f.p, f.project, f.task)
-			var invalid *taskproperties.ValidationError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("stored property did not retain validation error: %v", err)
-			}
-		})
+func TestSessionReadsPreserveTaskReadFailure(t *testing.T) {
+	f := setup(t)
+	expected := errors.New("task read failed")
+	f.dao.LockTaskFn = func(context.Context, string, string) (store.SessionTask, error) { return store.SessionTask{}, expected }
+	f.dao.Expect("LockTask", 1)
+	_, err := f.s.Current(f.dao.ContextPhase(context.Background(), map[string]int{"LockTask": 1}), f.p, f.project, f.task)
+	if !errors.Is(err, expected) {
+		t.Fatalf("DAO failure lost cause: %v", err)
 	}
 }

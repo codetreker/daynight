@@ -710,7 +710,9 @@ properties, assignedTo or Project ownership in old records cannot receive
 defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
-fences/generations and bounded counts for both active and invalidated manifests.
+fences/generations and actual counts for both active and invalidated manifests.
+Complete graph and sync responses are not rejected by stored node, edge or
+Session-map counts; cache quotas remain independent.
 An invalidated manifest has a recognized reason, null epoch/Project/watermark and
 zero task/edge counts; it cannot retain a usable incremental baseline. The shared
 details store and guarded transaction interface support intrinsic content reuse,
@@ -738,11 +740,11 @@ business versions remain bigint. The default ten-second server overlap can
 repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
 invalidate detail records, replace published indexes or broadcast. Network,
 HTTP, decoding, quota and IDB-completion errors preserve the prior valid cache
-and watermark without partial publication. Invalid stored properties fail the
-complete sync request with 400 invalid_input; database and transaction-completion
-faults remain 500 internal_error. Complete properties increase transport, parsing,
-full-set validation and summary storage costs. Graph node/edge limits and the
-detail LRU byte budget do not bound total summary bytes, and arbitrary legal
+and watermark without partial publication. Server reads trust canonical stored
+properties without repeated normalization, field or capacity checks; natural
+decoding, encoding, database and transaction errors remain visible. Complete
+properties increase transport, parsing, full-set client validation and summary
+storage costs. The detail LRU byte budget does not bound total summary bytes, and arbitrary legal
 maximum payloads are not guaranteed to fit every browser quota.
 
 After identity verification, a project publishes its validated local summary
@@ -940,8 +942,8 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-Project task search submits the original expression to the server, including
-completed Tasks and chain members. Its draft, filters and cursor pages are
+Project task search submits the original expression to the server, matching IDs,
+complete titles and Markdown descriptions, including completed Tasks and chain members. Its draft, filters and cursor pages are
 independent of the ordinary lists. Clearing the search restores the ordinary
 view and its scroll position. Search results open a live Task detail, including
 when project graph synchronization fails. Errors and empty results remain
@@ -1118,12 +1120,13 @@ It does not request another current-user or member list for message authors.
 An active, visible Discussion reads new messages every five seconds after a
 successful read and immediately catches up complete pages. Hidden tabs and pages
 pause reads. History, references and post receipts never advance the independent
-consumed-after ID. Visible and incoming count/byte caps retain complete bodies;
+consumed-after ID. Visible and incoming count windows retain complete bodies
+without message, page or retained-data byte admission;
 explicit navigation can replace displayed history, which remains reachable by
 before/after ID paging. Only a reading anchor, the latest confirmed receipt and
 one pending POST reservation can be fixed, so repeated own posts cannot prevent
 older unseen messages from progressing. The new-message count describes retained
-incoming messages rather than the service's total backlog.
+incoming messages and does not claim the service's total backlog.
 
 All Web reads request details=true. Author names and Agent provider badges use
 immutable message snapshots; missing or blank names use a separate full account
@@ -2184,9 +2187,11 @@ Webhook page tests independently observe request preparation, dispatch and the
 resulting UI. Native SHA-256 preparation is held by explicit promise gates in the
 restrictive cleanup case; each release retains the real digest computation.
 Exact write counts and distinct operation IDs identify sequential mutations.
-Team selection waits for its current named option. Controlled management and
-receipt responses settle within React `act` before authorization, draft, secret,
-original-operation and no-replay assertions. Late-denial tests complete the newer
+Team selection waits for its current named option. Malformed owner-list response
+cases release their initial endpoint detail within async React `act` before
+revealing a secret, so endpoint effects settle before the read begins. Controlled
+management and receipt responses settle within React `act` before authorization,
+draft, secret, original-operation and no-replay assertions. Late-denial tests complete the newer
 Team membership refresh or owner selection before releasing the old response.
 Rotation confirmation waits for dialog removal and an enabled Check operation
 action. Rendered errors, secrets, dialogs and focus use DOM readiness predicates;

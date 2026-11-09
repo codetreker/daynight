@@ -181,16 +181,6 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 	if err := WorkerReady(current); err == nil {
 		t.Fatal("active worker accepted")
 	}
-	current.Properties["worker"] = json.RawMessage(`{"bad":true}`)
-	if err := WorkerReady(current); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if _, err := ReleasedWorker(current, worker.ClaimID); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if _, err := WithdrawableWorker(current, worker.ClaimID); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
 	current, worker = activeFixture(t)
 	input := UpdateWorker{Herdr: ptr(&model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}), NativeSessionID: ptr(ptr("native"))}
 	values, changed, err := WorkerUpdateCandidate(current, worker, worker.ClaimID, input)

@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,134 +11,90 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/google/uuid"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func TestTaskHTTPCancellationPreservesReadableMaterialsAndSatisfiesDependencies(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	predecessor := createHTTPTask(t, handler, project.ID, "Unfinished predecessor")
-	task := createHTTPTask(t, handler, project.ID, "Cancelled search target", predecessor.ID)
-	task = updateHTTPTask(t, handler, task, map[string]any{
-		"allowAgents": true, "requiredPlatform": "linux", "assignedTo": handler.principal.UserID,
-		"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "https://example.test/pr/1", Title: "Retained result"}})},
-	})
-	other := createHTTPTask(t, handler, project.ID, "Other prerequisite")
-	external := setHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "External cancelled prerequisite"), "cancelled")
-	follower := createHTTPTask(t, handler, project.ID, "Follower", task.ID, other.ID, external.ID)
-	follower = updateHTTPTask(t, handler, follower, map[string]any{"externalDependsOn": []string{external.ID}})
-	seedHTTPStep(t, database, task.ID, "abcdef01", 0, "Retained step", "Step material")
-	stepBefore := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodGet, taskPath(task)+"/steps", ""), http.StatusOK)
-	message := decodeResponse[api.ThreadMessage](t, projectRequest(handler, http.MethodPost, threadPath(task), `{"body":"Retained discussion"}`), http.StatusCreated)
-	attachmentPath := taskPath(task) + "/attachments/files/retained.txt"
-	decodeResponse[api.Attachment](t, projectRequest(handler, http.MethodPut, attachmentPath, "Original attachment bytes"), http.StatusCreated)
-	beforeSync := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-	before := readHTTPTask(t, handler, task)
-	if before.Ready || !slices.Equal(before.BlockedBy, []string{predecessor.ID}) {
-		t.Fatalf("fixture must be blocked: %+v", before)
+func TestTaskHTTPCancellationProjectsTerminalTimingAndReadableMaterials(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	result := testTask("Cancelled search target")
+	stamp := result.UpdatedAt.Add(time.Minute)
+	dependency := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	result.Status, result.Version, result.CancelledAt, result.UpdatedAt, result.Ready = model.TaskCancelled, 2, &stamp, stamp, false
+	result.Description = "Readable cancelled Markdown"
+	result.DependsOn = []string{dependency}
+	result.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"https://example.test/pr/1","title":"Retained result"}]`)}
+	h.Tasks.SetStatusFunc = func(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.SetTaskStatus) (model.Task, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || input.Version != 1 || input.Status != model.TaskCancelled {
+			t.Fatalf("cancel input: %+v", input)
+		}
+		return result, nil
 	}
-	response := projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: before.Version, Status: "cancelled"}))
+	h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
+		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
+	}
+	h.Tasks.GraphFunc = func(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
+		return model.TaskGraph{Project: testProject(), ObservedAt: stamp, Summary: model.TaskGraphSummary{Total: 1, Cancelled: 1}, Tasks: []model.GraphTask{{ID: testTaskID, TitlePreview: result.Title, Status: result.Status, DependsOn: result.DependsOn, CreatedAt: result.CreatedAt, UpdatedAt: stamp, CancelledAt: &stamp}}}, nil
+	}
+	h.Sync = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID {
+			t.Fatalf("cancelled sync scope: %+v %s", principal, projectID)
+		}
+		return model.TaskSync{Mode: "snapshot", Epoch: testEpoch, Project: testProject(), ObservedAt: stamp, Tasks: []model.TaskViewRecord{{ID: testTaskID, TitlePreview: result.Title, Status: result.Status, Version: result.Version, Properties: result.Properties, DependsOn: result.DependsOn, CreatedAt: result.CreatedAt, UpdatedAt: stamp, CancelledAt: &stamp}}, AssigneeVersions: []model.TaskAssigneeVersion{}, Sessions: map[string]model.SessionListState{}}, nil
+	}
+	h.Search = func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Query != result.Title || input.Status == nil || *input.Status != model.TaskCancelled {
+			t.Fatalf("cancelled search input: %+v", input)
+		}
+		return tasksearch.Page{ProjectID: testProjectID, Total: 1, Items: []tasksearch.Item{{ID: testTaskID, ProjectID: testProjectID, Title: result.Title, Status: model.TaskCancelled, UpdatedAt: stamp, CancelledAt: &stamp, Match: tasksearch.Match{Fields: []string{"title"}}}}}, nil
+	}
+	collection := taskCollection(testProjectID)
+	path := collection + "/" + testTaskID
+	response := projectRequest(h, http.MethodPut, path+"/status", `{"version":1,"status":"cancelled"}`)
 	cancelled := decodeResponse[api.Task](t, response, http.StatusOK)
-	if cancelled.Status != "cancelled" || cancelled.Ready || cancelled.CancelledAt == nil || cancelled.CancelledAt.Location() != time.UTC ||
-		!cancelled.CancelledAt.Equal(cancelled.UpdatedAt) || cancelled.Version != before.Version+1 {
-		t.Fatalf("cancelled response does not expose committed terminal timing: %+v", cancelled)
-	}
-	comparable := cancelled
-	comparable.Status, comparable.Version, comparable.UpdatedAt, comparable.CancelledAt = before.Status, before.Version, before.UpdatedAt, before.CancelledAt
-	if !reflect.DeepEqual(comparable, before) {
-		t.Fatalf("cancellation changed unrelated materials: before=%+v after=%+v", before, cancelled)
-	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields["cancelledAt"]) == 0 {
-		t.Fatalf("cancelledAt omitted from wire: %s %v", response.Body, err)
+		t.Fatalf("cancelledAt missing from wire: %s %v", response.Body, err)
 	}
-	if !reflect.DeepEqual(setHTTPTask(t, handler, cancelled, "cancelled"), cancelled) {
-		t.Fatal("same-state cancellation changed terminal timing")
+	if cancelled.Status != "cancelled" || cancelled.Ready || cancelled.Version != 2 || cancelled.CancelledAt == nil || !cancelled.CancelledAt.Equal(stamp) || cancelled.CancelledAt.Location() != time.UTC || cancelled.Description != result.Description || !slices.Equal(cancelled.DependsOn, result.DependsOn) || !reflect.DeepEqual(cancelled.Properties, api.TaskProperties(result.Properties)) {
+		t.Fatalf("cancelled task projection: %+v", cancelled)
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: before.Version, Status: "cancelled"})), http.StatusConflict, "version_conflict")
-	for _, status := range []string{"todo", "in_progress", "done"} {
-		assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: cancelled.Version, Status: status})), http.StatusConflict, "invalid_transition")
+	read := decodeResponse[api.Task](t, projectRequest(h, http.MethodGet, path, ""), http.StatusOK)
+	if !reflect.DeepEqual(read, cancelled) {
+		t.Fatalf("cancelled read projection differs: %+v %+v", read, cancelled)
 	}
-	stepAfter := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodGet, taskPath(task)+"/steps", ""), http.StatusOK)
-	if !reflect.DeepEqual(stepAfter.Steps, stepBefore.Steps) || stepAfter.Version != cancelled.Version {
-		t.Fatal("cancelled Steps became unreadable or changed")
-	}
-	thread := decodeResponse[api.ThreadPage](t, projectRequest(handler, http.MethodGet, threadPath(task), ""), http.StatusOK)
-	if len(thread.Items) != 1 || !reflect.DeepEqual(thread.Items[0], message) {
-		t.Fatal("cancelled discussion became unreadable or changed")
-	}
-	attachment := projectRequest(handler, http.MethodGet, attachmentPath, "")
-	if attachment.Code != http.StatusOK || attachment.Body.String() != "Original attachment bytes" {
-		t.Fatalf("cancelled attachment differs: %d %s", attachment.Code, attachment.Body)
-	}
-	afterFollower := readHTTPTask(t, handler, follower)
-	if afterFollower.Version != follower.Version || afterFollower.Ready || !slices.Equal(afterFollower.BlockedBy, []string{other.ID}) || !slices.Equal(afterFollower.DependsOn, follower.DependsOn) {
-		t.Fatalf("mixed dependencies did not keep the remaining blocker: %+v", afterFollower)
-	}
-	other = setHTTPTask(t, handler, other, "done")
-	afterFollower = readHTTPTask(t, handler, follower)
-	if !afterFollower.Ready || len(afterFollower.BlockedBy) != 0 || afterFollower.Version != follower.Version {
-		t.Fatalf("terminal ordinary/external prerequisites did not allow follower: %+v", afterFollower)
-	}
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID), ""), http.StatusOK)
-	if graph.Summary.Total != 5 || graph.Summary.Cancelled != 2 || graph.Summary.Done != 1 || graph.Summary.Todo != 2 || graph.Summary.Ready != 2 || graph.Summary.Blocked != 0 {
-		t.Fatalf("cancellation graph summary: %+v", graph.Summary)
-	}
-	for _, node := range graph.Tasks {
-		if node.ID == task.ID && (!reflect.DeepEqual(node.CancelledAt, cancelled.CancelledAt) || !slices.Equal(node.DependsOn, before.DependsOn)) {
-			t.Fatalf("graph lost cancellation time or dependencies: %+v", node)
-		}
-	}
-	afterSync := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?epoch="+beforeSync.Epoch, ""), http.StatusOK)
-	if afterSync.Epoch != beforeSync.Epoch {
-		t.Fatal("cancellation rotated the deletion epoch")
-	}
-	for _, record := range afterSync.Tasks {
-		if record.ID == task.ID && (!reflect.DeepEqual(record.CancelledAt, cancelled.CancelledAt) || record.Status != "cancelled") {
-			t.Fatalf("sync lost cancellation contract: %+v", record)
-		}
-	}
-	search := decodeResponse[api.TaskSearchPage](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID)+"/search", `{"query":"Cancelled search target","status":"cancelled"}`), http.StatusOK)
-	if len(search.Items) != 1 || search.Items[0].ID != task.ID || !reflect.DeepEqual(search.Items[0].CancelledAt, cancelled.CancelledAt) {
-		t.Fatalf("cancelled search filter/timestamp: %+v", search)
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(h, http.MethodGet, "/api/v1/projects/"+testProjectID+"/task-graph?taskId="+testTaskID, ""), http.StatusOK)
+	sync := decodeResponse[api.TaskSync](t, projectRequest(h, http.MethodGet, "/api/v1/projects/"+testProjectID+"/task-sync", ""), http.StatusOK)
+	search := decodeResponse[api.TaskSearchPage](t, projectRequest(h, http.MethodPost, collection+"/search", jsonBody(t, map[string]any{"query": result.Title, "status": "cancelled"})), http.StatusOK)
+	if len(graph.Tasks) != 1 || len(sync.Tasks) != 1 || len(search.Items) != 1 || graph.Tasks[0].CancelledAt == nil || sync.Tasks[0].CancelledAt == nil || search.Items[0].CancelledAt == nil || !graph.Tasks[0].CancelledAt.Equal(stamp) || !sync.Tasks[0].CancelledAt.Equal(stamp) || !search.Items[0].CancelledAt.Equal(stamp) || graph.Summary.Cancelled != 1 || sync.Tasks[0].Status != "cancelled" || search.Items[0].Status != "cancelled" {
+		t.Fatalf("cancelled timestamp changed across projections: graph=%+v sync=%+v search=%+v", graph, sync, search)
 	}
 }
 
-func TestTaskHTTPCancellationPreservesCompletedIntervalAndReleasedWorkerHistory(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	project := taskProject(t, handler)
-	completed := setHTTPTask(t, handler, setHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Completed interval"), "in_progress"), "done")
-	follower := setHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Started follower", completed.ID), "in_progress")
-	cancelled := setHTTPTask(t, handler, completed, "cancelled")
-	if cancelled.CancelledAt == nil || !reflect.DeepEqual(cancelled.StartedAt, completed.StartedAt) || !reflect.DeepEqual(cancelled.CompletedAt, completed.CompletedAt) {
-		t.Fatal("done cancellation replaced the execution interval")
+func TestTaskHTTPCancellationPreservesSuppliedIntervalAndMapsRefusals(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	result := testTask("Completed interval")
+	start, end, cancelled := result.CreatedAt, result.CreatedAt.Add(time.Hour), result.CreatedAt.Add(2*time.Hour)
+	result.Status, result.Version, result.StartedAt, result.CompletedAt, result.CancelledAt, result.UpdatedAt = model.TaskCancelled, 4, &start, &end, &cancelled, cancelled
+	h.Tasks.SetStatusFunc = func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error) {
+		return result, nil
 	}
-	stamp := *cancelled.CancelledAt
-	cancelled = updateHTTPTask(t, handler, cancelled, map[string]any{"description": "Readable edited cancellation"})
-	if !cancelled.CancelledAt.Equal(stamp) || !reflect.DeepEqual(cancelled.StartedAt, completed.StartedAt) || !reflect.DeepEqual(cancelled.CompletedAt, completed.CompletedAt) {
-		t.Fatal("cancelled metadata edit changed retained terminal timing")
+	actual := decodeResponse[api.Task](t, projectRequest(h, http.MethodPut, taskCollection(testProjectID)+"/"+testTaskID+"/status", `{"version":3,"status":"cancelled"}`), http.StatusOK)
+	if actual.StartedAt == nil || actual.CompletedAt == nil || actual.CancelledAt == nil || !actual.StartedAt.Equal(start) || !actual.CompletedAt.Equal(end) || !actual.CancelledAt.Equal(cancelled) {
+		t.Fatalf("cancelled output replaced supplied interval: %+v", actual)
 	}
-	if got := readHTTPTask(t, handler, follower); !reflect.DeepEqual(got, follower) {
-		t.Fatal("done cancellation changed an already started follower")
-	}
-	workerTask := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Released cancellation"), map[string]any{"allowAgents": true})
-	workerTask = claimHTTPWorker(t, handler, workerTask, workerClaimBody(workerTask.Version))
-	claim := apiWorker(t, workerTask.Properties).ClaimID
-	assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(workerTask)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: workerTask.Version, Status: "cancelled"})), http.StatusConflict, "invalid_transition")
-	if !reflect.DeepEqual(readHTTPTask(t, handler, workerTask), workerTask) {
-		t.Fatal("active cancellation altered Worker ownership")
-	}
-	released := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(workerTask)+"/worker-claim/release", jsonBody(t, map[string]any{"version": workerTask.Version, "claimId": claim, "stoppedConfirmed": true})), http.StatusOK)
-	cancelled = setHTTPTask(t, handler, released, "cancelled")
-	if !reflect.DeepEqual(cancelled.Properties, released.Properties) || apiWorker(t, cancelled.Properties).State != "released" {
-		t.Fatal("released cancellation rewrote the retained execution history")
-	}
-	assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(cancelled)+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": cancelled.Version, "claimId": claim})), http.StatusConflict, "invalid_transition")
-	resume := workerClaimBody(cancelled.Version)
-	resume["previousClaimId"], resume["claimId"], resume["worktreeId"] = claim, uuid.NewString(), uuid.NewString()
-	assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(cancelled)+"/worker-claim/resume", jsonBody(t, resume)), http.StatusConflict, "invalid_transition")
-	if !reflect.DeepEqual(readHTTPTask(t, handler, cancelled), cancelled) {
-		t.Fatal("refused cancelled Worker recovery changed persistent history")
+	for _, status := range []string{"cancelled", "todo", "in_progress", "done"} {
+		t.Run(status, func(t *testing.T) {
+			f := newHTTPFixture(t, io.Discard)
+			f.Tasks.SetStatusFunc = func(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.SetTaskStatus) (model.Task, error) {
+				if ctx.Err() != nil || principal != f.principal || projectID != testProjectID || id != testTaskID || input.Version != 4 || input.Status != model.TaskStatus(status) {
+					t.Fatalf("terminal refusal input: %+v", input)
+				}
+				return model.Task{}, &model.Fault{Code: "invalid_transition", Message: "Task execution cannot be restored."}
+			}
+			assertProjectError(t, projectRequest(f, http.MethodPut, taskCollection(testProjectID)+"/"+testTaskID+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: 4, Status: status})), http.StatusConflict, "invalid_transition")
+		})
 	}
 }

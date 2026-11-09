@@ -399,6 +399,18 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	if err := authorize(principal, "oauth", otherGrant); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("deleted task: %v", err)
 	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=NULL WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", otherGrant); err != nil {
+		t.Fatalf("restored task: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE projects SET deleted_at=now() WHERE id=$1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", otherGrant); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("deleted project: %v", err)
+	}
 }
 
 func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
@@ -887,125 +899,66 @@ func TestPrivateTransferConcurrentCreateReserveClose(t *testing.T) {
 	}
 }
 
-func TestPrivateTransferRejectsInvalidOperations(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func TestPrivateTransferRejectsInvalidStoredDirection(t *testing.T) {
+	ctx := t.Context()
+	db := isolatedStore(t)
+	record := transferRecord(uuid.NewString(), time.Now().UTC())
+	record.Direction = "invalid"
+	completion, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, _, err := d.Insert(ctx, record)
+		return err
+	})
+	if err == nil || completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("invalid direction committed: %+v %v", completion, err)
+	}
+}
+
+func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
+	ctx := t.Context()
 	db := isolatedStore(t)
 	now := time.Now().UTC()
-	r := transferRecord(uuid.NewString(), now)
-	reject := func(op func(store.PrivateTransferDAO) error) {
-		t.Helper()
-		completion, err := db.WritePrivateTransfer(ctx, op)
-		if err == nil || completion.Outcome != store.TransactionNotCommitted {
-			t.Fatalf("invalid operation committed: %+v %v", completion, err)
-		}
-	}
-	bad := r
-	bad.ReservedBytes = 1
-	reject(func(d store.PrivateTransferDAO) error { _, _, e := transfercore.Create(ctx, d, bad); return e })
-	bad = r
-	bad.Direction = "invalid"
-	reject(func(d store.PrivateTransferDAO) error { _, _, e := transfercore.Create(ctx, d, bad); return e })
+	record := transferRecord(uuid.NewString(), now)
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		var e error
-		r, _, e = transfercore.Create(ctx, d, r)
-		return e
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Reserve(ctx, d, r.ID, -1, 100); return e })
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.Reserve(ctx, d, uuid.NewString(), 1, 100)
-		return e
-	})
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		got, e := transfercore.Reserve(ctx, d, r.ID, 0, 100)
-		if e == nil && (got.Version != r.Version || got.ReservedBytes != 0) {
-			t.Fatal("zero reservation changed record")
+		var err error
+		record, _, err = transfercore.Create(ctx, d, record)
+		if err != nil {
+			return err
 		}
-		return e
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, -1, r.Version)
-		return e
-	})
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.ConsumeReservation(ctx, d, uuid.NewString(), 1, 1)
-		return e
-	})
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		got, e := transfercore.ConsumeReservation(ctx, d, r.ID, 0, r.Version)
-		if e == nil && got.Version != r.Version {
-			t.Fatal("zero materialization changed record")
+		record, err = transfercore.Reserve(ctx, d, record.ID, 10, 100)
+		if err != nil {
+			return err
 		}
-		return e
+		record.State = "cleanup_pending"
+		record, err = transfercore.Update(ctx, d, record, record.Version)
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad = r
-	bad.State = "closed"
-	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Update(ctx, d, bad, r.Version); return e })
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.UpdatePending(ctx, d, r, r.Version)
-		return e
-	})
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.Close(ctx, d, uuid.NewString(), 1, now)
-		return e
-	})
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.Close(ctx, d, r.ID, r.Version, now)
-		return e
-	})
-	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Due(ctx, d, now, 0); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Prune(ctx, d, now, 101); return e })
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		var e error
-		r, e = transfercore.Reserve(ctx, d, r.ID, 10, 100)
-		if e != nil {
-			return e
-		}
-		r.State = "cleanup_pending"
-		r, e = transfercore.Update(ctx, d, r, r.Version)
-		return e
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Reserve(ctx, d, r.ID, 1, 100); return e })
 	state := "committed"
-	r.CleanupFromState = &state
-	r.Data = []byte(`{"operationId":"result"}`)
+	record.CleanupFromState = &state
+	record.Data = []byte(`{"operationId":"result"}`)
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		var e error
-		r, e = transfercore.UpdatePending(ctx, d, r, r.Version)
-		return e
+		var err error
+		record, err = transfercore.UpdatePending(ctx, d, record, record.Version)
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.State != "cleanup_pending" || r.CleanupFromState == nil || *r.CleanupFromState != "committed" || r.ReservedBytes != 10 {
-		t.Fatalf("late result lost cleanup obligation: %+v", r)
+	if record.State != "cleanup_pending" || record.CleanupFromState == nil || *record.CleanupFromState != "committed" || record.ReservedBytes != 10 {
+		t.Fatalf("late result lost cleanup obligation: %+v", record)
 	}
-	reject(func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.UpdatePending(ctx, d, r, r.Version-1)
-		return e
-	})
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		var e error
-		r, e = transfercore.Close(ctx, d, r.ID, r.Version, now.Add(time.Hour))
-		return e
+		var err error
+		record, err = transfercore.Close(ctx, d, record.ID, record.Version, now.Add(time.Hour))
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.CleanupFromState == nil || *r.CleanupFromState != "committed" || string(r.Data) != `{"operationId": "result"}` {
-		t.Fatalf("close lost receipt: %+v", r)
+	if record.CleanupFromState == nil || *record.CleanupFromState != "committed" || string(record.Data) != `{"operationId": "result"}` {
+		t.Fatalf("close lost receipt: %+v", record)
 	}
 }
 

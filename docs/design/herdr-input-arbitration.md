@@ -22,7 +22,7 @@ macOS Worker 将输入仲裁与[持续录制及归档](herdr-recording.md)组合
 
 首次启动的已知引导页也属于菜单：Codex 的 welcome 标题、选中的认证方式与继续提示，以及 Claude 的 welcome 标题配合主题选项/控件或安全说明/继续提示，均阻止自动输入与 cleanup。后续正常 prompt 排除历史引导内容。结构化 readiness 在这些页面仍可能为 true，不能据此把任务文本交给引导控件；人工持有者仍可操作菜单，原 pending 输入和 unknown 不重放规则保持不变。
 
-Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 source/format、字符串正文及未截断事实；读取失败或目标/几何变化不授予输入。读取后重新核对目标、结构化状态和适用的最终 claim/paused 授权。一个批次已经写入 paste 后，后续帧仍核验原目标、权限和 fence，不把该批次自己的正文当作新的人工草稿而拒绝。
+Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 source/format、字符串正文及未截断事实；读取失败或目标/几何变化不授予输入。读取后重新核对目标、结构化状态和原 claim 授权，并按输入用途检查 paused。一个批次已经写入 paste 后，后续帧仍核验原目标、权限和 fence，不把该批次自己的正文当作新的人工草稿而拒绝。
 
 ## 持久状态与操作身份
 
@@ -36,7 +36,7 @@ Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 sourc
 | `closing` | 拒绝普通输入；满足原条件时发送一次 cleanup prompt，然后受控停止 |
 | `closed` | 永久拒绝输入 |
 
-每次批次在原生写入前提交 `dispatching`；写入调用前同步标记可能已写。写前取消且确定没有调用原生 Input 才能 `rejected`。自动输入在零写入时遇到已知菜单/禁用输入，先持久保存 rejected receipt，首次输入保留 pending，再保留原 `HerdrInputBlockedError`；生命周期同步清除本次 admission，首次 assignment 同样投影为 pending。Coordinator 因而保持等待而不消耗执行恢复次数，菜单关闭后仍有原输入机会。相同异常若发生在已尝试原生写入之后，结果仍为 unknown，不能伪装成未发送的等待。写后错误、断线、超时或崩溃恢复均不自动重发。正常 `Detach` 回执仅对应 `transport_completed`，不证明 provider 接收、turn 启动或业务完成。已经写出的输入无法撤回。
+每次批次在原生写入前提交 `dispatching`；写入调用前同步标记可能已写。写前取消且确定没有调用原生 Input 才能 `rejected`。自动输入在零写入时遇到任务暂停、合法人工控制或控制挂起、已知菜单/禁用输入，保留明确区分原因的内部等待类型。已登记的操作先持久保存 rejected receipt，首次输入保留 pending；生命周期同步清除本次 admission，首次 assignment 同样投影为 pending。Coordinator 因而保持等待而不消耗执行恢复次数，阻塞解除后仍有原输入机会。该分类不能通过忽略任意 `permission_denied`、`automation_suspended` 或未提交错误代替；读取、归属、存储和实际传输错误保留其失败语义。相同阻塞若发生在已尝试原生写入之后，结果仍为 unknown，不能伪装成未发送的等待。写后错误、断线、超时或崩溃恢复均不自动重发。正常 `Detach` 回执仅对应 `transport_completed`，不证明 provider 接收、turn 启动或业务完成。已经写出的输入无法撤回。
 
 生命周期与输入 journal 分别提交结果。若输入 receipt 已持久为 transport_completed、生命周期仍因提交间崩溃保留 unknown，恢复按 Session/claim、原运行/段/完整绑定、连接代次顺序及初始正文摘要核验该 receipt 后使用其已完成事实；不改写生命周期的历史 unknown。输入 journal 自身结果未知、缺失或归属不符仍禁止恢复。
 
@@ -46,9 +46,9 @@ Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 sourc
 
 ## 人工控制与交还
 
-获取 lease 只做原身份、任务权限和可用原生状态的读取，不 attach。批次进行中返回 `input_busy`，不会排队等到首次输入完成再悄悄授予。租约 TTL 为 30 秒，调用方每 10 秒续约；Worker 使用本进程单调时限，重启撤销旧 lease。普通释放、失联、隐藏页签的服务端撤权和超时均保持 suspended。
+获取 lease 只做原身份、任务权限和可用原生状态的读取，不 attach。任务暂停不禁止合法 owner 获取、续约、释放 lease 或按现有规则执行人工 paste/keys，也不阻止满足原条件的 `resolve_initial_assignment`；这些动作不修改任务暂停属性。批次进行中返回 `input_busy`，不会排队等到首次输入完成再悄悄授予。租约 TTL 为 30 秒，调用方每 10 秒续约；Worker 使用本进程单调时限，重启撤销旧 lease。普通释放、失联、隐藏页签的服务端撤权和超时均保持 suspended。
 
-交还要求当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和 `resume` 用途的输入检查。resume 使用保留 ANSI 属性的可见读取。Codex 需要当前非 DIM 的正常 prompt glyph、renderer DIM 的精确空占位符、下一空输入行及正常键盘 footer；允许一个不要求特定内容的状态行。占位文案本身不足以证明为空，相同字面的普通样式草稿、多行草稿、未知控制或样式均拒绝。RGB/indexed color 的参数值不能被当成 DIM。Claude 只接受真实空白的 bordered prompt field 及正常 footer，含 Try 文本的歧义字段拒绝。已支持的 footer 包含原快捷键提示，以及精确的 `⏵⏵ bypass permissions on (shift+tab to cycle)` 权限提示；后者可带原生 `PR #数字` 和 `← for agents` 附加项。权限提示只用于识别已知字段布局，不改变权限，不替代空白边框、当前 prompt 与无草稿检查；未知提示或任意附加文字仍拒绝。不要求 model、cwd 或状态栏；未知界面与草稿不能因自动输入布局限制已移除而被当成空字段。这是受限样式与字段几何观察，不是通用 ANSI 终端框架。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
+交还要求任务未暂停、当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和 `resume` 用途的输入检查。解除任务暂停不会释放 lease、解决 unknown 或自动交还。resume 使用保留 ANSI 属性的可见读取。Codex 需要当前非 DIM 的正常 prompt glyph、renderer DIM 的精确空占位符、下一空输入行及正常键盘 footer；允许一个不要求特定内容的状态行。占位文案本身不足以证明为空，相同字面的普通样式草稿、多行草稿、未知控制或样式均拒绝。RGB/indexed color 的参数值不能被当成 DIM。Claude 只接受真实空白的 bordered prompt field 及正常 footer，含 Try 文本的歧义字段拒绝。已支持的 footer 包含原快捷键提示，以及精确的 `⏵⏵ bypass permissions on (shift+tab to cycle)` 权限提示；后者可带原生 `PR #数字` 和 `← for agents` 附加项。权限提示只用于识别已知字段布局，不改变权限，不替代空白边框、当前 prompt 与无草稿检查；未知提示或任意附加文字仍拒绝。不要求 model、cwd 或状态栏；未知界面与草稿不能因自动输入布局限制已移除而被当成空字段。这是受限样式与字段几何观察，不是通用 ANSI 终端框架。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
 
 `resolve_initial_assignment` 要求 `draftHandled=false` 和明确 `initialUnknownDisposition=delivered_continue`；`resume_automation` 要求 `draftHandled=true`、`initialUnknownDisposition=null`，且未知首次结果已单独处置。两者 `leaseId=null`，不能借恢复动作同时作出处置。Worker 只在 unresolved 的 suspended 状态公布处置动作，处置完成后才公布恢复动作；旧 Worker 缺少独立动作时浏览器禁用处置。服务端对尚未处置的 unknown/unconfirmed 独立拒绝恢复，即使旧 Worker 仍公布该动作。
 
@@ -68,7 +68,7 @@ API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `p
 
 准备运行使用 HTTP 注册；活动运行和段登记完成后，使用同一持久注册意图建立 Worker WebSocket。ACK 由生命周期 owner 提交之后才激活分派。每 10 秒发送控制状态并读取服务端撤权状态，socket 断开撤销本地控制；未知注册或消息不自动重放。实际运行 generation 与普通 connectionEpoch 分开，旧连接不能接管新运行。
 
-cleanup 首先同步提交 closing、提升控制代次并撤销 lease，再中止旧批次。尚未写出的输入取消；已经写出的只能保留原结果或 unknown。只有此前处于 automation、无人工草稿风险/未知输入、没有在途批次且结构化状态就绪、没有已知菜单或禁用输入时，才通过同一仲裁器发送一次 cleanup prompt。其他情况跳过提示并继续原实例受控停止；外部临时资源可能因此无法由 agent 及时收尾。
+cleanup 首先同步提交 closing、提升控制代次并撤销 lease，再中止旧批次。尚未写出的输入取消；已经写出的只能保留原结果或 unknown。只有此前处于 automation、任务未暂停、无人工草稿风险/未知输入、没有在途批次且结构化状态就绪、没有已知菜单或禁用输入时，才通过同一仲裁器发送一次 cleanup prompt。其他情况跳过提示并继续原实例受控停止；外部临时资源可能因此无法由 agent 及时收尾。
 
 正常 shutdown 的干净自动状态与人工 suspended 状态分别持久保留。输入 journal 保存每次原始 prepare 和消费请求，不覆盖旧请求。Worker 先同步持久 closing 并中止输入，在旧通道关闭前先确认已补齐 nativeSessionId 的原运行账本，再发布最后已确认的干净 automation 状态、读取服务端确认，再以原 control/connection epoch 和 stopOperationId 请求 `automation_recovery_prepare`。状态读回比较 connection/control epoch、state、lease、initialAssignment 和安全原因；availableActions 是能力过滤后的展示结果，不参与恢复授权比较。服务端同事务冻结旧控制为 closing 并保存单次许可；没有原在线控制、初始完成结果、无 lease/未决操作和当前授权就拒绝。
 
