@@ -15,7 +15,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 func sessionDAOTransaction(t *testing.T, db *Store, fn func(store.SessionScope) error) {
@@ -371,7 +370,8 @@ func TestSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T) {
 }
 
 func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	db := isolatedStore(t)
 	bot, principal := storedBotCandidate(t, db)
 	sessionDAOTransaction(t, db, func(scope store.SessionScope) error { return scope.BotDAO().InsertBot(ctx, bot) })
@@ -407,9 +407,6 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if err := dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id, Hash: []byte("bot grant"), ExpiresAt: time.Now().Add(time.Hour), Kind: "bootstrap", ParentCredentialID: principal.CredentialID}); err != nil {
 			return err
 		}
-		if err := dao.RevokeBotSessions(ctx, bot.ID); err != nil {
-			return err
-		}
 		proof, err := dao.LockBotSessionStop(ctx, id, bot.ID, principal.UserID)
 		if err != nil || proof.Snapshot.Fence != fence || proof.Consumed || proof.SourceEpoch != nil {
 			t.Fatalf("stop proof: %+v %v", proof, err)
@@ -420,22 +417,182 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		}
 		return dao.InsertRecordingEvidence(ctx, id, 1, uuid.NewString(), 1, strings.Repeat("c", 64))
 	})
-	rollback := errors.New("cleanup failed")
-	for _, caller := range []model.Principal{principal, runtimeBotPAT(t, db, bot)} {
-		if err := runtimeBotWriteAfterLock(t, db, bot, caller, runtimeDefinitionCredential, true, func(ctx context.Context, dao store.BotWriteDAO, _ pgx.Tx) error {
-			_, err := dao.SaveBotDeletion(ctx, bot.ID, &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})
-			return err
-		}); !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("expired deletion intent credential: kind=%s error=%v", caller.Kind, err)
+	state := func() string {
+		t.Helper()
+		var result string
+		if err := db.Pool.QueryRow(ctx, `SELECT jsonb_build_object(
+   'bot',to_jsonb(b),
+   'sessions',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.id),'[]'::jsonb) FROM task_sessions r WHERE r.bot_id=b.id),
+   'operations',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.operation_id),'[]'::jsonb) FROM session_operations r WHERE r.session_id=$2),
+   'events',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb) FROM session_events r WHERE r.session_id=$2),
+   'timeline',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb) FROM session_timeline r WHERE r.session_id=$2),
+   'resources',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb) FROM session_resources r WHERE r.session_id=$2),
+   'archives',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb) FROM session_archives r WHERE r.session_id=$2),
+   'recording',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.evidence_id),'[]'::jsonb) FROM session_recording_evidence r WHERE r.session_id=$2),
+   'workerPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(r)),'[]'::jsonb) FROM bot_worker_preferences r WHERE r.user_id=b.owner_user_id),
+   'configurationPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.worker_id),'[]'::jsonb) FROM bot_configuration_preferences r WHERE r.user_id=b.owner_user_id))::text FROM bots b WHERE b.id=$1`, bot.ID, id).Scan(&result); err != nil {
+			t.Fatal(err)
 		}
-		if err := runtimeBotWriteAfterLock(t, db, bot, caller, runtimeDefinitionCredential, true, func(ctx context.Context, dao store.BotWriteDAO, _ pgx.Tx) error {
-			_, err := dao.Bot(ctx, bot.ID)
-			return err
-		}); !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("expired deletion replay credential: kind=%s error=%v", caller.Kind, err)
+		return result
+	}
+	blocked := func(caller model.Principal, expired bool, operation func(context.Context, store.SessionScope, model.Bot) error) (store.Completion, error) {
+		t.Helper()
+		probeCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+		defer stop()
+		table := "sessions"
+		if caller.Kind == model.PATCredential {
+			table = "personal_access_tokens"
+		}
+		duration := "1 day"
+		if expired {
+			duration = "1 second"
+		}
+		var expiry time.Time
+		if err := db.Pool.QueryRow(probeCtx, `UPDATE `+table+` SET expires_at=clock_timestamp()+$2::interval WHERE id=$1 RETURNING expires_at`, caller.CredentialID, duration).Scan(&expiry); err != nil {
+			t.Fatal(err)
+		}
+		holder, err := db.Pool.Begin(probeCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer holder.Rollback(context.Background())
+		if _, err := holder.Exec(probeCtx, `SELECT id FROM bots WHERE id=$1 FOR UPDATE`, bot.ID); err != nil {
+			t.Fatal(err)
+		}
+		type result struct {
+			completion store.Completion
+			err        error
+		}
+		done, finished := make(chan result, 1), make(chan struct{})
+		go func() {
+			defer close(finished)
+			completion, err := db.WriteSession(probeCtx, func(scope store.SessionScope) error {
+				if err := scope.SessionDAO().LockCredential(probeCtx, caller, time.Now().UTC()); err != nil {
+					return err
+				}
+				current, err := scope.BotDAO().Bot(probeCtx, bot.ID)
+				if err != nil {
+					return err
+				}
+				if err := operation(probeCtx, scope, current); err != nil {
+					return err
+				}
+				return scope.SessionDAO().LockCredential(probeCtx, caller, time.Now().UTC())
+			})
+			done <- result{completion, err}
+		}()
+		defer func() {
+			stop()
+			_ = holder.Rollback(context.Background())
+			select {
+			case <-finished:
+			case <-time.After(2 * time.Second):
+				t.Error("deletion transaction did not drain after cancellation")
+			}
+		}()
+		waitTransferTeamLock(t, probeCtx, db, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
+		if expired {
+			for {
+				var reached bool
+				if err := db.Pool.QueryRow(probeCtx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&reached); err != nil {
+					t.Fatal(err)
+				}
+				if reached {
+					break
+				}
+				if err := waitThreadClock(probeCtx); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := holder.Commit(probeCtx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case result := <-done:
+			return result.completion, result.err
+		case <-probeCtx.Done():
+			t.Fatal(probeCtx.Err())
+			return store.Completion{}, probeCtx.Err()
 		}
 	}
-	completion, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+	callers := []model.Principal{principal, runtimeBotPAT(t, db, bot)}
+	deletion := &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+	intent := func(ctx context.Context, scope store.SessionScope, current model.Bot) error {
+		if current.Deletion != nil || current.Version != deletion.RequestedVersion {
+			return errors.New("live deletion fixture has already changed")
+		}
+		sessions, err := scope.SessionDAO().LockBotSessions(ctx, bot.ID)
+		if err != nil {
+			return err
+		}
+		if len(sessions) != 1 || sessions[0].ID != id {
+			return errors.New("live deletion fixture lost its Session")
+		}
+		if err := scope.SessionDAO().RevokeBotSessions(ctx, bot.ID); err != nil {
+			return err
+		}
+		_, err = scope.BotDAO().SaveBotDeletion(ctx, bot.ID, deletion)
+		return err
+	}
+	live := state()
+	for _, caller := range callers {
+		sessionDAOTransaction(t, db, func(scope store.SessionScope) error {
+			record, err := scope.SessionDAO().LockSession(ctx, id)
+			if err != nil {
+				return err
+			}
+			if string(record.GrantHash) != "bot grant" || record.GrantExpiry == nil || !record.GrantExpiry.After(time.Now()) || record.Consumed {
+				return errors.New("expiry intent needs an unconsumed live Session grant")
+			}
+			return scope.SessionDAO().LockCredential(ctx, caller, time.Now().UTC())
+		})
+		completion, err := blocked(caller, true, intent)
+		if !errors.Is(err, model.ErrNotFound) || completion.Outcome != store.TransactionNotCommitted || state() != live {
+			t.Fatalf("expired deletion intent changed live state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
+		}
+		completion, err = blocked(caller, false, func(context.Context, store.SessionScope, model.Bot) error { return nil })
+		if err != nil || completion.Outcome != store.TransactionCommitted || state() != live {
+			t.Fatalf("restored credential changed live state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
+		}
+	}
+	completion, err := blocked(principal, false, intent)
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("valid deletion intent: completion=%+v error=%v", completion, err)
+	}
+	sessionDAOTransaction(t, db, func(scope store.SessionScope) error {
+		proof, err := scope.SessionDAO().LockBotSessionStop(ctx, id, bot.ID, principal.UserID)
+		if err != nil || proof.Snapshot.Fence != fence || proof.Consumed || proof.SourceEpoch != nil {
+			t.Fatalf("revoked Session stop proof: %+v %v", proof, err)
+		}
+		return nil
+	})
+	committed := state()
+	replay := func(ctx context.Context, scope store.SessionScope, current model.Bot) error {
+		if current.Version != 3 || !reflect.DeepEqual(current.Deletion, deletion) {
+			return errors.New("replay did not read the matching committed deletion receipt")
+		}
+		record, err := scope.SessionDAO().LockSession(ctx, id)
+		if err != nil {
+			return err
+		}
+		if record.GrantHash != nil || record.GrantExpiry != nil || record.ConnectionExpiry != nil {
+			return errors.New("committed deletion retained Session authorization")
+		}
+		return nil
+	}
+	for _, caller := range callers {
+		completion, err := blocked(caller, true, replay)
+		if !errors.Is(err, model.ErrNotFound) || completion.Outcome != store.TransactionNotCommitted || state() != committed {
+			t.Fatalf("expired deletion replay changed committed state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
+		}
+		completion, err = blocked(caller, false, replay)
+		if err != nil || completion.Outcome != store.TransactionCommitted || state() != committed {
+			t.Fatalf("valid deletion replay changed committed state: kind=%s completion=%+v error=%v", caller.Kind, completion, err)
+		}
+	}
+	rollback := errors.New("cleanup failed")
+	completion, err = db.WriteSession(ctx, func(scope store.SessionScope) error {
 		if _, err := scope.BotDAO().Bot(ctx, bot.ID); err != nil {
 			return err
 		}
@@ -450,7 +607,7 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		}
 		return rollback
 	})
-	if !errors.Is(err, rollback) || completion.Outcome != store.TransactionNotCommitted {
+	if !errors.Is(err, rollback) || completion.Outcome != store.TransactionNotCommitted || state() != committed {
 		t.Fatalf("cleanup rollback: %+v %v", completion, err)
 	}
 	sessionDAOTransaction(t, db, func(scope store.SessionScope) error {
