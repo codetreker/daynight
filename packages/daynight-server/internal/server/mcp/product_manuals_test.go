@@ -1,0 +1,128 @@
+package mcp
+
+import (
+	"errors"
+	"io/fs"
+	"strings"
+	"testing"
+	"testing/fstest"
+)
+
+func manualFixture(t *testing.T) (fstest.MapFS, []manualManifestEntry) {
+	t.Helper()
+	files := fstest.MapFS{}
+	entries := append([]manualManifestEntry(nil), productManualManifest...)
+	paths := []string{"manuals/instructions.md"}
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	for _, path := range paths {
+		data, err := fs.ReadFile(productManualFS, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[path] = &fstest.MapFile{Data: data}
+	}
+	return files, entries
+}
+
+func TestProductManualsCompleteAndUnmodified(t *testing.T) {
+	manuals, err := loadProductManuals(productManualFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manuals.Documents) != 7 {
+		t.Fatalf("got %d documents", len(manuals.Documents))
+	}
+	instructions, err := fs.ReadFile(productManualFS, "manuals/instructions.md")
+	if err != nil || manuals.Instructions != string(instructions) {
+		t.Fatalf("instructions do not match source: %v", err)
+	}
+	for i, document := range manuals.Documents {
+		entry := productManualManifest[i]
+		body, err := fs.ReadFile(productManualFS, entry.Path)
+		if err != nil || document.Text != string(body) || document.Resource.URI != entry.Resource.URI || document.Resource.Size != int64(len(body)) {
+			t.Fatalf("%s: source or metadata mismatch: %v", entry.Resource.Name, err)
+		}
+	}
+	if !strings.Contains(manuals.Documents[5].Text, "[Design](docs/design.md)") {
+		t.Fatal("attachment path example was changed")
+	}
+}
+
+func TestProductManualValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(fstest.MapFS, *[]manualManifestEntry)
+		want string
+	}{
+		{"missing topic", func(_ fstest.MapFS, entries *[]manualManifestEntry) { *entries = (*entries)[:6] }, "seven topics"},
+		{"duplicate", func(_ fstest.MapFS, entries *[]manualManifestEntry) { (*entries)[1] = (*entries)[0] }, "duplicate"},
+		{"wrong topic", func(_ fstest.MapFS, entries *[]manualManifestEntry) { (*entries)[0].Resource.Name = "other" }, "invalid metadata"},
+		{"bad mime", func(_ fstest.MapFS, entries *[]manualManifestEntry) { (*entries)[0].Resource.MIMEType = "text/plain" }, "invalid metadata"},
+		{"missing file", func(files fstest.MapFS, _ *[]manualManifestEntry) { delete(files, "manuals/concepts.md") }, "concepts"},
+		{"missing instructions", func(files fstest.MapFS, _ *[]manualManifestEntry) { delete(files, "manuals/instructions.md") }, "instructions"},
+		{"invalid utf8", func(files fstest.MapFS, _ *[]manualManifestEntry) { files["manuals/concepts.md"].Data = []byte{0xff} }, "UTF-8"},
+		{"empty instructions", func(files fstest.MapFS, _ *[]manualManifestEntry) {
+			files["manuals/instructions.md"].Data = []byte(" \n")
+		}, "nonempty"},
+		{"incorrect size", func(_ fstest.MapFS, entries *[]manualManifestEntry) { (*entries)[0].Resource.Size++ }, "size mismatch"},
+		{"unknown reference", func(files fstest.MapFS, entries *[]manualManifestEntry) {
+			files["manuals/concepts.md"].Data = append(files["manuals/concepts.md"].Data, []byte("\n[bad](daynight://manuals/other.md)\n")...)
+			(*entries)[0].Resource.Size = int64(len(files["manuals/concepts.md"].Data))
+		}, "unknown product reference"},
+		{"old relative reference", func(files fstest.MapFS, entries *[]manualManifestEntry) {
+			files["manuals/concepts.md"].Data = append(files["manuals/concepts.md"].Data, []byte("\n[topic](materials.md)\n")...)
+			(*entries)[0].Resource.Size = int64(len(files["manuals/concepts.md"].Data))
+		}, "relative product reference"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files, entries := manualFixture(t)
+			tt.edit(files, &entries)
+			got, err := loadManualManifest(files, entries)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || len(got.Documents) != 0 || got.Instructions != "" {
+				t.Fatalf("got %#v, %v; want error containing %q and no result", got, err, tt.want)
+			}
+		})
+	}
+}
+
+type failedManualFS struct{ err error }
+
+func (f failedManualFS) Open(string) (fs.File, error) { return nil, f.err }
+
+func TestProductManualReadPreservesError(t *testing.T) {
+	cause := errors.New("fixture read failure")
+	_, err := loadProductManuals(failedManualFS{err: cause})
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "instructions") {
+		t.Fatalf("got %v, want wrapped source error", err)
+	}
+}
+
+func TestProductManualVersionsAreIndependent(t *testing.T) {
+	files, entries := manualFixture(t)
+	first, err := loadManualManifest(files, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files["manuals/concepts.md"].Data = append(files["manuals/concepts.md"].Data, []byte("\nUpdated edition.\n")...)
+	entries[0].Resource.Size = int64(len(files["manuals/concepts.md"].Data))
+	second, err := loadManualManifest(files, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Documents[0].Resource.URI != second.Documents[0].Resource.URI || first.Documents[0].Text == second.Documents[0].Text || strings.Contains(first.Documents[0].Text, "Updated edition.") {
+		t.Fatal("manual editions should have stable URI and independent complete text")
+	}
+}
+
+func TestProductManualFailureHasSafeKey(t *testing.T) {
+	files, entries := manualFixture(t)
+	delete(files, "manuals/concepts.md")
+	_, err := loadManualManifest(files, entries)
+	var loadErr *manualLoadError
+	if !errors.As(err, &loadErr) || loadErr.Key != "concepts" || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("got %v; want concepts and wrapped not-exist error", err)
+	}
+}
