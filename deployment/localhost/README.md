@@ -1,8 +1,9 @@
 # Localhost deployment
 
 This Docker Compose stack builds and runs the authenticated task dashboard,
-project/task HTTP API and PostgreSQL together. Docker Engine 28 or newer, Linux
-containers and Docker Compose 2.20 or newer are required. Linux hosts and macOS
+project/task HTTP API, PostgreSQL and temporary Redis monitoring storage together.
+Docker Engine 28 or newer, Linux containers and Docker Compose 2.20 or newer
+are required. Linux hosts and macOS
 with Docker Desktop using Linux containers can run this stack. The first build
 accesses Docker Hub, the npm registry and the Go module registry. No host Go,
 Node.js or PostgreSQL installation is needed. A registered UniAuth application
@@ -25,6 +26,15 @@ Set the following values in `deployment/localhost/.env` before starting:
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth application ID |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Registered UniAuth application secret; keep this file private |
 | `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Registered callback URL on the exact public origin, for example `http://127.0.0.1:8787/auth/callback` |
+| `DAYNIGHT_REDIS_URL` | Server connection URL for monitoring; the template uses `redis://redis:6379/0` on the Compose network |
+| `DAYNIGHT_REDIS_MAXMEMORY` | Positive Redis memory budget, such as the template's `128mb` |
+
+Redis uses `noeviction`: when the budget is exhausted, monitoring writes fail
+instead of silently evicting current states. Size the budget for the deployment's
+actual workload and Redis overhead; the template does not guarantee capacity for
+an arbitrary number of accounts. An invalid Redis setting causes a visible
+configuration or Redis startup error. The URL must address the intended Redis
+instance from the server's network namespace.
 
 The callback must have a canonical non-root path and no query or fragment. The
 server registers that path and rejects collisions with application API, page,
@@ -75,8 +85,10 @@ The production TypeScript configuration checks application sources and the Vite
 configuration; tests and acceptance tooling use the separate full-workspace
 `pnpm web:typecheck` command. The image includes the CLI source tree required by
 shared protocols and their transitive imports. The script embeds generated assets
-in the Go 1.27.2 binary, recreates all three service containers while preserving the PostgreSQL and attachment volumes, and waits up
-to 120 seconds for their health checks. Build time is separate from that
+in the Go 1.27.2 binary, recreates the service containers while preserving the
+PostgreSQL and attachment volumes, and waits up to 120 seconds for their health
+checks. Redis is required to start but has no
+health gate on Server. Build time is separate from that
 readiness timeout. The final nonroot runtime image contains the server binary
 and does not need Node.js. It prepares the required writable
 `DAYNIGHT_STORAGE_ROOT` for UID/GID `10001:10001`. The Compose-managed
@@ -203,9 +215,9 @@ dependency rules and the complete HTTP contract.
 
 ## Operate and update
 
-The containers are named `daynight-postgres`, `daynight-gateway` and
-`daynight-server`. These fixed names allow one localhost stack per Docker
-daemon, including when a different Compose project name is selected.
+The containers are named `daynight-postgres`, `daynight-gateway`,
+`daynight-server` and `daynight-redis`. These fixed names allow one localhost
+stack per Docker daemon, including when a different Compose project name is selected.
 
 Check health and follow logs:
 
@@ -217,6 +229,15 @@ docker compose logs --follow
 `/healthz` and `/readyz` are public database probes. They do not require a login
 and do not call UniAuth; a ready server can still report a UniAuth login failure.
 Both the gateway and server health checks use `/readyz`.
+Redis does not participate in `/readyz`, and stopping or restarting Redis does
+not restart Server. Monitoring requests return `503` when Redis is unavailable;
+capacity rejection returns `503` for writes. PostgreSQL-backed business operations
+continue independently.
+Each accepted current Worker state expires after one hour; reads and duplicate
+writes do not renew it. Redis has no persistent volume and RDB and AOF are
+disabled. Recreating or restarting Redis loses its states; Workers with monitoring
+reporting subsequently collect and submit their current state, without replaying
+history. Redis data is excluded from the database and attachment backup pair.
 
 Use Compose to restart the stack:
 
@@ -356,8 +377,8 @@ exercises this procedure with disposable data and confirms scoped cleanup.
 ## Exposure
 
 The authenticated dashboard and API are published only on host `127.0.0.1`.
-PostgreSQL has no published host port. The stack uses fixed development-only
-database credentials (`daynight` / `daynight-local`, database `daynight`). The
+PostgreSQL and Redis have no published host port. The stack uses fixed
+development-only database credentials (`daynight` / `daynight-local`, database `daynight`). The
 gateway forwards TCP to the server's strict `127.0.0.1:8787` listener inside
 their shared container network namespace, preserving the server's HTTP handling.
 TLS termination for an HTTPS public origin belongs to the deployment's external
