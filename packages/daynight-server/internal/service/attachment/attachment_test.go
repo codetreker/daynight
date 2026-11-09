@@ -160,12 +160,12 @@ func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.read(p, task)
-	m.expect("metadata", task.ProjectID, task.ID, second.Path).err = model.ErrNotFound
+	m.expect("metadataRead", task.ProjectID, task.ID, second.Path).err = attachmentNotFound()
 	_, _, err = subject.Open(ctx, p, task.ProjectID, task.ID, second.Path)
 	requireFault(t, err, "not_found")
 	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
-	m.expect("metadata", task.ProjectID, task.ID, second.Path).err = model.ErrNotFound
+	m.expect("metadataRead", task.ProjectID, task.ID, second.Path).err = attachmentNotFound()
 	requireFault(t, subject.Delete(ctx, p, task.ProjectID, task.ID, second.Path), "not_found")
 	rebuilt := first
 	rebuilt.CreatedAt = first.CreatedAt.Add(2 * time.Second)
@@ -198,7 +198,7 @@ func TestAttachmentScopeAndPathConflicts(t *testing.T) {
 		addressed.ProjectID, addressed.ID = ids[0], ids[1]
 		readMissing := func() {
 			m.expect("snapshot").callback = true
-			m.expect("access", p, addressed.ProjectID).result = model.ProjectAccess{}
+			m.expect("projectRead", p, addressed.ProjectID).result = model.ProjectAccess{}
 			m.expect("presence", addressed.ProjectID, addressed.ID).result = store.TaskPresence{Found: false}
 		}
 		mutateMissing := func() {
@@ -222,7 +222,7 @@ func TestAttachmentScopeAndPathConflicts(t *testing.T) {
 		requireFault(t, subject.Delete(t.Context(), p, ids[0], ids[1], "docs"), "not_found")
 	}
 	m.read(p, task)
-	m.expect("metadata", task.ProjectID, task.ID, "missing").err = model.ErrNotFound
+	m.expect("metadataRead", task.ProjectID, task.ID, "missing").err = attachmentNotFound()
 	_, _, err := subject.Open(t.Context(), p, task.ProjectID, task.ID, "missing")
 	requireFault(t, err, "not_found")
 }
@@ -298,7 +298,7 @@ func TestAttachmentStorageFailuresAndMissingPhysicalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	sentinel := errors.New("disk failed")
-	failed := NewAttachments(m, m, attachmentFaultStorage{Storage: files, put: sentinel, open: sentinel, delete: sentinel})
+	failed := m.service(m, attachmentFaultStorage{Storage: files, put: sentinel, open: sentinel, delete: sentinel})
 	m.read(p, task)
 	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 	m.expect("live", task.ProjectID)
@@ -340,7 +340,7 @@ func TestAttachmentDatabaseFailures(t *testing.T) {
 	_, err := subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
 	assertAttachmentDatabaseError(t, err, cause)
 	m.read(p, task)
-	m.expect("metadata", task.ProjectID, task.ID, "file").err = failure
+	m.expect("metadataRead", task.ProjectID, task.ID, "file").err = failure
 	_, _, err = subject.Open(t.Context(), p, task.ProjectID, task.ID, "file")
 	assertAttachmentDatabaseError(t, err, cause)
 	m.read(p, task)
@@ -351,7 +351,7 @@ func TestAttachmentDatabaseFailures(t *testing.T) {
 	assertAttachmentDatabaseError(t, err, cause)
 	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
-	m.expect("metadata", task.ProjectID, task.ID, "file").err = failure
+	m.expect("metadataRead", task.ProjectID, task.ID, "file").err = failure
 	assertAttachmentDatabaseError(t, subject.Delete(t.Context(), p, task.ProjectID, task.ID, "file"), cause)
 	m.expect("snapshot").err = failure
 	_, err = subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
@@ -379,7 +379,7 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 				m.expect("lock", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
 				m.expect("live", task.ProjectID)
 				m.conflict(task, "file", false)
-				m.expect("put", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5}).err = &store.Error{Phase: "put", Cause: cause}
+				m.expect("metadataPut", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5}).err = &store.Error{Phase: "put", Cause: cause}
 				item, created, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
 				var transaction *store.TransactionError
 				var database *store.Error
@@ -403,9 +403,9 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 				m.expect("lock", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
 				m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
 				m.metadata(task, before)
-				deletion := m.expect("delete", task.ProjectID, task.ID, "file")
+				deletion := m.expect("metadataDelete", task.ProjectID, task.ID, "file")
 				if operation == "suppressed delete" {
-					deletion.err = model.ErrNotFound
+					deletion.err = attachmentNotFound()
 				} else {
 					deletion.err = &store.Error{Phase: "delete", Cause: cause}
 				}

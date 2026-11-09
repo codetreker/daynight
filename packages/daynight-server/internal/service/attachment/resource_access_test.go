@@ -38,7 +38,7 @@ func TestAttachmentResourcePrincipalAdmission(t *testing.T) {
 
 func resourceAttachmentRead(m *attachmentMock, p model.Principal, task model.Task, access model.ProjectAccess) {
 	m.expect("snapshot").callback = true
-	m.expect("access", p, task.ProjectID).result = access
+	m.expect("projectRead", p, task.ProjectID).result = access
 	m.expect("presence", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
 }
 
@@ -50,7 +50,7 @@ func TestAttachmentResourceCurrentMembership(t *testing.T) {
 				p.UserID = "ef000000-0000-4000-8000-000000000004"
 			}
 			observed := &observedAttachmentStorage{Storage: files}
-			subject := NewAttachments(m, m, observed)
+			subject := m.service(m, observed)
 			secret := attachmentItem(task, "secret.html", "text/plain; charset=utf-8", int64(len("<h1>same-origin</h1>")))
 			if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, secret.Path), strings.NewReader("<h1>same-origin</h1>")); err != nil {
 				t.Fatal(err)
@@ -82,7 +82,7 @@ func TestAttachmentResourceCurrentMembership(t *testing.T) {
 				m.mutation(task, store.Completion{Outcome: store.TransactionCommitted})
 				m.expect("authorize", p, task.ProjectID).result = access
 				m.metadata(task, member)
-				m.expect("delete", task.ProjectID, task.ID, member.Path)
+				m.expect("metadataDelete", task.ProjectID, task.ID, member.Path)
 				if err := subject.Delete(t.Context(), p, task.ProjectID, task.ID, member.Path); err != nil {
 					t.Fatal(err)
 				}
@@ -90,7 +90,7 @@ func TestAttachmentResourceCurrentMembership(t *testing.T) {
 			before := observed.calls.Load()
 			refusedRead := func() {
 				m.expect("snapshot").callback = true
-				m.expect("access", p, task.ProjectID).err = model.ErrNotFound
+				m.expect("projectRead", p, task.ProjectID).err = projectReadNotFound()
 			}
 			refusedMutation := func() {
 				m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
@@ -148,7 +148,7 @@ func TestInheritedProjectOwnerUsesAttachmentOperations(t *testing.T) {
 	m.mutation(task, store.Completion{Outcome: store.TransactionCommitted})
 	m.expect("authorize", p, task.ProjectID).result = access
 	m.metadata(task, item)
-	m.expect("delete", task.ProjectID, task.ID, path)
+	m.expect("metadataDelete", task.ProjectID, task.ID, path)
 	if err := subject.Delete(t.Context(), p, task.ProjectID, task.ID, path); err != nil {
 		t.Fatal(err)
 	}

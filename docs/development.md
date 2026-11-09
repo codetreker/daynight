@@ -568,9 +568,13 @@ persistence and database recheck mechanisms. The
 owns focused commands and failure expectations. The complete
 `internal/core/session`, `internal/service/webhook` and
 `internal/service/attachment` suites execute without a database URL. Attachment
-service tests use explicit snapshot, mutation and DAO expectations for admission,
-file/metadata order, completion facts and resource lifetime. Their test binary
-clears database and UniAuth fixture variables even during full module validation.
+service tests control directly invoked Project-read and Attachment metadata and
+path-conflict operations, with separate snapshot, mutation and required DAO
+expectations. Real file gates, staging, publication, leases and callback completion
+retain their admission, file/metadata order and resource lifetime assertions. Core receivers retain exact Project-read authority/context and complete access,
+conflict-query resource/context and metadata write/delete cancellation forwarding.
+The Attachment service test binary clears database and UniAuth fixture variables
+even during full module validation.
 The [attachment service guide](../packages/daynight-server/README.md#attachment-service-and-store-tests)
 owns its focused command and the separate PostgreSQL and local filesystem proof
 owners. The regular `internal/server/session` unit suite controls directly
