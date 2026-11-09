@@ -99,6 +99,33 @@ describe('session history request progress', () => {
     expect(rows.find(item => item.entry.entrySeq === untouchedSeq)?.preview).toBe(true);
     expect(view.historyCoverage).toMatchObject({ firstEntrySeq: tail[0]!.entrySeq, throughEntrySeq: tail.at(-1)!.entrySeq, lastEventSeq: '1' });
   });
+  it.each([false, true])('keeps an unread interval between same-history tails until its cursor page is accepted (previously complete=%s)', async complete => {
+    const f = fixture();
+    const row = (seq: number) => ({ kind: 'assistant_message' as const, entryId: `message-${seq}`, entrySeq: String(seq), revision: '1', content: [{ type: 'text' as const, text: `Message ${seq}` }] });
+    const range = (first: number, length: number) => Array.from({ length }, (_, index) => row(first + index));
+    Object.assign(f.s, { lastTimelineSeq: '100' });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(1, 100), hasMoreBefore: !complete, beforeCursor: complete ? null : 'A' });
+    await ready(f);
+    const preview: SessionHistoryPreview = { fence: sessionFence(f.s), historyEpoch: f.s.historyEpoch, lastEventSeq: '2', entries: range(51, 150), resources: [], readingAnchor: { entryId: 'message-125', offset: 7, following: false } };
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'registered', session: { ...f.s, lastTimelineSeq: '250', sessionRevision: '13' } });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(151, 100), beforeCursor: 'B', lastEventSeq: '1' });
+    f.client.refresh(); await flush(); f.receive({ ...f.s, lastTimelineSeq: '250', sessionRevision: '13' }); await flush();
+    const rows = () => { const view = f.client.snapshot(); return selectSessionHistoryRows(view.state, preview, view.historyLoaded, view.historyCoverage); };
+    expect(rows()).toHaveLength(250);
+    expect(rows().find(item => item.entry.entryId === preview.readingAnchor!.entryId)?.preview).toBe(true);
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '151', throughEntrySeq: '250', completeBefore: false });
+    expect(f.client.snapshot().state.entries).toHaveLength(200);
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(101, 50), beforeCursor: 'C', lastEventSeq: '1' });
+    await f.client.loadOlder();
+    expect(f.api.timeline).toHaveBeenLastCalledWith(f.s.sessionId, 'before', 'B', expect.any(AbortSignal));
+    expect(rows()).toHaveLength(250);
+    expect(rows().find(item => item.entry.entryId === preview.readingAnchor!.entryId)?.preview).toBe(false);
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '101', throughEntrySeq: '250', completeBefore: false });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(1, 100), beforeCursor: null, hasMoreBefore: false, lastEventSeq: '1' });
+    await f.client.loadOlder();
+    expect(rows()).toHaveLength(250); expect(rows().every(item => !item.preview)).toBe(true);
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '1', throughEntrySeq: '250', completeBefore: true });
+  });
   it('does not expose old coverage under a snapshot event replacing the history epoch', async () => {
     const f = fixture(); await ready(f);
     f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'snapshot', payload: { ...f.s, historyEpoch: 'history-2', sessionRevision: '13' } } });

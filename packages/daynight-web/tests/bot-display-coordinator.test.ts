@@ -4,6 +4,7 @@ import { BotDisplaySnapshotStore, type BotDisplayPreview } from '../src/features
 import { BotSessionCache } from '../src/features/bots/session-cache';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 import type { TimelineReadingBookmark } from '../src/ui/useTimelineScroll';
+import { sessionFence } from '../../daynight/src/session/protocol';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { cleanups.splice(0).forEach(close => close()); vi.useRealTimers(); localStorage.clear(); });
@@ -261,4 +262,36 @@ it('cannot renew cleared history from local edits and resumes only after a new a
   await new Promise(resolve => setTimeout(resolve, 0));
   await expect(observer.flush()).resolves.toBe('saved');
   expect((await store.read(botOwner, bot.binding.botId))?.entries).toEqual([entry]);
+});
+it('reobserves new accepted history when a sibling clear changes the generation before any old-source publish', async () => {
+  const userId = crypto.randomUUID();
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === userId, storage: localStorage, withLock: async (_key, run) => run() });
+  const owner = new BotDisplaySnapshotCoordinator({ userId, isCurrent: () => true, store });
+  const peer = new BotDisplaySnapshotStore({ isCurrent: user => user === userId, storage: storage(), withLock: async (_key, run) => run() });
+  cleanups.push(() => owner.close(), () => peer.close());
+  const siblingBinding = { ...botBinding(2), ownerUserId: userId }, sibling = { ...preview(), ownerUserId: userId, botId: siblingBinding.botId, lastKnownBinding: siblingBinding, fence: { sessionId: siblingBinding.sessionId, testExecutionId: siblingBinding.testExecutionId, executionGeneration: '1' } };
+  const siblingLease = (await peer.observe(userId, sibling.botId))!;
+  await expect(peer.save(siblingLease, { source: 'verified-history', historyLoaded: true, preview: sibling })).resolves.toBe('saved');
+  const bot = botFixture({ ...botBinding(1), ownerUserId: userId }), first = { kind: 'assistant_message' as const, entryId: crypto.randomUUID(), entrySeq: '1', revision: '1', content: [{ type: 'text' as const, text: 'accepted before sibling clear' }] };
+  vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, items: [first] });
+  const cache = new BotSessionCache({ userId, isCurrent: () => true, storage: null, createApi: () => bot.api, onPrincipalMismatch: vi.fn() });
+  cleanups.push(cache.close); cache.select(bot.binding, bot.binding);
+  const client = cache.snapshot()[0]!.client;
+  await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  const observe = vi.spyOn(store, 'observe');
+  const observer = new BotHistorySnapshotObserver({ owner, binding: bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await observe.mock.results[0]!.value;
+  await expect(observer.flush()).resolves.toBe('saved');
+  await expect(peer.clearTarget(userId, sibling.botId)).resolves.toBe(true);
+  window.dispatchEvent(new StorageEvent('storage', { key: `daynight:bot-display:v1:${userId}`, storageArea: localStorage, newValue: localStorage.getItem(`daynight:bot-display:v1:${userId}`) }));
+  // No draft edit or flush observes the old source after the account fence.
+  const second = { ...first, entryId: crypto.randomUUID(), entrySeq: '2', content: [{ type: 'text' as const, text: 'new authority after sibling clear' }] };
+  const snapshot = bot.snapshot();
+  bot.receive({ protocol: snapshot.protocol, type: 'event', cursor: 'next', event: { protocol: snapshot.protocol, ...sessionFence(snapshot), connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: second } });
+  expect(client.snapshot().state.entries).toEqual([first, second]);
+  await observe.mock.results.at(-1)!.value;
+  await expect(observer.flush()).resolves.toBe('saved');
+  expect((await store.read(userId, bot.binding.botId))?.entries).toEqual([first, second]);
+  expect(await store.read(userId, sibling.botId)).toBeNull();
 });

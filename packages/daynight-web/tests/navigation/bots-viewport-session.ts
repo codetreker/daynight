@@ -10,6 +10,7 @@ export type BotViewportOptions = {
   readonly holdCurrent?: boolean;
   readonly holdHistory?: boolean;
   readonly revision?: string;
+  readonly persistentTail?: { readonly start: number; readonly end: number };
 };
 
 // Only the Bot transport is controlled. AuthenticatedApp, the cache, client,
@@ -57,8 +58,8 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
         metrics.tail++;
         if (options?.holdHistory) await historyGate;
         if (options?.scenario === 'persistent') return {
-          ...page(1, 100),
-          items: page(1, 100).items.map(entry => ({ ...entry,
+          ...page(options.persistentTail?.start ?? 1, options.persistentTail?.end ?? 100),
+          items: page(options.persistentTail?.start ?? 1, options.persistentTail?.end ?? 100).items.map(entry => ({ ...entry,
             entryId: `30000000-0000-4000-8000-${String(Number(binding.botId.slice(-12)) * 10000 + Number(entry.entrySeq)).padStart(12, '0')}`,
             revision: options.revision ?? '1',
             content: [{ type: 'text' as const, text: `Persistent message ${entry.entrySeq} from ${binding.botId}. Revision ${options.revision ?? '1'}.\n\nActual accepted history survives browser reopening.` }, ...(entry.entrySeq === '80' ? [{ type: 'resource' as const, resourceId: image.resourceId, label: image.name }] : [])],

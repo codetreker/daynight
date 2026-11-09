@@ -13,13 +13,13 @@ const timeline = `${selected} .session-timeline`;
 const row = `${selected} [data-entry-key]`;
 const entryId = (n: number) => `30000000-0000-4000-8000-${String(10000 + n).padStart(12, '0')}`;
 
-async function install(page: Page) {
+async function install(page: Page, tail: { readonly initialStart: number; readonly restoredStart: number; readonly end: number } | null = null) {
   let holdDetail = false, missing = false;
   const pending: (() => void)[] = [], writes: string[] = [];
-  await page.addInitScript(() => {
+  await page.addInitScript(tail => {
     const restored = sessionStorage.getItem('b2-history-barriers') === 'true';
-    window.botViewportOptions = { scenario: 'persistent', holdCurrent: restored, holdHistory: restored, revision: restored ? '2' : '1' };
-  });
+    window.botViewportOptions = { scenario: 'persistent', holdCurrent: restored, holdHistory: restored, revision: restored ? '2' : '1', ...(tail ? { persistentTail: { start: restored ? tail.restoredStart : tail.initialStart, end: tail.end } } : {}) };
+  }, tail);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
@@ -38,12 +38,12 @@ async function install(page: Page) {
   return { writes, hold() { holdDetail = true; }, release() { holdDetail = false; pending.splice(0).forEach(resolve => resolve()); }, missing() { missing = true; } };
 }
 
-async function saved(page: Page, target = bots[0]!.id) {
+async function saved(page: Page, target = bots[0]!.id, count = 100) {
   await expect.poll(() => page.evaluate(({ namespace, target }) => {
     const raw = localStorage.getItem(namespace);
     if (!raw) return 0;
     return (JSON.parse(raw).records as { preview: { botId: string; entries: unknown[] } }[]).find(record => record.preview.botId === target)?.preview.entries.length ?? 0;
-  }, { namespace, target })).toBe(100);
+  }, { namespace, target })).toBe(count);
 }
 
 async function anchor(page: Page) {
@@ -188,4 +188,39 @@ test('keeps a product return path after access loss on a 320px cold target', asy
   await back.click();
   await expect(page.locator('.bot-list')).toBeVisible();
   await expect(page).toHaveURL(/\/bots$/);
+});
+
+
+test('keeps uncovered preview rows and the reading anchor after a shorter real tail is persisted', async ({ page }) => {
+  const api = await install(page, { initialStart: 1, restoredStart: 51, end: 150 });
+  await page.goto(`/bots/${bots[0]!.id}`);
+  await expect(page.locator(row)).toHaveCount(150);
+  await saved(page, bots[0]!.id, 150);
+  await page.evaluate(() => sessionStorage.setItem('b2-history-barriers', 'true'));
+  api.hold(); await page.reload();
+  await expect(page.locator(row)).toHaveCount(150);
+  const originalTimeline = await page.locator(timeline).elementHandle();
+  const originalRow = await page.locator(`${row}[data-entry-key="${entryId(21)}"]`).elementHandle();
+  await expect.poll(() => page.locator(timeline).evaluate(node => node.scrollTop)).toBeGreaterThan(900);
+  const beforeWheel = await page.locator(timeline).evaluate(node => node.scrollTop);
+  await page.locator(timeline).hover(); await page.mouse.wheel(0, -900);
+  await expect(page.locator(`${selected} .session-latest`)).toBeVisible();
+  await expect.poll(() => page.locator(timeline).evaluate(node => node.scrollTop)).toBeLessThanOrEqual(beforeWheel - 899);
+  await page.locator(timeline).evaluate(node => {
+    const target = node.querySelector<HTMLElement>('[data-entry-key="30000000-0000-4000-8000-000000010021"]')!;
+    node.scrollTop += target.getBoundingClientRect().top - node.getBoundingClientRect().top;
+    node.dispatchEvent(new Event('scroll'));
+  });
+  const reading = await anchor(page);
+  expect(reading.key).toBe(entryId(21));
+  api.release(); await page.evaluate(() => { window.botViewport.releaseCurrent(); window.botViewport.releaseHistory(); });
+  await saved(page, bots[0]!.id, 100);
+  await expect(page.locator(`${row}[data-history-preview="true"]`)).toHaveCount(50);
+  await expect(page.locator(row)).toHaveCount(150);
+  expect(await page.locator(timeline).evaluate((node, original) => node === original, originalTimeline)).toBe(true);
+  expect(await page.locator(`${row}[data-entry-key="${entryId(21)}"]`).evaluate((node, original) => node === original, originalRow)).toBe(true);
+  const restored = await anchor(page);
+  expect(restored.key).toBe(reading.key); expect(Math.abs(restored.offset - reading.offset)).toBeLessThanOrEqual(3);
+  expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
+  expect(api.writes).toEqual([]);
 });

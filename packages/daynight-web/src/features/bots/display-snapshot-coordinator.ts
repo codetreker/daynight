@@ -198,8 +198,11 @@ export class BotHistorySnapshotObserver {
     const identity = historyKey(snapshot), generation = owner.generation(binding.botId);
     const source = JSON.stringify([identity, view.historyRevision, view.state.lastEventSeq]);
     if (source === this.expiredSource) return;
-    if (source === this.observedSource && this.observedGeneration !== generation) {
-      this.expiredSource = source; this.lease = null; this.candidate = null; this.lastAccepted = null; return;
+    if (this.observedGeneration !== generation) {
+      // New authority can obtain a fresh lease, but cannot reuse one revoked by
+      // an account-generation change even when no old-source publish saw it.
+      this.lease = null; this.candidate = null; this.lastAccepted = null;
+      if (source === this.observedSource) { this.expiredSource = source; return; }
     }
     if (source !== this.observedSource) { this.observedSource = source; this.observedGeneration = generation; this.expiredSource = null; }
     if (identity !== this.identity) { this.identity = identity; this.lease = null; this.candidate = null; this.lastAccepted = null; }

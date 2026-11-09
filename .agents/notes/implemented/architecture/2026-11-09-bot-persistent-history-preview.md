@@ -28,6 +28,9 @@ Their disk-only tombstone does not replace newer memory-only history or leases
 in the shared storage realm. Account-wide revocation tokens also fence first
 observations that have no cached preview yet; ordinary saves and LRU updates
 trigger passive reads without revoking accepted history sources.
+Every observed generation change discards the old lease before classifying its
+source. New accepted history can obtain a fresh observation while the unchanged
+old source remains frozen.
 Revocation events discard old memory records immediately, including before a
 failed lock can force memory-only operation. Disk reconciliation consumes the
 event's existing token, so a valid sibling's first passive read is not revoked
@@ -41,11 +44,18 @@ online pagination readiness. Applied-page coverage, rather than a current
 snapshot or wall-clock timestamp, determines which cached rows have been verified.
 An individual upsert verifies its own entry ID; it cannot extend a contiguous
 page boundary across entries that no page has supplied.
+Each refreshed tail starts a new cursor chain's coverage rather than joining
+disjoint tails through a minimum/maximum interval; older real rows remain by ID.
 The shared Session renderer accepts inert history data without a fabricated
 snapshot. A null client permits the same shell and timeline to display history
 before a verified binding exists. A real binding alone creates the actual client.
 Verified rows own their entry IDs; uncovered preview rows remain explicitly
 read-only and never enter the reducer, operation ledger or subsequent saves.
+The admitted display seed remains separate from the next persisted real tail.
+Within the same identity and revocation generation, ordinary persistence updates
+cannot replace it with a shorter record. Real coverage permanently consumes seed
+rows, preventing them from reappearing after cursor-chain coverage resets. The
+bounded seed only shrinks; it does not accumulate cross-tab history updates.
 
 Preview resource access is explicitly disabled, including downloads. Historical
 interactions cannot regain submission controls. New commands continue through

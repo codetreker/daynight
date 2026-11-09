@@ -12,7 +12,9 @@ import type { SessionPresentationSlots } from '../task-agent-session/session-pre
 import { BotConversationEmpty } from './BotConversationEmpty';
 import { getBotDisplaySnapshotCoordinator, type BotDisplaySnapshotCoordinator } from './display-snapshot-coordinator';
 import type { BotDisplayPreview } from './display-snapshot';
-import type { SessionHistoryPreview } from '../task-agent-session/history-preview';
+import { botDisplayHistoryKey } from './display-snapshot-codec';
+import { selectSessionHistoryRows, type SessionHistoryPreview } from '../task-agent-session/history-preview';
+import type { SessionViewState } from '../task-agent-session/client';
 import './bot-session.css';
 
 /** Own this hook above the selected Bot and its details panel. Neither selection nor details recreate it. */
@@ -90,7 +92,7 @@ export function BotSessionHost({ cache, displayBinding, actionBinding = null, bo
 }
 const noSubscribe = () => () => {};
 const noSnapshot = () => null;
-function useHistoryPreview(owner: BotDisplaySnapshotCoordinator | undefined, botId: string, active: boolean): BotDisplayPreview | null {
+function useHistoryPreview(owner: BotDisplaySnapshotCoordinator | undefined, botId: string, active: boolean, view: SessionViewState | null): BotDisplayPreview | null {
   const version = useSyncExternalStore(owner?.subscribe ?? noSubscribe, owner?.version ?? (() => 0));
   const selected = useRef<{ owner: BotDisplaySnapshotCoordinator; botId: string; active: boolean } | null>(null);
   const [loaded, setLoaded] = useState<{ owner: BotDisplaySnapshotCoordinator; botId: string; generation: number; preview: BotDisplayPreview | null } | null>(null);
@@ -104,9 +106,21 @@ function useHistoryPreview(owner: BotDisplaySnapshotCoordinator | undefined, bot
     const touch = selected.current?.owner !== owner || selected.current.botId !== botId || !selected.current.active;
     selected.current = { owner, botId, active };
     // Storage notifications must not write an LRU touch back to another tab.
-    void owner.read(botId, { touch }).then(preview => { if (live && owner.allowed(botId)) setLoaded({ owner, botId, generation, preview }); });
+    void owner.read(botId, { touch }).then(preview => {
+      if (!live || !owner.allowed(botId)) return;
+      // Persistence may save a shorter real tail. The admitted display seed owns
+      // its uncovered rows until real coverage or actual revocation consumes them.
+      setLoaded(previous => previous?.owner === owner && previous.botId === botId && previous.generation === generation && previous.preview && (!preview || botDisplayHistoryKey(previous.preview) === botDisplayHistoryKey(preview)) ? previous : { owner, botId, generation, preview });
+    });
     return () => { live = false; };
   }, [owner, botId, active, version, readAllowed]);
+  useLayoutEffect(() => {
+    if (!view?.historyLoaded || !loaded?.preview || loaded.owner !== owner || loaded.botId !== botId) return;
+    const entries = selectSessionHistoryRows(view.state, loaded.preview, true, view.historyCoverage).filter(row => row.preview).map(row => row.entry);
+    // Consumed rows stay withdrawn when a later tail starts a disjoint cursor
+    // chain. The retained seed only shrinks and never enters client/save inputs.
+    if (entries.length !== loaded.preview.entries.length) setLoaded(current => current === loaded ? { ...loaded, preview: { ...loaded.preview!, entries } } : current);
+  }, [view, loaded, owner, botId]);
   // Identity verification pauses new reads, while the same visible history can
   // remain readable. Hiding or changing its target ends that display allowance.
   const preview = owner && owner.displayAllowed(botId) && loaded?.owner === owner && loaded.botId === botId && loaded.generation === owner.generation(botId) && (readAllowed || active && displayed.current === loaded) ? loaded.preview : null;
@@ -117,7 +131,7 @@ function useHistoryPreview(owner: BotDisplaySnapshotCoordinator | undefined, bot
 function BotPane({ cache, botId, pane, active, current, fullscreenBoundary, presentation, error, onRetry }: { readonly cache: BotSessionCache; readonly botId: string; readonly presentation?: SessionPresentationSlots; readonly pane: BotSessionPane | null; readonly active: boolean; readonly current: boolean; readonly error: string | null; readonly onRetry?: () => void; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
   const view = useSyncExternalStore(pane?.client.subscribe ?? noSubscribe, pane?.client.snapshot ?? noSnapshot);
   const owner = cache.displaySnapshots();
-  const preview = useHistoryPreview(owner, botId, active && current);
+  const preview = useHistoryPreview(owner, botId, active && current, view);
   const previewInput: SessionHistoryPreview | undefined = preview ? { fence: preview.fence, historyEpoch: preview.historyEpoch, lastEventSeq: preview.lastEventSeq, entries: preview.entries, resources: preview.resources, ...(preview.readingAnchor ? { readingAnchor: preview.readingAnchor } : {}) } : undefined;
   const readingRef = useRef<SessionTimelineReadingHandle | null>(null);
   useLayoutEffect(() => { if (pane) pane.reading.current = readingRef.current; });

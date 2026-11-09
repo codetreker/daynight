@@ -625,15 +625,18 @@ export class TaskSessionClient {
       if (!currentRequest() || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || !currentRequest()) return;
       this.validatePage(page, snapshot);
       if (BigInt(page.lastEventSeq) < BigInt(snapshot.lastEventSeq)) throw new ApiError('protocol');
-      const coverage = this.pageCoverage(page.items, snapshot.lastTimelineSeq, page.lastEventSeq, !page.hasMoreBefore, this.replaceHistory ? null : this.view.historyCoverage);
       const previous = this.replaceHistory ? { ...this.view.state, entries: [], resources: new Map(), lastEventSeq: '0' } : this.view.state;
+      const lastEventSeq = BigInt(previous.lastEventSeq) > BigInt(page.lastEventSeq) ? previous.lastEventSeq : page.lastEventSeq;
+      // A refreshed tail starts a new cursor chain. Previously accepted rows remain
+      // authoritative by ID, but disjoint tails do not prove the interval between them.
+      const coverage = this.pageCoverage(page.items, snapshot.lastTimelineSeq, lastEventSeq, !page.hasMoreBefore, null);
       // A current read can publish a newer state while this tail is in flight.
       // Materializing history cannot roll back that accepted connection or activity.
       const latest = this.view.state.snapshot!;
       const selected = BigInt(latest.sessionRevision) > BigInt(snapshot.sessionRevision) ? latest : snapshot;
       let state = hydrateSession(previous, selected, page.items, page.resources);
       this.replaceHistory = false;
-      state = { ...state, lastEventSeq: BigInt(previous.lastEventSeq) > BigInt(page.lastEventSeq) ? previous.lastEventSeq : page.lastEventSeq };
+      state = { ...state, lastEventSeq };
       // The tail may include events newer than the initial WS snapshot. Replay only their
       // latest state receipts while retaining the page's already materialized timeline.
       for (const item of this.buffer) {
