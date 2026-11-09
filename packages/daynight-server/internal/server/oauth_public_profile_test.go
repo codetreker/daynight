@@ -48,7 +48,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 		handler.ServeHTTP(w, req)
 		return w
 	}
-	w := send("GET", "/mcp", "", "")
+	w := send("POST", "/mcp", "", "")
 	if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") != `Bearer resource_metadata="`+h.Origin+`/.well-known/oauth-protected-resource/mcp"` {
 		t.Fatalf("challenge: %d %q", w.Code, w.Header().Get("WWW-Authenticate"))
 	}
