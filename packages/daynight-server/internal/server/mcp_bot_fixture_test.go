@@ -153,10 +153,6 @@ func (d *mcpBotReader) Bots(ctx context.Context, owner string, worker *string, p
 	r := d.s.call("Bots", owner, worker, page)
 	return r[0].(store.BotPage), mcpBotErr(r[1])
 }
-func (d *mcpBotReader) BotsBounded(ctx context.Context, owner string, worker *string, page store.Page) (store.BotPage, error) {
-	r := d.s.call("BotsBounded", owner, worker, page)
-	return r[0].(store.BotPage), mcpBotErr(r[1])
-}
 func (d *mcpBotReader) BotPreferredWorker(ctx context.Context, owner string) (*string, error) {
 	r := d.s.call("BotPreferredWorker", owner)
 	return r[0].(*string), mcpBotErr(r[1])

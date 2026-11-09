@@ -111,21 +111,14 @@ func TestWorkerObservationUpdateFailurePreservesCause(t *testing.T) {
 
 func TestWorkerSummariesPreserveFailures(t *testing.T) {
 	cause := errors.New("worker summary failed")
-	consume := func(store.WorkerSummary) (bool, error) { return false, cause }
 	for _, tx := range []workerFailureTx{
 		{queryFailure: cause},
 		{rows: &failedWorkerRows{scan: func(...any) error { return cause }}},
 		{rows: &failedWorkerRows{failure: cause}},
-		{rows: &failedWorkerRows{scan: func(...any) error { return nil }}},
 	} {
-		err := (&Reader{tx: tx}).WorkerSummaries(t.Context(), "user", time.Now(), store.Page{Limit: 1}, consume)
+		_, err := (&Reader{tx: tx}).WorkerSummaries(t.Context(), "user", time.Now(), store.Page{Limit: 1})
 		if !errors.Is(err, cause) {
 			t.Fatalf("summary cause lost: %v", err)
 		}
-	}
-	bad := "invalid"
-	tx := workerFailureTx{rows: &failedWorkerRows{scan: func(values ...any) error { *values[7].(**string) = &bad; return nil }}}
-	if err := (&Reader{tx: tx}).WorkerSummaries(t.Context(), "user", time.Now(), store.Page{Limit: 1}, consume); err == nil {
-		t.Fatal("invalid observation time accepted")
 	}
 }

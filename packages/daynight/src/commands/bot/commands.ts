@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
+import { DEFAULT_OPERATION_LIMITS } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import type { CliContext } from "../../cli/context.js";
 import { UsageError } from "../../cli/context.js";
@@ -65,6 +66,7 @@ export const runBotCommand = async (args: readonly string[], context: CliContext
   const json = command.options.has("--json");
   const reconcile = botId === undefined ? undefined : `daynight bot show ${botId} --json`;
   try {
+    // A count-based Bot page can use the existing aggregate list budget.
     await dependencies.runServerCommand(context, async ({ api, operation }) => {
       if (action === "list") {
         const bots = await api.listBots(); operation.check();
@@ -77,7 +79,7 @@ export const runBotCommand = async (args: readonly string[], context: CliContext
       return { kind: "confirmed-mutation", output: json ? `${JSON.stringify(bot)}\n` : render(bot), failureText: (phase) => json
         ? JSON.stringify({ error: { operation: `bot.${action}`, botId, requestId, phase, outcomeUnconfirmed: false, confirmed: true, reconcile } })
         : `bot.${action} confirmed for Bot ${botId}, request ${requestId}; local ${phase} failed. Reconcile with ${reconcile}.` };
-    });
+    }, action === "list" ? { operationLimits: { responseBytes: DEFAULT_OPERATION_LIMITS.totalBytes } } : {});
   } catch (cause) {
     if (cause instanceof PublicDiagnosticError) throw cause;
     const failure = apiFailure(cause);

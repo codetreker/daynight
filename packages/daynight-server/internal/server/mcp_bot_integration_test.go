@@ -73,7 +73,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	if failed || obj(obj(override["data"])["resolvedConfiguration"])["cwd"] != "/chosen" || obj(obj(override["data"])["resolvedConfiguration"])["provider"] != "codex" {
 		t.Fatalf("overrides: %+v", override)
 	}
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("BotsBounded", []any{principal.UserID, (*string)(nil), store.Page{Limit: 1}}, store.BotPage{Items: []model.Bot{expected}, HasMore: true}, nil))
+	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bots", []any{principal.UserID, (*string)(nil), store.Page{Limit: 1}}, store.BotPage{Items: []model.Bot{expected}, HasMore: true}, nil))
 	page, failed := call("bot_list", map[string]any{"limit": 1})
 	if failed {
 		t.Fatalf("list: %+v", page)
@@ -84,7 +84,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	if len(items) != 1 || !ok {
 		t.Fatalf("first page: %+v", first)
 	}
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("BotsBounded", []any{principal.UserID, (*string)(nil), store.Page{Limit: 1, After: &store.Position{CreatedAt: expected.CreatedAt, ID: expected.ID}}}, store.BotPage{Items: []model.Bot{second}}, nil))
+	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bots", []any{principal.UserID, (*string)(nil), store.Page{Limit: 1, After: &store.Position{CreatedAt: expected.CreatedAt, ID: expected.ID}}}, store.BotPage{Items: []model.Bot{second}}, nil))
 	next, failed := call("bot_list", map[string]any{"limit": 1, "cursor": cursor})
 	if failed || len(obj(next["data"])["items"].([]any)) != 1 || obj(obj(next["data"])["items"].([]any)[0])["id"] == obj(items[0])["id"] {
 		t.Fatalf("second page: %+v", next)

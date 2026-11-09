@@ -821,7 +821,7 @@ var _ store.WebhookEligibilityDAO = (*eligibilityDAOMock)(nil)
 type workerReaderMock struct {
 	taskMockBase
 	WorkersFn             func(context.Context, string, time.Time, store.Page) (store.WorkerPage, error)
-	WorkerSummariesFn     func(context.Context, string, time.Time, store.Page, func(store.WorkerSummary) (bool, error)) error
+	WorkerSummariesFn     func(context.Context, string, time.Time, store.Page) (store.WorkerSummaryPage, error)
 	WorkerFn              func(context.Context, string, string, time.Time) (model.WorkerSnapshot, error)
 	WorkerConfigurationFn func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 }
@@ -831,9 +831,9 @@ func (mock *workerReaderMock) Workers(p0 context.Context, p1 string, p2 time.Tim
 	return mock.WorkersFn(p0, p1, p2, p3)
 }
 
-func (mock *workerReaderMock) WorkerSummaries(p0 context.Context, p1 string, p2 time.Time, p3 store.Page, p4 func(store.WorkerSummary) (bool, error)) error {
+func (mock *workerReaderMock) WorkerSummaries(p0 context.Context, p1 string, p2 time.Time, p3 store.Page) (store.WorkerSummaryPage, error) {
 	mock.need("WorkerSummaries", mock.WorkerSummariesFn != nil)
-	return mock.WorkerSummariesFn(p0, p1, p2, p3, p4)
+	return mock.WorkerSummariesFn(p0, p1, p2, p3)
 }
 
 func (mock *workerReaderMock) Worker(p0 context.Context, p1 string, p2 string, p3 time.Time) (model.WorkerSnapshot, error) {

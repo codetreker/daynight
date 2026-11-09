@@ -120,7 +120,7 @@ workerId, machine, platform, lastReportedAt,
 taskObservationState, taskObservedAt, activeTaskCount
 ```
 
-activeTaskCount 是当前有权限访问的快照任务数。它不是实时任务归属统计；unavailable 为 null，observed/stale 为过滤后整数，包括 0。列表不复制完整 telemetry。
+activeTaskCount 是当前有权限访问的快照任务数。它不是实时任务归属统计；unavailable 为 null，observed/stale 为过滤后整数，包括 0。列表不复制完整 telemetry。报告入口负责结构、字段、规范化和现有容量规则；列表与详情直接读取保存的规范数据，不重复校验这些规则。正常解码和响应编码失败保留原错误链，不转换为空结果。
 
 详情 worker 在摘要字段之外包含 telemetry、inventoryObservedAt、tasks。telemetry 使用报告中的结构，tasks 始终为数组；每项为 `{projectId,taskId,claimId,title,projectName,status,phase,agent}`。status 和 phase 是上报时的规范化值；agent 沿用当前 claim 枚举，包含 codex、copilot、claude。
 
@@ -128,7 +128,7 @@ activeTaskCount 是当前有权限访问的快照任务数。它不是实时任�
 
 分页使用不可变 `(created_at,worker_id)` 位置，cursor 绑定资源类型和认证账号。持续更新的 lastReportedAt 不作为位置；换账号或不匹配的 cursor 返回输入错误。每页是各自一致的读取快照，跨页期间的新注册或重新活跃记录可在下一轮遍历出现。
 
-列表完整 JSON 响应最多 8 MiB，包含转义、外壳、cursor 和末尾换行；达到字节或条数限制时从最后返回项继续。历史首项无法装入时返回 409 `resource_limit_exceeded`，不返回局部成功。
+列表按请求条数分页，以 `limit+1` 判断是否还有记录；有后续项时 cursor 指向最后返回项，末页为 null。列表与详情不设置读取响应字节预算，也不因保存数据的容量重新拒绝读取。写入容量规则不转化为额外配额。
 
 ## 错误与可观察结果
 

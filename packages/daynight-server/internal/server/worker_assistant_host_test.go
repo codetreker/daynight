@@ -88,18 +88,11 @@ func TestWorkerAssistantHostHTTPReportingAndLegacyReplacement(t *testing.T) {
 	zero := 0
 	summary := store.WorkerSummary{WorkerID: f.worker, CreatedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Machine: legacySnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksObserved, TaskObservedAt: &capacityObservedAt, ActiveTaskCount: &zero}
 	plan = f.read([]string{"observed", "dao", "summaries"}, func(r *capacityWorkerReader) {
-		r.summaries = func(user string, observed time.Time, page store.Page, accept func(store.WorkerSummary) (bool, error)) error {
+		r.summaries = func(user string, observed time.Time, page store.Page) (store.WorkerSummaryPage, error) {
 			if user != f.handler.principal.UserID || observed != capacityObservedAt || page.Limit != 50 || page.After != nil {
 				t.Fatalf("worker list arguments differ: %+v", page)
 			}
-			accepted, err := accept(summary)
-			if err != nil {
-				return err
-			}
-			if !accepted {
-				t.Fatal("worker list rejected its only summary")
-			}
-			return nil
+			return store.WorkerSummaryPage{Items: []store.WorkerSummary{summary}}, nil
 		}
 	})
 	page := decodeResponse[api.WorkerPage](t, projectRequest(f.handler, http.MethodGet, "/api/v1/me/workers", ""), http.StatusOK)

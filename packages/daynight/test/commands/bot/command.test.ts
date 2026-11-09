@@ -6,6 +6,7 @@ import type { CliContext } from "../../../src/cli/context.js";
 import { runCli } from "../../../src/cli/application.js";
 import { commands } from "../../../src/cli/commands.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
+import * as api from "../../../src/api/index.js";
 
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const workerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -14,7 +15,7 @@ const now = "2026-11-04T10:00:00Z";
 const bot = { id, workerId, ownerUserId: id, version: "9007199254740993", creationOrder: "9007199254740994", name: "助手", requestedOverrides: {}, resolvedConfiguration: { workerId, cwd: "/ordinary", provider: "codex", model: null, args: [] }, roleConfiguration: null, sessionId: null, testExecutionId: null, startupResult: { state: "pending", code: null }, deletion: null, createdAt: now, updatedAt: now };
 const deleted = (worker = "pending", server = "pending") => ({ id, workerId, version: "9007199254740994", deletion: { deletionId: requestId, requestedVersion: bot.version, workerCleanup: { state: worker, code: worker === "failed" ? "stop_failed" : null }, serverCleanup: { state: server, code: null } } });
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 const fixture = async (respond: (url: URL, init: RequestInit) => Response | Promise<Response>, failCleanup = false) => {
   vi.stubEnv("DN_CONFIG_DIR", undefined);
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-tests");
@@ -32,7 +33,7 @@ const fixture = async (respond: (url: URL, init: RequestInit) => Response | Prom
     const registered = commands.find((c) => c.name === "bot");
     const registry = commands.map((c) => c.name !== "bot" ? c : { ...c, load: async () => {
       const module = await import("../../../src/commands/bot/commands.js");
-      return { run: (args: readonly string[], current: CliContext) => module.runBotCommand(args, current, { runServerCommand: (ctx, action) => runServerCommand(ctx, action, { fetch, signalEmitter: signals }) }) };
+      return { run: (args: readonly string[], current: CliContext) => module.runBotCommand(args, current, { runServerCommand: (ctx, action, options) => runServerCommand(ctx, action, { ...options, fetch, signalEmitter: signals }) }) };
     } });
     const exit = await runCli(["bot", ...args], context, registered === undefined ? commands : registry);
     expect(signals.listenerCount("SIGINT")).toBe(0);
@@ -200,6 +201,24 @@ describe("public Bot commands", () => {
     const result = await run(["list", "--json"]);
     expect(result.exit).toBe(0); expect(JSON.parse(result.out)).toHaveLength(2);
     expect(requests[1]!.url.searchParams.get("cursor")).toBe("opaque /+?");
+  });
+  it.each([false, true])("reads count-based Bot pages within the aggregate budget (total exceeded: %s)", async exceedsTotal => {
+    const createOperation = api.createOperation;
+    vi.spyOn(api, "createOperation").mockImplementation(options => createOperation({ ...options, limits: { responseBytes: 1024, totalBytes: 4096, ...options?.limits } }));
+    const large = { ...bot, resolvedConfiguration: { ...bot.resolvedConfiguration, args: ["--add-dir", "/" + "x".repeat(1800)] } };
+    const second = { ...(exceedsTotal ? large : bot), id: requestId };
+    const { run, requests } = await fixture(url => json(url.searchParams.has("cursor") ? { items: [second], nextCursor: null } : { items: [large], nextCursor: "next" }));
+    const result = await run(["list", "--json"]);
+    expect(requests.map(({ url }) => url.searchParams.get("limit"))).toEqual(["100", "100"]);
+    expect(requests[1]!.url.searchParams.get("cursor")).toBe("next");
+    if (exceedsTotal) {
+      expect(result.exit).toBe(1);
+      expect(result.out).toBe("");
+      expect(JSON.parse(result.err).error).toMatchObject({ operation: "bot.list", phase: "response", outcomeUnconfirmed: false });
+    } else {
+      expect(result.exit).toBe(0);
+      expect(JSON.parse(result.out)).toEqual([large, second]);
+    }
   });
   it.each([401, 403, 404, 409])("preserves HTTP %s refusal and stable IDs without retry", async (status) => {
     const { run, requests } = await fixture(() => json({ error: { code: "version_conflict", message: "rejected", requestId: "server-request" } }, status));

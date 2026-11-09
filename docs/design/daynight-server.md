@@ -38,7 +38,7 @@ Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据�
 
 ## 账号级 Worker 观测
 
-`Workers` service 与既有任务用例共享具体 store 和认证 principal，使用独立的报告事务保存账号级最新运行快照。`workersRoutes` 注册报告、列表和详情，并沿用既有认证及清洗日志。报告只按输入任务主键批量规范化 claim 引用，读取按当前成员关系过滤历史观测；该路径不取得 project 写锁或修改任务归属。
+`Workers` service 与既有任务用例共享具体 store 和认证 principal，使用独立的报告事务保存账号级最新运行快照。`workersRoutes` 注册报告、列表和详情，并沿用既有认证及清洗日志。报告只按输入任务主键批量规范化 claim 引用，读取按当前成员关系过滤保存的观测；该路径不取得 project 写锁或修改任务归属。列表一次查询规范摘要字段，以 UUID 关联计算当前可见任务数；详情普通解码完整快照。两者按写入入口生成的存储表示读取，不重复结构、字段或容量检查，不设置领域读取字节预算。列表按请求条数和一项 lookahead 生成稳定 cursor。
 
 [快照设计](daynight-worker-snapshots.md)拥有 `workers` 表、原子 UPSERT、旧 observation 保护、稳定分页和时间语义；[需求](../spec/daynight-worker-snapshots.md)拥有公开字段与错误。任务图、claim inventory 和本机执行恢复保持各自的职责。
 
