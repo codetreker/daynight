@@ -1238,6 +1238,11 @@ hosted result.
 Ordinary discovery excludes stress-tagged files. With an isolated database,
 `bash scripts/stress.sh` runs the explicit stress-tagged workloads with race
 detection and refuses a nonempty `CI` environment.
+The server runtime two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
+`TestWebhookTwoInstanceTakeoverAndFencingStress`) is selected explicitly by the
+stress entry point. It uses a private deterministic capture
+stream and verifies its first-slot admission before testing second-slot recovery
+and late-result fencing; see the [fixture timing decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-takeover-fixture.md).
 
 Authentication integration prepares the pinned UniAuth gateway with
 `scripts/prepare-uniauth-fixture.mts`. The fixture runs on loopback with
