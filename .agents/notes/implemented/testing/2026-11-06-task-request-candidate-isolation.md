@@ -41,8 +41,12 @@ write boundary; store tests retain real SQL, locking, snapshots and rollback.
 No production API or transaction simulator is introduced.
 
 The [test guide](../../../../packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns the common DAO policy. Task service tests require no database URL; physical
-store tests still require an isolated PostgreSQL environment.
+owns the common dependency policy. Task service tests require no database URL;
+physical store tests still require isolated PostgreSQL. The
+[Go test dependency decision](2026-11-08-go-test-dependency-boundaries.md)
+extends this separation to the Task HTTP consumer: direct service/use-case mocks
+supply its results, and normal API flows retain real production process assembly
+in the explicit integration runner.
 
 ## Alternatives
 

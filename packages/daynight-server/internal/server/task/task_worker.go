@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -19,7 +17,7 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *authhttp.Authentication, logger *slog.Logger) {
+func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	path := "/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim"
 	mux.HandleFunc("POST "+path, auth.Require(handler.claimWorker))
 	mux.HandleFunc("PATCH "+path, auth.Require(handler.updateWorker))

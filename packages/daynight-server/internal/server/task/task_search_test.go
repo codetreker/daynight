@@ -9,33 +9,26 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const searchTestID = "11111111-1111-4111-8111-111111111111"
 
-type failedSearchReader struct{ err error }
-
-func (f failedSearchReader) ReadTaskSearch(context.Context, func(store.TaskSearchSnapshot) error) error {
-	return f.err
+func serveSearch(operation SearchOperation, logs *bytes.Buffer) *httptest.Server {
+	return serveSearchWithTimeout(operation, logs, 5*time.Second)
 }
-func serveSearch(reader store.TaskSearchReader, logs *bytes.Buffer) *httptest.Server {
-	return serveSearchWithTimeout(reader, logs, 5*time.Second)
-}
-func serveSearchWithTimeout(reader store.TaskSearchReader, logs *bytes.Buffer, timeout time.Duration) *httptest.Server {
+func serveSearchWithTimeout(operation SearchOperation, logs *bytes.Buffer, timeout time.Duration) *httptest.Server {
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	h := searchHandler{reader: reader, logger: logger, operationTimeout: timeout}
+	h := searchHandler{run: operation, logger: logger, operationTimeout: timeout}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", func(w http.ResponseWriter, r *http.Request) {
 		h.search(w, r, model.Principal{Kind: model.PATCredential, UserID: searchTestID, CredentialID: searchTestID})
@@ -44,28 +37,76 @@ func serveSearchWithTimeout(reader store.TaskSearchReader, logs *bytes.Buffer, t
 }
 func postSearch(t *testing.T, server *httptest.Server, body string) (int, string) {
 	t.Helper()
-	resp, err := http.Post(server.URL+"/api/v1/projects/"+searchTestID+"/tasks/search", "application/json", strings.NewReader(body))
+	client := server.Client()
+	client.Timeout = 5 * time.Second
+	response, err := client.Post(server.URL+"/api/v1/projects/"+searchTestID+"/tasks/search", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Header.Get("Cache-Control") != "no-store" {
+	if response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatal("cache header missing")
 	}
-	return resp.StatusCode, string(data)
+	return response.StatusCode, string(data)
 }
+func failedSearchOperation(err error) SearchOperation {
+	return func(context.Context, model.Principal, string, tasksearch.Request) (tasksearch.Page, error) {
+		return tasksearch.Page{}, err
+	}
+}
+
+func TestTaskSearchRoutesApplyDefaultOperationDeadline(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	principal := model.Principal{Kind: model.PATCredential, UserID: searchTestID, CredentialID: searchTestID}
+	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, credential string) (model.Principal, error) {
+		if kind != model.PATCredential || credential != "test-pat" {
+			t.Errorf("credential input=%s %s", kind, credential)
+		}
+		return principal, nil
+	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	calls := 0
+	before := time.Now()
+	TaskSearchRoutes(mux, func(ctx context.Context, actor model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+		calls++
+		deadline, exists := ctx.Deadline()
+		after := time.Now()
+		if !exists || deadline.Before(before.Add(5*time.Second)) || deadline.After(after.Add(5*time.Second)) || actor != principal || projectID != searchTestID || input.Query != "cache" {
+			t.Errorf("default operation deadline=%s exists=%t actor=%+v project=%s input=%+v", deadline, exists, actor, projectID, input)
+		}
+		return tasksearch.Page{ProjectID: projectID, Items: []tasksearch.Item{}}, nil
+	}, auth, logger)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+searchTestID+"/tasks/search", strings.NewReader(`{"query":"cache"}`))
+	request.Header.Set("Authorization", "Bearer test-pat")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	httpx.RequestLogging(logger, mux).ServeHTTP(response, request)
+	if response.Code != 200 || calls != 1 {
+		t.Fatalf("default route response=%d %s calls=%d", response.Code, response.Body, calls)
+	}
+}
+
 func TestSearchHTTPExpressionErrorAndPrivacy(t *testing.T) {
 	var logs bytes.Buffer
-	server := serveSearch(failedSearchReader{errors.New("must not execute")}, &logs)
-	defer server.Close()
-	status, body := postSearch(t, server, `{"query":"私人文本 AND (A"}`)
-	if status != 400 {
-		t.Fatalf("status=%d body=%s", status, body)
+	calls := 0
+	operation := func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+		calls++
+		if projectID != searchTestID || principal.UserID != searchTestID || input.Query != "私人文本 AND (A" {
+			t.Fatalf("search arguments=%+v %s %+v", principal, projectID, input)
+		}
+		return tasksearch.Page{}, &model.Fault{Code: "invalid_search_expression", Message: "Search expression is invalid.", SearchExpression: &model.SearchExpressionDetails{Reason: "unclosed_group", Position: 10, Length: 1}}
 	}
+	server := serveSearch(operation, &logs)
+	t.Cleanup(server.Close)
+	status, body := postSearch(t, server, `{"query":"私人文本 AND (A"}`)
 	var result struct {
 		Error struct {
 			Code    string `json:"code"`
@@ -79,249 +120,143 @@ func TestSearchHTTPExpressionErrorAndPrivacy(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Error.Code != "invalid_search_expression" || result.Error.Details.Reason != "unclosed_group" {
-		t.Fatalf("%s", body)
-	}
-	if strings.Contains(logs.String(), "私人文本") {
-		t.Fatal("query in log")
+	if status != 400 || result.Error.Code != "invalid_search_expression" || result.Error.Details.Reason != "unclosed_group" || result.Error.Details.Position != 10 || result.Error.Details.Length != 1 || calls != 1 {
+		t.Fatalf("status=%d body=%s calls=%d", status, body, calls)
 	}
 	status, body = postSearch(t, server, `{"query":"ok","cursor":null,"unknown":1}`)
-	if status != 400 {
-		t.Fatalf("status=%d body=%s", status, body)
+	if status != 400 || calls != 1 {
+		t.Fatalf("unknown field reached operation: status=%d body=%s calls=%d", status, body, calls)
+	}
+	if strings.Contains(logs.String(), "私人文本") {
+		t.Fatal("query leaked into log")
 	}
 }
+
 func TestSearchHTTPDeadlineAndFailurePrivacy(t *testing.T) {
 	var logs bytes.Buffer
-	server2 := serveSearch(failedSearchReader{&store.Error{Phase: "SQL secret", Cause: errors.New("driver secret")}}, &logs)
-	defer server2.Close()
-	status, body := postSearch(t, server2, `{"query":"private query"}`)
+	server := serveSearch(failedSearchOperation(&store.Error{Phase: "SQL secret", Cause: errors.New("driver secret")}), &logs)
+	t.Cleanup(server.Close)
+	status, body := postSearch(t, server, `{"query":"private query"}`)
 	if status != 500 {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
 	for _, secret := range []string{"private query", "SQL secret", "driver secret"} {
-		if strings.Contains(logs.String(), secret) {
-			t.Fatalf("log leaked %q", secret)
+		if strings.Contains(logs.String(), secret) || strings.Contains(body, secret) {
+			t.Fatalf("leaked %q: body=%s logs=%s", secret, body, &logs)
 		}
 	}
 }
 
-type blockingPostgresReader struct {
-	pool     *pgxpool.Pool
-	pid      atomic.Int32
-	started  chan struct{}
-	finished chan struct{}
-}
-
-func (r *blockingPostgresReader) ReadTaskSearch(ctx context.Context, _ func(store.TaskSearchSnapshot) error) error {
-	if r.finished != nil {
-		defer close(r.finished)
-	}
-	return postgres.ReadOnlySnapshot(ctx, r.pool, func(tx pgx.Tx) error {
-		var pid int32
-		if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
-			return err
-		}
-		r.pid.Store(pid)
-		if r.started != nil {
-			close(r.started)
-		}
-		_, err := tx.Exec(ctx, "SELECT pg_sleep(30)")
-		return err
-	})
-}
-
-func TestSearchHTTPCallerCancellationReleasesPostgres(t *testing.T) {
-	t.Parallel()
-	url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if url == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	reader := &blockingPostgresReader{pool: pool, started: make(chan struct{}), finished: make(chan struct{})}
+func TestSearchHTTPCallerCancellationPropagatesToOperation(t *testing.T) {
 	var logs bytes.Buffer
-	server := serveSearch(reader, &logs)
-	defer server.Close()
-	requestContext, cancelRequest := context.WithCancel(ctx)
-	defer cancelRequest()
-	request, err := http.NewRequestWithContext(requestContext, "POST", server.URL+"/api/v1/projects/"+searchTestID+"/tasks/search", strings.NewReader(`{"query":"cache"}`))
+	started, finished, release := make(chan struct{}), make(chan error, 1), make(chan struct{})
+	operation := func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+		if projectID != searchTestID || principal.UserID != searchTestID || input.Query != "cache" {
+			t.Errorf("search args=%s %+v %+v", projectID, principal, input)
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+			finished <- ctx.Err()
+			return tasksearch.Page{}, ctx.Err()
+		case <-release:
+			return tasksearch.Page{}, errors.New("test operation released during cleanup")
+		}
+	}
+	server := serveSearch(operation, &logs)
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/projects/"+searchTestID+"/tasks/search", strings.NewReader(`{"query":"cache"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	done := make(chan error, 1)
+	returned := make(chan error, 1)
 	go func() {
-		response, err := http.DefaultClient.Do(request)
+		response, err := server.Client().Do(request)
 		if response != nil {
 			response.Body.Close()
 		}
-		done <- err
+		returned <- err
 	}()
 	select {
-	case <-reader.started:
-	case <-ctx.Done():
-		t.Fatal("database query did not start")
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("search operation did not start")
 	}
-	for {
-		var running bool
-		if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND state='active' AND query LIKE '%pg_sleep(30)%')", reader.pid.Load()).Scan(&running); err != nil {
-			t.Fatal(err)
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("operation cancellation=%v", err)
 		}
-		if running {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("database sleep did not start")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	cancelRequest()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected caller cancellation: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("operation did not observe caller cancellation")
 	}
 	select {
-	case <-reader.finished:
-	case <-ctx.Done():
-		t.Fatal("database cleanup did not finish")
-	}
-	var active int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE pid=$1 AND state='active'", reader.pid.Load()).Scan(&active); err != nil {
-		t.Fatal(err)
-	}
-	if active != 0 {
-		t.Fatal("canceled database query remains active")
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("caller cancellation=%v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP client did not finish")
 	}
 }
 
-func TestSearchHTTPPostgresDeadlineCancelsQuery(t *testing.T) {
-	t.Parallel()
-	url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if url == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	observer, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer observer.Release()
-	ready, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ready.Release()
-	reader := &blockingPostgresReader{pool: pool, started: make(chan struct{})}
+func TestSearchHTTPOperationDeadlineCancelsOperation(t *testing.T) {
 	var logs bytes.Buffer
-	server := serveSearchWithTimeout(reader, &logs, 500*time.Millisecond)
-	defer server.Close()
-	type responseResult struct {
-		status int
-		body   string
-		cache  string
-		err    error
-	}
-	done := make(chan responseResult, 1)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/projects/"+searchTestID+"/tasks/search", strings.NewReader(`{"query":"private query"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	go func() {
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			done <- responseResult{err: err}
-			return
+	expired := make(chan error, 1)
+	started := make(chan time.Duration, 1)
+	release := make(chan struct{})
+	operation := func(ctx context.Context, _ model.Principal, _ string, _ tasksearch.Request) (tasksearch.Page, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Error("operation lacks its deadline")
 		}
-		defer response.Body.Close()
-		body, err := io.ReadAll(response.Body)
-		done <- responseResult{status: response.StatusCode, body: string(body), cache: response.Header.Get("Cache-Control"), err: err}
-	}()
-	select {
-	case <-reader.started:
-	case <-ctx.Done():
-		t.Fatal("database query did not start")
-	case result := <-done:
-		t.Fatalf("request finished before database query started: %+v", result)
-	}
-	for {
-		var running bool
-		if err := observer.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND state='active' AND query='SELECT pg_sleep(30)')", reader.pid.Load()).Scan(&running); err != nil {
-			t.Fatal(err)
-		}
-		if running {
-			break
-		}
+		started <- time.Until(deadline)
 		select {
 		case <-ctx.Done():
-			t.Fatal("database sleep was not observed")
-		case result := <-done:
-			t.Fatalf("request finished before database sleep was observed: %+v", result)
-		case <-time.After(10 * time.Millisecond):
+			expired <- ctx.Err()
+			return tasksearch.Page{}, ctx.Err()
+		case <-release:
+			return tasksearch.Page{}, errors.New("test operation released during cleanup")
 		}
 	}
-	var result responseResult
+	server := serveSearchWithTimeout(operation, &logs, 40*time.Millisecond)
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+	status, body := postSearch(t, server, `{"query":"cache"}`)
 	select {
-	case result = <-done:
-	case <-ctx.Done():
-		t.Fatal("search deadline did not finish the request")
+	case remaining := <-started:
+		if remaining <= 0 || remaining > 40*time.Millisecond {
+			t.Fatalf("deadline remaining=%s", remaining)
+		}
+	default:
+		t.Fatal("operation never started")
 	}
-	if result.err != nil || result.cache != "no-store" {
-		t.Fatalf("response: %+v", result)
+	select {
+	case err := <-expired:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("deadline=%v", err)
+		}
+	default:
+		t.Fatal("operation did not expire")
 	}
-	status, body := result.status, result.body
-	if status != 504 || !strings.Contains(body, `"search_timeout"`) {
-		t.Fatalf("status=%d body=%s logs=%s", status, body, logs.String())
-	}
-	pid := reader.pid.Load()
-	if pid == 0 {
-		t.Fatal("database query did not start")
-	}
-	var active int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE pid=$1 AND state='active'", pid).Scan(&active); err != nil {
-		t.Fatal(err)
-	}
-	if active != 0 {
-		t.Fatal("canceled database query remains active")
-	}
-	if strings.Contains(logs.String(), "private query") || strings.Contains(logs.String(), "pg_sleep") {
-		t.Fatal("query or SQL leaked into logs")
+	if status != 504 || !strings.Contains(body, `"code":"search_timeout"`) || !strings.Contains(logs.String(), `"cause":"search_timeout"`) {
+		t.Fatalf("status=%d body=%s logs=%s", status, body, &logs)
 	}
 }
 
 func TestSearchHTTPTransactionFailureIsNotTimeout(t *testing.T) {
 	var logs bytes.Buffer
-	server := serveSearch(failedSearchReader{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}}, &logs)
-	defer server.Close()
+	server := serveSearch(failedSearchOperation(&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}), &logs)
+	t.Cleanup(server.Close)
 	status, body := postSearch(t, server, `{"query":"cache"}`)
 	if status != 500 || !strings.Contains(body, `"internal_error"`) || !strings.Contains(logs.String(), `"cause":"database"`) {
-		t.Fatalf("status=%d body=%s logs=%s", status, body, logs.String())
+		t.Fatalf("status=%d body=%s logs=%s", status, body, &logs)
 	}
-}
-
-type failedCompletionReader struct {
-	cleanup bool
-	expired chan error
-}
-
-func (r failedCompletionReader) ReadTaskSearch(ctx context.Context, _ func(store.TaskSearchSnapshot) error) error {
-	<-ctx.Done()
-	r.expired <- ctx.Err()
-	if r.cleanup {
-		return &store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: errors.Join(ctx.Err(), errors.New("cleanup failed"))}
-	}
-	return &store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: errors.Join(ctx.Err(), errors.New("commit failed"))}
 }
 
 func TestSearchHTTPDeadlineDoesNotHideCompletionFailures(t *testing.T) {
@@ -333,19 +268,33 @@ func TestSearchHTTPDeadlineDoesNotHideCompletionFailures(t *testing.T) {
 			t.Parallel()
 			var logs bytes.Buffer
 			expired := make(chan error, 1)
-			server := serveSearchWithTimeout(failedCompletionReader{cleanup: test.cleanup, expired: expired}, &logs, 500*time.Millisecond)
-			defer server.Close()
+			release := make(chan struct{})
+			operation := func(ctx context.Context, _ model.Principal, _ string, _ tasksearch.Request) (tasksearch.Page, error) {
+				select {
+				case <-ctx.Done():
+				case <-release:
+					return tasksearch.Page{}, errors.New("test operation released during cleanup")
+				}
+				expired <- ctx.Err()
+				if test.cleanup {
+					return tasksearch.Page{}, &store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: errors.Join(ctx.Err(), errors.New("cleanup failed"))}
+				}
+				return tasksearch.Page{}, &store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: errors.Join(ctx.Err(), errors.New("commit failed"))}
+			}
+			server := serveSearchWithTimeout(operation, &logs, 40*time.Millisecond)
+			t.Cleanup(server.Close)
+			t.Cleanup(func() { close(release) })
 			status, body := postSearch(t, server, `{"query":"cache"}`)
 			select {
 			case err := <-expired:
 				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("operation did not reach its deadline: %v", err)
+					t.Fatalf("operation deadline=%v", err)
 				}
 			default:
-				t.Fatal("reader did not observe the operation deadline")
+				t.Fatal("operation did not observe its deadline")
 			}
 			if status != 500 || !strings.Contains(body, `"internal_error"`) || !strings.Contains(logs.String(), `"cause":"database"`) {
-				t.Fatalf("status=%d body=%s logs=%s", status, body, logs.String())
+				t.Fatalf("status=%d body=%s logs=%s", status, body, &logs)
 			}
 		})
 	}

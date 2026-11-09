@@ -14,11 +14,11 @@ files as a group would have lost independent assertions.
 
 ## Decision
 
-Domain packages own shared HTTP scenarios, including registration, strict input
-and authentication refusals, response-loss reconciliation, WebSocket transitions
-and archive readback. A scenario body has one owner. Root composition and domain
-protocol tests remain separate when they exercise different state preparation,
-observations or dependencies.
+Domain packages own shared HTTP scenario bodies, including registration, strict
+input and authentication refusals, response-loss reconciliation, WebSocket
+transitions and archive readback. A scenario body has one owner. Root composition
+and domain protocol tests remain separate when they exercise different state
+preparation, observations or dependencies.
 
 The initial consolidation retained full-application fixtures with real database
 and UniAuth boundaries. A focused browser ping fixture assembled the Session
@@ -27,12 +27,23 @@ interval. Mutable state and cleanup remained local to each test. The
 [Session test completion decision](2026-11-07-session-protocol-test-completion.md)
 records the protocol and cleanup corrections made with that split.
 
+Task HTTP tests use the direct service/use-case boundary in the
+[Go test dependency decision](2026-11-08-go-test-dependency-boundaries.md), which
+partially supersedes full-application fixture retention for that suite. They
+retain real HTTP adaptation and credential middleware with controlled lower
+results. Representative normal Task API flows use the explicit production
+process integration runner; rule, response-loss and SQL observations retain
+their actual protocol, service/core or Store owners.
+
 The [Session HTTP isolation decision](2026-11-09-server-session-test-dao-mocks.md)
 replaces the Session package's full-application fixture dependency. Its regular
-suite assembles real routes, authentication, Session service and engine using
-configured Identity and Session DAO facts. Actual HTTP, WebSocket, TCP and file
-observations remain in the adapter owner; Store and service tests retain their
-physical and orchestration proofs.
+transport suite composes actual routes, authentication, Session service and
+engine using configured Identity and Session DAO facts. Actual HTTP, WebSocket,
+TCP and file observations remain in that transport owner; Store and service
+tests retain their physical and orchestration proofs. This composition and the
+Task HTTP direct-service mocks describe different current collaborator
+boundaries; the common test-writing policy remains the owner of unit-test
+responsibilities.
 
 The root package retains scenarios needing private composition access, including
 runtime relay shutdown before dependency release and automation-recovery
@@ -61,9 +72,13 @@ fixtures retain their own composition owner.
 ## Consequences
 
 Initial consolidation reduced shared full-application scenarios to one database
-and authentication setup per case. Complete Session adapter isolation later
-removed those dependencies from that regular domain suite while retaining its
-real transport mechanisms and preserving physical observations in their owners.
+and authentication setup per case, preserving their failure, ordering,
+cancellation, isolation and cleanup observations. Task HTTP isolation changes
+its collaborator boundary to direct lower operations. Session transport
+isolation removes database and gateway setup while keeping its service/engine
+composition and real transport. Bot fixtures retain their own existing
+full-application arrangement. A historical reduction of duplicate scenario
+bodies does not require full-application preparation for every HTTP assertion.
 
 Root and domain packages still contain independent scenarios and can run
 concurrently. Compilation, remaining fixtures and other packages still cost

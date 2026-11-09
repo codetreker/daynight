@@ -354,15 +354,20 @@ SQLite SQL directories with the compiled dist tree; the
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
-`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. The complete
-Session core and Webhook service suites run independently with DAO mocks;
-their focused commands belong to the
-[server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks).
-The regular [Session HTTP suite](packages/daynight-server/README.md#session-http-tests)
-also runs independently with controlled identity and DAO facts, retaining actual
-HTTP, WebSocket and TCP transport. See the
-[development guide](docs/development.md) for prerequisites, native diagnostics,
-module validation commands. `pnpm e2e:test` separately builds and runs the complete
+`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. Task HTTP, complete
+Session core and Webhook service unit suites run independently without
+PostgreSQL; the
+[server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks)
+owns their focused commands and dependency boundaries. The regular
+[Session HTTP transport suite](packages/daynight-server/README.md#session-http-tests)
+also runs without a database or gateway, composing actual routes, authentication,
+Session service and engine with controlled identity and DAO facts. Normal Go API
+flows use the separate
+[API integration runner](packages/daynight-server/README.md#go-api-integration),
+which builds the production Server and uses a Go HTTP client with real
+authentication and an isolated database. See the
+[development guide](docs/development.md) for prerequisites, native diagnostics
+and module validation commands. `pnpm e2e:test` separately builds and runs the complete
 product with isolated PostgreSQL and full UniAuth; the [Product E2E guide](packages/e2e_tests/README.md)
 owns its Linux prerequisites, authentication topology and cleanup.
 
@@ -390,7 +395,10 @@ module ownership. The independent product E2E job follows the framework and its
 actual production build inputs. Mixed changes select the union of their jobs.
 The [selector](.github/scripts/ci-modules.mts) owns exact path rules; the
 [development guide](docs/development.md#ci-selection) owns execution details.
-Main pushes select every module and product E2E.
+Main pushes select every module and product E2E. Each selected job runs its ordinary event checkout and
+its checked-in tests. Validation does not compose remote test PRs or require
+pairing receipts; the [checkout-source decision](.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
+preserves the source boundary and normal gates.
 
 | Changed paths | PR application jobs |
 |---|---|

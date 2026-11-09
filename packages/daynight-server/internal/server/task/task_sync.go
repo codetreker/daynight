@@ -10,8 +10,6 @@ import (
 
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
@@ -24,7 +22,7 @@ import (
 
 var taskSyncTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$`)
 
-func TaskSyncRoutes(mux *http.ServeMux, sync *service.TaskSync, auth *authhttp.Authentication, logger *slog.Logger, window time.Duration) {
+func TaskSyncRoutes(mux *http.ServeMux, sync SyncOperation, auth RouteAuthentication, logger *slog.Logger, window time.Duration) {
 	handler := &taskHandler{sync: sync, logger: logger, window: window}
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-sync", auth.Require(handler.taskSync))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-sync", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
@@ -99,7 +97,7 @@ func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, pri
 		return
 	}
 	logger = logger.With("since", input.Since, "window", h.window)
-	result, err := h.sync.Get(request.Context(), principal, projectID, input)
+	result, err := h.sync(request.Context(), principal, projectID, input)
 	if err != nil {
 		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
 			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)

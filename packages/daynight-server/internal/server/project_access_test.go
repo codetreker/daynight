@@ -34,7 +34,7 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	h.Auth.RegisterRoutes(mux)
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, sessioncore.NewEngine(nil), 10*time.Second), h.Auth, logger, 10*time.Second)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, sessioncore.NewEngine(nil), 10*time.Second).Get, h.Auth, logger, 10*time.Second)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	path := "/api/v1/projects/" + strings.ToUpper(h.project.ID) + "/access"
 	for _, test := range []struct {
@@ -125,7 +125,7 @@ func TestOwnershipProjectionExactVersionsAcrossCurrentReaders(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
 	taskhttp.TaskRoutes(mux, taskservice.NewTasks(h.Database), h.Auth, logger)
-	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, sessioncore.NewEngine(nil), time.Second), h.Auth, logger, time.Second)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, sessioncore.NewEngine(nil), time.Second).Get, h.Auth, logger, time.Second)
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
