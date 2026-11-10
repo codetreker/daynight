@@ -38,12 +38,13 @@ type Input struct {
 type Service struct {
 	attachments   Opener
 	lifecycle     *mcptransfer.Lifecycle
+	authorize     func(*mcptransfer.Lifecycle, context.Context, mcptransfer.Actor, string, string) error
 	files         filestorage.TransferStorage
 	renewInterval time.Duration
 }
 
 func New(attachments Opener, lifecycle *mcptransfer.Lifecycle, files filestorage.TransferStorage) *Service {
-	return &Service{attachments: attachments, lifecycle: lifecycle, files: files, renewInterval: 20 * time.Second}
+	return &Service{attachments: attachments, lifecycle: lifecycle, authorize: (*mcptransfer.Lifecycle).Authorize, files: files, renewInterval: 20 * time.Second}
 }
 
 type snapshot struct {
@@ -141,7 +142,7 @@ func (s *Service) inspect(ctx context.Context, a mcptransfer.Actor, in Input) (m
 	if err = obj.Body.Close(); err != nil {
 		return nil, err
 	}
-	if err = s.lifecycle.Authorize(ctx, a, in.ProjectID, in.TaskID); err != nil {
+	if err = s.authorize(s.lifecycle, ctx, a, in.ProjectID, in.TaskID); err != nil {
 		return nil, err
 	}
 	return map[string]any{"attachment": wireAttachment(metadata), "sizeBytes": strconv.FormatInt(obj.Info.Size, 10), "contentRef": reference(in), "contentIncluded": false}, nil
@@ -152,7 +153,7 @@ func (s *Service) inline(ctx context.Context, a mcptransfer.Actor, in Input) (ma
 		return nil, err
 	}
 	defer obj.Body.Close()
-	if err = s.lifecycle.Authorize(ctx, a, in.ProjectID, in.TaskID); err != nil {
+	if err = s.authorize(s.lifecycle, ctx, a, in.ProjectID, in.TaskID); err != nil {
 		return nil, err
 	}
 	if obj.Info.Size < 0 || obj.Info.Size > int64(in.MaxBytes) {
@@ -165,7 +166,7 @@ func (s *Service) inline(ctx context.Context, a mcptransfer.Actor, in Input) (ma
 	if int64(len(b)) != obj.Info.Size {
 		return nil, errors.New("attachment size changed during inline read")
 	}
-	if err = s.lifecycle.Authorize(ctx, a, in.ProjectID, in.TaskID); err != nil {
+	if err = s.authorize(s.lifecycle, ctx, a, in.ProjectID, in.TaskID); err != nil {
 		return nil, err
 	}
 	data := map[string]any{"attachment": wireAttachment(metadata), "sizeBytes": strconv.Itoa(len(b))}
@@ -319,7 +320,7 @@ func (s *Service) source(ctx context.Context, a mcptransfer.Actor, in Input) (mo
 		}
 		return model.Attachment{}, filestorage.Object{}, openErr
 	}
-	if err := s.lifecycle.Authorize(ctx, a, in.ProjectID, in.TaskID); err != nil {
+	if err := s.authorize(s.lifecycle, ctx, a, in.ProjectID, in.TaskID); err != nil {
 		if obj.Body != nil {
 			_ = obj.Body.Close()
 		}

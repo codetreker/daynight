@@ -110,23 +110,39 @@ func TestReadRejectsInvalidInputs(t *testing.T) {
 	}
 }
 func TestInspectAndInlineStorageFailures(t *testing.T) {
-	f := newFixture(t)
 	for _, action := range []string{"inspect", "inline"} {
-		in := f.input
-		in.Action = action
-		if result, err := f.service.Read(t.Context(), f.actor, in); err == nil || result != nil {
-			t.Fatalf("missing source %s: %#v %v", action, result, err)
-		}
+		t.Run("missing "+action, func(t *testing.T) {
+			f := newSourceFixture(t, nil)
+			f.openErr = &model.Fault{Code: "not_found", Message: "Attachment not found", Cause: model.ErrNotFound}
+			f.expect([]string{"open", "authorize"}, nil)
+			in := f.input
+			in.Action = action
+			result, err := f.service.Read(f.ctx, f.actor, in)
+			if result != nil || !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("missing source %s: %#v %v", action, result, err)
+			}
+		})
 	}
-	f.put(t, []byte("content"))
-	real := f.service.attachments
-	for _, tc := range []struct{ action, mode string }{{"inspect", "close"}, {"inline", "read"}, {"inline", "short"}} {
-		f.service.attachments = alteredOpener{Opener: real, mode: tc.mode}
-		in := f.input
-		in.Action = tc.action
-		if result, err := f.service.Read(t.Context(), f.actor, in); err == nil || result != nil {
-			t.Fatalf("%s %s returned content: %#v %v", tc.action, tc.mode, result, err)
-		}
+	for _, tc := range []struct {
+		action, mode string
+		steps        []string
+		authCount    int
+	}{
+		{"inspect", "close", []string{"open", "authorize", "close"}, 1},
+		{"inline", "read", []string{"open", "authorize", "authorize", "close"}, 2},
+		{"inline", "short", []string{"open", "authorize", "authorize", "read", "close"}, 2},
+	} {
+		t.Run(tc.action+" "+tc.mode, func(t *testing.T) {
+			f := newSourceFixture(t, []byte("content"))
+			f.service.attachments = alteredOpener{Opener: f, mode: tc.mode}
+			f.expect(tc.steps, make([]error, tc.authCount)...)
+			in := f.input
+			in.Action = tc.action
+			result, err := f.service.Read(f.ctx, f.actor, in)
+			if err == nil || result != nil || (tc.mode != "short" && !errors.Is(err, storageFailure)) {
+				t.Fatalf("%s %s returned content: %#v %v", tc.action, tc.mode, result, err)
+			}
+		})
 	}
 }
 func TestChunkStorageFailuresAreNotReturnedAsContent(t *testing.T) {

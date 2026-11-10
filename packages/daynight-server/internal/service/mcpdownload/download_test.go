@@ -143,26 +143,48 @@ func TestSnapshotRetainsBytesAndReportsRanges(t *testing.T) {
 	}
 }
 func TestInlineLimitsAndInvalidUTF8(t *testing.T) {
-	f := newFixture(t)
-	f.put(t, []byte{'a', 0xff})
-	in := f.input
-	in.Action = "inline"
-	r := f.read(t, in)
-	if r["contentIncluded"] != false || r["requiresExplicitBinaryRead"] != true || r["text"] != nil {
-		t.Fatalf("binary auto: %#v", r)
+	cases := []struct {
+		name, format string
+		maxBytes     int
+		steps        []string
+	}{
+		{"binary auto", "", 0, []string{"open", "authorize", "authorize", "read", "authorize", "close"}},
+		{"explicit invalid text", "text", 0, []string{"open", "authorize", "authorize", "read", "authorize", "close"}},
+		{"explicit binary", "base64", 0, []string{"open", "authorize", "authorize", "read", "authorize", "close"}},
+		{"inline limit", "base64", 1, []string{"open", "authorize", "authorize", "close"}},
 	}
-	in.Format = "text"
-	if _, err := f.service.Read(t.Context(), f.actor, in); err == nil {
-		t.Fatal("invalid text accepted")
-	}
-	in.Format = "base64"
-	r = f.read(t, in)
-	if r["contentBase64"] != "Yf8=" {
-		t.Fatalf("binary: %#v", r)
-	}
-	in.MaxBytes = 1
-	if _, err := f.service.Read(t.Context(), f.actor, in); err == nil {
-		t.Fatal("oversized inline accepted")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSourceFixture(t, []byte{'a', 0xff})
+			errs := []error{nil, nil, nil}
+			if tc.maxBytes == 1 {
+				errs = errs[:2]
+			}
+			f.expect(tc.steps, errs...)
+			in := f.input
+			in.Action, in.Format, in.MaxBytes = "inline", tc.format, tc.maxBytes
+			r, err := f.service.Read(f.ctx, f.actor, in)
+			switch tc.name {
+			case "binary auto":
+				if err != nil || r["contentIncluded"] != false || r["requiresExplicitBinaryRead"] != true || r["text"] != nil {
+					t.Fatalf("binary auto: %#v %v", r, err)
+				}
+			case "explicit invalid text":
+				var fault *model.Fault
+				if r != nil || !errors.As(err, &fault) || fault.Code != "invalid_encoding" {
+					t.Fatalf("invalid text accepted: %#v %v", r, err)
+				}
+			case "explicit binary":
+				if err != nil || r["contentBase64"] != "Yf8=" {
+					t.Fatalf("binary: %#v %v", r, err)
+				}
+			case "inline limit":
+				var fault *model.Fault
+				if r != nil || !errors.As(err, &fault) || fault.Code != "content_too_large" {
+					t.Fatalf("oversized inline accepted: %#v %v", r, err)
+				}
+			}
+		})
 	}
 }
 func TestTextPrefix(t *testing.T) {
