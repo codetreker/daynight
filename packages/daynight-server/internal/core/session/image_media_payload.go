@@ -484,8 +484,10 @@ func (s *Execution) hydrateMediaOffers(ctx context.Context, f sp.ControllerFence
 	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
 		return s.controller(ctx, f, func(tx *operationTx, r *record, _ task) error { return work(tx, r) })
 	}
+	out := make([]map[string]any, 0, len(messages))
 	for _, msg := range messages {
 		if msg["type"] != "image_request" || msg["action"] != "write" {
+			out = append(out, msg)
 			continue
 		}
 		body, ok := msg["body"].(json.RawMessage)
@@ -497,11 +499,17 @@ func (s *Execution) hydrateMediaOffers(ctx context.Context, f sp.ControllerFence
 			return nil, e
 		}
 		if !has {
+			out = append(out, msg)
 			continue
 		}
 		row := store.SessionMediaRequest{SessionID: f.SessionID, RequestID: msg["requestId"].(string), Action: "write", Fence: f, Body: body}
 		wire, check, finish, e := s.mediaFileIO(ctx, access, row, body, nil)
 		if e != nil {
+			// Pending requests retain their durable identity for a later Poll.
+			// Capacity pressure must not terminate unrelated text traffic.
+			if onlyMediaCapacityError(e) {
+				continue
+			}
 			return nil, e
 		}
 		e = access(ctx, check)
@@ -510,6 +518,29 @@ func (s *Execution) hydrateMediaOffers(ctx context.Context, f sp.ControllerFence
 			return nil, e
 		}
 		msg["body"] = json.RawMessage(wire)
+		out = append(out, msg)
 	}
-	return messages, nil
+	return out, nil
+}
+
+func onlyMediaCapacityError(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !onlyMediaCapacityError(cause) {
+				return false
+			}
+		}
+		return true
+	}
+	if f, ok := err.(*model.Fault); ok {
+		return f.Code == "rate_limited" && f.Cause == nil
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return onlyMediaCapacityError(cause)
+	}
+	return false
 }

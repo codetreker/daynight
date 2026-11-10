@@ -230,7 +230,7 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 	})
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
 		m := d.(store.SessionMediaDAO)
-		pending, e := m.PendingSessionMediaRequests(t.Context(), id)
+		pending, e := m.PendingSessionMediaRequests(t.Context(), fence.Fence)
 		if e != nil {
 			return e
 		}
@@ -251,7 +251,7 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 		if json.Unmarshal(loaded.Result, &result) != nil || !loaded.Complete || result["bytes"] != "original" {
 			t.Fatal("remote completion lost", string(loaded.Result))
 		}
-		pending, e := m.PendingSessionMediaRequests(t.Context(), id)
+		pending, e := m.PendingSessionMediaRequests(t.Context(), fence.Fence)
 		if e == nil && len(pending) != 0 {
 			t.Fatal("completed request still offered")
 		}

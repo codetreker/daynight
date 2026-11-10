@@ -109,10 +109,14 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const old = transactions.read(() => db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(spec.uploadId) as { value: string } | undefined);
     if (old) { const p = JSON.parse(old.value) as Preparation; if (canonicalImageJson(p.spec) !== canonicalImageJson(spec)) throw new Error("Image preparation upload_conflict."); return p.receipt; }
     checkBudgets(Number(spec.byteLength));
-    const filename = `${randomUUID()}.part`, fd = openSync(path.join(root, filename), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    try { fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
+    const filename = `${randomUUID()}.part`;
     const receipt: LocalImagePreparation = { uploadId: spec.uploadId, imageId: spec.imageId, target: spec.target, state: "receiving", acceptedOffset: "0", validated: null, error: null };
-    put({ spec, filename, receipt, decoding: false }); return receipt;
+    // Record the exact private path before creating bytes. A failed create or
+    // flush remains reclaimable even when the prepare response is an error.
+    put({ spec, filename, receipt, decoding: false });
+    const fd = openSync(path.join(root, filename), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+    try { fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
+    return receipt;
   };
   const write = async (input: { uploadId: string; offset: string; sha256: string; data: string }): Promise<LocalImagePreparation> => {
     checkOpen(); const p = get(input.uploadId); assertTarget(p.spec);
@@ -155,12 +159,27 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     })();
     inFlight.set(input.uploadId, { controller, promise }); return promise;
   };
-  const release = async ({ uploadId }: { uploadId: string }): Promise<LocalImagePreparation> => {
+  const release = async ({ uploadId, spec: original }: { uploadId: string; spec?: ImageUploadSpec }): Promise<LocalImagePreparation> => {
     checkOpen(); imageId(uploadId);
-    const running = inFlight.get(uploadId); if (running) { running.controller.abort(new Error("Image preparation was released.")); await running.promise; }
-    const p = get(uploadId);
+    const spec = original === undefined ? undefined : parseImageUploadSpec(original);
+    if (spec && spec.uploadId !== uploadId) throw new Error("Image preparation upload_conflict.");
+    const row = transactions.read(() => db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(uploadId) as { value: string } | undefined);
+    let p: Preparation;
+    if (row) {
+      p = JSON.parse(row.value) as Preparation;
+      if (spec && canonicalImageJson(spec) !== canonicalImageJson(p.spec)) throw new Error("Image preparation upload_conflict.");
+    } else {
+      if (!spec) throw new Error("Image preparation is unavailable.");
+      assertTarget(spec);
+      p = { spec, filename: `${randomUUID()}.part`, decoding: false, receipt: { uploadId, imageId: spec.imageId, target: spec.target, state: "released", acceptedOffset: "0", validated: null, error: null } };
+    }
+    const running = inFlight.get(uploadId);
+    if (running) { running.controller.abort(new Error("Image preparation was released.")); await running.promise; p = get(uploadId); }
     const used = transactions.read(() => db.prepare("SELECT i.canonical FROM input_intents i JOIN operations o ON i.operation_id=o.id WHERE json_extract(o.value,'$.state') NOT IN ('rejected','expired','failed')").all() as { canonical: string }[]).some(row => { const command = JSON.parse(row.canonical) as { payload?: { content?: { uploadId?: string }[] } }; return command.payload?.content?.some(part => part.uploadId === uploadId); });
     if (used || (reads.get(uploadId) ?? 0) > 0) throw new Error("Image preparation upload_in_use.");
+    // A missing preparation still needs a durable tombstone so a delayed
+    // replay of the original prepare cannot create new staging after release.
+    if (!row) { put(p); return p.receipt; }
     if (p.receipt.state === "released") return p.receipt;
     if (existsSync(path.join(root, p.filename))) unlinkSync(path.join(root, p.filename)); syncDirectory(root);
     p.receipt = { ...p.receipt, state: "released", validated: null, error: null }; put(p); return p.receipt;

@@ -75,7 +75,7 @@ func (h *Routes) beginUnifiedArchive(w http.ResponseWriter, r *http.Request, p m
 	}
 	return unified, nil
 }
-func readUnifiedArchiveBody(w http.ResponseWriter, r *http.Request, kind string, limit int64) (body []byte, result error) {
+func readUnifiedArchiveBody(w http.ResponseWriter, r *http.Request, kind string, limit int64, allowEmpty bool) (body []byte, result error) {
 	media, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || len(r.Header.Values("Content-Type")) != 1 || len(r.Header.Values("Content-Encoding")) != 0 || media != kind || len(parameters) > 1 || len(parameters) == 1 && parameters["charset"] == "" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") {
 		httpx.CloseUnreadBody(w, r)
@@ -92,7 +92,7 @@ func readUnifiedArchiveBody(w http.ResponseWriter, r *http.Request, kind string,
 		}
 		return nil, err
 	}
-	if len(body) == 0 {
+	if len(body) == 0 && !allowEmpty {
 		return nil, httpx.InvalidInput("Archive body is empty.")
 	}
 	return body, nil
@@ -116,7 +116,7 @@ func (h *Routes) prepareArchive(w http.ResponseWriter, r *http.Request, p model.
 		h.Failure(w, r, err)
 		return
 	}
-	body, err := readUnifiedArchiveBody(w, r, "application/json", 32768)
+	body, err := readUnifiedArchiveBody(w, r, "application/json", 32768, false)
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
@@ -165,7 +165,7 @@ func (h *Routes) putArchiveManifest(w http.ResponseWriter, r *http.Request, p mo
 		h.Failure(w, r, err)
 		return
 	}
-	body, err := readUnifiedArchiveBody(w, r, "application/json", sp.MaxArchiveManifestBytes)
+	body, err := readUnifiedArchiveBody(w, r, "application/json", sp.MaxArchiveManifestBytes, false)
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
@@ -191,7 +191,8 @@ func (h *Routes) putArchiveBundleFile(w http.ResponseWriter, r *http.Request, p 
 	}
 	offset, e1 := strconv.ParseInt(values.Get("offset"), 10, 64)
 	length, e2 := strconv.ParseInt(r.Header.Get("Daynight-File-Byte-Length"), 10, 64)
-	if e1 != nil || e2 != nil || offset < 0 || length < 1 || len(r.Header.Values("Daynight-File-Byte-Length")) != 1 || len(r.Header.Values("Daynight-File-SHA256")) != 1 || len(r.Header.Values("Daynight-Chunk-SHA256")) != 1 || strconv.FormatInt(offset, 10) != values.Get("offset") || strconv.FormatInt(length, 10) != r.Header.Get("Daynight-File-Byte-Length") {
+	legacyResource := values.Get("purpose") == "resource" && values.Get("migrationOnly") == "true" && purpose == "timeline"
+	if e1 != nil || e2 != nil || offset < 0 || length < 0 || length == 0 && !legacyResource || len(r.Header.Values("Daynight-File-Byte-Length")) != 1 || len(r.Header.Values("Daynight-File-SHA256")) != 1 || len(r.Header.Values("Daynight-Chunk-SHA256")) != 1 || strconv.FormatInt(offset, 10) != values.Get("offset") || strconv.FormatInt(length, 10) != r.Header.Get("Daynight-File-Byte-Length") {
 		h.Failure(w, r, httpx.InvalidInput("Invalid archive offset or length."))
 		return
 	}
@@ -201,13 +202,13 @@ func (h *Routes) putArchiveBundleFile(w http.ResponseWriter, r *http.Request, p 
 		h.Failure(w, r, err)
 		return
 	}
-	data, err := readUnifiedArchiveBody(w, r, "application/octet-stream", 1048576)
+	data, err := readUnifiedArchiveBody(w, r, "application/octet-stream", 1048576, legacyResource && length == 0)
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
 	}
 	var out sp.ArchiveFileReceipt
-	if values.Get("purpose") == "resource" && values.Get("migrationOnly") == "true" && purpose == "timeline" {
+	if legacyResource {
 		resource, parseErr := sp.DecodeResource([]byte(r.Header.Get("Daynight-Resource-Descriptor")))
 		if parseErr != nil {
 			h.Failure(w, r, archiveCleanupError(httpx.InvalidInput("Invalid legacy resource descriptor."), op.Close()))
@@ -279,7 +280,7 @@ func (h *Routes) archiveSourceTail(w http.ResponseWriter, r *http.Request, p mod
 		h.Failure(w, r, err)
 		return
 	}
-	body, err := readUnifiedArchiveBody(w, r, "application/json", sp.MaxArchiveSourceTailBytes)
+	body, err := readUnifiedArchiveBody(w, r, "application/json", sp.MaxArchiveSourceTailBytes, false)
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return

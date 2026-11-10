@@ -103,7 +103,7 @@ func (h *Routes) historyLedger(w http.ResponseWriter, r *http.Request) {
 		out, err = op.HistoryLedgerStatus(r.Context(), writer, r.PathValue("fileId"))
 	} else {
 		var data []byte
-		data, err = readUnifiedArchiveBody(w, r, "application/octet-stream", 1048576)
+		data, err = readUnifiedArchiveBody(w, r, "application/octet-stream", 1048576, false)
 		if err == nil {
 			out, err = op.PutHistoryLedger(r.Context(), writer, r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data)
 		}

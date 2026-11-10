@@ -203,7 +203,7 @@ func (s *Execution) mediaOffers(ctx context.Context, tx *operationTx, r *record)
 	if e != nil {
 		return nil, e
 	}
-	rows, e := d.PendingSessionMediaRequests(ctx, r.Snapshot.SessionID)
+	rows, e := d.PendingSessionMediaRequests(ctx, r.Snapshot.Fence)
 	if e != nil {
 		return nil, e
 	}

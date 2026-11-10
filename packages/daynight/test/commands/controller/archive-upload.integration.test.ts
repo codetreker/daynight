@@ -176,6 +176,29 @@ test("archive migrates an original resource into the common blob model and rejec
  const manifest=JSON.parse(bodies[0]!);expect(manifest.resources[0].resource).toEqual(resource);expect(manifest.resources[0].blobId).toBeTypeOf("string");expect(manifest.resources[0]).not.toHaveProperty("data");expect(receiver.files.get(manifest.resources[0].blobId)?.equals(bytes)).toBe(true);
  expect(openPendingContent(f.journalPath,f.ticket.sessionId).resources.get(resource.resourceId)?.data).toBeNull();
 });
+test("stopped archival retains and retries an available zero-byte legacy resource", async () => {
+  const f = await fixture(), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const bytes = Buffer.alloc(0), resource = { resourceId: randomUUID(), name: "empty.txt", status: "available" as const, mediaType: "text/plain", byteLength: "0", sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+  store.saveResource(resource, bytes);
+  store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: resource.resourceId, label: "empty original" }] });
+  const sourceThrough = store.getLastSourceSequence(); store.close();
+  const bodies: string[] = [], offsets: string[] = [];
+  const receiver = archiveTestReceiver({ bodies, sourceThrough });
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (init?.method === "PUT" && url.searchParams.get("purpose") === "resource") offsets.push(url.searchParams.get("offset")!);
+    return receiver.request(input, init);
+  };
+  const options = { ...f, serverToken: "test", request };
+  const receipt = await uploadStoppedControllerArchive(options);
+  const manifest = JSON.parse(bodies[0]!);
+  expect(manifest.resources).toEqual([{ resource, blobId: expect.any(String) }]);
+  expect(receiver.files.get(manifest.resources[0].blobId)).toEqual(bytes);
+  expect(receiver.entries(bodies[0]!)[0].content).toEqual([{ type: "resource", resourceId: resource.resourceId, label: "empty original" }]);
+  expect(offsets).toEqual(["0"]);
+  expect(await uploadStoppedControllerArchive(options)).toEqual(receipt);
+  expect(bodies).toHaveLength(1);
+});
 test("an available resource cannot be published without retained original bytes",async()=>{
  const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  try { expect(()=>store.saveResource({resourceId:randomUUID(),name:"missing.txt",status:"available",mediaType:"text/plain",byteLength:"1",sha256:"0".repeat(64),error:null})).toThrow("incomplete"); }finally{store.close()}

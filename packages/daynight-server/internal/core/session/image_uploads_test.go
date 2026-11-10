@@ -284,10 +284,10 @@ func (d *imageRuleDAO) SessionUploadMediaRequests(_ context.Context, s, id, reso
 	}
 	return out, nil
 }
-func (d *imageRuleDAO) PendingSessionMediaRequests(context.Context, string) ([]store.SessionMediaRequest, error) {
+func (d *imageRuleDAO) PendingSessionMediaRequests(_ context.Context, fence sp.Fence) ([]store.SessionMediaRequest, error) {
 	out := []store.SessionMediaRequest{}
 	for _, row := range d.media {
-		if !row.Complete {
+		if !row.Complete && row.Fence.Fence == fence {
 			out = append(out, row)
 		}
 	}

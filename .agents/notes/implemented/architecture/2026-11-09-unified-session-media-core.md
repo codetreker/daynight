@@ -55,6 +55,13 @@ that might still be occupied. Cleanup sweeps the exact typed upload namespace,
 not only paths with committed chunk rows: durable file publication can precede
 a failed or uncertain chunk-row commit. A shared upload payload gate joins late
 read-response writers before the durable sweep and final accounting decision.
+A completed prepare error does not prove that no Controller files remain.
+After reading the exact durable failed prepare, service release carries the
+original spec. The Controller verifies that spec or writes a released tombstone
+when no preparation exists, preventing delayed prepare replay. A successful
+prepare keeps its original release body; an unknown prepare must first finish.
+Preparation records name their random private path before creating or flushing
+the file, so an error leaves a reclaimable identity rather than a rowless file.
 Fixed upload expiry follows the same mechanism;
 stopped archive preparation and sealing reconcile abandoned uploads without the
 original client. Occupied operation, unknown, message, record and native-resume
@@ -68,6 +75,17 @@ fence, chunk length and digest. Raw write bodies and read-response chunks live
 only in the existing metered shared staging or committed blob storage. Short
 transactions reserve their original identities and leases; file I/O and bounded
 wire reconstruction happen outside those transactions, followed by revalidation.
+Remote prepare/write/complete waits retain the upload and execution-lifetime
+gates but release the outer transfer lease before starting the RPC. Write requests
+refer to the existing metered chunk metadata; the relay obtains its own lease to
+reconstruct bytes. This avoids two uploads consuming both Session slots while
+each waits for a third slot. Local file access resumes only after fresh actor,
+upload, receipt, fence, expiry and delete-epoch checks and new admission. Unknown
+release results retain the conservative failure. Poll defers only capacity-blocked
+write offers while preserving their identities and healthy text traffic; storage
+and cleanup failures still propagate. Pending offers are filtered by the current
+execution fence before the bounded selection. Connection epochs may rebind within
+that generation; older unknown rows remain queryable.
 The HTTP caller and Controller relay can therefore run on different instances.
 A process-local mailbox cannot replace the shared durable source. Existing
 payload-bearing rows are normalized through an exact expected-state write;
@@ -107,6 +125,10 @@ manifest, one timeline and references to the same immutable resource store.
 Legacy schema1 conversion belongs only at the data boundary. Its recoverable
 migration preserves the original files and identities until the new closure has
 been durably committed and read back. New writes do not generate a schema1 copy.
+A zero-byte legacy resource retains its original ID, zero length and the empty
+SHA-256. Its migration uses offset zero and an empty block, publishes an actual
+durable empty original, and preserves that identity on exact retries. This narrow
+legacy exception does not admit empty history or timeline files.
 Existing resources are reused only after descriptor and storage-identity checks
 at migration preparation and commit. Sealing checks unavailable descriptors,
 inline-content presence, blob fields and GC state. An exact stopped reset removes preparation

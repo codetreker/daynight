@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -395,8 +396,12 @@ func (tx *DAO) SaveSessionMediaRequest(ctx context.Context, r store.SessionMedia
 	}
 	return nil
 }
-func (tx *DAO) PendingSessionMediaRequests(ctx context.Context, s string) ([]store.SessionMediaRequest, error) {
-	rows, e := tx.tx.Query(ctx, `SELECT request_id::text FROM session_media_requests WHERE session_id=$1 AND NOT complete AND NOT(action IN ('write','complete') AND EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=session_media_requests.session_id AND uploads.upload_id=(session_media_requests.body->>'uploadId')::uuid AND uploads.receipt->>'state' IN ('released','expired','failed'))) ORDER BY request_id LIMIT 2`, s)
+func (tx *DAO) PendingSessionMediaRequests(ctx context.Context, current sp.Fence) ([]store.SessionMediaRequest, error) {
+	fence, e := json.Marshal(current)
+	if e != nil {
+		return nil, e
+	}
+	rows, e := tx.tx.Query(ctx, `SELECT request_id::text FROM session_media_requests WHERE session_id=$1 AND (fence-'connectionEpoch')=$2::jsonb AND NOT complete AND NOT(action IN ('write','complete') AND EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=session_media_requests.session_id AND uploads.upload_id=(session_media_requests.body->>'uploadId')::uuid AND uploads.receipt->>'state' IN ('released','expired','failed'))) ORDER BY request_id LIMIT 2`, current.SessionID, fence)
 	if e != nil {
 		return nil, mediaQueryError("list pending media", e)
 	}
@@ -416,7 +421,7 @@ func (tx *DAO) PendingSessionMediaRequests(ctx context.Context, s string) ([]sto
 	}
 	out := []store.SessionMediaRequest{}
 	for _, id := range ids {
-		r, e := tx.SessionMediaRequest(ctx, s, id)
+		r, e := tx.SessionMediaRequest(ctx, current.SessionID, id)
 		if e != nil {
 			return nil, e
 		}

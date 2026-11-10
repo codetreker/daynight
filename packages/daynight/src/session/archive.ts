@@ -57,8 +57,8 @@ export const parseSessionArchivePreparation = (value: unknown): SessionArchivePr
   return { recordId: uuid(data.recordId), phase: data.phase as SessionArchivePreparation["phase"], resources, timelineRevision: data.timelineRevision === null ? null : sequence(data.timelineRevision), error: data.error === null ? null : parseImageError(data.error), historyEpoch: data.historyEpoch, sourceThrough: zeroSequence(data.sourceThrough) };
 };
 export const parseSessionArchiveFileReceipt = (value: unknown): SessionArchiveFileReceipt => {
-  const data = exact(value, ["fileId", "state", "acceptedOffset", "byteLength", "sha256", "error"]), byteLength = sequence(data.byteLength), acceptedOffset = zeroSequence(data.acceptedOffset);
-  if (!["receiving", "complete", "failed"].includes(String(data.state)) || BigInt(byteLength) > BigInt(SESSION_ARCHIVE_HISTORY_MAX_BYTES) || BigInt(acceptedOffset) > BigInt(byteLength) || data.state === "complete" && acceptedOffset !== byteLength || (data.state === "failed") !== (data.error !== null)) return invalid();
+  const data = exact(value, ["fileId", "state", "acceptedOffset", "byteLength", "sha256", "error"]), byteLength = zeroSequence(data.byteLength), acceptedOffset = zeroSequence(data.acceptedOffset);
+  if (byteLength === "0" && data.sha256 !== "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" || !["receiving", "complete", "failed"].includes(String(data.state)) || BigInt(byteLength) > BigInt(SESSION_ARCHIVE_HISTORY_MAX_BYTES) || BigInt(acceptedOffset) > BigInt(byteLength) || data.state === "complete" && acceptedOffset !== byteLength || (data.state === "failed") !== (data.error !== null)) return invalid();
   return { fileId: uuid(data.fileId), state: data.state as SessionArchiveFileReceipt["state"], acceptedOffset, byteLength, sha256: hash(data.sha256), error: data.error === null ? null : parseImageError(data.error) };
 };
 

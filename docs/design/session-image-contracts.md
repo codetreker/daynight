@@ -198,7 +198,8 @@ validated状态仅证明Controller完整字节及解码验证，validated非null
 | `prepare` | ImageUploadSpec | LocalImagePreparation |
 | `write` | `{uploadId,offset,sha256,data}`，data为规范Base64块 | LocalImagePreparation |
 | `complete` | `{uploadId,sha256,byteLength}` | LocalImagePreparation |
-| `status` / `release` | `{uploadId}` | LocalImagePreparation |
+| `status` | `{uploadId}` | LocalImagePreparation |
+| `release` | `{uploadId,spec?}`，spec 为原 ImageUploadSpec，仅确定失败的 prepare 回收携带 | LocalImagePreparation |
 | `read_prepared` | `{preparationId:uploadId,offset,limit}` | PreparedImageChunk，仅validated允许 |
 | `read` | ImageReadRequest | ImageReadChunk，仅公开available允许 |
 
@@ -208,7 +209,7 @@ validated状态仅证明Controller完整字节及解码验证，validated非null
 
 服务媒体请求的持久账本保留原 requestId/action/fence、完整非字节元数据、块长度/摘要及完成结果，不长期保存 write body 或 read/read_prepared/read_capture result 中的 Base64 原件。私有账本用 `$data` 保存块身份，该字段不进入 wire；原 data 从同 Session、同 upload/attempt 的已计量共享暂存块或已提交 blob 恢复。原件不存在或摘要不符时拒绝，不能从变化的外部来源重建。
 
-Poll 构造持久 offer、Controller read response 的服务落盘及等待者读回都使用短事务取得原请求、scope、fence、delete epoch 和 durable lease，结束事务后持精确文件 gate 执行有界 I/O，再以短事务复核这些原事实。read response 的原 bytes 先写入受原 upload reservation 保护的精确 chunk namespace，再持久保存不含 bytes 的结果；已经完成的原件只核验既有 blob，不晚到重建 staging。offer 的 write body 和等待者读取结果在事务外从同一共享文件恢复并核块摘要，因此 HTTP caller 和 Controller relay instance 无须是同一进程。进程内等待状态不是 durable replay bytes 的所有者。
+Poll 先按当前 Session、claim/test execution 与 generation 筛选持久媒体请求，再排序并取最多两个 offer；同 generation 的 connection epoch 可沿原请求重绑，旧 generation 的 unknown 行继续保留供原身份查询。Poll 构造持久 offer、Controller read response 的服务落盘及等待者读回都使用短事务取得原请求、scope、fence、delete epoch 和 durable lease，结束事务后持精确文件 gate 执行有界 I/O，再以短事务复核这些原事实。read response 的原 bytes 先写入受原 upload reservation 保护的精确 chunk namespace，再持久保存不含 bytes 的结果；已经完成的原件只核验既有 blob，不晚到重建 staging。offer 的 write body 和等待者读取结果在事务外从同一共享文件恢复并核块摘要，因此 HTTP caller 和 Controller relay instance 无须是同一进程。进程内等待状态不是 durable replay bytes 的所有者。 complete 等待远端 prepare/write/complete 时没有本地文件 I/O，保留原 upload 私有 gate 和执行生命周期 gate，但先确认释放外层 transfer lease；write 只登记既有计量块的元数据，由 relay 自取 durable lease 读取。远端结果完整匹配后，服务重新核验原 actor、spec、receipt、blob、到期、fence、delete epoch 和 frozen 状态并取得新 lease，才打开本地原件。释放结果未知不开始远端请求。Poll 若仅因临时媒体并发额度不足而无法重建某 write，则保留原请求，延期该 offer，继续健康文本传输；存储、校验、清理及混合错误仍明确返回。
 
 旧账本中的完整 body/result 在 core 计算无 bytes 的等价元数据，并由 DAO 按读到的原 fence/body/result/error/complete 做精确 Expected CAS；冲突或 unknown 保留原身份与占用，不覆盖较新的结果。取消只结束该次 I/O 并等待执行单元退出；准备、unknown 和未完成清理继续保留其 reservation。
 
@@ -477,7 +478,7 @@ source ACK 的保留策略由 core 拥有：先核原 identity/hash，再按当�
 
 GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 upload actor，不要求 Task 仍处于原 claim；它不授予新目标或发送资格。固定到期后，receiving/verifying 转为 expired；complete 只有在 Session 锁内确认不存在自身 upload pin 之外的有效引用时，才撤销自身 pin、清空 receipt.resource 并转为 expired。原 operation/unknown/message/archive/native_resume 引用存在时保持 complete；complete 重放沿同一存储保留规则返回原状态，精确 prepare 重放只返回原身份当前终态，不延长 expiry。其他引用只保留原件，不授予到期后的新发送资格；新发送准入拒绝过期准备。已经登记的原 operation 精确重传返回原回执，其派发重核只接受绑定该 operationId 的原 operation pin，不能借另一操作或历史消息的引用创建新 intent。
 
-停止后的 archive prepare 和 seal 使用相同规则主动结算到期上传，不依赖原客户端再发 GET 或 DELETE。结算先在数据库 scope 外取得原 upload 的 `PrivateGate`，再重读固定 expiry 和当前身份，确认 writer 已退出才进入 expired 并清理 staging；不能仅从归档屏障中过滤过期行。failed/expired/released 的 staging 或原件尚未清理时，同一结算入口继续回收，未完成者仍阻止 seal。曾创建远端 preparation 的上传必须读到原 prepare/release 身份下完整且匹配的 Controller release 确认；离线、verifying、缺失结果或 unknown 均不能推断远端已释放，不返还相应容量。
+停止后的 archive prepare 和 seal 使用相同规则主动结算到期上传，不依赖原客户端再发 GET 或 DELETE。结算先在数据库 scope 外取得原 upload 的 `PrivateGate`，再重读固定 expiry 和当前身份，确认 writer 已退出才进入 expired 并清理 staging；不能仅从归档屏障中过滤过期行。failed/expired/released 的 staging 或原件尚未清理时，同一结算入口继续回收，未完成者仍阻止 seal。曾创建远端 preparation 的上传必须读到原 prepare/release 身份下完整且匹配的 Controller release 确认；离线、verifying、缺失结果或 unknown 均不能推断远端已释放，不返还相应容量。 原 prepare 若已持久完成且仅有 error、没有 result，服务在重新核验其原 request/action/spec/fence 后，可使用携带精确原 spec 的原 release 身份继续回收；确定失败不证明没有残留文件。Controller 核验已有准备的完整 spec，缺行时持久 released tombstone，阻止迟到 prepare 重建；仍须等待原 decode/read/pin 退出并完成已知路径删除。成功 prepare 的 release 保留原 `{uploadId}` 身份。原 prepare 仍 unknown 时只观察它，不提前 release 或返配额。
 
 明确未派发或可信未接受结论解除 operation 占用，尚未过期上传可保留；原生接受后先建消息引用再解除冗余上传引用。unknown 保留。归档先建立记录引用再允许 Session 清理。浏览器移除只释放其草稿，权限撤销只取消该 actor 访问，均不能删除其他合法引用。
 
@@ -542,7 +543,7 @@ journal 格式迁移007与精确 schema 检查拥有以下表；状态和错误�
 
 跨 execution 的准入账本位于 `stateDirectory/controller/media/budget.sqlite`，以 immediate transaction 更新 `allocations`。2200 MiB/execution、8 GiB/stateDirectory 包含实际原件、暂存、未知残留与预留；私有硬链接按 inode 只计一次。128 MiB 元数据和8 MiB结算余量计入真实 SQLite sidecars 与 pending metadata。关闭 Controller 不释放 native/resume 及未知引用；只有完整 execution 目录最终删除并刷盘后才退还该 allocation。
 
-Decimal 用规范文本/bigint比较，仅在限额内转换文件API安全整数；元数据受64MiB timeline与100000 entries约束，图片原件按需读取，不预载全部图片。prepare先持久空文件和新增目录再提交零偏移。块顺序为 write → fsync → immediate transaction提交块及offset → 回执。恢复截断并刷盘未提交尾部；文件短于确认offset或已提交块hash损坏为明确失败，不倒退偏移冒充成功。rename持久源/目标目录，Windows实际flush/rename持久性须独立验证。
+Decimal 用规范文本/bigint比较，仅在限额内转换文件API安全整数；元数据受64MiB timeline与100000 entries约束，图片原件按需读取，不预载全部图片。prepare 先持久包含完整 spec 和随机私有路径的 receiving 行，再创建并刷盘空文件和目录，全部成功才返回零偏移；创建或刷盘失败仍保留可精确回收的路径。缺行的旧随机文件不能凭猜测删除，仍计入实际占用。块顺序为 write → fsync → immediate transaction提交块及offset → 回执。恢复截断并刷盘未提交尾部；文件短于确认offset或已提交块hash损坏为明确失败，不倒退偏移冒充成功。rename持久源/目标目录，Windows实际flush/rename持久性须独立验证。
 
 ### 双端完整解码
 

@@ -385,7 +385,8 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	}
 	canonical, e := model.CanonicalID(fileID)
 	_, digestErr := hex.DecodeString(digest)
-	if digestErr != nil || len(digest) != 64 || strings.ToLower(digest) != digest || e != nil || canonical != fileID || offset < 0 || length < 1 || length > limit || len(data) < 1 || len(data) > archiveChunkBytes || offset+int64(len(data)) > length || archiveDigest(data) != chunkDigest {
+	emptyLegacy := purpose == "resource" && length == 0 && offset == 0 && len(data) == 0 && digest == archiveDigest(nil)
+	if digestErr != nil || len(digest) != 64 || strings.ToLower(digest) != digest || e != nil || canonical != fileID || offset < 0 || (length < 1 || len(data) < 1) && !emptyLegacy || length > limit || len(data) > archiveChunkBytes || offset+int64(len(data)) > length || archiveDigest(data) != chunkDigest {
 		return out, fault("invalid_input", "Invalid archive file chunk.")
 	}
 	var file store.ArchiveBundleFile
@@ -508,7 +509,9 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 			return e
 		}
 		chunk = store.ArchiveBundleChunk{SessionID: op.id, FileID: fileID, Offset: offset, ByteLength: int64(len(data)), SHA256: chunkDigest, Path: namespace.Directory() + "/files/" + fileID + "/chunks/" + decimal(offset)}
-		if offset < file.AcceptedOffset {
+		if emptyLegacy && file.State == "complete" && file.AcceptedOffset == 0 {
+			duplicate = true
+		} else if offset < file.AcceptedOffset {
 			chunks, e := dao.SessionArchiveChunks(ctx, op.id, fileID)
 			if e != nil {
 				return e
@@ -545,7 +548,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 			return fileReceipt(file), nil
 		}
 	}
-	if !duplicate {
+	if !duplicate && !emptyLegacy {
 		if err = putArchiveChunk(ctx, op.execution.files, chunk.Path, data, chunkDigest); err != nil {
 			return out, err
 		}
@@ -574,8 +577,10 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 			return archiveConflict()
 		}
 		if !duplicate {
-			if e = dao.InsertSessionArchiveChunk(ctx, chunk); e != nil {
-				return e
+			if !emptyLegacy {
+				if e = dao.InsertSessionArchiveChunk(ctx, chunk); e != nil {
+					return e
+				}
 			}
 			file.AcceptedOffset = offset + int64(len(data))
 			if e = dao.SaveSessionArchiveFile(ctx, file); e != nil {

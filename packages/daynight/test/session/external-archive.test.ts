@@ -36,3 +36,11 @@ test("accepts migration evidence only as a bounded ready schema3 status", () => 
   expect(() => archive.parseSessionArchiveStatus({ state: "pending", sha256: null, byteLength: null, errorCode: null, schemaVersion: 3, completeness: null, migration })).toThrow();
   expect(() => archive.parseSessionArchiveStatus({ state: "ready", sha256: ready.sha256, byteLength: "8", errorCode: null, migration })).toThrow();
 });
+
+test("accepts an empty legacy blob receipt only with its canonical zero offset and digest", () => {
+  const receipt = { fileId: id(8), state: "complete", acceptedOffset: "0", byteLength: "0", sha256: digest(Buffer.alloc(0)), error: null };
+  expect(archive.parseSessionArchiveFileReceipt(receipt)).toEqual(receipt);
+  for (const changed of [{ acceptedOffset: "1" }, { byteLength: "00" }, { byteLength: "-1" }, { sha256: digest("nonempty") }]) {
+    expect(() => archive.parseSessionArchiveFileReceipt({ ...receipt, ...changed })).toThrow();
+  }
+});

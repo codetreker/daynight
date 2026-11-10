@@ -37,7 +37,7 @@ export type ImageActionBody = {
   write: { readonly uploadId:string; readonly offset:string; readonly sha256:string; readonly data:string };
   complete: { readonly uploadId:string; readonly sha256:string; readonly byteLength:string };
   status: { readonly uploadId:string };
-  release: { readonly uploadId:string };
+  release: { readonly uploadId:string; readonly spec?:ImageUploadSpec };
   read_prepared: { readonly preparationId:string; readonly offset:string; readonly limit:number };
   read_capture: { readonly captureId:string; readonly attemptId:string; readonly sha256:string; readonly byteLength:string; readonly offset:string; readonly limit:number };
   retry_capture: { readonly captureId:string; readonly attemptId:string };
@@ -268,6 +268,7 @@ export const parseImageRequest = (v:unknown):ImageRequest => {
   else if(action==="read_capture"){const b=imageObject(o.body,["captureId","attemptId","sha256","byteLength","offset","limit"]);const byteLength=imageDecimal(b.byteLength),offset=imageDecimal(b.offset,true);if(BigInt(byteLength)>10485760n||BigInt(offset)>=BigInt(byteLength))return fail();body={captureId:imageId(b.captureId),attemptId:imageId(b.attemptId),sha256:imageSha(b.sha256),byteLength,offset,limit:imageInteger(b.limit,524288)};}
   else if(action==="write"){const b=imageObject(o.body,["uploadId","offset","sha256","data"]);if(typeof b.data!=="string"||b.data.length===0||b.data.length>699052||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(b.data))return fail();const raw=atob(b.data);if(raw.length>524288||btoa(raw)!==b.data)return fail();body={uploadId:imageId(b.uploadId),offset:imageDecimal(b.offset,true),sha256:imageSha(b.sha256),data:b.data};}
   else if(action==="complete"){const b=imageObject(o.body,["uploadId","sha256","byteLength"]);const byteLength=imageDecimal(b.byteLength);if(BigInt(byteLength)>10485760n)return fail();body={uploadId:imageId(b.uploadId),sha256:imageSha(b.sha256),byteLength};}
+  else if(action==="release" && o.body !== null && typeof o.body === "object" && Object.hasOwn(o.body,"spec")){const b=imageObject(o.body,["uploadId","spec"]),spec=parseImageUploadSpec(b.spec),uploadId=imageId(b.uploadId);if(uploadId!==spec.uploadId)return fail();body={uploadId,spec};}
   else {const b=imageObject(o.body,["uploadId"]);body={uploadId:imageId(b.uploadId)};}
   return {type:"image_request",protocol:protocol(o.protocol),...fence(o),requestId:id(o.requestId),action,body} as ImageRequest;
 };

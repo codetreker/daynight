@@ -175,7 +175,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
       const offset=receipt?.acceptedOffset??"0";
       // All bytes with a receiving receipt still require validation. An exact
       // retry of the final original block asks the same writer to reconcile it.
-      const start=offset===file.byteLength ? String(Math.floor((Number(offset)-1)/524288)*524288) : offset;
+      const start=offset===file.byteLength && offset!=="0" ? String(Math.floor((Number(offset)-1)/524288)*524288) : offset;
       const block=read(start,524288);
       try { receipt=parse(await call("PUT",`${path}?offset=${start}${purpose==="resource"?"&purpose=resource&migrationOnly=true":""}`,block,{"Daynight-File-Byte-Length":file.byteLength,"Daynight-File-SHA256":file.sha256,"Daynight-Chunk-SHA256":sha256(block),...(descriptor===undefined?{}:{"Daynight-Resource-Descriptor":JSON.stringify(descriptor)})})); }
       catch(error) { const current=parse(await call("GET",`${path}/status`));check(current);if (current.state!=="complete" && current.acceptedOffset===offset) throw error;receipt=current; }

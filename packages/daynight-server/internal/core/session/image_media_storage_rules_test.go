@@ -30,7 +30,7 @@ func (d *mediaStorageRuleDAO) SessionMediaRequest(context.Context, string, strin
 	}
 	return d.row, nil
 }
-func (d *mediaStorageRuleDAO) PendingSessionMediaRequests(context.Context, string) ([]store.SessionMediaRequest, error) {
+func (d *mediaStorageRuleDAO) PendingSessionMediaRequests(context.Context, sp.Fence) ([]store.SessionMediaRequest, error) {
 	return []store.SessionMediaRequest{d.row}, nil
 }
 func (d *mediaStorageRuleDAO) SaveSessionMediaRequest(_ context.Context, row store.SessionMediaRequest) error {

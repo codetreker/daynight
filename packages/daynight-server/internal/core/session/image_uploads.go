@@ -355,6 +355,7 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	var upload store.SessionUploadRecord
 	var chunks []store.SessionUploadChunk
 	var path string
+	var deleteEpoch int64
 	lease := uuid.NewString()
 	ioContext, finishIO, ioErr := s.beginImageIO(ctx, id, lease)
 	if ioErr != nil {
@@ -409,6 +410,7 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		if e = acquireImageResourceLease(ctx, d, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "write", DeleteEpoch: usage.DeleteEpoch}); e != nil {
 			return e
 		}
+		deleteEpoch = usage.DeleteEpoch
 		path, e = BlobAddress(project, r.Owner, id, u.BlobID)
 		if e != nil {
 			return e
@@ -487,21 +489,19 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	}
 	var controllerValidated *sp.ValidatedImage
 	if remote {
+		// Remote waits perform no local file I/O. Retain the upload and lifetime
+		// gates, but free this transfer slot for the relay's independently leased
+		// chunk reconstruction. A failed release cannot establish free capacity.
+		if e = s.releaseImageLease(ctx, p, project, taskID, id, lease); e != nil {
+			return out, e
+		}
 		if _, e = s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "prepare"), "prepare", upload.Spec); e != nil {
 			return out, e
 		}
 		for _, chunk := range chunks {
-			o, err := s.files.Open(ctx, sessionresource.Bucket, chunk.Path)
-			if err != nil {
-				return out, err
-			}
-			data, err := io.ReadAll(io.LimitReader(o.Body, imageChunkBytes+1))
-			err = errors.Join(err, o.Body.Close())
-			if err != nil {
-				return out, err
-			}
-			body := sp.ImageChunkWrite{UploadID: uploadID, Offset: decimal(chunk.Offset), SHA256: chunk.SHA256, Data: base64.StdEncoding.EncodeToString(data)}
-			if _, e = s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "write/"+body.Offset), "write", body); e != nil {
+			offset := decimal(chunk.Offset)
+			body := map[string]any{"uploadId": uploadID, "offset": offset, "sha256": chunk.SHA256, "$data": mediaDataIdentity{SHA256: chunk.SHA256, ByteLength: int(chunk.ByteLength)}}
+			if _, e = s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "write/"+offset), "write", body); e != nil {
 				return out, e
 			}
 		}
@@ -517,6 +517,34 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 			return out, fault("resource_conflict", "Controller did not validate the complete image original.")
 		}
 		controllerValidated = prepared.Validated
+		// No original may be opened until fresh admission confirms the same
+		// actor, upload, receipt, fence and deletion generation observed above.
+		e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
+			if !write {
+				return denied()
+			}
+			d, current, err := s.upload(ctx, tx, r, p, uploadID)
+			if err != nil {
+				return err
+			}
+			if err = s.imageTarget(p, r, current.Spec.Target); err != nil {
+				return err
+			}
+			if current.SessionID != upload.SessionID || current.BlobID != upload.BlobID || current.StorageReleased != upload.StorageReleased || !current.ExpiresAt.Equal(upload.ExpiresAt) || !s.now().Before(current.ExpiresAt) || !jsonEqual(encode(current.Spec), encode(upload.Spec)) || !jsonEqual(encode(current.Receipt), encode(upload.Receipt)) {
+				return conflict()
+			}
+			usage, err := d.SessionResourceUsage(ctx, id)
+			if err != nil {
+				return err
+			}
+			if usage.Deleting || usage.Frozen || usage.DeleteEpoch != deleteEpoch {
+				return conflict()
+			}
+			return acquireImageResourceLease(ctx, d, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "write", DeleteEpoch: deleteEpoch})
+		})
+		if e != nil {
+			return out, e
+		}
 	}
 	reader, closeReaders, e := open()
 	if e != nil {
@@ -716,12 +744,32 @@ func (s *Execution) releaseControllerPreparationWithAccess(ctx context.Context, 
 	if !remote {
 		return nil
 	}
-	// Reconcile an earlier uncertain prepare before asking the original remote
-	// identity to release. This also handles release racing the first RPC offer.
-	if _, e := s.controllerMediaWithAccess(ctx, id, mediaIdentity(uploadID, "prepare"), "prepare", spec, access); e != nil {
-		return e
+	// An unknown prepare must finish under its original identity. A durable
+	// failure proves that attempt has exited, but not that it left no files.
+	// Release still needs a Controller receipt for the exact original spec.
+	failed := false
+	if _, prepareErr := s.controllerMediaWithAccess(ctx, id, mediaIdentity(uploadID, "prepare"), "prepare", spec, access); prepareErr != nil {
+		observeErr := access(ctx, func(tx *operationTx, r *record) error {
+			d, e := mediaDAO(tx)
+			if e != nil {
+				return e
+			}
+			row, e := d.SessionMediaRequest(ctx, id, mediaIdentity(uploadID, "prepare"))
+			if e != nil {
+				return e
+			}
+			failed = r.Snapshot.ContentRevision == 2 && row.SessionID == id && row.RequestID == mediaIdentity(uploadID, "prepare") && row.Action == "prepare" && row.Fence.Fence == r.Snapshot.Fence && jsonEqual(row.Body, encode(spec)) && row.Complete && row.Error != nil && row.Result == nil
+			return nil
+		})
+		if observeErr != nil || !failed {
+			return errors.Join(prepareErr, observeErr)
+		}
 	}
-	raw, e := s.controllerMediaWithAccess(ctx, id, mediaIdentity(uploadID, "release"), "release", map[string]any{"uploadId": uploadID}, access)
+	body := map[string]any{"uploadId": uploadID}
+	if failed {
+		body["spec"] = spec
+	}
+	raw, e := s.controllerMediaWithAccess(ctx, id, mediaIdentity(uploadID, "release"), "release", body, access)
 	if e != nil {
 		return e
 	}

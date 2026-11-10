@@ -36,11 +36,11 @@ func (d *mediaFailureDAO) SaveSessionMediaRequest(ctx context.Context, row store
 	}
 	return nil
 }
-func (d *mediaFailureDAO) PendingSessionMediaRequests(ctx context.Context, session string) ([]store.SessionMediaRequest, error) {
+func (d *mediaFailureDAO) PendingSessionMediaRequests(ctx context.Context, fence sp.Fence) ([]store.SessionMediaRequest, error) {
 	if d.point == "pending" {
 		return nil, d.cause
 	}
-	return d.imageRuleDAO.PendingSessionMediaRequests(ctx, session)
+	return d.imageRuleDAO.PendingSessionMediaRequests(ctx, fence)
 }
 func (d *mediaFailureDAO) SessionUpload(ctx context.Context, session, id string) (store.SessionUploadRecord, error) {
 	if d.point == "upload" {

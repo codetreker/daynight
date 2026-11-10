@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -104,105 +105,111 @@ func (d *archiveFlowDAO) SetUnifiedSessionArchiveReady(_ context.Context, _, has
 }
 
 func TestArchiveBundlePublishesOnlyAfterExactTimelineAndBlobClosure(t *testing.T) {
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer files.Close()
-	engine := NewEngine(&imageRuleStorage{Storage: files, free: 1 << 45, total: 1 << 46})
-	d := &archiveFlowDAO{files: map[string]store.ArchiveBundleFile{}, chunks: map[string][]store.ArchiveBundleChunk{}, resources: map[string]store.SessionResourceRecord{}}
-	owner, session, claim, controller, instance := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	p := model.Principal{Kind: model.PATCredential, UserID: owner}
-	fence := sp.Fence{SessionID: session, ClaimID: claim, ExecutionGeneration: "1"}
-	r := &record{Owner: owner, SourceSeq: 7, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: fence}, Identity: sp.Identity{ControllerID: controller, ControllerInstanceID: instance, Provider: "codex"}, Lifecycle: "archived", HistoryEpoch: "original-history"}}
-	execution := &Execution{Engine: engine}
-	execution.archiveRun = func(ctx context.Context, principal model.Principal, _, _, id string, finalize bool, work func(*Access) error) error {
-		if principal != p || id != session || !finalize {
-			t.Fatal("wrong archive scope")
-		}
-		return work(&Access{tx: &operationTx{dao: d}, record: r})
-	}
-	engine.SetMediaLeaseCleanup(func(ctx context.Context, id, lease string) error {
-		return d.ReleaseSessionResourceLease(ctx, id, lease)
-	})
-	op := &ArchiveOperation{execution: execution, principal: p, id: session, owner: owner, mode: ArchiveV1Upload}
-	ctx := t.Context()
-	prepared, err := op.PrepareArchive(ctx, sp.ArchivePrepareRequest{Fence: fence, ControllerID: controller, ControllerInstanceID: instance})
-	if err != nil || prepared.SourceThrough != "7" || prepared.HistoryEpoch != "original-history" {
-		t.Fatal(prepared, err)
-	}
-	if _, err = op.SealArchive(ctx); err == nil {
-		t.Fatal("sealed before complete history")
-	}
-	original := []byte("original")
-	id := uuid.NewString()
-	length, hash, mime := decimal(int64(len(original))), archiveDigest(original), "text/plain"
-	resource := sp.Resource{ResourceID: id, Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
-	entry, err := sp.DecodeTimeline([]byte(`{"entryId":"` + uuid.NewString() + `","entrySeq":"1","revision":"1","kind":"assistant_message","content":[{"type":"resource","resourceId":"` + id + `","label":"legacy"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	history := encode(sp.ArchiveHistoryContent{HistoryEpoch: "original-history", SourceThrough: "7", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{resource}})
-	historyID := uuid.NewString()
-	half := len(history) / 2
-	first, err := op.PutArchiveFile(ctx, "history", historyID, 0, int64(len(history)), archiveDigest(history), archiveDigest(history[:half]), history[:half])
-	if err != nil || first.State != "receiving" {
-		t.Fatal(first, err)
-	}
-	if _, err = op.PutArchiveFile(ctx, "history", historyID, 1, int64(len(history)), archiveDigest(history), archiveDigest(history[:half]), history[:half]); err == nil {
-		t.Fatal("overlapping chunk accepted")
-	}
-	if _, err = op.PutArchiveFile(ctx, "history", historyID, 0, int64(len(history)), archiveDigest(history), archiveDigest(history[:half]), history[:half]); err != nil {
-		t.Fatal("exact retry", err)
-	}
-	last, err := op.PutArchiveFile(ctx, "history", historyID, int64(half), int64(len(history)), archiveDigest(history), archiveDigest(history[half:]), history[half:])
-	if err != nil || last.State != "complete" {
-		t.Fatal(last, err)
-	}
-	if _, err = op.SealArchive(ctx); !errors.Is(err, model.ErrNotFound) {
-		t.Fatal("missing available original must block seal", err)
-	}
-	blobID := uuid.NewString()
-	saved, err := op.PutArchiveResource(ctx, blobID, 0, int64(len(original)), hash, hash, original, resource)
-	if err != nil || saved.State != "complete" {
-		t.Fatal(saved, err)
-	}
-	sealed, err := op.SealArchive(ctx)
-	if err != nil || sealed.Phase != "sealed" || len(sealed.Resources) != 1 {
-		t.Fatal(sealed, err)
-	}
-	timeline := encode(sp.ArchiveTimeline{Entries: []sp.TimelineEntry{entry}})
-	fileID := uuid.NewString()
-	reference := sp.ArchiveFileReference{FileID: fileID, SHA256: archiveDigest(timeline), ByteLength: decimal(int64(len(timeline)))}
-	manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentKind: "native_timeline", RecordID: session, Fence: fence, Provider: "codex", ControllerID: controller, ControllerInstanceID: instance, Timeline: reference, Resources: sealed.Resources, Completeness: "complete"}
-	body := encode(manifest)
-	if _, err = op.PutArchiveManifest(ctx, body); err == nil {
-		t.Fatal("manifest accepted before timeline")
-	}
-	receipt, err := op.PutArchiveFile(ctx, "timeline", fileID, 0, int64(len(timeline)), reference.SHA256, reference.SHA256, timeline)
-	if err != nil || receipt.State != "complete" {
-		t.Fatal(receipt, err)
-	}
-	status, err := op.PutArchiveManifest(ctx, body)
-	if err != nil || status.State != "ready" || status.SchemaVersion != 3 || d.leases != 0 {
-		t.Fatal(status, err, d.leases)
-	}
-	encoded, err := json.Marshal(status)
-	if err != nil || !json.Valid(encoded) {
-		t.Fatal(string(encoded), err)
-	}
-	if _, err = op.PutArchiveManifest(ctx, body); err != nil {
-		t.Fatal("original commit retry", err)
-	}
-	manifest.Completeness = "partial"
-	if _, err = op.PutArchiveManifest(ctx, encode(manifest)); err == nil {
-		t.Fatal("different manifest replaced original")
-	}
-	if err = files.Delete(ctx, "session-resources", d.resources[id].BlobPath); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = op.PutArchiveManifest(ctx, body); err == nil {
-		t.Fatal("known available missing blob became partial/ready")
+	for _, original := range [][]byte{[]byte("original"), {}} {
+		t.Run(decimal(int64(len(original))), func(t *testing.T) {
+			files, err := local.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			engine := NewEngine(&imageRuleStorage{Storage: files, free: 1 << 45, total: 1 << 46})
+			d := &archiveFlowDAO{files: map[string]store.ArchiveBundleFile{}, chunks: map[string][]store.ArchiveBundleChunk{}, resources: map[string]store.SessionResourceRecord{}}
+			owner, session, claim, controller, instance := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+			p := model.Principal{Kind: model.PATCredential, UserID: owner}
+			fence := sp.Fence{SessionID: session, ClaimID: claim, ExecutionGeneration: "1"}
+			r := &record{Owner: owner, SourceSeq: 7, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: fence}, Identity: sp.Identity{ControllerID: controller, ControllerInstanceID: instance, Provider: "codex"}, Lifecycle: "archived", HistoryEpoch: "original-history"}}
+			execution := &Execution{Engine: engine}
+			execution.archiveRun = func(ctx context.Context, principal model.Principal, _, _, id string, finalize bool, work func(*Access) error) error {
+				if principal != p || id != session || !finalize {
+					t.Fatal("wrong archive scope")
+				}
+				return work(&Access{tx: &operationTx{dao: d}, record: r})
+			}
+			engine.SetMediaLeaseCleanup(func(ctx context.Context, id, lease string) error {
+				return d.ReleaseSessionResourceLease(ctx, id, lease)
+			})
+			op := &ArchiveOperation{execution: execution, principal: p, id: session, owner: owner, mode: ArchiveV1Upload}
+			ctx := t.Context()
+			prepared, err := op.PrepareArchive(ctx, sp.ArchivePrepareRequest{Fence: fence, ControllerID: controller, ControllerInstanceID: instance})
+			if err != nil || prepared.SourceThrough != "7" || prepared.HistoryEpoch != "original-history" {
+				t.Fatal(prepared, err)
+			}
+			if _, err = op.SealArchive(ctx); err == nil {
+				t.Fatal("sealed before complete history")
+			}
+			id := uuid.NewString()
+			length, hash, mime := decimal(int64(len(original))), archiveDigest(original), "text/plain"
+			resource := sp.Resource{ResourceID: id, Status: "available", Name: "legacy", MediaType: &mime, ByteLength: &length, SHA256: &hash}
+			entry, err := sp.DecodeTimeline([]byte(`{"entryId":"` + uuid.NewString() + `","entrySeq":"1","revision":"1","kind":"assistant_message","content":[{"type":"resource","resourceId":"` + id + `","label":"legacy"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			history := encode(sp.ArchiveHistoryContent{HistoryEpoch: "original-history", SourceThrough: "7", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{resource}})
+			historyID := uuid.NewString()
+			half := len(history) / 2
+			first, err := op.PutArchiveFile(ctx, "history", historyID, 0, int64(len(history)), archiveDigest(history), archiveDigest(history[:half]), history[:half])
+			if err != nil || first.State != "receiving" {
+				t.Fatal(first, err)
+			}
+			if _, err = op.PutArchiveFile(ctx, "history", historyID, 1, int64(len(history)), archiveDigest(history), archiveDigest(history[:half]), history[:half]); err == nil {
+				t.Fatal("overlapping chunk accepted")
+			}
+			if _, err = op.PutArchiveFile(ctx, "history", historyID, 0, int64(len(history)), archiveDigest(history), archiveDigest(history[:half]), history[:half]); err != nil {
+				t.Fatal("exact retry", err)
+			}
+			last, err := op.PutArchiveFile(ctx, "history", historyID, int64(half), int64(len(history)), archiveDigest(history), archiveDigest(history[half:]), history[half:])
+			if err != nil || last.State != "complete" {
+				t.Fatal(last, err)
+			}
+			if _, err = op.SealArchive(ctx); !errors.Is(err, model.ErrNotFound) {
+				t.Fatal("missing available original must block seal", err)
+			}
+			blobID := uuid.NewString()
+			saved, err := op.PutArchiveResource(ctx, blobID, 0, int64(len(original)), hash, hash, original, resource)
+			if err != nil || saved.State != "complete" {
+				t.Fatal(saved, err)
+			}
+			if retry, err := op.PutArchiveResource(ctx, blobID, 0, int64(len(original)), hash, hash, original, resource); err != nil || !reflect.DeepEqual(retry, saved) {
+				t.Fatal("original resource retry", retry, err)
+			}
+			sealed, err := op.SealArchive(ctx)
+			if err != nil || sealed.Phase != "sealed" || len(sealed.Resources) != 1 {
+				t.Fatal(sealed, err)
+			}
+			timeline := encode(sp.ArchiveTimeline{Entries: []sp.TimelineEntry{entry}})
+			fileID := uuid.NewString()
+			reference := sp.ArchiveFileReference{FileID: fileID, SHA256: archiveDigest(timeline), ByteLength: decimal(int64(len(timeline)))}
+			manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentKind: "native_timeline", RecordID: session, Fence: fence, Provider: "codex", ControllerID: controller, ControllerInstanceID: instance, Timeline: reference, Resources: sealed.Resources, Completeness: "complete"}
+			body := encode(manifest)
+			if _, err = op.PutArchiveManifest(ctx, body); err == nil {
+				t.Fatal("manifest accepted before timeline")
+			}
+			receipt, err := op.PutArchiveFile(ctx, "timeline", fileID, 0, int64(len(timeline)), reference.SHA256, reference.SHA256, timeline)
+			if err != nil || receipt.State != "complete" {
+				t.Fatal(receipt, err)
+			}
+			status, err := op.PutArchiveManifest(ctx, body)
+			if err != nil || status.State != "ready" || status.SchemaVersion != 3 || d.leases != 0 {
+				t.Fatal(status, err, d.leases)
+			}
+			encoded, err := json.Marshal(status)
+			if err != nil || !json.Valid(encoded) {
+				t.Fatal(string(encoded), err)
+			}
+			if _, err = op.PutArchiveManifest(ctx, body); err != nil {
+				t.Fatal("original commit retry", err)
+			}
+			manifest.Completeness = "partial"
+			if _, err = op.PutArchiveManifest(ctx, encode(manifest)); err == nil {
+				t.Fatal("different manifest replaced original")
+			}
+			if err = files.Delete(ctx, "session-resources", d.resources[id].BlobPath); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = op.PutArchiveManifest(ctx, body); err == nil {
+				t.Fatal("known available missing blob became partial/ready")
+			}
+		})
 	}
 }
 

@@ -126,5 +126,7 @@ type SessionUploadMediaDAO interface {
 type SessionMediaDAO interface {
 	SessionMediaRequest(context.Context, string, string) (SessionMediaRequest, error)
 	SaveSessionMediaRequest(context.Context, SessionMediaRequest) error
-	PendingSessionMediaRequests(context.Context, string) ([]SessionMediaRequest, error)
+	// PendingSessionMediaRequests filters the exact execution fence before the
+	// offer limit. Connection epochs remain eligible for same-generation rebind.
+	PendingSessionMediaRequests(context.Context, sp.Fence) ([]SessionMediaRequest, error)
 }

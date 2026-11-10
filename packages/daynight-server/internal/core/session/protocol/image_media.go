@@ -15,8 +15,21 @@ func validImageMediaBody(action string, body json.RawMessage) bool {
 		return validateObject(body, schema{"uploadId": identifier, "offset": decimalRange(9223372036854775807, true), "sha256": imageDigest, "data": func(v json.RawMessage) bool { return stringField(v) != "" && canonicalChunk(v) }})
 	case "complete":
 		return validateObject(body, schema{"uploadId": identifier, "sha256": imageDigest, "byteLength": decimalRange(MaxImageBytes, false)})
-	case "status", "release":
+	case "status":
 		return validateObject(body, schema{"uploadId": identifier})
+	case "release":
+		var value map[string]json.RawMessage
+		if json.Unmarshal(body, &value) != nil {
+			return false
+		}
+		if _, present := value["spec"]; !present {
+			return validateObject(body, schema{"uploadId": identifier})
+		}
+		if !validateObject(body, schema{"uploadId": identifier, "spec": func(raw json.RawMessage) bool { _, e := DecodeImageUploadSpec(raw); return e == nil }}) {
+			return false
+		}
+		spec, e := DecodeImageUploadSpec(value["spec"])
+		return e == nil && stringField(value["uploadId"]) == spec.UploadID
 	case "read_prepared":
 		return validateObject(body, schema{"preparationId": identifier, "offset": decimalRange(9223372036854775807, true), "limit": integerRange(1, MaxContentChunkBytes)})
 	case "read_capture":

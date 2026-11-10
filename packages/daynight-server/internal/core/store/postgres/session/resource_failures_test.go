@@ -118,7 +118,7 @@ func TestResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults(t *
 			return e
 		}},
 		{"pending media", func() error {
-			rows, e := media.PendingSessionMediaRequests(t.Context(), id)
+			rows, e := media.PendingSessionMediaRequests(t.Context(), sp.Fence{SessionID: id})
 			if len(rows) != 0 {
 				t.Fatal("closed transaction supplied pending media")
 			}
