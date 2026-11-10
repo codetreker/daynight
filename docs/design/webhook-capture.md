@@ -8,7 +8,7 @@ Task、Step 和 Thread 的真实写入在其原事务中捕获事件。Task 状�
 
 ## 固定内容和证明
 
-`internal/core/webhook/protocol` 校验六类 `wire v1/schema 1` 事实并生成固定字段序的 CloudEvents structured JSON。Task 和 Step 使用最终 Task 版本；Thread 使用最终消息 ID 和时间，不改变 Task 版本。数据仅含固定的最小字段。机器 schema 与严格解码共同验证结构、身份及跨字段约束；任意位置的相等关系由解码器检查。原始事实 codec 1 保存捕获时的完整 structured JSON，Delivery 保存相同的确定 body，均保存长度和 SHA-256。动态签名与网络发送由[投递模块](webhook-delivery.md)负责。
+`internal/core/webhook/protocol` 校验六类 `wire v1/schema 1` 事实并生成固定字段序的 CloudEvents structured JSON。Task 和 Step 使用最终 Task 版本；Thread 使用最终消息 ID 和时间，不改变 Task 版本。数据仅含固定的最小字段。Task 状态字段接受 proposed、todo、in_progress、done、cancelled，状态变化事实校验原值与新值及其不等关系；创建默认 proposed 的事实同样由严格渲染器与 schema 验证。渲染验证发生在目标匹配之前，没有接收目标也不能掩盖非法事实。机器 schema 与严格解码共同验证结构、身份及跨字段约束；任意位置的相等关系由解码器检查。原始事实 codec 1 保存捕获时的完整 structured JSON，Delivery 保存相同的确定 body，均保存长度和 SHA-256。动态签名与网络发送由[投递模块](webhook-delivery.md)负责。
 
 原匹配摘要将匹配按 subscription ID、binding ID 升序排列，编码为无空白的 JSON 数组；每项依次为 subscription ID、binding ID、project ID、event type 和十进制 authorization epoch 字符串。对 UTF-8 字节计算 SHA-256；原数量另存正 bigint。后续读取须验证完整集合及其与 Event、Delivery 的关联，不能用新订阅替代原证明。
 

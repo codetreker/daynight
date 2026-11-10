@@ -1,3 +1,10 @@
+[data-task-status="proposed"] {
+  --row-background: #edf6f6;
+  --row-hover: #e0eeee;
+  --row-border: #c4dcdc;
+  --row-status: #43757e;
+}
+
 [data-task-status="todo"] {
   --row-background: #f1f3f6;
   --row-hover: #e8ecf1;

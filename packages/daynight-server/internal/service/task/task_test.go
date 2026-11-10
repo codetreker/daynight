@@ -224,7 +224,7 @@ func TestTaskCreateReadAndDerivedState(t *testing.T) {
 		return created, nil
 	}
 	f.audience(ctx, "task.created")
-	got, err := f.tasks.Create(ctx, f.principal, strings.ToUpper(f.project.ID), taskcore.CreateTask{Title: "  Third  ", Description: "Description", DependsOn: []string{strings.ToUpper(second.ID), strings.ToUpper(first.ID)}})
+	got, err := f.tasks.Create(ctx, f.principal, strings.ToUpper(f.project.ID), taskcore.CreateTask{Status: pointer(model.TaskTodo), Title: "  Third  ", Description: "Description", DependsOn: []string{strings.ToUpper(second.ID), strings.ToUpper(first.ID)}})
 	if err != nil || !reflect.DeepEqual(got, created) {
 		t.Fatalf("create authoritative result: %#v %v", got, err)
 	}
@@ -548,7 +548,7 @@ func TestTaskSetStatusAllPairsAndVersionOrder(t *testing.T) {
 
 func TestTaskStatusInputValidation(t *testing.T) {
 	tasks, project, target, principal := taskInputValidationFixture()
-	for _, input := range []taskcore.SetTaskStatus{{Version: 0, Status: model.TaskTodo}, {Version: -1, Status: model.TaskDone}, {Version: 1, Status: ""}, {Version: 1, Status: "proposed"}, {Version: 1, Status: "TODO"}, {Version: 1, Status: " todo"}} {
+	for _, input := range []taskcore.SetTaskStatus{{Version: 0, Status: model.TaskTodo}, {Version: -1, Status: model.TaskDone}, {Version: 1, Status: ""}, {Version: 1, Status: "invalid"}, {Version: 1, Status: "TODO"}, {Version: 1, Status: " todo"}} {
 		_, err := tasks.SetStatus(t.Context(), principal, project.ID, target.ID, input)
 		requireFault(t, err, "invalid_input")
 	}
@@ -814,7 +814,7 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 			t.Fatalf("filtered empty page: %#v %v", got, err)
 		}
 	}
-	for _, request := range []taskservice.TaskListRequest{{PageRequest: model.PageRequest{Limit: 0}}, {PageRequest: model.PageRequest{Limit: 10}, Status: pointer(model.TaskStatus(""))}, {PageRequest: model.PageRequest{Limit: 10}, Status: pointer(model.TaskStatus("proposed"))}, {PageRequest: model.PageRequest{Limit: 10, Cursor: pointer("")}}, {PageRequest: model.PageRequest{Limit: 10, Cursor: firstCursor}, Status: pointer(model.TaskTodo)}, {PageRequest: model.PageRequest{Limit: 10, Cursor: firstCursor}, Ready: pointer(false)}} {
+	for _, request := range []taskservice.TaskListRequest{{PageRequest: model.PageRequest{Limit: 0}}, {PageRequest: model.PageRequest{Limit: 10}, Status: pointer(model.TaskStatus(""))}, {PageRequest: model.PageRequest{Limit: 10}, Status: pointer(model.TaskStatus("invalid"))}, {PageRequest: model.PageRequest{Limit: 10, Cursor: pointer("")}}, {PageRequest: model.PageRequest{Limit: 10, Cursor: firstCursor}, Status: pointer(model.TaskTodo)}, {PageRequest: model.PageRequest{Limit: 10, Cursor: firstCursor}, Ready: pointer(false)}} {
 		_, err := f.tasks.List(ctx, f.principal, f.project.ID, request)
 		requireFault(t, err, "invalid_input")
 	}

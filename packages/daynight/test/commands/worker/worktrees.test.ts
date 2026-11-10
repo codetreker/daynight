@@ -83,7 +83,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((entry) => rm(entry, { recursive: true, force: true })));
 });
 
-describe("worker repositories and task worktrees", () => {
+describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.each(["files", "reftable"] as const)("keeps %s seed and sibling bytes, refs and objects independent of a case copy", async (refFormat) => {
     const first = await fixture(refFormat); const sibling = await fixture(refFormat); const source = await seed(refFormat);
     const head = git(first.repository, ["rev-parse", "HEAD"]);
@@ -240,11 +240,12 @@ describe("worker repositories and task worktrees", () => {
     let prepared: Awaited<ReturnType<typeof prepare>>;
     beforeEach(async () => { prepared = await prepare(); });
 
-    it("ignores unrecognized markers while still reporting moved recognized registrations", async () => {
+    it("preserves unrecognized markers and rejects moved recognized registrations", async () => {
       const { f, adapter, binding, healthyOwner, healthyBinding, admin, locked, original } = prepared;
       for (const marker of ["human", "daynight-worker:{", "daynight-worker:{}", `daynight-worker:${JSON.stringify({ ...JSON.parse(original.slice("daynight-worker:".length)), serverOrigin: "https://example.com" })}`]) {
         await writeFile(locked, `${marker}\n`);
-        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthyBinding }]);
+        if (marker !== "human" && "scanWorktrees" in adapter) await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
+        else expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthyBinding }]);
         expect(await readFile(locked, "utf8")).toBe(`${marker}\n`);
         await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
       }

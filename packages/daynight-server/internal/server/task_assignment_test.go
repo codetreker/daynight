@@ -83,7 +83,7 @@ func TestTaskHTTPAssignmentStrictInputsAndNullableResources(t *testing.T) {
 	other, outsider := "c6666666-6666-4666-8666-666666666666", "c7777777-7777-4777-8777-777777777777"
 	declared := f.target
 	declared.Title, declared.AssignedTo = "Assignment default", nil
-	task, response := assignmentHTTPCreate(f, declared, `{"title":"Assignment default"}`, nil)
+	task, response := assignmentHTTPCreate(f, declared, `{"title":"Assignment default","status":"todo"}`, nil)
 	if task.AssignedTo != nil {
 		t.Fatalf("default assignment: %#v", task)
 	}
@@ -113,7 +113,7 @@ func TestTaskHTTPAssignmentStrictInputsAndNullableResources(t *testing.T) {
 		invalid.Title, invalid.AssignedTo = "Invalid target", &id
 		values := platformHTTPValues(invalid)
 		assignmentHTTPMutation(f, nil, &values, nil, nil, true, &id, model.ErrNotFound)
-		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Invalid target", "assignedTo": id})), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"status": "todo", "title": "Invalid target", "assignedTo": id})), http.StatusBadRequest, "invalid_input")
 		invalid = task
 		invalid.AssignedTo, invalid.Title = &id, "Must not partly save"
 		values = platformHTTPValues(invalid)
@@ -131,7 +131,7 @@ func TestTaskHTTPAssignmentStrictInputsAndNullableResources(t *testing.T) {
 		if target != nil {
 			created.AssignedTo = &f.principal.UserID
 		}
-		row, read := assignmentHTTPCreate(f, created, jsonBody(t, map[string]any{"title": "Explicit assignment", "assignedTo": target}), nil)
+		row, read := assignmentHTTPCreate(f, created, jsonBody(t, map[string]any{"status": "todo", "title": "Explicit assignment", "assignedTo": target}), nil)
 		if !reflect.DeepEqual(row.AssignedTo, created.AssignedTo) || row.AllowAgents {
 			t.Fatalf("creation assignment: %#v", row)
 		}
@@ -184,7 +184,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			other := "c6666666-6666-4666-8666-666666666666"
 			declared := f.target
 			declared.Title = "Executing assignment"
-			task, _ := assignmentHTTPCreate(f, declared, jsonBody(t, map[string]any{"title": declared.Title, "assignedTo": f.principal.UserID}), nil)
+			task, _ := assignmentHTTPCreate(f, declared, jsonBody(t, map[string]any{"status": "todo", "title": declared.Title, "assignedTo": f.principal.UserID}), nil)
 			after := platformHTTPResult(task, task)
 			after.AllowAgents = true
 			task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, nil, true)
@@ -260,7 +260,7 @@ func TestTaskHTTPAssignmentRetainsFormerMember(t *testing.T) {
 	former := "c6666666-6666-4666-8666-666666666666"
 	task := f.target
 	task.Title, task.AssignedTo = "Retained responsibility", &former
-	task, _ = assignmentHTTPCreate(f, task, jsonBody(t, map[string]any{"title": task.Title, "assignedTo": former}), nil)
+	task, _ = assignmentHTTPCreate(f, task, jsonBody(t, map[string]any{"status": "todo", "title": task.Title, "assignedTo": former}), nil)
 	after := platformHTTPResult(task, task)
 	after.AllowAgents = true
 	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, nil, true)
@@ -273,7 +273,7 @@ func TestTaskHTTPAssignmentRetainsFormerMember(t *testing.T) {
 	}
 	unassigned := f.target
 	unassigned.Title, unassigned.AssignedTo = "Cannot select former member", nil
-	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"title": unassigned.Title}), nil)
+	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), nil)
 	candidate := unassigned
 	candidate.AssignedTo = &former
 	values := platformHTTPValues(candidate)
@@ -287,12 +287,12 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 	f := newTaskHTTPFixture(t)
 	unassigned := f.target
 	unassigned.Title, unassigned.AssignedTo = "Unassigned prerequisite", nil
-	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"title": unassigned.Title}), nil)
+	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), nil)
 	assigned := f.target
 	assigned.Title = "Assigned successor"
 	assigned.DependsOn, assigned.BlockedBy = []string{unassigned.ID}, []string{unassigned.ID}
 	assigned.Ready = false
-	assigned, _ = assignmentHTTPCreate(f, assigned, jsonBody(t, map[string]any{"title": assigned.Title, "assignedTo": f.principal.UserID, "dependsOn": []string{unassigned.ID}}), []model.Task{unassigned})
+	assigned, _ = assignmentHTTPCreate(f, assigned, jsonBody(t, map[string]any{"status": "todo", "title": assigned.Title, "assignedTo": f.principal.UserID, "dependsOn": []string{unassigned.ID}}), []model.Task{unassigned})
 	rows := []model.Task{unassigned, assigned}
 	facts := []model.TaskAssigneeFact{{UserID: f.principal.UserID, ProfileID: &f.principal.UserID, HasProjectAccess: true, Qualified: true}}
 	check := func(expected map[string]*string, delta string) {

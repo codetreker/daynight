@@ -35,6 +35,8 @@ snapshot or migration proof remain with that proof. Real pool-exhaustion,
 connection-release and lost-commit-reply witnesses retain physical observations;
 a supplied mock outcome cannot replace them. Equal test names are insufficient
 to remove a duplicate: distinct inputs and assertions must remain executed.
+The [private-transfer reservation decision](2026-11-10-private-transfer-reservation-test-ownership.md)
+applies this separation to reservation rules and receipt/ledger persistence.
 
 Attachment metadata upsert, readback and deletion have one canonical scenario
 in the attachment implementation tests. It invokes the public `Store` write

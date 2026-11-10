@@ -1,3 +1,6 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,7 +99,7 @@ beforeEach(() => {
     project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
     reportConfiguration: vi.fn(), report: vi.fn(),
   });
-  mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) });
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockResolvedValue(() => "prompt");
   mocks.probe.mockResolvedValue("0.164.0");
@@ -388,7 +391,7 @@ describe("worker cloud-first startup", () => {
       if (projectId === undefined && scenario === "unavailable") throw new Error("Project does not exist for the configured worker repository.");
       return { id: projectId ?? uuid(1), repoUrl: projectId === undefined ? remoteUrl : second.remote };
     });
-    if (scenario === "foreign") mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]) });
+    if (scenario === "foreign") mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]) }, { scanWorktrees: scanFromList }));
     let options: WorkerCoordinatorOptions | undefined;
     mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
     const running = runWorker({ ...f, signal: cancellation.signal });
@@ -824,7 +827,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
   expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
-  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(12);
+  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(4);
@@ -838,7 +841,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(3);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(12);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   unchangedWorker.close();
 });
 

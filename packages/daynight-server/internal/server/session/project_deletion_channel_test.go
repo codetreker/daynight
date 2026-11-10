@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -237,4 +238,22 @@ func TestDeletedProjectClosesTerminalBrowserAfterWorkerCompletion(t *testing.T) 
 	if missingReplies.Load() == 0 || f.calls.Called("DisconnectTerminalViewer") != 1 {
 		t.Fatal("browser closure did not follow missing-Project reply and one cleanup")
 	}
+}
+
+func TestDeletedProjectTimelineReturnsNotFound(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	f.authentication.ExpectCalls(1)
+	f.nextCall("Timeline")
+	f.backend.Configure(func(c *sessionhttp.ServiceCallsForTest) {
+		c.Timeline = func(ctx context.Context, p model.Principal, project, task, id, direction, cursor string, limit int) (map[string]any, error) {
+			if err := f.scopeArguments(ctx, p, project, task, id); err != nil {
+				return nil, err
+			}
+			if err := f.require(direction == "tail" && cursor == "" && limit == 100, "missing Project changed timeline defaults"); err != nil {
+				return nil, err
+			}
+			return nil, &model.Fault{Code: "not_found", Message: "Project was not found."}
+		}
+	})
+	assertProjectError(t, projectRequest(f.handler, http.MethodGet, f.base+"/"+f.snapshot.SessionID+"/timeline", ""), http.StatusNotFound, "not_found")
 }

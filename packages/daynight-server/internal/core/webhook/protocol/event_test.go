@@ -42,6 +42,14 @@ func TestAllFactsRoundTrip(t *testing.T) {
 	ts := sampleTime()
 	reply := "55555555-5555-4555-8555-555555555555"
 	tests := []Fact{
+		func() Fact { f := fact(Created); f.Status = "proposed"; return f }(),
+		func() Fact { f := fact(StatusChanged); f.PreviousStatus = "proposed"; f.Status = "done"; return f }(),
+		func() Fact {
+			f := fact(StatusChanged)
+			f.PreviousStatus = "in_progress"
+			f.Status = "proposed"
+			return f
+		}(),
 		func() Fact { f := fact(Created); f.Status = "todo"; f.Paused = true; return f }(),
 		func() Fact { f := fact(StatusChanged); f.PreviousStatus = "done"; f.Status = "cancelled"; return f }(),
 		func() Fact { f := fact(Paused); f.Paused = true; return f }(),

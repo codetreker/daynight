@@ -420,7 +420,7 @@ test("deletes every private generation after real Controller stop while preservi
   try {
     db.prepare("INSERT INTO projects VALUES (?,?,?)").run(projectId, "https://example.test/independent", repository);
     db.prepare("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)").run(projectId, taskId, claimId, "active", "codex", randomUUID(), "web");
-    db.prepare("INSERT INTO cleanup_schedules VALUES (?,?,?,?,?,?,?,?,?)").run(projectId, taskId, claimId, worktreeId, 1234, 1, 5678, "backend-close", "unrelated retained responsibility");
+    db.prepare("INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error) VALUES (?,?,?,?,?,?,?,?,?)").run(projectId, taskId, claimId, worktreeId, 1234, 1, 5678, "backend-close", "unrelated retained responsibility");
   } finally { db.close(); }
   const rows = independentRows();
   await launchAndObserveReady(f, signal);

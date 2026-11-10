@@ -119,7 +119,7 @@ Results are ordered by creation time and UUID. `structuredContent.data` contains
 
 `task_ready` has no assignee filter. To find all ready tasks assigned to the connected account, use `task_list` with `ready: true` and `assignedTo: "me"`, then traverse its pages. Do not fetch a capped unfiltered ready batch and filter it locally as though the result were complete.
 
-An empty ready result does not mean the Project has no tasks. In-progress work, blocked todo work, terminal history or tasks excluded by the supplied filters may still exist.
+An empty ready result does not mean the Project has no tasks. Proposed suggestions, in-progress work, blocked todo work, terminal history or tasks excluded by the supplied filters may still exist.
 
 ## Project inventories and filters
 
@@ -127,7 +127,7 @@ An empty ready result does not mean the Project has no tasks. In-progress work, 
 
 | Input | Meaning |
 | --- | --- |
-| `status` | Select one of `todo`, `in_progress`, `done` or `cancelled`. |
+| `status` | Select one of `proposed`, `todo`, `in_progress`, `done` or `cancelled`. |
 | `all: true` | Include both terminal statuses as well as unfinished work. Cannot be combined with `status`. |
 | `assignedTo` | A local user UUID, `"me"` for the current authenticated account, or `"unassigned"`. |
 | `ready` | Filter by the computed readiness boolean. |
@@ -137,7 +137,7 @@ An empty ready result does not mean the Project has no tasks. In-progress work, 
 
 With neither `all: true` nor an explicit status, both `done` and `cancelled` are excluded. Include terminal history when the question requires it; a default unfinished list cannot rule out previously completed or cancelled work.
 
-Results group in-progress Tasks first, then ready todo, blocked todo, and terminal Tasks when selected. Within each group, creation time and UUID determine order. This is scheduling-oriented ordering, not relevance ranking.
+Results group in-progress Tasks first, then ready todo, blocked todo, proposed, and terminal Tasks when selected. Within each group, creation time and UUID determine order. This is scheduling-oriented ordering, not relevance ranking.
 
 For all ready work assigned to the current account:
 
@@ -203,12 +203,13 @@ Task statuses are:
 
 | Status | Meaning |
 | --- | --- |
-| `todo` | Work has not started in the current execution interval. It may be ready or blocked. |
+| `proposed` | An unconfirmed suggestion. It is unfinished, never ready and cannot be acquired automatically or satisfy prerequisites. |
+| `todo` | Confirmed work has not started in the current execution interval. It may be ready or blocked. |
 | `in_progress` | Work is recorded as in progress. This state is not an executor lock, lease or process handle. |
 | `done` | The work is recorded as successfully delivered. Actual results and applicable acceptance must support that conclusion. |
 | `cancelled` | No further execution is required. Cancellation is irreversible and does not establish that the requirements were delivered. |
 
-New Tasks start `todo` with `allowAgents: false`. Registration does not start execution. `task_update` changes metadata; `task_set_status` changes status.
+New Tasks default to `proposed` with `allowAgents: false`. Creation accepts an optional proposed/todo status; use explicit todo for confirmed work, including internal multi-step tasks. Registration does not start execution. Ordinary proposed/todo/in_progress/done state changes require no fixed stage order; existing dependency and Worker protections continue to apply. `task_update` changes metadata; `task_set_status` changes status.
 
 Before entering `in_progress` or `done`, every direct prerequisite must be `done` or `cancelled`. Cancellation itself does not require satisfied prerequisites. Cancelling a predecessor preserves dependency edges and can make a successor ready when all its other conditions are met; it does not supply missing deliverables or stage confirmations.
 
@@ -217,9 +218,9 @@ A done Task cannot be reopened while a direct successor is `in_progress` or `don
 | Actual transition | Timestamp effect |
 | --- | --- |
 | Enter `in_progress` | Start a new execution interval; clear `completedAt`. |
-| Return to `todo` | Clear `startedAt` and `completedAt`. |
+| Return to `proposed` or `todo` | Clear `startedAt` and `completedAt`. |
 | `in_progress` to `done` | Preserve nullable `startedAt`; record `completedAt`. |
-| `todo` to `done` | Record `completedAt` without a start time; elapsed execution time is unknown. |
+| `proposed` or `todo` to `done` | Record `completedAt` without a start time; elapsed execution time is unknown. |
 | Enter `cancelled` | Record `cancelledAt`; preserve the prior execution start/completion times. |
 
 In time-bearing Task resources, `cancelledAt` is required and nullable. The current terminal timestamp is `completedAt` for done work and `cancelledAt` for cancelled work. Do not interpret a preserved historical completion time as delivery of the cancelled requirement.

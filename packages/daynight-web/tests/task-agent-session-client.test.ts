@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskSessionClient } from '../src/features/task-agent-session/client';
 import type { SessionApi, SessionChannel } from '../src/api/sessions';
 import type { BrowserMessage, TimelinePage } from '../../daynight/src/session/controller-protocol';
-import type { SessionOperation, SessionSnapshot } from '../src/api/types';
+import type { SessionOperation, SessionSnapshot, TimelineEntry } from '../src/api/types';
 const snapshot = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
@@ -22,6 +22,67 @@ function fixture(storage: Storage | null = null, principal = userId, ownerUserId
 }
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' }); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true)); }
 describe('task session transport lifecycle', () => {
+  it('keeps an image moved into retained Markdown and revokes it when its known entry removes the reference', async () => {
+    const f = fixture(), resource = { resourceId: '00000012-1111-4111-8111-111111111111', name: 'saved.png', status: 'available' as const, mediaType: 'image/png', byteLength: '68', sha256: 'a'.repeat(64), error: null };
+    const part = { type: 'image' as const, imageId: '00000013-1111-4111-8111-111111111111', resourceId: resource.resourceId, label: resource.name };
+    const entry: TimelineEntry = { entryId: '00000014-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [part] };
+    vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [entry], resources: [resource], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    await ready(f);
+    const scope = f.client.imageScope()!, asset = scope.asset(resource)!;
+    const update = (payload: TimelineEntry, eventSeq: string) => f.receive({ protocol: f.s.protocol, type: 'event', cursor: eventSeq, event: { protocol: f.s.protocol, ...sessionBinding(f.s), sessionId: f.s.sessionId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq, kind: 'timeline_upsert', payload } });
+    update({ ...entry, revision: '2', content: [{ type: 'markdown', text: '', partId: '00000015-1111-4111-8111-111111111111', revision: '2', textSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', complete: true, truncated: false, bindings: [], retainedImages: [{ imageId: part.imageId, start: 0, end: 4, part, sourceRevision: '1', sourceTextSha256: 'b'.repeat(64), linkHref: null }] }] }, '1');
+    expect(asset.canRead()).toBe(true); expect(f.client.imageScope()).toBe(scope);
+    update({ ...entry, revision: '3', content: [{ type: 'text', text: 'Image removed.' }] }, '2');
+    expect(scope.valid).toBe(true); expect(asset.canRead()).toBe(false);
+  });
+  it.each([
+    { completeBefore: false, originalSeq: '1', through: '50', valid: true },
+    { completeBefore: true, originalSeq: '1', through: '50', valid: false },
+    { completeBefore: true, originalSeq: '100', through: '50', valid: true },
+    { completeBefore: false, originalSeq: '75', through: '100', valid: false },
+  ])('reconciles absent image rows only inside authoritative coverage: %j', async ({ completeBefore, originalSeq, through, valid }) => {
+    const f = fixture(), resource = { resourceId: '00000012-1111-4111-8111-111111111111', name: 'saved.png', status: 'available' as const, mediaType: 'image/png', byteLength: '68', sha256: 'a'.repeat(64), error: null };
+    const entry: TimelineEntry = { entryId: '00000014-1111-4111-8111-111111111111', entrySeq: originalSeq, revision: '1', kind: 'assistant_message', content: [{ type: 'resource', resourceId: resource.resourceId, label: resource.name }] };
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [entry], resources: [resource], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    await ready(f);
+    const scope = f.client.imageScope()!, asset = scope.asset(resource)!;
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: { ...f.s, connectionEpoch: '2' }, cursor: 'reconnected' });
+    expect(f.client.imageScope()).toBe(scope); expect(asset.canRead()).toBe(true);
+    const replacement = { ...f.s, sessionRevision: String(BigInt(f.s.sessionRevision) + 1n), connectionEpoch: '2', historyEpoch: 'next-history', lastTimelineSeq: through };
+    const tail: TimelineEntry[] = [{ ...entry, entryId: '00000016-1111-4111-8111-111111111111', entrySeq: '50', content: [{ type: 'text', text: 'New tail.' }] }];
+    if (through !== '50') tail.push({ ...tail[0]!, entryId: '00000017-1111-4111-8111-111111111111', entrySeq: through });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ sessionId: f.s.sessionId, historyEpoch: replacement.historyEpoch, items: tail, resources: [], beforeCursor: completeBefore ? null : 'older', afterCursor: null, hasMoreBefore: !completeBefore, hasMoreAfter: false, lastEventSeq: '0' });
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: replacement, cursor: 'new-history' });
+    await vi.waitFor(() => expect(f.client.snapshot().historySettled).toBe(true));
+    expect(f.client.snapshot().state.entries.map(item => item.entryId)).toEqual(tail.map(item => item.entryId));
+    expect(f.client.imageScope()).toBe(scope); expect(asset.canRead()).toBe(valid);
+  });
+  it.each([401, 403, 404, 410])('revokes existing image scopes when a resource read returns %s', async status => {
+    const f = fixture();
+    const resource = { resourceId: '00000012-1111-4111-8111-111111111111', name: 'saved.png', status: 'available' as const, mediaType: 'image/png', byteLength: '68', sha256: 'a'.repeat(64), error: null };
+    vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [], resources: [resource], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    await ready(f);
+    const scope = f.client.imageScope()!, invalidated = vi.fn(), asset = scope.asset(resource)!;
+    scope.subscribeInvalidation(invalidated);
+    expect(asset.canDownload()).toBe(true);
+    vi.mocked(f.api.resource).mockRejectedValue(new ApiError('server', status, status === 410 ? 'task_deleted' : 'permission_denied'));
+    await expect(f.client.resource(resource.resourceId, new AbortController().signal)).rejects.toBeInstanceOf(ApiError);
+    expect(scope.valid).toBe(false); expect(asset.canDownload()).toBe(false);
+    expect(invalidated).toHaveBeenCalledOnce(); expect(f.client.imageScope()).toBeNull();
+  });
+  it('keeps one image scope across renders and reconnects, and revokes it on close', async () => {
+    const f = fixture(); await ready(f);
+    const scope = f.client.imageScope();
+    expect(scope?.identity.actorUserId).toBe(userId);
+    expect(scope?.canRead()).toBe(true);
+    expect(f.client.imageScope()).toBe(scope);
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: { ...f.s, connectionEpoch: '2' }, cursor: 'next' });
+    expect(f.client.imageScope()).toBe(scope);
+    f.client.close();
+    expect(scope?.valid).toBe(false);
+    expect(scope?.canRead()).toBe(false);
+    expect(f.client.imageScope()).toBeNull();
+  });
   it('keeps a non-owner live reader connected while refusing messages, cancellation and responses', async () => {
     const f = fixture(null, userId, '00000010-1111-4111-8111-111111111111', { operations: { canSend: true, canCancel: true, canRespond: true }, currentTurnId: 'working-turn', activity: 'working' });
     const interaction = { interactionId: 'approval', revision: '1', state: 'pending' as const, kind: 'approval' as const, title: 'Approve Write', detail: 'notes/review.txt', actions: ['allow_once' as const, 'reject' as const] };

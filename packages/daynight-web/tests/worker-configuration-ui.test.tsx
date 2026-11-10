@@ -8,7 +8,7 @@ import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheError } from '../src/features/task-cache/database';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
+import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerResponse } from './helpers/workers';
 
@@ -409,5 +409,111 @@ describe('Worker detail configuration integration', () => {
     change('Startup arguments', '[still private'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
     actor = nextUser; view.rerender(ui(second, true)); expect(screen.queryByDisplayValue('[still private')).toBeNull(); await flush();
     expect(input()).toHaveValue('8'); expect(input('Startup arguments')).toHaveValue('[]');
+  });
+});
+
+
+describe('Worker control mode form', () => {
+  it('saves a mode change, retains the actual old mode and includes mode in overall application', async () => {
+    const value = { ...configurationValue(), agentControlMode: 'herdr' as const };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'herdr')]);
+    const writes: unknown[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { revision: string; value: WorkerConfigurationValue };
+        writes.push(body);
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return controlModeResponse(resource);
+    });
+    mount(); await flush();
+    const mode = screen.getByRole('combobox', { name: 'Control mode' });
+    expect(within(mode).getAllByRole('option').map(option => option.textContent)).toEqual(['herdr', 'web']);
+    const feedback = document.getElementById('feedback-agentControlMode')!;
+    expect(mode).toHaveValue('herdr'); expect(feedback).toHaveTextContent('Actual: herdr');
+    fireEvent.change(mode, { target: { value: 'web' } }); expect(feedback).toHaveTextContent('Unsaved');
+    save(); await flush();
+    expect(writes).toEqual([{ revision: '1', value: { ...value, agentControlMode: 'web' } }]);
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: herdr');
+    const target = resource.desired!.value;
+    resource = observed('2', target, globals(target, '2'), '2'); await advance();
+    expect(document.querySelector('.configuration-summary')).toHaveTextContent('Awaiting application');
+    expect(feedback).toHaveTextContent('Actual: Not confirmed');
+    const error = { code: 'invalid_configuration' as const, category: 'agent' as const, phase: 'validate' as const, occurredAt: WORKER_TIME };
+    resource = observed('2', target, [...globals(target, '2'), { ...item({ kind: 'agentControlMode' }, 'herdr', '2'), state: 'error', error }], '3'); await advance();
+    expect(feedback).toHaveTextContent('Failed'); expect(feedback).toHaveTextContent('Actual: herdr'); expect(feedback).toHaveTextContent('Validation · Invalid configuration');
+    expect(document.querySelector('.configuration-summary')).toHaveTextContent('Partially applied');
+    resource = observed('2', target, [...globals(target, '2'), item({ kind: 'agentControlMode' }, 'web', '2')], '4'); await advance();
+    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: web');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('leaves unadopted mode unselected and protects an explicit choice from late adoption', async () => {
+    let resource = configurationResource('1', { ...configurationValue(), agentControlMode: null });
+    const fetch = install(() => controlModeResponse(resource));
+    mount(); await flush();
+    const mode = screen.getByRole('combobox', { name: 'Control mode' }) as HTMLSelectElement;
+    expect(mode.selectedIndex).toBe(-1); expect(mode.options).toHaveLength(2);
+    expect(document.getElementById('feedback-agentControlMode')).toHaveTextContent('Actual: Not confirmed');
+    fireEvent.change(mode, { target: { value: 'herdr' } }); mode.focus();
+    resource = configurationResource('2', { ...configurationValue(), agentControlMode: 'web' }); await advance();
+    expect(screen.getByRole('combobox', { name: 'Control mode' })).toBe(mode);
+    expect(mode).toHaveValue('herdr'); expect(mode).toHaveFocus();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' }));
+    expect(mode).toHaveValue('web');
+    fireEvent.change(mode, { target: { value: 'herdr' } });
+    fireEvent.click(within(document.querySelector('.configuration-form') as HTMLElement).getByRole('button', { name: 'Discard changes' }));
+    expect(mode).toHaveValue('web');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  });
+  it('disables only mode on an old service while saving other fields', async () => {
+    let resource = configurationResource();
+    const writes: Record<string, unknown>[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)); writes.push(body.value);
+        resource = configurationResource('2', body.value);
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    expect(screen.getByRole('combobox', { name: 'Control mode' })).toBeDisabled();
+    expect(screen.getByText('Upgrade the service to configure control mode.')).toBeInTheDocument();
+    change('Automatic recovery limit', '8'); save(); await flush();
+    expect(writes).toHaveLength(1); expect(writes[0]).not.toHaveProperty('agentControlMode');
+    expect(writes[0]!.recoveryLimit).toBe(8); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+});
+
+describe('control mode capability downgrade', () => {
+  it.each(['saved', 'unknown'] as const)('keeps unsent mode edits while other settings are %s through the legacy contract', async result => {
+    let supported = true;
+    let resource = configurationResource('1', { ...configurationValue(), agentControlMode: 'herdr' as const });
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value);
+        resource = configurationResource(String(BigInt(resource.desired!.revision) + 1n), { ...resource.desired!.value, ...body.value });
+        if (result === 'unknown' && !supported) return Promise.reject(new TypeError('response lost'));
+      }
+      if (supported) return controlModeResponse(resource);
+      const { agentControlMode: _mode, ...legacy } = resource.desired!.value;
+      return configurationResponse(configurationResource(resource.desired!.revision, legacy));
+    });
+    mount(); await flush();
+    const mode = screen.getByRole('combobox', { name: 'Control mode' });
+    fireEvent.change(mode, { target: { value: 'web' } }); supported = false; await advance();
+    expect(mode).toBeDisabled(); expect(mode).toHaveValue('web');
+    const saveButton = screen.getByRole('button', { name: 'Save configuration' });
+    expect(saveButton).toBeDisabled();
+    change('Automatic recovery limit', '8'); expect(saveButton).toBeEnabled(); save(); await flush();
+    expect(writes).toHaveLength(1); expect(writes[0]).not.toHaveProperty('agentControlMode'); expect(writes[0]!.recoveryLimit).toBe(8);
+    expect(mode).toHaveValue('web'); expect(document.querySelector('.draft-summary')).toHaveTextContent('Unsaved changes');
+    expect(saveButton).toBeDisabled();
+    supported = true; await advance(); expect(mode).toBeEnabled(); expect(mode).toHaveValue('web'); expect(saveButton).toBeEnabled();
+    save(); await flush(); expect(writes).toHaveLength(2); expect(writes[1]!.agentControlMode).toBe('web');
+    expect(saveButton).toBeDisabled(); expect(document.querySelector('.draft-summary')).toHaveTextContent('No changes');
   });
 });

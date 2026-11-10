@@ -16,7 +16,7 @@ func workerClaimBody(version int64) map[string]any {
 func createHTTPWorkerTask(t *testing.T, handler *resourceTestHandler, projectID, title string, dependencies ...string) api.Task {
 	t.Helper()
 	return decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(projectID), jsonBody(t, map[string]any{
-		"title": title, "description": "initial description", "dependsOn": append([]string{}, dependencies...), "assignedTo": handler.principal.UserID,
+		"title": title, "description": "initial description", "status": "todo", "dependsOn": append([]string{}, dependencies...), "assignedTo": handler.principal.UserID,
 	})), http.StatusCreated)
 }
 

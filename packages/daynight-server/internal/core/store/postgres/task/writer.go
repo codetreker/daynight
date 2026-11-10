@@ -110,12 +110,12 @@ func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (
 	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7, assigned_to = $8,
 		started_at = CASE
 			WHEN status <> $5 AND $5 = 'in_progress' THEN statement_timestamp()
-			WHEN status <> $5 AND $5 = 'todo' THEN NULL
-			WHEN status = 'todo' AND $5 = 'done' THEN NULL
+			WHEN status <> $5 AND $5 IN ('proposed', 'todo') THEN NULL
+			WHEN status IN ('proposed', 'todo') AND $5 = 'done' THEN NULL
 			ELSE started_at END,
 		completed_at = CASE
 			WHEN status <> $5 AND $5 = 'done' THEN statement_timestamp()
-			WHEN status <> $5 AND $5 IN ('todo', 'in_progress') THEN NULL
+			WHEN status <> $5 AND $5 IN ('proposed', 'todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
 		cancelled_at = CASE
             WHEN status <> $5 AND $5 = 'cancelled' THEN statement_timestamp()

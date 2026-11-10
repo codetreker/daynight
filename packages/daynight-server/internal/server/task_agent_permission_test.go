@@ -18,7 +18,7 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	row := f.target
 	row.AssignedTo, row.Title = nil, "Manual by default"
 	created := platformHTTPWrite(f, nil, platformHTTPValues(row), row, false)
-	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Manual by default"}`)
+	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Manual by default","status":"todo"}`)
 	task := decodeResponse[api.Task](t, response, http.StatusCreated)
 	platformHTTPCheck(t, task, platformHTTPAPI(*created))
 	row = *created

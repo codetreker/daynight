@@ -12,7 +12,7 @@ Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额
 - `herdr`：worker 通过 Herdr 启动原生终端会话，Task Session 提供只读终端观察和明确授权的控制；Herdr 承载终端通道。
 - `web`：worker 直接启动 Daynight controller，由 controller 持有私有原生会话，经 Daynight server 将结构化事件和操作连接到 Task Session。整个生命周期不依赖 Herdr 安装或服务。
 
-配置复用 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
+模式由 Worker 云端配置的已应用 agentControlMode 决定。首次采纳读取 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，已有本地 `web` 保持其值；旧服务继续使用本地模式。模式变更仅用于新 claim，原 claim 保持冻结模式、native 配置和执行身份，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
 
 本文件定义要求，不以字段或协议存在宣称运行时已完成。各组件的实际可用性与拒绝行为由[实现设计](../design/task-session-protocol.md)说明。
 
@@ -237,7 +237,7 @@ Task、独立 Test 和 Bot 的归档 ready 后，结束状态只在 Session 头�
 
 归档上传和正文读取共享占用额度：每服务实例同时一项，同一共享存储根内每个归档原 owner 同时一项。额度满时立即返回 429 `resource_busy`；额度覆盖正文读取、校验、存储和响应发送，发送结束或失败后释放。上传正文和响应发送分别有 120 秒实际 I/O 期限；超时不得将未完成传输报告为成功。额度不扩大原有访问与删除后收尾权限。
 
-归档 pending、failed、unavailable 必须明确显示；未确认完整上传不得删除唯一历史源。失败只重试归档，不重新执行任务。任务软删除不能阻断仍具有效凭据和项目成员资格的原执行 owner 完成归档及清理；此收尾权限不恢复已删除任务的页面、历史正文读取或控制权限。归档建立的持久原生身份须在所有共享存储的服务实例上保持一致，旧 live cache 和终态清理不能将其回退。归档须验证原执行归属、代次、条目顺序、资源引用及字节完整性；不完整或超限内容明确失败，不能静默截断。当前归档上限为 64 MiB，单资源 8 MiB；本机源保留供诊断与重试。容器在完成上传前销毁仍可能丢失内容，运行中远端增量备份和独立容器管理不属于此能力；普通 worktree 不能被称为安全 sandbox。
+归档 pending、failed、unavailable 必须明确显示；未确认完整上传不得删除唯一历史源。失败只重试归档，不重新执行任务。Worker 对已证明的历史不完整采用[待修复与低频条件探测](daynight-worker.md)；保留原 generation 的 receipt 对账机会，不通过清除完整性标记释放原件。任务软删除不能阻断仍具有效凭据和项目成员资格的原执行 owner 完成归档及清理；此收尾权限不恢复已删除任务的页面、历史正文读取或控制权限。归档建立的持久原生身份须在所有共享存储的服务实例上保持一致，旧 live cache 和终态清理不能将其回退。归档须验证原执行归属、代次、条目顺序、资源引用及字节完整性；不完整或超限内容明确失败，不能静默截断。当前归档上限为 64 MiB，单资源 8 MiB；本机源保留供诊断与重试。容器在完成上传前销毁仍可能丢失内容，运行中远端增量备份和独立容器管理不属于此能力；普通 worktree 不能被称为安全 sandbox。
 
 服务端重启或网络积压不能仅因显示事件无法转发而停止健康 Agent。显示传输限额按实际 JSON 编码后的字节计算；合法文本中的 HTML 字符或 Unicode 转义不能让同一事件永久阻塞确认与重同步。真正超预算的非交互展示内容仍保留在本机，传输端必须提供有界、可继续同步的降级路径，不能丢失操作证据或伪造已完整回放。带权限语义的交互必须保持完整，不因展示降级改变审批问题或答案。原生执行证据和操作日志必须继续在本机保存；重新同步前不开放控制。服务端暂收命令不等于 Controller 已持久接收，网页只在真实原生受理后清除对应草稿，未知结果不得自动重发。历史、传输和最小操作账本分别具有明确容量边界，不能通过危险清理去重记录来维持容量。
 

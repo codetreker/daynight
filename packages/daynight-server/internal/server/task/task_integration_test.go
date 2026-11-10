@@ -31,7 +31,7 @@ func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 	changed := created
 	changed.Title, changed.Description, changed.Version = "Renamed", "Filled", 4
 	h.Tasks.CreateFunc = func(ctx context.Context, principal model.Principal, projectID string, input taskcore.CreateTask) (model.Task, error) {
-		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Title != "Default values" || input.Description != "" || len(input.DependsOn) != 0 || input.DependsOn == nil || input.Properties == nil || len(input.Properties) != 0 || input.AssignedTo != nil || input.RequiredPlatform != nil {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Title != "Default values" || input.Description != "" || len(input.DependsOn) != 0 || input.DependsOn == nil || input.Properties == nil || len(input.Properties) != 0 || input.AssignedTo != nil || input.RequiredPlatform != nil || input.Status != nil {
 			t.Fatalf("create input: %+v principal=%+v project=%s", input, principal, projectID)
 		}
 		return created, nil
@@ -92,6 +92,52 @@ func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 	}
 }
 
+func taskHTTPStatus(value model.TaskStatus) *model.TaskStatus { return &value }
+
+func TestTaskHTTPCreateStatusForwarding(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status *model.TaskStatus
+	}{
+		{name: "omitted"},
+		{name: "proposed", status: taskHTTPStatus(model.TaskProposed)},
+		{name: "todo", status: taskHTTPStatus(model.TaskTodo)},
+		{name: "invalid", status: taskHTTPStatus("unknown")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			result := testTask("Creation status")
+			result.Status, result.Ready = model.TaskProposed, false
+			if tc.status != nil {
+				result.Status = *tc.status
+				result.Ready = *tc.status == model.TaskTodo
+			}
+			h.Tasks.CreateFunc = func(_ context.Context, principal model.Principal, projectID string, input taskcore.CreateTask) (model.Task, error) {
+				if principal != h.principal || projectID != testProjectID || !reflect.DeepEqual(input.Status, tc.status) {
+					t.Fatalf("creation status was changed: %+v", input)
+				}
+				if tc.name == "invalid" {
+					return model.Task{}, &model.Fault{Code: "invalid_input", Message: "Invalid creation status."}
+				}
+				return result, nil
+			}
+			body := map[string]any{"title": result.Title}
+			if tc.status != nil {
+				body["status"] = *tc.status
+			}
+			response := projectRequest(h, http.MethodPost, taskCollection(testProjectID), jsonBody(t, body))
+			if tc.name == "invalid" {
+				assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+				return
+			}
+			actual := decodeResponse[api.Task](t, response, http.StatusCreated)
+			if actual.Status != string(result.Status) || actual.Ready != result.Ready {
+				t.Fatalf("creation status projection: %+v", actual)
+			}
+		})
+	}
+}
+
 func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 	h := newHTTPFixture(t, io.Discard)
 	collection := taskCollection(testProjectID)
@@ -103,7 +149,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"title":"x","description":null}`, `{"title":"x","description":1}`,
 		`{"title":"x","dependsOn":null}`, `{"title":"x","dependsOn":{}}`, `{"title":"x","dependsOn":"id"}`,
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
-		`{"title":"x","status":"todo"}`, `{"title":"x","version":1}`, `{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
+		`{"title":"x","status":null}`, `{"title":"x","status":1}`, `{"title":"x","status":[]}`, `{"title":"x","status":{}}`, `{"title":"x","version":1}`, `{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
 		"{\"title\":\"" + string([]byte{0xff}) + "\"}",
 	} {
 		t.Run("create_"+body[:min(len(body), 70)], func(t *testing.T) {

@@ -115,7 +115,7 @@ describe("lossless task versions", () => {
     ("preserves JSON syntax failures for %s", (raw) => expect(() => parseApiJson(raw)).toThrow(SyntaxError));
 });
 
-describe.each(['todo', 'in_progress', 'done'] as const)('%s status transport', (target) => {
+describe.each(['proposed', 'todo', 'in_progress', 'done'] as const)('%s status transport', (target) => {
   it.each([1n, 9_007_199_254_740_993n, 9_223_372_036_854_775_806n])('puts exact numeric version %s and accepts either possible status version', async (version) => {
     for (const delta of [0n, 1n]) {
       const saved = { ...task, version: version + delta, status: target, ready: target === 'todo' };
@@ -128,13 +128,13 @@ describe.each(['todo', 'in_progress', 'done'] as const)('%s status transport', (
     }
   });
   it.each([
-    { ...task, projectId: otherId }, { ...task, id: otherId }, { ...task, status: 'proposed' },
+    { ...task, projectId: otherId }, { ...task, id: otherId }, { ...task, status: 'pending' },
     { ...task, version: 3n },
   ])('rejects mismatching response scope, status or version %#', async (fields) => {
     fetchResponse(response(Object.assign({}, task, { status: target, version: 2n }, fields)));
     await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
   });
-  it('rejects a different three-state target and unexpected successful status', async () => {
+  it('rejects a different status target and unexpected successful status', async () => {
     fetchResponse(response({ ...task, status: target === 'done' ? 'todo' : 'done', version: 2n }));
     await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     fetchResponse(response({ ...task, status: target, version: 2n }, 201));
@@ -169,7 +169,7 @@ describe('shared status transport failures', () => {
     for (const version of [0n, -1n, 9_223_372_036_854_775_808n, 9_007_199_254_740_992 as unknown as bigint]) {
       await expect(setTaskStatus(projectId, taskId, target, version, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     }
-    await expect(setTaskStatus(projectId, taskId, 'proposed' as never, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(setTaskStatus(projectId, taskId, 'pending' as never, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('retains network/body causes and never replays writes', async () => {

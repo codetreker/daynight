@@ -22,7 +22,7 @@ func (s *Projects) ResolveRepository(ctx context.Context, principal model.Princi
 	var found bool
 	err = read(ctx, s.store, func(dao store.ProjectReader) error {
 		var err error
-		result, found, err = core.FindRepository(ctx, dao, principal, match)
+		result, found, err = s.findRepository(ctx, dao, principal, match)
 		return err
 	})
 	if err != nil {

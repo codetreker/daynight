@@ -55,11 +55,11 @@ describe("Bash completion rendering", () => {
     expect(script).toContain("dn_options=('--tree' '--project' '--json' '-h' '--help')");
   });
 
-  it("offers unified status command and four-state filtering without metadata status updates", () => {
+  it("offers unified status command and Task status filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
     expect(script).toContain("dn_children=('session' 'create' 'list' 'search' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'set-status' 'delete' 'graph' 'step' 'thread' 'attachment')");
-    expect(script).toContain("dn_value_choices=('todo' 'in_progress' 'done' 'cancelled')");
+    expect(script).toContain("dn_value_choices=('proposed' 'todo' 'in_progress' 'done' 'cancelled')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");
     expect(update).toContain("'--if-version'");
@@ -116,7 +116,7 @@ describe("Bash completion rendering", () => {
     expect(script).toContain("dn_option_actions=('' '' '' 'help' 'help')");
     expect(script).toContain("dn_option_repeats=('0' '0' '0' '0' '0')");
     expect(script).toContain("dn_argument_count=2");
-    expect(script).toContain("dn_choices=('todo' 'in_progress' 'done' 'cancelled')");
+    expect(script).toContain("dn_choices=('proposed' 'todo' 'in_progress' 'done' 'cancelled')");
     expect(script).not.toContain("'--status'");
     expect(script).not.toContain("'--json'");
   });

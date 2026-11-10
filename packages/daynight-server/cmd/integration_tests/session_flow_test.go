@@ -31,7 +31,7 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	client.Transport = sessionWorkerTransport{next: client.Transport}
 	f.client = &client
 	project := createProject(t, f, "API native Session")
-	task := createTask(t, f, project, "Native Session task", map[string]any{"assignedTo": f.userID})
+	task := createTask(t, f, project, "Native Session task", map[string]any{"assignedTo": f.userID, "status": "todo"})
 	task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
 	claimID, workerID, worktreeID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{

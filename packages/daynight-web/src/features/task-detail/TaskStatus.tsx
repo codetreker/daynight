@@ -5,7 +5,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskMutationState } from './TaskDetailSession';
 import { TaskControlTip, TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 
-const statuses: readonly TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
+const statuses: readonly TaskStatus[] = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'];
 export const TaskStatusMenu = ({ status, disabled, cancelBlocked, onSelect }: {
   readonly status: TaskStatus;
   readonly disabled: boolean;

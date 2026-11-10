@@ -7,7 +7,7 @@ import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mer
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
-type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; dispatched: boolean };
+type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; dispatched: boolean };
 type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
   readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null;
@@ -15,6 +15,8 @@ type State = {
   readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null; readonly abandoned: boolean; readonly protectedDraft: boolean;
 };
 const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false });
+const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => submission.controlModeSupported ? submission.draft
+  : { ...submission.draft, agentControlMode: state.baselineDraft?.agentControlMode };
 type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
 const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
 
@@ -60,14 +62,20 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
     };
     const acceptRead = (incoming: WorkerConfigurationResource) => update(old => {
       const resource = mergeConfigurationResources(old.resource, incoming);
+      const mode = resource.desired?.value.agentControlMode;
+      if (resource.controlModeSupported === true && mode !== undefined && old.draft !== null && old.draft.agentControlMode === undefined) {
+        // A newly negotiated field had no editable draft in the legacy form.
+        // Establish its baseline without replacing any existing field edits.
+        old = { ...old, draft: { ...old.draft, agentControlMode: mode }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, agentControlMode: mode } };
+      }
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
         if (old.abandoned && resource.desired !== null) {
           const draft = draftFromValue(resource.desired.value);
           return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
-        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value)) {
-          return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submitted.draft, baselineRevision: resource.desired.revision, protectedDraft: false };
+        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported)) {
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submittedBaseline(old, submitted), baselineRevision: resource.desired.revision, protectedDraft: false };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
         const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
@@ -135,16 +143,17 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       const old = currentState();
       if (old.pending || old.uncertain || old.draft === null || old.baselineRevision === null || old.resource?.desired === null || old.resource === null) return;
       if (old.resource.desired.revision !== old.baselineRevision) { update(value => ({ ...value, notice: 'conflict' })); return; }
-      const parsed = parseConfigurationDraft(old.draft);
-      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft)) return;
-      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), dispatched: false };
+      const controlModeSupported = old.resource.controlModeSupported === true;
+      const parsed = parseConfigurationDraft(old.draft, controlModeSupported);
+      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported)) return;
+      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, dispatched: false };
       const controller = new AbortController(); write = controller;
       const signal = AbortSignal.any([controller.signal, scope.signal]);
       update(value => ({ ...value, pending: true, error: null, errorSource: null, notice: null, submission: submitted }));
       try {
         await waitForAdmission(signal);
         if (!alive() || signal.aborted) return;
-        const incoming = await saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, onDispatch: () => { submitted.dispatched = true; } });
+        const incoming = await saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, onDispatch: () => { submitted.dispatched = true; } });
         await waitForAdmission(signal);
         if (!alive() || signal.aborted) return;
         update(value => {
@@ -153,7 +162,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
             const draft = draftFromValue(resource.desired.value);
             return { ...value, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, abandoned: false, protectedDraft: false };
           }
-          return { ...value, resource, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, baselineDraft: submitted.draft, baselineRevision: incoming.desired!.revision, protectedDraft: false };
+          return { ...value, resource, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, baselineDraft: submittedBaseline(value, submitted), baselineRevision: incoming.desired!.revision, protectedDraft: false };
         });
       } catch (error) {
         if (!alive() || signal.aborted) return;
@@ -226,12 +235,14 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
   // before classifying a newer target as an external edit.
   const conflict = !current.pending && !current.uncertain && current.baselineRevision !== null && current.resource?.desired !== null && current.resource !== null && current.resource.desired.revision !== current.baselineRevision;
   const matchesLatest = conflict && current.draft !== null && current.resource?.desired != null && configurationDraftsEqual(current.draft, draftFromValue(current.resource.desired.value));
+  const dirty = !current.abandoned && !matchesLatest && current.draft !== null && current.baselineDraft !== null &&
+    (!configurationDraftsEqual(current.draft, current.baselineDraft) || current.submission !== null && !configurationDraftsEqual(current.draft, current.submission.draft) || current.protectedDraft);
   return {
     resource: current.resource, draft: current.draft, baselineRevision: current.baselineRevision,
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
-    dirty: !current.abandoned && !matchesLatest && current.draft !== null && current.baselineDraft !== null &&
-      (!configurationDraftsEqual(current.draft, current.baselineDraft) || current.submission !== null && !configurationDraftsEqual(current.draft, current.submission.draft) || current.protectedDraft),
+    dirty,
+    saveableDirty: dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, current.resource?.controlModeSupported === true),
     conflict,
     setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };

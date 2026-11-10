@@ -315,7 +315,7 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	processPersistenceDecode[api.Project](t, response, body, http.StatusOK)
 	createTask := func(title, description string, dependencies, external []string) api.Task {
 		t.Helper()
-		response, body := jsonRequest(http.MethodPost, projectPath+"/tasks", map[string]any{"title": title, "description": description, "dependsOn": dependencies, "externalDependsOn": external})
+		response, body := jsonRequest(http.MethodPost, projectPath+"/tasks", map[string]any{"title": title, "description": description, "status": "todo", "dependsOn": dependencies, "externalDependsOn": external})
 		return processPersistenceDecode[api.Task](t, response, body, http.StatusCreated)
 	}
 	first := createTask("Prerequisite", "Persistent description", []string{}, []string{})

@@ -41,7 +41,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Page through a user's in-progress chains and independent tasks | `task list --status in_progress --group-by chain` | [Grouped work](task-management.md#grouped-work) |
 | Read or maintain Task Steps | `task step list/show/add/update/set-status/move/delete` | [Task Steps](task-management.md#task-steps) |
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |
-| Create tasks | `task create` | [Create task](create-task.md) |
+| Create tasks | `task create` (defaults to proposed; `--status todo` for confirmed work) | [Create task](create-task.md) |
 | Change metadata or human responsibility | `task update` (`--assigned-to`, `--clear-assigned-to`) | [Task management](task-management.md#metadata) |
 | Read property values or definitions | `task properties` | [Properties](task-management.md#properties) |
 | Set or remove task properties | `task set-property`, `task remove-property` | [Properties](task-management.md#properties) |

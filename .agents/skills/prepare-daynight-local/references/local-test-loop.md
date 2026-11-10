@@ -38,7 +38,8 @@ If retained preview state requires a separate verification root, use the exact
 root selected by the repository reference throughout this loop. Do not revert to
 the launcher's default root between commands.
 
-Discover or register the selected repository on this local service:
+Discover or register the selected repository on this local service. Set
+`DN_REPO_URL` to the canonical `url` returned by the repository check:
 
 ```bash
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" project list --json
@@ -121,13 +122,13 @@ For example, from a shell with the description loaded into `DN_TEST_DESCRIPTION`
 
 ```bash
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" task create \
-  --title "Local test $DN_RUN_ID" --description "$DN_TEST_DESCRIPTION" \
+  --title "Local test $DN_RUN_ID" --description "$DN_TEST_DESCRIPTION" --status todo \
   --project "$DN_PROJECT_ID"
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" task show "$DN_TASK_ID" \
   --project "$DN_PROJECT_ID" --json
 ```
 
-Creation defaults to the authenticated account, `todo` and `allowAgents=false`.
+Creation defaults to the authenticated account, `proposed` and `allowAgents=false`; this confirmed test-loop task explicitly selects todo.
 There is no create `--allow-agents` or `--json` option. Do not set `in_progress`;
 Worker must perform the real claim. Record the confirmed task ID immediately.
 

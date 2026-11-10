@@ -77,6 +77,7 @@ const summary = (value: unknown): TaskGraphSummary => {
   const data = record(value);
   const parsed = {
     total: count(data.total),
+    proposed: count(data.proposed),
     todo: count(data.todo),
     inProgress: count(data.inProgress),
     done: count(data.done),
@@ -84,7 +85,7 @@ const summary = (value: unknown): TaskGraphSummary => {
     ready: count(data.ready),
     blocked: count(data.blocked),
   };
-  if (parsed.total !== parsed.todo + parsed.inProgress + parsed.done + parsed.cancelled || parsed.todo !== parsed.ready + parsed.blocked) return malformed();
+  if (parsed.total !== parsed.proposed + parsed.todo + parsed.inProgress + parsed.done + parsed.cancelled || parsed.todo !== parsed.ready + parsed.blocked) return malformed();
   return parsed;
 };
 

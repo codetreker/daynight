@@ -1,4 +1,4 @@
-# Build Minimal Local UI Fixtures
+# Build Minimal Local Fixtures
 
 Use fixtures to expose a user path, not to populate every possible product state.
 Follow [repository preparation](test-repository.md),
@@ -13,7 +13,7 @@ proposal, but must be labeled and cannot prove a real product lifecycle.
 
 ## Keep the fixture set attributable
 
-Choose a unique, nonsensitive audit marker before creation. Keep a small resource
+Choose a unique, nonsensitive marker before creation. Keep a small resource
 inventory beside the private environment record under ignored `.tmp/`; record
 only identities and observations, not credentials or full configuration.
 
@@ -23,11 +23,11 @@ only identities and observations, not credentials or full configuration.
 | Project | Full local ID, repository identity and reused/created ownership |
 | Task | Full local ID, unique marker, purpose, observed status/version and `allowAgents` |
 | Attachment | Owning local task, relative path, purpose and whether created or replaced |
-| Runtime, when needed | Expected Worker, Bot/Session and original claim identities, their observed state and why a real execution is required |
+| Runtime, when needed | Expected Worker, Bot/Session and original claim identities, or the Test Session and its workspace; their observed state and why a real execution is required |
 | Retention | Retain for inspection, or eligible for explicitly scoped cleanup after verifying no active user |
 
 Read the project and existing fixtures first. A similarly named object is not
-necessarily owned by this audit. Retain returned IDs immediately; a timeout after
+necessarily owned by this work. Retain returned IDs immediately; a timeout after
 creation is not permission to create another object. Resolve uncertainty against
 the same local origin, project, unique marker and full content before retrying.
 
@@ -45,18 +45,18 @@ its result.
 | Relationships | Add only the additional tasks and ordinary dependencies needed for a chain or blocked state, through supported CLI commands | Chain presentation, readiness explanations, nested navigation and aggregate status |
 | Rich content | Add a long Markdown body, unbroken path, or owned attachment at a unique relative path | Wrapping, code/attachment overflow, preview controls and dialog layout |
 | Real execution | Use the bounded [CLI/website/Worker loop](local-test-loop.md), selecting the actual test Worker and preserving the original claim | Task-to-Session linkage, real working/completed states, result readback and supported native input |
-| Assistant conversation | Create one test Bot through supported product controls on the verified development Worker; send only the bounded prompt the audit needs | Assistant list/header/detail composition, switching, composer and long conversation behavior |
+| Native session without a claim | Start a [controller Test Session](test-sessions.md) for the Provider in scope | Session View states, approvals, interruption and archives with a real Provider |
+| Assistant conversation | Create one test Bot through supported product controls on the verified development Worker; send only the bounded prompt the scenario needs | Assistant list/header/detail composition, switching, composer and long conversation behavior |
 
-Task creation defaults to `todo` and `allowAgents=false`; read back those fields
+Task creation defaults to `proposed` and `allowAgents=false`; use explicit `--status todo` when the fixture needs confirmed executable work. Always read back those fields
 instead of assuming the default survived concurrent changes. Do not manually
 mark a task `in_progress` to make a Session appear. Dependencies and task status
-alone do not create an Agent. A test session from `daynight controller` also does
-not establish Worker claim behavior.
+alone do not create an Agent. A Test Session from `daynight controller` does not
+establish Worker claim behavior.
 
-For content-only fixtures, use recognizable but nonsensitive samples. Include
-both Chinese and English long names, an unbroken repository-style path, a code
-block and several paragraphs only where the user path needs them. Avoid giant
-payloads or stress-test inventories as substitutes for representative content.
+Use recognizable but nonsensitive sample content; topic skills describe the
+content variations their checks need. Avoid giant payloads or stress-test
+inventories as substitutes for representative content.
 
 Example local creation, after resolving the variables under this skill:
 
@@ -74,7 +74,7 @@ and dollar signs. Inspect current CLI help for relationship, Bot or attachment
 arguments instead of guessing switches. No automatic fixture generator should
 enable execution as a side effect of creating layout data.
 
-## Use real lifecycles when the finding depends on them
+## Use real lifecycles when the scenario depends on them
 
 Before enabling any task or starting a Bot, follow the test loop's Worker pool,
 effective configuration and native environment checks. A Bot can acquire runtime

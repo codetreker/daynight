@@ -3,26 +3,37 @@ package project
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 )
 
 func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
-	h := membershipTestHarness(t)
-	_, token := h.invitation(t)
-	decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200)
-	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID); err != nil {
-		t.Fatal(err)
+	h := newHTTPHarness(t)
+	memberID := "00000000-0000-4000-8000-000000000058"
+	check := membershipExpectation(t, h, h.Project.ID)
+	grant := membershipGrant(h, 9007199254740993, model.ProjectMemberRole)
+	grant.UserID = memberID
+	name, email, avatar := "Member", "member@example.test", "https://example.test/member.png"
+	teamRole := model.ProjectMemberRole
+	people := []model.ProjectParticipant{
+		{UserID: h.Principal.UserID, EffectiveRole: model.ProjectAdmin, InheritedFrom: &model.ProjectInheritance{Team: model.TeamRef{ID: h.Project.Ownership.TeamID, Kind: "personal"}, Role: model.ProjectAdmin}, Profile: model.ProjectParticipantProfile{Name: &name, Email: &email, AvatarURL: &avatar}},
+		{UserID: memberID, EffectiveRole: model.ProjectMemberRole, DirectGrant: &grant},
 	}
-	base := "/api/v1/projects/" + h.project.ID + "/members"
-	response := h.call("GET", base, "", h.member)
-	people := decodeResponse[api.ProjectParticipantList](t, response, 200)
-	if len(people.Items) != 2 || response.Header().Get("Daynight-User-ID") != h.memberID || response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("participant response: %s %#v", response.Body, response.Header())
+	access := membershipAccess(h, nil)
+	access.TeamRole = &teamRole
+	h.Memberships.ListWithAccessFunc = func(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error) {
+		check(ctx, p, id)
+		return coreproject.ProjectParticipants{Items: people, ActorAccess: access}, nil
+	}
+	response := membershipCall(t, h, "GET", "/api/v1/projects/"+h.Project.ID+"/members", "")
+	result := decodeResponse[api.ProjectParticipantList](t, response, 200)
+	if len(result.Items) != 2 || response.Header().Get("Daynight-User-ID") != h.Principal.UserID || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("participants: %s %v", response.Body, response.Header())
 	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || len(envelope) != 2 || envelope["items"] == nil || envelope["actorAccess"] == nil {
@@ -32,60 +43,48 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 	if err := json.Unmarshal(envelope["items"], &raw); err != nil {
 		t.Fatal(err)
 	}
-	for index, participant := range people.Items {
-		if len(raw[index]) != 5 || raw[index]["userId"] == nil || raw[index]["profile"] == nil || raw[index]["effectiveRole"] == nil || raw[index]["directGrant"] == nil || participant.DirectGrant == nil {
-			t.Fatalf("participant fields: %#v", raw[index])
+	for index, participant := range result.Items {
+		fields := raw[index]
+		if len(fields) != 5 || fields["userId"] == nil || fields["profile"] == nil || fields["effectiveRole"] == nil || fields["directGrant"] == nil || fields["inheritedFrom"] == nil {
+			t.Fatalf("participant fields: %#v", fields)
 		}
 		var profile map[string]json.RawMessage
-		if err := json.Unmarshal(raw[index]["profile"], &profile); err != nil || len(profile) != 3 || profile["name"] == nil || profile["email"] == nil || profile["avatarUrl"] == nil {
-			t.Fatalf("required profile object: %#v %v", profile, err)
+		if err := json.Unmarshal(fields["profile"], &profile); err != nil || len(profile) != 3 || profile["name"] == nil || profile["email"] == nil || profile["avatarUrl"] == nil {
+			t.Fatalf("profile: %#v %v", profile, err)
 		}
-		if participant.UserID == h.memberID {
-			if participant.Profile.Name != nil || participant.Profile.Email != nil || participant.Profile.AvatarURL != nil || participant.EffectiveRole != "member" || participant.DirectGrant.Version != 9007199254740993 || participant.DirectGrant.ProjectID != h.project.ID || participant.DirectGrant.UserID != h.memberID {
-				t.Fatalf("nullable canonical profile and direct grant: %#v", participant)
+		if participant.UserID == memberID {
+			if participant.Profile.Name != nil || participant.Profile.Email != nil || participant.Profile.AvatarURL != nil || participant.EffectiveRole != "member" || participant.DirectGrant == nil || participant.DirectGrant.Version != 9007199254740993 || participant.DirectGrant.ProjectID != h.Project.ID || participant.DirectGrant.UserID != memberID || participant.InheritedFrom != nil {
+				t.Fatalf("nullable profile and grant: %+v", participant)
 			}
-			if string(profile["name"]) != "null" || string(profile["email"]) != "null" || string(profile["avatarUrl"]) != "null" || !strings.Contains(string(raw[index]["directGrant"]), `"version":9007199254740993`) {
-				t.Fatalf("nullable/exact wire values: %#v", raw[index])
+			if string(profile["name"]) != "null" || string(profile["email"]) != "null" || string(profile["avatarUrl"]) != "null" || !strings.Contains(string(fields["directGrant"]), `"version":9007199254740993`) {
+				t.Fatalf("exact wire: %#v", fields)
 			}
+		} else if participant.DirectGrant != nil || participant.EffectiveRole != "admin" || participant.InheritedFrom == nil || participant.InheritedFrom.Team.ID != h.Project.Ownership.TeamID || participant.InheritedFrom.Role != "admin" || participant.Profile.Name == nil || *participant.Profile.Name != name || participant.Profile.Email == nil || *participant.Profile.Email != email || participant.Profile.AvatarURL == nil || *participant.Profile.AvatarURL != avatar {
+			t.Fatalf("inherited profile: %+v", participant)
 		}
 	}
-	path := base + "/" + h.memberID
-	grantResponse := h.call("PATCH", path, memberRoleBody(t, 9007199254740993, "member", h.adminID), h.admin)
-	grant := decodeResponse[api.ProjectGrant](t, grantResponse, 200)
-	var grantFields map[string]json.RawMessage
-	if err := json.Unmarshal(grantResponse.Body.Bytes(), &grantFields); err != nil || len(grantFields) != 6 || string(grantFields["version"]) != "9007199254740993" || grant.ProjectID != h.project.ID || grant.UserID != h.memberID || grant.Role != "member" || grant.CreatedAt.Location() != time.UTC || grant.UpdatedAt.Location() != time.UTC {
-		t.Fatalf("mutation returns the real grant: %s %v", grantResponse.Body, err)
+	if strings.Contains(response.Body.String(), "github:") || strings.Contains(response.Body.String(), "uniAuth") {
+		t.Fatal("participant response disclosed identity internals")
 	}
-	for _, method := range []string{"PATCH", "DELETE"} {
-		body := memberRemovalBody(t, grant.Version, h.memberID)
-		if method == "PATCH" {
-			body = memberRoleBody(t, grant.Version, "admin", h.memberID)
+	h.assertCalls(map[string]int{"ListWithAccess": 1})
+}
+
+func TestProjectParticipantHTTPExactGrantVersionAndUTC(t *testing.T) {
+	h := newHTTPHarness(t)
+	check := membershipExpectation(t, h, h.Project.ID)
+	grant := membershipGrant(h, 9007199254740993, model.ProjectMemberRole)
+	h.Memberships.SetRoleFunc = func(ctx context.Context, p model.Principal, project, user string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error) {
+		check(ctx, p, project)
+		if user != p.UserID || input != (coreproject.SetProjectMemberRole{Version: 9007199254740993, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}) {
+			t.Fatalf("exact role input: %q %+v", user, input)
 		}
-		mismatch := h.call(method, path, body, h.admin)
-		assertProjectError(t, mismatch, 409, "identity_mismatch")
-		if mismatch.Header().Get("Daynight-User-ID") != h.adminID {
-			t.Fatal("mismatch lost the actual response principal")
-		}
+		return grant, nil
 	}
-	after := decodeResponse[api.ProjectParticipantList](t, h.call("GET", base, "", h.admin), 200)
-	if !reflect.DeepEqual(after.Items, people.Items) {
-		t.Fatal("wrong expected actor changed participant grants or profiles")
+	response := membershipCall(t, h, "PATCH", "/api/v1/projects/"+h.Project.ID+"/members/"+h.Principal.UserID, memberRoleBody(t, 9007199254740993, "member", h.Principal.UserID))
+	result := decodeResponse[api.ProjectGrant](t, response, 200)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 6 || string(fields["version"]) != "9007199254740993" || result.ProjectID != h.Project.ID || result.UserID != h.Principal.UserID || result.Role != "member" || result.CreatedAt.Location() != time.UTC || result.UpdatedAt.Location() != time.UTC || !result.CreatedAt.Equal(grant.CreatedAt) || !result.UpdatedAt.Equal(grant.UpdatedAt) {
+		t.Fatalf("exact grant: %s %v", response.Body, err)
 	}
-	for _, body := range []string{`{"version":1,"role":"member"}`, `{"version":1,"role":"member","expectedUserId":null}`, `{"version":1,"role":"member","expectedUserId":42}`, `{"version":1,"role":"member","expectedUserId":"invalid"}`} {
-		assertProjectError(t, h.call("PATCH", path, body, h.admin), 400, "invalid_input")
-	}
-	for _, body := range []string{`{"version":1}`, `{"version":1,"expectedUserId":null}`, `{"version":1,"expectedUserId":42}`, `{"version":1,"expectedUserId":"invalid"}`} {
-		assertProjectError(t, h.call("DELETE", path, body, h.admin), 400, "invalid_input")
-	}
-	if _, err := h.Database.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, h.memberID); err != nil {
-		t.Fatal(err)
-	}
-	broken := h.call("GET", base, "", h.admin)
-	assertProjectError(t, broken, 500, "internal_error")
-	if strings.Contains(broken.Body.String(), `"items"`) || strings.Contains(broken.Body.String(), h.memberID) {
-		t.Fatal("integrity failure returned a partial or synthetic roster")
-	}
-	if !strings.Contains(h.Logs.String(), `"error_code":"identity_mismatch"`) {
-		t.Fatal("identity mismatch was not classified as its domain failure")
-	}
+	h.assertCalls(map[string]int{"SetRole": 1})
 }

@@ -1,3 +1,5 @@
+import type { ArchiveProbeResult } from "../../../src/commands/controller/archive-error.js";
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -21,12 +23,12 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: (...args: Parameters<typeof actual.setTimeout>) => mocks.delay(...args) };
 });
-vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: mocks.archive }));
+vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: mocks.archive, probeStoppedControllerArchive: mocks.archiveProbe }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
@@ -88,6 +90,7 @@ let dispose: ReturnType<typeof vi.fn>;
 let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
   mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
@@ -103,7 +106,7 @@ beforeEach(async () => {
   prepare = vi.fn(async () => {}); shutdown = vi.fn(async () => true); dispose = vi.fn(async () => {}); update = vi.fn();
   mocks.telemetry.mockReturnValue({ collect }); mocks.probe.mockResolvedValue("0.164.0");
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
-  mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) });
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockResolvedValue(() => "prompt");
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
@@ -117,6 +120,64 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it.each([{ supported: false, change: "upgrade" }, { supported: true, change: "rollback" }])("renegotiates control mode after a server $change", async ({ supported: initialSupport }) => {
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, projects: [] } };
+    const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
+    const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
+    let supported = initialSupport;
+    const exchanges: string[] = [];
+    const accepted: WorkerCloudReport[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const pathname = new URL(String(url)).pathname, headers = new Headers(options!.headers);
+      const mode = supported && headers.get("Daynight-Worker-Control-Mode") === "1";
+      const desired = mode ? { ...target, value: { ...target.value, agentControlMode: "web" } } : target;
+      const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: {
+        "Content-Type": "application/json", "Daynight-User-ID": uuid(6),
+        ...(headers.has("Daynight-Worker-Configuration") ? { "Daynight-Worker-Configuration": headers.get("Daynight-Worker-Configuration")! } : {}),
+        ...(mode ? { "Daynight-Worker-Control-Mode": "1" } : {}),
+      } });
+      if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
+      if (pathname.endsWith("/configuration")) {
+        exchanges.push(`GET:${mode ? "mode" : "legacy"}`);
+        return response({ desired, observationRevision: "0", observation: null });
+      }
+      if (pathname.endsWith("/report")) {
+        const configuration = (JSON.parse(options!.body as string) as { configuration: WorkerCloudReport }).configuration;
+        const includesMode = Object.hasOwn(configuration, "controlModeBootstrap");
+        if (!supported && includesMode) {
+          exchanges.push("POST:mode:rejected");
+          return response({ error: { code: "invalid_input", message: "Unknown Worker configuration field.", requestId: "mode-rollback" } }, 400);
+        }
+        exchanges.push(`POST:${includesMode ? "mode" : "legacy"}:accepted`);
+        accepted.push(configuration);
+        const selectors = JSON.parse(headers.get("Daynight-Worker-Prompts")!) as { key: { scope: string; projectId?: string } }[];
+        const prompts = selectors.map(({ key }) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "user" ? uuid(6) : key.scope === "worker" ? uuid(4) : key.projectId, revision: "0", text: "", updatedAt: null } }));
+        return response({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false, prompts } });
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    });
+    mocks.remote.mockReturnValue({ ...real, project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })) });
+    const running = start(f);
+    await eventually(() => expect(accepted.some(configuration => configuration.observation?.items.some(item => item.key.kind === "native" && item.state === "applied"))).toBe(true));
+    const before = exchanges.length;
+    supported = !initialSupport;
+    await vi.advanceTimersByTimeAsync(30_000);
+    if (initialSupport) {
+      await eventually(() => expect(exchanges.slice(before)).toEqual(["POST:mode:rejected"]));
+      await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await eventually(() => expect(exchanges.slice(before, before + 3)).toEqual(["POST:mode:rejected", "GET:legacy", "POST:legacy:accepted"]));
+      expect(accepted.at(-1)).not.toHaveProperty("controlModeBootstrap");
+      expect(accepted.at(-1)!.observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+    } else {
+      await eventually(() => expect(exchanges.slice(before, before + 2)).toEqual(["GET:mode", "POST:mode:accepted"]));
+      await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
+      expect(accepted.at(-1)!.controlModeBootstrap).toBe("herdr");
+    }
+    f.signal.abort(); await running;
+  });
+
   it("shares the real response byte budget between reconciliation GET and report POST", async () => {
     const f = await fixture();
     target = { ...target, value: { ...target.value, projects: [] } };
@@ -241,7 +302,10 @@ describe("worker runtime configuration reporting", () => {
     const running = start(f);
     await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
     await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
-    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    // Startup may already have requested reconciliation; observe its GET before advancing time.
+    coordinatorOptions.onInventory!(null);
     await eventuallyWithoutAdvancingTime(() => expect(readStarted).toBe(true));
     await vi.advanceTimersByTimeAsync(7_000); releaseRead.resolve();
     await eventuallyWithoutAdvancingTime(() => expect(reportSignal).toBeDefined());
@@ -300,6 +364,40 @@ describe("worker runtime configuration reporting", () => {
     const restored = report.mock.calls.find(([, body]) => body.runtimeConfiguration?.native?.model.source === "cloud")![1];
     expect(restored.runtimeConfiguration!.native).toEqual({ agent: "codex", model: { value: "cloud-model", source: "cloud" }, reasoningEffort: { value: "medium", source: "cloud" } });
     restart.signal.abort(); await restarted;
+  });
+
+  it("normalizes new execution settings and source reports with the applied cloud mode", async () => {
+    const f = await fixture();
+    await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "herdr", agentReasoningEffort: "high" } }));
+    target = { ...target, value: { ...target.value, agentControlMode: "web", native: { agent: "codex", model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
+    const running = start(f);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.some(([, body]) => body.runtimeConfiguration?.native?.reasoningEffort.value === "high")).toBe(true));
+    const web = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")![0];
+    expect(web.globalConfiguration).toMatchObject({ args: ["--effort", "high"] });
+    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "herdr", native: { ...target.value.native, args: [] } } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")).toBe(true));
+    const herdr = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")![0];
+    expect(herdr.globalConfiguration).toMatchObject({ args: ["-c", "model_reasoning_effort=\"high\""] });
+    expect(report.mock.calls.at(-1)![2].controlModeBootstrap).toBe("herdr");
+    f.signal.abort(); await running;
+  });
+
+  it("keeps the applied Herdr configuration when its native arguments cannot run in Web mode", async () => {
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, agentControlMode: "herdr", native: { agent: "codex", model: null, args: ["--search"] }, projects: [] } };
+    const running = start(f);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")).toBe(true));
+    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "web" } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(configurationTransitions().some(item => item.key.kind === "agentControlMode" && item.state === "error")).toBe(true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.some(([, , configuration]) => configuration.observation?.items.some(item => item.key.kind === "agentControlMode" && item.state === "error" && item.appliedValue === "herdr"))).toBe(true));
+    expect(update.mock.calls.every(([configuration]) => configuration.globalConfiguration === null || configuration.globalConfiguration.agentControlMode === "herdr")).toBe(true);
+    expect(update.mock.calls.at(-1)![0].globalConfiguration.args).toEqual(["--search"]);
+    f.signal.abort(); await running;
   });
 
   it("reconciles an imported target after a lost bootstrap receipt before capturing another report", async () => {
@@ -377,7 +475,7 @@ describe("worker runtime configuration reporting", () => {
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const labels = new Map([[uuid(11), "broken"], [uuid(12), "second"], [uuid(13), "third"]]);
     mocks.completed.mockReturnValue([...labels.keys()].map(executionId => ({ serverOrigin: "https://daynight.example", webExecution: { executionId, launchId: executionId, sessionId: executionId, launchSubmission: "submitted" } })));
-    mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId }));
+    mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId, sessionId: launchId }));
     const attempts: { label: string; at: number; round: number }[] = [];
     mocks.archive.mockImplementation(async ({ ticket }) => { attempts.push({ label: labels.get(ticket.executionId)!, at: now, round: rounds }); if (ticket.executionId === uuid(11)) throw new Error("Original archive source is missing."); return { state: "ready" }; });
     const appliedDelays: number[] = [];
@@ -672,4 +770,146 @@ describe("worker runtime configuration reporting", () => {
     f.signal.abort(); await rejected;
     expect(shutdown).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce(); expect(mocks.webClose).toHaveBeenCalledOnce();
   });
+});
+
+
+it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] as const)("backfill performs only low-frequency archive condition probes: %s", async outcome => {
+  const f = await fixture();
+  target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };
+  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  const startTime = now;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId, sessionId: launchId, claimId: uuid(3), executionGeneration: "1" }));
+  const probes: number[] = [];
+  mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
+    probes.push(now - startTime);
+    if (outcome === "cancelled") { f.signal.abort(); throw new Error("probe cancelled"); }
+    if (probes.length > 1 && outcome === "probe-error") throw new Error("metadata unavailable");
+    return probes.length > 1 && outcome === "receipt" ? { kind: "attempt" } : { kind: "blocked", code: "archive_incomplete" };
+  });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
+    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, updateConfiguration: update, shutdown };
+  });
+  await start(f);
+  if (outcome === "cancelled") {
+    expect(probes).toEqual([0]); expect(mocks.archive).not.toHaveBeenCalled();
+    expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+  } else {
+    expect(probes.slice(0, 2)).toEqual([0, 900000]);
+    if (outcome === "receipt") expect(mocks.archive).toHaveBeenCalledOnce();
+    else { expect(probes).toEqual([0, 900000, 1800000]); expect(mocks.archive).not.toHaveBeenCalled(); }
+    if (outcome === "persistence-error") {
+      const retries = mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry").map(([event]) => event);
+      expect(retries).toHaveLength(3);
+      expect(retries.every(event => event.error instanceof AggregateError && event.error.message.includes("not persisted"))).toBe(true);
+      expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+    }
+  }
+});
+
+
+it("retains backfill blocker and probe deadline across runtime restart without cleanup ownership", async () => {
+  const f = await fixture();
+  let now = Date.parse(workerTelemetryTime);
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const identity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", executionId: uuid(11), executionGeneration: "1", launchId: uuid(11) };
+  mocks.completed.mockReturnValue([{ ...identity, webExecution: { ...identity, sessionId: uuid(11), launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ ...identity, sessionId: uuid(11) });
+  mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
+  let stop = f.signal, rounds = 0;
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, updateConfiguration: update, shutdown }));
+  await start(f);
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  const readState = () => {
+    const db = openWorkerStore(f.paths.databaseFile);
+    try { expect(db.listCleanupSchedules()).toEqual([]); return db.getArchiveBackfillSchedule(identity); }
+    finally { db.close(); }
+  };
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  const restart = async () => { rounds = 0; stop = new AbortController(); await start({ ...f, signal: stop }); };
+  now += 60_000;
+  await restart();
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  expect(mocks.archive).not.toHaveBeenCalled();
+  now += 840_000;
+  mocks.archiveProbe.mockRejectedValue(new Error("metadata unavailable"));
+  await restart();
+  expect(mocks.archiveProbe).toHaveBeenCalledTimes(2);
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  expect(mocks.archive).not.toHaveBeenCalled();
+  now += 900_000;
+  mocks.archiveProbe.mockResolvedValue({ kind: "attempt" });
+  mocks.archive.mockRejectedValue(new Error("receipt mismatch"));
+  await restart();
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+  now += 900_000;
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  await restart();
+  expect(readState()).toBeNull();
+  expect(mocks.archive).toHaveBeenCalledTimes(2);
+});
+
+
+it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
+  (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
+))("updates backfill scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
+  const f = await fixture();
+  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  const startTime = now;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const identity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", executionId: uuid(11), executionGeneration: "1", launchId: uuid(11) };
+  await mkdir(path.dirname(f.paths.databaseFile), { recursive: true });
+  const db = openWorkerStore(f.paths.databaseFile);
+  try { db.saveArchiveBackfillSchedule(identity, { archiveRepairCode: code, nextAttemptAt: now }); } finally { db.close(); }
+  mocks.completed.mockReturnValue([{ ...identity, webExecution: { ...identity, sessionId: uuid(11), launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ ...identity, sessionId: uuid(11) });
+  mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
+    if (outcome === "unconfirmed") throw new Error("metadata unavailable");
+    if (outcome === "blocked") return { kind: "blocked", code };
+    return { kind: outcome === "receipt" ? "attempt" : "complete" };
+  });
+  let store!: WorkerCoordinatorOptions["store"];
+  const attempts: number[] = [];
+  const admissions: ReturnType<typeof store.getArchiveBackfillSchedule>[] = [];
+  mocks.archive.mockImplementation(async () => {
+    attempts.push(now - startTime); admissions.push(store.getArchiveBackfillSchedule(identity));
+    if (outcome === "regressed") {
+      const { ArchiveRepairRequiredError } = await import("../../../src/commands/controller/archive-error.js");
+      throw new ArchiveRepairRequiredError(code);
+    }
+    if (attempts.length < 3) throw new Error("Session archive request failed (503).");
+    return { state: "ready" };
+  });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    store = options.store;
+    if (outcome === "clear-failed") vi.spyOn(store, "deleteArchiveBackfillSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
+    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, updateConfiguration: update, shutdown };
+  });
+  await start(f);
+  const read = openWorkerStore(f.paths.databaseFile);
+  try {
+    expect(read.listCleanupSchedules()).toEqual([]);
+    if (outcome === "complete") {
+      expect(attempts).toEqual([0, 60_000, 120_000]);
+      expect(admissions).toEqual([null, null, null]);
+      expect(read.getArchiveBackfillSchedule(identity)).toBeNull();
+      expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1);
+      expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry").every(([event]) => !event.message.includes("requires repair"))).toBe(true);
+    } else {
+      expect(read.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, nextAttemptAt: startTime + 900_000 });
+      expect(attempts).toEqual(outcome === "receipt" || outcome === "regressed" ? [0] : []);
+      expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+      expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+    }
+  } finally { read.close(); }
 });

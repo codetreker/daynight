@@ -41,6 +41,26 @@ afterEach(async () => {
 });
 
 describe("operation-scoped API access", () => {
+  it.each([undefined, "proposed", "todo"] as const)("creates initial status %s and confirms the returned status", async (status) => {
+    const result = { ...task, status: status ?? "proposed", ready: status === "todo" };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(result, 201));
+    await expect(client(fetch).createTask(projectId, { title: "Task", ...(status === undefined ? {} : { status }) })).resolves.toEqual(result);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(parseApiJson(String(fetch.mock.calls[0]![1]!.body))).toEqual({ title: "Task", ...(status === undefined ? {} : { status }) });
+  });
+
+  it.each(["in_progress", "done", "cancelled", "invalid", null])("rejects unsupported initial status %s before I/O", (status) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(() => client(fetch).createTask(projectId, { title: "Task", status } as never)).toThrow("Initial task status");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not accept an old default-todo server response for proposed creation", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(task, 201));
+    await expect(client(fetch).createTask(projectId, { title: "Task" })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it.each([null, "windows", "linux", "macos"] as const)("preserves requiredPlatform=%s in create, update and graph resources", async (requiredPlatform) => {
     const value = { ...task, requiredPlatform };
     const taskGraph = { ...graph(), tasks: graph().tasks.map((item) => ({ ...item, requiredPlatform })) };
@@ -49,10 +69,10 @@ describe("operation-scoped API access", () => {
       .mockResolvedValueOnce(jsonResponse(value))
       .mockResolvedValueOnce(jsonResponse(taskGraph));
     const api = client(fetch);
-    await expect(api.createTask(projectId, { title: "Platform task", requiredPlatform })).resolves.toEqual(value);
+    await expect(api.createTask(projectId, { status: "todo", title: "Platform task", requiredPlatform })).resolves.toEqual(value);
     await expect(api.updateTask(projectId, taskId, { version: 9_223_372_036_854_775_807n, requiredPlatform })).resolves.toEqual(value);
     await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(taskGraph);
-    expect(parseApiJson(String(fetch.mock.calls[0]![1]!.body))).toEqual({ title: "Platform task", requiredPlatform });
+    expect(parseApiJson(String(fetch.mock.calls[0]![1]!.body))).toEqual({ title: "Platform task", status: "todo", requiredPlatform });
     expect(parseApiJson(String(fetch.mock.calls[1]![1]!.body))).toEqual({ version: 9_223_372_036_854_775_807n, requiredPlatform });
   });
 
@@ -208,7 +228,7 @@ describe("operation-scoped API access", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["todo", "in_progress", "done", "cancelled"] as const)("submits one precise %s PUT and reads the full resulting task", async (status) => {
+  it.each(["proposed", "todo", "in_progress", "done", "cancelled"] as const)("submits one precise %s PUT and reads the full resulting task", async (status) => {
     const version = 9_223_372_036_854_775_806n;
     const result = { ...task, status, cancelledAt: status === "cancelled" ? time : null, ready: status === "todo", description: "Full result", version: version + 1n };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(result));
@@ -244,11 +264,11 @@ describe("operation-scoped API access", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects removed proposed input before I/O", () => {
+  it("rejects unknown task status input before I/O", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const api = client(fetch);
-    expect(() => api.listTasks(projectId, { status: "proposed" as never })).toThrow("Task status");
-    expect(() => api.setTaskStatus(projectId, taskId, { version: 1n, status: "proposed" as never })).toThrow("Task status");
+    expect(() => api.listTasks(projectId, { status: "unknown" as never })).toThrow("Task status");
+    expect(() => api.setTaskStatus(projectId, taskId, { version: 1n, status: "unknown" as never })).toThrow("Task status");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -315,14 +335,14 @@ describe("operation-scoped API access", () => {
       .mockResolvedValueOnce(jsonResponse({ ...task, version: 9_007_199_254_740_994n }));
     const api = client(fetch);
     await api.createProject({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId });
-    await api.createTask(projectId, { title: "Task" });
-    await api.createTask(projectId, { title: "Task", description: "", dependsOn: [otherId, otherId] });
+    await api.createTask(projectId, { status: "todo", title: "Task" });
+    await api.createTask(projectId, { status: "todo", title: "Task", description: "", dependsOn: [otherId, otherId] });
     await api.updateTask(projectId, taskId, { version: 9_007_199_254_740_993n, description: "", dependsOn: [] });
     expect(fetch.mock.calls.map((call) => call[1]?.method)).toEqual(["POST", "POST", "POST", "PATCH"]);
     expect(fetch.mock.calls.map((call) => call[1]?.body)).toEqual([
       JSON.stringify({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId }),
-      '{"title":"Task"}',
-      JSON.stringify({ title: "Task", description: "", dependsOn: [otherId, otherId] }),
+      '{"title":"Task","status":"todo"}',
+      JSON.stringify({ title: "Task", status: "todo", description: "", dependsOn: [otherId, otherId] }),
       '{"version":9007199254740993,"description":"","dependsOn":[]}',
     ]);
     expect(fetch.mock.calls.every((call) => call[1]?.redirect === "manual")).toBe(true);
@@ -335,11 +355,11 @@ describe("operation-scoped API access", () => {
       .mockResolvedValueOnce(jsonResponse({ ...task, properties: { ...properties } }))
       .mockResolvedValueOnce(jsonResponse(task));
     const api = client(fetch);
-    expect((await api.createTask(projectId, { title: "Task", properties })).properties).toEqual({ ...properties });
+    expect((await api.createTask(projectId, { status: "todo", title: "Task", properties })).properties).toEqual({ ...properties });
     await api.updateTask(projectId, taskId, { version: 9_223_372_036_854_775_807n, properties });
     await api.updateTask(projectId, taskId, { version: 1n, properties: { pullRequests: [] } });
     expect(fetch.mock.calls.map((call) => parseApiJson(String(call[1]!.body)))).toEqual([
-      { title: "Task", properties },
+      { title: "Task", status: "todo", properties },
       { version: 9_223_372_036_854_775_807n, properties },
       { version: 1n, properties: { pullRequests: [] } },
     ]);
@@ -353,12 +373,12 @@ describe("operation-scoped API access", () => {
       .mockResolvedValueOnce(jsonResponse({ ...value, externalDependsOn: [] }))
       .mockResolvedValueOnce(jsonResponse(value));
     const api = client(fetch);
-    await expect(api.createTask(projectId, { title: "Task", dependsOn: [otherId], externalDependsOn: [otherId] })).resolves.toEqual(value);
+    await expect(api.createTask(projectId, { status: "todo", title: "Task", dependsOn: [otherId], externalDependsOn: [otherId] })).resolves.toEqual(value);
     await api.updateTask(projectId, taskId, { version: 9_223_372_036_854_775_807n, externalDependsOn: [otherId] });
     await api.updateTask(projectId, taskId, { version: 1n, externalDependsOn: [] });
     await api.updateTask(projectId, taskId, { version: 1n, dependsOn: [otherId] });
     expect(fetch.mock.calls.map((call) => parseApiJson(String(call[1]!.body)))).toEqual([
-      { title: "Task", dependsOn: [otherId], externalDependsOn: [otherId] },
+      { title: "Task", status: "todo", dependsOn: [otherId], externalDependsOn: [otherId] },
       { version: 9_223_372_036_854_775_807n, externalDependsOn: [otherId] },
       { version: 1n, externalDependsOn: [] },
       { version: 1n, dependsOn: [otherId] },
@@ -451,14 +471,14 @@ describe("operation-scoped API access", () => {
 
   it("reports an unconfirmed mutation when its response exceeds a byte limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(task, 201));
-    await expect(client(fetch, operation({ limits: { responseBytes: 10 } })).createTask(projectId, { title: "Task" })).rejects.toMatchObject({ outcomeUnconfirmed: true, confirmedRefusal: false, cause: { kind: "response_limit" } });
+    await expect(client(fetch, operation({ limits: { responseBytes: 10 } })).createTask(projectId, { status: "todo", title: "Task" })).rejects.toMatchObject({ outcomeUnconfirmed: true, confirmedRefusal: false, cause: { kind: "response_limit" } });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("marks disconnected mutation results unconfirmed and does not retry", async () => {
     let mutations = 0;
     const url = await server((request) => { mutations++; request.socket.destroy(); });
-    await expect(createApiClient({ serverUrl: url, operation: operation() }).createTask(projectId, { title: "Task" })).rejects.toMatchObject({ operation: "task.create", outcomeUnconfirmed: true, confirmedRefusal: false, cause: expect.any(Error) });
+    await expect(createApiClient({ serverUrl: url, operation: operation() }).createTask(projectId, { status: "todo", title: "Task" })).rejects.toMatchObject({ operation: "task.create", outcomeUnconfirmed: true, confirmedRefusal: false, cause: expect.any(Error) });
     expect(mutations).toBe(1);
   });
 
@@ -515,7 +535,7 @@ describe("operation-scoped API access", () => {
   it("retains synchronous injected fetch failures without unhandled cancellation rejections", async () => {
     const cause = new Error("Synchronous network boundary failure");
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => { throw cause; });
-    await expect(client(fetch).createTask(projectId, { title: "Task" })).rejects.toMatchObject({ cause, outcomeUnconfirmed: true });
+    await expect(client(fetch).createTask(projectId, { status: "todo", title: "Task" })).rejects.toMatchObject({ cause, outcomeUnconfirmed: true });
   });
 
   it("rejects unsupported timer ranges before starting an operation", () => {
@@ -632,7 +652,7 @@ describe("operation-scoped API access", () => {
 const graph = (): TaskGraph => ({
   observedAt: time,
   project,
-  summary: { total: 2, todo: 1, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 0 },
+  summary: { total: 2, proposed: 0, todo: 1, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 0 },
   tasks: [
     { id: taskId, titlePreview: "Task", titleTruncated: false, allowAgents: false, requiredPlatform: null, assignedTo: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
     { id: otherId, titlePreview: "Done", titleTruncated: false, allowAgents: false, requiredPlatform: null, assignedTo: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
@@ -642,7 +662,7 @@ const graph = (): TaskGraph => ({
 const mixedDependencyGraph = (): TaskGraph => ({
   observedAt: time,
   project,
-  summary: { total: 3, todo: 2, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 1 },
+  summary: { total: 3, proposed: 0, todo: 2, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 1 },
   tasks: [
     { ...graph().tasks[0]!, allowAgents: true, dependsOn: [otherId, normalId], externalDependsOn: [otherId], blockedBy: [otherId], ready: false },
     { ...graph().tasks[1]!, status: "todo", ready: true },
@@ -650,12 +670,12 @@ const mixedDependencyGraph = (): TaskGraph => ({
   ],
 });
 
-const threeStateGraph = (): TaskGraph => {
+const statusGraph = (): TaskGraph => {
   const ready = graph().tasks[0]!;
   const done = graph().tasks[1]!;
   const blocked = { ...ready, id: "44444444-4444-4444-4444-444444444444", ready: false, dependsOn: [ready.id], blockedBy: [ready.id] };
   const inProgress = { ...ready, id: "88888888-8888-8888-8888-888888888888", status: "in_progress" as const, ready: false };
-  return { observedAt: time, project, summary: { total: 4, todo: 2, inProgress: 1, done: 1, cancelled: 0, ready: 1, blocked: 1 }, tasks: [ready, blocked, inProgress, done] };
+  return { observedAt: time, project, summary: { total: 4, proposed: 0, todo: 2, inProgress: 1, done: 1, cancelled: 0, ready: 1, blocked: 1 }, tasks: [ready, blocked, inProgress, done] };
 };
 
 const joinId = "55555555-5555-5555-5555-555555555555";
@@ -668,7 +688,7 @@ const chainProjection = (): TaskGraph => {
   });
   return {
     observedAt: time, project,
-    summary: { total: 5, todo: 5, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 4 },
+    summary: { total: 5, proposed: 0, todo: 5, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 4 },
     tasks: [node(taskId), node(otherId, [taskId, externalId], [externalId]), node(normalId, [taskId]), node(joinId, [otherId, normalId]), node(externalId, [outsideId, externalDependencyId], [externalDependencyId])],
   };
 };
@@ -699,7 +719,7 @@ describe("response DTO contract", () => {
     if (failure === "recursive-external") tasks.push({ ...tasks[0]!, id: outsideId });
     if (failure === "chain-dangling") tasks[1] = { ...tasks[1]!, dependsOn: [taskId, externalId, outsideId], blockedBy: [taskId, externalId, outsideId] };
     if (failure === "context-known-blocker") tasks[4] = { ...tasks[4]!, dependsOn: [taskId, outsideId], externalDependsOn: [taskId], blockedBy: [outsideId] };
-    const summary = { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => !task.ready).length };
+    const summary = { total: tasks.length, proposed: 0, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => !task.ready).length };
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks, summary }))).getTaskGraph(projectId, seed)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
 
@@ -888,7 +908,7 @@ describe("response DTO contract", () => {
   });
 
   it("counts cancelled nodes separately and satisfies their consumers without requiring their own prerequisites", async () => {
-    const value = threeStateGraph();
+    const value = statusGraph();
     const blocked = value.tasks[1]!;
     const cancelled = { ...value.tasks[0]!, id: "99999999-9999-4999-8999-999999999999", status: "cancelled" as const, ready: false, cancelledAt: time, dependsOn: [blocked.id], blockedBy: [blocked.id] };
     const tasks = value.tasks.map((item, index) => index === 2 ? { ...item, dependsOn: [cancelled.id], blockedBy: [] } : item);
@@ -901,26 +921,33 @@ describe("response DTO contract", () => {
   });
 
   it("projects all three graph states and counts only blocked todo tasks as blocked", async () => {
-    const value = threeStateGraph();
+    const value = statusGraph();
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(value))).getTaskGraph(projectId, taskId)).resolves.toEqual(value);
-    const empty = { observedAt: time, project, summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 }, tasks: [] };
+    const empty = { observedAt: time, project, summary: { total: 0, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 }, tasks: [] };
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(empty))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
+  it("counts proposed separately and accepts a proposed prerequisite as unfinished", async () => {
+    const value = statusGraph();
+    const tasks = value.tasks.map((item, index) => index === 0 ? { ...item, status: "proposed", ready: false } : item);
+    const expected = { ...value, tasks, summary: { ...value.summary, proposed: 1, todo: 1, ready: 0 } };
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(expected))).getTaskGraph(projectId, taskId)).resolves.toEqual(expected);
+  });
+
   it.each([
-    { todo: undefined }, { todo: null }, { todo: "2" }, { todo: -1 }, { todo: 1.5 },
+    { proposed: undefined }, { proposed: -1 }, { proposed: 1 }, { todo: undefined }, { todo: null }, { todo: "2" }, { todo: -1 }, { todo: 1.5 },
     { total: 5 }, { todo: 5 }, { inProgress: 2 }, { done: 2 }, { ready: 2 }, { blocked: 2 },
-  ])("rejects missing, malformed or inconsistent three-state graph counters %#", async (changes) => {
-    const value = threeStateGraph();
+  ])("rejects missing, malformed or inconsistent Task graph counters %#", async (changes) => {
+    const value = statusGraph();
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, summary: { ...value.summary, ...changes } }))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
 
-  it.each(["todo-ready", "todo-blockers", "in-progress-blocked", "done-blocked", "proposed"])("rejects invalid three-state graph dependency data: %s", async (failure) => {
-    const value = threeStateGraph();
+  it.each(["todo-ready", "todo-blockers", "in-progress-blocked", "done-blocked", "unknown"])("rejects invalid Task graph dependency data: %s", async (failure) => {
+    const value = statusGraph();
     const tasks = value.tasks.map((item) => ({ ...item }));
     if (failure === "todo-ready") tasks[1] = { ...tasks[1]!, ready: true };
     if (failure === "todo-blockers") tasks[1] = { ...tasks[1]!, blockedBy: [] };
-    if (failure === "proposed") tasks[0] = { ...tasks[0]!, status: "proposed" as never };
+    if (failure === "unknown") tasks[0] = { ...tasks[0]!, status: "unknown" as never };
     if (failure === "in-progress-blocked" || failure === "done-blocked") {
       const index = failure === "in-progress-blocked" ? 2 : 3;
       tasks[index] = { ...tasks[index]!, dependsOn: [tasks[0]!.id], blockedBy: [tasks[0]!.id] };
@@ -984,7 +1011,7 @@ describe("response DTO contract", () => {
     const original = graph();
     const ids = Array.from({ length: 10001 }, (_, index) => index === 0 ? taskId : `50000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`);
     const tasks = ids.map((id, index) => ({ ...original.tasks[1]!, id, dependsOn: index + 1 < ids.length ? [ids[index + 1]!] : [] }));
-    const value = { ...original, tasks, summary: { ...original.summary, total: tasks.length, todo: 0, done: tasks.length, ready: 0 } };
+    const value = { ...original, tasks, summary: { ...original.summary, total: tasks.length, proposed: 0, todo: 0, done: tasks.length, ready: 0 } };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, futureField: 42 }));
     expect(await client(fetch).getTaskGraph(projectId, taskId)).toEqual(value);
   });

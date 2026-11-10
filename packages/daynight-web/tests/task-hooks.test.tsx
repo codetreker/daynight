@@ -42,7 +42,7 @@ const node: GraphTask = { assignedTo: null, requiredPlatform: null, allowAgents:
 const detail: TaskDetail = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const graph = (id = projectId): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
-  tasks: [node], summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
+  tasks: [node], summary: { proposed: 0, total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
 });
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -87,7 +87,7 @@ describe("task graph snapshots", () => {
     const initial: TaskGraph = { ...graph(), tasks: [
       { ...node, id: otherTask, titlePreview: "Prerequisite", status: "done", ready: false, startedAt: time, completedAt: time, cancelledAt: null, createdAt: "2026-10-20T12:00:00.123455Z" },
       { ...node, dependsOn: [otherTask] },
-    ], summary: { total: 2, todo: 1, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 0 } };
+    ], summary: { proposed: 0, total: 2, todo: 1, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 0 } };
     const classified: TaskGraph = { ...initial, tasks: initial.tasks.map((task) => task.id === taskId
       ? { ...task, externalDependsOn: [otherTask] } : task) };
     const later = { ...classified, observedAt: "2026-10-20T12:00:10.123456Z" };
@@ -279,7 +279,7 @@ describe("task graph snapshots", () => {
   it("publishes status and readiness changes even with unchanged task timestamps", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const reviewed: TaskGraph = { ...graph(), tasks: [{ ...node, status: "done", ready: false }],
-      summary: { total: 1, todo: 0, inProgress: 0, done: 1, cancelled: 0, ready: 0, blocked: 0 } };
+      summary: { proposed: 0, total: 1, todo: 0, inProgress: 0, done: 1, cancelled: 0, ready: 0, blocked: 0 } };
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(reviewed);
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -308,7 +308,7 @@ describe("task graph snapshots", () => {
   it("retains a same-project snapshot through refresh and failure, then replaces it whole on success", async () => {
     const update = deferred<TaskGraph>();
     const replacement = resetSnapshot({ ...graph(), tasks: [],
-      summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
+      summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(update.promise).mockResolvedValue(replacement);
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -438,7 +438,7 @@ describe("task details", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     const reviewed = { ...detail, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
     let predecessor: GraphTask = { ...node, id: otherTask, titlePreview: "Prerequisite" };
-    graphRequest.mockImplementation(async () => ({ ...graph(), tasks: [{ ...node, dependsOn: [otherTask], blockedBy: predecessor.status === "done" ? [] : [otherTask], ready: predecessor.status === "done" }, predecessor], summary: {
+    graphRequest.mockImplementation(async () => ({ ...graph(), tasks: [{ ...node, dependsOn: [otherTask], blockedBy: predecessor.status === "done" ? [] : [otherTask], ready: predecessor.status === "done" }, predecessor], summary: { proposed: 0,
       total: 2, todo: predecessor.status === "todo" ? 2 : 1, inProgress: 0,
       done: predecessor.status === "done" ? 1 : 0, cancelled: 0, ready: 1, blocked: predecessor.status === "done" ? 0 : 1,
     } }));

@@ -18,7 +18,7 @@ const task = (id = taskId, assignedTo: string | null = null): Task => ({
 });
 const graph = (assignedTo: string | null): TaskGraph => {
   const { projectId: _project, title, description: _description, version: _version, properties: _properties, ...node } = task(taskId, assignedTo);
-  return { project, observedAt: time, summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false }] };
+  return { project, observedAt: time, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false }] };
 };
 const response = (value: unknown, principal?: string | string[], status = 200): Response => {
   const headers = new Headers({ "Content-Type": "application/json" });
@@ -71,7 +71,7 @@ describe("native assignment read and write protocol", () => {
 
   it.each([undefined, null, userId.toUpperCase()])("transmits assignedTo=%s with exact versions and no extra reads", async (assignedTo) => {
     const normalized = assignedTo === undefined || assignedTo === null ? null : userId;
-    const created = task(taskId, normalized);
+    const created = { ...task(taskId, normalized), status: "proposed", ready: false };
     const changed = { ...created, version: 9_223_372_036_854_775_807n };
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(response(created, undefined, 201))

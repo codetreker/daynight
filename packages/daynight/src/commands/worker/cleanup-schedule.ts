@@ -1,3 +1,5 @@
+export const ARCHIVE_REPAIR_PROBE_INTERVAL_MS = 15 * 60_000;
+
 import type { WorkerStore } from "./store.js";
 import type { CleanupScheduleRecord, ResourceOwner } from "./types.js";
 

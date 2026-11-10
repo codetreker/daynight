@@ -1,4 +1,6 @@
-import { uploadStoppedControllerArchive } from "../controller/archive-upload.js";
+import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
+import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS } from "./cleanup-schedule.js";
+import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
 import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
@@ -31,7 +33,7 @@ import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
-import type { WorkerProject } from "./types.js";
+import type { ArchiveBackfillIdentity, WorkerProject } from "./types.js";
 import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
@@ -135,7 +137,7 @@ const effectiveExecutionConfiguration = (native: WorkerCloudNative, mode: AgentC
 });
 
 const nativeConfigurationApplication = (options: {
-  paths: WorkerPaths; homeDirectory: string; workingDirectory: string; mode: AgentControlMode;
+  paths: WorkerPaths; homeDirectory: string; workingDirectory: string;
   overrides: WorkerLocalNativeOverrides;
   signal: AbortSignal; emit: (event: WorkerEvent) => void;
 }) => {
@@ -151,8 +153,8 @@ const nativeConfigurationApplication = (options: {
   return {
     current: () => environment,
     prepareEnvironment: getEnvironment,
-    apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
-      normalizeWorkerNative(native, options.mode, options.overrides);
+    apply: async (native: WorkerCloudNative, signal: AbortSignal, mode: AgentControlMode): Promise<void> => {
+      normalizeWorkerNative(native, mode, options.overrides);
       const nativeEnvironment = await getEnvironment();
       const operation = createOperation({ signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
       try { await probeNativeAgentVersion({ agent: native.agent, environment: { ...process.env, ...nativeEnvironment.agentEnvironment }, cwd: options.workingDirectory }, operation); }
@@ -173,8 +175,47 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl) throw new Error("Archive server identity changed.");
       await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal });
     };
+    const probeArchive: NonNullable<import("./backends/web.js").WebBackendOptions["probeArchive"]> = async (task, journalPath, signal) => {
+      signal.throwIfAborted();
+      if (!task.webExecution) throw new Error("Original controller execution is missing.");
+      const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
+      if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
+        || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
+        || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
+      return probeStoppedControllerArchive({ journalPath, ticket, signal });
+    };
     const backfilled = new Set<string>();
     const archiveRetryAt = new Map<string, number>();
+    const archiveRepairs = new Map<string, ArchiveRepairCode>();
+    const archiveFailures = new Map<string, string>();
+    const archiveObservations = new Map<string, string>();
+    const archiveActivities = new Map<string, string>();
+    const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown): void => {
+      const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
+      const next = new Date(nextAttemptAt).toISOString();
+      try {
+        const operationId = archiveFailures.get(identity.executionId) ?? randomUUID();
+        if (!archiveFailures.has(identity.executionId) || error !== undefined) {
+          monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, error: repairCode === undefined ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
+          archiveFailures.set(identity.executionId, operationId);
+        }
+        if (repairCode !== undefined) {
+          const activity = archiveActivities.get(identity.executionId);
+          if (activity === undefined) {
+            const id = monitoring?.startActivity({ kind: "maintenance", phase: "archive-backfill", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: next });
+            if (id !== undefined) archiveActivities.set(identity.executionId, id);
+          } else monitoring?.updateActivity(activity, { nextAttemptAt: next });
+          if (error !== undefined && !(error instanceof ArchiveRepairRequiredError)) {
+            const observationId = archiveObservations.get(identity.executionId) ?? randomUUID();
+            archiveObservations.set(identity.executionId, observationId);
+            monitoring?.fail({ operationId: observationId, component: "archive", phase: "archive-backfill", scope, error, retryState: "scheduled", nextAttemptAt: next });
+          }
+        } else {
+          const activity = archiveActivities.get(identity.executionId);
+          if (activity !== undefined) monitoring?.updateActivity(activity, { waitReason: "retry-backoff", nextAttemptAt: next });
+        }
+      } catch { /* Monitoring cannot change archival. */ }
+    };
     let lastArchiveAttempt: string | null = null;
     const backfillArchives = async (signal: AbortSignal) => {
       const tasks = webStore.listCompletedTasks();
@@ -186,16 +227,55 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
         // Advance on failure as well as success so a damaged source cannot monopolize catch-up.
         lastArchiveAttempt = execution.executionId;
+        const identity = { serverOrigin: serverUrl, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
+          executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
         try {
-          await archive(task, path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), signal);
+          const retained = store.getArchiveBackfillSchedule(identity);
+          if (retained !== null) {
+            archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
+            archiveRetryAt.set(execution.executionId, retained.nextAttemptAt);
+            observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode);
+            if (retained.nextAttemptAt > Date.now()) continue;
+          }
+          const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
+          const admission = await probeArchive(task, journalPath, signal);
+          if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
+          if (admission.kind === "complete") {
+            // Receipt admission alone does not establish that the source was repaired.
+            store.deleteArchiveBackfillSchedule(identity);
+            archiveRepairs.delete(execution.executionId);
+          }
+          await archive(task, journalPath, signal);
+          signal.throwIfAborted();
+          store.deleteArchiveBackfillSchedule(identity);
           backfilled.add(execution.executionId);
+          archiveRepairs.delete(execution.executionId);
+          archiveRetryAt.delete(execution.executionId);
+          const failure = archiveFailures.get(execution.executionId);
+          if (failure) { try { monitoring?.recover(failure); } catch { /* Monitoring cannot change archival. */ } archiveFailures.delete(execution.executionId); }
+          const observation = archiveObservations.get(execution.executionId), activity = archiveActivities.get(execution.executionId);
+          try { if (observation) monitoring?.recover(observation); if (activity) monitoring?.endActivity(activity); } catch { /* Monitoring cannot change archival. */ }
+          archiveObservations.delete(execution.executionId); archiveActivities.delete(execution.executionId);
           emit({ kind: "session-archive-ready", message: `Completed session ${execution.sessionId} history is archived.` });
-        } catch { archiveRetryAt.set(execution.executionId, Date.now() + 60_000); emit({ kind: "session-archive-retry", message: `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` }); }
+        } catch (error) {
+          signal.throwIfAborted();
+          if (error instanceof ArchiveRepairRequiredError) archiveRepairs.set(execution.executionId, error.code);
+          const repairCode = archiveRepairs.get(execution.executionId);
+          const nextAttemptAt = Date.now() + (repairCode === undefined ? 60_000 : ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
+          archiveRetryAt.set(execution.executionId, nextAttemptAt);
+          let reportedError = error;
+          if (repairCode !== undefined) {
+            try { store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: repairCode, nextAttemptAt }); }
+            catch (persistenceError) { reportedError = new AggregateError([error, persistenceError], "Archive backfill schedule was not persisted; in-memory condition backoff remains active."); }
+          }
+          observeBackfill(identity, nextAttemptAt, repairCode, reportedError);
+          emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
+        }
         // Bound historical catch-up per reconciliation round.
         break;
       }
     };
-    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
+    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, probeArchive, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
@@ -363,7 +443,7 @@ export const runWorker = async (options: {
       void job.finally(() => { if (bindingJobs.get(projectId)?.job === job) bindingJobs.delete(projectId); }).catch(() => undefined);
       return job;
     };
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, overrides: local, signal, emit });
+    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, overrides: local, signal, emit });
     let fallback: Awaited<ReturnType<typeof validateWorkerConfigurationSource>> | null = null;
     let fallbackRepositories: WorkerRepositoryAssignment[] = [];
     let fallbackTargets: string[] = [];
@@ -380,9 +460,9 @@ export const runWorker = async (options: {
       const repositories: WorkerRepositoryAssignment[] = [];
       for (const project of effective.projects) {
         const binding = prepared.get(project.projectId);
-        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, local.agentControlMode, effective.recoveryLimit, local) });
+        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, effective.agentControlMode!, effective.recoveryLimit, local) });
       }
-      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
     };
     const transitions = new Map<string, string>();
     const preparationFailures = new Map<string, { operationId: string; observedAt: string; revision: string; successRevision: string | null }>();
@@ -395,7 +475,7 @@ export const runWorker = async (options: {
     let configurationChanged = new AbortController();
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
-      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal,
+      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode,
       applyNative: nativeApplication.apply,
       onNativeApplication: event => {
         const projectId = event.key.kind === "projectNative" ? event.key.projectId : null;
@@ -558,8 +638,11 @@ export const runWorker = async (options: {
               const project = await resolveProject({ repoUrl: mapping.remote }, signal);
               const operation = createOperation({ signal });
               try {
-                const worktrees = await getGit().listWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
-                if (worktrees.some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+                const scan = await getGit().scanWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
+                if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Local repository resource coverage is incomplete.");
+                if ([...scan.validated, ...scan.quarantined].some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+                // Mapping admission proves the project/path association only. The
+                // coordinator independently proves quarantined owners before claiming.
               } finally { operation.dispose(); }
               await admitLocalBinding({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, signal);
             }
@@ -635,7 +718,7 @@ export const runWorker = async (options: {
                 nativeActivity = m.startActivity({ kind: "maintenance", phase: "configuration", scope: nativeScope });
               });
               try {
-                await nativeApplication.apply(nativeTarget, signal);
+                await nativeApplication.apply(nativeTarget, signal, local.agentControlMode);
                 const recovered = fallbackNativeFailures.get(projectId);
                 if (recovered !== undefined && !signal.aborted && manager.current().desired === null && isDeepStrictEqual(recovered.target, nativeTarget)) {
                   observeMonitoring(m => { m.recover(recovered.operationId); m.setNativeConfigurationReason(nativeScope, null); }); fallbackNativeFailures.delete(projectId);
@@ -743,7 +826,7 @@ export const runWorker = async (options: {
         native: fallback,
         projects: fallbackRepositories.map(repository => ({ projectId: repository.project.projectId, native: repository.configuration })),
       } : snapshot.effective;
-      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, local.agentControlMode, local, localFallback ? "local" : "cloud");
+      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, localFallback ? local.agentControlMode : snapshot.effective.agentControlMode ?? local.agentControlMode, local, localFallback ? "local" : "cloud");
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
     }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
@@ -757,14 +840,14 @@ export const runWorker = async (options: {
         },
         capture: () => {
           const captured = manager.report(manager.current().desired === null ? bootstrap : null);
-          try { parseWorkerCloudReport(captured); }
+          try { parseWorkerCloudReport(captured, true); }
           catch (error) { reconcileReport = true; throw error; }
           return captured;
         },
         send: async (report, captured, operation, selectors) => {
           try { return await remote.reportConfiguration(workerId, report, captured, operation, selectors); }
           catch (error) {
-            if (!(error instanceof ApiError) || error.outcomeUnconfirmed || error.phase === "prepare" && error.cause instanceof OperationError && error.cause.kind === "request_limit") reconcileReport = true;
+            if (!(error instanceof ApiError) || error.outcomeUnconfirmed || error.status === 400 && error.code === "invalid_input" || error.phase === "prepare" && error.cause instanceof OperationError && error.cause.kind === "request_limit") reconcileReport = true;
             if (error instanceof ApiError && error.status === 404 && error.code === "not_found" && manager.current().desired === null && captured.bootstrap !== null) {
               bootstrap = null;
               fallback ??= await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, operation.signal);
@@ -772,7 +855,12 @@ export const runWorker = async (options: {
             throw error;
           }
         },
-        accept: async (sent, receipt) => { await manager.acknowledge(sent, receipt); if (receipt.desired !== null) bootstrap = null; },
+        accept: async (sent, receipt) => {
+          await manager.acknowledge(sent, receipt);
+          if (receipt.desired !== null) bootstrap = null;
+          // Legacy receipts cannot advertise a later upgrade; refresh capability before the next report.
+          if (receipt.desired?.value.agentControlMode === undefined) reconcileReport = true;
+        },
       },
     });
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
@@ -988,7 +1076,7 @@ export const runWorkerControl = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, mode: local.agentControlMode, overrides: local, signal, emit: diagnostics.emit });
+    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
     if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
@@ -1020,18 +1108,18 @@ export const runWorkerControl = async (options: {
         }
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, preferPlatformSpecificTasks: initial.preferPlatformSpecificTasks };
       } else {
-        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, applyNative: nativeApplication.apply });
+        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, applyNative: nativeApplication.apply });
         await configurationManager.receive(resource.desired, resource.observationRevision);
         await configurationManager.settle();
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
-        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local);
+        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local);
         const repositories = store.listProjects().flatMap(project => {
           const selected = effective.projects.find(value => value.projectId === project.projectId);
           const native = selected === undefined ? effective.native : selected.native;
-          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, local.agentControlMode, effective.recoveryLimit!, local) }];
+          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.agentControlMode!, effective.recoveryLimit!, local) }];
         });
-        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
       }
     }
     const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
@@ -1064,7 +1152,7 @@ export const runWorkerControl = async (options: {
                   resource = { desired: null, observationRevision: "0", observation: null };
                 }
               }
-              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, applyNative: nativeApplication.apply });
+              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, applyNative: nativeApplication.apply });
               await configurationManager.receive(resource.desired, resource.observationRevision);
               if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
             }

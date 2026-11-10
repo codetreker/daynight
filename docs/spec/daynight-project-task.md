@@ -380,12 +380,12 @@ daynight task graph <task-id> [--depends-only]
 `--path=value` 继续拒绝。附件上传的 `--path` 是 text 选项，接受内联赋值。
 `project create`、属性 set/remove 和附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符用于保留前导连字符的位置参数，选项必须放在终止符之前。其他操作继续使用其声明的语法。
 
-创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。服务端对标题、描述、完整依赖及属性值执行[写入额度](daynight-api-input-limits.md)；CLI 保留服务端拒绝。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`、`cancelled`，列表默认选择
+创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--status proposed|todo`、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。服务端对标题、描述、完整依赖及属性值执行[写入额度](daynight-api-input-limits.md)；CLI 保留服务端拒绝。新 task 默认 `proposed`，可用 --status todo 创建已确认任务，且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，列表默认选择
 所有未结束任务（排除done/cancelled）；`--all` 选择所有未删除任务的业务状态，
 单个 `--status` 选择指定状态，包括 `done` 和 `cancelled`。`--all` 与 `--status` 互斥，组合使用
-属于参数错误；列表状态值为 `todo`、`in_progress`、`done`、`cancelled`，共享语法负责校验和静态候选，
+属于参数错误；列表状态值为 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，共享语法负责校验和静态候选，
 帮助显示选项说明。`--ready` 表示 `ready=true`，与所选状态按 AND 组合，支持
-`--all --ready`。`list` 与 `ready` 接受 --allow-agents true|false 与 --compatible-platform windows|linux|macos。严格拒绝其他值，省略不筛选；兼容包含null和同值要求，全部过滤先于服务排序、分页和ready上限，不在本地丢项。列表读完全部匹配分页后，按 `in_progress`、ready、其余 `todo`、
+`--all --ready`。`list` 与 `ready` 接受 --allow-agents true|false 与 --compatible-platform windows|linux|macos。严格拒绝其他值，省略不筛选；兼容包含null和同值要求，全部过滤先于服务排序、分页和ready上限，不在本地丢项。列表读完全部匹配分页后，按 `in_progress`、ready、其余 `todo`、`proposed`、
 done/cancelled终态分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。list 另支持 --assigned-to UUID|me|unassigned，省略无负责人限制；与状态/ready/许可/平台组合并保留到每页。me 以成功响应 Daynight-User-ID 绑定本次完整遍历，空页也校验，后页不得切换身份；不另发 /me 请求。按 UUID 或未分配查询验证返回项匹配，不能静默丢弃。详情按选定
 project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 `task delete` 的精确版本、一次预读、不重试及数据保留规则。`--remove-depends` 是可选开关：省略时无未删除引用者即可删除，有引用者则 409 拒绝；传入才明确解除全部传入引用并原子软删除，不要求无引用任务也传开关。显式 project ID、show/update/set-status/delete 的 task ID、标题、描述、状态、
 版本及修改字段组合的参数错误必须先于配置读取、Git 和网络访问拒绝；两类依赖 ID 在本地正规化并排序，
@@ -403,7 +403,7 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 拒绝，stdout 保持为空。正常的候选选择使用此有界操作，完整依赖关系可按需使用
 `graph` 查看。
 
-`set-status <task-id> <status>` 接受四状态目标、可选 project、精确 `--if-version` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。原三态转换保持；cancelled可由非active任务进入且不可恢复；当前版本同状态 +0，实际改变 +1，
+`set-status <task-id> <status>` 接受五状态目标、可选 project、精确 `--if-version` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。proposed/todo/in_progress/done 可直接互相设置，无需经过固定阶段；cancelled可由非active任务进入且不可恢复；当前版本同状态 +0，实际改变 +1，
 过期同状态先冲突。实际进入 in_progress/done 检查全部直接前置；done 退回要求没有进行中或已完成直接后继。
 拒绝返回原错误及稳定排序的阻塞 ID，不级联。成员与管理员均可设置，状态不授予执行或交付权限。
 显式版本不预读；省略时提交前只读一次。基于已审阅资料的决策必须带其版本，不能用临时 GET 替代。
@@ -442,10 +442,10 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 查询范围、返回集合和依赖引用语义由
 [服务端需求](daynight-server.md#任务链图查询)拥有。
 
-普通 graph 输出呈现所选节点的四种状态、依赖、阻塞和汇总。summary 统计本链与补充的
-外部节点；文本汇总包含四态，JSON summary 为 total、todo、inProgress、done、cancelled、ready、blocked，满足
-`total = todo + inProgress + done + cancelled` 与 `todo = ready + blocked`。ready只来自全部前置为done或cancelled的todo；
-列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览和快照边界继承服务合同。
+普通 graph 输出呈现所选节点的五种状态、依赖、阻塞和汇总。summary 统计本链与补充的
+外部节点；文本汇总包含五态，JSON summary 为 total、proposed、todo、inProgress、done、cancelled、ready、blocked，满足
+`total = proposed + todo + inProgress + done + cancelled` 与 `todo = ready + blocked`。ready只来自全部前置为done或cancelled的todo；
+列表、show、graph 均严格校验五种状态，状态写入只通过 set-status。标题预览和快照边界继承服务合同。
 图读取不复查保存集合的节点或边容量，现有客户端传输字节和取消期限继续适用。完整任务和图节点严格读取必填布尔 allowAgents、必填nullable requiredPlatform 与必填nullable assignedTo；后者只接受null或规范用户UUID。缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any；负责人显示 Assigned to: UUID 或 unassigned，不查询姓名。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`、`cancelledAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。自然读取、解码或传输预算失败时不返回部分图。
 
 附件 `put/list/read/remove` 继承相同的 project 选择，逐文件处理完整相对路径。

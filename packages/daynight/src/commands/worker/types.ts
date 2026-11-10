@@ -1,3 +1,4 @@
+import type { ArchiveRepairCode } from "../controller/archive-error.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
 
 export type ProjectIdentity = { projectId: string };
@@ -24,8 +25,12 @@ export type CleanupSchedule = {
   nextAttemptAt: number;
   stage: string;
   lastError: string | null;
+  archiveRepairCode?: ArchiveRepairCode | null;
 };
 export type CleanupScheduleRecord = ResourceOwner & CleanupSchedule;
+export type ArchiveBackfillIdentity = ClaimIdentity & { serverOrigin: string; executionId: string; executionGeneration: string; launchId: string };
+export type ArchiveBackfillSchedule = { archiveRepairCode: ArchiveRepairCode; nextAttemptAt: number };
+export type ArchiveBackfillScheduleRecord = ArchiveBackfillIdentity & ArchiveBackfillSchedule;
 export type WorktreeBinding = { repositoryPath: string; commonDirectory: string; worktreePath: string; branch: string };
 
 export type FrozenExecutionConfiguration = ExecutionConfiguration;

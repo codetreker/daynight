@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -64,7 +66,7 @@ describe("Bot execution evidence", () => {
     const f = fixture(); f.store.prepare(f.record); const db = f.database;
     db.prepare("UPDATE bot_executions SET record=json_set(record, '$.launchSubmission', 'lost')").run();
     expect(() => f.store.get(f.record)).toThrow(/submission/i);
-    db.pragma("user_version=13"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=12");
+    db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat) + 1}`); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat)}`);
   });
 });
 

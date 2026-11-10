@@ -48,7 +48,7 @@ const graph = (projectId: string): TaskGraph => {
   const detail = serverDetail(projectId);
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: `${currentUser.name} project ${projectId === project ? 'P' : 'Q'}`, repoUrl: 'https://example.com/repo', createdAt: stamp, updatedAt: stamp },
     tasks: [{ assignedTo: detail.assignedTo, requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, cancelledAt: detail.cancelledAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
-    summary: { total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, cancelled: 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
+    summary: { proposed: 0, total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, cancelled: 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void;

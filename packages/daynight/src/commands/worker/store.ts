@@ -4,7 +4,7 @@ import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
-import type { ClaimIdentity, CleanupSchedule, CleanupScheduleRecord, LocalTask, ProjectIdentity, ResourceOwner, WorkerProject } from "./types.js";
+import type { ArchiveBackfillIdentity, ArchiveBackfillSchedule, ArchiveBackfillScheduleRecord, ClaimIdentity, CleanupSchedule, CleanupScheduleRecord, LocalTask, ProjectIdentity, ResourceOwner, WorkerProject } from "./types.js";
 import { parseWorkerCloudNative, type WorkerCloudNative } from "../../api/worker-configuration.js";
 type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true };
 const parseFrozenNative = (value: unknown): FrozenNativeConfiguration => {
@@ -38,18 +38,31 @@ const projectKey = (value: ProjectIdentity): ProjectIdentity => ({ projectId: id
 const claimKey = (value: ClaimIdentity): ClaimIdentity => ({ ...projectKey(value), taskId: id(value.taskId, "Task ID"), claimId: id(value.claimId, "Claim ID") });
 const projectColumns = "project_id AS projectId, repo_url AS repoUrl, local_path AS localPath";
 const taskColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, status, agent, session_id AS sessionId, agent_control_mode AS agentControlMode";
-const cleanupColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, worktree_id AS worktreeId, deadline, failures, next_attempt_at AS nextAttemptAt, stage, last_error AS lastError";
+const cleanupColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, worktree_id AS worktreeId, deadline, failures, next_attempt_at AS nextAttemptAt, stage, last_error AS lastError, archive_repair_code AS archiveRepairCode";
 const nonnegativeInteger = (value: number, name: string): number => {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`);
   return value;
 };
 const asCleanupState = (value: CleanupSchedule): CleanupSchedule => {
+  const code = value.archiveRepairCode ?? null;
+  if (code !== null && code !== "archive_incomplete" && code !== "projection_gap") throw new TypeError("Invalid archive repair code.");
+  if (code !== null && value.stage !== "archive") throw new TypeError("Archive repair requires the archive cleanup stage.");
   return { deadline: nonnegativeInteger(value.deadline, "Cleanup deadline"), failures: nonnegativeInteger(value.failures, "Cleanup failures"), nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Cleanup next attempt"),
-    stage: text(value.stage, "Cleanup stage"), lastError: value.lastError === null ? null : text(value.lastError, "Cleanup scheduling error") };
+    ...(code === null ? {} : { archiveRepairCode: code }), stage: text(value.stage, "Cleanup stage"), lastError: value.lastError === null ? null : text(value.lastError, "Cleanup scheduling error") };
 };
 const asCleanupRecord = (row: CleanupScheduleRecord): CleanupScheduleRecord => ({
   ...claimKey(row), worktreeId: id(row.worktreeId, "Worktree ID"), ...asCleanupState(row),
 });
+const archiveBackfillKey = (value: ArchiveBackfillIdentity) => ({ serverOrigin: text(value.serverOrigin, "Archive server origin"), executionId: id(value.executionId, "Archive execution ID") });
+const asArchiveBackfillIdentity = (value: ArchiveBackfillIdentity): ArchiveBackfillIdentity => {
+  const generation = text(value.executionGeneration, "Archive execution generation");
+  if (!/^[1-9][0-9]{0,18}$/.test(generation) || BigInt(generation) > 9_223_372_036_854_775_807n) throw new TypeError("Invalid archive execution generation.");
+  return { ...archiveBackfillKey(value), ...claimKey(value), executionGeneration: generation, launchId: id(value.launchId, "Archive launch ID") };
+};
+const asArchiveBackfillSchedule = (value: ArchiveBackfillSchedule): ArchiveBackfillSchedule => {
+  if (value.archiveRepairCode !== "archive_incomplete" && value.archiveRepairCode !== "projection_gap") throw new TypeError("Invalid archive repair code.");
+  return { archiveRepairCode: value.archiveRepairCode, nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Archive next attempt") };
+};
 const asProject = (row: WorkerProject): WorkerProject => ({ ...projectKey(row), repoUrl: text(row.repoUrl, "Repository URL"), localPath: absolutePath(row.localPath, "Project local path") });
 const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
@@ -90,6 +103,16 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     const row = db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as CleanupScheduleRecord | undefined;
     return row === undefined ? null : asCleanupRecord(row);
   });
+  const getArchiveBackfillSchedule = (identity: ArchiveBackfillIdentity): ArchiveBackfillScheduleRecord | null => read(() => {
+    const row = db.prepare(`SELECT server_origin AS serverOrigin, execution_id AS executionId, execution_generation AS executionGeneration,
+      launch_id AS launchId, project_id AS projectId, task_id AS taskId, claim_id AS claimId,
+      archive_repair_code AS archiveRepairCode, next_attempt_at AS nextAttemptAt
+      FROM archive_backfill_schedules WHERE server_origin = @serverOrigin AND execution_id = @executionId`).get(archiveBackfillKey(identity)) as ArchiveBackfillScheduleRecord | undefined;
+    if (row === undefined) return null;
+    const owner = asArchiveBackfillIdentity(identity);
+    if (Object.entries(owner).some(([key, value]) => row[key as keyof ArchiveBackfillIdentity] !== value)) throw new Error("Archive backfill schedule identity changed.");
+    return { ...owner, ...asArchiveBackfillSchedule(row) };
+  });
   const needTask = (identity: ClaimIdentity): LocalTask => {
     const task = getTask(identity);
     if (task === null) throw new Error("The claimed task is not registered.");
@@ -127,6 +150,18 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
         ON CONFLICT(project_id) DO UPDATE SET repo_url = excluded.repo_url, local_path = excluded.local_path`).run(project);
       return getProject(project)!;
     }),
+    getArchiveBackfillSchedule,
+    saveArchiveBackfillSchedule: (identity: ArchiveBackfillIdentity, state: ArchiveBackfillSchedule): void => atomic(() => {
+      const record = { ...asArchiveBackfillIdentity(identity), ...asArchiveBackfillSchedule(state) };
+      getArchiveBackfillSchedule(record);
+      db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at)
+        VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, @archiveRepairCode, @nextAttemptAt)
+        ON CONFLICT(server_origin, execution_id) DO UPDATE SET archive_repair_code = excluded.archive_repair_code, next_attempt_at = excluded.next_attempt_at`).run(record);
+    }),
+    deleteArchiveBackfillSchedule: (identity: ArchiveBackfillIdentity): void => atomic(() => {
+      if (getArchiveBackfillSchedule(identity) === null) return;
+      db.prepare("DELETE FROM archive_backfill_schedules WHERE server_origin = @serverOrigin AND execution_id = @executionId").run(archiveBackfillKey(identity));
+    }),
     getCleanupSchedule,
     listCleanupSchedules: (): CleanupScheduleRecord[] => read(() => (db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules ORDER BY project_id, task_id, claim_id`).all() as CleanupScheduleRecord[]).map(asCleanupRecord)),
     saveCleanupSchedule: (owner: ResourceOwner, state: CleanupSchedule): CleanupScheduleRecord => atomic(() => {
@@ -137,10 +172,10 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
         if (previous.worktreeId !== record.worktreeId) throw new Error("The cleanup claim is already bound to a different worktree.");
         if (previous.deadline !== record.deadline) throw new Error("The original cleanup deadline cannot change.");
       }
-      db.prepare(`INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error)
-        VALUES (@projectId, @taskId, @claimId, @worktreeId, @deadline, @failures, @nextAttemptAt, @stage, @lastError)
-        ON CONFLICT(project_id, task_id, claim_id) DO UPDATE SET failures = excluded.failures, next_attempt_at = excluded.next_attempt_at, stage = excluded.stage, last_error = excluded.last_error`)
-        .run(record);
+      db.prepare(`INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error, archive_repair_code)
+        VALUES (@projectId, @taskId, @claimId, @worktreeId, @deadline, @failures, @nextAttemptAt, @stage, @lastError, @archiveRepairCode)
+        ON CONFLICT(project_id, task_id, claim_id) DO UPDATE SET failures = excluded.failures, next_attempt_at = excluded.next_attempt_at, stage = excluded.stage, last_error = excluded.last_error, archive_repair_code = excluded.archive_repair_code`)
+        .run({ ...record, archiveRepairCode: record.archiveRepairCode ?? null });
       return getCleanupSchedule(record)!;
     }),
     deleteCleanupSchedule: (identity: ClaimIdentity): void => atomic(() => {

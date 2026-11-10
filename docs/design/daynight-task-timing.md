@@ -43,10 +43,10 @@ core 与 API 使用可空时间字段，JSON明确输出startedAt、completedAt�
 
 | 实际写入 | 起点 | 终点 |
 |---|---|---|
-| todo/done → in_progress | 锁后 `statement_timestamp()` | null |
-| in_progress/done → todo | null | null |
+| proposed/todo/done → in_progress | 锁后 `statement_timestamp()` | null |
+| 其他非取消状态 → proposed/todo | null | null |
 | in_progress → done | 保留真实可空起点 | 锁后 `statement_timestamp()` |
-| todo → done | null | 锁后 `statement_timestamp()` |
+| proposed/todo → done | null | 锁后 `statement_timestamp()` |
 | 进入cancelled | 保留 | 保留；另写数据库cancelledAt |
 | 普通编辑或同状态 | 保留 | 保留 |
 
