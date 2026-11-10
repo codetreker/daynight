@@ -55,9 +55,10 @@ transaction and shared-snapshot witnesses. The
 [test-writing rules](../../../../docs/writing_tests.md) own dependency isolation
 and the separate normal-flow scope of API integration and product E2E tests.
 
-Step write tests encode the fitting 170-description collection and overflowing
-171-description candidate through the production 64 MiB codec, then verify Add
-and Update reject before any write. The
+The [Step limits decision](2026-11-10-step-limits-test-ownership.md) assigns the
+real 170/171 collection encoding and admission rules to Core, while Service
+tests retain complete input forwarding and real encoding-failure coordination.
+The
 [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
 removes Graph/Sync stored-size admission and their count-only matrices. Real
 ordinary Store graphs retain selection, dependency arrays, snapshots and

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -300,6 +301,181 @@ func receiverEncoded(t *testing.T, header model.TaskHeader, mutation Mutation, o
 	}
 	if !reflect.DeepEqual(resource, wantResource) || !bytes.Equal(data, wantData) || !reflect.DeepEqual(mutation.Candidate, expected) {
 		t.Fatalf("encoded resource or candidate differs: got %+v want %+v", resource, wantResource)
+	}
+}
+
+func TestWriteReceiverOriginalTextLimits(t *testing.T) {
+	cases := []struct {
+		name, title, description, field string
+		parserReject, valid             bool
+	}{
+		{"title boundary multibyte", strings.Repeat("界", 341) + "x", "", "", false, true},
+		{"title over multibyte", strings.Repeat("界", 341) + "xx", "", "title", false, false},
+		{"description boundary multibyte", "x", strings.Repeat("界", 21845) + "x", "", false, true},
+		{"description over multibyte", "x", strings.Repeat("界", 21845) + "xx", "description", false, false},
+		{"escaped boundary", strings.Repeat("<", 1024), strings.Repeat("<", 65536), "", false, true},
+		{"title over escaped", strings.Repeat("<", 1025), "", "title", false, false},
+		{"description over escaped", "x", strings.Repeat("<", 65537), "description", false, false},
+		{"empty description", "title", "", "", false, true},
+		{"whitespace title", " \u0085\t", "", "title", true, false},
+		{"nul title", "x\x00", "", "title", true, false},
+		{"nul description", "x", "\x00", "description", true, false},
+		{"invalid title UTF-8", string([]byte{0xff}), "", "title", true, false},
+		{"invalid description UTF-8", "x", string([]byte{0xff}), "description", true, false},
+	}
+	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	for i, tc := range cases {
+		for _, operation := range []string{"add", "change"} {
+			t.Run(tc.name+"/"+operation, func(t *testing.T) {
+				header := receiverHeader(1)
+				originalHeader := header
+				current := receiverRows()
+				original := slices.Clone(current)
+				id := fmt.Sprintf("%08x", i+2)
+				var mutation Mutation
+				var err error
+				if operation == "add" {
+					var step model.TaskStep
+					var before, after *string
+					step, before, after, err = PrepareAdd(id, tc.title, tc.description, nil, nil, nil)
+					if err == nil {
+						if tc.parserReject {
+							t.Fatal("parser accepted invalid text")
+						}
+						mutation, err = AdmitAdd(header, current, step, before, after)
+					}
+				} else {
+					id = "00000000"
+					changes := Changes{Title: &tc.title, Description: &tc.description}
+					err = ValidateChanges(changes)
+					if err == nil {
+						if tc.parserReject {
+							t.Fatal("parser accepted invalid text")
+						}
+						mutation, err = AdmitChange(header, current, id, changes)
+					}
+				}
+				if !tc.valid {
+					receiverFault(t, err, "invalid_input")
+					if tc.parserReject {
+						if !strings.Contains(err.Error(), tc.field) {
+							t.Fatalf("parser refusal lost %s reason: %v", tc.field, err)
+						}
+					} else {
+						var violation *limit.Violation
+						actual, maximum := len(tc.title), int64(1024)
+						if tc.field == "description" {
+							actual, maximum = len(tc.description), 65536
+						}
+						if !errors.As(err, &violation) || violation.Field != tc.field || violation.Actual != int64(actual) || violation.Max != maximum || violation.Unit != "bytes" {
+							t.Fatalf("byte refusal lost field or measured bytes: %v", err)
+						}
+					}
+					if !reflect.DeepEqual(mutation, Mutation{}) || !reflect.DeepEqual(current, original) || header != originalHeader {
+						t.Fatal("refusal changed input or returned mutation")
+					}
+					return
+				}
+				if err != nil || !mutation.Changed {
+					t.Fatalf("admission: %+v %v", mutation, err)
+				}
+				expected := slices.Clone(original)
+				position := 0
+				if operation == "add" {
+					position = 2
+					expected = append(expected, model.TaskStep{ID: id, Position: 2, Title: tc.title, Description: tc.description, Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed})
+				} else {
+					expected[0].Title, expected[0].Description, expected[0].UpdatedAt = tc.title, tc.description, observed
+				}
+				if mutation.To != position {
+					t.Fatalf("target position = %d, want %d", mutation.To, position)
+				}
+				receiverCandidate(t, current, original, mutation)
+				resource, data, err := EncodeMutation(header, mutation, observed, operation)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded codec.StepsResource
+				if err := json.Unmarshal(data, &decoded); err != nil || !reflect.DeepEqual(decoded, resource) {
+					t.Fatalf("encoded resource differs: %v", err)
+				}
+				if resource.ProjectID != header.ProjectID || resource.TaskID != header.ID || resource.Version != 2 || len(resource.Steps) != len(expected) || !reflect.DeepEqual(mutation.Candidate, expected) {
+					t.Fatal("encoded mutation lost parent or complete candidate")
+				}
+				for j, row := range expected {
+					want := codec.Step{ID: row.ID, Title: row.Title, Description: row.Description, Status: row.Status, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+					if resource.Steps[j] != want {
+						t.Fatalf("encoded row %d differs", j)
+					}
+				}
+				receiverCandidate(t, current, original, mutation)
+				if header != originalHeader {
+					t.Fatal("encoding changed source header")
+				}
+			})
+		}
+	}
+}
+
+func TestWriteReceiverOriginalCollectionCapacity(t *testing.T) {
+	const count = 170
+	body := strings.Repeat("<", 65536)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	header := receiverHeader(1)
+	originalHeader := header
+	full := make([]model.TaskStep, count+1)
+	for i := range full {
+		full[i] = model.TaskStep{ID: fmt.Sprintf("%08x", i), Position: int64(i), Title: "x", Description: body, Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
+	}
+	_, encoded, err := codec.EncodeCollection(header, full[:count])
+	if err != nil || len(encoded) >= codec.MaxEncodedBytes {
+		t.Fatalf("170 complete descriptions must fit actual codec: size=%d err=%v", len(encoded), err)
+	}
+	encoded = nil
+	current := slices.Clone(full)
+	current[count].Description = ""
+	original := slices.Clone(current)
+	changes := Changes{Description: &body}
+	if err := ValidateChanges(changes); err != nil {
+		t.Fatal(err)
+	}
+	change, err := AdmitChange(header, current, "000000aa", changes)
+	if err != nil || !change.Changed || change.To != count || !reflect.DeepEqual(change.Candidate, full) {
+		t.Fatalf("171-row change candidate differs: %v", err)
+	}
+	receiverCandidate(t, current, original, change)
+	_, _, err = EncodeMutation(header, change, at, "change")
+	var fault *model.Fault
+	var actualLimit *codec.LimitError
+	if !errors.As(err, &fault) || fault.Code != "steps_limit_exceeded" || !errors.As(err, &actualLimit) || actualLimit.EncodedBytes <= codec.MaxEncodedBytes || fault.StepsLimit == nil || fault.StepsLimit.MaxEncodedBytes != 64*1024*1024 || fault.StepsLimit.EncodedBytes != actualLimit.EncodedBytes || !errors.Is(err, actualLimit) {
+		t.Fatalf("actual 171-row overflow lost fault, details or cause: %v", err)
+	}
+	if !reflect.DeepEqual(change.Candidate, full) || header != originalHeader {
+		t.Fatal("encoding changed candidate or source header")
+	}
+	receiverCandidate(t, current, original, change)
+	step, before, after, err := PrepareAdd("000000ab", "x", body, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	add, err := AdmitAdd(header, current, step, before, after)
+	if err != nil || !add.Changed || add.To != count+1 || len(add.Candidate) != count+2 {
+		t.Fatalf("172-row add admission: %v", err)
+	}
+	for i, got := range add.Candidate {
+		var want model.TaskStep
+		if i < len(original) {
+			want = original[i]
+		} else {
+			want = model.TaskStep{ID: "000000ab", Position: count + 1, Title: "x", Description: body, Status: model.TaskStepTodo}
+		}
+		if got != want || got.Position != int64(i) {
+			t.Fatalf("add candidate row %d differs", i)
+		}
+	}
+	receiverCandidate(t, current, original, add)
+	if header != originalHeader {
+		t.Fatal("add changed source header")
 	}
 }
 
