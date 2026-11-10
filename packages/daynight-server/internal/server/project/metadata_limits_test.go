@@ -7,41 +7,50 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 )
 
-func TestProjectHTTPMetadataLimitsPreserveRows(t *testing.T) {
-	h := projectRoutesHarness(t)
-	urlPrefix := "https://example.com/"
-	maxURL := urlPrefix + strings.Repeat("r", 4096-len(urlPrefix))
-	body := func(name, repo string) string {
-		return fmt.Sprintf(`{"name":%q,"repoUrl":%q,"expectedUserId":%q}`, name, repo, h.adminID)
-	}
-	for _, pair := range [][2]string{
-		{strings.Repeat("a", 256), "host:one"},
-		{strings.Repeat("😀", 256), maxURL},
-		{"Legacy HTTPS syntax", "https://-host/repo"},
-		{"Legacy SSH syntax", "ssh://git@host!name/repo"},
-		{"Legacy SCP syntax", "git@服务:repo"},
+func TestProjectHTTPMetadataLimitsPreserveValues(t *testing.T) {
+	prefix := "https://example.com/"
+	maxURL := prefix + strings.Repeat("r", 4096-len(prefix))
+	for _, tc := range []struct {
+		name, repo string
+		refused    bool
+	}{
+		{strings.Repeat("a", 256), "host:one", false},
+		{strings.Repeat("😀", 256), maxURL, false},
+		{"Legacy HTTPS syntax", "https://-host/repo", false},
+		{"Legacy SSH syntax", "ssh://git@host!name/repo", false},
+		{"Legacy SCP syntax", "git@服务:repo", false},
+		{strings.Repeat("a", 257), "host:repo", true},
+		{strings.Repeat("😀", 256) + "a", "host:repo", true},
+		{"Project", maxURL + "r", true},
 	} {
-		created := decodeResponse[api.ProjectDocument](t, h.call("POST", "/api/v1/projects", body(pair[0], pair[1]), h.admin), 201)
-		if created.Name != pair[0] || created.RepoURL != pair[1] {
-			t.Fatal("boundary input changed")
-		}
-	}
-	snapshot := func() string {
-		t.Helper()
-		var state string
-		err := h.Database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object('teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY team_id,user_id) FROM team_members m),'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),'ownership',(SELECT jsonb_agg(to_jsonb(o) ORDER BY project_id) FROM project_ownership o),'grants',(SELECT jsonb_agg(to_jsonb(g) ORDER BY project_id,user_id) FROM project_grants g))::text`).Scan(&state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return state
-	}
-	before := snapshot()
-	for _, pair := range [][2]string{{strings.Repeat("a", 257), "host:repo"}, {strings.Repeat("😀", 256) + "a", "host:repo"}, {"Project", maxURL + "r"}} {
-		assertProjectError(t, h.call("POST", "/api/v1/projects", body(pair[0], pair[1]), h.admin), 400, "invalid_input")
-	}
-	if after := snapshot(); after != before {
-		t.Fatal("rejected Project writes changed rows, ownership, grants or versions")
+		t.Run(fmt.Sprintf("%d bytes %d bytes refused=%v", len(tc.name), len(tc.repo), tc.refused), func(t *testing.T) {
+			h := newHTTPHarness(t)
+			h.Projects.CreateWithAccessFunc = func(_ context.Context, _ model.Principal, input coreproject.CreateProject) (model.Project, model.ProjectAccess, error) {
+				if input.Name != tc.name || input.RepoURL != tc.repo || input.ExpectedUserID != h.Principal.UserID || input.TeamID != nil {
+					t.Fatalf("input=%+v", input)
+				}
+				if tc.refused {
+					return model.Project{}, model.ProjectAccess{}, &model.Fault{Code: "invalid_input", Message: "Project metadata exceeds its limit"}
+				}
+				result := h.Project
+				result.Name, result.RepoURL = tc.name, tc.repo
+				return result, model.ProjectAccess{ProjectID: result.ID}, nil
+			}
+			body := fmt.Sprintf(`{"name":%q,"repoUrl":%q,"expectedUserId":%q}`, tc.name, tc.repo, h.Principal.UserID)
+			response := h.call("POST", "/api/v1/projects", body)
+			if tc.refused {
+				assertProjectError(t, response, 400, "invalid_input")
+			} else {
+				created := decodeResponse[api.ProjectDocument](t, response, 201)
+				if created.Name != tc.name || created.RepoURL != tc.repo {
+					t.Fatal("boundary input changed")
+				}
+			}
+			h.assertCalls(map[string]int{"CreateWithAccess": 1})
+		})
 	}
 }

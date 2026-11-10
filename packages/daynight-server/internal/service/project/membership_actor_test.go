@@ -62,3 +62,15 @@ func TestMembershipExpectedActorRequiresCanonicalIdentity(t *testing.T) {
 		requireFault(t, err, "invalid_input")
 	}
 }
+
+func TestInvitationExpectedActorRejectsBeforeDomainStore(t *testing.T) {
+	principal := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	memberships := NewMemberships(nil)
+	projectID, invitationID, other := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	_, err := memberships.CreateInvitation(t.Context(), principal, projectID, other)
+	requireFault(t, err, "identity_mismatch")
+	err = memberships.RevokeInvitation(t.Context(), principal, projectID, invitationID, other)
+	requireFault(t, err, "identity_mismatch")
+	_, err = memberships.AcceptInvitation(t.Context(), principal, "dninvite_"+strings.Repeat("a", 43), other)
+	requireFault(t, err, "identity_mismatch")
+}

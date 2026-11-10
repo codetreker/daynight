@@ -68,6 +68,16 @@ func TestProjectCreationAndSettingsPersist(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	creator := project.NewCreation(f.tx, f.owner)
+	longID := uuid.NewString()
+	longName := strings.Repeat("😀", 256)
+	longURL := "https://example.com/" + strings.Repeat("x", 4096-len("https://example.com/"))
+	if _, _, err := creator.InsertProject(ctx, longID, longName, longURL, f.team); err != nil {
+		t.Fatal(err)
+	}
+	var storedName, storedURL string
+	if err := f.tx.QueryRow(ctx, `SELECT name,repo_url FROM projects WHERE id=$1`, longID).Scan(&storedName, &storedURL); err != nil || storedName != longName || storedURL != longURL {
+		t.Fatalf("boundary Project metadata changed: name=%q url=%q error=%v", storedName, storedURL, err)
+	}
 	for _, lock := range []bool{false, true} {
 		facts, err := creator.CreationPersonalTeam(ctx, lock)
 		if err != nil || facts.ID != f.personal || facts.MemberCount != 1 || facts.OwnerAdminCount != 1 {
@@ -118,6 +128,10 @@ func TestProjectCreationAndSettingsPersist(t *testing.T) {
 	}
 	defer readTx.Rollback(context.Background())
 	reader := project.NewReader(readTx)
+	boundary, err := reader.Project(ctx, longID)
+	if err != nil || boundary.Name != longName || boundary.RepoURL != longURL {
+		t.Fatalf("committed boundary Project metadata changed: %+v %v", boundary, err)
+	}
 	saved, err := reader.Project(ctx, f.project)
 	if err != nil || saved != after || saved.Ownership.TeamID != f.team || saved.Name != "Project" || saved.RepoURL != "host:repo" {
 		t.Fatalf("saved = %+v, %v", saved, err)
