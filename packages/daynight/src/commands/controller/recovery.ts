@@ -8,6 +8,9 @@ export const isCleaningGeneration = (operations: readonly ControllerOperation[],
 export const observeNativeInput = (journal: ControllerLifecycleStore, observation: string | InputObservation): boolean => {
   const operationId = typeof observation === "string" ? observation : observation.operationId;
   const operation = journal.getOperation(operationId);
+  // Reopening may replay the same durable receipt to rebuild native aliases.
+  // Revalidate all image evidence without rewriting an accepted operation.
+  if (operation?.kind === "send_message" && ["provider_accepted", "confirmed"].includes(operation.state)) return typeof observation !== "string" && journal.recordInputObservation(observation);
   if (!operation || !["initial", "send_message", "execute_command"].includes(operation.kind) || !["dispatching", "unknown"].includes(operation.state)) return false;
   // Legacy callbacks cannot settle an image intent by operation ID alone.
   const intent = journal.getInputIntent(operationId);

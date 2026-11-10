@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
+if (process.argv.includes("--version")) { process.stdout.write("2.1.247 (controlled fixture)\n"); process.exit(0); }
 
 createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);

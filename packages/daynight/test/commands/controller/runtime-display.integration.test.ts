@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -39,11 +40,12 @@ vi.mock("../../../src/commands/controller/providers/claude.js", async importOrig
   const original = await importOriginal<typeof import("../../../src/commands/controller/providers/claude.js")>();
   return { openClaudeProvider: (options: ProviderOptions) => { f.options = options; return original.openClaudeProvider(options); } };
 });
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: (...args: unknown[]) => f.sdkQuery(...args), getSessionInfo: async () => ({ sessionId: f.nativeId, cwd: process.cwd() }), getSessionMessages: async () => f.history }));
-vi.mock("node:child_process", async importOriginal => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
-  execFile: (_executable: string, _args: string[], _options: unknown, callback: (error: null, stdout: string) => void) => callback(null, JSON.stringify({ info: { sessionId: f.nativeId, cwd: process.cwd() }, messages: f.history })),
-}));
+vi.mock("../../../src/commands/controller/providers/claude-live.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/claude-live.js")>(), queryClaudeLive: (...args: unknown[]) => f.sdkQuery(...args) }));
+vi.mock("../../../src/commands/controller/providers/claude-transcript-helper.js", () => ({ openClaudeTranscriptHelper: async () => ({
+  snapshot: { nativeSessionId: f.nativeId },
+  nextPage: async () => ({ done: true, cursor: "fixture", records: f.history.map(value => ({ value: { ...value as object, session_id: f.nativeId }, media: [], assistantBlockOffset: null })) }),
+  acknowledge: async () => {}, close: async () => {},
+}) }));
 
 import { runController } from "../../../src/commands/controller/runtime.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
@@ -145,8 +147,11 @@ for (const provider of ["codex", "claude", "copilot"] as const) {
       expect(f.close).not.toHaveBeenCalled();
     } finally { await v.stop(); }
     // Reopening the actual pending archive source reparses bytes from disk.
-    const reopened = openPendingContent(v.journalFile, v.ticket.sessionId);
-    expect([...reopened.entries.values()].sort((a, b) => Number(a.entrySeq) - Number(b.entrySeq))).toEqual(saved!);
+    const db = new Database(v.journalFile, { readonly: true });
+    try {
+      const reopened = openPendingContent(v.journalFile, v.ticket.sessionId, db);
+      expect([...reopened.entries.values()].sort((a, b) => Number(a.entrySeq) - Number(b.entrySeq))).toEqual(saved!);
+    } finally { db.close(); }
   });
 }
 

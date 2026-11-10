@@ -100,11 +100,11 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     assertMigrationAllowed: (db, source) => { assertOriginal(db); assertJournalMigrationAllowed(db, source); }, onReady: assertOriginal,
   });
   const frozen = withClosedJournal(db, () => {
-   if (existsSync(`${journalPath}.pending-content/manifest.json`)) finalizePendingMigration(db,openPendingContent(journalPath,ticket.sessionId));
+   if (existsSync(`${journalPath}.pending-content/manifest.json`)) finalizePendingMigration(db,openPendingContent(journalPath,ticket.sessionId,db));
    return runSqliteImmediate(db, () => {
     assertCurrentSqlite(db, controllerJournalFormat); assertOriginal(db); assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
     if (!existsSync(`${journalPath}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
-    const content = openPendingContent(journalPath, ticket.sessionId); reconcilePendingContent(db, content);
+    const content = openPendingContent(journalPath, ticket.sessionId, db); reconcilePendingContent(db, content);
     const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough:string; acknowledgedThrough:string; projection_gap:string|null; archive_incomplete:number };
     const repairCode = archiveRepairCode(source);
     if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
@@ -117,7 +117,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const assertFrozen = (requireAcknowledged = true): void => inspectOriginal(current => {
     const source = current.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS acknowledged FROM execution WHERE id=1").get() as {through:string;acknowledged:string};
     if (source.through !== frozen.source.sourceThrough || source.acknowledged !== (requireAcknowledged ? source.through : frozen.source.acknowledgedThrough)) throw new Error("The stopped source checkpoint was not completely acknowledged.");
-    const pending = openPendingContent(journalPath, ticket.sessionId);
+    const pending = openPendingContent(journalPath, ticket.sessionId, current);
     const timeline = {entries:[...pending.entries.values()].sort((a,b)=>BigInt(a.entrySeq)<BigInt(b.entrySeq)?-1:1)};
     const resources = [...pending.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
     if (JSON.stringify(timeline) !== JSON.stringify(frozen.timeline) || JSON.stringify(resources) !== JSON.stringify(frozen.allResources)) throw new Error("The stopped archive source changed during transfer.");

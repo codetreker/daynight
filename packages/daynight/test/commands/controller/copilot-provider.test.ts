@@ -2,16 +2,29 @@ import { textNativeInput } from "../../../src/commands/controller/providers/nati
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { createRequire } from "node:module";
 import { startupFailure } from "../../../src/commands/controller/startup.js";
 import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
 import type { ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
-const sdk = vi.hoisted(() => ({ construct: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
+const sdk = vi.hoisted(() => ({ provenGeometry: false, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
+vi.mock("../../../src/commands/controller/providers/copilot-image-profile.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/controller/providers/copilot-image-profile.js")>();
+  return { ...actual, copilotImageProfile(sdkVersion: string, cliVersion: string) {
+    const profile = actual.copilotImageProfile(sdkVersion, cliVersion);
+    return profile && sdk.provenGeometry ? { geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : profile;
+  } };
+});
 const processMock = vi.hoisted(() => ({ spawn: vi.fn() }));
-vi.mock("@github/copilot-sdk", () => ({ CopilotClient: class { constructor(options: unknown) { return sdk.construct(options); } }, RuntimeConnection: { forUri: sdk.connection } }));
+vi.mock("../../../src/commands/controller/providers/copilot-bridge.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/copilot-bridge.js")>(), startCopilotBridge(options: { port: number; token: string }) {
+  const client = sdk.construct({ connection: sdk.connection(`127.0.0.1:${options.port}`, { connectionToken: options.token }) });
+  return { ready: client.start().then(() => client), close: async () => {}, metrics: () => ({ peakRss: 0, peakHeap: 0 }) };
+}, sendCopilotBridgeImages: (native: unknown, input: unknown) => sdk.imageSend(native, input) }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: processMock.spawn }));
 import { openCopilotProvider } from "../../../src/commands/controller/providers/copilot.js";
+import { CopilotImages } from "../../../src/commands/controller/providers/copilot-images.js";
 
 const event = (type: string, data: unknown = {}, agentId?: string) => ({ id: randomUUID(), timestamp: new Date().toISOString(), parentId: null, type, data, ...(agentId ? { agentId } : {}) });
 let fixture: ReturnType<typeof setup>;
@@ -22,6 +35,7 @@ function setup() {
   processMock.spawn.mockImplementation(() => { queueMicrotask(() => { child.emit("spawn"); child.stdout.write("Listening on port 54321\n"); }); return child; });
   let captured: { sessionId: string; onEvent: (e: unknown) => void; [key: string]: unknown };
   const native = { sessionId: "", send: vi.fn(async () => "native-message-id"), getEvents: vi.fn(async () => [] as unknown[]), disconnect: vi.fn(async () => {}), rpc: {
+    eventLog: { read: vi.fn(async ({ cursor }: { cursor?: string; max: number; includeEphemeral: boolean }) => { const events = await native.getEvents(), index = Number(cursor ?? 0); return { events: events.slice(index, index + 1), cursor: String(index + 1), hasMore: index + 1 < events.length, cursorStatus: "ok" }; }) },
     metadata: { snapshot: vi.fn(async () => ({ sessionId: native.sessionId, workingDirectory: process.cwd(), alreadyInUse: false, isRemote: false })), isProcessing: vi.fn(async () => ({ processing: false })) },
     plan: { readSqlTodos: vi.fn(async () => ({ rows: [] as { id?: string; title?: string; description?: string; status?: string }[] })) }, interruptMainTurn: vi.fn(async () => ({ interrupted: true })), permissions: { configure: vi.fn(async () => ({ success: true })), handlePendingPermissionRequest: vi.fn(async () => ({ success: true })) },
   } };
@@ -32,7 +46,7 @@ function setup() {
   const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
   return { child, client, native, entries, states, options, observed, spawned, emit: (e: unknown) => captured.onEvent(e), config: () => captured };
 }
-beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
+beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
 test("new Copilot selection cannot pass startup after the native catalog is unavailable", async () => {
   const result = await openCopilotProvider({ ...fixture.options, model: "requested", validateNativeSelection: true }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
@@ -246,6 +260,32 @@ test("Copilot owned runtime requests graceful shutdown before transport disposal
   expect(fixture.client.rpc.runtime.shutdown.mock.invocationCallOrder[0]).toBeLessThan(fixture.client.stop.mock.invocationCallOrder[0]!);
 });
 
+test("Copilot joins its owned runtime after media cleanup fails and retries the retained cleanup", async () => {
+  const provider = await openCopilotProvider(fixture.options), failure = new Error("Fixture media removal failed");
+  const closeImages = vi.spyOn(CopilotImages.prototype, "close").mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+  try {
+    await expect(provider.close()).rejects.toBe(failure);
+    expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).toHaveBeenCalledOnce();
+    expect(fixture.child.signalCode).toBe("SIGTERM"); expect(fixture.states.at(-1)?.activity).toBe("stopped");
+    await expect(provider.close()).resolves.toBeUndefined(); expect(closeImages).toHaveBeenCalledTimes(2);
+    expect(fixture.child.kill).toHaveBeenCalledOnce();
+  } finally { closeImages.mockRestore(); await provider.close().catch(() => {}); }
+});
+
+test("Copilot preserves media and runtime shutdown errors without reporting an unjoined runtime as stopped", async () => {
+  const provider = await openCopilotProvider(fixture.options), mediaFailure = new Error("Fixture media removal failed"), runtimeFailure = new Error("Fixture process termination failed");
+  const closeImages = vi.spyOn(CopilotImages.prototype, "close").mockRejectedValue(mediaFailure);
+  fixture.child.kill.mockImplementation(() => { throw runtimeFailure; });
+  fixture.emit(event("permission.requested", { requestId: "cleanup-permission", permissionRequest: { kind: "shell", fullCommandText: "echo fixture" } }));
+  try {
+    const error = await provider.close().catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual(expect.arrayContaining([mediaFailure, runtimeFailure]));
+    expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).toHaveBeenCalled();
+    expect(fixture.states.some(state => state.activity === "stopped")).toBe(false);
+    expect(fixture.states.at(-1)).toMatchObject({ activity: "unknown", capabilities: { send: false, steer: false, cancel: false, respond: false } });
+  } finally { closeImages.mockRestore(); await provider.close().catch(() => {}); }
+});
+
 test("Copilot late ACK confirms only the timed-out invocation in its still-owned runtime", async () => {
   const provider = await openCopilotProvider(fixture.options); vi.useFakeTimers();
   let acknowledge!: (id: string) => void; fixture.native.send.mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
@@ -454,4 +494,99 @@ test("Copilot Worker does not submit input when native full access configuration
   fixture.native.rpc.permissions.configure.mockRejectedValue(new Error("Unhandled method session.permissions.configure"));
   await expect(openCopilotProvider({ ...fixture.options, unattended: true })).rejects.toThrow("Unhandled method");
   expect(fixture.native.send).not.toHaveBeenCalled();
+});
+
+const imageFixture = async (pure = false, provenGeometry = true) => {
+  sdk.provenGeometry = provenGeometry;
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-provider-images"); await mkdir(base, { recursive: true });
+  const root = await mkdtemp(path.join(base, "case-")), localPath = path.join(root, "image.png");
+  const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  await writeFile(localPath, bytes, { mode: 0o400 });
+  const operationId = randomUUID(), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), mediaType: "image/png", localPath, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") };
+  const input = { content: [...pure ? [] : [{ type: "text" as const, text: "Inspect the image" }], image] }, states = new Map<string, unknown>();
+  const intent: any = { sha256: "b".repeat(64), command: { kind: "send_message", operationId, payload: { expectedTurnId: null, target: { expectedNativeSessionId: null }, content: input.content } } };
+  const model = { getCurrent: vi.fn(async () => ({ modelId: "vision-model" })), list: vi.fn(async () => ({ list: [{ id: "vision-model", name: "Vision", capabilities: { supports: { vision: true }, limits: { vision: { supported_media_types: ["image/png"], max_prompt_image_size: 10_485_760, max_prompt_images: 8 } } } }] })) };
+  Object.assign(fixture.native.rpc, { model }); Object.assign(fixture.client, { getStatus: vi.fn(async () => ({ version: "1.0.105", protocolVersion: 3 })) });
+  const observed = vi.fn(() => true);
+  const options = { ...fixture.options, onInputObserved: observed, imageRuntime: { getIntent: (id: string) => id === operationId ? intent : null, readState: (key: string) => states.get(key) ?? null, writeState: (key: string, value: unknown) => states.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
+  return { root, input, image, intent, operationId, options, observed, states, model };
+};
+
+test.each([true, false])("under a controlled proven geometry profile the common Copilot send preserves ordered leases and durable acceptance (pure=%s)", async pure => {
+  const f = await imageFixture(pure); let provider;
+  try {
+    provider = await openCopilotProvider(f.options);
+    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "supported", steer: "unknown" });
+    const receipt = await provider.send(f.input, f.operationId, null); expect(receipt.disposition).toBe("started");
+    expect(sdk.imageSend).toHaveBeenCalledOnce(); expect(sdk.imageSend.mock.calls[0]?.[1]).toEqual({ prompt: pure ? "" : "Inspect the image", mode: "immediate", attachments: [{ path: f.image.localPath, byteLength: f.image.byteLength, sha256: f.image.sha256, mimeType: "image/png" }] });
+    expect(fixture.native.send).not.toHaveBeenCalled(); expect(f.observed).toHaveBeenCalledWith(expect.objectContaining({ provider: "copilot", operationId: f.operationId, nativeMessageId: "native-image-message", intentSha256: f.intent.sha256 }));
+    await expect(provider.send(f.input, randomUUID(), receipt.turnId!)).rejects.toThrow("capability"); expect(sdk.imageSend).toHaveBeenCalledOnce();
+  } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("second image validation failure and changed model evidence both prevent the entire Copilot send", async () => {
+  const f = await imageFixture(); let provider;
+  try {
+    provider = await openCopilotProvider(f.options);
+    const changed = { ...f.image, imageId: randomUUID(), sha256: "f".repeat(64) };
+    await expect(provider.send({ content: [...f.input.content, changed] }, f.operationId, null)).rejects.toThrow("integrity");
+    expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
+    f.model.getCurrent.mockResolvedValue({ modelId: "unknown-model" });
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("capability"); expect(sdk.imageSend).not.toHaveBeenCalled();
+    expect(fixture.states.at(-1)?.currentTurnId).toBeNull();
+  } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("Copilot image acceptance remains unknown if its durable callback does not confirm", async () => {
+  const f = await imageFixture(); f.observed.mockReturnValue(false); let provider;
+  try {
+    provider = await openCopilotProvider(f.options);
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("durably");
+    expect(sdk.imageSend).toHaveBeenCalledOnce(); expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
+  } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("a timed-out Copilot image send keeps its original Promise and appends late original provenance without replay", async () => {
+  const f = await imageFixture(); let provider;
+  const { openControllerLifecycleStore } = await import("../../../src/commands/controller/lifecycle-store.js");
+  const { observeNativeInput } = await import("../../../src/commands/controller/recovery.js");
+  const ticket: import("../../../src/commands/controller/launch-ticket.js").ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "copilot", cwd: f.root, nativeHome: path.join(f.root, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const journal = openControllerLifecycleStore(path.join(f.root, "journal.sqlite"), ticket, { contentOwnedLocally: true });
+  const { readFile } = await import("node:fs/promises");
+  journal.saveResource({ resourceId: f.image.resourceId, revision: "1", status: "available", name: "original.png", mediaType: "image/png", byteLength: f.image.byteLength, sha256: f.image.sha256, width: 1, height: 1, frameCount: 1, error: null }, await readFile(f.image.localPath));
+  const payload = { content: [{ type: "text" as const, text: "Inspect the image" }, { type: "image" as const, imageId: f.image.imageId, resourceId: f.image.resourceId, uploadId: randomUUID(), sha256: f.image.sha256, byteLength: f.image.byteLength }], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: null }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
+  const command: import("../../../src/session/protocol.js").SessionCommand = { protocol: "daynight.session.v1", contentRevision: 2, requestId: randomUUID(), operationId: f.operationId, sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1", kind: "send_message", payload };
+  journal.prepareOperation({ operationId: f.operationId, kind: "send_message", payload, intent: command }); journal.markDispatching(f.operationId);
+  Object.assign(f.options.imageRuntime!, { getIntent: (operationId: string) => { const intent = journal.getInputIntent(operationId), operation = journal.getOperation(operationId); return intent && operation ? { command: JSON.parse(intent.canonical), sha256: intent.sha256, state: operation.state } : null; }, readState: journal.readNativeImageState, writeState: journal.writeNativeImageState, publishNativeInputAssociation: journal.publishNativeInputAssociation, queryNativeInputAssociation: journal.queryNativeInputAssociation });
+  const timeline = f.options.onTimeline; f.options.onTimeline = entry => { journal.projectTimeline(entry); timeline(entry); };
+  f.options.onInputObserved = observation => { f.observed(); return observeNativeInput(journal, observation); };
+  f.options.onImageOccurrence = (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged;
+  f.options.imageOccurrenceAcknowledged = imageId => journal.imageOccurrenceAcknowledged(imageId);
+  try {
+    provider = await openCopilotProvider(f.options); journal.patchSnapshot({ nativeSessionId: provider.nativeSessionId }); let acknowledge!: (id: string) => void;
+    sdk.imageSend.mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
+    vi.useFakeTimers();
+    const sending = provider.send(f.input, f.operationId, null), rejected = expect(sending).rejects.toThrow("unknown");
+    await vi.waitFor(() => expect(sdk.imageSend).toHaveBeenCalledOnce());
+    fixture.emit({ ...event("user.message", { content: "Inspect the image", attachments: [{ type: "blob", mimeType: "image/png", omittedReason: "size_limit" }] }), id: "late-native" });
+    const before = (fixture.entries.find(entry => entry.kind === "user_message") as any).content[1].imageId;
+    await vi.advanceTimersByTimeAsync(60_001); await rejected; expect(f.observed).not.toHaveBeenCalled();
+    acknowledge("late-native"); await vi.advanceTimersByTimeAsync(0);
+    expect(f.observed).toHaveBeenCalledOnce(); expect(sdk.imageSend).toHaveBeenCalledOnce();
+    const after = journal.readTimeline({ historyEpoch: "epoch", direction: "tail", cursor: null, limit: 10 }).items.find(entry => entry.kind === "user_message") as any;
+    expect(after.content).toHaveLength(3); expect(after.content[1].imageId).toBe(before); expect(after.content[2].imageId).toBe(f.image.imageId);
+  } finally { await provider?.close(); vi.useRealTimers(); journal.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+
+test("the installed Copilot profile refuses image input without a proven geometry envelope while text stays available", async () => {
+  const f = await imageFixture(true, false); let provider;
+  try {
+    provider = await openCopilotProvider(f.options);
+    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "unknown", reasonCode: "capability_unknown", geometry: { known: false } });
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("capability");
+    expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
+    await provider.send(textNativeInput("Still text"), randomUUID(), null);
+    expect(fixture.native.send).toHaveBeenCalledOnce();
+  } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
 });
