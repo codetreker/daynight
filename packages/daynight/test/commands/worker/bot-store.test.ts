@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { Bot } from "../../../src/commands/worker/bots/types.js";
@@ -47,10 +49,10 @@ describe("durable Bot inventory", () => {
       expect(() => f.store.observe(owner, { ...bot(), ...changed } as Bot, 2)).toThrow();
       expect(f.store.get(owner, id(3))).toEqual(before);
     }
-    const db = f.database; db.pragma("user_version = 13");
+    const db = f.database; db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat) + 1}`);
     expect(() => f.store.observe(owner, { ...bot(), version: "2" }, 2)).toThrow(/unsupported-version/);
     expect(() => f.store.list(owner)).toThrow(/unsupported-version/);
-    db.pragma("user_version = 12"); expect(f.store.get(owner, id(3))).toEqual(before);
+    db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat)}`); expect(f.store.get(owner, id(3))).toEqual(before);
   });
 });
 

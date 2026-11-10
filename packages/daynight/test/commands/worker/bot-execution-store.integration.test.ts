@@ -1,3 +1,4 @@
+import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../../src/platform/sqlite-sql.js";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -7,7 +8,7 @@ import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
-import { assertCurrentSqlite } from "../../../src/platform/sqlite-format.js";
+import { assertCurrentSqlite, currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 
 import { cleanupBotExecutions, createBotExecutionFixture, dirs, handles, id, owner, proof, root, snapshot, stopped, submitted } from "./bot-execution-store.fixtures.js";
 
@@ -26,7 +27,8 @@ const formatTenFixture = () => {
   db.prepare("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)").run(id(40), id(41), id(42), "active", "codex", id(43), "web");
   db.prepare("INSERT INTO cleanup_schedules VALUES (?,?,?,?,?,?,?,?,?)").run(id(40), id(41), id(42), id(44), 1234, 2, 5678, "backend-close", "retained failure");
   const tables = ["bots", "bot_executions", "projects", "tasks", "cleanup_schedules"];
-  const rows = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]));
+  const columns = new Map(tables.map(table => [table, (db.pragma(`table_info(${table})`) as { name: string }[]).map(column => `"${column.name}"`).join(",")]));
+  const rows = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT ${columns.get(table)!} FROM ${table}`).all()]));
   return { ...f, database: file, db, legacyFormat, rows };
 };
 
@@ -82,7 +84,7 @@ describe("Bot execution file persistence and migration", () => {
     expect(() => openBotExecutionStore(file, { onMigration: () => {} })).toThrow(/migration/);
     expect(db.pragma("user_version", { simple: true })).toBe(8); expect(db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     vi.restoreAllMocks(); const store = openBotExecutionStore(file, { onMigration: () => {} }); handles.push(store);
-    expect(db.pragma("user_version", { simple: true })).toBe(12); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
+    expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat)); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     expect(db.prepare("SELECT * FROM projects").get()).toMatchObject({ project_id: id(4), local_path: home });
   });
   it("atomically replaces a stopped generation while preserving registration, role and original conversation", () => {
@@ -119,15 +121,14 @@ describe("Bot execution file persistence and migration", () => {
     const record = bots.get(owner, id(3))!;
     expect(record).toEqual(f.record);
     expect(store.get(record)).toEqual(f.store.get(f.record));
-    expect(db.pragma("user_version", { simple: true })).toBe(12);
+    expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   });
   it("upgrades format ten without rewriting Bot execution, inventory or Task cleanup responsibility", () => {
     const f = formatTenFixture(), rows = f.rows();
-    const schema = f.db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all();
     const bots = openBotStore(f.database, { onMigration: () => {} }), executions = openBotExecutionStore(f.database, { onMigration: () => {} }); handles.push(bots, executions);
-    expect(f.db.pragma("user_version", { simple: true })).toBe(12);
+    expect(f.db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
     expect(f.rows()).toEqual(rows);
-    expect(f.db.prepare("SELECT * FROM sqlite_schema WHERE tbl_name != 'claim_native_configurations' ORDER BY name").all()).toEqual(schema);
+    expect(f.db.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat)));
     expect(f.db.prepare("SELECT * FROM claim_native_configurations").all()).toEqual([]);
     expect(bots.get(owner, id(3))).toEqual(f.record);
     expect(executions.get(f.record)).toEqual(f.store.get(f.record));
@@ -159,7 +160,7 @@ describe("Bot execution file persistence and migration", () => {
     expect(f.rows()).toEqual(rows);
     vi.restoreAllMocks();
     const reopened = openBotStore(f.database, { onMigration: () => {} }); handles.push(reopened);
-    expect(f.db.pragma("user_version", { simple: true })).toBe(12);
+    expect(f.db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
     expect(f.rows()).toEqual(rows);
   });
 });
