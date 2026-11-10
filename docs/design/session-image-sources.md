@@ -24,9 +24,8 @@
 
 - 真实 runtime 没有向 coordinator 提供 `nativeReadPolicy`。现有私有调用点返回 `{revision,verify():void}`，本身不能证明某条路径、链接解析后的对象、独立 Read deny 和当前撤销代次均获准。真实 Provider 的完整有效读策略适配仍未实现；`permissionMode`、sandbox/profile 名、同用户可读或一次工具读取不能代替该证明。本地来源因此返回 `policy_restricted`，不把测试中的允许策略用于真实原生会话。
 - 真实 runtime 没有提供 `externalPolicy`，也没有取得部署级出口隔离证明。外部来源因此返回 `policy_restricted`。受控网络测试可注入 `controlledNetworkBoundary` 和 CA，但该配置不证明真实部署已阻断透明路由到本机、内网和元数据。
-- Windows 包含 reparse-aware opener 和真实句柄测试，但尚未取得其真机执行结果。Linux 与 Intel macOS 包含 helper/ABI 分支，也尚无真机执行证据；已有 macOS ARM64 机制测试不能替代这些平台的验证。
 
-这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此开放真实自动采集或声明端到端验收通过。
+这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此开放真实自动采集或声明端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
 
 ## 来源与出现的职责
 

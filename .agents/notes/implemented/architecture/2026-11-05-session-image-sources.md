@@ -147,13 +147,13 @@ Known symlink/junction substitutions and cwd aliases are resolved explicitly;
 absolute prefixes must reach the original root ID. Volume serial and complete
 file IDs preserve checked objects. Only NTFS is accepted: the persisted Node
 stat identity is insufficient to identify ReFS files uniquely. Sharing conflicts
-remain observable. Its real-handle tests, including an attribute-only junction
-mutation with unchanged file ID, have no Windows execution result yet.
-Linux and Intel macOS also lack actual platform execution evidence; macOS ARM64
-mechanism validation does not qualify these platforms. These are unmet
-implementation and acceptance
-requirements, not approved deferrals. The source consumers do not yet establish
-complete automatic source capture or end-to-end availability.
+remain observable. Its real-handle tests include an attribute-only junction
+mutation with unchanged file ID. Handle validation must execute on each supported
+platform; another platform's result or a source branch does not qualify it.
+Intel macOS is outside the current supported platform set. Native authorization
+and deployment egress remain unmet requirements, not approved deferrals. The
+source consumers do not yet establish complete automatic source capture or
+end-to-end availability.
 
 Permission is checked throughout preparation and exported-block delivery, but
 already-lawfully-delivered bytes cannot be remotely erased. Local file checks
