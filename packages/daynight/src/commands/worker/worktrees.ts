@@ -1,5 +1,6 @@
 import path from "node:path";
 import { readRegistrationIndex, registrationsFor, scanRepositoryWorktrees, type RegistrationIndex, type WorktreeScan } from "./worktree-scan.js";
+import { resolveGitDirectory } from "./worktree-paths.js";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
@@ -139,7 +140,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new WorktreeValidationError("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
       } else {
         verifyLeaf = true;
-        if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new WorktreeValidationError("The original worktree Git pointer has changed.");
+        if (!pointer.startsWith("gitdir: ") || await resolveGitDirectory(binding.worktreePath, pointer.slice(8)) !== await resolveGitDirectory(registration.directory, ".")) throw new WorktreeValidationError("The original worktree Git pointer has changed.");
         const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
         if (await directory(common) !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree belongs to another Git repository.");
         if (!terminal) await validateOrigin(binding.worktreePath, project.repoUrl, operation);
