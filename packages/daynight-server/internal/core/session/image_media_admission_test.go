@@ -141,12 +141,18 @@ func boundedMediaRelay(t *testing.T, f imageRuleFixture) (*Execution, *boundedMe
 func TestConcurrentUploadCompletionsLeaveRelayTransferCapacity(t *testing.T) {
 	raw := []byte("two independently completed originals")
 	f := newImageRuleFixture(t, raw)
+	// The barriers require independent upload gates. Random identities can share
+	// a storage stripe, legitimately serializing completion before remote prepare.
+	f.r.Snapshot.SessionID = "10000000-0000-4000-8000-000000000001"
+	f.spec.Target.Fence = f.r.Snapshot.Fence
+	f.d.bundle.SessionID = f.r.Snapshot.SessionID
+	f.spec.UploadID = "20000000-0000-4000-8000-000000000001"
 	f.prepare(t)
 	if _, err := f.write(t, raw, 0); err != nil {
 		t.Fatal(err)
 	}
 	other := f
-	other.spec.UploadID, other.spec.ImageID = uuid.NewString(), uuid.NewString()
+	other.spec.UploadID, other.spec.ImageID = "20000000-0000-4000-8000-000000000002", uuid.NewString()
 	other.prepare(t)
 	if _, err := other.write(t, raw, 0); err != nil {
 		t.Fatal(err)
@@ -154,6 +160,19 @@ func TestConcurrentUploadCompletionsLeaveRelayTransferCapacity(t *testing.T) {
 	relay, d, mu := boundedMediaRelay(t, f)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
+	func() {
+		for _, upload := range []string{f.spec.UploadID, other.spec.UploadID} {
+			gate, err := f.files.AcquireGate(ctx, filestorage.PrivateGate, "session-image-upload/"+f.r.Snapshot.SessionID+"/"+upload)
+			if err != nil {
+				t.Fatalf("concurrency fixture requires independent upload gates: %v", err)
+			}
+			defer func() {
+				if err := gate.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+		}
+	}()
 	done := make(chan error, 2)
 	for _, spec := range []sp.ImageUploadSpec{f.spec, other.spec} {
 		go func() {
