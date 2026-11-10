@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"reflect"
 	"testing"
 
@@ -9,8 +10,13 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 )
 
-func TestProposedTaskStorageKeepsExecutionEligibilityAndTimingDistinct(t *testing.T) {
-	database := writerStore(t)
+func TestTaskProposedStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "ProposedTaskStorageKeepsExecutionEligibilityAndTimingDistinct", testProposedTaskStorageKeepsExecutionEligibilityAndTimingDistinct)
+	suite.run(t, "PriorityPaginationOrdersProposedBetweenBlockedAndTerminalTasks", testPriorityPaginationOrdersProposedBetweenBlockedAndTerminalTasks)
+}
+
+func testProposedTaskStorageKeepsExecutionEligibilityAndTimingDistinct(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	proposed := writerTask(t, database, project.ID, 10, model.TaskProposed)
 	dependent := writerTask(t, database, project.ID, 11, model.TaskTodo, proposed.ID)
@@ -65,8 +71,7 @@ func TestProposedTaskStorageKeepsExecutionEligibilityAndTimingDistinct(t *testin
 	}
 }
 
-func TestPriorityPaginationOrdersProposedBetweenBlockedAndTerminalTasks(t *testing.T) {
-	database := writerStore(t)
+func testPriorityPaginationOrdersProposedBetweenBlockedAndTerminalTasks(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	done := writerTask(t, database, project.ID, 10, model.TaskDone)
 	proposed := writerTask(t, database, project.ID, 11, model.TaskProposed)

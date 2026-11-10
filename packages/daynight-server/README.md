@@ -1928,6 +1928,13 @@ preparation failures fail validation. Package concurrency stays limited to two:
 schema-isolated fixtures still share the database-wide migration advisory lock.
 Both entries clear cached test results before their coverage runs.
 
+Schema-stable Task DAO tests share one real Store per sequential parent test.
+Each independent case resets mutable tables and sequence state before executing
+its original transactions and persisted readbacks. Snapshot seeds and the
+migration ledger remain intact; catalog-changing cases retain separate schemas.
+The [Task fixture decision](../../.agents/notes/implemented/testing/2026-11-10-task-dao-group-fixtures.md)
+records reset ownership and isolation limits.
+
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
 module's `.tmp/`. The `verify-server` and `verify-server-startup-shutdown` jobs
 use independent PostgreSQL services and upload their profiles separately.
