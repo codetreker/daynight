@@ -1,5 +1,6 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), relayClose: vi.fn(), ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (value: string) => value, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
@@ -270,12 +271,13 @@ test("a subsequent shutdown error cannot replace the original initialization tim
 
 
 test("runtime supplies a lazily acquired external policy from the trusted configuration path and closes its producer", async () => {
-  setup(); vi.stubEnv("DN_CONFIG_DIR", "/private/deployment-config");
+  const stateDirectory = path.resolve("/private/deployment-config");
+  setup(); vi.stubEnv("DN_CONFIG_DIR", stateDirectory);
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
   try {
     await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
-    expect(externalRuntime.create).toHaveBeenCalledWith({ paths: { stateDirectory: "/private/deployment-config", configFile: "/private/deployment-config/config.yml" } });
+    expect(externalRuntime.create).toHaveBeenCalledWith({ paths: { stateDirectory, configFile: path.join(stateDirectory, "config.yml") } });
     expect(externalRuntime.acquire).not.toHaveBeenCalled();
     await expect(externalRuntime.coordinatorOptions!.acquireExternalPolicy()).resolves.toEqual({ marker: "external-generation" });
     expect(externalRuntime.acquire).toHaveBeenCalledOnce();
