@@ -9,8 +9,23 @@ const pointerPath = (base: string, raw: string): string => {
     return raw;
   }
   if (path.parse(raw).root) throw new Error("A drive-relative Git pointer cannot establish its target.");
-  // The filesystem must interpret symlink/.. traversal before normalization.
+  // Keep the original traversal for platform-specific proof before lookup.
   return `${base}${path.sep}${raw}`;
+};
+
+const proveWindowsParentTraversal = async (target: string): Promise<void> => {
+  if (path.sep !== "\\") return;
+  const root = path.parse(target).root;
+  let cursor = root;
+  for (const component of target.slice(root.length).split(/[\\/]+/)) {
+    if (component === "..") {
+      // Node normalizes Windows paths before opening them. Prove each directory
+      // that normalization erases; a junction or failed observation is unknown.
+      const entry = await lstat(cursor);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("A Windows Git pointer parent traversal requires an ordinary directory.");
+      cursor = path.dirname(cursor);
+    } else if (component && component !== ".") cursor = path.join(cursor, component);
+  }
 };
 
 export type GitFileTarget = { path: string; missing: boolean };
@@ -20,6 +35,7 @@ export const ambiguousMissingGitTargets = (left: GitFileTarget, right: GitFileTa
 
 export const resolveGitFile = async (base: string, raw: string): Promise<GitFileTarget> => {
   const target = pointerPath(base, raw);
+  await proveWindowsParentTraversal(target);
   let entry;
   try { entry = await lstat(target); }
   catch (error) {
@@ -36,6 +52,7 @@ export const resolveGitFile = async (base: string, raw: string): Promise<GitFile
 
 export const resolveGitDirectory = async (base: string, raw: string): Promise<string> => {
   const target = pointerPath(base, raw);
+  await proveWindowsParentTraversal(target);
   const entry = await lstat(target);
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("A Git directory pointer must identify an ordinary directory.");
   return realpath(target);
