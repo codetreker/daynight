@@ -10,7 +10,7 @@ import type { LocalTask as WebTask } from "../../../src/commands/worker/backends
 import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { access, mkdir, mkdtemp, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { access, link, lstat, mkdir, mkdtemp, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import * as directoryIdentity from "../../../src/platform/directory-identity.js";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -3436,7 +3436,7 @@ describe("real Git resource isolation", () => {
     } finally { op.dispose(); await git.dispose(); }
   }, 20000);
 
-  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected", "manual-alias", "native-io", "native-io-wrapped", "native-io-parse"])("admits only with independently bounded ownership: %s", async proof => {
+  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected", "manual-alias", "manual-case", "manual-hardlink", "native-io", "native-io-wrapped", "native-io-parse"])("admits only with independently bounded ownership: %s", async proof => {
     const f = await fixture(["capacity-full", "stopped", "unselected"].includes(proof) ? 1 : 2);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
     await mkdir(f.project.localPath);
@@ -3449,12 +3449,25 @@ describe("real Git resource isolation", () => {
     try {
       const binding = await git.prepareWorktree(f.project, owner, op);
       if (!proof.startsWith("native-io")) execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
-      if (proof === "manual-alias") {
+      let separateManualTarget = false;
+      if (proof.startsWith("manual-")) {
         const manual = path.join(f.root, "manual"), alias = path.join(f.root, "alias");
         run(["worktree", "add", "--detach", manual, "HEAD"]);
         const admin = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: manual, encoding: "utf8", timeout: 10000 }).trim();
-        await symlink(f.project.localPath, alias, process.platform === "win32" ? "junction" : "dir");
-        await writeFile(path.join(admin, "gitdir"), `${path.join(alias, ".worktrees", "daynight", owner.taskId, ".git")}\n`);
+        let target = path.join(alias, ".worktrees", "daynight", owner.taskId, ".git");
+        if (proof === "manual-alias") await symlink(f.project.localPath, alias, process.platform === "win32" ? "junction" : "dir");
+        else {
+          const original = path.join(binding.worktreePath, ".git");
+          target = proof === "manual-case" ? path.join(binding.worktreePath, ".GIT") : path.join(f.root, "linked.git");
+          if (proof === "manual-hardlink") await link(original, target);
+          const entry = await lstat(target, { bigint: true }).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
+          separateManualTarget = entry === null;
+          if (entry !== null) {
+            const originalEntry = await lstat(original, { bigint: true });
+            expect([entry.dev, entry.ino]).toEqual([originalEntry.dev, originalEntry.ino]);
+          }
+        }
+        await writeFile(path.join(admin, "gitdir"), `${target}\n`);
       }
       if (proof.startsWith("native-io")) {
         const open = directoryIdentity.openDirectoryIdentity;
@@ -3468,7 +3481,7 @@ describe("real Git resource isolation", () => {
         });
       }
       f.store.registerPending({ ...owner, agent: "codex" });
-      if (["current", "claim-unconfirmed", "conflict", "capacity-full", "manual-alias"].includes(proof) || proof.startsWith("native-io")) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      if (["current", "claim-unconfirmed", "conflict", "capacity-full"].includes(proof) || proof.startsWith("manual-") || proof.startsWith("native-io")) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
       if (proof === "stopped" || proof === "unselected") {
         f.store.completeTask(owner);
         Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {} } });
@@ -3478,7 +3491,7 @@ describe("real Git resource isolation", () => {
       const coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor, ...(proof === "unselected" ? { readyProjectIds: [] } : {}) });
       try {
         await coordinator.tick();
-        if (proof === "current") {
+        if (proof === "current" || separateManualTarget) {
           expect(f.remote.claim).toHaveBeenCalledOnce();
           expect(f.store.getTask(owner)?.status).toBe("pending");
           await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
@@ -3491,7 +3504,7 @@ describe("real Git resource isolation", () => {
             expect.objectContaining({ code: "claim-unconfirmed" }),
           ]));
         } else expect(f.remote.claim).not.toHaveBeenCalled();
-        if (proof === "manual-alias" || proof.startsWith("native-io")) {
+        if (proof.startsWith("manual-") && !separateManualTarget || proof.startsWith("native-io")) {
           expect(f.tasks.start).not.toHaveBeenCalled();
           expect(f.store.getTask(owner)?.status).toBe("pending");
           expect(monitor.capture("1").capacity?.quality).not.toBe("current");

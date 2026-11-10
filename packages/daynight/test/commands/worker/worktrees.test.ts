@@ -258,6 +258,51 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   describe("partial resource scans", () => {
+    it.each(["case-alias", "hardlink"])("reconciles file-object registration aliases: %s", async kind => {
+      const f = await fixture(), adapter = manager(f.root);
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const markerPath = path.join(administrativeDirectory(binding.worktreePath), "locked"), marker = await readFile(markerPath);
+      const original = path.join(binding.worktreePath, ".git");
+      const target = kind === "case-alias" ? path.join(binding.worktreePath, ".GIT") : path.join(f.root, "linked.git");
+      if (kind === "hardlink") await link(original, target);
+      const originalStat = await lstat(original, { bigint: true });
+      const aliasStat = await lstat(target, { bigint: true }).catch(error => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      // Case-sensitive volumes retain a genuinely missing .GIT target. Other
+      // volumes must recognize the existing file regardless of its spelling.
+      const duplicate = aliasStat !== null;
+      if (duplicate) expect([aliasStat.dev, aliasStat.ino]).toEqual([originalStat.dev, originalStat.ino]);
+      if (kind === "hardlink") expect(originalStat.nlink).toBe(2n);
+      const manual = path.join(f.root, "manual");
+      git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
+      const pointer = path.join(administrativeDirectory(manual), "gitdir");
+      await writeFile(pointer, `${target}\n`);
+      git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
+      const scan = await adapter.scanWorktrees(f.project, operation());
+      if (duplicate) {
+        expect(scan.unknown.length).toBeGreaterThan(0);
+        expect(scan.quarantined).toEqual([]);
+      } else {
+        expect(scan.unknown).toEqual([]);
+        expect(scan.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ code: "branch_mismatch" }) }]);
+      }
+      git(binding.worktreePath, ["checkout", binding.branch]);
+      if (duplicate) {
+        await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
+        await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
+        await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      } else {
+        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
+        await expect(adapter.verifyWorktree(f.project, f.owner, operation())).resolves.toEqual(binding);
+      }
+      expect(await readFile(markerPath)).toEqual(marker);
+      expect(await readFile(pointer, "utf8")).toBe(`${target}\n`);
+      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+      expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
+    });
+
     it("quarantines malformed identity bytes after registration ownership is proven", async () => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
