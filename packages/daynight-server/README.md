@@ -1141,13 +1141,22 @@ The [Identity test boundary decision](../../.agents/notes/implemented/testing/20
 ### Bot management service tests
 
 The `internal/service/bot` suite executes actual snapshot/write callbacks,
-normalization, native catalog transport, deletion stop-proof validation and
-Session/file cleanup. Private instance operations supply direct core creation,
-read and selection results and deletion decisions. Production constructors bind
-the real implementations and retain `time.Now`; strict unit expectations verify
-context, principal, identifiers, inputs, current-scope capabilities, call order,
-completion outcomes and error chains. Ordinary tests clear database and UniAuth
-fixture variables and do not simulate persisted state.
+normalization, model catalog protocol and request coordination, deletion
+stop-proof validation and Session/file cleanup. Private instance operations
+supply direct core creation, read and selection results and deletion decisions.
+Production constructors bind the real implementations and retain `time.Now`;
+strict unit expectations verify context, principal, identifiers, inputs,
+current-scope capabilities, call order, completion outcomes and error chains.
+Ordinary tests clear database and UniAuth fixture variables and do not simulate
+persisted state.
+
+Model catalog tests execute request encoding, response identity association,
+result validation and decoding, pagination, catalog consistency checks, bounded
+accumulation, the total native-discovery deadline and error propagation.
+`modelRequestFunc` supplies `modelRequester.Request` with controlled messages and
+errors. Production application wiring supplies the authenticated Worker requester
+through `NewWithNativeDiscovery`; these unit tests do not establish network or
+HTTP transport behavior.
 
 ```bash
 source scripts/env.sh
