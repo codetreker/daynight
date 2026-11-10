@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -7,6 +9,7 @@ import { readControllerOperation, readControllerSnapshot } from "../../../src/co
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
+const journalVersion = currentSqliteVersion(controllerJournalFormat);
 const databases: Database.Database[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const database of databases.splice(0)) if (database.open) database.close(); });
 const fixture = () => {
@@ -33,7 +36,7 @@ test.each([null, 2_000_000_000])("unversioned journals discard historical eviden
   expect(readControllerSnapshot(f.file)).toBeNull();
   expect(readControllerOperation(f.file, f.ticket.initialOperationId)).toBeNull();
   const check = f.file;
-  try { expect(check.pragma("user_version", { simple: true })).toBe(6); expect(check.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); }
+  try { expect(check.pragma("user_version", { simple: true })).toBe(journalVersion); expect(check.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); }
   finally { check.close(); }
 });
 
@@ -68,10 +71,10 @@ test.each(["id", "owner_pid"] as const)("missing %s owner metadata prevents unve
   finally { check.close(); }
 });
 
-test.each([1, 6, 7])("unknown nonzero journal version %s is rejected without migration", async version => {
+test.each([1, journalVersion, journalVersion + 1])("unknown nonzero journal version %s is rejected without migration", async version => {
   const f = fixture(), db = f.file;
   db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')"); db.pragma(`user_version=${version}`);
-  expect(() => readControllerSnapshot(f.file)).toThrow(version === 7 ? "unsupported-version" : "invalid-format");
+  expect(() => readControllerSnapshot(f.file)).toThrow(version === journalVersion + 1 ? "unsupported-version" : "invalid-format");
   const check = f.file;
   try { expect(check.pragma("user_version", { simple: true })).toBe(version); expect(check.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" }); }
   finally { check.close(); }

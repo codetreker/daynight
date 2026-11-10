@@ -87,10 +87,13 @@ configuration; tests and acceptance tooling use the separate full-workspace
 shared protocols and their transitive imports. The script embeds generated assets
 in the Go 1.27.2 binary, recreates the service containers while preserving the
 PostgreSQL and attachment volumes, and waits up to 120 seconds for their health
-checks. Redis is required to start but has no
-health gate on Server. Build time is separate from that
-readiness timeout. The final nonroot runtime image contains the server binary
-and does not need Node.js. It prepares the required writable
+checks. Redis is required to start but has no health gate on Server. Build time
+is separate from that readiness timeout. The final nonroot runtime image contains
+the server binary, Node.js 24 and the lockfile-selected sharp dependency closure.
+The pinned image-validation helper and its build manifest live under
+`/opt/daynight/image-validation`; service validation runs independently from
+Controller validation. Provider image profiles remain disabled until their full
+native evidence exists. It prepares the required writable
 `DAYNIGHT_STORAGE_ROOT` for UID/GID `10001:10001`. The Compose-managed
 `attachment-data` volume mounts at that root. Docker initializes a fresh volume
 from the image directory with its ownership, so the server writes as UID 10001

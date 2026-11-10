@@ -1,3 +1,5 @@
+import { nativeInputText, textNativeInput } from "./native-input.js";
+import type { NativeInput } from "./types.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { codexNativeHome } from "./codex-settings-metadata.js";
 import { CodexInterruptions } from "./codex-interruptions.js";
@@ -208,7 +210,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     }
     activity = "idle"; state();
   } catch (error) { await close(); throw error; }
-  const send = async (text: string, operationId: string, expectedTurnId: string | null, skill?: { name: string; path: string }): Promise<ProviderReceipt> => {
+  const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, skill?: { name: string; path: string }): Promise<ProviderReceipt> => {
+      const text = nativeInputText(inputValue);
       if (closed || sending || pending.size || expectedTurnId !== currentTurnId) throw new NativeRpcError(-32602, "Native turn changed or interaction is pending.");
       sending = true;
       interruptions.submitting(operationId, text, expectedTurnId);
@@ -232,9 +235,9 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       if (closed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
       const command = controls.command(id, revision);
       if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
-      if (command.kind === "skill") return send(args, operationId, null, { name: command.name, path: command.path });
+      if (command.kind === "skill") return send(textNativeInput(args), operationId, null, { name: command.name, path: command.path });
       if (/\$(?!ARGUMENTS\b)(?:[A-Za-z_0-9{]|\$)/.test(command.body) || args.trim() && !command.body.includes("$ARGUMENTS")) throw new NativeRpcError(-32602, "This prompt supports only $ARGUMENTS placeholders.");
-      return send(command.body.replace(/\$ARGUMENTS\b/g, () => args), operationId, null);
+      return send(textNativeInput(command.body.replace(/\$ARGUMENTS\b/g, () => args)), operationId, null);
     },
     async cancel(expectedTurnId) { if (currentTurnId !== expectedTurnId) throw new NativeRpcError(-32602, "Native turn changed."); await rpc.request("turn/interrupt", { threadId: nativeId, turnId: expectedTurnId }); await turns.wait(expectedTurnId, Date.now() + 30_000).catch(error => { if (!turns.isComplete(expectedTurnId)) throw error; }); return { disposition: "handled" }; },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {

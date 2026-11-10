@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import type { SourceTimelineEntry } from "../../../src/session/controller-protocol.js";
+import { parseInspectionPage } from "../../../src/session/history.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -156,5 +158,46 @@ it("reserves HTML escaping used by the final MCP response encoder", async () => 
     const page = store.readInspection(query(epoch, null, 1));
     expect(responseBytes(page) + 4096).toBeLessThanOrEqual(262144);
     expect(page.items[0]).toMatchObject({ body: null, truncated: true });
+  } finally { store.close(); }
+});
+
+it.each(["image", "markdown", "reasoning", "retained", "tool"] as const)("includes %s image references in descriptor previews and global coverage", async location => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID(), resourceId = randomUUID(), imageId = randomUUID();
+  const bytes = Buffer.from("Saved image"), name = "图".repeat(341) + "x";
+  const image = { type: "image" as const, imageId, resourceId, label: "original" };
+  const binding = { imageId, start: 0, end: 1, part: image };
+  const metadata = { partId: randomUUID(), revision: "1", textSha256: createHash("sha256").update("x").digest("hex"), complete: true, truncated: false, bindings: location === "retained" ? [] : [binding], retainedImages: location === "retained" ? [{ ...binding, sourceRevision: "1", sourceTextSha256: "a".repeat(64), linkHref: null }] : [] };
+  const base = { entryId: randomUUID(), revision: "1", imageProjectionError: null };
+  const markdown = { type: "markdown" as const, text: "x", ...metadata };
+  const entry: SourceTimelineEntry = location === "reasoning" || location === "retained" ? { ...base, kind: "reasoning", text: "x", markdown: metadata }
+    : location === "tool" ? { ...base, kind: "tool_call", callId: "tool", name: "shell", input: "x", output: [markdown], status: "completed", truncated: false }
+    : { ...base, kind: "assistant_message", content: [location === "image" ? image : markdown] };
+  try {
+    store.projectTimeline(entry);
+    const missing = store.readInspection(query(epoch));
+    expect(missing.items[0]!.resources).toEqual([{ resourceId, status: "unavailable", name: resourceId, mediaType: null, byteLength: null, sha256: null }]);
+    expect(missing.coverage).toEqual({ state: "partial", reason: "resource_unavailable" });
+    store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", text: "newer" });
+    expect(store.readInspection(query(epoch, null, 1)).coverage).toEqual({ state: "partial", reason: "resource_unavailable" });
+    store.saveResource({ resourceId, status: "available", name, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null, revision: "1", width: 1, height: 1, frameCount: 1 }, bytes);
+    const page = store.readInspection(query(epoch));
+    expect(page.items[0]!.resources).toEqual([{ resourceId, status: "available", name, mediaType: "image/png", byteLength: "11", sha256: createHash("sha256").update(bytes).digest("hex") }]);
+    expect(parseInspectionPage(page)).toEqual(page);
+    expect(page.coverage).toEqual({ state: "complete", reason: null });
+    expect(store.readInspection(query(epoch, null, 1)).coverage).toEqual({ state: "complete", reason: null });
+  } finally { store.close(); }
+});
+
+it.each(["unavailable", "projection"] as const)("retains %s image coverage outside the selected page", async gap => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID();
+  const error = { code: "source_unavailable", message: "Projection is unavailable." };
+  try {
+    if (gap === "unavailable") store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "image_unavailable", imageId: randomUUID(), label: "missing", error }] });
+    else store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", imageProjectionError: error, text: "x", markdown: { partId: randomUUID(), revision: "1", textSha256: createHash("sha256").update("x").digest("hex"), complete: true, truncated: false, bindings: null, retainedImages: [] } });
+    const newest = randomUUID();
+    store.projectTimeline({ entryId: newest, revision: "1", kind: "reasoning", text: "newer" });
+    const page = store.readInspection(query(epoch, null, 1));
+    expect(page.items.map(item => item.entryId)).toEqual([newest]);
+    expect(page.coverage).toEqual({ state: "partial", reason: "resource_unavailable" });
   } finally { store.close(); }
 });

@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -11,7 +12,7 @@ const open = async (scenario: string, resumed = false, journal?: { hasTimelineEn
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resumed ? "native-thread" : null,
     executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), env: { ...process.env, CODEX_TEST_INTERRUPT: scenario },
     ...(journal ? { hasTimelineEntry: (id: string) => journal.hasTimelineEntry(id) } : {}),
-    onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: value => { child = value; } });
+    onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onState: () => {}, onSpawn: value => { child = value; } });
   return { provider, entries, observed, child };
 };
 const rows = (entries: readonly ProviderEntry[]) => [...new Map(entries.map(entry => [entry.entryId, entry])).values()];
@@ -20,7 +21,7 @@ const markers = (entries: readonly ProviderEntry[]) => rows(entries).filter(entr
 test.each(["ack-first", "completion-first"])("Codex %s interruption has one stable terminal marker", async scenario => {
   const live = await open(scenario);
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await live.provider.cancel(sent.turnId!);
     expect(markers(live.entries)).toHaveLength(1);
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
@@ -34,7 +35,7 @@ test("interrupted completion recovers native user items omitted from individual 
   const live = await open("completion-items");
   try {
     const operationId = randomUUID();
-    const sent = await live.provider.send("cancel", operationId, null);
+    const sent = await live.provider.send(textNativeInput("cancel"), operationId, null);
     await live.provider.cancel(sent.turnId!);
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toMatchObject([{ content: [{ type: "text", text: "cancel" }] }]);
     expect(live.observed).toContain(operationId);
@@ -45,7 +46,7 @@ test("interrupted completion recovers native user items omitted from individual 
 test("interruption before native input recording retains submitted text without inventing receipt evidence", async () => {
   const live = await open("missing-user");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await live.provider.cancel(sent.turnId!);
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toMatchObject([{ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("cancel") })]) }]);
     await vi.waitFor(() => expect(live.entries.some(entry => entry.kind === "error" && entry.code === "native_input_missing")).toBe(true));
@@ -67,7 +68,7 @@ test("paginated native turns restore empty interruptions in their original order
 test.each(["completed", "failed"])("a %s turn is never labeled interrupted after an interrupt request", async scenario => {
   const live = await open(scenario);
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await live.provider.cancel(sent.turnId!);
     expect(markers(live.entries)).toEqual([]);
     expect(live.entries.filter(entry => entry.kind === "error" && entry.code === "native_turn_error")).toHaveLength(scenario === "failed" ? 1 : 0);
@@ -78,7 +79,7 @@ test("missing live input is recovered from full native history without a duplica
   const live = await open("history-user");
   try {
     const operationId = randomUUID();
-    const sent = await live.provider.send("cancel", operationId, null);
+    const sent = await live.provider.send(textNativeInput("cancel"), operationId, null);
     await live.provider.cancel(sent.turnId!);
     await vi.waitFor(() => expect(live.observed).toContain(operationId));
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toMatchObject([{ content: [{ type: "text", text: "cancel" }] }]);
@@ -90,7 +91,7 @@ test("missing live input is recovered from full native history without a duplica
 test("native completion confirms cancellation without waiting for input-history recovery", async () => {
   const live = await open("history-delayed");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await live.provider.cancel(sent.turnId!);
     expect(markers(live.entries)).toHaveLength(1);
     expect(live.entries.some(entry => entry.kind === "error" && entry.code === "native_input_missing")).toBe(false);
@@ -101,7 +102,7 @@ test("native completion confirms cancellation without waiting for input-history 
 test("an unreadable completed turn retains input with an explicit unverified-recording diagnostic", async () => {
   const live = await open("history-read-failure");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await live.provider.cancel(sent.turnId!);
     await vi.waitFor(() => expect(rows(live.entries)).toContainEqual(expect.objectContaining({ code: "native_input_missing", message: expect.stringContaining("could not be verified") })));
     expect(live.observed).toEqual([]);
@@ -116,10 +117,10 @@ test("history failures are not silently downgraded to item-only recovery", async
 test("a late start receipt cannot resurrect an already interrupted turn", async () => {
   const live = await open("late-receipt");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await expect(live.provider.waitForTurn(sent.turnId!, Date.now() + 500)).rejects.toThrow("interrupted");
     // A new idle send is admitted only if the late receipt left the ended turn idle.
-    await expect(live.provider.send("next", randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+    await expect(live.provider.send(textNativeInput("next"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
     expect(markers(live.entries)).toHaveLength(1);
   } finally { await live.provider.close(); }
 });
@@ -127,7 +128,7 @@ test("a late start receipt cannot resurrect an already interrupted turn", async 
 test("a completion from another thread cannot create an interruption marker", async () => {
   const live = await open("foreign-thread");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     expect(markers(live.entries)).toEqual([]);
     await live.provider.cancel(sent.turnId!);
     expect(markers(live.entries)).toHaveLength(1);
@@ -138,8 +139,8 @@ test("an interrupted turn retains an unrecorded steer without duplicating its re
   const live = await open("steer-missing");
   try {
     const first = randomUUID(), second = randomUUID();
-    const sent = await live.provider.send("cancel", first, null);
-    await live.provider.send("follow-up", second, sent.turnId!);
+    const sent = await live.provider.send(textNativeInput("cancel"), first, null);
+    await live.provider.send(textNativeInput("follow-up"), second, sent.turnId!);
     await live.provider.cancel(sent.turnId!);
     await vi.waitFor(() => expect(live.entries.some(entry => entry.kind === "error" && entry.code === "native_input_missing")).toBe(true));
     const users = rows(live.entries).filter(entry => entry.kind === "user_message");
@@ -152,8 +153,8 @@ test("an interrupted turn retains an unrecorded steer without duplicating its re
 test("a definitely rejected steer is not presented as submitted input on interruption", async () => {
   const live = await open("steer-rejected");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
-    await expect(live.provider.send("rejected follow-up", randomUUID(), sent.turnId!)).rejects.toThrow("Steer rejected");
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
+    await expect(live.provider.send(textNativeInput("rejected follow-up"), randomUUID(), sent.turnId!)).rejects.toThrow("Steer rejected");
     await live.provider.cancel(sent.turnId!);
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
   } finally { await live.provider.close(); }
@@ -173,9 +174,9 @@ test("large native turns retain item pagination instead of loading whole-turn pa
 test.each(["reject-first", "complete-first", "reject-delayed"].flatMap(order => ["full", "notLoaded"].map(view => `${order}:${view}`)))("a racing rejected steer (%s) never persists input or a missing-input diagnosis", async scenario => {
   const live = await open(`race:${scenario}`);
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     let settled = false;
-    const steer = live.provider.send("rejected racing input", randomUUID(), sent.turnId!).then(() => null, error => { settled = true; return error; });
+    const steer = live.provider.send(textNativeInput("rejected racing input"), randomUUID(), sent.turnId!).then(() => null, error => { settled = true; return error; });
     await live.provider.cancel(sent.turnId!);
     if (scenario.startsWith("reject-delayed")) expect(settled).toBe(false);
     expect(await steer).toMatchObject({ message: "Racing steer rejected" });
@@ -188,9 +189,9 @@ test.each(["reject-first", "complete-first", "reject-delayed"].flatMap(order => 
 test("a racing accepted steer is retained only after its receipt settles, without delaying cancellation", async () => {
   const live = await open("race:accept-delayed:full");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     let settled = false;
-    const steer = live.provider.send("accepted racing input", randomUUID(), sent.turnId!).then(receipt => { settled = true; return receipt; });
+    const steer = live.provider.send(textNativeInput("accepted racing input"), randomUUID(), sent.turnId!).then(receipt => { settled = true; return receipt; });
     await live.provider.cancel(sent.turnId!);
     expect(settled).toBe(false);
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
@@ -205,9 +206,9 @@ test("a racing accepted steer is retained only after its receipt settles, withou
 test("a timed-out racing steer retains explicitly unknown dispatch text after cancellation already settled", async () => {
   const live = await open("race:timeout:full");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     vi.useFakeTimers();
-    const steer = live.provider.send("unknown racing input", randomUUID(), sent.turnId!).catch(error => error as Error);
+    const steer = live.provider.send(textNativeInput("unknown racing input"), randomUUID(), sent.turnId!).catch(error => error as Error);
     await live.provider.cancel(sent.turnId!);
     expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(30_001);
@@ -222,8 +223,8 @@ test("a timed-out racing steer retains explicitly unknown dispatch text after ca
 test.each(["reject-delayed", "timeout"])("close flushes an interrupted turn waiting for %s dispatch before returning", async outcome => {
   const live = await open(`race:${outcome}:notLoaded`);
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
-    const steer = live.provider.send("racing input", randomUUID(), sent.turnId!).catch(error => error as Error);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
+    const steer = live.provider.send(textNativeInput("racing input"), randomUUID(), sent.turnId!).catch(error => error as Error);
     await live.provider.cancel(sent.turnId!);
     await live.provider.close();
     const countAtClose = live.entries.length;
@@ -241,8 +242,8 @@ test.each(["reject-delayed", "timeout"])("close flushes an interrupted turn wait
 test("native process loss retains a confirmed interruption while dispatch becomes unknown", async () => {
   const live = await open("race:timeout:notLoaded");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
-    const steer = live.provider.send("racing input", randomUUID(), sent.turnId!).catch(error => error as Error);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
+    const steer = live.provider.send(textNativeInput("racing input"), randomUUID(), sent.turnId!).catch(error => error as Error);
     await live.provider.cancel(sent.turnId!);
     live.child.kill("SIGTERM");
     await steer;
@@ -258,7 +259,7 @@ test("native process loss retains a confirmed interruption while dispatch become
 test("close drains an interrupted turn's outstanding input-history projection", async () => {
   const live = await open("history-delayed");
   try {
-    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const sent = await live.provider.send(textNativeInput("cancel"), randomUUID(), null);
     await live.provider.cancel(sent.turnId!);
     await live.provider.close();
     const countAtClose = live.entries.length;

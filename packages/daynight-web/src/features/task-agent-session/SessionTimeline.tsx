@@ -107,6 +107,8 @@ type EntryProps = {
 function SessionParts({ content, resources, active, onLoadResource, resourceAccess, raw = false }: Pick<EntryProps, 'resources' | 'active' | 'onLoadResource' | 'resourceAccess'> & { readonly content: readonly MessagePart[]; readonly raw?: boolean }) {
   return content.map((part, index) => {
     if (part.type === 'text') return raw ? <pre className="session-tool-output" tabIndex={0} key={index}>{part.text}</pre> : <SessionMarkdown key={index} text={part.text} />;
+    if (part.type === 'markdown') return <SessionMarkdown key={index} text={part.text} />;
+    if (part.type === 'image_unavailable') return <SessionResourceView key={index} resource={undefined} label={part.label} active={active} onLoad={onLoadResource} />;
     const resource = resources.get(part.resourceId);
     return <SessionResourceView key={`${part.resourceId}/${resource?.status}/${resource?.sha256}`} resource={resource} label={part.label} active={active} resourceAccess={resourceAccess} onLoad={onLoadResource} />;
   });

@@ -1,3 +1,5 @@
+import { createControllerCaptureBridge } from "./media/capture.js";
+import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
@@ -16,16 +18,23 @@ import { createControllerRelay } from "./relay.js";
 import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
 import { NativeRpcError } from "./providers/native-rpc.js";
+import type { NativeInput } from "./providers/types.js";
+import type { NativeInputLease } from "./media/preparations.js";
+import { IMAGE_LIMITS } from "../../session/image-values.js";
+import { syncControllerImageHistory } from "./media/history-sync.js";
 import type { NativeProvider, ProviderOptions } from "./providers/types.js";
 
 export const runController = async (options: { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string }): Promise<void> => {
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
-  const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true });
+  const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
   let projectionFailure: string | null = null, providerFailure: string | null = null;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
+  const historyAbort = new AbortController();
+  let historyWork: Promise<void> | null = null, historyRequested = false;
+  let historyTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
   let cleanupInputStarted = false;
   let cleaning = isCleaningGeneration(journal.listOperations(), ticket.executionGeneration);
@@ -46,7 +55,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
   };
   const readState = (): import("../../session/controller-protocol.js").ControllerState => {
     const s = journal.getSnapshot();
-    return { nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
+    const providerImages = journal.providerImageCapabilities?.({ expectedNativeSessionId: s.nativeSessionId, modelId: ticket.configuration.model, controlsRevision: s.controls?.revision ?? null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } });
+    return { ...(providerImages ? { providerImages } : {}), nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
   const fail = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error); diagnostic(message);
@@ -72,26 +82,70 @@ export const runController = async (options: { homeDirectory: string; provider: 
     })();
     active.set(operation.operationId, execute); void execute.finally(() => active.delete(operation.operationId)).catch(fail); return execute;
   };
+  const assertImageCommand = (command: SessionCommand): void => {
+    if (command.kind !== "send_message" || !command.payload.content.some(part => part.type === "image")) return;
+    const images = readState().providerImages, target = command.payload.target;
+    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId || command.payload.expectedImageCapabilityRevision !== images.revision) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
+  };
   const relay = createControllerRelay(ticket, journal, {
     onConnection: connected => { synchronized = connected; if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
     onError: diagnostic,
     readState,
+    onAcknowledged: () => {
+      if (historyTimer) clearTimeout(historyTimer);
+      historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(String(error))); }, 250);
+    },
+    beforeImage: () => synchronizeImageHistory(),
+    onRetryCapture: (body, signal) => captureBridge.retry(body, signal),
     onCommand: async command => {
       if (command.sessionId !== ticket.sessionId || command.claimId !== ticket.claimId || command.testExecutionId !== ticket.testExecutionId || command.executionGeneration !== ticket.executionGeneration) throw new Error("Stale session command.");
-      const operation = journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload });
+      const operation = journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
       if (operation.state !== "accepted") { relay.receipt(operation); return; }
       if (!provider || stopping || !synchronized) throw new Error("Native provider is not available.");
       await queueNative(command.kind, async () => {
         const current = journal.getOperation(command.operationId);
         if (current && current.state !== "accepted") { relay.receipt(current); return; }
         if (!provider || stopping || !synchronized) throw new Error("Native provider is not available.");
-        await relay.authorize(command.operationId);
-        if (!relay.connected() || stopping) throw new Error("Relay authorization lost before native dispatch.");
-        const result = await dispatch(operation, () => executeCommand(command)); relay.receipt(result);
+        let lease: NativeInputLease | undefined;
+        try {
+          if (command.kind === "send_message" && command.payload.content.some(part => part.type === "image")) {
+            // File acquisition can await I/O. It precedes the irreversible dispatch marker.
+            lease = await journal.media().acquireInput(command.payload, command.operationId);
+          }
+          if (!provider || stopping || !synchronized) throw new NativeRpcError(-32602, "Native provider is not available.");
+          assertControlCommand(command, journal.getSnapshot());
+          if (lease) assertImageCommand(command);
+          await relay.authorize(command.operationId);
+          if (!relay.connected() || stopping) throw new Error("Relay authorization lost before native dispatch.");
+          // Authorization is asynchronous too; check current turn and target again.
+          assertControlCommand(command, journal.getSnapshot());
+          if (lease) assertImageCommand(command);
+          lease?.verify();
+          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, lease?.input); }); relay.receipt(result);
+        } catch (error) {
+          if (journal.getOperation(command.operationId)?.state === "accepted") relay.receipt(journal.recordOperation(command.operationId, "rejected", null, error instanceof NativeRpcError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized."));
+          else throw error;
+        } finally { lease?.close(); }
       });
     },
   });
-  const executeCommand = async (command: SessionCommand) => {
+  const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized });
+  async function synchronizeImageHistory(): Promise<void> {
+    if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    if (stopping || !relay.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
+    historyRequested = true;
+    if (historyWork) return historyWork;
+    historyWork = (async () => {
+      while (historyRequested && !stopping) {
+        historyRequested = false;
+        const fence = relay.currentFence(); if (!fence) return;
+        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal });
+      }
+    })();
+    try { await historyWork; } finally { historyWork = null; }
+  }
+  const executeCommand = async (command: SessionCommand, input?: NativeInput) => {
     if (!provider || stopping) throw new NativeRpcError(-32602, "Native provider is unavailable.");
     if (cleaning && command.kind !== "interaction_response") throw new NativeRpcError(-32602, "The controller is cleaning this execution.");
     assertControlCommand(command, journal.getSnapshot());
@@ -110,7 +164,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     if (command.kind === "send_message") {
       if (!["not_required", "provider_accepted", "confirmed"].includes(journal.getSnapshot().initialInputState)) throw new NativeRpcError(-32602, "Initial task input is not confirmed.");
       if (ticket.initialInput === "none" && journal.getSnapshot().nativeSessionId === null && journal.listOperations().some(operation => operation.operationId !== command.operationId && operation.kind === "send_message" && ["dispatching", "provider_accepted", "confirmed", "unknown"].includes(operation.state))) throw new NativeRpcError(-32602, "The first native input is still unconfirmed; its original operation must be reconciled.");
-      return provider.send(command.payload.content.map(part => part.text).join("\n"), command.operationId, command.payload.expectedTurnId);
+      return provider.send(input ?? { content: command.payload.content.filter(part => part.type === "text") }, command.operationId, command.payload.expectedTurnId);
     }
     if (command.kind === "cancel") return provider.cancel(command.payload.expectedTurnId);
     if (cleaning && !cleanupInteractions.has(command.payload.interactionId)) throw new NativeRpcError(-32602, "Only the current cleanup interaction may be answered.");
@@ -119,6 +173,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     stopping = true;
+    if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     shutdownPromise = (async () => {
     try {
       await startup?.catch(() => {});
@@ -134,7 +189,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
       publishState(); await relay.flush().catch(fail);
     }
     catch (error) { fail(error); }
-    finally { relay.close(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
+    finally { historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
     })();
     return shutdownPromise;
   };
@@ -195,7 +250,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
             if (!provider || stopping || request.action.kind === "submit_initial" && !synchronized) throw new Error("Controller is still initializing or disconnected.");
             if (request.action.kind === "submit_initial") {
               const prepared = journal.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } });
-              operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(ticket.initialPrompt, ticket.initialOperationId, null)), 65_000);
+              operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(textNativeInput(ticket.initialPrompt), ticket.initialOperationId, null)), 65_000);
               if (operation === null) return;
             } else {
               const action = request.action;
@@ -212,7 +267,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
                 if (Date.now() >= action.deadline) throw new Error("Cleanup deadline expired before input submission.");
                 journal.assertInputCapacity();
                 cleanupInputStarted = true;
-                const receipt = await provider!.send(action.prompt, action.operationId, null);
+                const receipt = await provider!.send(textNativeInput(action.prompt), action.operationId, null);
                 journal.recordOperation(action.operationId, "provider_accepted", receipt);
                 if (!receipt.turnId) throw new Error("Native cleanup turn identity is unknown.");
                 await provider!.waitForTurn(receipt.turnId, action.deadline);
@@ -268,8 +323,12 @@ export const runController = async (options: { homeDirectory: string; provider: 
         // an opening callback would make startup wait for its own completion.
         if (provider) void shutdown();
       },
-      onInputObserved: operationId => nativeEvent(() => {
-        if (!observeNativeInput(journal, operationId)) return;
+      onImageOccurrence: (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged,
+      imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
+      ...captureBridge.providerOptions,
+      onInputObserved: observation => nativeEvent(() => {
+        const operationId = typeof observation === "string" ? observation : observation.operationId;
+        if (!observeNativeInput(journal, observation)) return;
         publishState();
         const receipt = journal.getOperation(operationId);
         if (receipt?.kind === "send_message" || receipt?.kind === "execute_command") { try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); } }

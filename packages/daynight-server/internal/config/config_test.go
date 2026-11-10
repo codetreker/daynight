@@ -248,3 +248,34 @@ func TestWebhookConfiguration(t *testing.T) {
 		t.Fatal("shutdown exceeded shared budget")
 	}
 }
+
+func TestImageValidationConfiguration(t *testing.T) {
+	c, err := LoadConfig(configEnvironment(nil))
+	if err != nil || c.ImageNodePath != "" || c.ImageHelperPath != "" || c.ImageManifestPath != "" || c.ImageTemporaryDirectory != "" {
+		t.Fatalf("decoder must remain unavailable without explicit artifacts: %+v %v", c, err)
+	}
+	values := map[string]string{
+		"DAYNIGHT_IMAGE_NODE_PATH":      "/opt/daynight/bin/node",
+		"DAYNIGHT_IMAGE_HELPER_PATH":    "/opt/daynight/media/image-validation-helper.js",
+		"DAYNIGHT_IMAGE_MANIFEST_PATH":  "/opt/daynight/media/image-validation-manifest.json",
+		"DAYNIGHT_IMAGE_TEMP_DIRECTORY": "/var/lib/daynight/image-validation",
+	}
+	c, err = LoadConfig(configEnvironment(values))
+	if err != nil || c.ImageNodePath != values["DAYNIGHT_IMAGE_NODE_PATH"] || c.ImageHelperPath != values["DAYNIGHT_IMAGE_HELPER_PATH"] || c.ImageManifestPath != values["DAYNIGHT_IMAGE_MANIFEST_PATH"] || c.ImageTemporaryDirectory != values["DAYNIGHT_IMAGE_TEMP_DIRECTORY"] {
+		t.Fatalf("explicit decoder configuration: %+v %v", c, err)
+	}
+	for field := range values {
+		for _, invalid := range []string{"", "relative/path", "/absolute/../path", "/absolute/line\nbreak"} {
+			copy := make(map[string]string, len(values))
+			for k, v := range values {
+				copy[k] = v
+			}
+			copy[field] = invalid
+			_, err := LoadConfig(configEnvironment(copy))
+			var failure *ConfigurationError
+			if !errors.As(err, &failure) || failure.Field != field {
+				t.Fatalf("accepted invalid %s: %v", field, err)
+			}
+		}
+	}
+}

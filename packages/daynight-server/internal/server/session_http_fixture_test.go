@@ -120,6 +120,11 @@ func (d *sessionHTTPDAO) id(id string) {
 func (d *sessionHTTPDAO) verify() {
 	required := map[string]int{}
 	switch d.first {
+	case "ListSessionMediaLeases":
+		if len(d.calls) != 1 || d.calls["ListSessionMediaLeases"] != 1 {
+			d.fail("media recovery listing retained or reused its database scope")
+		}
+		return
 	case "LockTaskRegistration":
 		required = map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1}
 	case "SessionLocation":
@@ -164,6 +169,17 @@ func (d *sessionHTTPDAO) verify() {
 	}
 
 }
+func (d *sessionHTTPDAO) ListSessionMediaLeases(ctx context.Context) ([]store.SessionResourceLease, error) {
+	d.called(ctx, "ListSessionMediaLeases")
+	d.f.mu.Lock()
+	read := d.f.mediaRecoveryRead
+	d.f.mu.Unlock()
+	if read == nil {
+		d.fail("unconfigured media recovery lease listing")
+	}
+	return read(ctx)
+}
+
 func (d *sessionHTTPDAO) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
 	d.called(ctx, "LockCredential")
 	if now.IsZero() || p != d.f.handler.principal {

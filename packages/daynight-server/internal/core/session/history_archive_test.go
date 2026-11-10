@@ -28,7 +28,7 @@ func TestTaskHistoryArchiveRetainsRealFileReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(retained.Bytes(), data) {
+	if !bytes.Equal(retained.Bytes(), data) || retained.TimelineBytes() != nil {
 		t.Fatal("archive bytes changed")
 	}
 	if _, err = f.s.TryReserveArchivePreflight(); err == nil {

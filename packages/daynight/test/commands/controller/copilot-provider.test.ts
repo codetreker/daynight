@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -28,7 +29,7 @@ function setup() {
   const client = { start: vi.fn(async () => {}), stop: vi.fn(async () => []), forceStop: vi.fn(async () => {}), ping: vi.fn(async () => ({})), createSession: vi.fn(capture), resumeSession: vi.fn(async (id, config) => capture({ ...config, sessionId: id })), getSessionMetadata: vi.fn(async (id: string) => ({ sessionId: id, isRemote: false, context: { workingDirectory: process.cwd() } })), rpc: { skills: { getDiscoveryPaths: vi.fn(async () => ({ paths: [{ path: "/native/project/skills" }] })) }, runtime: { shutdown: vi.fn(async () => ({})) }, sessions: { checkInUse: vi.fn(async () => ({ inUse: [] as string[] })) } } };
   sdk.construct.mockReturnValue(client);
   const entries: ProviderEntry[] = [], states: ProviderState[] = [], observed: string[] = [], spawned: unknown[] = [];
-  const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(id), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
+  const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
   return { child, client, native, entries, states, options, observed, spawned, emit: (e: unknown) => captured.onEvent(e), config: () => captured };
 }
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
@@ -185,7 +186,7 @@ test("Copilot ACK confirms only its send; text history never fabricates operatio
   const id = randomUUID(), operation = randomUUID();
   fixture.native.getEvents.mockResolvedValue([event("user.message", { content: "same text", messageId: operation })]);
   const provider = await openCopilotProvider({ ...fixture.options, resumeNativeSessionId: id });
-  const receipt = await provider.send("same text", operation, null);
+  const receipt = await provider.send(textNativeInput("same text"), operation, null);
   expect(receipt.disposition).toBe("started"); expect(receipt.turnId).toBeTruthy();
   expect(fixture.native.send).toHaveBeenCalledWith({ prompt: "same text", mode: "immediate" });
   expect(fixture.observed).not.toContain(operation);
@@ -194,27 +195,27 @@ test("Copilot ACK confirms only its send; text history never fabricates operatio
 
 test("Copilot model-step completion and child idle cannot complete the foreground turn", async () => {
   const provider = await openCopilotProvider(fixture.options);
-  const receipt = await provider.send("work", randomUUID(), null); let ended = false;
+  const receipt = await provider.send(textNativeInput("work"), randomUUID(), null); let ended = false;
   const waiting = provider.waitForTurn(receipt.turnId!, Date.now() + 2000).then(() => { ended = true; });
   fixture.emit(event("assistant.turn_start", { turnId: "0", interactionId: "a" }));
   fixture.emit(event("assistant.turn_end", { turnId: "0" }));
   fixture.emit(event("assistant.idle", {}, "child"));
   await Promise.resolve(); expect(ended).toBe(false); expect(fixture.states.at(-1)?.currentTurnId).toBe(receipt.turnId);
   fixture.emit(event("assistant.idle")); await waiting; expect(fixture.states.at(-1)?.currentTurnId).toBeNull();
-  const next = await provider.send("next", randomUUID(), null); expect(next.turnId).not.toBe(receipt.turnId);
+  const next = await provider.send(textNativeInput("next"), randomUUID(), null); expect(next.turnId).not.toBe(receipt.turnId);
   await provider.close();
 });
 
 test("Copilot steer belongs to the active turn and stale sends are rejected before native dispatch", async () => {
-  const provider = await openCopilotProvider(fixture.options), receipt = await provider.send("work", randomUUID(), null);
-  await expect(provider.send("stale", randomUUID(), randomUUID())).rejects.toThrow(/turn/i);
+  const provider = await openCopilotProvider(fixture.options), receipt = await provider.send(textNativeInput("work"), randomUUID(), null);
+  await expect(provider.send(textNativeInput("stale"), randomUUID(), randomUUID())).rejects.toThrow(/turn/i);
   expect(fixture.native.send).toHaveBeenCalledTimes(1);
-  await expect(provider.send("direction", randomUUID(), receipt.turnId!)).resolves.toMatchObject({ turnId: receipt.turnId });
+  await expect(provider.send(textNativeInput("direction"), randomUUID(), receipt.turnId!)).resolves.toMatchObject({ turnId: receipt.turnId });
   await provider.close();
 });
 
 test("Copilot cancellation waits for foreground stop and preserves child ownership", async () => {
-  const provider = await openCopilotProvider(fixture.options), receipt = await provider.send("work", randomUUID(), null); let confirmed = false;
+  const provider = await openCopilotProvider(fixture.options), receipt = await provider.send(textNativeInput("work"), randomUUID(), null); let confirmed = false;
   const cancel = provider.cancel(receipt.turnId!).then(() => { confirmed = true; });
   await Promise.resolve(); expect(confirmed).toBe(false);
   fixture.emit(event("abort", {}, "child")); await Promise.resolve(); expect(confirmed).toBe(false);
@@ -225,11 +226,11 @@ test("Copilot cancellation waits for foreground stop and preserves child ownersh
 test("Copilot child loss rejects in-flight send and disables all controls without replay", async () => {
   const provider = await openCopilotProvider(fixture.options);
   fixture.native.send.mockImplementation(() => new Promise(() => {}));
-  const send = provider.send("uncertain", randomUUID(), null), rejection = expect(send).rejects.toThrow(/unknown|connection|stopped/);
+  const send = provider.send(textNativeInput("uncertain"), randomUUID(), null), rejection = expect(send).rejects.toThrow(/unknown|connection|stopped/);
   await Promise.resolve();
   fixture.child.exitCode = 1; fixture.child.emit("exit", 1, null); fixture.child.emit("close", 1, null);
   await rejection; expect(fixture.states.at(-1)).toMatchObject({ activity: "unknown", capabilities: { send: false, steer: false, cancel: false, respond: false } });
-  await expect(provider.send("again", randomUUID(), null)).rejects.toThrow(); expect(fixture.native.send).toHaveBeenCalledTimes(1);
+  await expect(provider.send(textNativeInput("again"), randomUUID(), null)).rejects.toThrow(); expect(fixture.native.send).toHaveBeenCalledTimes(1);
   await provider.close();
 });
 
@@ -248,7 +249,7 @@ test("Copilot owned runtime requests graceful shutdown before transport disposal
 test("Copilot late ACK confirms only the timed-out invocation in its still-owned runtime", async () => {
   const provider = await openCopilotProvider(fixture.options); vi.useFakeTimers();
   let acknowledge!: (id: string) => void; fixture.native.send.mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
-  const operation = randomUUID(), rejected = expect(provider.send("one dispatch", operation, null)).rejects.toThrow(/unknown/);
+  const operation = randomUUID(), rejected = expect(provider.send(textNativeInput("one dispatch"), operation, null)).rejects.toThrow(/unknown/);
   await vi.advanceTimersByTimeAsync(60_001); await rejected; expect(fixture.observed).toEqual([]);
   acknowledge("real-native-message-id"); await vi.advanceTimersByTimeAsync(0);
   expect(fixture.observed).toEqual([operation]); expect(fixture.native.send).toHaveBeenCalledOnce();
@@ -258,7 +259,7 @@ test("Copilot late ACK confirms only the timed-out invocation in its still-owned
 test("Copilot ACK arriving after runtime loss cannot confirm input", async () => {
   const provider = await openCopilotProvider(fixture.options); let acknowledge!: (id: string) => void;
   fixture.native.send.mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
-  const rejected = expect(provider.send("uncertain", randomUUID(), null)).rejects.toThrow(/unknown/);
+  const rejected = expect(provider.send(textNativeInput("uncertain"), randomUUID(), null)).rejects.toThrow(/unknown/);
   await Promise.resolve();
   fixture.child.exitCode = 1; fixture.child.emit("exit", 1, null); fixture.child.emit("close", 1, null); await rejected;
   acknowledge("late-message"); await new Promise(resolve => setImmediate(resolve)); expect(fixture.observed).toEqual([]);
@@ -387,7 +388,7 @@ test("Copilot waits for a complete startup line before accepting a split TCP por
 
 test.each(["close", "loss"])("Copilot does not dispatch deferred input after same-tick %s", async failure => {
   const provider = await openCopilotProvider(fixture.options);
-  const rejected = expect(provider.send("must not reach native", randomUUID(), null)).rejects.toThrow();
+  const rejected = expect(provider.send(textNativeInput("must not reach native"), randomUUID(), null)).rejects.toThrow();
   let closing: Promise<void> | undefined;
   if (failure === "close") closing = provider.close();
   else { fixture.child.exitCode = 1; fixture.child.emit("exit", 1, null); fixture.child.emit("close", 1, null); }

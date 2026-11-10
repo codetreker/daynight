@@ -20,7 +20,7 @@ function fixture(bot = binding) {
   const s = snapshot(); let receive!: (message: BrowserMessage) => void;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const channel = { close: vi.fn() }, onInvalidate = vi.fn();
-  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _after, handler) => { receive = handler; return channel; }) };
+  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused', channel: vi.fn((_id, _after, handler) => { receive = handler; return channel; }) };
   const client = new TaskSessionClient({ api, userId: binding.ownerUserId, testSessionId: binding.sessionId, bot, isCurrent: () => true, onPrincipalMismatch: vi.fn(), onInvalidate, storage: sessionStorage }); clients.push(client);
   return { s, page, api, client, channel, onInvalidate, receive: (next = s) => receive({ protocol: next.protocol, type: 'snapshot', userId: binding.ownerUserId, snapshot: next, cursor: 'zero' }) };
 }

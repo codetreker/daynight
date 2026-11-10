@@ -38,7 +38,7 @@ it("ships exact SQL resources and initializes each installed store", () => {
     count += Object.keys(source).length;
     expect(files(path.join(installed, "dist", directory))).toEqual(source);
   }
-  expect(count).toBe(20);
+  expect(count).toBe(21);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -53,7 +53,7 @@ const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", 12, ["bot_executions", "bots", "claim_native_configurations", "cleanup_schedules", "projects", "tasks"]],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 3, ["executions", "orchestration_blockers"]],
-  ["commands/controller/journal-format.js", "controllerJournalFormat", 6, ["content_index", "execution", "operations", "outbox"]],
+  ["commands/controller/journal-format.js", "controllerJournalFormat", 7, ["content_index", "execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_observations", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
 const versions = [];
@@ -70,5 +70,5 @@ for (const [module, name, version, tables] of owners) {
 console.log(JSON.stringify(versions));
 `, [installed, databases], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, 12, 3, 6, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, 12, 3, 7, 1]);
 });

@@ -17,7 +17,7 @@ function fixture() {
   let current: CurrentSessionResponse = { status: 'registered', session: s };
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const api: SessionApi = {
-    current: vi.fn(async () => current), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused',
+    current: vi.fn(async () => current), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused',
     channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; disconnect = onClose; return { close: vi.fn() }; }),
   };
   const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn() });

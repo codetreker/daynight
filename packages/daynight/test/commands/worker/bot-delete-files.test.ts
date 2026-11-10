@@ -1,3 +1,5 @@
+import { openMediaBudgetLedger } from "../../../src/commands/controller/media/budget-ledger.js";
+import Database from "better-sqlite3";
 import { createServer } from "node:net";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -225,4 +227,18 @@ describe("Bot private file deletion", () => {
     await expect(removeBotDeletionFile(target, AbortSignal.abort())).rejects.toThrow();
     expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
   });
+  it("releases image budget only after the complete original execution sweep, retaining pins on failure", async () => {
+    const f = await fixture(), state = path.join(f.home, "state"), executionId = f.execution.executionId;
+    const ledger = openMediaBudgetLedger(state, executionId); ledger.reserve(1024); ledger.close();
+    const reserved = () => { const db = new Database(path.join(state, "controller", "media", "budget.sqlite")); try { return (db.prepare("SELECT reserved_bytes FROM allocations WHERE execution_id=?").get(executionId) as { reserved_bytes: number } | undefined)?.reserved_bytes ?? null; } finally { db.close(); } };
+    const target = await captured(f.directory, "directory"), privateImage = path.join(f.directory, "journal.sqlite.media-staging", "native", "pinned.bin");
+    await mkdir(path.dirname(privateImage), { recursive: true }); await writeFile(privateImage, "native resume pin");
+    const outside = path.join(f.home, "outside"); await writeFile(outside, "keep"); const unsafe = path.join(f.directory, "outside-link"); await symlink(outside, unsafe);
+    await expect(removeBotDeletionFile(target, signal())).rejects.toThrow(/symbolic/);
+    expect(reserved()).toBe(1024); expect(await readFile(privateImage, "utf8")).toBe("native resume pin");
+    await rm(unsafe); await removeBotDeletionFile(target, signal());
+    expect(reserved()).toBeNull(); await expect(lstat(f.directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(outside, "utf8")).toBe("keep");
+  });
+
 });

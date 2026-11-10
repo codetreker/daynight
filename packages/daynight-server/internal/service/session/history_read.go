@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -43,6 +44,40 @@ func historyObservationTime(v sp.TaskSessionInspection) time.Time {
 		return v.Session.ObservedAt.UTC()
 	}
 	return time.Now().UTC()
+}
+
+func historyArchiveContent(archive core.HistoryArchive) (string, []sp.TimelineEntry, []sp.Resource, error) {
+	var header struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if json.Unmarshal(archive.Bytes(), &header) != nil {
+		return "", nil, nil, historyFault("source_corrupt", "The Session archive format is invalid.")
+	}
+	if header.SchemaVersion == 3 {
+		manifest, err := sp.DecodeArchiveManifest(archive.Bytes())
+		if err != nil {
+			return "", nil, nil, historyFault("source_corrupt", "The Session archive format is invalid.")
+		}
+		data := archive.TimelineBytes()
+		timeline, err := sp.DecodeArchiveTimeline(data)
+		if err != nil || manifest.Timeline.SHA256 != v2.HashBytes(data) || manifest.Timeline.ByteLength != strconv.Itoa(len(data)) {
+			return "", nil, nil, historyFault("source_corrupt", "The Session archive timeline is invalid.")
+		}
+		resources := make([]sp.Resource, 0, len(manifest.Resources))
+		for _, resource := range manifest.Resources {
+			resources = append(resources, resource.Resource)
+		}
+		return manifest.RecordID, timeline.Entries, resources, nil
+	}
+	doc, err := sp.DecodeArchive(archive.Bytes())
+	if err != nil {
+		return "", nil, nil, historyFault("source_corrupt", "The Session archive format is invalid.")
+	}
+	resources := make([]sp.Resource, 0, len(doc.Resources))
+	for _, resource := range doc.Resources {
+		resources = append(resources, resource.Resource)
+	}
+	return doc.SessionID, doc.Entries, resources, nil
 }
 func (s *History) Read(ctx context.Context, p model.Principal, project, task, id string, in ReadRequest) (*ReadResult[sp.MessagePage], error) {
 	if in.Limit == 0 {
@@ -99,19 +134,15 @@ func (s *History) Read(ctx context.Context, p model.Principal, project, task, id
 		if err := ctx.Err(); err != nil {
 			return sp.MessagePage{}, err
 		}
-		doc, err := sp.DecodeArchive(archive.Bytes())
+		archiveID, entries, resources, err := historyArchiveContent(archive)
 		if err != nil {
-			return sp.MessagePage{}, historyFault("source_corrupt", "The Session archive format is invalid.")
+			return sp.MessagePage{}, err
 		}
-		if doc.SessionID != id {
+		if archiveID != id {
 			return sp.MessagePage{}, historyFault("source_corrupt", "The Session archive identity is inconsistent.")
 		}
-		resources := make([]sp.Resource, 0, len(doc.Resources))
-		for _, resource := range doc.Resources {
-			resources = append(resources, resource.Resource)
-		}
 		hash := v2.HashBytes(archive.Bytes())
-		page, err := core.BuildHistoryPage(id, hash, "archive", hash, doc.Entries, resources, in.Before, in.Limit, in.Conversation, in.ResponseOverhead, historyObservationTime(observed))
+		page, err := core.BuildHistoryPage(id, hash, "archive", hash, entries, resources, in.Before, in.Limit, in.Conversation, in.ResponseOverhead, historyObservationTime(observed))
 		if err != nil {
 			return page, err
 		}
@@ -153,15 +184,14 @@ func (s *History) Entry(ctx context.Context, p model.Principal, project, task, i
 	} else if observed.Source == "archive" {
 		archive, err = s.backend.TaskArchiveContent(ctx, p, project, task, id)
 		if err == nil {
-			var doc sp.ArchiveDocument
-			doc, err = sp.DecodeArchive(archive.Bytes())
-			if err != nil {
-				err = historyFault("source_corrupt", "The Session archive format is invalid.")
-			} else if doc.SessionID != id {
+			var archiveID string
+			var entries []sp.TimelineEntry
+			archiveID, entries, _, err = historyArchiveContent(archive)
+			if err == nil && archiveID != id {
 				err = historyFault("source_corrupt", "The Session archive identity is inconsistent.")
-			} else {
+			} else if err == nil {
 				hash := v2.HashBytes(archive.Bytes())
-				result, err = core.BuildEntryChunk(id, hash, "archive", hash, doc.Entries, in.Cursor, historyObservationTime(observed))
+				result, err = core.BuildEntryChunk(id, hash, "archive", hash, entries, in.Cursor, historyObservationTime(observed))
 			}
 		}
 	} else {

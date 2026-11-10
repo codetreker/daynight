@@ -5,6 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"slices"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -19,9 +23,22 @@ func (s *Execution) SourceSeq(ctx context.Context, f sp.ControllerFence) (int64,
 	err := s.controller(ctx, f, func(_ *operationTx, r *record, _ task) error { n = r.SourceSeq; return nil })
 	return n, err
 }
-func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (map[string]any, error) {
+func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[string]any, result error) {
+	prepared, check, finish, err := s.prepareReadMediaResponse(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	if finish != nil {
+		defer func() { result = errors.Join(result, finish()) }()
+	}
+	m = prepared
 	var out map[string]any
-	err := s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, t task) error {
+	err = s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, t task) error {
+		if check != nil {
+			if err := check(tx, r); err != nil {
+				return err
+			}
+		}
 		var err error
 		switch m.Type {
 		case "sync_state":
@@ -46,6 +63,10 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (map[str
 				return err
 			}
 			out = envelope(r, "sync_ack")
+		case "image_capture":
+			out, err = s.captureMessage(ctx, tx, r, m)
+		case "image_response":
+			out, err = s.acceptMediaResponse(ctx, tx, r, m)
 		case "content_response":
 			out, err = s.acceptContent(tx, r, m)
 		case "events":
@@ -111,6 +132,9 @@ func (s *Execution) applyState(ctx context.Context, tx *operationTx, r *record, 
 	v.Activity = state.Activity
 	v.CurrentTurnID = state.CurrentTurnID
 	v.Capabilities = state.Capabilities
+	if err := s.refreshImageState(ctx, tx, r, state.ProviderImages); err != nil {
+		return err
+	}
 	v.Controls = state.Controls
 	v.TurnStartedAt = state.TurnStartedAt
 	v.CleanupInteractionIDs = state.CleanupInteractionIDs
@@ -161,6 +185,21 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 		return nil, conflict()
 	}
 	batchHash := sha256.Sum256(encode(m.Events))
+	var durable store.SessionSourceDAO
+	if r.Snapshot.ContentRevision == 2 {
+		var ok bool
+		durable, ok = tx.dao.(store.SessionSourceDAO)
+		if !ok {
+			return nil, fault("component_unsupported", "Durable source acknowledgements require a server upgrade.")
+		}
+		prior, e := durable.SessionSourceHash(ctx, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "batch", Identity: m.BatchID})
+		if e == nil && !bytes.Equal(prior, batchHash[:]) {
+			return nil, conflict()
+		}
+		if e != nil && !errors.Is(e, model.ErrNotFound) {
+			return nil, e
+		}
+	}
 	if prior, ok := r.Live.BatchHashes[m.BatchID]; ok && prior != batchHash {
 		return nil, conflict()
 	}
@@ -168,6 +207,18 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 		n := number(e.SourceSeq)
 		hash := sha256.Sum256(encode(e))
 		if n <= r.SourceSeq {
+			if durable != nil {
+				previous, err := durable.SessionSourceHash(ctx, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "event", Identity: e.SourceSeq})
+				if errors.Is(err, model.ErrNotFound) {
+					return nil, fault("source_gap", "The original source digest is outside the retained acknowledgement window.")
+				}
+				if err != nil {
+					return nil, err
+				}
+				if !bytes.Equal(previous, hash[:]) {
+					return nil, conflict()
+				}
+			}
 			if previous, ok := r.Live.SourceHashes[n]; ok && previous != hash {
 				return nil, conflict()
 			}
@@ -224,8 +275,8 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 			if err != nil {
 				return nil, err
 			}
-			if resource.ByteLength != nil && number(*resource.ByteLength) > sp.MaxResourceBytes {
-				return nil, fault("payload_too_large", "Resource exceeds 8 MiB.")
+			if err = sourceResourceLimit(r, resource); err != nil {
+				return nil, err
 			}
 			if err = s.emit(ctx, tx, r, "resource", resource, &e); err != nil {
 				return nil, err
@@ -242,6 +293,11 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 		default:
 			return nil, fault("invalid_input", "Unsupported source event.")
 		}
+		if durable != nil {
+			if err := saveSourceHash(ctx, durable, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "event", Identity: e.SourceSeq, Through: n, Digest: hash[:]}); err != nil {
+				return nil, err
+			}
+		}
 		r.SourceSeq = n
 		r.Live.SourceHashes[n] = hash
 		r.Live.SourceOrder = append(r.Live.SourceOrder, n)
@@ -256,6 +312,11 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 		if len(r.Live.BatchOrder) > 128 {
 			delete(r.Live.BatchHashes, r.Live.BatchOrder[0])
 			r.Live.BatchOrder = r.Live.BatchOrder[1:]
+		}
+	}
+	if durable != nil {
+		if err := saveSourceHash(ctx, durable, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "batch", Identity: m.BatchID, Through: number(m.Events[len(m.Events)-1].SourceSeq), Digest: batchHash[:]}); err != nil {
+			return nil, err
 		}
 	}
 	out := envelope(r, "events_ack")
@@ -285,4 +346,15 @@ func (s *Execution) Disconnect(ctx context.Context, f sp.ControllerFence) error 
 		}
 		return save(ctx, tx, r)
 	})
+}
+
+func sourceResourceLimit(r *record, resource sp.Resource) error {
+	limit := int64(sp.MaxResourceBytes)
+	if r.Snapshot.ContentRevision == 2 && resource.Revision != "" {
+		limit = sp.MaxImageBytes
+	}
+	if resource.ByteLength != nil && number(*resource.ByteLength) > limit {
+		return fault("payload_too_large", "Resource exceeds the negotiated Session content limit.")
+	}
+	return nil
 }

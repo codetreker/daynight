@@ -18,7 +18,7 @@ function fixture() {
   let paused = false, current = true;
   const channels: { receive: (message: BrowserMessage) => void; disconnect: (error?: unknown) => void }[] = [];
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: 'A', afterCursor: null, hasMoreBefore: true, hasMoreAfter: false, lastEventSeq: '0' };
-  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { channels.push({ receive, disconnect }); return { close: vi.fn() }; }) };
+  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { channels.push({ receive, disconnect }); return { close: vi.fn() }; }) };
   const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage: null });
   client.setCurrentReadVisible(true);
   clients.push(client);

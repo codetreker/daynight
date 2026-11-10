@@ -26,6 +26,8 @@ const (
 // ArchiveOperation owns one instance and one original-owner permit until Close.
 // A caller must keep it open until it has finished using all large input and output.
 type ArchiveOperation struct {
+	historyWriter            *ActiveHistoryWriter
+	finalizeMigration        bool
 	mu                       sync.Mutex
 	execution                *Execution
 	principal                model.Principal
@@ -41,10 +43,19 @@ type ArchiveOperation struct {
 type RetainedArchive struct {
 	Data      []byte
 	operation *ArchiveOperation
+	closeFn   func() error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (r *RetainedArchive) Close() error {
-	return r.operation.Close()
+	r.closeOnce.Do(func() {
+		if r.closeFn != nil {
+			r.closeErr = r.closeFn()
+		}
+		r.closeErr = errors.Join(r.closeErr, r.operation.Close())
+	})
+	return r.closeErr
 }
 
 // BeginArchive verifies access in a short database scope before taking permits.

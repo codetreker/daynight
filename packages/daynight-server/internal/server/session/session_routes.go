@@ -70,6 +70,7 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux)
 	h.registerArchiveRoutes(mux)
+	h.registerImageRoutes(mux)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		if _, err := httpx.QueryValues(r); err != nil {
 			h.Failure(w, r, err)
@@ -119,7 +120,7 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 }
 func (h *Routes) Parameters(next httpx.AuthenticatedHandler) httpx.AuthenticatedHandler {
 	return func(w http.ResponseWriter, r *http.Request, p model.Principal) {
-		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "evidenceId", "workerId", "botId"} {
+		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "uploadId", "imageId", "evidenceId", "workerId", "botId"} {
 			if raw := r.PathValue(name); raw != "" {
 				id, err := model.CanonicalID(raw)
 				if err != nil {
@@ -297,6 +298,10 @@ func (h *Routes) operation(w http.ResponseWriter, r *http.Request, p model.Princ
 	h.Result(w, r, http.StatusOK, map[string]any{"operation": result}, err)
 }
 func (h *Routes) resource(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if r.URL.RawQuery != "" {
+		h.imageResource(w, r, p)
+		return
+	}
 	if _, err := httpx.QueryValues(r); err != nil {
 		h.Failure(w, r, err)
 		return

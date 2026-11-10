@@ -1,12 +1,18 @@
+import type { InputObservation } from "../../session/image-values.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
 
 export const isCleaningGeneration = (operations: readonly ControllerOperation[], generation: string): boolean =>
   operations.some(operation => operation.kind === "cleanup" && operation.executionGeneration === generation);
 
 /** A native user-message identity proves receipt, not successful turn completion. */
-export const observeNativeInput = (journal: ControllerLifecycleStore, operationId: string): boolean => {
+export const observeNativeInput = (journal: ControllerLifecycleStore, observation: string | InputObservation): boolean => {
+  const operationId = typeof observation === "string" ? observation : observation.operationId;
   const operation = journal.getOperation(operationId);
   if (!operation || !["initial", "send_message", "execute_command"].includes(operation.kind) || !["dispatching", "unknown"].includes(operation.state)) return false;
+  // Legacy callbacks cannot settle an image intent by operation ID alone.
+  const intent = journal.getInputIntent(operationId);
+  if (intent !== null && (typeof observation === "string" || !journal.recordInputObservation(observation))) return false;
+  if (intent === null && typeof observation !== "string") return false;
   journal.recordOperation(operationId, "provider_accepted", operation.result);
   return true;
 };

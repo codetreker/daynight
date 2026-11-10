@@ -24,7 +24,7 @@ function fixture(kind: 'task' | 'test') {
   const api: SessionApi = {
     archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })),
     timeline: vi.fn(async () => page), command: vi.fn(async (_id, command) => receipt(command)), operation: vi.fn(),
-    resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _cursor, next, close) => { receive = next; disconnect = close; return { close: vi.fn() }; }),
+    resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused', channel: vi.fn((_id, _cursor, next, close) => { receive = next; disconnect = close; return { close: vi.fn() }; }),
   };
   const client = new TaskSessionClient({ api, userId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage: null,
     ...(kind === 'task' ? { projectId: task.identity.projectId, taskId: task.identity.taskId, claimId: task.claimId , ownerUserId: userId} : { testSessionId: s.sessionId }),

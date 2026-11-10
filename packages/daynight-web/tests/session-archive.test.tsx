@@ -21,7 +21,7 @@ function fixture(lifecycle: SessionSnapshot['lifecycle'] = 'archived', standalon
   const status: SessionArchiveStatus = { state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null };
   let receive!: (value: BrowserMessage) => void;
   const close = vi.fn();
-  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), archive: vi.fn(async () => status), archiveContent: vi.fn(async () => archive), channel: vi.fn((_id, _cursor, next) => { receive = next; return { close }; }), timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused' };
+  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), archive: vi.fn(async () => status), archiveContent: vi.fn(async () => archive), channel: vi.fn((_id, _cursor, next) => { receive = next; return { close }; }), timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused' };
   const client = new TaskSessionClient({ api, userId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), ...(standalone ? { testSessionId: s.sessionId } : { projectId: task.identity.projectId, taskId: task.identity.taskId, claimId: task.claimId , ownerUserId: userId}) });
   client.setCurrentReadVisible(true);
   clients.push(client);

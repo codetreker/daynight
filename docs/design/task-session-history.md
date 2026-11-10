@@ -14,13 +14,13 @@
 
 Controller 每次连接发送 `X-Daynight-Content-Read-Version: 1`。服务端只把本次握手值绑定到成功 Connect 创建的 live connection；缺少声明为版本 0，不继承持久注册或旧连接。版本 0 只收到旧 timeline 请求；短条目可读取，显示预算占位返回 `upgrade_required`。重连的能力变化不修改 Web timeline 合同。
 
-`inspect_page` 必须携带 `coverage`。Controller 从原始条目和资源集合计算已知缺口：工具原文的 `truncated=true` 对应 `entry_truncated`；没有此类缺口时，非 available 资源或条目引用的缺失资源对应 `resource_unavailable`。覆盖事实先于条目分页、正文引用和 conversation 过滤确定；服务端按原值传递，空过滤页仍可为 partial。归档先通过格式、引用及完整性校验，合法内容的投影应用同一覆盖规则，并保留归档自己的完整性事实；悬空资源引用仍作为损坏拒绝。
+`inspect_page` 必须携带 `coverage`。Controller 从原始条目和资源集合计算已知缺口：工具原文的 `truncated=true` 对应 `entry_truncated`；没有此类缺口时，非 available 资源、缺失资源、明确不可用的图片或尚未解决的图片投影对应 `resource_unavailable`。资源闭包复用统一归档遍历，包含消息、工具、Markdown、reasoning 和 retained 绑定。覆盖事实先于条目分页、正文引用和 conversation 过滤确定；服务端按原值传递，空过滤页仍可为 partial。归档先通过格式、引用及完整性校验，合法内容的投影应用同一覆盖规则，并保留归档自己的完整性事实；悬空资源引用仍作为损坏拒绝。
 
 ## 页、引用与正文块
 
 历史页默认取 20 条、最多 200 条，先按稳定序列选页，再应用 conversation 过滤。页内从旧到新排列，before 边界基于未过滤页。live cursor 绑定 Session、epoch 和边界序列；archive cursor 同时绑定归档 SHA256。来源或 epoch 改变须重置，不在续页时自动切换来源。
 
-每项完整正文使用规范 JSON；超预算项返回有限元数据和 `contentRef`，其边界仍推进。资源描述符只包含标识、名称、类型、大小、摘要和可用性，预览数量有界且明确标记缺省；原始资源引用保留在完整正文内。
+每项完整正文使用规范 JSON；超预算项返回有限元数据和 `contentRef`，其边界仍推进。资源描述符只包含标识、名称、类型、大小、摘要和可用性，预览数量有界且明确标记缺省；名称保留统一图片资源允许的最多 1024 UTF-8 字节。图片几何信息不进入这六字段元数据预览；原始资源引用保留在完整正文内。
 
 正文引用固定 entryId、revision、epoch、来源版本、SHA256 和 UTF-8 字节数。块读取校验全部身份，从指定字节偏移返回最多 32 KiB，块尾退到完整 Unicode 码点。所有数字序列、大小和偏移以十进制字符串表示。原文重建后可用摘要和字节数校验；变化返回 `content_changed`，不拼接不同版本。
 
@@ -30,7 +30,7 @@ MCP 在 SDK 执行前拒绝包含历史读取的多调用 batch 和无法容纳�
 
 ## 归档与权限生命周期
 
-首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
+首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 
 Task 内容读取使用单独的授权目的，允许真实 PAT/OAuth 凭据并逐页、逐块重新检查。Controller、归档上传、Bot/Test 和其他命令的原有准入不扩大。网络内容等待后再次授权，并拒绝变化的 fence/epoch。pending、缺件、损坏、来源变化、空历史与可证明的覆盖缺口保留独立结果，不把无法判断的完整性当作已验证事实。
 

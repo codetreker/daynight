@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -17,7 +18,7 @@ const start = async (notifications: readonly unknown[]) => {
     env: { ...process.env, CODEX_HOME: fileURLToPath(new URL("./fixtures/no-codex-home", import.meta.url)) },
     onTimeline: entry => { parseTimelineEntry({ ...entry, entrySeq: String(entries.length + 1) }); entries.push(entry); },
     onState: state => states.push(state), onSpawn: () => {} });
-  try { await provider.send(JSON.stringify(notifications), randomUUID(), null); }
+  try { await provider.send(textNativeInput(JSON.stringify(notifications)), randomUUID(), null); }
   catch (error) { await provider.close(); throw error; }
   return { provider, entries, states };
 };
@@ -36,7 +37,7 @@ test("a retry notification retains diagnostics without completing the native tur
     await Promise.resolve();
     expect(settled).toBe(false);
     expect(states.at(-1)).toMatchObject({ activity: "working", currentTurnId: "native-turn" });
-    await provider.send(JSON.stringify({ status: "completed", error: null }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "completed", error: null })), randomUUID(), "native-turn");
     await completion;
     expect(states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null });
     expect(errors(entries)).toEqual(before);
@@ -54,7 +55,7 @@ test("terminal notifications wait for completion and retain both error reports i
     await Promise.resolve();
     expect(settled).toBe(false);
     expect(states.at(-1)?.activity).toBe("working");
-    await provider.send(JSON.stringify({ status: "failed", error: { ...terminalError, additionalDetails: null } }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "failed", error: { ...terminalError, additionalDetails: null } })), randomUUID(), "native-turn");
     expect(await completion).toBeInstanceOf(Error);
     const final = errors(entries).at(-1)!;
     expect(final.code).toBe("native_turn_error");
@@ -70,7 +71,7 @@ test.each([null, { message: "Permission denied", codexErrorInfo: "unauthorized",
   const { provider, entries } = await start([]);
   try {
     const completion = provider.waitForTurn("native-turn", Date.now() + 3000).catch(error => error as Error);
-    await provider.send(JSON.stringify({ status: "failed", error }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "failed", error })), randomUUID(), "native-turn");
     expect(await completion).toBeInstanceOf(Error);
     expect(errors(entries)).toHaveLength(1);
     expect(errors(entries)[0]!.code).toBe("native_turn_error");
@@ -105,7 +106,7 @@ test("explicit foreign-thread errors and completion cannot affect the current tu
     let settled = false;
     const completion = provider.waitForTurn("native-turn", Date.now() + 3000).then(() => { settled = true; });
     await Promise.resolve(); expect(settled).toBe(false);
-    await provider.send(JSON.stringify({ status: "completed", error: null }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "completed", error: null })), randomUUID(), "native-turn");
     await completion;
   } finally { await provider.close(); }
 });
@@ -130,7 +131,7 @@ test("an unrelated completion cannot discard the active turn's terminal diagnost
   ]);
   try {
     const active = errors(entries)[0]!;
-    await provider.send(JSON.stringify({ status: "failed", error: nativeError }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "failed", error: nativeError })), randomUUID(), "native-turn");
     expect(errors(entries).at(-1)!.entryId).toBe(active.entryId);
     expect(new Set(errors(entries).map(entry => entry.entryId)).size).toBe(2);
   } finally { await provider.close(); }
@@ -147,7 +148,7 @@ test("invalid non-error thread identity cannot settle the current turn", async (
     let settled = false;
     const completion = provider.waitForTurn("native-turn", Date.now() + 3000).then(() => { settled = true; });
     await Promise.resolve(); expect(settled).toBe(false);
-    await provider.send(JSON.stringify({ status: "completed", error: null }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "completed", error: null })), randomUUID(), "native-turn");
     await completion;
   } finally { await provider.close(); }
 });
@@ -166,7 +167,7 @@ test("interruption never reclassifies an earlier retry as recovery", async () =>
   try {
     const before = structuredClone(errors(entries));
     const completion = provider.waitForTurn("native-turn", Date.now() + 3000).catch(error => error as Error);
-    await provider.send(JSON.stringify({ status: "interrupted", error: null }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "interrupted", error: null })), randomUUID(), "native-turn");
     expect(await completion).toBeInstanceOf(Error);
     expect(errors(entries).filter(entry => entry.code !== "turn_interrupted" && entry.code !== "native_input_missing")).toEqual(before);
     await vi.waitFor(() => expect(errors(entries).some(entry => entry.code === "turn_interrupted")).toBe(true));
@@ -177,8 +178,8 @@ test.each([false, true])("large completed-turn items cannot displace terminal er
   const { provider, entries } = await start(priorNotice ? [notification({ willRetry: false })] : []);
   try {
     const completion = provider.waitForTurn("native-turn", Date.now() + 3000).catch(error => error as Error);
-    await provider.send(JSON.stringify({ status: "failed", itemsView: "summary", items: [{ type: "agentMessage", id: "long-answer", text: "Long assistant output. ".repeat(2_000), phase: null, memoryCitation: null, delivery: null, questions: null }],
-      error: { message: "Terminal request failed", codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } }, additionalDetails: "terminal transport diagnostics", misalignment: null } }), randomUUID(), "native-turn");
+    await provider.send(textNativeInput(JSON.stringify({ status: "failed", itemsView: "summary", items: [{ type: "agentMessage", id: "long-answer", text: "Long assistant output. ".repeat(2_000), phase: null, memoryCitation: null, delivery: null, questions: null }],
+      error: { message: "Terminal request failed", codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } }, additionalDetails: "terminal transport diagnostics", misalignment: null } })), randomUUID(), "native-turn");
     expect(await completion).toBeInstanceOf(Error);
     const final = errors(entries).at(-1)!;
     expect(final.code).toBe("native_turn_error");

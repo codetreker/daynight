@@ -124,6 +124,26 @@ describe("Task Session read commands", () => {
     expect(f.stderr).toEqual([]);
   });
 
+  it("renders Markdown, image references and unavailable images without downloading originals", async () => {
+    const resourceId = "66666666-6666-4666-8666-666666666666", imageId = "77777777-7777-4777-8777-777777777777";
+    const content = [
+      { type: "markdown", text: "Markdown\n原文\u001b[31m", partId: "88888888-8888-4888-8888-888888888888", revision: "1", textSha256: "a".repeat(64), complete: true, truncated: false, bindings: [], retainedImages: [] },
+      { type: "image", imageId, resourceId, label: "Original image" },
+      { type: "image_unavailable", imageId: "99999999-9999-4999-8999-999999999999", label: "Missing image", error: { code: "source_unavailable", message: "Original unavailable." } },
+      { type: "resource", resourceId, label: "Legacy\u0007resource" },
+    ];
+    const f = fixture({ ...page, items: [{ ...message, body: { ...body, imageProjectionError: null, content } }] });
+    expect(await f.run(["read", taskId, sessionId, "--project", projectId])).toBe(0);
+    const output = f.stdout.join("");
+    expect(output).toContain("Markdown\n原文\\u001b[31m");
+    expect(output).toContain(`Image reference: ${resourceId}; Original image`);
+    expect(output).toContain("Image unavailable: Missing image; source_unavailable; Original unavailable.");
+    expect(output).toContain("Legacy\\u0007resource");
+    expect(output).not.toContain("undefined");
+    expect(output).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u);
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
   it("keeps empty conversation pages and their unfiltered continuation", async () => {
     const f = fixture({ ...page, items: [] });
     expect(await f.run(["read", taskId, sessionId, "--project", projectId, "--conversation"])).toBe(0);

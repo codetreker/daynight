@@ -105,16 +105,7 @@ func historyItem(id, epoch, source, version string, e sp.TimelineEntry, resource
 }
 
 func historyResourceReferences(e sp.TimelineEntry) map[string]bool {
-	refs := map[string]bool{}
-	for _, field := range []string{"content", "output"} {
-		var parts []struct{ Type, ResourceID string }
-		_ = json.Unmarshal(e.Data[field], &parts)
-		for _, part := range parts {
-			if part.Type == "resource" {
-				refs[part.ResourceID] = true
-			}
-		}
-	}
+	refs, _, _ := sp.ArchiveHistoryReferences([]sp.TimelineEntry{e})
 	return refs
 }
 
@@ -126,6 +117,10 @@ func historyCoverage(entries []sp.TimelineEntry, resources []sp.Resource) sp.His
 			return sp.HistoryCoverage{State: "partial", Reason: observationPointer("entry_truncated")}
 		}
 	}
+	refs, missing, err := sp.ArchiveReferences(entries)
+	if err != nil || missing {
+		return sp.HistoryCoverage{State: "partial", Reason: observationPointer("resource_unavailable")}
+	}
 	present := make(map[string]bool, len(resources))
 	for _, resource := range resources {
 		if resource.Status != "available" {
@@ -133,11 +128,9 @@ func historyCoverage(entries []sp.TimelineEntry, resources []sp.Resource) sp.His
 		}
 		present[resource.ResourceID] = true
 	}
-	for _, entry := range entries {
-		for id := range historyResourceReferences(entry) {
-			if !present[id] {
-				return sp.HistoryCoverage{State: "partial", Reason: observationPointer("resource_unavailable")}
-			}
+	for id := range refs {
+		if !present[id] {
+			return sp.HistoryCoverage{State: "partial", Reason: observationPointer("resource_unavailable")}
 		}
 	}
 	return sp.HistoryCoverage{State: "complete"}

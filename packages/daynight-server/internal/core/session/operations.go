@@ -32,6 +32,13 @@ func loadOperation(ctx context.Context, tx *operationTx, session, id string) (op
 		return operationRecord{}, err
 	}
 	o := operationRecord{Command: persisted.Command, Receipt: persisted.Receipt, Actor: persisted.Actor, Hash: persisted.Hash, Epoch: persisted.Epoch, Seq: persisted.Seq, Deadline: persisted.Deadline}
+	if command, available, err := persistedIntent(ctx, tx, session, id); err != nil {
+		return o, err
+	} else if available {
+		o.Command = command
+		o.Available = true
+	}
+
 	if live, e := tx.op.content(session, false); e != nil {
 		return o, e
 	} else if live != nil {
@@ -43,6 +50,9 @@ func loadOperation(ctx context.Context, tx *operationTx, session, id string) (op
 	return o, nil
 }
 func commandHash(c sp.Command) []byte {
+	if sp.ContainsImages(c.Payload) {
+		return imageCommandHash(c)
+	}
 	var payload any
 	_ = json.Unmarshal(c.Payload, &payload)
 	b := encode(sp.BindingFields(c.Fence, map[string]any{"sessionId": c.SessionID, "claimId": c.ClaimID, "executionGeneration": c.ExecutionGeneration, "operationId": c.OperationID, "kind": c.Kind, "payload": payload}))
@@ -66,6 +76,9 @@ func (s *Execution) authorizeCommand(ctx context.Context, tx *operationTx, r *re
 	case "send_message":
 		var p sp.SendMessage
 		_ = json.Unmarshal(c.Payload, &p)
+		if err := s.authorizeImages(ctx, tx, r, c); err != nil {
+			return err
+		}
 		if !v.Operations.CanSend {
 			return conflict()
 		}
@@ -376,6 +389,9 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 		if err = tx.dao.InsertSessionOperation(ctx, store.SessionOperation{SessionID: id, OperationID: c.OperationID, Seq: r.OperationSeq, Hash: hash, Command: commandSummary(c), Actor: p, Receipt: durableOperation(result)}); err != nil {
 			return err
 		}
+		if err = persistIntent(ctx, tx, c); err != nil {
+			return err
+		}
 		if err = s.emit(ctx, tx, r, "operation", result, nil); err != nil {
 			return err
 		}
@@ -385,7 +401,7 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 }
 func (s *Execution) Operation(ctx context.Context, p model.Principal, project, taskID, id, operationID string) (sp.Operation, error) {
 	var out sp.Operation
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, _ *record, _ task) error {
 		o, e := loadOperation(ctx, tx, id, operationID)
 		out = o.Receipt
 		return e
@@ -428,6 +444,11 @@ func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[strin
 			return conflict()
 		}
 		out = append(out, s.contentRequests(tx, r)...)
+		media, mediaErr := s.mediaOffers(ctx, tx, r)
+		if mediaErr != nil {
+			return mediaErr
+		}
+		out = append(out, media...)
 		if (!active(t, r) && r.Snapshot.Lifecycle != "draining") || !r.Snapshot.Synchronized {
 			return nil
 		}
@@ -481,7 +502,10 @@ func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[strin
 		}
 		return save(ctx, tx, r)
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMediaOffers(ctx, f, out)
 }
 func (s *Execution) begin(ctx context.Context, tx *operationTx, r *record, t task, id string) (map[string]any, error) {
 	o, err := loadOperation(ctx, tx, r.Snapshot.SessionID, id)
@@ -609,8 +633,8 @@ func (s *Execution) reconcile(ctx context.Context, tx *operationTx, r *record, t
 	return out, nil
 }
 
-// Only bounded targeting identifiers accompany the intent hash. User text,
-// command arguments, approval answers and provider diagnostics stay on the host.
+// The summary retains the historical ledger shape. New complete intents have
+// a separate immutable record; existing summaries and hashes are never rewritten.
 func commandSummary(c sp.Command) sp.Command {
 	summary := c
 	summary.RequestID = ""

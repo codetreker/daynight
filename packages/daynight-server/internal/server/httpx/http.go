@@ -235,7 +235,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusUnauthorized
 		case "permission_denied", "forbidden":
 			status = http.StatusForbidden
-		case "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression":
+		case "invalid_image", "image_integrity", "image_decode_failed", "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression":
 			status = http.StatusBadRequest
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout
@@ -267,9 +267,9 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusGone
 		case "not_found", "message_not_found", "invitation_unavailable":
 			status = http.StatusNotFound
-		case "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
+		case "media_outcome_unknown", "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			status = http.StatusServiceUnavailable
-		case "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
+		case "archive_conflict", "archive_incomplete", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
 			status = http.StatusConflict
 		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "resource_limit_exceeded":
 			status = http.StatusConflict

@@ -16,7 +16,7 @@ function fixture(visible = true) {
   let owned = true, paused = false, receive!: (message: BrowserMessage) => void;
   const close = vi.fn();
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
-  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _cursor, onMessage) => { receive = onMessage; return { close }; }) };
+  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused', channel: vi.fn((_id, _cursor, onMessage) => { receive = onMessage; return { close }; }) };
   const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => owned, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage: null });
   client.setCurrentReadVisible(visible); clients.push(client);
   return { s, api, client, close, receive: () => receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot: s, cursor: 'zero' }), pause: () => { paused = true; }, resume: () => { paused = false; client.syncAvailability(); }, revoke: () => { owned = false; client.syncAvailability(); } };

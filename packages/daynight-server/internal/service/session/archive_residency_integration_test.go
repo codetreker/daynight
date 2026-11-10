@@ -65,7 +65,7 @@ func TestArchiveResidencySharedRootAndSingleConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = secondFiles.Close() })
-	gate := &serviceStorageBarrier{Storage: firstFiles, kind: "upload", entered: make(chan struct{}), release: make(chan struct{})}
+	gate := &serviceStorageBarrier{Storage: firstFiles, kind: "upload", manifestOnly: true, entered: make(chan struct{}), release: make(chan struct{})}
 	released := false
 	defer func() {
 		if !released {
@@ -89,10 +89,10 @@ func TestArchiveResidencySharedRootAndSingleConnection(t *testing.T) {
 	t.Cleanup(func() { _ = firstEngine.Stop(context.Background()); _ = secondEngine.Stop(context.Background()) })
 	first := New(&postgres.Store{Pool: firstPool}, firstEngine)
 	second := New(&postgres.Store{Pool: secondPool}, secondEngine)
-	data := serviceArchive(t, snapshot)
+	data := prepareServiceArchive(t, ctx, first, f.owner, f.project, f.task, snapshot)
 	result := make(chan error, 1)
 	go func() {
-		_, e := first.PutArchive(ctx, f.owner, f.project, f.task, snapshot.SessionID, data)
+		e := publishServiceArchive(ctx, first, f.owner, f.project, f.task, snapshot.SessionID, data)
 		result <- e
 	}()
 	awaitBarrier(t, ctx, gate, result)

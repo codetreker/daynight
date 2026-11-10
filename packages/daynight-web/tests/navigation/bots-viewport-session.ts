@@ -122,6 +122,6 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
       if (!archived) throw new Error('No archive is expected.');
       return archive();
     },
-    resource: async () => { metrics.resourceReads++; return options?.scenario === 'persistent' ? new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII='), char => char.charCodeAt(0))], { type: 'image/png' }) : new Blob(); }, resourceUrl: () => '/unused',
+    resource: async () => { metrics.resourceReads++; return options?.scenario === 'persistent' ? new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII='), char => char.charCodeAt(0))], { type: 'image/png' }) : new Blob(); }, resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused',
   };
 }

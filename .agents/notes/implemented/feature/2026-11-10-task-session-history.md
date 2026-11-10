@@ -44,6 +44,13 @@ Archive readers retain the existing preflight, owner and residency reservations
 until response delivery finishes or is cancelled. MCP reserves the large budget
 for reads that can materialize a legacy archive. Every page and chunk rechecks
 authorization, with OAuth admitted only for Task reads.
+Schema3 reads validate the manifest and its independent timeline within the
+same archive operation. The shared archive permit and timeline read lease
+survive through delivery.
+Resource previews share the unified media reference traversal, including
+Markdown, reasoning and retained bindings. They project only six metadata
+fields; the preview name accepts the unified image limit of 1024 UTF-8 bytes.
+Explicit image failures and unresolved projections retain partial coverage.
 
 Successful MCP reads keep public strict output schemas and protocol tests, with
 ordinary runtime encoding. The dedicated history budget does not restore the

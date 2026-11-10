@@ -1,4 +1,4 @@
--- Schema snapshot version: 56
+-- Schema snapshot version: 59
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -350,6 +350,55 @@ CREATE TABLE "schema_migrations" (
     CONSTRAINT "schema_migrations_checksum_check" CHECK (("length"("checksum") = 64))
 );
 
+CREATE TABLE "session_archive_bundles" (
+    "session_id" "uuid" NOT NULL,
+    "prepare_id" "uuid" NOT NULL,
+    "phase" "text" NOT NULL,
+    "revision" bigint NOT NULL,
+    "identity" "jsonb" NOT NULL,
+    "resources" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "ledger" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "history_id" "uuid",
+    "timeline_id" "uuid",
+    "manifest_path" "text" DEFAULT ''::"text" NOT NULL,
+    "manifest_hash" "text" DEFAULT ''::"text" NOT NULL,
+    "manifest_length" "text" DEFAULT ''::"text" NOT NULL
+);
+
+CREATE TABLE "session_archive_chunks" (
+    "session_id" "uuid" NOT NULL,
+    "file_id" "uuid" NOT NULL,
+    "chunk_offset" bigint NOT NULL,
+    "byte_length" bigint NOT NULL,
+    "sha256" "text" NOT NULL,
+    "object_path" "text" NOT NULL
+);
+
+CREATE TABLE "session_archive_files" (
+    "session_id" "uuid" NOT NULL,
+    "file_id" "uuid" NOT NULL,
+    "purpose" "text" NOT NULL,
+    "timeline_revision" bigint DEFAULT 1 NOT NULL,
+    "staging_released" boolean DEFAULT false NOT NULL,
+    "resource" "jsonb" DEFAULT 'null'::"jsonb" NOT NULL,
+    "sha256" "text" NOT NULL,
+    "byte_length" bigint NOT NULL,
+    "accepted_offset" bigint NOT NULL,
+    "state" "text" NOT NULL,
+    "object_path" "text" NOT NULL
+);
+
+CREATE TABLE "session_archive_migrations" (
+    "session_id" "uuid" NOT NULL,
+    "migration_id" "uuid" NOT NULL,
+    "source_path" "text" NOT NULL,
+    "source_hash" "text" NOT NULL,
+    "source_byte_length" bigint NOT NULL,
+    "target_path" "text" DEFAULT ''::"text" NOT NULL,
+    "target_hash" "text" DEFAULT ''::"text" NOT NULL,
+    "phase" "text" NOT NULL
+);
+
 CREATE TABLE "session_archives" (
     "session_id" "uuid" NOT NULL,
     "state" "text" NOT NULL,
@@ -362,9 +411,9 @@ CREATE TABLE "session_archives" (
     "completeness" "text",
     "finalization_id" "uuid",
     "receipt" "jsonb",
-    CONSTRAINT "session_archive_body" CHECK (((("state" = 'ready'::"text") AND ("sha256" ~ '^[a-f0-9]{64}$'::"text") AND ("sha256" IS NOT NULL) AND (("byte_length" >= 1) AND ("byte_length" <= 67108864)) AND ("byte_length" IS NOT NULL) AND ("object_path" IS NOT NULL) AND ("error_code" IS NULL)) OR (("state" <> 'ready'::"text") AND ("sha256" IS NULL) AND ("byte_length" IS NULL) AND ("object_path" IS NULL)))),
+    CONSTRAINT "session_archive_body" CHECK ((("schema_version" = 3) OR (("state" = 'ready'::"text") AND ("sha256" ~ '^[a-f0-9]{64}$'::"text") AND ("sha256" IS NOT NULL) AND (("byte_length" >= 1) AND ("byte_length" <= 67108864)) AND ("byte_length" IS NOT NULL) AND ("object_path" IS NOT NULL) AND ("error_code" IS NULL)) OR (("state" <> 'ready'::"text") AND ("sha256" IS NULL) AND ("byte_length" IS NULL) AND ("object_path" IS NULL)))),
     CONSTRAINT "session_archive_state" CHECK (("state" = ANY (ARRAY['pending'::"text", 'ready'::"text", 'failed'::"text", 'unavailable'::"text"]))),
-    CONSTRAINT "session_archive_version" CHECK (((("schema_version" = 1) AND ("state" <> 'unavailable'::"text") AND (("state" <> 'pending'::"text") OR ("error_code" IS NULL)) AND ("completeness" IS NULL) AND ("finalization_id" IS NULL) AND ("receipt" IS NULL)) OR (("schema_version" = 2) AND ((("state" = 'ready'::"text") AND ("completeness" = ANY (ARRAY['complete'::"text", 'partial'::"text"])) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = 'unavailable'::"text") AND ("completeness" IS NULL) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = ANY (ARRAY['pending'::"text", 'failed'::"text"])) AND ("completeness" IS NULL) AND ("receipt" IS NULL)))))),
+    CONSTRAINT "session_archive_version" CHECK ((("schema_version" = 3) OR (("schema_version" = 1) AND ("state" <> 'unavailable'::"text") AND (("state" <> 'pending'::"text") OR ("error_code" IS NULL)) AND ("completeness" IS NULL) AND ("finalization_id" IS NULL) AND ("receipt" IS NULL)) OR (("schema_version" = 2) AND ((("state" = 'ready'::"text") AND ("completeness" = ANY (ARRAY['complete'::"text", 'partial'::"text"])) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = 'unavailable'::"text") AND ("completeness" IS NULL) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = ANY (ARRAY['pending'::"text", 'failed'::"text"])) AND ("completeness" IS NULL) AND ("receipt" IS NULL)))))),
     CONSTRAINT "session_archives_error_code_check" CHECK (("error_code" ~ '^[a-z_]{1,64}$'::"text"))
 );
 
@@ -377,6 +426,60 @@ CREATE TABLE "session_events" (
     "source_body" "jsonb",
     "event" "jsonb" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL
+);
+
+CREATE TABLE "session_image_captures" (
+    "session_id" "uuid" NOT NULL,
+    "capture_id" "uuid" NOT NULL,
+    "image_id" "uuid" NOT NULL,
+    "request" "jsonb" NOT NULL,
+    "receipt" "jsonb" NOT NULL,
+    "validated" "jsonb"
+);
+
+CREATE TABLE "session_image_chunks" (
+    "session_id" "uuid" NOT NULL,
+    "upload_id" "uuid" NOT NULL,
+    "chunk_offset" bigint NOT NULL,
+    "byte_length" bigint NOT NULL,
+    "sha256" "text" NOT NULL,
+    "blob_path" "text" NOT NULL
+);
+
+CREATE TABLE "session_image_uploads" (
+    "session_id" "uuid" NOT NULL,
+    "upload_id" "uuid" NOT NULL,
+    "actor_id" "uuid" NOT NULL,
+    "image_id" "uuid" NOT NULL,
+    "blob_id" "uuid" NOT NULL,
+    "spec" "jsonb" NOT NULL,
+    "receipt" "jsonb" NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "storage_released" boolean DEFAULT false NOT NULL
+);
+
+CREATE TABLE "session_media_rates" (
+    "owner_user_id" "uuid" NOT NULL,
+    "category" "text" NOT NULL,
+    "tokens" bigint NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "session_media_requests" (
+    "session_id" "uuid" NOT NULL,
+    "request_id" "uuid" NOT NULL,
+    "action" "text" NOT NULL,
+    "fence" "jsonb" NOT NULL,
+    "body" "jsonb" NOT NULL,
+    "result" "jsonb",
+    "error" "jsonb",
+    "complete" boolean DEFAULT false NOT NULL
+);
+
+CREATE TABLE "session_operation_intents" (
+    "session_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "canonical_bytes" "bytea" NOT NULL
 );
 
 CREATE TABLE "session_operations" (
@@ -405,12 +508,47 @@ CREATE TABLE "session_recording_evidence" (
     CONSTRAINT "session_recording_evidence_revision_check" CHECK (("revision" > 0))
 );
 
+CREATE TABLE "session_resource_leases" (
+    "session_id" "uuid" NOT NULL,
+    "lease_id" "uuid" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "resource_id" "uuid",
+    "delete_epoch" bigint NOT NULL
+);
+
+CREATE TABLE "session_resource_references" (
+    "session_id" "uuid" NOT NULL,
+    "resource_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "reference_id" "text" NOT NULL
+);
+
+CREATE TABLE "session_resource_state" (
+    "session_id" "uuid" NOT NULL,
+    "delete_epoch" bigint DEFAULT 0 NOT NULL,
+    "deleting" boolean DEFAULT false NOT NULL
+);
+
 CREATE TABLE "session_resources" (
     "session_id" "uuid" NOT NULL,
     "resource_id" "uuid" NOT NULL,
     "descriptor" "jsonb" NOT NULL,
     "content" "bytea",
+    "blob_id" "uuid",
+    "gc_pending" boolean DEFAULT false NOT NULL,
+    "blob_path" "text",
+    "migration_id" "uuid",
     CONSTRAINT "session_resources_content_check" CHECK ((("content" IS NULL) OR ("octet_length"("content") <= 8388608)))
+);
+
+CREATE TABLE "session_source_hashes" (
+    "session_id" "uuid" NOT NULL,
+    "source_epoch" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "source_seq" bigint NOT NULL,
+    "identity" "text" NOT NULL,
+    "digest" "bytea" NOT NULL
 );
 
 CREATE TABLE "session_timeline" (
@@ -1119,6 +1257,24 @@ ALTER TABLE ONLY "projects"
 ALTER TABLE ONLY "schema_migrations"
     ADD CONSTRAINT "schema_migrations_pkey" PRIMARY KEY ("version");
 
+ALTER TABLE ONLY "session_archive_bundles"
+    ADD CONSTRAINT "session_archive_bundles_pkey" PRIMARY KEY ("session_id");
+
+ALTER TABLE ONLY "session_archive_bundles"
+    ADD CONSTRAINT "session_archive_bundles_prepare_id_key" UNIQUE ("prepare_id");
+
+ALTER TABLE ONLY "session_archive_chunks"
+    ADD CONSTRAINT "session_archive_chunks_pkey" PRIMARY KEY ("session_id", "file_id", "chunk_offset");
+
+ALTER TABLE ONLY "session_archive_files"
+    ADD CONSTRAINT "session_archive_files_pkey" PRIMARY KEY ("session_id", "file_id");
+
+ALTER TABLE ONLY "session_archive_migrations"
+    ADD CONSTRAINT "session_archive_migrations_migration_id_key" UNIQUE ("migration_id");
+
+ALTER TABLE ONLY "session_archive_migrations"
+    ADD CONSTRAINT "session_archive_migrations_pkey" PRIMARY KEY ("session_id");
+
 ALTER TABLE ONLY "session_archives"
     ADD CONSTRAINT "session_archives_pkey" PRIMARY KEY ("session_id");
 
@@ -1130,6 +1286,30 @@ ALTER TABLE ONLY "session_events"
 
 ALTER TABLE ONLY "session_events"
     ADD CONSTRAINT "session_events_session_id_source_epoch_source_seq_key" UNIQUE ("session_id", "source_epoch", "source_seq");
+
+ALTER TABLE ONLY "session_image_captures"
+    ADD CONSTRAINT "session_image_captures_pkey" PRIMARY KEY ("session_id", "capture_id");
+
+ALTER TABLE ONLY "session_image_captures"
+    ADD CONSTRAINT "session_image_captures_session_id_image_id_key" UNIQUE ("session_id", "image_id");
+
+ALTER TABLE ONLY "session_image_chunks"
+    ADD CONSTRAINT "session_image_chunks_pkey" PRIMARY KEY ("session_id", "upload_id", "chunk_offset");
+
+ALTER TABLE ONLY "session_image_uploads"
+    ADD CONSTRAINT "session_image_uploads_pkey" PRIMARY KEY ("session_id", "upload_id");
+
+ALTER TABLE ONLY "session_image_uploads"
+    ADD CONSTRAINT "session_image_uploads_session_id_blob_id_key" UNIQUE ("session_id", "blob_id");
+
+ALTER TABLE ONLY "session_media_rates"
+    ADD CONSTRAINT "session_media_rates_pkey" PRIMARY KEY ("owner_user_id", "category");
+
+ALTER TABLE ONLY "session_media_requests"
+    ADD CONSTRAINT "session_media_requests_pkey" PRIMARY KEY ("session_id", "request_id");
+
+ALTER TABLE ONLY "session_operation_intents"
+    ADD CONSTRAINT "session_operation_intents_pkey" PRIMARY KEY ("session_id", "operation_id");
 
 ALTER TABLE ONLY "session_operations"
     ADD CONSTRAINT "session_operations_pkey" PRIMARY KEY ("session_id", "operation_id");
@@ -1143,8 +1323,20 @@ ALTER TABLE ONLY "session_recording_evidence"
 ALTER TABLE ONLY "session_recording_evidence"
     ADD CONSTRAINT "session_recording_evidence_session_id_execution_generation__key" UNIQUE ("session_id", "execution_generation", "revision");
 
+ALTER TABLE ONLY "session_resource_leases"
+    ADD CONSTRAINT "session_resource_leases_pkey" PRIMARY KEY ("session_id", "lease_id");
+
+ALTER TABLE ONLY "session_resource_references"
+    ADD CONSTRAINT "session_resource_references_pkey" PRIMARY KEY ("session_id", "resource_id", "kind", "reference_id");
+
+ALTER TABLE ONLY "session_resource_state"
+    ADD CONSTRAINT "session_resource_state_pkey" PRIMARY KEY ("session_id");
+
 ALTER TABLE ONLY "session_resources"
     ADD CONSTRAINT "session_resources_pkey" PRIMARY KEY ("session_id", "resource_id");
+
+ALTER TABLE ONLY "session_source_hashes"
+    ADD CONSTRAINT "session_source_hashes_pkey" PRIMARY KEY ("session_id", "source_epoch", "kind", "identity");
 
 ALTER TABLE ONLY "session_timeline"
     ADD CONSTRAINT "session_timeline_pkey" PRIMARY KEY ("session_id", "entry_id");
@@ -1322,9 +1514,17 @@ CREATE INDEX "projects_created_id" ON "projects" USING "btree" ("created_at", "i
 
 CREATE INDEX "projects_live_created_id_idx" ON "projects" USING "btree" ("created_at", "id") WHERE ("deleted_at" IS NULL);
 
+CREATE UNIQUE INDEX "session_archive_one_receiving_file" ON "session_archive_files" USING "btree" ("session_id") WHERE ("state" = 'receiving'::"text");
+
+CREATE UNIQUE INDEX "session_image_capture_attempt" ON "session_image_captures" USING "btree" ("session_id", (("receipt" ->> 'attemptId'::"text")));
+
+CREATE UNIQUE INDEX "session_image_occurrence_source" ON "session_image_captures" USING "btree" ("session_id", ((("request" -> 'occurrence'::"text") ->> 'sourceKey'::"text")));
+
 CREATE INDEX "session_operations_pending" ON "session_operations" USING "btree" ("session_id", "operation_seq") WHERE (("receipt" ->> 'state'::"text") = 'accepted'::"text");
 
 CREATE INDEX "session_operations_terminal_pending" ON "session_operations" USING "btree" ("session_id", "operation_seq") WHERE (("receipt" ->> 'state'::"text") = ANY (ARRAY['queued'::"text", 'dispatching'::"text"]));
+
+CREATE INDEX "session_resource_leases_owner" ON "session_resource_leases" USING "btree" ("owner_id", "kind");
 
 CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 

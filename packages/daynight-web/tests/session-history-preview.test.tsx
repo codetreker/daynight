@@ -92,11 +92,11 @@ describe('read-only history preview handoff', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Read failed' }));
     expect(retry).toHaveBeenCalledOnce();
   });
-  it('renders historic approvals as inert requests without controls or resource requests', () => {
+  it.each(['resource', 'image'] as const)('renders historic approvals and %s parts without controls or resource requests', type => {
     const resourceId = 'resource';
     const entries: TimelineEntry[] = [
       { kind: 'interaction', entryId: 'approval', entrySeq: '1', revision: '1', interaction: { interactionId: 'request', revision: '1', state: 'pending', kind: 'approval', title: 'Historical approval', detail: 'Old operation', actions: ['allow_once'] } },
-      { kind: 'assistant_message', entryId: 'image', entrySeq: '2', revision: '1', content: [{ type: 'resource', resourceId, label: 'Old image' }] },
+      { kind: 'assistant_message', entryId: 'image', entrySeq: '2', revision: '1', imageProjectionError: null, content: [type === 'image' ? { type, imageId: crypto.randomUUID(), resourceId, label: 'Old image' } : { type, resourceId, label: 'Old image' }] },
     ];
     const p: SessionHistoryPreview = { ...preview, entries, resources: [{ resourceId, name: 'result.png', status: 'available', mediaType: 'image/png', byteLength: '4', sha256: 'digest', error: null }] };
     const rendered = render(<SessionTimeline {...props} state={emptySessionState()} historyPreview={p} historyLoaded={false} />);

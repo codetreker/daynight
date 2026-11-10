@@ -28,10 +28,18 @@ type ArchiveDocument struct {
 	Resources            []ArchiveResource `json:"resources"`
 }
 type ArchiveStatus struct {
-	State      string  `json:"state"`
-	SHA256     *string `json:"sha256"`
-	ByteLength *string `json:"byteLength"`
-	ErrorCode  *string `json:"errorCode"`
+	State         string                   `json:"state"`
+	SHA256        *string                  `json:"sha256"`
+	ByteLength    *string                  `json:"byteLength"`
+	ErrorCode     *string                  `json:"errorCode"`
+	SchemaVersion int                      `json:"schemaVersion,omitempty"`
+	Completeness  *string                  `json:"completeness,omitempty"`
+	Migration     *ArchiveMigrationReceipt `json:"migration,omitempty"`
+}
+type ArchiveMigrationReceipt struct {
+	MigrationID      string `json:"migrationId"`
+	SourceSHA256     string `json:"sourceSha256"`
+	SourceByteLength string `json:"sourceByteLength"`
 }
 type ArchiveUpdate struct {
 	Fence
@@ -39,6 +47,25 @@ type ArchiveUpdate struct {
 	ControllerInstanceID string  `json:"controllerInstanceId"`
 	State                string  `json:"state"`
 	ErrorCode            *string `json:"errorCode"`
+}
+
+func (s ArchiveStatus) MarshalJSON() ([]byte, error) {
+	type legacy struct {
+		State      string  `json:"state"`
+		SHA256     *string `json:"sha256"`
+		ByteLength *string `json:"byteLength"`
+		ErrorCode  *string `json:"errorCode"`
+	}
+	value := legacy{s.State, s.SHA256, s.ByteLength, s.ErrorCode}
+	if s.SchemaVersion != 3 {
+		return json.Marshal(value)
+	}
+	return json.Marshal(struct {
+		legacy
+		SchemaVersion int                      `json:"schemaVersion"`
+		Completeness  *string                  `json:"completeness"`
+		Migration     *ArchiveMigrationReceipt `json:"migration,omitempty"`
+	}{value, 3, s.Completeness, s.Migration})
 }
 
 var archiveIdentitySchema = extend(fenceSchema, schema{"controllerId": identifier, "controllerInstanceId": identifier})

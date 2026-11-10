@@ -19,7 +19,7 @@
 | 单条输入 | 最多 8 张，每图 10,485,760 bytes，全部图片合计 20,971,520 bytes；任一图片失败整条拒绝，无截断、剩余子集或仅文字发送。 |
 | 输入与显示格式 | 输入 PNG/JPEG/WebP；显示保留 PNG/JPEG/GIF/WebP/AVIF。SVG、HTML、空、伪装、截断和损坏内容明确拒绝，不转码替换原件。 |
 | Session 原件 | committed + reserved 不超过 1,073,741,824 bytes 且不超过 1000 resource；未知长度先预留单图上限。同 resourceId 多引用计一次，不同 resourceId 即使相同摘要仍分别计量；出现数不等于资源数。超限拒绝新接纳，已有图片仍可读。 |
-| 完整历史 | 新 timeline 与完整旧 schema1 envelope 分别不超过 67,108,864 bytes，最多 100,000 entries；全部文本、reasoning、工具、失败图片、bindings、retained 和撤回容器计入。预留后并发文字不能挤占已承诺空间。 |
+| 完整历史 | 现行 timeline 与旧数据边界的 schema1 envelope 各自不超过 67,108,864 bytes，最多 100,000 entries；全部文本、reasoning、工具、失败图片、bindings、retained 和撤回容器计入。预留后并发文字不能挤占已承诺空间。 |
 | 归档 | manifest 不超过 4,194,304 bytes、1000 项；新图片原件不内嵌 Base64。完整同步最多 67,125,248 bytes，不放宽其中 timeline 的 64 MiB 上限；大单条正文可完整同步，不能用显示分页截短代替。 |
 | 服务存储准入 | 覆盖暂存与原件最坏两份空间，空闲高于 max(1 GiB, 卷容量 5%)；每图片 Session 另计 132 MiB 归档元数据和最坏暂存增量。实占与预留不双计，跨卷复制计峰值；ENOSPC 明确失败，不删除历史原件腾空间。 |
 | 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。最多 10,000 个上传身份 tombstone，达到限制拒绝新身份但保留查询、释放、文本和历史。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |

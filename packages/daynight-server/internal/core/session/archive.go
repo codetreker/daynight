@@ -14,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 const archiveBucket = sessionarchive.Bucket
@@ -39,14 +40,67 @@ func scopeArchiveTask(ctx context.Context, tx *operationTx, project, id string, 
 func archiveStatus(ctx context.Context, tx *operationTx, id string) (sp.ArchiveStatus, string, error) {
 	return tx.dao.SessionArchive(ctx, id)
 }
+func archiveStatusWithMigration(ctx context.Context, tx *operationTx, id string) (sp.ArchiveStatus, error) {
+	out, path, err := archiveStatus(ctx, tx, id)
+	dao, capable := tx.dao.(store.SessionArchiveDAO)
+	if err != nil || !capable || out.State != "ready" || out.SchemaVersion != 3 {
+		return out, err
+	}
+	migration, err := dao.SessionArchiveMigration(ctx, id)
+	if errors.Is(err, model.ErrNotFound) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	if (migration.Phase == "committed" || migration.Phase == "verified") && migration.TargetPath == path && out.SHA256 != nil && migration.TargetHash == *out.SHA256 && migration.SourceLength > 0 {
+		out.Migration = &sp.ArchiveMigrationReceipt{MigrationID: migration.MigrationID, SourceSHA256: migration.SourceHash, SourceByteLength: decimal(migration.SourceLength)}
+	}
+	return out, nil
+}
 func (s *Execution) ArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
-	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
+	convertLegacy := false
+	ownerFinalization := false
+	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *record, _ task) error {
 		var err error
-		out, _, err = archiveStatus(ctx, tx, id)
+		out, err = archiveStatusWithMigration(ctx, tx, id)
+		_, capable := tx.dao.(store.SessionArchiveDAO)
+		convertLegacy = capable && out.State == "ready" && out.SchemaVersion != 3
+		ownerFinalization = p.Kind == model.PATCredential && p.UserID == r.Owner
 		return err
 	})
+	if err == nil && convertLegacy {
+		if e := s.migrateArchiveForStatus(ctx, p, project, taskID, id, ownerFinalization); e != nil {
+			return out, e
+		}
+		err = s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
+			var e error
+			out, e = archiveStatusWithMigration(ctx, tx, id)
+			return e
+		})
+	}
 	return out, err
+}
+
+func (s *Execution) migrateArchiveForStatus(ctx context.Context, p model.Principal, project, taskID, id string, ownerFinalization bool) (result error) {
+	if !ownerFinalization {
+		content, err := s.ArchiveContent(ctx, p, project, taskID, id)
+		if err != nil {
+			return err
+		}
+		return content.Close()
+	}
+	op, err := s.BeginArchive(ctx, p, project, taskID, id, ArchiveV1Upload)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, op.Close()) }()
+	op.finalizeMigration = true
+	// This internal owner operation discards content and exposes only the status
+	// receipt. Public archive and resource readers retain ordinary read scopes.
+	_, err = s.archiveContent(ctx, op)
+	return err
 }
 func archiveWriter(p model.Principal, r *record, f sp.Fence, controller, instance string) error {
 	if p.Kind != model.PATCredential || p.UserID != r.Owner {
@@ -59,6 +113,9 @@ func archiveWriter(p model.Principal, r *record, f sp.Fence, controller, instanc
 }
 func (s *Execution) UpdateArchive(ctx context.Context, p model.Principal, project, taskID, id string, in sp.ArchiveUpdate) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
+	if _, err := sp.DecodeArchiveUpdate(encode(in)); err != nil {
+		return out, fault("invalid_input", "Invalid archive update.")
+	}
 	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *record, _ task) error {
 		if err := archiveWriter(p, r, in.Fence, in.ControllerID, in.ControllerInstanceID); err != nil {
 			return err
@@ -99,6 +156,9 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 		}
 		if err := archiveWriter(p, r, doc.Fence, doc.ControllerID, doc.ControllerInstanceID); err != nil {
 			return err
+		}
+		if _, unified := tx.dao.(store.SessionArchiveDAO); unified {
+			return fault("component_unsupported", "This server requires a unified external archive writer.")
 		}
 		if doc.Provider != r.Snapshot.Identity.Provider || r.Snapshot.Identity.NativeSessionID != nil && !jsonEqual(encode(doc.NativeSessionID), encode(r.Snapshot.Identity.NativeSessionID)) {
 			return conflict()
@@ -178,7 +238,8 @@ func (s *Execution) ArchiveContentReserved(ctx context.Context, p model.Principa
 func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
-	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) (result error) {
+	legacyPath := ""
+	err := s.archiveAccess(ctx, p, project, taskID, id, op.finalizeMigration, func(tx *operationTx, r *record, _ task) (result error) {
 		if r.Owner != op.owner {
 			return conflict()
 		}
@@ -205,11 +266,24 @@ func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (j
 		if status.SHA256 == nil || status.ByteLength == nil || strconv.Itoa(len(data)) != *status.ByteLength || hex.EncodeToString(sum[:]) != *status.SHA256 {
 			return fault("source_corrupt", "Session archive integrity check failed.")
 		}
-		if _, err = sp.DecodeArchive(data); err != nil {
+		if status.SchemaVersion == 3 {
+			_, err = sp.DecodeArchiveManifest(data)
+		} else {
+			_, err = sp.DecodeArchive(data)
+		}
+		if err != nil {
 			return &model.Fault{Code: "source_corrupt", Message: "The Session archive format is invalid.", Cause: err}
+		}
+		if status.SchemaVersion != 3 {
+			if _, capable := tx.dao.(store.SessionArchiveDAO); capable {
+				legacyPath = path
+			}
 		}
 		out = data
 		return nil
 	})
+	if err == nil && legacyPath != "" {
+		return s.migrateLegacyArchive(ctx, op, out, legacyPath)
+	}
 	return out, err
 }

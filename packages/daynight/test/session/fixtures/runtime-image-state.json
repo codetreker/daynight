@@ -1,0 +1,34 @@
+{
+  "providerImages": {
+    "revision": "1",
+    "expectedNativeSessionId": "native",
+    "modelId": null,
+    "controlsRevision": null,
+    "send": "unsupported",
+    "steer": "unsupported",
+    "reasonCode": "profile_disabled",
+    "inputMediaTypes": [],
+    "maxImageBytes": "10485760",
+    "maxMessageImageBytes": "20971520",
+    "maxImagesPerMessage": 8,
+    "geometry": {
+      "version": 1,
+      "known": false,
+      "maxWidth": 0,
+      "maxHeight": 0,
+      "maxPixels": 0,
+      "maxFrames": 0
+    }
+  },
+  "nativeSessionId": "native",
+  "initialInputState": "confirmed",
+  "synchronized": true,
+  "activity": "idle",
+  "currentTurnId": null,
+  "capabilities": {
+    "send": true,
+    "steer": true,
+    "cancel": true,
+    "respond": true
+  }
+}

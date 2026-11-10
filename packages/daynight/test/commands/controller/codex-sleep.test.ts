@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -50,7 +51,7 @@ test("stdio sleep notifications and resumed native history reach the same timeli
   const options = { cwd: process.cwd(), model: null, args: [], executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onState: () => {}, onSpawn: () => {}, env: { ...process.env, CODEX_TEST_SLEEP: "1" } };
   const provider = await openCodexProvider({ ...options, resumeNativeSessionId: null, onTimeline: entry => live.push(entry) });
   try {
-    const receipt = await provider.send("sleep", randomUUID(), null);
+    const receipt = await provider.send(textNativeInput("sleep"), randomUUID(), null);
     await provider.waitForTurn(receipt.turnId!, Date.now() + 2_000);
   } finally { await provider.close(); }
   const resumed = await openCodexProvider({ ...options, resumeNativeSessionId: "native-thread", onTimeline: entry => history.push(entry) });

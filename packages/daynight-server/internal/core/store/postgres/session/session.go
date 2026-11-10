@@ -359,8 +359,8 @@ func (tx *DAO) LockBotSessionStop(ctx context.Context, id, botID, owner string) 
 }
 
 func (tx *DAO) DeleteBotSession(ctx context.Context, id, botID string) error {
-	// These tables do not cascade on Session removal, including archive and recording metadata.
-	for _, table := range []string{"session_events", "session_timeline", "session_operations", "session_resources", "session_archives", "session_recording_evidence"} {
+	// Session deletion owns metadata cleanup explicitly, after its file and lease barriers.
+	for _, table := range []string{"session_archive_chunks", "session_archive_files", "session_archive_bundles", "session_archive_migrations", "session_operation_intents", "session_resource_references", "session_image_chunks", "session_image_uploads", "session_image_captures", "session_resource_leases", "session_resource_state", "session_media_requests", "session_source_hashes", "session_events", "session_timeline", "session_operations", "session_resources", "session_archives", "session_recording_evidence"} {
 		if _, err := tx.tx.Exec(ctx, `DELETE FROM `+table+` WHERE session_id=$1`, id); err != nil {
 			return pginternal.QueryError("delete bot session children", err)
 		}
@@ -522,7 +522,13 @@ func (tx *DAO) LockArchiveTask(ctx context.Context, project, id string) (store.S
 func (tx *DAO) SessionArchive(ctx context.Context, id string) (sp.ArchiveStatus, string, error) {
 	status := sp.ArchiveStatus{State: "unavailable"}
 	var path *string
-	err := tx.tx.QueryRow(ctx, `SELECT state,sha256,byte_length::text,error_code,object_path FROM session_archives WHERE session_id=$1`, id).Scan(&status.State, &status.SHA256, &status.ByteLength, &status.ErrorCode, &path)
+	var schemaVersion int
+	var completeness *string
+	err := tx.tx.QueryRow(ctx, `SELECT state,sha256,byte_length::text,error_code,object_path,schema_version,completeness FROM session_archives WHERE session_id=$1`, id).Scan(&status.State, &status.SHA256, &status.ByteLength, &status.ErrorCode, &path, &schemaVersion, &completeness)
+	if schemaVersion == 3 {
+		status.SchemaVersion = 3
+		status.Completeness = completeness
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sp.ArchiveStatus{State: "unavailable"}, "", nil
 	}

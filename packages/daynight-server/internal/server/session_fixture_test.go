@@ -38,6 +38,7 @@ type sessionHTTPFixture struct {
 	writes             sessionHTTPWrites
 	calls              map[string]int
 	credentialRevoked  bool
+	mediaRecoveryRead  func(context.Context) ([]store.SessionResourceLease, error)
 	handler            *resourceTestHandler
 	server             *httptest.Server
 	application        *sessionApplication

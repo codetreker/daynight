@@ -149,7 +149,50 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 	})
 	mustQueryExec(t, db, `INSERT INTO session_events(session_id,event_seq,event) VALUES($1,1,'{}')`, id)
 	mustQueryExec(t, db, `INSERT INTO session_timeline(session_id,entry_id,entry_seq,revision,entry) VALUES($1,$2,1,1,'{}')`, id, uuid.NewString())
-	mustQueryExec(t, db, `INSERT INTO session_resources(session_id,resource_id,descriptor) VALUES($1,$2,'{}')`, id, uuid.NewString())
+	resource := uuid.NewString()
+	mustQueryExec(t, db, `INSERT INTO session_resources(session_id,resource_id,descriptor) VALUES($1,$2,'{}')`, id, resource)
+	// Seed every media child independently of business admission: this test owns
+	// the real transaction's cleanup closure, including rollback and account scope.
+	mediaRows := map[string]string{
+		"session_operation_intents":   `INSERT INTO session_operation_intents(session_id,operation_id,canonical_bytes) VALUES($1,$3,'intent')`,
+		"session_resource_references": `INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id) VALUES($1,$4,'message','message')`,
+		"session_image_uploads":       `INSERT INTO session_image_uploads(session_id,upload_id,actor_id,image_id,blob_id,spec,receipt,expires_at) VALUES($1,$3,$2,$3,$4,'{}','{"state":"complete"}',now())`,
+		"session_image_chunks":        `INSERT INTO session_image_chunks(session_id,upload_id,chunk_offset,byte_length,sha256,blob_path) VALUES($1,$3,0,1,repeat('a',64),'chunk')`,
+		"session_image_captures":      `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt) VALUES($1,$3,$3,'{}','{}')`,
+		"session_resource_leases":     `INSERT INTO session_resource_leases(session_id,lease_id,owner_id,kind,resource_id,delete_epoch) VALUES($1,$3,$2,'read',$4,0)`,
+		"session_resource_state":      `INSERT INTO session_resource_state(session_id,delete_epoch,deleting) VALUES($1,1,true)`,
+		"session_media_requests":      `INSERT INTO session_media_requests(session_id,request_id,action,fence,body) VALUES($1,$3,'prepare','{}','{}')`,
+		"session_source_hashes":       `INSERT INTO session_source_hashes(session_id,source_epoch,kind,source_seq,identity,digest) VALUES($1,$3,'event',1,'1',decode(repeat('a',64),'hex'))`,
+		"session_archive_bundles":     `INSERT INTO session_archive_bundles(session_id,prepare_id,phase,revision,identity) VALUES($1,$3,'verified',1,'{}')`,
+		"session_archive_files":       `INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path) VALUES($1,$3,'history',repeat('a',64),1,1,'complete','history')`,
+		"session_archive_chunks":      `INSERT INTO session_archive_chunks(session_id,file_id,chunk_offset,byte_length,sha256,object_path) VALUES($1,$3,0,1,repeat('a',64),'chunk')`,
+		"session_archive_migrations":  `INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,source_byte_length,phase) VALUES($1,$3,'legacy',repeat('a',64),1,'verified')`,
+	}
+	for _, query := range mediaRows {
+		// A CTE gives all statements the same typed arguments without relying on
+		// the number of placeholders used by each child table.
+		query = strings.ReplaceAll(query, "$1", "fixture.session_id")
+		query = strings.ReplaceAll(query, "$2", "fixture.owner_id")
+		query = strings.ReplaceAll(query, "$3", "fixture.operation_id")
+		query = strings.ReplaceAll(query, "$4", "fixture.resource_id")
+		query = strings.Replace(query, " VALUES(", " SELECT ", 1)
+		query = strings.TrimSuffix(query, ")") + " FROM fixture"
+		mustQueryExec(t, db, `WITH fixture AS (SELECT $1::uuid session_id,$2::uuid owner_id,$3::uuid operation_id,$4::uuid resource_id) `+query, id, actor.UserID, op, resource)
+	}
+	mustQueryExec(t, db, `INSERT INTO session_media_rates(owner_user_id,category,tokens,updated_at) VALUES($1,'control',1,$2)`, actor.UserID, now)
+	assertMediaRows := func(want int) {
+		t.Helper()
+		for table := range mediaRows {
+			var count int
+			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE session_id=$1`, id).Scan(&count); err != nil || count != want {
+				t.Fatalf("%s cleanup: %d want %d: %v", table, count, want, err)
+			}
+		}
+		var tokens int64
+		if err := db.Pool.QueryRow(ctx, `SELECT tokens FROM session_media_rates WHERE owner_user_id=$1 AND category='control'`, actor.UserID).Scan(&tokens); err != nil || tokens != 1 {
+			t.Fatalf("Session cleanup changed the account bucket: %d %v", tokens, err)
+		}
+	}
 	cleanup := func(commit bool) {
 		tx, err := db.Pool.Begin(ctx)
 		if err != nil {
@@ -170,6 +213,7 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		}
 	}
 	cleanup(false)
+	assertMediaRows(1)
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		if _, err := dao.LockSession(ctx, id); err != nil {
 			return err
@@ -181,6 +225,7 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		return nil
 	})
 	cleanup(true)
+	assertMediaRows(0)
 	for _, table := range []string{"task_sessions", "session_events", "session_timeline", "session_operations", "session_resources", "session_archives", "session_recording_evidence"} {
 		column := "session_id"
 		if table == "task_sessions" {

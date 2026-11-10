@@ -13,7 +13,7 @@ test("cleanup admission belongs to its execution generation, including legacy to
 test("native user identity resolves only uncertain input receipt, never cleanup or completed operations", () => {
   const recordOperation = vi.fn();
   const getOperation = vi.fn();
-  const journal = { getOperation, recordOperation } as unknown as ControllerLifecycleStore;
+  const journal = { getOperation, recordOperation, getInputIntent: () => null } as unknown as ControllerLifecycleStore;
   for (const kind of ["initial", "send_message"]) for (const state of ["unknown", "dispatching"]) {
     getOperation.mockReturnValue({ kind, state, result: null });
     expect(observeNativeInput(journal, "matching-id")).toBe(true);

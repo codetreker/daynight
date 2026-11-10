@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -19,12 +21,25 @@ type LiveHistoryRequest struct {
 	Epoch, Before                               string
 	Limit, ResponseOverhead, ContentReadVersion int
 }
+
+// HistoryArchive retains the archive envelope and, for schema3, its independent
+// timeline under one permit until the transport closes the result.
 type HistoryArchive interface {
 	Bytes() []byte
+	TimelineBytes() []byte
 	io.Closer
 }
 
-func (r *RetainedArchive) Bytes() []byte { return r.Data }
+func (r *RetainedArchive) Bytes() []byte         { return r.Data }
+func (r *RetainedArchive) TimelineBytes() []byte { return nil }
+
+type historyTimelineArchive struct {
+	*RetainedArchive
+	manifest []byte
+}
+
+func (r *historyTimelineArchive) Bytes() []byte         { return r.manifest }
+func (r *historyTimelineArchive) TimelineBytes() []byte { return r.Data }
 func (s *Execution) SetTaskReadRunners(content BrowserRunner, task TaskRunner, archive ArchiveRunner) {
 	s.taskContentReadRun, s.taskReadRun, s.taskArchiveReadRun = content, task, archive
 }
@@ -119,7 +134,31 @@ func (s *Execution) TaskArchiveContent(ctx context.Context, p model.Principal, p
 	if err != nil {
 		return nil, err
 	}
-	return reader.ArchiveContent(ctx, p, project, taskID, id)
+	archive, err := reader.ArchiveContent(ctx, p, project, taskID, id)
+	if err != nil {
+		return nil, err
+	}
+	var header struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if err = json.Unmarshal(archive.Data, &header); err != nil || header.SchemaVersion != 3 {
+		return archive, nil
+	}
+	manifest, err := sp.DecodeArchiveManifest(archive.Data)
+	if err != nil || manifest.RecordID != id {
+		return nil, errors.Join(fault("source_corrupt", "The Session archive identity is inconsistent."), archive.Close())
+	}
+	// Transfer the manifest's existing permit to the timeline reader. A second
+	// archive operation would compete with the capacity already held by this read.
+	timeline, err := reader.archiveTimelineContent(ctx, archive.operation, manifest.Timeline.FileID, &manifest, v2.HashBytes(archive.Data))
+	if err != nil {
+		var invalid *archiveValidationError
+		if errors.Is(err, fs.ErrNotExist) || errors.As(err, &invalid) {
+			return nil, &model.Fault{Code: "source_corrupt", Message: "The ready Session archive timeline is missing or corrupt.", Cause: err}
+		}
+		return nil, err
+	}
+	return &historyTimelineArchive{RetainedArchive: timeline, manifest: archive.Data}, nil
 }
 func (s *Execution) TaskArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
 	reader, err := s.taskReader()

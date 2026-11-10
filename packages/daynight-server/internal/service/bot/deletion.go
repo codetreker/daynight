@@ -77,6 +77,10 @@ func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p mode
 	return nil
 }
 func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p model.Principal, id string) (model.Bot, error) {
+	return s.lockBotUsing(ctx, scope, p, id, s.operations.owner)
+}
+
+func (s *Deletions) lockBotUsing(ctx context.Context, scope store.SessionScope, p model.Principal, id string, requireOwner func(model.Bot, model.Principal) error) (model.Bot, error) {
 	if err := s.credential(ctx, scope.SessionDAO(), p); err != nil {
 		return model.Bot{}, err
 	}
@@ -87,7 +91,7 @@ func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p mod
 	if err != nil {
 		return bot, err
 	}
-	if err := s.operations.owner(bot, p); err != nil {
+	if err := requireOwner(bot, p); err != nil {
 		return bot, err
 	}
 	return bot, nil
@@ -218,6 +222,19 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 }
 
 func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
+	resourcesPrepared := false
+	if local, ok := s.live.(interface {
+		CancelSessionMedia(context.Context, string) error
+	}); ok {
+		if err := s.cleanSessionResources(ctx, p, id, deletionID, local); err != nil {
+			var physical *resourceCleanupFailure
+			if errors.As(err, &physical) {
+				return s.recordCleanupFailure(ctx, p, id, deletionID)
+			}
+			return model.Bot{}, err
+		}
+		resourcesPrepared = true
+	}
 	var out model.Bot
 	var sessions []store.BotSession
 	cleanupFailed := false
@@ -249,7 +266,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 				return deletionFault("controller_offline", "Archive file storage is unavailable.")
 			}
 			namespace, err := sessionarchive.NewNamespace(sessionarchive.Users, bot.OwnerUserID, session.ID)
-			if err == nil {
+			if err == nil && !resourcesPrepared {
 				err = s.files.DeleteSessionArchives(ctx, namespace)
 			}
 			if err == nil {
@@ -282,13 +299,27 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 	if !cleanupFailed || completion.Outcome != store.TransactionNotCommitted {
 		return model.Bot{}, err
 	}
-	// The barrier and Worker receipt are durable. Record failure separately without downgrading a successful retry.
+	return s.recordCleanupFailure(ctx, p, id, deletionID)
+}
+
+// The barrier and Worker receipt are durable. Record failure separately without
+// downgrading a successful retry or interpreting an uncertain transaction.
+func (s *Deletions) recordCleanupFailure(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
+	return s.recordCleanupFailureUsing(ctx, p, id, deletionID, resourceCleanupOperations{
+		requireOwner: s.operations.owner,
+		fail:         s.operations.fail,
+		save:         s.operations.save,
+	})
+}
+
+func (s *Deletions) recordCleanupFailureUsing(ctx context.Context, p model.Principal, id, deletionID string, operations resourceCleanupOperations) (model.Bot, error) {
+	var out model.Bot
 	completion, failure := s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
-		bot, e := s.lockBot(ctx, scope, p, id)
+		bot, e := s.lockBotUsing(ctx, scope, p, id, operations.requireOwner)
 		if e != nil {
 			return e
 		}
-		change, e := s.operations.fail(&bot, deletionID)
+		change, e := operations.fail(&bot, deletionID)
 		if e != nil {
 			return e
 		}
@@ -296,7 +327,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 			out = bot
 			return nil
 		}
-		out, e = s.operations.save(ctx, scope.BotDAO(), bot)
+		out, e = operations.save(ctx, scope.BotDAO(), bot)
 		return e
 	})
 	if failure != nil {

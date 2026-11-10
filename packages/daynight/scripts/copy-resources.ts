@@ -1,4 +1,5 @@
-import { cpSync, statSync } from "node:fs";
+import { cpSync, statSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const resources = [
   { path: "commands/review/skills/daynight-review", kind: "directory", sqlOnly: false },
@@ -32,3 +33,14 @@ for (const resource of resources) {
     },
   );
 }
+
+// Both service and Controller execute this immutable decoder build. The manifest
+// identifies the helper and engine together; it does not attest native vision.
+const media = new URL("../dist/commands/controller/media/", import.meta.url);
+const digest = (file: string): string => createHash("sha256").update(readFileSync(new URL(file, media))).digest("hex");
+writeFileSync(new URL("image-validation-manifest.json", media), JSON.stringify({
+  version: 1,
+  buildId: "daynight-image-validation-v1-sharp-0.35.5",
+  helperSha256: digest("image-validation-helper.js"),
+  engineSha256: digest("image-validation.js"),
+}) + "\n");

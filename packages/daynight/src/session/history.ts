@@ -1,10 +1,10 @@
-import { parseSessionResource, parseTimelineEntry, type SessionResource, type TimelineEntry } from "./protocol.js";
+import { parseTimelineEntry, type SessionResource, type TimelineEntry } from "./protocol.js";
 
 export const HISTORY_RESPONSE_BYTES = 262144;
 export const HISTORY_CHUNK_BYTES = 32768;
 export const HISTORY_CURSOR_BYTES = 4096;
 export const CONTENT_READ_VERSION_HEADER = "X-Daynight-Content-Read-Version";
-export type InspectionResource = Omit<SessionResource, "error">;
+export type InspectionResource = Pick<SessionResource, "resourceId" | "status" | "name" | "mediaType" | "byteLength" | "sha256">;
 export type SessionContentRef = { readonly cursor: string; readonly sha256: string; readonly byteLength: string };
 export type SessionMessageItem = {
   readonly entryId: string; readonly entrySeq: string; readonly revision: string; readonly kind: TimelineEntry["kind"];
@@ -36,6 +36,15 @@ const epoch = (value: unknown): string => typeof value === "string" && (/^[a-f0-
 export const historyCursorText = (value: unknown): string => typeof value === "string" && value.length > 0 && value.length <= HISTORY_CURSOR_BYTES && /^[A-Za-z0-9_-]+$/.test(value) ? value : fail();
 const nullableCursor = (value: unknown): string | null => value === null ? null : historyCursorText(value);
 const timestamp = (value: unknown): string | null => value === null ? null : typeof value === "string" && value.length <= 64 && /^\d{4}-\d\d-\d\dT.*Z$/.test(value) && Number.isFinite(Date.parse(value)) ? value : fail();
+const resourceText = (value: unknown, limit: number): string => typeof value === "string" && value.isWellFormed() && /[^\p{White_Space}]/u.test(value) && !value.includes("\0") && Buffer.byteLength(value) <= limit ? value : fail();
+const parseInspectionResource = (value: unknown): InspectionResource => {
+  const data = exact(value, ["resourceId", "status", "name", "mediaType", "byteLength", "sha256"]);
+  if (data.status !== "pending" && data.status !== "available" && data.status !== "failed" && data.status !== "unavailable") return fail();
+  const mediaType = data.mediaType === null ? null : resourceText(data.mediaType, 256);
+  const byteLength = data.byteLength === null ? null : sequence(data.byteLength, true), sha256 = data.sha256 === null ? null : hash(data.sha256);
+  if (mediaType !== null && !/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mediaType) || data.status === "available" && (mediaType === null || byteLength === null || sha256 === null)) return fail();
+  return { resourceId: uuid(data.resourceId), status: data.status, name: resourceText(data.name, 1024), mediaType, byteLength, sha256 };
+};
 
 /** Timeline form bounds can be fractional; identity sequences remain strings. */
 export const canonicalHistoryJSON = (value: unknown): string => {
@@ -59,11 +68,7 @@ export const parseSessionMessageItem = (value: unknown): SessionMessageItem => {
   if (typeof data.kind !== "string" || !kinds.includes(data.kind as TimelineEntry["kind"])) return fail();
   const kind = data.kind as TimelineEntry["kind"], role = kind === "user_message" ? "user" : kind === "assistant_message" ? "assistant" : null;
   if (data.role !== role || !Array.isArray(data.resources) || data.resources.length > 20) return fail();
-  const resources = data.resources.map(value => {
-    const resource = exact(value, ["resourceId", "status", "name", "mediaType", "byteLength", "sha256"]);
-    const { error: _, ...parsed } = parseSessionResource({ ...resource, error: null });
-    return parsed;
-  });
+  const resources = data.resources.map(parseInspectionResource);
   if (new Set(resources.map(resource => resource.resourceId)).size !== resources.length) return fail();
   const body = data.body === null ? null : parseTimelineEntry(data.body), truncated = bool(data.truncated), contentRef = data.contentRef === null ? null : parseSessionContentRef(data.contentRef);
   if (truncated !== (body === null) || truncated !== (contentRef !== null) || body && (body.entryId !== entryId || body.entrySeq !== entrySeq || body.revision !== revision || body.kind !== kind)) return fail();

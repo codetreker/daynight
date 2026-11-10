@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   BOT_DISPLAY_SNAPSHOT_NAMESPACE, BotDisplaySnapshotStore,
   decodeBotDisplayPreview, parseBotDisplayPreview, prepareBotDisplayPreview,
   type BotDisplayPreview, type BotDisplaySnapshotLock, type BotDisplaySnapshotSave,
 } from '../src/features/bots/display-snapshot';
-import type { SessionResource, TimelineEntry } from '../../daynight/src/session/protocol';
+import { parseTimelineEntry, type SessionResource, type TimelineEntry } from '../../daynight/src/session/protocol';
 
 const id = (n: number) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const key = (owner: string) => BOT_DISPLAY_SNAPSHOT_NAMESPACE + owner;
@@ -52,6 +53,36 @@ function storageFacade(): Storage {
 }
 
 describe('Bot display snapshot codec', () => {
+  it.each(['markdown', 'reasoning', 'unknown_reasoning'] as const)('retains the complete resource closure for %s image bindings', kind => {
+    const owner = crypto.randomUUID(), image = { ...resource(), revision: '1', width: 1, height: 1, frameCount: 1 };
+    const text = '![saved](resource:saved)', textSha256 = createHash('sha256').update(text).digest('hex');
+    const binding = { imageId: id(3_001), start: 0, end: text.length, part: { type: 'image' as const, imageId: id(3_001), resourceId: image.resourceId, label: 'saved' } };
+    const unknown = kind === 'unknown_reasoning';
+    const markdown = { partId: id(4_001), revision: '2', textSha256, complete: true, truncated: false, bindings: unknown ? null : [binding], retainedImages: unknown ? [{ ...binding, sourceRevision: '1', sourceTextSha256: textSha256, linkHref: null }] : [] };
+    const common = { entryId: id(1_001), entrySeq: '1', revision: '2', imageProjectionError: unknown ? { code: 'source_unavailable', message: 'Projection unavailable.' } : null };
+    const message = parseTimelineEntry(kind === 'markdown'
+      ? { ...common, kind: 'assistant_message', content: [{ type: 'markdown', text, ...markdown }] }
+      : { ...common, kind: 'reasoning', text, markdown });
+    const value = preview(owner, 1, { entries: [message], resources: [image] });
+    expect(prepareBotDisplayPreview(value, owner, value.botId)?.resources).toEqual([image]);
+    expect(decodeBotDisplayPreview(JSON.stringify({ ...value, resources: [] }), owner, value.botId)).toBeNull();
+  });
+
+  it.each(['user_message', 'assistant_message', 'tool_call'] as const)('persists unified image descriptors from %s and rejects missing resource metadata', async kind => {
+    const owner = crypto.randomUUID(), image = { ...resource(), revision: '1', width: 1, height: 1, frameCount: 1 };
+    const content = [{ type: 'image' as const, imageId: id(3_001), resourceId: image.resourceId, label: 'saved image' }];
+    const message: TimelineEntry = kind === 'tool_call'
+      ? { kind, entryId: id(1_001), entrySeq: '1', revision: '1', imageProjectionError: null, callId: 'image-call', name: 'image', input: '', output: content, status: 'completed', truncated: false }
+      : { ...entry(), kind, imageProjectionError: null, content };
+    const value = preview(owner, 1, { entries: [message], resources: [image] });
+    expect(prepareBotDisplayPreview(value, owner, value.botId)?.resources).toEqual([image]);
+    expect(decodeBotDisplayPreview(JSON.stringify({ ...value, resources: [] }), owner, value.botId)).toBeNull();
+    const target = store(owner);
+    expect(await save(target, value)).toBe('saved');
+    target.close();
+    expect(await store(owner, { storage: storageFacade() }).read(owner, value.botId)).toEqual(value);
+  });
+
   it('round-trips detached historical entries, descriptors and a reading anchor', () => {
     const owner = crypto.randomUUID(), image = resource();
     const message: TimelineEntry = { ...entry(), kind: 'assistant_message', content: [{ type: 'text', text: 'saved response' }, { type: 'resource', resourceId: image.resourceId, label: 'image' }] };

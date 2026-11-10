@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import fixture from "./fixtures/history-canonical.json" with { type: "json" };
-import { canonicalHistoryJSON, decodeHistoryEntryCursor, decodeHistoryPageCursor, encodeHistoryEntryCursor, encodeHistoryPageCursor, parseEntryChunk, parseInspectionPage } from "../../src/session/history.js";
+import { canonicalHistoryJSON, decodeHistoryEntryCursor, decodeHistoryPageCursor, encodeHistoryEntryCursor, encodeHistoryPageCursor, parseEntryChunk, parseInspectionPage, parseSessionMessageItem } from "../../src/session/history.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const identity = { source: "live" as const, sessionId: id, historyEpoch: id, sourceVersion: id };
@@ -41,5 +41,15 @@ it("requires exact and internally consistent inspection coverage", () => {
   }
   for (const coverage of [null, {}, { state: "complete" }, { state: "complete", reason: "entry_truncated" }, { state: "partial", reason: null }, { state: "partial", reason: "unknown" }, { state: "unknown", reason: null }, { state: "complete", reason: null, extra: true }]) {
     expect(() => parseInspectionPage({ ...page, coverage })).toThrow();
+  }
+});
+
+it("accepts bounded image names in the six-field inspection preview without admitting full resource descriptors", () => {
+  const resource = { resourceId: id, status: "available", name: "图".repeat(341) + "x", mediaType: "image/png", byteLength: "10", sha256: "a".repeat(64) };
+  const body = { entryId: id, entrySeq: "1", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "image" }] };
+  const item = { entryId: id, entrySeq: "1", revision: "1", kind: "assistant_message", role: "assistant", timestamp: null, body, truncated: false, contentRef: null, resources: [resource], resourcesTruncated: false };
+  expect(parseSessionMessageItem(item).resources).toEqual([resource]);
+  for (const change of [{ name: resource.name + "x" }, { revision: "1", width: 1, height: 1, frameCount: 1 }, { error: null }, { sha256: "invalid" }, { mediaType: "invalid" }, { byteLength: "01" }]) {
+    expect(() => parseSessionMessageItem({ ...item, resources: [{ ...resource, ...change }] })).toThrow();
   }
 });

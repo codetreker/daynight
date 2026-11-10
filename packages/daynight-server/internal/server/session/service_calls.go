@@ -23,6 +23,20 @@ type archiveContent struct {
 }
 
 type serviceCalls struct {
+	GetImageOccurrence             func(context.Context, model.Principal, string, string, string, string) (sp.ImageOccurrenceStatus, error)
+	RetryImageOccurrence           func(context.Context, model.Principal, string, string, string, string) (sp.ImageOccurrenceRetryReceipt, error)
+	BeginHistoryLedgerReserved     func(context.Context, string, string, string, sessioncore.ActiveHistoryWriter, io.Closer) (archiveOperation, error)
+	ArchivePreparation             func(context.Context, model.Principal, string, string, string) (sp.ArchivePrepareReceipt, error)
+	ArchiveFileStatus              func(context.Context, model.Principal, string, string, string, string) (sp.ArchiveFileReceipt, error)
+	ArchiveTimelineContentReserved func(context.Context, model.Principal, string, string, string, string, io.Closer) (archiveContent, error)
+	PrepareUpload                  func(context.Context, model.Principal, string, string, string, sp.ImageUploadSpec) (sp.ImageUploadReceipt, bool, error)
+	WriteUploadChunk               func(context.Context, model.Principal, string, string, string, string, sp.ImageChunkWrite) (sp.ImageUploadReceipt, error)
+	CompleteUpload                 func(context.Context, model.Principal, string, string, string, string, sp.ImageUploadComplete) (sp.ImageUploadReceipt, error)
+	GetUpload                      func(context.Context, model.Principal, string, string, string, string) (sp.ImageUploadReceipt, error)
+	ReleaseUpload                  func(context.Context, model.Principal, string, string, string, string) (sp.ImageUploadReceipt, error)
+	ReadResource                   func(context.Context, model.Principal, string, string, string, sp.ImageReadRequest) (sp.ImageReadChunk, error)
+	ImageCapabilities              func(context.Context, model.Principal, string, string, string) (map[string]any, error)
+
 	TaskOperation                  func(context.Context, model.Principal, string, string, string, string) (sessioncore.TaskOperationResult, error)
 	ArchiveContentReserved         func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error)
 	ArchiveStatus                  func(context.Context, model.Principal, string, string, string) (sp.ArchiveStatus, error)
@@ -77,6 +91,19 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		return serviceCalls{}
 	}
 	return serviceCalls{
+		BeginHistoryLedgerReserved: func(ctx context.Context, project, task, id string, writer sessioncore.ActiveHistoryWriter, reservation io.Closer) (archiveOperation, error) {
+			return service.BeginHistoryLedgerReserved(ctx, project, task, id, writer, reservation.(*sessioncore.ArchivePreflightReservation))
+		},
+		ArchivePreparation: service.ArchivePreparation,
+		ArchiveFileStatus:  service.ArchiveFileStatus,
+		ArchiveTimelineContentReserved: func(ctx context.Context, p model.Principal, project, task, id, fileID string, reservation io.Closer) (archiveContent, error) {
+			content, err := service.ArchiveTimelineContentReserved(ctx, p, project, task, id, fileID, reservation.(*sessioncore.ArchivePreflightReservation))
+			if err != nil {
+				return archiveContent{}, err
+			}
+			return archiveContent{Data: content.Data, Closer: content}, nil
+		},
+		GetImageOccurrence: service.GetImageOccurrence, RetryImageOccurrence: service.RetryImageOccurrence, PrepareUpload: service.PrepareUpload, WriteUploadChunk: service.WriteUploadChunk, CompleteUpload: service.CompleteUpload, GetUpload: service.GetUpload, ReleaseUpload: service.ReleaseUpload, ReadResource: service.ReadResource, ImageCapabilities: service.ImageCapabilities,
 		TaskOperation:                  service.TaskOperation,
 		ArchiveContentReserved:         archiveContentCall(service.ArchiveContentReserved),
 		ArchiveStatus:                  service.ArchiveStatus,

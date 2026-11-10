@@ -3,11 +3,13 @@ package session
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 type historyReadInspector func(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error)
@@ -95,12 +97,14 @@ func TestHistoryReadPendingAndHerdrRemainDistinct(t *testing.T) {
 
 type retainedHistoryFixture struct {
 	data       []byte
+	timeline   []byte
 	closes     int
 	closeError error
 }
 
-func (r *retainedHistoryFixture) Bytes() []byte { return r.data }
-func (r *retainedHistoryFixture) Close() error  { r.closes++; return r.closeError }
+func (r *retainedHistoryFixture) Bytes() []byte         { return r.data }
+func (r *retainedHistoryFixture) TimelineBytes() []byte { return r.timeline }
+func (r *retainedHistoryFixture) Close() error          { r.closes++; return r.closeError }
 func TestHistoryArchiveProjectionRetainsLeaseAndPreservesPartial(t *testing.T) {
 	id := "11111111-1111-4111-8111-111111111111"
 	claim := "22222222-2222-4222-8222-222222222222"
@@ -156,5 +160,127 @@ func TestHistoryArchiveProjectionRetainsLeaseAndPreservesPartial(t *testing.T) {
 	s.backend = backend
 	if _, err = s.Read(t.Context(), model.Principal{}, "p", "t", id, ReadRequest{}); err == nil || lease.closes != 3 {
 		t.Fatalf("corruption cleanup %v closes=%d", err, lease.closes)
+	}
+}
+
+func historySchema3Fixture(t *testing.T) ([]byte, []byte, core.HistoryPosition) {
+	t.Helper()
+	raw, _ := historyArchiveFixtureBytes(t, historyTestSession)
+	legacy, err := sp.DecodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := sp.MarshalWire(sp.ArchiveTimeline{Entries: legacy.Entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := sp.ArchiveManifest{SchemaVersion: 3, ContentKind: "native_timeline", RecordID: legacy.SessionID, Fence: legacy.Fence, ControllerID: legacy.ControllerID, ControllerInstanceID: legacy.ControllerInstanceID, Provider: legacy.Provider, Timeline: sp.ArchiveFileReference{FileID: historyTestEntry, SHA256: v2.HashBytes(timeline), ByteLength: strconv.Itoa(len(timeline))}, Resources: []sp.ArchiveResourceReference{}, Completeness: "complete"}
+	data, err := sp.MarshalWire(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sp.DecodeArchiveManifest(data); err != nil {
+		t.Fatal("fixture", err)
+	}
+	body, err := v2.CanonicalJSON(legacy.Entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := v2.HashBytes(data)
+	position := core.HistoryPosition{Source: "archive", SessionID: historyTestSession, Epoch: hash, Version: hash, EntryID: historyTestEntry, Revision: "1", SHA256: v2.HashBytes(body), ByteLength: strconv.Itoa(len(body)), Offset: "0", Chunk: true}
+	return data, timeline, position
+}
+
+func TestHistorySchema3ReadsIndependentTimelineAndRetainsLease(t *testing.T) {
+	data, timeline, position := historySchema3Fixture(t)
+	for _, operation := range []string{"page", "entry"} {
+		t.Run(operation, func(t *testing.T) {
+			lease := &retainedHistoryFixture{data: data, timeline: timeline}
+			backend := historyReadBackend{archive: func(context.Context, model.Principal, string, string, string) (core.HistoryArchive, error) {
+				return lease, nil
+			}}
+			s := NewHistory(historyReadInspector(func(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error) {
+				return sp.TaskSessionInspection{Source: "archive"}, nil
+			}), backend)
+			var close func() error
+			if operation == "page" {
+				result, e := s.Read(t.Context(), model.Principal{}, "p", "t", historyTestSession, ReadRequest{})
+				if e != nil {
+					t.Fatal(e)
+				}
+				if len(result.Data.Items) != 1 || result.Data.Items[0].EntryID != historyTestEntry || result.Data.HistoryEpoch != position.Epoch {
+					t.Fatalf("page %#v", result.Data)
+				}
+				close = result.Close
+			} else {
+				result, e := s.Entry(t.Context(), model.Principal{}, "p", "t", historyTestSession, EntryRequest{Cursor: position.Cursor()})
+				if e != nil {
+					t.Fatal(e)
+				}
+				if v2.HashBytes([]byte(result.Data.Fragment)) != position.SHA256 || result.Data.HistoryEpoch != position.Epoch {
+					t.Fatalf("entry %#v", result.Data)
+				}
+				close = result.Close
+			}
+			if lease.closes != 0 {
+				t.Fatal("archive closed before transport completion")
+			}
+			if err := close(); err != nil {
+				t.Fatal(err)
+			}
+			_ = close()
+			if lease.closes != 1 {
+				t.Fatal("lease not released exactly once", lease.closes)
+			}
+		})
+	}
+}
+
+func TestHistorySchema3RejectsInvalidIndependentTimeline(t *testing.T) {
+	for _, operation := range []string{"page", "entry"} {
+		for _, scenario := range []string{"envelope", "manifest", "missing", "invalid", "digest", "length"} {
+			t.Run(operation+"/"+scenario, func(t *testing.T) {
+				data, timeline, position := historySchema3Fixture(t)
+				switch scenario {
+				case "envelope":
+					data = []byte(`!`)
+				case "manifest":
+					data = []byte(`{"schemaVersion":3}`)
+				case "missing":
+					timeline = nil
+				case "invalid":
+					timeline = []byte(`{}`)
+				case "digest":
+					timeline = append(timeline, ' ')
+				case "length":
+					manifest, err := sp.DecodeArchiveManifest(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					manifest.Timeline.ByteLength = strconv.Itoa(len(timeline) + 1)
+					data, err = sp.MarshalWire(manifest)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				lease := &retainedHistoryFixture{data: data, timeline: timeline}
+				backend := historyReadBackend{archive: func(context.Context, model.Principal, string, string, string) (core.HistoryArchive, error) {
+					return lease, nil
+				}}
+				s := NewHistory(historyReadInspector(func(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error) {
+					return sp.TaskSessionInspection{Source: "archive"}, nil
+				}), backend)
+				var err error
+				if operation == "page" {
+					_, err = s.Read(t.Context(), model.Principal{}, "p", "t", historyTestSession, ReadRequest{})
+				} else {
+					_, err = s.Entry(t.Context(), model.Principal{}, "p", "t", historyTestSession, EntryRequest{Cursor: position.Cursor()})
+				}
+				requireHistoryFault(t, err, "source_corrupt")
+				if lease.closes != 1 {
+					t.Fatal("invalid schema3 retained its permit", lease.closes)
+				}
+			})
+		}
 	}
 }

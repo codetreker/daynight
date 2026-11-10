@@ -1,3 +1,5 @@
+import { nativeInputText, textNativeInput } from "./native-input.js";
+import type { NativeInput } from "./types.js";
 import { CopilotControls } from "./controls-copilot.js";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -160,7 +162,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     try { await close(); } catch { options.onDiagnostic?.("Copilot startup cleanup failed; native process stop remains unconfirmed."); }
     throw failure;
   }
-  const send = async (text: string, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
+  const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
+      const text = nativeInputText(inputValue);
       if (closed || disconnected || dispatching || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
       const steering = currentTurnId !== null;
       const turnId = currentTurnId ?? randomUUID(); if (!currentTurnId) turnStartedAt = null; currentTurnId = turnId; dispatching = true; activity = "working"; state();
@@ -188,7 +191,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (closed || disconnected || dispatching || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
       const result = await controls!.invoke(id, args, revision);
-      if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(result.prompt, operationId, null, result.displayPrompt); }
+      if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(textNativeInput(result.prompt), operationId, null, result.displayPrompt); }
       if (result.kind !== "text" && result.kind !== "completed") throw new NativeRpcError(-32602, "Copilot command requires unsupported subcommand selection.");
       const text = result.kind === "text" ? result.text : result.message;
       if (text) options.onTimeline({ entryId: nativeEntryId(nativeId, `command:${operationId}`), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });

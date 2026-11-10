@@ -54,8 +54,8 @@ func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 	}
 }
 
-func TestKnownTransferRefusalsRequireConfirmedRollback(t *testing.T) {
-	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable"} {
+func TestKnownTransferAndMediaFaultsRequireConfirmedRollback(t *testing.T) {
+	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete"} {
 		fault := &model.Fault{Code: code, Message: "refused"}
 		if got, ok := KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got.Code != code {
 			t.Fatalf("confirmed refusal %s was suppressed", code)

@@ -5,7 +5,14 @@ import { renderSessionObservation } from "../observation-rendering.js";
 
 const lines = (value: string): string => value.split("\n").map(terminalText).join("\n");
 const argument = (value: string): string => `'${terminalText(value).replaceAll("'", "'\\''")}'`;
-const part = (value: MessagePart): string => value.type === "text" ? lines(value.text) : `Resource reference: ${value.resourceId}; ${lines(value.label)}`;
+const part = (value: MessagePart): string => {
+  switch (value.type) {
+    case "text": case "markdown": return lines(value.text);
+    case "image": return `Image reference: ${terminalText(value.resourceId)}; ${lines(value.label)}`;
+    case "resource": return `Resource reference: ${terminalText(value.resourceId)}; ${lines(value.label)}`;
+    case "image_unavailable": return `Image unavailable: ${lines(value.label)}; ${terminalText(value.error.code)}; ${lines(value.error.message)}`;
+  }
+};
 const bodyText = (body: TimelineEntry): readonly string[] => {
   switch (body.kind) {
     case "user_message": case "assistant_message": return body.content.map(part);

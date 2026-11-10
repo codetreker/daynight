@@ -23,10 +23,16 @@ const PollInterval = 250 * time.Millisecond
 const HeartbeatTimeout = 30 * time.Second
 
 type Engine struct {
+	captureMutex          sync.Mutex
+	captureJobs           map[string]bool
+	mediaWork             imageWorkRegistry
 	archiveSlots          chan struct{}
 	archivePreflightSlots chan struct{}
 	Origin                string
 	files                 filestorage.Storage
+	imageDecoder          ImageDecoder
+	releaseMediaLeaseRun  func(context.Context, string, string) error
+	recoverMediaLeasesRun func(context.Context) error
 	now                   func() time.Time
 	liveMutex             sync.Mutex
 	live                  map[string]*liveCell
@@ -263,6 +269,9 @@ func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Pr
 		if err != nil || stopped.After(s.now().Add(time.Second)) {
 			return out, conflict()
 		}
+		if err = handoffActiveHistory(ctx, tx, r, g); err != nil {
+			return out, err
+		}
 		v.Controls = nil
 		v.TurnStartedAt = nil
 		v.ExecutionGeneration = g.ExecutionGeneration
@@ -332,13 +341,24 @@ func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h 
 		if number(h.LastAckedSourceSeq) > r.SourceSeq {
 			return conflict()
 		}
+		v.ContentRevision = 0
+		if h.ContentRevision == 2 {
+			v.ContentRevision = 2
+		}
+		if err := s.refreshImageState(ctx, tx, r, nil); err != nil {
+			return err
+		}
 		v.ConnectionEpoch = next(v.ConnectionEpoch)
 		v.ConnectionState = "synchronizing"
 		v.Synchronized = false
 		now := s.now()
 		r.LastSeen = &now
 		r.ConnectionExpiry = r.GrantExpiry
-		v.HistoryEpoch = uuid.NewString()
+		historyEpoch := uuid.NewString()
+		if err := handoffConnectedHistory(ctx, tx, r, historyEpoch); err != nil {
+			return err
+		}
+		v.HistoryEpoch = historyEpoch
 		if err := createLive(tx, r); err != nil {
 			return err
 		}

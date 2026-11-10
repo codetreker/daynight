@@ -1,6 +1,9 @@
 package sessionprotocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 var operationSchema = extend(fenceSchema, schema{
 	"protocol": enum(Protocol), "operationId": identifier, "kind": enum("send_message", "cancel", "interaction_response", "update_setting", "execute_command", "refresh_controls"),
@@ -13,13 +16,25 @@ func DecodeOperation(data []byte) (Operation, error) {
 }
 
 var resourceSchema = schema{
+	"revision": sequence, "width": optional(integerRange(1, 16384)), "height": optional(integerRange(1, 16384)), "frameCount": optional(integerRange(1, 256)),
 	"resourceId": identifier, "status": enum("pending", "available", "failed", "unavailable"), "name": key,
 	"mediaType":  optional(pattern(`^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+$`)),
 	"byteLength": optional(zeroSequence), "sha256": optional(pattern(`^[a-f0-9]{64}$`)), "error": optional(text),
 }
 
 func DecodeResource(data []byte) (Resource, error) {
-	result, err := decode[Resource](data, nested(resourceSchema))
+	fields := extend(resourceSchema, schema{})
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	if raw["revision"] != nil {
+		fields["name"] = imageLabel
+	}
+	if raw["revision"] == nil {
+		for _, key := range []string{"revision", "width", "height", "frameCount"} {
+			delete(fields, key)
+		}
+	}
+	result, err := decode[Resource](data, nested(fields))
 	if err != nil {
 		return Resource{}, err
 	}
@@ -27,6 +42,40 @@ func DecodeResource(data []byte) (Resource, error) {
 		return Resource{}, errInvalid
 	}
 	if result.Status == "available" && (result.SHA256 == nil || result.MediaType == nil || result.ByteLength == nil || result.Error != nil) {
+		return Resource{}, errInvalid
+	}
+	if result.Revision != "" {
+		if result.Status == "available" {
+			if result.ByteLength == nil || !decimalRange(MaxImageBytes, false)(json.RawMessage(encodeJSONText(*result.ByteLength))) {
+				return Resource{}, errInvalid
+			}
+			image := result.MediaType != nil && strings.HasPrefix(*result.MediaType, "image/")
+			if image && !displayMime(json.RawMessage(encodeJSONText(*result.MediaType))) {
+				return Resource{}, errInvalid
+			}
+			if !image && (result.Width != nil || result.Height != nil || result.FrameCount != nil) {
+				return Resource{}, errInvalid
+			}
+		} else {
+			if result.MediaType != nil || result.ByteLength != nil || result.SHA256 != nil || result.Width != nil || result.Height != nil || result.FrameCount != nil {
+				return Resource{}, errInvalid
+			}
+			if (result.Status == "pending") != (result.Error == nil) {
+				return Resource{}, errInvalid
+			}
+		}
+	}
+	if result.Revision != "" && result.Status == "available" && result.MediaType != nil && strings.HasPrefix(*result.MediaType, "image/") {
+		if result.Width == nil || result.Height == nil || result.FrameCount == nil {
+			return Resource{}, errInvalid
+		}
+		v := ValidatedImage{MediaType: *result.MediaType, ByteLength: *result.ByteLength, SHA256: *result.SHA256, Width: *result.Width, Height: *result.Height, FrameCount: *result.FrameCount}
+		b, _ := json.Marshal(v)
+		if !validImageMetadata(b) {
+			return Resource{}, errInvalid
+		}
+	}
+	if (result.Width == nil) != (result.Height == nil) || (result.Width == nil) != (result.FrameCount == nil) {
 		return Resource{}, errInvalid
 	}
 	return result, nil
@@ -46,6 +95,7 @@ func validateIdentity(data json.RawMessage) bool {
 }
 
 var snapshotSchema = extend(fenceSchema, schema{
+	"contentRevision": integerRange(1, ContentRevision), "imageBudget": validateImageBudget,
 	"controls": nested(controlsSchema), "turnStartedAt": optional(turnStartedAt),
 	"protocol": enum(Protocol), "schemaVersion": version, "projectionVersion": version, "connectionEpoch": zeroSequence,
 	"identity":        validateIdentity,
@@ -61,6 +111,13 @@ func DecodeSnapshot(data []byte) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	if (result.TestExecutionID != "") != (result.Identity.OwnerUserID != "") || (result.InitialInputState == "not_required" && result.TestExecutionID == "") {
+		return Snapshot{}, errInvalid
+	}
+	if result.ContentRevision == 2 {
+		if result.ImageBudget == nil || result.Capabilities.Images == nil {
+			return Snapshot{}, errInvalid
+		}
+	} else if result.ImageBudget != nil || result.Capabilities.Images != nil {
 		return Snapshot{}, errInvalid
 	}
 	writes := result.Operations.CanSend || result.Operations.CanCancel || result.Operations.CanRespond
@@ -154,6 +211,12 @@ func validateMessagePart(data json.RawMessage) bool {
 		return validateObject(data, schema{"type": enum("text"), "text": emptyText})
 	case "resource":
 		return validateObject(data, schema{"type": enum("resource"), "resourceId": identifier, "label": text})
+	case "markdown":
+		return validateMarkdownPart(data)
+	case "image":
+		return validateObject(data, schema{"type": enum("image"), "imageId": identifier, "resourceId": identifier, "label": imageLabel})
+	case "image_unavailable":
+		return validateObject(data, schema{"type": enum("image_unavailable"), "imageId": identifier, "label": imageLabel, "error": nested(schema{"code": key, "message": func(raw json.RawMessage) bool { return stringValue(raw, false, 256) }})})
 	default:
 		return false
 	}
@@ -184,6 +247,13 @@ func decodeTimeline(data []byte, source bool) (TimelineEntry, error) {
 	base := schema{"entryId": identifier, "revision": sequence, "kind": enum(value.Kind)}
 	var sourceFields map[string]json.RawMessage
 	_ = json.Unmarshal(data, &sourceFields)
+	enriched := sourceFields["imageProjectionError"] != nil
+	if enriched {
+		base["imageProjectionError"] = optional(nested(imageErrorSchema))
+		if value.Kind == "reasoning" {
+			extra = extend(extra, schema{"markdown": func(json.RawMessage) bool { return true }})
+		}
+	}
 	if !source || sourceFields["entrySeq"] != nil {
 		base["entrySeq"] = sequence
 	}
@@ -192,6 +262,9 @@ func decodeTimeline(data []byte, source bool) (TimelineEntry, error) {
 	}
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(data, &fields)
+	if !validateEntryImages(fields, value.Kind, enriched) {
+		return TimelineEntry{}, errInvalid
+	}
 	return TimelineEntry{EntryID: stringField(fields["entryId"]), EntrySeq: stringField(fields["entrySeq"]), Revision: stringField(fields["revision"]), Kind: value.Kind, Data: fields}, nil
 }
 func DecodeTimeline(data []byte) (TimelineEntry, error)       { return decodeTimeline(data, false) }
@@ -242,3 +315,5 @@ func DecodeEvent(data []byte) (Event, error) {
 	}
 	return value, nil
 }
+
+func encodeJSONText(value string) string { b, _ := json.Marshal(value); return string(b) }
