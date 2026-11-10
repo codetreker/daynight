@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const [directory, role, disposition, status] = process.argv.slice(2);
+const safeSyscalls = new Set(["open", "write", "close", "rename", "stat", "fstat"]);
 let stage = "bootstrap";
 const publish = (filename, value) => {
   writeFileSync(filename + ".tmp", JSON.stringify(value));
@@ -11,6 +12,7 @@ const publish = (filename, value) => {
 const fail = (error, failureStage = stage) => {
   const receipt = { schemaVersion: 1, role, stage: failureStage, name: error instanceof Error ? error.name : "NonErrorThrown" };
   if (error !== null && typeof error === "object" && (typeof error.code === "string" || typeof error.code === "number")) receipt.code = error.code;
+  if (error !== null && typeof error === "object" && typeof error.syscall === "string" && safeSyscalls.has(error.syscall)) receipt.syscall = error.syscall;
   try { publish(path.join(directory, role + ".error.json"), receipt); }
   finally { process.exit(1); }
 };
@@ -43,14 +45,12 @@ try {
     stage = "wait-root-release";
     setInterval(() => { if (existsSync(path.join(directory, "leave-middle"))) process.exit(Number(status)); }, 5);
   } else {
-    let ticks = 0;
+    const tick = Buffer.from([1]);
     const heartbeat = path.join(directory, role + ".heartbeat");
     stage = "heartbeat-wait";
     setInterval(() => {
-      stage = "heartbeat-write";
-      writeFileSync(heartbeat + ".tmp", String(++ticks));
-      stage = "heartbeat-publish";
-      renameSync(heartbeat + ".tmp", heartbeat);
+      stage = "heartbeat-append";
+      appendFileSync(heartbeat, tick);
       stage = "heartbeat-wait";
     }, 10);
   }

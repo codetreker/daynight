@@ -224,6 +224,9 @@ it after rejection, so pre-target startup alone cannot satisfy that test. Its
 Portable controls retain real root closure, advancing descendant heartbeats,
 native error identity and the original cause; they do not qualify Windows Job
 behavior. The PR Windows CLI job runs the native controls and complete suite.
+Its Git/platform heartbeat witnesses append bytes and observe file size; a
+controlled reader that denies delete sharing verifies progress without hot-file
+replacement. Historical file holders remain outside that controlled proof.
 Native release controls also compare direct Git with the owned runner after
 their short-lived CLI owners exit, without an extra Job handle masking the
 result. Pre-admission owner-loss controls keep the ambient Job open and require

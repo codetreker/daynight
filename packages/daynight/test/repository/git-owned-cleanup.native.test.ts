@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -100,9 +100,15 @@ vi.mock("../../src/platform/windows-owned-command.js", async importOriginal => {
 
 type Member = { role: string; pid: number; birth: string; handle: unknown };
 type Declaration = { pid: number; parentPid: number; birth: string };
-type ActorFailure = { role: string; stage: string; name: string; code?: string | number };
+type ActorFailure = { role: string; stage: string; name: string; code?: string | number; syscall?: string };
 const actorRoles = ["middle", "leaf", "pipe", "bystander"] as const;
+const safeActorSyscalls = new Set(["open", "write", "close", "rename", "stat", "fstat"]);
 const barrierMs = 10_000;
+const readHeartbeat = (file: string): number => {
+  const ticks = statSync(file).size;
+  if (!Number.isSafeInteger(ticks) || ticks < 0) throw new RangeError("Native fixture heartbeat size must be a nonnegative safe integer.");
+  return ticks;
+};
 const script = path.resolve(import.meta.dirname, "../fixtures/git-owned-command-tree.mjs");
 const environment = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")));
 const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: environment(), encoding: "utf8", timeout: 10_000, stdio: "pipe" });
@@ -132,8 +138,10 @@ const actorFailures = (root: string): ActorFailure[] => actorRoles.flatMap(role 
   if (!existsSync(file)) return [];
   const value = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
   if (value.schemaVersion !== 1 || value.role !== role || typeof value.stage !== "string" || typeof value.name !== "string" ||
-      value.code !== undefined && typeof value.code !== "string" && typeof value.code !== "number") throw new Error(`Invalid native fixture ${role} error receipt.`);
-  return [{ role, stage: value.stage, name: value.name, ...(value.code === undefined ? {} : { code: value.code as string | number }) }];
+      value.code !== undefined && typeof value.code !== "string" && typeof value.code !== "number" ||
+      value.syscall !== undefined && (typeof value.syscall !== "string" || !safeActorSyscalls.has(value.syscall))) throw new Error(`Invalid native fixture ${role} error receipt.`);
+  return [{ role, stage: value.stage, name: value.name, ...(value.code === undefined ? {} : { code: value.code as string | number }),
+    ...(value.syscall === undefined ? {} : { syscall: value.syscall as string }) }];
 });
 const failedObservation = (root: string, stage: string, members: readonly Member[], api: WindowsCommandJobKernel): Record<string, unknown> => {
   let actorErrors: unknown;
@@ -146,8 +154,7 @@ const failedObservation = (root: string, stage: string, members: readonly Member
     const file = path.join(root, role + ".heartbeat");
     if (!existsSync(file)) return { role, present: false };
     try {
-      const source = readFileSync(file, "utf8"), ticks = Number(source);
-      return Number.isSafeInteger(ticks) && ticks > 0 && source === String(ticks) ? { role, present: true, ticks } : { role, present: true, valid: false };
+      return { role, present: true, ticks: readHeartbeat(file) };
     } catch (error) { return { role, observationError: safeError(error) }; }
   }) };
 };
@@ -312,18 +319,18 @@ describe.skipIf(process.platform !== "win32")("native repository Git Job ownersh
       const heartbeat = path.join(root, "leaf.heartbeat"), bystanderHeartbeat = path.join(root, "bystander.heartbeat");
       await barrier("initial-leaf-and-bystander-heartbeat-files", () => existsSync(heartbeat) && existsSync(bystanderHeartbeat), ["leaf", "bystander"]);
       currentStage = "initial-leaf-heartbeat-baseline";
-      const before = Number(readFileSync(heartbeat, "utf8"));
-      await barrier("initial-leaf-heartbeat-growth", () => Number(readFileSync(heartbeat, "utf8")) > before, ["leaf", "bystander"]);
-      record("owned-live-before-root-release", { leafMembership, leafHeartbeat: { before, after: Number(readFileSync(heartbeat, "utf8")) } });
+      const before = readHeartbeat(heartbeat);
+      await barrier("initial-leaf-heartbeat-growth", () => readHeartbeat(heartbeat) > before, ["leaf", "bystander"]);
+      record("owned-live-before-root-release", { leafMembership, leafHeartbeat: { before, after: readHeartbeat(heartbeat) } });
       currentStage = "release-original-root";
       writeFileSync(path.join(root, "leave-middle"), "release");
       rootReleased = true;
       await barrier("middle-and-original-git-exited", () => api.signaled(middle.handle) && api.signaled(target!.handle), ["leaf", "bystander"]);
       expect(api.signaled(leaf.handle)).toBe(false);
       currentStage = "after-root-exit-heartbeat-baseline";
-      const running = Number(readFileSync(heartbeat, "utf8"));
-      await barrier("leaf-heartbeat-after-root-exit", () => Number(readFileSync(heartbeat, "utf8")) > running, ["leaf", "bystander"]);
-      const unrelatedBefore = Number(readFileSync(bystanderHeartbeat, "utf8"));
+      const running = readHeartbeat(heartbeat);
+      await barrier("leaf-heartbeat-after-root-exit", () => readHeartbeat(heartbeat) > running, ["leaf", "bystander"]);
+      const unrelatedBefore = readHeartbeat(bystanderHeartbeat);
       if (scenario.kind === "release") {
         currentStage = "normal-product-return";
         const result = await pending;
@@ -338,17 +345,17 @@ describe.skipIf(process.platform !== "win32")("native repository Git Job ownersh
         expect(probe.fullJob).toBeUndefined();
         expect(probe.stdoutEnded).toBe(true); expect(probe.stderrEnded).toBe(true);
         expect(api.signaled(leaf.handle)).toBe(false);
-        const released = Number(readFileSync(heartbeat, "utf8"));
-        await barrier("released-background-heartbeat", () => Number(readFileSync(heartbeat, "utf8")) > released, ["leaf", "bystander"]);
+        const released = readHeartbeat(heartbeat);
+        await barrier("released-background-heartbeat", () => readHeartbeat(heartbeat) > released, ["leaf", "bystander"]);
         expectedProductErrorAssertionsCompleted = result instanceof Error;
-        record("normal-release-kept-background-alive", { leafHeartbeat: { before: released, after: Number(readFileSync(heartbeat, "utf8")) } });
+        record("normal-release-kept-background-alive", { leafHeartbeat: { before: released, after: readHeartbeat(heartbeat) } });
       } else {
         const survivingMembership = api.contains(probe.fullJob ?? probe.job, leaf.handle);
         const survivingInventory = api.inspect(probe.fullJob ?? probe.job);
         expect(survivingMembership).toBe(true);
         expect(survivingInventory).toContain(leaf.pid);
         expect(api.signaled(pipe!.handle)).toBe(false);
-        record("root-closed-with-live-leaf-and-pipe", { leafMembership: survivingMembership, inventory: survivingInventory, leafHeartbeat: { before: running, after: Number(readFileSync(heartbeat, "utf8")) } });
+        record("root-closed-with-live-leaf-and-pipe", { leafMembership: survivingMembership, inventory: survivingInventory, leafHeartbeat: { before: running, after: readHeartbeat(heartbeat) } });
         const cancelled = performance.now();
         if (scenario.kind === "fetch-stop") controller.abort(new Error("Cancel the real Git fetch after its root exits"));
         currentStage = "stopped-product-return";
@@ -372,17 +379,17 @@ describe.skipIf(process.platform !== "win32")("native repository Git Job ownersh
           expect(api.signaled(leaf.handle)).toBe(false);
           const retainedMembership = api.contains(probe.fullJob, leaf.handle), retainedActive = api.active(probe.fullJob);
           expect(retainedMembership).toBe(true); expect(retainedActive).toBeGreaterThan(0);
-          const retained = Number(readFileSync(heartbeat, "utf8"));
-          await barrier("native-denial-retained-leaf-heartbeat", () => Number(readFileSync(heartbeat, "utf8")) > retained, ["leaf", "pipe", "bystander"]);
+          const retained = readHeartbeat(heartbeat);
+          await barrier("native-denial-retained-leaf-heartbeat", () => readHeartbeat(heartbeat) > retained, ["leaf", "pipe", "bystander"]);
           expectedProductErrorAssertionsCompleted = true;
           record("native-denial-retained-live-member-before-fixture-cleanup", { leafMembership: retainedMembership, jobActive: retainedActive,
-            leafHeartbeat: { before: retained, after: Number(readFileSync(heartbeat, "utf8")) } });
+            leafHeartbeat: { before: retained, after: readHeartbeat(heartbeat) } });
         }
       }
       expect(api.signaled(unrelated.handle)).toBe(false);
-      await barrier("bystander-heartbeat-before-cleanup", () => Number(readFileSync(bystanderHeartbeat, "utf8")) > unrelatedBefore,
+      await barrier("bystander-heartbeat-before-cleanup", () => readHeartbeat(bystanderHeartbeat) > unrelatedBefore,
         scenario.kind === "fetch-stop" ? ["bystander"] : ["leaf", "bystander"]);
-      record("bystander-live-before-fixture-cleanup", { bystanderHeartbeat: { before: unrelatedBefore, after: Number(readFileSync(bystanderHeartbeat, "utf8")) } });
+      record("bystander-live-before-fixture-cleanup", { bystanderHeartbeat: { before: unrelatedBefore, after: readHeartbeat(bystanderHeartbeat) } });
     } catch (error) {
       primary = error;
       events.push({ stage: "unexpected-fixture-failure-before-cleanup", atNs: process.hrtime.bigint().toString(), observation: failedObservation(root, currentStage, members, api),
@@ -500,8 +507,8 @@ describe.skipIf(process.platform !== "win32")("native repository Git Job ownersh
       runRequested = true;
       const middle = await declared("middle"), leaf = await declared("leaf");
       const heartbeat = path.join(root, "leaf.heartbeat"); await barrier("cli-leaf-heartbeat-file", () => existsSync(heartbeat), ["leaf", "cli"]);
-      const started = Number(readFileSync(heartbeat, "utf8"));
-      await barrier("cli-initial-leaf-heartbeat-growth", () => Number(readFileSync(heartbeat, "utf8")) > started, ["leaf", "cli"]);
+      const started = readHeartbeat(heartbeat);
+      await barrier("cli-initial-leaf-heartbeat-growth", () => readHeartbeat(heartbeat) > started, ["leaf", "cli"]);
       writeFileSync(path.join(root, "leave-middle"), "release");
       const resultFile = path.join(root, "cli-result.json"); await barrier("cli-product-result", () => existsSync(resultFile), ["leaf", "cli"]);
       const result = JSON.parse(readFileSync(resultFile, "utf8")) as { profile: string; kind: string; exitCode?: number; signal?: string | null };
@@ -512,10 +519,10 @@ describe.skipIf(process.platform !== "win32")("native repository Git Job ownersh
       writeFileSync(path.join(root, "exit-cli"), "release");
       await barrier("cli-owner-exited", () => api.signaled(cli.handle) && ownerClosed, ["leaf"]);
       expect(ownerResult).toEqual({ code: 0, signal: null });
-      const afterCliExit = Number(readFileSync(heartbeat, "utf8")); let advanced = afterCliExit;
+      const afterCliExit = readHeartbeat(heartbeat); let advanced = afterCliExit;
       await barrier("cli-background-heartbeat-after-owner-exit", () => {
         expect(api.signaled(cli.handle)).toBe(true); expect(api.signaled(leaf.handle)).toBe(false);
-        const observed = Number(readFileSync(heartbeat, "utf8"));
+        const observed = readHeartbeat(heartbeat);
         if (observed <= afterCliExit) return false;
         advanced = observed; return true;
       }, ["leaf"]);

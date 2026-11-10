@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -12,6 +12,37 @@ import { spawnWindowsOwnedCommand, WindowsCommandCleanupError } from "../../src/
 import type { WindowsOwnedCommand } from "../../src/platform/windows-owned-command.js";
 
 type Member = { role: string; pid: number; birth: string; handle: unknown };
+const actorRoles = ["root", "middle", "leaf", "bystander"] as const;
+const actorCodes = new Set(["EPERM", "EACCES", "EBUSY", "ENOENT", "EIO", "ENOSPC", "EMFILE", "ENFILE", "EINVAL", "UNKNOWN"]);
+const actorSyscalls = new Set(["open", "write", "close", "rename", "stat", "read", "spawn"]);
+const actorStages = new Set(["identity", "identity-publish", "poll", "spawn-middle", "spawn-leaf", "heartbeat-append", "attempt-fork", "fork-result"]);
+type ActorFailure = { schemaVersion: 1; role: string; stage: string; name: string; code?: string; syscall?: string };
+const readHeartbeat = (file: string): number => {
+  const ticks = statSync(file).size;
+  if (!Number.isSafeInteger(ticks) || ticks < 0) throw new Error("Native heartbeat byte count is invalid.");
+  return ticks;
+};
+const safeError = (error: unknown): Record<string, unknown> => {
+  if (!(error instanceof Error)) return { thrownType: typeof error };
+  const fields: Record<string, unknown> = { name: error.name };
+  const values = error as Error & { code?: string; syscall?: string; errno?: number; win32Code?: number };
+  if (values.code !== undefined && actorCodes.has(values.code)) fields.code = values.code;
+  if (values.syscall !== undefined && actorSyscalls.has(values.syscall)) fields.syscall = values.syscall;
+  if (Number.isSafeInteger(values.errno) && values.errno! >= -0x8000_0000 && values.errno! <= 0xffff_ffff) fields.errno = values.errno;
+  if (Number.isSafeInteger(values.win32Code) && values.win32Code! >= 0 && values.win32Code! <= 0xffff_ffff) fields.win32Code = values.win32Code;
+  return fields;
+};
+const observe = (read: () => unknown): unknown => { try { return read(); } catch (error) { return { observationError: safeError(error) }; } };
+const actorFailures = (root: string): ActorFailure[] => actorRoles.flatMap(role => {
+  const file = path.join(root, role + ".error.json");
+  if (!existsSync(file)) return [];
+  const value = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  if (Object.keys(value).some(key => !["schemaVersion", "role", "stage", "name", "code", "syscall"].includes(key)) ||
+      value.schemaVersion !== 1 || value.role !== role || typeof value.name !== "string" || typeof value.stage !== "string" || !actorStages.has(value.stage) ||
+      value.code !== undefined && (typeof value.code !== "string" || !actorCodes.has(value.code)) ||
+      value.syscall !== undefined && (typeof value.syscall !== "string" || !actorSyscalls.has(value.syscall))) throw new Error(`Native ${role} error receipt is invalid.`);
+  return [value as ActorFailure];
+});
 const script = path.resolve(import.meta.dirname, "../fixtures/windows-owned-command-tree.mjs");
 const until = async (check: () => boolean | Promise<boolean>, deadline = performance.now() + 10_000): Promise<void> => {
   while (!await check()) {
@@ -24,6 +55,8 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
   let directory: string, api: WindowsCommandJobKernel;
   let terminateProcess: (handle: unknown, code: number) => number;
   let restrict: (handle: unknown) => unknown;
+  let nativeLastError: () => number;
+  let openSharedHeartbeat: (file: string) => unknown, closeSharedHeartbeat: (handle: unknown) => void;
   beforeAll(async () => {
     const root = path.resolve(import.meta.dirname, "../../../../.tmp"); await mkdir(root, { recursive: true });
     directory = await mkdtemp(path.join(root, "native-owned-command-")); api = await loadWindowsJobKernel();
@@ -31,7 +64,18 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
     terminateProcess = kernel.func("int __stdcall TerminateProcess(void *handle, uint32_t code)");
     const current = kernel.func("void * __stdcall GetCurrentProcess()");
     const duplicate = kernel.func("int __stdcall DuplicateHandle(void *sourceProcess, void *source, void *targetProcess, void *target, uint32_t access, int inherit, uint32_t options)");
-    const lastError = kernel.func("uint32_t __stdcall GetLastError()");
+    nativeLastError = kernel.func("uint32_t __stdcall GetLastError()");
+    const lastError = nativeLastError;
+    const openFile = kernel.func("void * __stdcall CreateFileW(str16 name, uint32_t access, uint32_t share, void *security, uint32_t disposition, uint32_t flags, void *templateFile)");
+    const closeHandle = kernel.func("int __stdcall CloseHandle(void *handle)");
+    const bits = koffi.sizeof("void *") * 8;
+    openSharedHeartbeat = file => {
+      // Permit heartbeat writes while withholding the delete sharing required by replacement.
+      const handle: unknown = openFile(file, 0x8000_0000, 3, null, 3, 0x80, null), code = lastError();
+      if (handle === null || BigInt.asUintN(bits, koffi.address(handle)) === (1n << BigInt(bits)) - 1n) throw Object.assign(new Error("Native shared heartbeat reader did not open."), { win32Code: code });
+      return handle;
+    };
+    closeSharedHeartbeat = handle => { if (!closeHandle(handle)) { const code = lastError(); throw Object.assign(new Error("Native shared heartbeat reader did not close."), { win32Code: code }); } };
     restrict = job => {
       const buffer = Buffer.alloc(koffi.sizeof("void *"));
       if (!duplicate(current(), job, current(), buffer, 0x00100007, 0, 0)) throw new Error(`Native Job restriction failed (${lastError()}).`);
@@ -45,6 +89,26 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
     let command: WindowsOwnedCommand | undefined, job: unknown, jobClosed = false, closeAttempted = false, primary: unknown;
     let nativeDenial: unknown, closeCalls = 0, terminateCalls = 0, sealed = false, bystanderClosed = false;
     let bystander: ChildProcess | undefined, bystanderError: unknown;
+    let currentStage = "create-fixture";
+    const healthy = (liveRoles: readonly string[]): void => {
+      const failures = actorFailures(root);
+      if (failures.length) throw Object.assign(new Error(`Native fixture actor ${failures[0]!.role} failed at ${failures[0]!.stage}.`), { fixtureRole: failures[0]!.role, stage: currentStage });
+      if (bystanderError !== undefined) throw bystanderError;
+      if (bystanderClosed) throw new Error(`Native bystander exited before ${currentStage}.`);
+      for (const role of liveRoles) {
+        const member = members.find(candidate => candidate.role === role);
+        if (member === undefined) throw new Error(`Native ${role} was not captured before ${currentStage}.`);
+        if (api.signaled(member.handle)) throw new Error(`Native ${role} exited before ${currentStage}.`);
+      }
+    };
+    const barrier = async (stage: string, check: () => boolean | Promise<boolean>, liveRoles: readonly string[], deadline = performance.now() + 10_000): Promise<void> => {
+      currentStage = stage; await until(() => { healthy(liveRoles); return check(); }, deadline);
+    };
+    const failureSnapshot = (): Record<string, unknown> => {
+      return { stage: currentStage, actorErrors: observe(() => actorFailures(root)),
+        members: members.map(member => ({ role: member.role, pid: member.pid, birth: member.birth, signal: observe(() => api.signaled(member.handle)) })),
+        heartbeats: ["leaf", "bystander"].map(role => { const file = path.join(root, role + ".heartbeat"); return { role, present: existsSync(file), ticks: observe(() => existsSync(file) ? readHeartbeat(file) : null) }; }) };
+    };
     const record = (stage: string, extra: Record<string, unknown> = {}) => events.push({ stage, atNs: process.hrtime.bigint().toString(),
       members: members.map(member => ({ role: member.role, pid: member.pid, birth: member.birth, signaled: api.signaled(member.handle) })), ...extra });
     const capture = (role: string, pid: number, birth?: string, suppliedHandle?: unknown): Member => {
@@ -68,7 +132,8 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
       }
     };
     const declared = async (role: string): Promise<Member> => {
-      const file = path.join(root, role + ".json"); await until(() => existsSync(file));
+      const file = path.join(root, role + ".json");
+      await barrier("declaration-" + role, () => existsSync(file), members.filter(member => member.role === "bystander" || member.role === "root").map(member => member.role));
       const value = JSON.parse(await readFile(file, "utf8")) as { pid: number; birth: string };
       if (role === "root") {
         const original = members.find(member => member.role === "root");
@@ -96,9 +161,11 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
         sealAdmissions: handle => {
           api.sealAdmissions(handle); sealed = true;
           if (scenario === "seal") {
+            currentStage = "seal-fork-result";
             writeFileSync(path.join(root, "attempt-fork"), "release");
             const deadline = performance.now() + 1000;
             while (!existsSync(path.join(root, "fork-result.json"))) {
+              healthy(["bystander", "root", "middle", "leaf"]);
               if (performance.now() >= deadline) throw new Error("Sealed native fork observation did not finish.");
               Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
             }
@@ -134,24 +201,25 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
       writeFileSync(path.join(root, "spawn"), "release");
       const middle = await declared("middle"), leaf = await declared("leaf");
       expect(api.contains(job, leaf.handle)).toBe(true);
-      const heartbeat = path.join(root, "leaf.heartbeat"); await until(() => existsSync(heartbeat));
-      const before = Number(readFileSync(heartbeat, "utf8")); await until(() => Number(readFileSync(heartbeat, "utf8")) > before);
+      const heartbeat = path.join(root, "leaf.heartbeat"); await barrier("initial-leaf-heartbeat", () => existsSync(heartbeat), ["bystander", "root", "middle", "leaf"]);
+      const before = readHeartbeat(heartbeat); await barrier("initial-leaf-heartbeat-growth", () => readHeartbeat(heartbeat) > before, ["bystander", "root", "middle", "leaf"]);
       if (scenario !== "seal") {
-        writeFileSync(path.join(root, "leave-middle"), "release"); await until(() => api.signaled(middle.handle));
-        writeFileSync(path.join(root, "leave-root"), "release"); await command.closed;
+        writeFileSync(path.join(root, "leave-middle"), "release"); await barrier("middle-exit", () => api.signaled(middle.handle), ["bystander", "root", "leaf"]);
+        currentStage = "original-root-and-pipes-closed"; writeFileSync(path.join(root, "leave-root"), "release"); await command.closed;
         expect(api.signaled(target.handle)).toBe(true); expect(api.signaled(leaf.handle)).toBe(false);
-        const closedRootBaseline = Number(readFileSync(heartbeat, "utf8")); let advanced = closedRootBaseline;
-        await until(() => {
+        const closedRootBaseline = readHeartbeat(heartbeat); let advanced = closedRootBaseline;
+        await barrier("post-root-leaf-heartbeat-growth", () => {
           expect(api.signaled(leaf.handle)).toBe(false);
-          const observed = Number(readFileSync(heartbeat, "utf8"));
+          const observed = readHeartbeat(heartbeat);
           if (observed <= closedRootBaseline) return false;
           advanced = observed; return true;
-        });
+        }, ["bystander", "leaf"]);
         const currentMembership = api.contains(job, leaf.handle), inventory = api.inspect(job);
         expect(currentMembership).toBe(true); expect(inventory).toContain(leaf.pid);
         record("closed-root-with-detectable-live-leaf", { leafMembership: currentMembership, inventory,
           leafHeartbeat: { before: closedRootBaseline, after: advanced } });
       }
+      currentStage = "stop-owned";
       if (scenario === "last-owner-failure") {
         let failure: unknown;
         try { await command.stop(); } catch (error) { failure = error; }
@@ -159,7 +227,7 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
         expect(nativeDenial).toMatchObject({ name: "WindowsJobError", stage: "terminate-members", win32Code: 5 });
         expect((failure as WindowsCommandCleanupError).errors[0]).toBe(nativeDenial);
         expect(closeCalls).toBe(1); expect(jobClosed).toBe(true);
-        await until(() => members.filter(member => member.role !== "bystander").every(member => api.signaled(member.handle)));
+        await barrier("last-owner-close-owned-exit", () => members.filter(member => member.role !== "bystander").every(member => api.signaled(member.handle)), ["bystander"]);
         record("last-owner-close-assisted-exit-error-retained-before-fixture-cleanup", { originalErrorRetained: (failure as WindowsCommandCleanupError).errors[0] === nativeDenial });
       } else {
         await command.stop();
@@ -168,10 +236,10 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
       }
       expect(sealed).toBe(true); expect(terminateCalls).toBe(1); expect(closeCalls).toBe(1); expect(jobClosed).toBe(true);
       expect(api.signaled(unrelated.handle)).toBe(false);
-      const bystanderHeartbeat = path.join(root, "bystander.heartbeat"); await until(() => existsSync(bystanderHeartbeat));
-      const alive = Number(readFileSync(bystanderHeartbeat, "utf8")); await until(() => Number(readFileSync(bystanderHeartbeat, "utf8")) > alive);
+      const bystanderHeartbeat = path.join(root, "bystander.heartbeat"); await barrier("post-stop-bystander-heartbeat", () => existsSync(bystanderHeartbeat), ["bystander"]);
+      const alive = readHeartbeat(bystanderHeartbeat); await barrier("post-stop-bystander-heartbeat-growth", () => readHeartbeat(bystanderHeartbeat) > alive, ["bystander"]);
       record("bystander-still-writing-before-fixture-cleanup");
-    } catch (error) { primary = error; throw error; }
+    } catch (error) { primary = error; events.push({ stage: "failure-before-fixture-cleanup", atNs: process.hrtime.bigint().toString(), observation: failureSnapshot() }); throw error; }
     finally {
       const failures: unknown[] = [];
       const attempt = (action: () => void): void => { try { action(); } catch (error) { failures.push(error); } };
@@ -194,6 +262,88 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
   it("detects and stops a detached member after its original root and parent exit", async () => exercise("survivor"), 30_000);
   it("seals new user-code admission while an already admitted root remains alive", async () => exercise("seal"), 30_000);
   it("retains an actual native stop failure even when final last-owner close later kills the member", async () => exercise("last-owner-failure"), 30_000);
+
+  it("keeps append heartbeat progress while a known shared reader refuses atomic replacement", async () => {
+    const root = await mkdtemp(path.join(directory, "shared-reader-")), heartbeat = path.join(root, "bystander.heartbeat"), events: unknown[] = [];
+    let child: ChildProcess | undefined, childClosed = false, childError: unknown, member: Member | undefined, reader: unknown, readerOwned = false, primary: unknown;
+    let stage = "actor-declaration";
+    const healthy = (): void => {
+      const failures = actorFailures(root);
+      if (failures.length) throw new Error(`Shared-reader actor failed at ${failures[0]!.stage}.`);
+      if (childError !== undefined) throw childError;
+      if (childClosed || member !== undefined && api.signaled(member.handle)) throw new Error(`Shared-reader actor exited before ${stage}.`);
+    };
+    const barrier = async (check: () => boolean): Promise<void> => until(() => { healthy(); return check(); });
+    const snapshot = (): Record<string, unknown> => ({ stage, readerHeld: readerOwned, actorErrors: observe(() => actorFailures(root)),
+      actor: member === undefined ? null : { pid: member.pid, birth: member.birth, signal: observe(() => api.signaled(member!.handle)) },
+      ticks: observe(() => existsSync(heartbeat) ? readHeartbeat(heartbeat) : null) });
+    try {
+      child = spawn(process.execPath, [script, root, "bystander"], { stdio: "ignore", windowsHide: true });
+      child.once("error", error => { childError = error; }); child.once("close", () => { childClosed = true; });
+      const file = path.join(root, "bystander.json"); await barrier(() => existsSync(file));
+      const declared = JSON.parse(readFileSync(file, "utf8")) as { pid: number; birth: string };
+      const handle = api.open(declared.pid);
+      if (handle === null) throw new Error("Shared-reader actor disappeared before capture.");
+      try {
+        const identity = api.identity(handle);
+        if (identity.pid !== declared.pid || identity.birth.toString() !== declared.birth || identity.pid !== child.pid || identity.parentPid !== process.pid || api.signaled(handle)) throw new Error("Shared-reader actor identity did not match its original child.");
+        member = { role: "bystander", pid: identity.pid, birth: identity.birth.toString(), handle };
+      } catch (error) {
+        try { api.closeProcess(handle); } catch (closeError) { throw new AggregateError([error, closeError], "Rejected shared-reader observation did not close."); }
+        throw error;
+      }
+      stage = "heartbeat-ready"; await barrier(() => existsSync(heartbeat) && readHeartbeat(heartbeat) > 0);
+      reader = openSharedHeartbeat(heartbeat); readerOwned = true;
+      const replacement = heartbeat + ".replacement"; writeFileSync(replacement, Buffer.from([1]));
+      let replacementError: unknown;
+      stage = "refuse-replacement";
+      try { renameSync(replacement, heartbeat); } catch (error) { replacementError = error; }
+      expect(replacementError).toBeInstanceOf(Error);
+      expect((replacementError as NodeJS.ErrnoException).syscall).toBe("rename");
+      expect(typeof (replacementError as NodeJS.ErrnoException).code).toBe("string"); expect(existsSync(replacement)).toBe(true);
+      const before = readHeartbeat(heartbeat); stage = "append-with-reader-held";
+      await barrier(() => readHeartbeat(heartbeat) > before);
+      const after = readHeartbeat(heartbeat);
+      expect(after).toBeGreaterThan(before); expect(api.signaled(member.handle)).toBe(false); expect(readerOwned).toBe(true);
+      events.push({ stage: "append-progress-before-reader-or-actor-cleanup", holder: "fixture-owned-shared-reader", shareMode: 3, deleteSharing: false,
+        replacementError: safeError(replacementError), heartbeat: { before, after }, observation: snapshot() });
+    } catch (error) { primary = error; events.push({ stage: "failure-before-fixture-cleanup", observation: snapshot() }); throw error; }
+    finally {
+      const failures: unknown[] = [];
+      const attempt = (action: () => void): void => { try { action(); } catch (error) { failures.push(error); } };
+      const deadline = performance.now() + 10_000, cooperativeDeadline = deadline - 1000;
+      if (readerOwned) { readerOwned = false; attempt(() => closeSharedHeartbeat(reader)); }
+      let requested = false, joined = false, forceAttempted = false;
+      try { writeFileSync(path.join(root, "leave-bystander"), "release"); requested = true; } catch (error) { failures.push(error); }
+      const actorClosed = (): boolean => (member === undefined || api.signaled(member.handle)) && (child === undefined || childClosed);
+      if (requested) {
+        try { await until(actorClosed, cooperativeDeadline); joined = true; } catch (error) { failures.push(error); }
+      }
+      if (!joined) {
+        if (member !== undefined) attempt(() => {
+          if (!api.signaled(member!.handle)) {
+            forceAttempted = true;
+            if (!terminateProcess(member!.handle, 1)) { const code = nativeLastError(); throw Object.assign(new Error("Shared-reader actor termination failed."), { win32Code: code }); }
+          }
+        });
+        else if (child !== undefined && child.exitCode === null && child.signalCode === null) attempt(() => { forceAttempted = true; child!.kill("SIGKILL"); });
+        try { await until(actorClosed, deadline); joined = true; } catch (error) { failures.push(error); }
+      }
+      let finalSignal: unknown = null;
+      if (member !== undefined) {
+        try { finalSignal = api.signaled(member.handle); }
+        catch (error) { failures.push(error); finalSignal = { observationError: safeError(error) }; }
+      }
+      const abandonedChildReference = !joined && child !== undefined && !childClosed;
+      events.push({ stage: "cleanup-before-observer-close", atNs: process.hrtime.bigint().toString(), cooperativeRequested: requested, forceAttempted, joined, childClosed, abandonedChildReference,
+        actor: member === undefined ? null : { pid: member.pid, birth: member.birth, signaled: finalSignal } });
+      if (abandonedChildReference) attempt(() => { child!.unref(); });
+      if (member !== undefined) attempt(() => api.closeProcess(member!.handle));
+      if (childError !== undefined && childError !== primary) failures.push(childError);
+      console.error("WINDOWS_HEARTBEAT_SHARING_DIAGNOSTIC " + JSON.stringify({ primaryError: primary === undefined ? null : safeError(primary), cleanupErrors: failures.map(safeError), events }));
+      if (failures.length) throw new AggregateError(primary === undefined ? failures : [primary, ...failures], "Shared-reader fixture cleanup failed.", primary === undefined ? undefined : { cause: primary });
+    }
+  }, 30_000);
 
   it("preserves quoted argv, Unicode environment, NUL input, and a backpressured binary pipe tail", async () => {
     const root = await mkdtemp(path.join(directory, "argv 中文 "));

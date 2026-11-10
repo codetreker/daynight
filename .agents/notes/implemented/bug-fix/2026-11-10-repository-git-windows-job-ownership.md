@@ -155,6 +155,17 @@ retaining a full-access Job handle cannot prove last-owner kill-on-close. A
 successful Job termination request is joined before fixture-only per-object
 fallback; asynchronous exit is not treated as a second termination error.
 
+Native Git and platform fixture heartbeats append one byte per beat and observe
+file size from a fresh baseline. Repeated atomic replacement would require
+[delete sharing](https://github.com/MicrosoftDocs/sdk-api/blob/656e9656bfaef34dd29cd7ee9e1146aec17e924c/sdk-api-src/content/fileapi/nf-fileapi-createfilew.md#L153-L166)
+from open readers; an observation channel must not depend on replacing its hot
+file. Identity and error receipts still publish atomically once. Append/stat
+errors remain failures, and held process identity, liveness, membership and
+strict progress checks remain independent requirements. A controlled read handle
+that permits writing but denies deletion qualifies this protocol; it does not
+identify the holder behind a historical CI error. Legacy review heartbeats keep
+their separate format.
+
 Normal release is compared with direct Git in separate short-lived CLI owners:
 the background leaf must advance from a fresh heartbeat baseline after its CLI
 has exited. Suspended owner-loss controls keep the ambient Job open and require
