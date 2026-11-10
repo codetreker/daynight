@@ -1,4 +1,5 @@
 import path from "node:path";
+import { inspect } from "node:util";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cpSync } from "node:fs";
@@ -606,7 +607,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await writeFile(blocker, "setInterval(() => {}, 1000);\n");
     git(f.repository, ["config", "remote.origin.uploadpack", `\"${process.execPath}\" \"${blocker}\"`]);
     const adapter = manager(f.root, { runGit: (cwd, args, op, options) => runRepositoryGit(cwd, args, op, args.includes("fetch") ? { ...options, timeoutMs: 1500 } : options) });
-    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("deadline exceeded");
+    const prepared = adapter.prepareWorktree(f.project, f.owner, operation()).catch((error: unknown) => {
+      if (error instanceof AggregateError) console.error("Fetch timeout cleanup evidence:", inspect(error, { depth: null }));
+      throw error;
+    });
+    await expect(prepared).rejects.toThrow("deadline exceeded");
     expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
     expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
   });
