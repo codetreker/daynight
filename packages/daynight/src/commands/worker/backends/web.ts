@@ -1,3 +1,4 @@
+import type { ArchiveProbeResult } from "../../controller/archive-error.js";
 import { parseStartupObservation, type SessionStartupReport, type StartupObservation } from "../../../session/startup.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../cleanup-operation.js";
 import path from "node:path";
@@ -25,6 +26,7 @@ export type WebBackendOptions = {
   promptSource?: Pick<WorkerPromptSource, "current">;
   preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>;
   request?: typeof requestController;
+  probeArchive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<ArchiveProbeResult>;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
   onUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => void;
 };
@@ -516,6 +518,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         signal.throwIfAborted();
         if (!launched) success(task, { kind: "cleanup", phase: "agent-stop" });
         if (kind === "shutdown") return { task, complete: true };
+        const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
+        const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
+        stage = "observation";
+        if (enroll) await cleanupOperation(operation => enroll.call(options.git, project, task, operation), signal);
         if (launched) {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
@@ -526,7 +532,6 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);
-        const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
         await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
         if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
         success(task, { kind: "cleanup", phase: "worktree-removal" });
@@ -540,6 +545,17 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   return {
     ...backend,
+    probeArchive: async (input: LocalTask, signal: AbortSignal): Promise<ArchiveProbeResult> => {
+      signal.throwIfAborted();
+      const task = current(input);
+      if (task.worktreeId !== input.worktreeId || task.webExecution === null || input.webExecution === null
+        || task.webExecution.executionId !== input.webExecution.executionId || task.webExecution.executionGeneration !== input.webExecution.executionGeneration
+        || task.webExecution.launchId !== input.webExecution.launchId || task.cleanup?.kind !== "terminal") throw new Error("Archive probing requires the original terminal execution.");
+      if (!options.probeArchive) throw new Error("Archive condition probing is unavailable; the original source is retained.");
+      const result = await options.probeArchive(task, journal(task), signal);
+      signal.throwIfAborted();
+      return result;
+    },
     setMonitoringObserver: (value: Monitoring): void => {
       monitoring = value;
       if (value.observeFailure !== undefined) for (const [key, pending] of pendingFailures) {

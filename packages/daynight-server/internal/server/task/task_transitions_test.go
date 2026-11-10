@@ -25,6 +25,7 @@ func TestTaskHTTPStatusResultsAndSafeDiagnostics(t *testing.T) {
 		status        model.TaskStatus
 		version       int64
 	}{
+		{"proposed", "changed", model.TaskProposed, 2},
 		{"todo", "changed", model.TaskTodo, 2},
 		{"in_progress", "changed", model.TaskInProgress, 2},
 		{"done", "changed", model.TaskDone, 2},
@@ -101,7 +102,7 @@ func TestTaskHTTPStatusStrictBodiesQueriesAndMethods(t *testing.T) {
 	if h.Tasks.TotalCalls() != 0 {
 		t.Fatalf("protocol rejection called service %d times", h.Tasks.TotalCalls())
 	}
-	for _, status := range []string{"proposed", "Todo", " todo", ""} {
+	for _, status := range []string{"unknown", "Todo", " todo", ""} {
 		t.Run("domain_"+status, func(t *testing.T) {
 			f := newHTTPFixture(t, io.Discard)
 			f.Tasks.SetStatusFunc = func(_ context.Context, _ model.Principal, _, _ string, input taskcore.SetTaskStatus) (model.Task, error) {

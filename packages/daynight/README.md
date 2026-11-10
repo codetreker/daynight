@@ -255,36 +255,20 @@ references to read separately.
 
 The option must be the sole argument. Extra arguments or another option exit
 with status 2 and empty stdout before the manual is read. A missing file, read
-failure or invalid UTF-8 exits with status 1 and retains its cause. Reading and
+failure, blank content or invalid UTF-8 exits with status 1 and retains its cause. Reading and
 validation complete before output; an output failure can leave partial stdout.
 The command requires no login, Git repository, configuration, launcher or
 interactive terminal, and creates no files.
 
-The `using-daynight` skill owns task orchestration workflows and is installed
-through the separate command below. The CLI manual explains command use.
+The `using-daynight` skill installs the same product manual for an Agent. Repository
+workflow and Worker execution constraints remain separate from this manual.
 
 ## Agent skill installation
 
-The public `using-daynight` skill provides task creation, handoff review and
-execution of one specified task. Ordinary execution reads `run-task.md`.
-Worker-started agents use `autopilot-managed-task` only when their startup
-prompt explicitly names the `worker-managed` environment, the `using-daynight`
-skill and that mode, together with their assignment. `SKILL.md` routes to the
-selected instructions; ordinary execution does not load managed task rules.
-Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
-The [foreground worker](#worker-configuration-and-startup) constructs that
-explicit assignment and loads the installed managed entry before launch.
-Managed execution follows one assignment through implementation, validation,
-focused PR delivery, CI and review repair, and merge. A valid worker-managed
-assignment already has sufficient authorization for that delivery and PR merge;
-merge as soon as the checks and review conditions are satisfied without asking
-for additional confirmation. Explicit user restrictions, pauses and revocation
-remain binding. Pending CI or
-review stays in execution; demonstrated external blockers return to the worker
-with a checkpoint. Merge requires current-head approval and required checks,
-and platform confirmation; mainline CI after merge is awaited only on explicit
-request. The mode preserves the assigned scope, the original claim and the
-controller's ownership of worktree, branch and workspace cleanup.
+The public skill contains a short navigation entry and the complete manual, also
+available offline with `daynight --skill`. The Worker supplies its execution
+constraints and original assignment in its prompt; each repository's rules and
+actual authorization govern delivery.
 
 Install the skill through an interactive terminal:
 
@@ -918,10 +902,10 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
-Creation starts in `todo` with `allowAgents=false` and unrestricted
+Creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Creation uses `allowAgents=false` and unrestricted
 `requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
-sets `todo`, `in_progress`, `done` or `cancelled`. The original three states retain
+sets `proposed`, `todo`, `in_progress`, `done` or `cancelled`. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
 reopening and direct completion; cancellation is irreversible and does not prove
 delivery. Cancelled records and materials remain readable.
 Every project member may use ordinary status setting. Active worker completion
@@ -953,14 +937,14 @@ Migration `014_task_status_assignment.sql` converts historical proposed rows
 to todo, increments only those versions and updates their update time while
 preserving every other field, including requiredPlatform and historical execution timestamps. Default,
 data, CHECK and ledger change atomically. Other rows and applied migrations remain
-unchanged; restart does not repeat the conversion. Runtime readers reject the old state.
+unchanged; restart does not repeat the conversion. A subsequent migration restores proposed as a current status and the creation default without changing existing rows or historical migrations.
 
 Task resources expose required nullable startedAt, completedAt and cancelledAt.
 Cancellation preserves both execution endpoints and records its own database
 time; a cancelled task never resumes execution or starts a new duration. Actual entry
-into in_progress starts a new interval and clears the end; return to todo clears
+into in_progress starts a new interval and clears the end; return to proposed or todo clears
 both. In-progress to done preserves a nullable start and records a real end;
-todo to done records only an end, leaving duration unknown. Metadata and same-state
+proposed/todo to done records only an end, leaving duration unknown. Metadata and same-state
 writes preserve time. Task-graph and task-sync responses supply a database
 `observedAt` sample; Web synchronization updates its separate clock without
 rebuilding unchanged graph/index data.
@@ -1286,7 +1270,7 @@ User signal cancellation exits 130. JSON retains the
 original body or explicit content reference; text retains readable line breaks
 while escaping terminal controls. Session reads do not execute message content,
 start Agents, change claims or grant sending permission. The bundled
-[Session inspection guide](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+[Session inspection guide](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
 describes the Agent workflow and equivalent MCP read tools.
 
 ### Task Session messages and recovery
@@ -1343,7 +1327,7 @@ identity in bounded output. Provider acceptance and confirmation do not mean the
 Agent completed the requested work. Local receipt-save or output failure does
 not undo service acceptance or authorize another POST.
 
-The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
 describes authorized use, unknown recovery and the corresponding MCP tools.
 
 ## Task properties
@@ -1956,13 +1940,24 @@ existing service credentials and stable worker identity, with no separate
 command or configuration switch.
 
 The cloud target owns concurrency, polling and recovery limits, platform-specific
-acquisition preference, Project selection, and global/per-Project Agent, model and
-arguments. Repository roots, local paths, service credentials, Worker identity,
-`agentControlMode`, and optional
+acquisition preference, control mode, Project selection, and global/per-Project
+Agent, model and arguments. Repository roots, local paths, service credentials,
+Worker identity, and optional
 `agentModel` / `agentReasoningEffort` overrides stay local. First enrollment imports a candidate from the original local YAML only
 when no cloud target exists. Later starts and heartbeats always use the cloud
 target; legacy local managed fields cannot replace it. Configuration enrollment does not depend
 on active claims or alter task/claim formats, permission or recovery rules.
+
+My Workers → Configuration → Control mode selects `herdr` or `web`. A new local
+configuration defaults to `herdr`; an existing local `web` setting is adopted
+when its cloud target has not yet acquired a mode. Explicit cloud choices win
+over later bootstrap candidates. Both service and CLI must support the separate
+`Daynight-Worker-Control-Mode: 1` capability; older services keep local mode.
+Applying a mode validates it together with global native settings and publishes
+the pair only after persistence. Project native settings are revalidated for that
+mode. Existing claims retain their frozen mode, native settings, sessions and
+worktrees. Failed application keeps the previous effective pair and reports the
+failure; saving a target alone does not confirm application.
 
 Set `worker.agentModel` and/or `worker.agentReasoningEffort` to override only
 those settings for new executions, even after enrollment. Each field independently
@@ -2191,18 +2186,20 @@ The Worker stores its target, successful per-item values, errors and observation
 acknowledgments in `worker/configuration.json`, scoped to the service origin,
 authenticated user and Worker ID. One serialized commit owner merges receives,
 application results and acknowledgments, atomically persists the latest state,
-then publishes an immutable effective view. The cache uses schema version 2;
-version 1 is explicitly migrated, adding a false platform preference and pending
-application item for an initialized target while preserving removals, retries,
-failures and observation identity.
-The observation limit of 1025 retains space for the added scalar alongside a full
-previous collection. Current-format missing fields, invalid scope, corrupt data
+then publishes an immutable effective view. The cache uses schema version 3;
+versions 1 and 2 are explicitly migrated while preserving removals, retries,
+failures, unadopted mode and observation identity. Version 1 also retains its
+platform-preference migration. Native history records its validation mode and
+must be revalidated in a new process. The negotiated observation limit is 1026,
+including at most 1025 non-mode items; old projections retain the 1025 limit. Current-format missing fields, invalid scope, corrupt data
 and storage errors remain failures. Cached native success history is retained for
 observation. For both global and Project native settings, a new runtime validates
 the current cloud target first and publishes that tuple on success, including
 explicit null model and empty arguments. Only a failed target validation permits
-revalidation of historical successful settings under the current local control
-mode. Unvalidated history remains unavailable while the target is being checked;
+revalidation of historical successful settings under their recorded control
+mode. Migrated version 1/2 history has no recorded mode and must instead be
+validated under the local compatibility mode; that mode is not historical proof.
+Unvalidated history remains unavailable while the target is being checked;
 values already validated in this runtime remain usable during later updates.
 Atomic file replacement alone does not permit an older application result to
 overwrite a newer target.
@@ -2429,7 +2426,7 @@ exact version and confirms the same assignment and pause before waiting. It
 reports the issue and retains session context; the user chooses how to respond.
 After verifying resolution, the original assignment and permission to resume,
 it clears the pause and confirms false or absence before continuing. Independent
-user restrictions still apply. The [managed workflow](src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction)
+user restrictions still apply. The [Worker execution contract](../../docs/spec/daynight-worker.md)
 owns readback, failure and conflict handling.
 
 The Worker appends the latest confirmed personal user, project and Worker prompt
@@ -2637,7 +2634,7 @@ Restart resumes the same claim's remaining resources without starting business
 execution. Previously confirmed cleanup responsibility can continue during later
 service-read failures.
 
-Native cleanup failures retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
+Transient or unclassified cleanup failures retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
 seconds, when normal reconciliation next observes eligibility. Backoff does not
 spend execution recovery budget or release a capacity slot. Other eligible
 cleanup and healthy execution continue under the existing capacity limit. Errors
@@ -2645,6 +2642,36 @@ identify the failed stage and next retry time, distinguishing unconfirmed native
 stop from a stopped agent awaiting backend closure, archive upload or worktree
 removal. If a retry-state write fails, the current process retains bounded
 backoff and both errors without claiming that the latest decision is durable.
+
+A known incomplete Web archive enters a durable repair-required state. Every
+15 minutes the Worker checks the original stopped generation without loading
+pending timeline content or resource bytes. The claim, source and capacity remain
+reserved. A recovered receipt still enters the normal remote receipt validation;
+its presence alone neither clears the repair classification nor releases resources.
+Confirmed complete source conditions clear the saved repair classification before
+a full cleanup attempt, which must pass every archive and ownership check. Later
+transient upload failures use normal cleanup backoff or the 60-second historical
+backfill retry. A failed classification write preserves the repair wait; successful
+classification changes still retain cleanup responsibility and capacity until
+complete cleanup succeeds. Repeated checks do not repair missing history or clear
+its completeness flags.
+
+On supported macOS APFS volumes, an immutable identity sidecar lets a newer
+Worker verify the original worktree after mount device numbers change. Existing
+worktrees acquire this evidence only while their original ownership checks still
+pass. A worktree that already drifted without saved evidence needs explicit
+reconciliation; restarting cannot manufacture the missing proof. Other platforms
+retain strict identity checks. Keep the original marker and sidecar intact.
+
+A fully enumerated, independently attributed damaged worktree can be quarantined
+only for static local validation failures under stable observations, while
+unrelated tasks use remaining capacity. It retains its claim's slot and blocks
+reuse of the same task. Observed changes to ownership, metadata, current directory
+objects or Git pointers during inspection leave coverage unknown. An early
+validation failure cannot bypass the scan's recheck of the indexed ownership
+marker. Unreadable inventory, changing observations or conflicting ownership
+still blocks new acquisition globally. An online heartbeat or zero remote active
+tasks does not establish that local capacity is available.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
 terminal cleanup, and joins them before directly stopping agents and closing
@@ -2701,10 +2728,12 @@ recovery ledger. The
 
 ## Web worker sessions
 
-Set `worker.agentControlMode: web` and select `worker.agent: codex`, `claude` or
-`copilot` in `~/.daynight/config.yml`. The default mode is `herdr`. The mode is
+Select Control mode `web` and Agent `codex`, `claude` or `copilot` in
+My Workers → Configuration. Before enrollment, `worker.agentControlMode` and
+`worker.agent` in `~/.daynight/config.yml` supply the initial values.
+The default mode is `herdr`. The mode is
 worker-wide, frozen by the service on each claim, and cannot be changed through
-summary updates. Older service records without a mode mean Herdr. Changing
+summary updates. Older claim records without a mode mean Herdr. Changing
 configuration affects new claims; existing work stays with its original backend.
 
 Web execution does not initialize, start or probe Herdr. Independent runtime
@@ -2888,8 +2917,9 @@ daynight worker resources list
 The JSON result identifies the original Session, project/task/claim/worktree,
 stop evidence, source and worktree paths, source byte count, archive state,
 retry time and any disposal decision. Inspection never starts an Agent. A
-confirmed original stop releases execution capacity even if archival failed;
-`stop_unknown` still consumes capacity. The old worktree continues to reserve
+confirmed original stop releases execution capacity even if archival failed,
+provided no quarantined resource responsibility remains. Quarantine retains its
+reservation until revalidation; `stop_unknown` still consumes capacity. The old worktree continues to reserve
 its task path until verified removal.
 
 New claims are blocked at 20 retained worktrees or 2 GiB of pending recording

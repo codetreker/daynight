@@ -105,6 +105,7 @@ export const inspection: InspectionMessages = {
     cancel: "Cancel",
     closeConfirmation: "Close confirmation",
     unchanged: "The status and execution times will remain unchanged. The reviewed version will still be checked.",
+    resetProposedTiming: "Returning to Proposed clears both execution timestamps.",
     resetTiming: "Returning to To do clears both execution timestamps.",
     startTiming: "Entering In progress starts a new execution interval and clears its completion time.",
     finishTiming: "Completing this execution keeps its recorded start and records a completion time.",

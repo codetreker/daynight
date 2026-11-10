@@ -18,7 +18,7 @@ vi.mock("../../../src/commands/worker/control.js", () => ({ submitWorkerControl:
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 
@@ -38,7 +38,7 @@ beforeEach(() => {
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
   mocks.git.mockReturnValue({ prepareRepository: vi.fn(), dispose: vi.fn(async () => {}) });
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn() });
-  mocks.prompt.mockResolvedValue(() => "prompt");
+  mocks.prompt.mockReturnValue("prompt");
   mocks.probe.mockResolvedValue("0.164.0");
   mocks.coordinator.mockReturnValue({ tick: vi.fn(), shutdown: vi.fn() });
 });

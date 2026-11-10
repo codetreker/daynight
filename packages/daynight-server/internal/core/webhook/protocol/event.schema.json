@@ -126,6 +126,7 @@
     },
     "taskStatus": {
       "enum": [
+        "proposed",
         "todo",
         "in_progress",
         "done",
@@ -187,6 +188,16 @@
         {
           "not": {
             "anyOf": [
+              {
+                "properties": {
+                  "previousStatus": {
+                    "const": "proposed"
+                  },
+                  "status": {
+                    "const": "proposed"
+                  }
+                }
+              },
               {
                 "properties": {
                   "previousStatus": {

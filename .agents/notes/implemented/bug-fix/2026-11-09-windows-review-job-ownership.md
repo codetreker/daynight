@@ -13,6 +13,12 @@ an intermediate parent that has exited. Both review phases need ownership before
 target code can create descendants, while retaining their actual results and
 streaming behavior.
 
+A native fixture can retain a late Job member that production never captured.
+External termination is asynchronous, so that independent process object need
+not be signaled at the instant the product stop returns. An immediate assertion
+for every fixture handle would demand more than the captured-object completion
+contract.
+
 ## Decision
 
 Each Windows skill-discovery and review phase owns a held, noninheritable Job
@@ -75,6 +81,13 @@ the old incident is not claimed to be reproduced or explained.
 not imply a previously captured process object has signaled. Review retains
 per-object waits and a separate active-count check.
 
+**Require every independent fixture handle to signal at stop return.** The
+fixture intentionally creates one member after production inventory. Its
+asynchronous exit is observed through the fixture's own retained handle, while
+the product's captured objects still require an immediate signaled assertion.
+Starting another grace period after stop would reset the budget. Additional
+fixture waits use the absolute deadline established before stopping.
+
 ## Consequences
 
 Review adds a guardian lifecycle and a native Job setup requirement on Windows.
@@ -93,14 +106,28 @@ and IPC-loss handling with a controlled Job boundary. Deterministic native-bound
 tests prove failure retention and captured-object completion independently from
 membership accounting. Windows fixtures retain representative guardian, target,
 late-child, vanished-parent and bystander objects independently of production
-inventory, including `.cmd` startup and last-owner loss. A synthetic unrelated
-PID-list entry tests real `IsProcessInJob` exclusion; it does not claim native PID
-reuse. Actual Windows acceptance requires executing those fixtures on the same
-source revision; portable passes cannot establish native behavior.
+inventory, including `.cmd` startup and last-owner loss. Explicit-stop cases
+immediately require the guardian and independently held pre-stop inventory
+members to be signaled at stop return. Remaining fixture-only members are
+observed through their retained handles. An absolute deadline derived from the
+existing five-second grace before stopping limits additional waiting. Each
+observation first checks completion, so already-signaled objects pass even if
+joined stop work exhausted that budget; pending objects cannot begin another
+wait after expiry. This does not preempt native calls or joins, or promise a hard
+total wall-clock bound. The bystander must remain alive during every observation.
+All original exit and bystander heartbeat assertions finish before forced
+fixture cleanup can assist termination. Preparation, cleanup and last-owner-loss
+observations retain their ten-second budgets, and native cases retain their
+45-second budgets. A synthetic unrelated PID-list entry tests real
+`IsProcessInJob` exclusion; it does not claim native PID reuse. Actual Windows
+acceptance requires executing those fixtures on the same source revision;
+portable passes cannot establish native behavior.
 
 The native ownership rules follow Microsoft's
 [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
 [TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject),
+the asynchronous termination and process-handle waiting rules in
+[TerminateProcess](https://github.com/MicrosoftDocs/sdk-api/blob/656e9656bfaef34dd29cd7ee9e1146aec17e924c/sdk-api-src/content/processthreadsapi/nf-processthreadsapi-terminateprocess.md#L89-L91),
 and [gated process launch](https://devblogs.microsoft.com/oldnewthing/20181116-00/?p=100245)
 references. The historical ambiguity follows the
 [parent PID example](https://devblogs.microsoft.com/oldnewthing/20150403-00/?p=44313/).

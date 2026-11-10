@@ -15,7 +15,7 @@ worker 根据冻结模式选择 backend。Herdr backend 负责 Codex、Claude、
 
 ## 配置与持久身份
 
-`worker.agentControlMode` 只接受 `herdr|web`，省略为 `herdr`。repository 继承根模式但不可覆盖；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持两种模式。
+Worker 的云端 `agentControlMode` 只接受 `herdr|web`，旧未采纳目标保持未知。新配置从本地 `worker.agentControlMode` 首次采纳，省略时为 `herdr`；旧服务继续使用本地模式。新 claim 只使用经过成组验证并持久发布的 mode/native，既有 claim 继续使用冻结身份。repository 继承全局模式但不可覆盖；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持两种模式。
 
 有效模式进入服务端 WorkerClaim 和本机认领索引，Web 另将配置冻结到独立执行记录和 launch ticket。服务端旧记录缺字段按 Herdr 迁移；本机最小索引按明确 schema 升级补充模式，旧详细 worker 数据库继续明确拒绝，不静默转换。没有执行证据不能补造进程、会话或已停止事实。请求显式 null、未知值或 Web 非空 Herdr binding 均拒绝。
 

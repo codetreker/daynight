@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -19,7 +20,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
 
 const mocks = vi.hoisted(() => ({ git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), backend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
@@ -39,7 +40,7 @@ const cancellations = new Set<AbortController>();
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  mocks.prompt.mockResolvedValue(() => "prompt"); mocks.verify.mockResolvedValue(undefined); mocks.probe.mockResolvedValue("0.164.0");
+  mocks.prompt.mockReturnValue("prompt"); mocks.verify.mockResolvedValue(undefined); mocks.probe.mockResolvedValue("0.164.0");
   mocks.telemetry.mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
 });
 afterEach(async () => {
@@ -93,7 +94,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   };
   mocks.remote.mockReturnValue(remote);
   const prepareRepository = vi.fn(async () => {}), dispose = vi.fn(async () => {});
-  mocks.git.mockReturnValue({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose });
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.backend.mockReturnValue({ advance, cleanup });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });

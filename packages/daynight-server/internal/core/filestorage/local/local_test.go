@@ -77,6 +77,21 @@ func TestFilesRetainAddressesAndBytes(t *testing.T) {
 		t.Fatal("case or bucket alias")
 	}
 	assertNoTemporary(t, root)
+	if err := storage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if got := read(t, reopened, "attachments", "Task/docs/Design 文档.md"); !bytes.Equal(got, content) {
+		t.Fatal("reopening storage changed retained file bytes")
+	}
 }
 
 func TestOverwritePublishesCompleteFileAndKeepsOpenReader(t *testing.T) {

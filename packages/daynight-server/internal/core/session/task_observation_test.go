@@ -150,6 +150,11 @@ func TestTaskObservationDistinguishesAbsenceAndChangedExecution(t *testing.T) {
 		registration, observation, reason string
 	}{
 		{"no worker", func(_ *Engine, s *store.TaskSessionSource, _ *liveSession) { s.Worker = nil; s.Session = nil }, "not_applicable", "observed", "no_execution"},
+		{"proposed", func(_ *Engine, s *store.TaskSessionSource, _ *liveSession) {
+			s.Worker = nil
+			s.Session = nil
+			s.TaskStatus = model.TaskProposed
+		}, "not_applicable", "observed", "not_started"},
 		{"not started", func(_ *Engine, s *store.TaskSessionSource, _ *liveSession) {
 			s.Worker = nil
 			s.Session = nil

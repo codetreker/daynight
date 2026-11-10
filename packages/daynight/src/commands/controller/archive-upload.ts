@@ -1,3 +1,4 @@
+import { ArchiveRepairRequiredError, archiveRepairCode, type ArchiveProbeResult } from "./archive-error.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -30,6 +31,25 @@ const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {
   catch (close) { if (failed) throw new AggregateError([failure, close], "Archive journal operation and shutdown failed."); throw close; }
   if (failed) throw failure;
   return result!;
+};
+
+/** Metadata admission only. A receipt is an opportunity to reconcile, never proof of success. */
+export const probeStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; signal?: AbortSignal }): Promise<ArchiveProbeResult> => {
+  options.signal?.throwIfAborted();
+  const db = new Database(options.journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+  const result = withClosedJournal(db, () => db.transaction((): ArchiveProbeResult => {
+    stoppedSnapshot(db, options.ticket);
+    if (existsSync(`${options.journalPath}.archive-receipt-${options.ticket.executionGeneration}.json`)) return { kind: "attempt" };
+    const version = Number(db.pragma("user_version", { simple: true }));
+    // Older supported formats retain their original migration and archive admission path.
+    if (version < 6) return { kind: "attempt" };
+    assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
+    const source = db.prepare("SELECT projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { projection_gap: string | null; archive_incomplete: number };
+    const code = archiveRepairCode(source);
+    return code === null ? { kind: "complete" } : { kind: "blocked", code };
+  }).deferred());
+  options.signal?.throwIfAborted();
+  return result;
 };
 
 type ArchiveIntent = {
@@ -74,6 +94,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     if (receipt.schemaVersion === undefined) writeDurableJson(receiptPath, current);
     return current;
   }
+  const admission = await probeStoppedControllerArchive({ journalPath, ticket, signal: roundSignal });
+  if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
   const db = openSqliteDatabase({ file: journalPath, format: controllerJournalFormat, allowCreate: false,
     assertMigrationAllowed: (db, source) => { assertOriginal(db); assertJournalMigrationAllowed(db, source); }, onReady: assertOriginal,
   });
@@ -84,7 +106,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     if (!existsSync(`${journalPath}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
     const content = openPendingContent(journalPath, ticket.sessionId, db); reconcilePendingContent(db, content);
     const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough:string; acknowledgedThrough:string; projection_gap:string|null; archive_incomplete:number };
-    if (source.archive_incomplete !== 0 || source.projection_gap !== null && source.projection_gap !== "Recovered pending timeline requires full relay resynchronization.") throw new Error("Pending archive has an unresolved projection gap.");
+    const repairCode = archiveRepairCode(source);
+    if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
     const timeline = parseSessionArchiveTimeline({ entries: [...content.entries.values()].sort((a,b) => BigInt(a.entrySeq) < BigInt(b.entrySeq) ? -1 : 1) });
     const allResources = [...content.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
     const refs = sessionArchiveReferences(timeline.entries), resources = [...refs.resources].sort().map(id => { const resource = content.resources.get(id)?.resource; if (!resource || resource.status === "pending") throw new Error("Pending archive resource is incomplete."); return resource; });

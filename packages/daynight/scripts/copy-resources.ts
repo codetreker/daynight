@@ -2,29 +2,29 @@ import { cpSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
 const resources = [
-  { path: "commands/review/skills/daynight-review", kind: "directory", sqlOnly: false },
-  { path: "commands/skill/skills/using-daynight", kind: "directory", sqlOnly: false },
-  { path: "commands/skill/usage.md", kind: "file", sqlOnly: false },
-  { path: "commands/review/sqlite", kind: "directory", sqlOnly: true },
-  { path: "commands/worker/sqlite", kind: "directory", sqlOnly: true },
-  { path: "commands/worker/backends/sqlite", kind: "directory", sqlOnly: true },
-  { path: "commands/worker/herdr/sqlite", kind: "directory", sqlOnly: true },
-  { path: "commands/worker/herdr/input-sqlite", kind: "directory", sqlOnly: true },
-  { path: "commands/controller/sqlite/journal", kind: "directory", sqlOnly: true },
-  { path: "commands/controller/sqlite/resume-lease", kind: "directory", sqlOnly: true },
+  { source: "commands/review/skills/daynight-review", destination: "commands/review/skills/daynight-review", kind: "directory", sqlOnly: false },
+  { source: "commands/skill/skills/using-daynight", destination: "commands/skill/skills/using-daynight", kind: "directory", sqlOnly: false },
+  { source: "commands/skill/skills/using-daynight/references/manual.md", destination: "commands/skill/usage.md", kind: "file", sqlOnly: false },
+  { source: "commands/review/sqlite", destination: "commands/review/sqlite", kind: "directory", sqlOnly: true },
+  { source: "commands/worker/sqlite", destination: "commands/worker/sqlite", kind: "directory", sqlOnly: true },
+  { source: "commands/worker/backends/sqlite", destination: "commands/worker/backends/sqlite", kind: "directory", sqlOnly: true },
+  { source: "commands/worker/herdr/sqlite", destination: "commands/worker/herdr/sqlite", kind: "directory", sqlOnly: true },
+  { source: "commands/worker/herdr/input-sqlite", destination: "commands/worker/herdr/input-sqlite", kind: "directory", sqlOnly: true },
+  { source: "commands/controller/sqlite/journal", destination: "commands/controller/sqlite/journal", kind: "directory", sqlOnly: true },
+  { source: "commands/controller/sqlite/resume-lease", destination: "commands/controller/sqlite/resume-lease", kind: "directory", sqlOnly: true },
 ];
 
 for (const resource of resources) {
-  const source = statSync(new URL(`../src/${resource.path}`, import.meta.url));
+  const source = statSync(new URL(`../src/${resource.source}`, import.meta.url));
   if (resource.kind === "directory" ? !source.isDirectory() : !source.isFile()) {
-    throw new Error(`Resource source is not a ${resource.kind}: ${resource.path}`);
+    throw new Error(`Resource source is not a ${resource.kind}: ${resource.source}`);
   }
 }
 
 for (const resource of resources) {
   cpSync(
-    new URL(`../src/${resource.path}`, import.meta.url),
-    new URL(`../dist/${resource.path}`, import.meta.url),
+    new URL(`../src/${resource.source}`, import.meta.url),
+    new URL(`../dist/${resource.destination}`, import.meta.url),
     {
       recursive: true,
       errorOnExist: true,

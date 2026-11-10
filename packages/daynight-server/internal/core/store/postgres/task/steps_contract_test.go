@@ -53,8 +53,13 @@ func writerStepReadRows(t *testing.T, database *postgres.Store, projectID, taskI
 	return header, rows
 }
 
-func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
-	database := writerStore(t)
+func TestTaskStepStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "TaskStepsChangeStoreUpdatesOneExistingTarget", testTaskStepsChangeStoreUpdatesOneExistingTarget)
+	suite.run(t, "TaskStepsWritesPreserveParentAcrossExecutionPolicies", testTaskStepsWritesPreserveParentAcrossExecutionPolicies)
+}
+
+func testTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
 	task := writerTask(t, database, project.ID, 10, model.TaskDone)
@@ -320,8 +325,7 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 	}
 }
 
-func TestTaskStepsWritesPreserveParentAcrossExecutionPolicies(t *testing.T) {
-	database := writerStore(t)
+func testTaskStepsWritesPreserveParentAcrossExecutionPolicies(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	dependency := writerTask(t, database, project.ID, 10, model.TaskDone)
 	for index, policy := range []string{"todo", "in_progress", "done", "active_worker", "invalid_worker"} {

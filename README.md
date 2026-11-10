@@ -16,7 +16,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 ## What you can do
 
 - **Organize repository work.** Associate projects with Git repositories, create
-  Markdown tasks, link pull requests and track `todo`, `in_progress`, `done` and `cancelled`.
+  Markdown tasks, link pull requests and track `proposed`, `todo`, `in_progress`, `done` and `cancelled`.
 - **Understand what can start.** Model prerequisites, find ready and blocked
   tasks, and distinguish dependencies within a task chain from dependencies on
   other chains. Both kinds must be completed before dependent work starts.
@@ -33,10 +33,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   complete messages and explicit pagination, including verified Agent attribution
   when an Agent explicitly supplies its current claim.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
-  Copilot CLI or Claude Code to register work, discuss designs, execute specified
-  tasks and review handoffs. Ordinary execution handles one specified task.
-  Worker-started agents use an explicitly assigned managed mode; task readiness
-  and agent permission remain separate from delivery authorization.
+  Copilot CLI or Claude Code for the Daynight product manual. Repository rules
+  and actual authorization govern development and delivery.
 - **Control access and execution settings.** Use private projects, memberships,
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.
@@ -133,7 +131,7 @@ Select the detected agents and User or Project scope, then follow the installer'
 reload instructions. For example, ask your agent: “Use using-daynight to register
 a task for this project: improve the installation instructions.” The
 [skill guide](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-explains task creation, handoff, execution and Goal workflows.
+explains Daynight product operations.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
@@ -215,9 +213,11 @@ saving; the command explicitly reports when the environment still needs attentio
 
 The first run imports local managed settings only when no cloud target exists.
 After enrollment the cloud configuration resource owns concurrency, Project
-selection, global and Project-level Agent/model/args, polling and recovery limits.
+selection, global and Project-level Agent/model/args, control mode, polling and recovery limits.
 Local setup and repository edits direct managed changes to cloud management;
-repository paths, credentials, Worker identity and agentControlMode remain local.
+repository paths, credentials and Worker identity remain local. Control mode is
+adopted once from the local setting, preserving existing `web` Workers; subsequent
+changes use the cloud target after capability negotiation.
 Startup checks the cloud before normal scheduling. Heartbeats receive targets
 and report actual application outcomes independently of task polling; settings
 apply separately, and failed items retain errors for the next accepted report.
@@ -235,11 +235,14 @@ that the supported Herdr installer preserves configuration semantics; unsafe
 layouts fail before installation. Setup remains read-only. Local setup checks do
 not qualify real native execution, provider login or task delivery.
 
-Set `worker.agentControlMode: web` in `~/.daynight/config.yml` to use Daynight's
+Select `web` under My Workers → Configuration → Control mode to use Daynight's
 Task Session page with Codex, Claude Code or Copilot. Web execution uses a private
 Controller and the Daynight relay, with no Herdr dependency. Each claim retains
 its original mode; a configuration change applies only to new claims. Herdr
-continues to own terminal sessions in the default mode.
+continues to own terminal sessions in the default mode. Before enrollment,
+`worker.agentControlMode` supplies the initial mode and defaults to `herdr`.
+Upgrade both the service and CLI to enable cloud mode application; older services
+retain local mode, and a saved target is not an application confirmation.
 
 Before enrollment, `repo add` lists accessible Projects for multiselection. Use
 `--project PROJECT_UUID` for an explicit noninteractive registration;
@@ -477,9 +480,9 @@ result scope and evidence limits.
 ## Working in the repository
 
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
-delivery. This repository manages concrete work in Daynight; load
-[`using-daynight`](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-before executing a task. Use
+delivery. This repository manages concrete work in Daynight; use the
+[`using-daynight` manual](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
+for product operations and follow the [development workflow](.agents/skills/development-workflow/SKILL.md). Use
 [`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
 a bounded change request into a clear task, choose its required operating
 system, and hand it off to a Worker. Use

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { withCliCancellation } from "../../cli/cancellation.js";
+import { validateManualContents } from "./manual.js";
 import type { CliContext } from "../../cli/context.js";
 
 export const runSkillRead = async (context: CliContext): Promise<void> => {
@@ -9,7 +10,7 @@ export const runSkillRead = async (context: CliContext): Promise<void> => {
     let contents: Buffer;
     try {
       contents = await readFile(filename);
-      new TextDecoder("utf-8", { fatal: true }).decode(contents);
+      validateManualContents(contents);
     } catch (cause) { throw new Error(`Cannot read the installed Daynight CLI usage manual ${filename}. Reinstall the npm package and try again.`, { cause }); }
     signal.throwIfAborted();
     let failure: unknown;

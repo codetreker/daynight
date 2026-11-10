@@ -16,7 +16,7 @@ import { installGraphMeasurements } from '../graph-measurements';
 const time = '2026-10-20T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
-  summary: { total: 5, todo: 2, inProgress: 1, done: 2, cancelled: 0, ready: 1, blocked: 1 },
+  summary: { proposed: 0, total: 5, todo: 2, inProgress: 1, done: 2, cancelled: 0, ready: 1, blocked: 1 },
   tasks: [
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
@@ -54,7 +54,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const waitingGraph: GraphData = {
       ...graph,
-      summary: { total: 3, todo: 3, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: 1 },
+      summary: { proposed: 0, total: 3, todo: 3, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: 1 },
       tasks: [
         { ...graph.tasks[0]!, status: 'todo', ready: true },
         { ...graph.tasks[3]!, status: 'todo', dependsOn: ['A', 'F'], blockedBy: ['A', 'F'] },
@@ -236,7 +236,7 @@ describe('localized task graph presentation', () => {
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
-    const completeIndex = buildGraphIndex({ ...graph, summary: { total: 5, todo: 0, inProgress: 0, done: 5, cancelled: 0, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
+    const completeIndex = buildGraphIndex({ ...graph, summary: { proposed: 0, total: 5, todo: 0, inProgress: 0, done: 5, cancelled: 0, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
     view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
     expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
   });

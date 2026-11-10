@@ -71,7 +71,7 @@ export type WorkspaceMessages = {
     readonly chains: string;
     readonly statusFilter: string;
     readonly allStatuses: string;
-    readonly statusOptions: Readonly<Record<"todo" | "in_progress" | "done" | "cancelled", string>>;
+    readonly statusOptions: Readonly<Record<"proposed" | "todo" | "in_progress" | "done" | "cancelled", string>>;
   };
   readonly search: {
     readonly form: string; readonly input: string; readonly placeholder: string; readonly submit: string; readonly clear: string;

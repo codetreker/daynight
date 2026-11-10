@@ -117,6 +117,11 @@ describe("assignee version manifest", () => {
 });
 
 describe("strict summary protocol", () => {
+  it("preserves proposed in complete sync facts without treating it as executable", () => {
+    const result = parseTaskSync({ ...sync, tasks: [{ ...task, status: "proposed" }] }, projectId);
+    expect(result.tasks[0]!.status).toBe("proposed");
+  });
+
   it.each([undefined, null, 1, 1n, "", "0", "-1", "+1", "01", "1.0", "1e1", "9223372036854775808"])("rejects noncanonical versions %#", (version) => {
     expect(() => parseTaskSummary({ ...task, version })).toThrow("invalid response");
   });
@@ -126,7 +131,7 @@ describe("strict summary protocol", () => {
   });
   it.each([
     { properties: null }, { properties: [] }, { properties: 17 },
-    { status: "proposed" }, { requiredPlatform: "android" }, { dependsOn: [taskId, taskId] },
+    { status: "pending" }, { requiredPlatform: "android" }, { dependsOn: [taskId, taskId] },
     { externalDependsOn: [projectId] }, { updatedAt: "2026-02-30T00:00:00Z" },
     { createdAt: "2026-10-20T00:00:00.1234567890Z" }, { startedAt: "2026-10-20T00:00:00+00:00" },
   ])("rejects malformed summary fields %#", (change) => expect(() => parseTaskSummary({ ...task, ...change })).toThrow());

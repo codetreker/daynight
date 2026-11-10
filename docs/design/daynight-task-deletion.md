@@ -1,6 +1,6 @@
 # Task 软删除设计
 
-[需求](../spec/daynight-task-deletion.md)定义 CLI、Web 和 HTTP 的删除行为。任务使用todo、in_progress、done、cancelled四种业务状态，软删除是持久化可见性标记，避免把数据保留混入执行状态转换。
+[需求](../spec/daynight-task-deletion.md)定义 CLI、Web 和 HTTP 的删除行为。任务使用proposed、todo、in_progress、done、cancelled五种业务状态，软删除是持久化可见性标记，避免把数据保留混入执行状态转换。
 
 ## 存储与事务
 

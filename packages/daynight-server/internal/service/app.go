@@ -93,7 +93,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 			} else {
 				grants := coreoauth.NewGrantLifecycle(database)
 				app.OAuthProfile = &OAuthProfile{Admission: admission, Clients: clients, Authorizations: authorizations, Grants: grants,
-					Maintenance: oauthservice.Maintenance{Clients: database, Authorizations: authorizations, Credentials: grants}}
+					Maintenance: oauthservice.NewMaintenance(database, authorizations, grants)}
 			}
 		}
 	}

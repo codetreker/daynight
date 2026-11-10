@@ -1,3 +1,4 @@
+import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { readWorkerClaim, readSessionStartupReport, readTaskPaused } from "../../api/task-properties.js";
 import { legacyBranchLatch } from "./backends/orchestration.js";
@@ -10,10 +11,13 @@ import { requireImplementedWorkerBackend } from "./backend.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
+import { realpath } from "node:fs/promises";
+import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
+import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
-import { ensureCleanupSchedule } from "./cleanup-schedule.js";
+import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import { createCleanupDriver } from "./cleanup.js";
 import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
@@ -37,7 +41,7 @@ export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" 
 export type WorkerCoordinatorOptions = {
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
-  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver">>;
+  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
@@ -45,6 +49,7 @@ export type WorkerCoordinatorOptions = {
   readyProjectIds?: readonly string[]; targetProjectIds?: readonly string[];
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
   preferPlatformSpecificTasks: boolean;
+  recoveryLimit?: number;
   prepareProject?: (projectId: string, signal: AbortSignal) => Promise<void>;
   configurationComplete?: () => boolean;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
@@ -55,10 +60,11 @@ export type WorkerCoordinatorOptions = {
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
   monitoring?: ReturnType<typeof createMonitoringObserver>;
 };
-export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds">;
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit">;
 
 const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
   maxConcurrent: value.maxConcurrent,
+  ...(value.recoveryLimit === undefined ? {} : { recoveryLimit: value.recoveryLimit }),
   preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
   ...(value.targetProjectIds === undefined ? {} : { targetProjectIds: Object.freeze([...value.targetProjectIds]) }),
@@ -68,7 +74,7 @@ const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordin
 
 type CleanupTarget = ClaimIdentity & { worktreeId?: string };
 const hasWorktreeIdentity = (target: CleanupTarget): target is ResourceOwner => target.worktreeId !== undefined;
-type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string>; unresolved: Set<string>; scannedProjects: Set<string>; unavailableProjects: Set<string> };
+type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string>; unresolved: Set<string>; scannedProjects: Set<string>; unavailableProjects: Set<string>; quarantined: Map<string, ResourceOwner> };
 const key = (identity: ClaimIdentity): string => `${identity.projectId}/${identity.taskId}/${identity.claimId}`;
 const taskKey = (identity: Pick<ClaimIdentity, "projectId" | "taskId">): string => `${identity.projectId}/${identity.taskId}`;
 const remoteOwner = (task: Task): ResourceOwner => {
@@ -140,6 +146,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const monitoringOperations = new Map<string, string>();
   const projectMonitoringFailures = new Map<string, string>();
   const resourceMonitoringFailures = new Map<string, string>();
+  const quarantinedMonitoringFailures = new Map<string, { owner: ResourceOwner; operationId: string }>();
   const candidateMonitoringFailures = new Map<string, string>();
   const inventoryMonitoringFailures = new Map<string, string>();
   const nameMonitoringFailures = new Map<string, string>();
@@ -152,7 +159,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
   const ending = new Map<string, CleanupTarget>(options.store.listCleanupSchedules().map(record => [key(record), record]));
   let capacityWarning = "";
-  const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string }>();
+  const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string | null; archiveRepairCode?: ArchiveRepairCode | null }>();
+  const archiveProbes = new Set<string>();
   const failures = new Map<string, number>();
   const inputWaiting = new Map<string, string>();
   const snapshotWarnings = new Map<string, Set<string>>();
@@ -280,14 +288,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const configurationFor = (task: LocalTask): ExecutionConfiguration | null => {
-    if (task.agentControlMode === "web") { const frozen = options.webStore?.getTask(task)?.configuration; if (frozen) return frozen; }
+    const mode = task.agentControlMode ?? "herdr";
     const repository = configuration.repositories.find(repository => repository.project.projectId === task.projectId);
-    if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;
     const current = repository?.configuration ?? configuration.globalConfiguration;
-    if (current === null) return null;
-    const frozen = options.store.getNativeConfiguration(task);
-    if (frozen !== null) return { ...frozen, agentControlMode: task.agentControlMode ?? "herdr", recoveryLimit: current.recoveryLimit };
-    return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
+    // Fresh claims freeze native settings before their Web execution record exists.
+    const frozen = (mode === "web" ? options.webStore?.getTask(task)?.configuration : undefined) ?? options.store.getNativeConfiguration(task);
+    const recoveryLimit = configuration.recoveryLimit ?? current?.recoveryLimit ?? (frozen != null && "recoveryLimit" in frozen ? frozen.recoveryLimit as number : undefined);
+    if (frozen != null && recoveryLimit !== undefined) return { ...frozen, agentControlMode: mode, recoveryLimit };
+    if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;
+    // An unfrozen historical claim cannot borrow parameters validated for another backend.
+    if (current == null || (current.agentControlMode ?? "herdr") !== mode) return null;
+    return current.agent === task.agent ? { ...current, agentControlMode: mode } : { agent: task.agent, agentControlMode: mode, model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
   const canAdvance = (task: LocalTask): boolean => canAdvanceProject(task.projectId) && configurationFor(task) !== null;
   const updatePromptDemand = (): void => {
@@ -312,6 +323,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const owners = new Map<string, ResourceOwner>();
     const proven = new Set([...options.store.listTasks().map(key), ...currentClaims.map(key)]);
     const unresolved = new Set<string>();
+    const quarantined = new Map<string, ResourceOwner>();
     const scannedProjects = new Set<string>();
     const unavailableProjects = new Set<string>();
     const currentWarnings = new Map<string, Map<string, string>>();
@@ -325,11 +337,51 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (previous !== undefined && previous.worktreeId !== owner.worktreeId) throw new Error("The same claim has conflicting resource identities.");
       owners.set(key(owner), owner);
     };
-    for (const owner of responsibilities()) {
+    const nativeOwners = responsibilities();
+    for (const owner of nativeOwners) {
       recordOwner(owner); proven.add(key(owner));
     }
     for (const workspace of herdr) { recordOwner(workspace.owner); proven.add(key(workspace.owner)); }
     for (const task of options.webStore?.listUnfinishedTasks() ?? []) { recordOwner(task); proven.add(key(task)); }
+    // Closing a workspace does not confirm process stop; its original owner
+    // and execution path still constrain quarantine ownership.
+    const stopping = pendingStops().map(stop => stop.context);
+    const independentOwners = [...currentClaims, ...nativeOwners, ...herdr.map(item => item.owner), ...stopping, ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
+    const provenQuarantine = async (owner: ResourceOwner, scannedProject: WorkerProject): Promise<boolean> => {
+      const matches = independentOwners.filter(other => key(other) === key(owner));
+      const mapping = options.store.getProject(owner);
+      if (mapping === null || matches.length === 0 || matches.some(other => other.worktreeId !== owner.worktreeId)) return false;
+      // A matching claim cannot bound a registration moved into another repo.
+      // The project mapping and original execution bindings must agree with
+      // the physical repository that supplied this scan, including aliases.
+      const root = await realpath(scannedProject.localPath);
+      const remote = repositoryIdentity(scannedProject.repoUrl);
+      if (await realpath(mapping.localPath) !== root || repositoryIdentity(mapping.repoUrl) !== remote) return false;
+      const native = lifecycle();
+      let nativePaths: string[];
+      if (native?.worktreePath !== undefined) {
+        const original = native.worktreePath(owner);
+        nativePaths = original === null ? [] : [original];
+      } else {
+        // Older adapters expose the original path through retained resources.
+        const records = native?.archive?.resources().filter(record => key(record.owner) === key(owner)) ?? [];
+        if (records.some(record => record.owner.worktreeId !== owner.worktreeId)) return false;
+        nativePaths = records.map(record => record.worktreePath);
+      }
+      nativePaths.push(...stopping.filter(context => key(context) === key(owner)).map(context => context.cwd));
+      for (const nativePath of nativePaths) {
+        if (!path.isAbsolute(nativePath)) return false;
+        const original = await resolvePhysicalDirectory(nativePath);
+        const expected = await resolvePhysicalDirectory(path.join(root, ".worktrees", "daynight", owner.taskId));
+        if (path.join(original.ancestorPath, ...original.missingComponents) !== path.join(expected.ancestorPath, ...expected.missingComponents)) return false;
+      }
+      const web = options.webStore?.getTask(owner);
+      if (web != null) {
+        if (web.worktreeId !== owner.worktreeId || await realpath(web.repositoryPath) !== root || repositoryIdentity(web.repoUrl) !== remote) return false;
+        if (web.resources.worktree !== null && await realpath(web.resources.worktree.repositoryPath) !== root) return false;
+      }
+      return true;
+    };
     for (const project of options.store.listProjects()) {
       const warnings = new Map<string, string>();
       currentWarnings.set(project.projectId, warnings);
@@ -340,7 +392,24 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const target = configuration.targetProjectIds === undefined
         ? configuration.repositories.some(repository => repository.project.projectId === project.projectId)
         : configuration.targetProjectIds.includes(project.projectId);
-      try { worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation, unavailable.has(project.projectId) || !target, true), signal); }
+      try {
+        const scan = await workerOperation(operation => options.git.scanWorktrees(project, operation, unavailable.has(project.projectId) || !target, true), signal);
+        if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Git resource enumeration is incomplete.");
+        for (const item of scan.quarantined) {
+          if (!await provenQuarantine(item.owner, project)) throw new Error("The quarantined worktree has no unambiguous independent ownership proof.", { cause: item.error });
+        }
+        for (const item of scan.quarantined) {
+          const identity = key(item.owner);
+          recordOwner(item.owner); proven.add(identity); quarantined.set(identity, item.owner); unresolved.add(identity);
+          const failure = quarantinedMonitoringFailures.get(identity) ?? { owner: item.owner, operationId: randomUUID() };
+          quarantinedMonitoringFailures.set(identity, failure);
+          const error = item.error instanceof WorktreePreconditionError ? item.error : new WorktreePreconditionError("validation_failed", "The original worktree failed validation and remains reserved.", { cause: item.error });
+          observe(m => m.fail({ operationId: failure.operationId, component: "resources", phase: "resource-observation", scope: { kind: "claim", projectId: item.owner.projectId, taskId: item.owner.taskId, claimId: item.owner.claimId }, error }));
+          warn("quarantined", item.owner, `Quarantined worktree ${identity} retains capacity and blocks its task; unrelated tasks may use remaining capacity.`);
+          if (!snapshotWarnings.get(project.projectId)?.has(JSON.stringify(["quarantined", item.owner.projectId, item.owner.taskId, item.owner.claimId, item.owner.worktreeId]))) options.emit({ kind: "resource-quarantined", message: `Worktree ${identity} failed validation; its original resources are retained.`, error: item.error });
+        }
+        worktrees = scan.validated;
+      }
       catch (error) {
         if (isWorkerCancellation(error, signal ?? normalSignal)) throw error;
         unavailableProjects.add(project.projectId);
@@ -366,8 +435,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       for (const [identity, message] of warnings) if (!previous?.has(identity)) options.emit({ kind: "warning", message });
       snapshotWarnings.set(projectId, new Set([...warnings.keys(), ...(coveredProjects.has(projectId) ? [] : previous ?? [])]));
     }
+    for (const [identity, failure] of quarantinedMonitoringFailures) {
+      if (!quarantined.has(identity) && scannedProjects.has(failure.owner.projectId) && coveredProjects.has(failure.owner.projectId)) {
+        observe(m => m.recover(failure.operationId)); quarantinedMonitoringFailures.delete(identity);
+      }
+    }
     unmappedWarnings = unmapped;
-    return { herdr, owners, proven, unresolved, scannedProjects, unavailableProjects };
+    return { herdr, owners, proven, unresolved, scannedProjects, unavailableProjects, quarantined };
   };
   const ownInventory = async (signal: AbortSignal, initialInvalidations: ReadonlyMap<string, number>): Promise<{ tasks: Map<string, Task>; covered: Set<string>; unavailable: Set<string> }> => {
     const projects = [...new Set([...options.store.listProjects().map(project => project.projectId), ...configuration.repositories.map(repository => repository.project.projectId), ...(configuration.targetProjectIds ?? [])])].map(projectId => ({ projectId }));
@@ -456,7 +530,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
       });
     }).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
-      if (isWorkerCancellation(error, signal)) return;
+      if (isWorkerCancellation(error, signal)) { archiveProbes.delete(identityKey); return; }
       if (!terminal && error instanceof HerdrInputWaitingError) {
         if (operationId !== undefined) observe(m => m.updateActivity(operationId!, pausedClaims.has(identityKey) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "waiting", status: "waiting", waitReason: "native-input" }));
         if (inputWaiting.get(identityKey) !== error.message) {
@@ -476,27 +550,30 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         let previous: ReturnType<WorkerStore["getCleanupSchedule"]> = null;
         try { previous = options.store.getCleanupSchedule(owner); count = Math.max(count, previous?.failures ?? 0); }
         catch (storageError) { reportedError = new AggregateError([error, storageError], "Cleanup failed and its retry state could not be read."); }
-        count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
-        const retryMs = Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6));
+        const probeOnly = archiveProbes.delete(identityKey);
+        const cause = error instanceof WorkerCleanupError ? error.cause : error;
         const stage = error instanceof WorkerCleanupError ? error.stage : "observation";
+        const repairCode = stage !== "archive" ? null : cause instanceof ArchiveRepairRequiredError ? cause.code : cleanupRetries.get(identityKey)?.archiveRepairCode ?? previous?.archiveRepairCode ?? null;
+        if (!probeOnly) count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
+        const retryMs = repairCode === null ? Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6)) : ARCHIVE_REPAIR_PROBE_INTERVAL_MS;
         const nextAttemptAt = now() + retryMs;
         if (operationId !== undefined) {
-          const failureKey = `true/${identityKey}/${stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          const failureKey = `true/${identityKey}/${repairCode !== null && !(cause instanceof ArchiveRepairRequiredError) ? "archive-observation" : stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
           monitoringFailures.set(failureKey, failureId);
           observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
           for (const [key, pending] of monitoringFailures) if (key.startsWith(`true/${identityKey}/`) && key !== failureKey) observe(m => m.updateFailureRetry(pending, "scheduled", new Date(nextAttemptAt).toISOString()));
-          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: "retry-backoff", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: repairCode === null ? "retry-backoff" : "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
         }
         // Storage failures must not reject the job or prevent shutdown from proving stop.
         const lastError = error instanceof Error ? error.message || error.name : String(error) || "Unknown cleanup error";
-        cleanupRetries.set(identityKey, { failures: count, nextAttemptAt, stage, lastError });
+        cleanupRetries.set(identityKey, { failures: count, nextAttemptAt, stage, lastError, archiveRepairCode: repairCode });
         try {
           if (previous === null && hasWorktreeIdentity(owner)) previous = ensureCleanupSchedule(options.store, owner, now());
-          if (previous !== null) options.store.saveCleanupSchedule(previous, { ...previous, failures: count, nextAttemptAt, stage, lastError });
+          if (previous !== null) options.store.saveCleanupSchedule(previous, { ...previous, failures: count, nextAttemptAt, stage, lastError, archiveRepairCode: repairCode });
           task = options.store.getTask(identity);
         } catch (storageError) { reportedError = new AggregateError([reportedError, storageError], "Cleanup failed; retry persistence is unconfirmed and in-process backoff remains active."); }
         const stopStatus = stage === "archive" || stage === "worktree-removal" || stage === "backend-close" ? "Agent stop confirmed; " : "";
-        cleanupMessage = `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources retain capacity; correct the reported cause and normal reconciliation retries automatically.`;
+        cleanupMessage = repairCode !== null ? `Archive requires repair (${repairCode}); originals and capacity retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.` : `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources retain capacity; correct the reported cause and normal reconciliation retries automatically.`;
       } else {
         task = options.store.getTask(identity);
         if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
@@ -595,12 +672,31 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (deleteWorktree && task !== null && task.status !== "done") options.store.completeTask(owner);
   };
 
+  const observeArchiveRepair = (owner: CleanupTarget, code: ArchiveRepairCode, nextAttemptAt: number): void => {
+    const identity = key(owner), failureKey = `true/${identity}/archive`, activityKey = `true/${identity}`;
+    const scope = { kind: "claim" as const, projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId };
+    observe(m => {
+      if (!monitoringFailures.has(failureKey)) {
+        const id = randomUUID(); monitoringFailures.set(failureKey, id);
+        m.fail({ operationId: id, component: "cleanup", phase: "archive", scope, error: new ArchiveRepairRequiredError(code), retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
+      }
+      if (!monitoringActivities.has(activityKey)) {
+        const id = m.startActivity({ kind: "cleanup", phase: "archive", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
+        monitoringActivities.set(activityKey, id);
+      }
+    });
+  };
+
   const launchCleanups = (): void => {
     for (const [identityKey, owner] of ending) {
       // A stopped archive owns its separate persisted retry schedule. Native
       // cleanup must not consume or erase that schedule after a runner restart.
       if (hasWorktreeIdentity(owner) && lifecycle()?.archive && isStopped(owner)) continue;
       if (jobs.has(identityKey)) continue;
+      let retained = cleanupRetries.get(identityKey);
+      try { retained ??= options.store.getCleanupSchedule(owner) ?? undefined; }
+      catch { /* Read failures are handled inside the isolated cleanup job. */ }
+      if (retained?.archiveRepairCode) observeArchiveRepair(owner, retained.archiveRepairCode, retained.nextAttemptAt);
       if (now() < (cleanupRetries.get(identityKey)?.nextAttemptAt ?? 0)) continue;
       // Creation and ownership validation run inside the isolated job's error boundary.
       let nextAttemptAt = 0;
@@ -608,6 +704,23 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       catch { /* The job records the storage failure without stopping other claims. */ }
       if (now() < nextAttemptAt) continue;
       startJob(owner, async (signal) => {
+        if (retained?.archiveRepairCode) {
+          archiveProbes.add(identityKey);
+          try {
+            const task = options.webStore?.getTask(owner);
+            if (!task || !hasWorktreeIdentity(owner) || task.worktreeId !== owner.worktreeId || !options.webBackend?.probeArchive) throw new Error("The original archive probe binding is unavailable.");
+            const result = await options.webBackend.probeArchive(task, signal);
+            signal.throwIfAborted();
+            if (result.kind === "blocked") throw new ArchiveRepairRequiredError(result.code);
+            if (result.kind === "complete") {
+              // Clear only the repaired condition; cleanup still owns the claim and worktree.
+              const schedule = ensureCleanupSchedule(options.store, owner, now());
+              const cleared = options.store.saveCleanupSchedule(owner, { ...schedule, ...retained, archiveRepairCode: null });
+              cleanupRetries.set(identityKey, cleared);
+            }
+          } catch (error) { throw new WorkerCleanupError("archive", error); }
+          archiveProbes.delete(identityKey);
+        }
         await runCleanup(owner, true, signal);
         options.store.deleteCleanupSchedule(owner);
         ending.delete(identityKey);
@@ -793,6 +906,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const identity of ending.keys()) add(identity, "cleanup");
     for (const stop of pendingStops()) add(key(stop.context), "pending-stop");
     return [...roles].filter(([identity]) => {
+      if (resources.quarantined.has(identity)) return true;
       if (stopped.has(identity) && controllers.get(identity)?.terminal !== false) return false;
       if (resources.owners.has(identity) && !resources.proven.has(identity)) return true;
       const owner = resources.owners.get(identity) ?? options.store.listTasks().find(task => key(task) === identity);
@@ -1003,6 +1117,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
       if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
+      const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
+      if (enroll) await cleanupOperation(operation => enroll.call(options.git, projectFor(owner), owner, operation), normalSignal);
       const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
       if (!ready) { observe(m => { const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { status: "waiting", waitReason: "unknown" }); if (failure !== undefined) m.updateFailureRetry(failure, "none"); }); return; }
       observe(m => {
@@ -1187,7 +1303,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (local !== null && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && local.status === "active" && !blockedByOldClaim(local, knownOwners)) schedule(local, remoteTask);
     }
     const resources = await snapshot(normalSignal, coveredProjects, [...inventory.values()].map((task) => remoteOwner(task)), unavailable);
-    if (resources.unavailableProjects.size === 0) recoverScheduler("resource-observation");
+    if (resources.unavailableProjects.size === 0 && resources.quarantined.size === 0) recoverScheduler("resource-observation");
     const observedAt = new Date(now()).toISOString();
     const publishCapacity = (): void => {
       const projection = latestReservations;
@@ -1202,13 +1318,19 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const allMappingsObserved = (): boolean => configurationObserved()
       && options.store.listProjects().every(project => resources.scannedProjects.has(project.projectId))
       && (configuration.targetProjectIds ?? []).every(id => unavailable.has(id) || options.store.getProject({ projectId: id }) !== null);
-    cycleCoverage = allMappingsObserved() && unavailable.size === 0 && resources.unavailableProjects.size === 0
+    const quarantinedTask = (task: Pick<ClaimIdentity, "projectId" | "taskId">): boolean => [...resources.quarantined.values()].some(owner => taskKey(owner) === taskKey(task));
+    const quarantinedReasons = (observedAt: string) => [...resources.quarantined.values()].map(owner => ({
+      code: "retained-resource-conflict" as const,
+      scope: { kind: "claim" as const, projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId },
+      observedAt, nextAttemptAt: null,
+    }));
+    cycleCoverage = allMappingsObserved() && unavailable.size === 0 && resources.unavailableProjects.size === 0 && resources.quarantined.size === 0
       && configuration.repositories.every(repository => prepared.has(repository.project.projectId)) ? "complete" : "partial";
     for (const [identityKey, owner] of resources.owners) {
-      if (coveredProjects.has(owner.projectId) && resources.proven.has(identityKey) && !inventory.has(identityKey) && !isStopped(owner)) ending.set(identityKey, owner);
+      if (!resources.quarantined.has(identityKey) && coveredProjects.has(owner.projectId) && resources.proven.has(identityKey) && !inventory.has(identityKey) && !isStopped(owner)) ending.set(identityKey, owner);
     }
     for (const local of options.store.listUnfinishedTasks()) {
-      if (!coveredProjects.has(local.projectId) || resources.unavailableProjects.has(local.projectId) || inventory.has(key(local))) continue;
+      if (!coveredProjects.has(local.projectId) || resources.unavailableProjects.has(local.projectId) || resources.quarantined.has(key(local)) || inventory.has(key(local))) continue;
       const owner = resources.owners.get(key(local));
       if (owner !== undefined && isStopped(owner)) {
         ending.delete(key(local));
@@ -1221,7 +1343,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const [identityKey, remoteTask] of inventory) {
       let local = options.store.getTask(remoteOwner(remoteTask));
       if (local === null) continue;
-      if (allMappingsObserved() && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && resources.scannedProjects.has(local.projectId) && canAdvance(local) && resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources.owners.values())) {
+      if (!quarantinedTask(local) && allMappingsObserved() && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && resources.scannedProjects.has(local.projectId) && canAdvance(local) && resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources.owners.values())) {
         local = options.store.activateTask(local);
         schedule(local, remoteTask);
       }
@@ -1234,7 +1356,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         nextPendingProject = (nextPendingProject + 1) % projects.length;
         if (!coveredProjects.has(project.projectId)) continue;
         const pending = options.store.listUnfinishedTasks().filter((task) => task.projectId === project.projectId && task.status === "pending").sort((left, right) => left.taskId.localeCompare(right.taskId));
-        const local = pending.find(task => canAdvance(task) && inventory.has(key(task)) && !blockedByOldClaim(task, resources.owners.values()));
+        const local = pending.find(task => !quarantinedTask(task) && canAdvance(task) && inventory.has(key(task)) && !blockedByOldClaim(task, resources.owners.values()));
         if (local === undefined) continue;
         schedule(options.store.activateTask(local), inventory.get(key(local))!);
         started = true;
@@ -1251,6 +1373,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (cycleCoverage !== "complete") observe(m => m.setAdmission("partial", [
       ...[...unavailable].map(projectId => ({ code: "project-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt: admissionAt, nextAttemptAt: null })),
       ...[...preparationFailed].filter(projectId => !unavailable.has(projectId)).map(projectId => ({ code: "project-preparation-failed" as const, scope: { kind: "project" as const, projectId }, observedAt: admissionAt, nextAttemptAt: null })),
+      ...quarantinedReasons(admissionAt),
+      ...(occupied >= configuration.maxConcurrent ? [{ code: "capacity-full" as const, scope: { kind: "worker" as const }, observedAt: admissionAt, nextAttemptAt: null }] : []),
       ...[...resources.unavailableProjects].map(projectId => ({ code: "resource-observation-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt: admissionAt, nextAttemptAt: null })),
     ]));
     else if (occupied >= configuration.maxConcurrent) observe(m => m.setAdmission("complete", [
@@ -1305,7 +1429,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             }
             invalidateProject(repository.project.projectId);
             searchUnavailable.add(repository.project.projectId);
-            observe(m => m.setAdmission("partial", [...searchUnavailable].map(projectId => ({ code: "project-unavailable", scope: { kind: "project", projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }))));
+            observe(m => m.setAdmission("partial", [
+              ...quarantinedReasons(admissionAt),
+              ...[...searchUnavailable].map(projectId => ({ code: "project-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null })),
+            ]));
             searchIncomplete = true;
             cycleCoverage = "partial";
             coveredProjects.delete(repository.project.projectId);
@@ -1347,7 +1474,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             registerClaim(granted);
             confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
-            if (allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
+            if (!quarantinedTask(local) && allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
             if (configuration !== acquisitionConfiguration || !allMappingsObserved()) cycleCoverage = "partial";
             observe(m => m.staleCapacity());
             return;
@@ -1355,7 +1482,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             if (isWorkerCancellation(error, normalSignal)) throw error;
             if (isUnavailableProject(error)) options.onInventory?.(null);
             cycleCoverage = "partial";
-            observe(m => m.setAdmission("partial", [{ code: "claim-unconfirmed", scope: { kind: "project", projectId: candidate.projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }]));
+            observe(m => m.setAdmission("partial", [...quarantinedReasons(admissionAt), { code: "claim-unconfirmed", scope: { kind: "project", projectId: candidate.projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }]));
             options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
             return;
           }
@@ -1370,6 +1497,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const observedAt = new Date(now()).toISOString();
       observe(m => m.setAdmission(searchIncomplete || cycleCoverage !== "complete" ? "partial" : "complete", [
         ...[...searchUnavailable].map(projectId => ({ code: "project-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt, nextAttemptAt: null })),
+        ...quarantinedReasons(observedAt),
         ...[...retainedConflicts].map(projectId => ({ code: "retained-resource-conflict" as const, scope: { kind: "project" as const, projectId }, observedAt, nextAttemptAt: null })),
       ]));
     }

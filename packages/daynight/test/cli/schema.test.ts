@@ -229,7 +229,7 @@ describe("shared command syntax", () => {
     ["create", "--title="], ["create", "--title", "-leading"],
     ["create", "--title", "Title", "--description"],
     ["create", "--title", "Title", "--description", "--status"],
-    ["list", "--status=proposed"], ["set-status", "task-id", "proposed"], ["list", "--status=TODO"], ["list", "--status", "invalid"], ["list", "--status="],
+    ["list", "--status=unknown"], ["set-status", "task-id", "unknown"], ["list", "--status=TODO"], ["list", "--status", "invalid"], ["list", "--status="],
     ["delete", "task-id", "--remove-depends=true"], ["delete", "task-id", "--remove-depends=false"],
     ["delete", "task-id", "--remove-depends", "true"], ["delete", "task-id", "--remove-depends", "--remove-depends"],
     ["list", "--ready=true"], ["list", "--help=true"],

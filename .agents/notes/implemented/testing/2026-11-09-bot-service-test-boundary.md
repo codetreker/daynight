@@ -20,10 +20,17 @@ live Session eviction; a callback's proposed writes do not establish commit.
 
 `Bots` holds private instance-owned bindings for directly invoked core creation,
 reads and selection operations. Both production constructors bind the original
-implementations. Request normalization, fingerprints, cursor encoding and model
-catalog transport remain real. `modelRequester` retains the authenticated Worker
-request boundary, including the total deadline, response identity, pagination,
-catalog consistency and bounded accumulation.
+implementations. Request normalization, fingerprints and cursor encoding remain
+real.
+
+`readModels` executes model catalog request encoding, response identity
+association, result validation and decoding, pagination, catalog consistency
+checks and bounded accumulation. Native discovery retains its total deadline
+and error propagation. Service unit tests supply `modelRequester.Request`
+through `modelRequestFunc`, controlling the returned messages and errors.
+Production application wiring supplies the authenticated Worker requester through
+`NewWithNativeDiscovery`; these unit tests do not establish network or HTTP
+transport behavior.
 
 The service executes actual snapshot and write callbacks. Tests provide typed
 lower results and errors independently of completion or cleanup, checking the

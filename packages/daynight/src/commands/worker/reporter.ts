@@ -67,7 +67,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     await configuration.prepare?.(operation);
     operation.check();
     const captured = configuration.capture();
-    const sent = immutable(parseWorkerCloudReport(captured));
+    const sent = immutable(parseWorkerCloudReport(captured, Object.hasOwn(captured, "controlModeBootstrap")));
     const source = configuration.prompts;
     const promptCapture = source?.captureBatch() ?? null;
     const receipt = await configuration.send(options.report(), sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []);

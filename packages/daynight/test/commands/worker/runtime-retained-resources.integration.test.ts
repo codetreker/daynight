@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -20,7 +21,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
 const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));
 vi.mock("../../../src/commands/worker/herdr/durable.js", () => ({ createDurableWorkerHerdr: mocks.durable }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
@@ -42,7 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Platform selection is simulated; native processes and macOS process-control behavior are outside this regression.
   Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
-  mocks.prompt.mockResolvedValue(() => "prompt");
+  mocks.prompt.mockReturnValue("prompt");
   mocks.verify.mockResolvedValue(undefined);
   mocks.telemetry.mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
 });
@@ -94,7 +95,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   const lifecycle = { responsibilities: vi.fn(() => []), isStopped: vi.fn(() => false), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
   mocks.durable.mockReturnValue({ lifecycle, tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []) }, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn(), attachment: {} });
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
-  mocks.git.mockReturnValue({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose });
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.webBackend.mockReturnValue({ advance, cleanup });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });

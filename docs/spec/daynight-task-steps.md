@@ -206,7 +206,7 @@ daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] 
 
 ## 权限、快照与原子写入
 
-admin 与 member 具有相同读取、添加、内容更新、状态设置、移动和删除能力；Task 的 `todo`、`in_progress`、`done`，自动执行许可关闭、无 Session 或有效 Worker/Session 归属均不增加 Steps 门槛。访问首先检查正常项目成员关系和父资源可见性，再检查父墓碑。Steps 写入不读取 Worker 属性来决定可写性，不改变执行归属，也不冻结 Session。
+admin 与 member 具有相同读取、添加、内容更新、状态设置、移动和删除能力；Task 的 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，自动执行许可关闭、无 Session 或有效 Worker/Session 归属均不增加 Steps 门槛。访问首先检查正常项目成员关系和父资源可见性，再检查父墓碑。Steps 写入不读取 Worker 属性来决定可写性，不改变执行归属，也不冻结 Session。
 
 读取在同一个 `REPEATABLE READ` 快照中检查项目成员关系、父资源存在性与软删除，再读取父版本及目标内容。父版本、完整内容及顺序必须属于一个一致状态；读取不改变父版本、更新时间、执行计时、状态、依赖、属性或执行归属。
 

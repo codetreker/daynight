@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -86,7 +87,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     claimId: task.claimId, executionGeneration: e.executionGeneration, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId })) } as unknown as WorkerSessionApi;
   let clock = 10;
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => clock });
-  const git = { listWorktrees: vi.fn(async () => []), verifyWorktree: vi.fn(async () => {}) } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), verifyWorktree: vi.fn(async () => {}) } as unknown as WorkerGitManager;
   const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, platform: "linux", buildPrompt: () => "fixture", emit() {}, now: () => clock });
   let remoteTask: Task = { id: task.taskId, projectId: project.projectId, title: "fixture", description: "fixture", status: "in_progress", allowAgents: true,
     assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),

@@ -320,7 +320,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       return row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 0.5 && box.right <= bounds.right + 0.5 && boxes.slice(index + 1).every(other => box.right <= other.left + 0.5 || other.right <= box.left + 0.5 || box.bottom <= other.top + 0.5 || other.bottom <= box.top + 0.5));
     })).toBe(true);
     await status.focus(); await page.keyboard.press('Enter');
-    const options = dialog.getByRole('menuitemradio'); await expect(options).toHaveCount(4);
+    const options = dialog.getByRole('menuitemradio'); await expect(options).toHaveCount(5);
     await page.keyboard.press('End'); await expect(options.last()).toBeFocused();
     await page.keyboard.press('Home'); await expect(options.first()).toBeFocused();
     await page.keyboard.press('Escape'); await expect(status).toBeFocused();

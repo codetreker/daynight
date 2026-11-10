@@ -7,9 +7,6 @@ import (
 	"net/http"
 
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -18,13 +15,13 @@ import (
 )
 
 type MembershipRoutes struct {
-	memberships *projectservice.Memberships
-	auth        *authhttp.Authentication
+	memberships MembershipOperations
+	auth        MembershipAuthentication
 	logger      *slog.Logger
 }
 
 // NewMembershipRoutes composes membership handlers without activating the application mux.
-func NewMembershipRoutes(memberships *projectservice.Memberships, auth *authhttp.Authentication, logger *slog.Logger) *MembershipRoutes {
+func NewMembershipRoutes(memberships MembershipOperations, auth MembershipAuthentication, logger *slog.Logger) *MembershipRoutes {
 	return &MembershipRoutes{memberships: memberships, auth: auth, logger: logger}
 }
 

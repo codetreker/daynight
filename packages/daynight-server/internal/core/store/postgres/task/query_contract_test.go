@@ -80,8 +80,16 @@ func TestActiveDependentIDsUseOnlyDirectScopedOrdinaryAndExternalEdges(t *testin
 	}
 }
 
-func TestProjectWriteClockUsesDatabaseStatementTimeAndUTC(t *testing.T) {
-	database := testutil.OpenStore(t, postgres.Open)
+func TestTaskQueryStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "ProjectWriteClockUsesDatabaseStatementTimeAndUTC", testProjectWriteClockUsesDatabaseStatementTimeAndUTC)
+	suite.run(t, "ProjectWriteClockPreservesQueryFailureCause", testProjectWriteClockPreservesQueryFailureCause)
+	suite.run(t, "QueriesKeysetsAndFiltersBeforePagination", testQueriesKeysetsAndFiltersBeforePagination)
+	suite.run(t, "QueriesCandidateGraphReplacesWholeSet", testQueriesCandidateGraphReplacesWholeSet)
+	suite.run(t, "QueriesScopedResourcesAndUpdates", testQueriesScopedResourcesAndUpdates)
+}
+
+func testProjectWriteClockUsesDatabaseStatementTimeAndUTC(t *testing.T, database *postgres.Store) {
 	project := testutil.QueryProject(t, database.Pool, database, 1)
 	ctx := t.Context()
 	raw, err := database.Pool.Begin(ctx)
@@ -112,8 +120,7 @@ func TestProjectWriteClockUsesDatabaseStatementTimeAndUTC(t *testing.T) {
 	testutil.AssertPoolReusable(t, database.Pool)
 }
 
-func TestProjectWriteClockPreservesQueryFailureCause(t *testing.T) {
-	database := testutil.OpenStore(t, postgres.Open)
+func testProjectWriteClockPreservesQueryFailureCause(t *testing.T, database *postgres.Store) {
 	project := testutil.QueryProject(t, database.Pool, database, 1)
 	ctx := t.Context()
 	raw, err := database.Pool.Begin(ctx)
@@ -137,8 +144,7 @@ func TestProjectWriteClockPreservesQueryFailureCause(t *testing.T) {
 	testutil.AssertPoolReusable(t, database.Pool)
 }
 
-func TestQueriesKeysetsAndFiltersBeforePagination(t *testing.T) {
-	s := testutil.OpenStore(t, postgres.Open)
+func testQueriesKeysetsAndFiltersBeforePagination(t *testing.T, s *postgres.Store) {
 	ctx := context.Background()
 	project := testutil.QueryProject(t, s.Pool, s, 1)
 	instant := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
@@ -181,8 +187,7 @@ func TestQueriesKeysetsAndFiltersBeforePagination(t *testing.T) {
 	}
 }
 
-func TestQueriesCandidateGraphReplacesWholeSet(t *testing.T) {
-	s := testutil.OpenStore(t, postgres.Open)
+func testQueriesCandidateGraphReplacesWholeSet(t *testing.T, s *postgres.Store) {
 	ctx := context.Background()
 	project, other := testutil.QueryProject(t, s.Pool, s, 1), testutil.QueryProject(t, s.Pool, s, 2)
 	a := testutil.QueryTask(t, s, project.ID, 11, model.TaskTodo)
@@ -238,8 +243,7 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 	})
 }
 
-func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
-	s := testutil.OpenStore(t, postgres.Open)
+func testQueriesScopedResourcesAndUpdates(t *testing.T, s *postgres.Store) {
 	ctx := context.Background()
 	first, second := testutil.QueryProject(t, s.Pool, s, 1), testutil.QueryProject(t, s.Pool, s, 2)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {

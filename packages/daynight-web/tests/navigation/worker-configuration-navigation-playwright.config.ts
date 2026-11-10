@@ -3,7 +3,7 @@ import { defineConfig } from '@playwright/test';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 export default defineConfig({
-  testDir: '.', testMatch: ['**/worker-configuration-navigation.browser.ts', '**/worker-monitoring.browser.ts'], workers: 1, retries: 0,
+  testDir: '.', testMatch: ['**/worker-configuration-navigation.browser.ts', '**/worker-monitoring.browser.ts', '**/worker-control-mode.browser.ts'], workers: 1, retries: 0,
   timeout: 30_000, globalTimeout: 360_000,
   outputDir: fileURLToPath(new URL('../../../../.tmp/worker-navigation/results', import.meta.url)),
   reporter: [['line'], ['json', { outputFile: fileURLToPath(new URL('../../../../.tmp/worker-navigation/browser.json', import.meta.url)) }]],

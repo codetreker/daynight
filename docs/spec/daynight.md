@@ -10,7 +10,7 @@ worker 已提供独立前台入口，完整行为和后续管理/平台验收由
 Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `daynight` 入口及短命令 `dn`，命令模块
 拥有各自的业务行为、依赖和生命周期。`review` 是 GitHub PR 审查模块，`worker` 是按自有 claim 对账的前台任务执行模块；`update` 管理
 整个客户端的 npm 全局安装；`login/logout` 管理 CLI 凭据；review 自行拥有仓库配置和首次引导；`completion` 生成 Bash 和 zsh
-的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill install` 安装随包分发的公开 `using-daynight` skill。独立的 Go 服务和浏览器应用保留自己的产品需求
+的原生补全脚本并安装启动配置；`--skill` 输出 CLI 使用手册，`skill install` 安装随包分发的公开 `using-daynight` skill。独立的 Go 服务和浏览器应用保留自己的产品需求
 与生命周期。
 
 本文档负责客户端入口、命令组合、按需配置引导、自更新和 shell 补全的必需行为；
@@ -18,7 +18,7 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 [worker 需求](daynight-worker.md)负责前台领取、资源、恢复和清理。
 [project/task 需求](daynight-project-task.md)负责已确认的 server 连接配置、仓库关联
 发现和远端项目任务命令。客户端机制见[架构设计](../design/daynight.md)，补全机制见
-[补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和任务工作流
+[补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和本仓库任务工作流
 由[Agent skill 需求](daynight-agent-skill.md)拥有；各业务文档明确实际交付状态。
 
 Task Steps 的已交付 CLI 提供 `task step list/show` 读取与 `task step add`；完整有序资源、短 ID、四状态、共享父版本和严格输出由[Steps 资源契约](daynight-task-steps.md)拥有。
@@ -92,7 +92,7 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 显示各自帮助；裸 `skill`、`project`、`task` 与 `task step` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本与 `--skill` 选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
-`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties、attachments 与 Step list/show 读取与 add 的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册不依赖本地引用文件，不承载 `using-daynight` 的任务编排工作流。
+`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties、attachments 与 Step list/show 读取与 add 的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册与安装后的 `using-daynight` 使用同一权威来源，不依赖本地引用文件，不承载仓库任务编排工作流。
 
 `--skill` 必须是唯一参数；额外参数、其他选项和内联赋值按 usage error 以状态码 2 拒绝，且在读取手册前停止。手册文件缺失、读取失败或非法 UTF-8 以状态码 1 退出并保留原因。读取与校验完成后才输出；输出失败可能留下部分 stdout。
 
@@ -210,8 +210,8 @@ npm 替换失败；该失败必须明确报告。
 `review add-repo --path` 的目录候选；zsh 同时展示候选说明。非重复选项使用后不再
 提供，已消耗的位置参数不重复提供候选，remote 不提供远端候选或无关文件候选。
 目录建议不约束运行时合法值，操作者仍能输入尚未创建的目标目录。状态的静态
-列表状态候选为`todo`、`in_progress`、`done`、`cancelled`，分离及内联形式使用同一候选；
-update 不声明 status，set-status 使用 task ID、四状态目标和可选精确版本。重复依赖选项
+列表状态候选为`proposed`、`todo`、`in_progress`、`done`、`cancelled`，分离及内联形式使用同一候选；
+create 的 --status 仅提供 proposed/todo；update 不声明 status，set-status 使用 task ID、五状态目标和可选精确版本。重复依赖选项
 使用后仍可继续补全；自由文本、project/task ID 和依赖 ID 不回落文件候选。空描述
 和已完成内联值之后，后续选项按共享语法继续补全。
 
@@ -313,7 +313,7 @@ shell 的内存状态；输出对应的既有 `source <(daynight completion bash
 |---|---|---|
 | 安装 npm 包后通过 `daynight` 或 `dn` 调用相同参数，包括帮助、版本、使用手册输出及自更新。 | 两个启动器使用同一入口，输出、配置与退出行为一致；更新后两者指向同一新版本。 | C1, C2, C4 |
 | 无配置、SQLite 不可加载且 PATH 缺少 review 工具时调用根帮助或版本。 | 输出帮助或当前包版本，退出 0，未解析用户主目录或触及 review 数据。 | C1, C2, C3 |
-| 在无配置、无仓库、无 launcher、非交互终端中执行 `--skill`。 | 输出当前 npm 安装包独立使用手册的原始字节，退出 0，无配置、安装或运行时副作用；额外参数在文件读取前退出 2，手册缺失、读取失败或非法 UTF-8 退出 1 并保留原因。 | C2, C3 |
+| 在无配置、无仓库、无 launcher、非交互终端中执行 `--skill`。 | 输出当前 npm 安装包使用手册的原始字节，退出 0，无配置、安装或运行时副作用；额外参数在文件读取前退出 2，手册缺失、读取失败、空白正文或非法 UTF-8 退出 1 并保留原因。 | C2, C3 |
 | 调用裸 `review`、裸 `completion`、组帮助或任何操作帮助。 | 显示对应帮助，退出 0，未进入业务操作或加载审查运行时。 | C2, C3 |
 | 调用未知根命令、旧入口、不完整参数或未知操作选项。 | 输出错误及对应帮助命令，退出 2；未执行配置、审查或更新。 | C2, C3 |
 | 在 remote 前后使用一次 `--path`，或重复、合并赋值、混用帮助及其他参数。 | 合法顺序保持等价；重复 `--path`、`--path=value`、`--` 和非唯一帮助参数退出 2。 | C2 |

@@ -9,8 +9,7 @@ Prepare one independently verifiable change and hand it to the existing
 Daynight Worker workflow. Successful handoff and readback complete this skill;
 the Worker owns implementation and subsequent delivery.
 
-Use the repository's [using-daynight skill](../../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-for setup, task creation, content, write safety and handoff. Follow repository
+Use the [development workflow](../development-workflow/SKILL.md) for task creation, content and handoff, and `daynight --skill` for product operations and write safety. Follow repository
 language, documentation, decision-note, prototype and delivery requirements.
 
 ## Understand and bound the change
@@ -27,7 +26,7 @@ handoff. Ask necessary questions together after investigating what the repositor
 can answer. Routine implementation choices stay with the implementing agent.
 When the work requires a multi-stage Goal, follow the existing Goal workflow.
 
-Apply the [creation workflow](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/create-task.md),
+Apply the [creation workflow](../development-workflow/references/create-task.md),
 including project selection and duplicate checks across unfinished and completed
 work. Read the full candidate task, sources, dependencies and acceptance criteria
 before reusing it. Preserve active work and ownership; a similar title is not
@@ -37,8 +36,8 @@ dispatch unless the request establishes a distinct remaining problem.
 ## Prepare an executable task
 
 Write an outcome-oriented title and enough content for an implementer without
-the original conversation. Apply the [task content standard](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md)
-including its [delivery handoff threshold](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md#content-sufficiency). Provide the following substance without empty template fields:
+the original conversation. Apply the [task content standard](../development-workflow/references/task-content.md)
+including its [delivery handoff threshold](../development-workflow/references/task-content.md#content-sufficiency). Provide the following substance without empty template fields:
 
 | Information | Required substance |
 |---|---|
@@ -63,7 +62,7 @@ and verification remain the implementer's work within the defined solution.
 ## Choose the operating system
 
 Set `requiredPlatform` from the environment genuinely needed to implement or
-verify the task, using the existing [task metadata](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-management.md#metadata):
+verify the task, using the existing [task metadata](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#tasks-and-queries):
 
 | Value | Selection rule |
 |---|---|
@@ -85,7 +84,7 @@ task boundaries before handoff; one platform value cannot express an OS set.
 
 ## Register, hand off and return
 
-Respect the user's requested operation under [authorization and scope](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/authorization.md).
+Respect the user's requested operation under [authorization and scope](../development-workflow/references/authorization.md).
 Discussion stays discussion; a registration-only request ends after verified
 registration. Discovering or reading this skill does not authorize mutations.
 When the user requests automatic handoff and inputs are sufficient, continue
@@ -93,17 +92,23 @@ through preparation, registration, review and handoff without a redundant
 confirmation between those operations.
 
 Register or update within the confirmed scope using the creation workflow and
-[write safety](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md).
-New tasks begin with automatic execution disabled. Set and verify the platform
-during preparation; changing an existing task must respect its state and scope.
-Read back the complete task and genuinely required resources before handoff.
+[write safety](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
+Create a new task for a confirmed internal change with `task create --status todo`
+so it can enter the existing handoff workflow. Registration-only requests retain
+the selected creation status, proposed by default; discussion-only scope does not
+authorize delivery registration or handoff. New tasks begin with automatic
+execution disabled. Set and verify the platform during preparation; changing an
+existing task must respect its state and scope. Read back the complete task and
+genuinely required resources before handoff.
 
-Apply the [handoff workflow](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/handoff.md)
+Apply the [handoff workflow](../development-workflow/references/handoff.md)
 to that task ID. Its content and independently authenticated responsibility
 checks, state restrictions, exact-version write and final reconciliation govern
 enablement. Preserve assignment, status, dependencies and Worker history; report
-gaps through that workflow rather than bypassing them. A completed or already
-active task follows its existing state-specific handling.
+gaps through that workflow rather than bypassing them. An existing proposed task
+keeps its status and permission; selecting todo requires an explicit caller
+decision, and enabling allowAgents alone cannot make it eligible. A completed or
+already active task follows its existing state-specific handling.
 
 Return the task reference, preparation and handoff conclusions, observed
 version, assignee, platform, permission, status, dependency blockers and any

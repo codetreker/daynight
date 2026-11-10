@@ -149,3 +149,52 @@ func TestProjectQueryScopedResourcesAndCreationMetadata(t *testing.T) {
 	}
 
 }
+
+func TestProjectContinuationRecoversAfterRelationRestored(t *testing.T) {
+	database := testutil.OpenStore(t, postgres.Open)
+	owner, _, first := testutil.ProjectMembershipFixture(t, database)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for _, n := range []int{1, 2} {
+		if _, err := testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(n), "Project", "host:repo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var position *Position
+	read := func() (ProjectPage, error) {
+		var page ProjectPage
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			var err error
+			page, err = snapshot.ProjectDAO().ScopedProjects(ctx, owner, ProjectScope{Kind: ProjectScopeAll}, Page{Limit: 1, After: position})
+			return err
+		})
+		return page, err
+	}
+	page, err := read()
+	if err != nil || len(page.Items) != 1 || !page.HasMore || page.Items[0].ID != first.ID {
+		t.Fatalf("first Project page: %+v %v", page, err)
+	}
+	position = &Position{CreatedAt: page.Items[0].CreatedAt, ID: page.Items[0].ID}
+	baseline, err := read()
+	if err != nil || len(baseline.Items) != 1 || baseline.Items[0].ID == page.Items[0].ID {
+		t.Fatalf("baseline continuation: %+v %v", baseline, err)
+	}
+	testutil.MustExec(t, database.Pool, `ALTER TABLE projects RENAME TO private_missing_projects`)
+	renamed := true
+	t.Cleanup(func() {
+		if renamed {
+			testutil.MustExec(t, database.Pool, `ALTER TABLE private_missing_projects RENAME TO projects`)
+		}
+	})
+	failed, err := read()
+	var cause *pgconn.PgError
+	if !errors.As(err, &cause) || cause.Code != "42P01" || len(failed.Items) != 0 {
+		t.Fatalf("failed continuation returned data or lost database cause: %+v %v", failed, err)
+	}
+	testutil.MustExec(t, database.Pool, `ALTER TABLE private_missing_projects RENAME TO projects`)
+	renamed = false
+	recovered, err := read()
+	if err != nil || !reflect.DeepEqual(recovered, baseline) {
+		t.Fatalf("same continuation changed after recovery: baseline=%+v recovered=%+v error=%v", baseline, recovered, err)
+	}
+}

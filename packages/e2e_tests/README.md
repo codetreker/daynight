@@ -69,8 +69,9 @@ are not inserted directly to bypass these flows.
 ## Scenarios and fixtures
 
 `tests/main-flow.spec.ts` verifies browser login, CLI device login, CLI project
-and task creation, Web task-state modification, CLI readback and completion, and
-Web reload. The same resource IDs and content cross the clients and persist in
+and task creation, default proposed readback, explicit todo creation for confirmed
+reference work, direct Web proposed-to-in_progress modification, CLI readback and
+completion, and Web reload. The same resource IDs and content cross the clients and persist in
 the real database.
 
 Add normal sequential journeys under `tests/`, using `tests/fixtures.ts` for the
@@ -97,6 +98,16 @@ The `verify-e2e` Linux job is selected when framework or production build inputs
 change, and on every main push. It prepares the locked toolchain and browser,
 checks the framework, runs harness tests and calls `pnpm e2e:test`. The final
 `checks` gate requires a selected product E2E job to succeed.
+
+The hosted Ubuntu image supplies Chromium's runtime shared libraries. CI runs
+`playwright install chromium` from this package's locked dependency within a
+four-minute step, using the checkout-local browser directory. It does not run
+an APT transaction for Playwright's additional fonts on every job. Playwright's
+default host dependency checks remain enabled, and the complete journey must
+launch that locked browser successfully. Download failures and missing runtime
+libraries still fail validation. The
+[browser installation decision](../../.agents/notes/implemented/testing/2026-11-10-product-e2e-browser-installation.md)
+records the dependency assumption and its limits.
 
 CI writes the exact run pointer and preparation phase through
 `DAYNIGHT_E2E_RUN_POINTER`. Every step has a deadline: the declared maxima total

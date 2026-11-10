@@ -22,7 +22,7 @@ const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false
   id: taskId, titlePreview: "A task", titleTruncated: false, status: "todo",
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const summary = { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 };
+const summary = { proposed: 0, total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 };
 const graph = { observedAt: "2026-10-20T12:00:00Z", project, summary, tasks: [graphTask] };
 const sync = taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
 const parsedSync = taskSyncFromGraph(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
@@ -161,11 +161,16 @@ describe("response parsing", () => {
     }
   });
 
-  it("rejects the removed proposed state in graph and detail responses", () => {
-    for (const ready of [false, true]) {
-      const legacy = { ...graphTask, status: "proposed", ready };
-      expect(() => parseTaskGraph({ ...graph, tasks: [legacy] }, projectId)).toThrow("invalid response");
-      expect(() => parseTaskDetail({ ...task, ...legacy }, projectId, taskId)).toThrow("invalid response");
+  it("reads proposed tasks and requires their independent summary count", () => {
+    const proposed = { ...graphTask, status: "proposed", ready: false };
+    const proposedSummary = { ...summary, proposed: 1, todo: 0, ready: 0 };
+    expect(parseTaskGraph({ ...graph, summary: proposedSummary, tasks: [proposed] }, projectId).tasks[0]).toEqual(proposed);
+    expect(parseTaskDetail({ ...task, ...proposed }, projectId, taskId).status).toBe("proposed");
+    const { proposed: _count, ...missing } = proposedSummary;
+    expect(() => parseTaskGraph({ ...graph, summary: missing, tasks: [proposed] }, projectId)).toThrow("invalid response");
+    expect(() => parseTaskGraph({ ...graph, summary: { ...proposedSummary, proposed: 0 }, tasks: [proposed] }, projectId)).toThrow("invalid response");
+    for (const status of ["pending", "approved"]) {
+      expect(() => parseTaskDetail({ ...task, status }, projectId, taskId)).toThrow("invalid response");
     }
   });
 
@@ -211,7 +216,7 @@ describe("response parsing", () => {
     { ...graph, tasks: [graphTask, graphTask] },
     { ...graph, summary: null },
     { ...graph, summary: { ...summary, ready: 0 } },
-    ...["total", "todo", "inProgress", "done", "ready", "blocked"].flatMap((field) => [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1", null].map((value) =>
+    ...["total", "proposed", "todo", "inProgress", "done", "ready", "blocked"].flatMap((field) => [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1", null].map((value) =>
       ({ ...graph, summary: { ...summary, [field]: value } }))),
     ...["titlePreview", "titleTruncated", "ready", "status", "dependsOn", "blockedBy", "id", "createdAt", "updatedAt"].map((field) =>
       ({ ...graph, tasks: [{ ...graphTask, [field]: null }] })),

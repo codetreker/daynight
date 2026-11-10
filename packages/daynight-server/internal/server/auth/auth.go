@@ -19,16 +19,15 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
 type Authentication struct {
 	*RequestAuthentication
-	identity     *identityservice.Identity
+	identity     identityOperations
 	callbackPath string
 }
 
-func NewAuthentication(identity *identityservice.Identity, settings config.AuthSettings, logger *slog.Logger) (*Authentication, error) {
+func NewAuthentication(identity identityOperations, settings config.AuthSettings, logger *slog.Logger) (*Authentication, error) {
 	origin, callbackPath, err := config.ValidateAuthSettings(settings, identity.CallbackURL())
 	if err != nil {
 		return nil, err
