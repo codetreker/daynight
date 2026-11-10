@@ -5,6 +5,7 @@ import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "no
 import path from "node:path";
 import os from "node:os";
 import { overlappingCases, waitCompanionReady } from "./bot-directory-context.mjs";
+import { beginCapture, serveCapture } from "./bot-directory-capture-gate.mjs";
 import { fileURLToPath } from "node:url";
 
 const repository = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -146,6 +147,7 @@ const restore = async () => {
 };
 const stopSession = async () => {
   if (receipt?.session === undefined || receipt.session.stopped) return null;
+  if (receipt.session.state === "pending") { receipt.session.stopped = true; receipt.session.notStarted = true; await persist(); return null; }
   const session = receipt.session.name;
   if (!/^daynight-bot-directory-[0-9a-f-]{36}$/.test(session)) throw new Error("Refusing an unknown ETW session identity.");
   try {
@@ -214,33 +216,63 @@ for (const name of productionPaths) receipt.production[name] = { base: await git
 await persist();
 receipt.sourceTree = { base: await git(["rev-parse", `${base}:packages/daynight/src`]), head: await git(["rev-parse", "HEAD:packages/daynight/src"]) };
 await save(path.join(results, "source.json"), receipt);
+const normalInputScopes = ["packages/daynight/test", "packages/daynight/vitest*.config.ts", "packages/daynight/scripts/test-bootstrap.ts", "packages/daynight/scripts/test-isolation.cts", "packages/daynight/scripts/test-isolation.regression.mjs", "packages/daynight/tsconfig*.json", "packages/daynight/package.json", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "patches", ".github/workflows/checks.yml"];
+const normalDiff = await git(["diff", "--name-status", base, "HEAD", "--", ...normalInputScopes]);
+receipt.normalSuiteInputs = { testTree: { base: await git(["rev-parse", `${base}:packages/daynight/test`]), head: await git(["rev-parse", "HEAD:packages/daynight/test"]) }, differences: normalDiff === "" ? [] : normalDiff.split(/\r?\n/).map(line => { const [status, ...names] = line.split("\t"); return { status, names }; }) };
 receipt.companion = { path: companionPath, baseBlob: await git(["rev-parse", `${base}:${companionPath}`]), headBlob: await git(["rev-parse", `HEAD:${companionPath}`]) };
 await persist();
 await save(path.join(results, "source.json"), receipt);
 let aliases;
 const vitest = path.join(repository, "packages/daynight/node_modules/vitest/vitest.mjs");
 const prefix = "fixture teardown isolation|joins the final process observation|launches one real Controller with no user turn after unknown parent observation=(false|true), then observes the same writer after browser disconnect";
-const started = Date.now(), overallMs = 12 * 60_000, roundBudgetMs = 9 * 60_000;
+const fullSuiteProfile = profile === "full-normal-cli-context";
+const started = Date.now(), overallMs = (fullSuiteProfile ? 18 : 12) * 60_000, roundBudgetMs = (fullSuiteProfile ? 16 : 9) * 60_000;
 
 const readCases = async filename => (await readFile(filename, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 const commandReceipt = result => ({ code: result.code, signal: result.signal, forcedTermination: result.forcedTermination, descendantsStopped: result.descendantsStopped });
-const vitestArguments = (args, folder, label) => [vitest, "run", ...args, "--bail=1", "--reporter=default", "--reporter=json", `--reporter=${path.join(scripts, "bot-directory-case-reporter.mjs")}`, `--outputFile=${path.join(folder, `${label}-vitest.json`)}`];
+const vitestArguments = (args, folder, label, bail = true) => [vitest, "run", ...args, ...(bail ? ["--bail=1"] : []), "--reporter=default", "--reporter=json", `--reporter=${path.join(scripts, "bot-directory-case-reporter.mjs")}`, `--outputFile=${path.join(folder, `${label}-vitest.json`)}`];
 
 const capture = async (name, args, targetBase) => {
   const folder = path.join(privateDirectory, name), resultDirectory = path.join(results, name);
   await mkdir(folder); await mkdir(resultDirectory);
   const etl = path.join(folder, "events.etl"), xml = path.join(folder, "events.xml");
   const markers = { begin: path.join(folder, "capture-begin"), end: path.join(folder, "capture-end") };
-  receipt.session = { name: `daynight-bot-directory-${randomUUID()}`, stopped: false, requestedAt: new Date().toISOString() };
+  const fullSuite = name === "full-suite";
+  receipt.session = { name: `daynight-bot-directory-${randomUUID()}`, stopped: false, state: fullSuite ? "pending" : "starting", requestedAt: new Date().toISOString() };
   await persist();
   const phase = { name, startedAt: new Date().toISOString(), errors: [], command: null, statistics: null, complete: false };
   const contextual = name !== "control" && profile === "original-prefix-with-task-cli";
-  let companionCompletion;
-  try {
+  let companionCompletion, gate, windowTimer, captureStop;
+  const endWindow = async explicit => {
+    clearTimeout(windowTimer);
+    captureStop ??= (async () => {
+      if (explicit) await writeFile(markers.end, "end\n");
+      phase.statistics = await stopSession(); phase.captureStoppedAt = new Date().toISOString();
+    })();
+    await captureStop;
+    if (explicit && phase.captureDeadlineExceeded) throw new Error("The original Bot capture boundary arrived after the diagnostic window.");
+  };
+  const begin = async () => {
+    receipt.session.state = "starting";
+    await persist();
     await must(systemTool("logman"), ["create", "trace", receipt.session.name, "-ets", "-pf", path.join(privateDirectory, "providers.txt"), "-f", "bin", "-max", "64", "-bs", "64", "-nb", "16", "128", "-o", etl]);
+    phase.traceStartedAt = new Date().toISOString();
+    if (fullSuite) windowTimer = setTimeout(() => {
+      phase.captureDeadlineExceeded = true;
+      phase.errors.push({ name: "CaptureWindowError", message: "The original Bot end boundary was not observed within twenty seconds; the normal suite continues." });
+      void endWindow(false).catch(error => phase.errors.push(describe(error)));
+    }, 20_000);
     const initialThreads = JSON.parse((await must(process.execPath, [native, "threads"], { timeoutMs: 10_000 })).toString("utf8"));
     await save(path.join(folder, "initial-threads.json"), initialThreads);
     await writeFile(markers.begin, "begin\n");
+    phase.captureStartedAt = new Date().toISOString();
+  };
+  try {
+    if (fullSuite) gate = serveCapture(folder, path.join(repository, fixturePath), {
+      start: async () => { await beginCapture(begin, () => endWindow(false)); },
+      end: async () => { await endWindow(true); },
+    });
+    else await begin();
     if (contextual) {
       phase.companion = { ready: null, command: null, tests: [], overlaps: [], overlapConfirmed: false };
       companionCompletion = command(process.execPath, vitestArguments(["test/cli/task.test.ts"], folder, "companion"), {
@@ -249,11 +281,11 @@ const capture = async (name, args, targetBase) => {
       }).then(result => ({ result }), error => ({ result: error.result, error }));
       phase.companion.ready = await waitCompanionReady(path.join(folder, "companion-ready.json"), companionCompletion, path.join(repository, companionPath));
     }
-    const commandResult = await command(process.execPath, vitestArguments(args, folder, "original"), { timeoutMs: roundBudgetMs, stream: true, ownedTree: true, environment: { ...process.env, BOT_DIRECTORY_CASE_REPORT: path.join(folder, "cases.jsonl") } });
+    const commandResult = await command(process.execPath, vitestArguments(args, folder, "original", !fullSuite), { timeoutMs: name === "control" ? 9 * 60_000 : roundBudgetMs, stream: true, ownedTree: true, environment: { ...process.env, BOT_DIRECTORY_CASE_REPORT: path.join(folder, "cases.jsonl"), ...(fullSuite ? { BOT_DIRECTORY_CAPTURE_GATE: folder, BOT_DIRECTORY_CAPTURE_MODULE: path.join(repository, fixturePath), BOT_DIRECTORY_CASE_MODULES: JSON.stringify([path.join(repository, fixturePath), path.join(repository, companionPath)]) } : {}) } });
     phase.command = commandReceipt(commandResult);
     await writeFile(path.join(folder, "stdout.log"), commandResult.stdout);
     await writeFile(path.join(folder, "stderr.log"), commandResult.stderr);
-    await writeFile(markers.end, "end\n");
+    if (!fullSuite) await writeFile(markers.end, "end\n");
   } catch (error) {
     phase.errors.push(describe(error));
     if (error.result !== undefined) {
@@ -261,12 +293,20 @@ const capture = async (name, args, targetBase) => {
       try {
         await writeFile(path.join(folder, "stdout.log"), error.result.stdout);
         await writeFile(path.join(folder, "stderr.log"), error.result.stderr);
-        if (!ownedExecutionUnconfirmed) await writeFile(markers.end, "end\n");
+        if (!fullSuite && !ownedExecutionUnconfirmed) await writeFile(markers.end, "end\n");
       } catch (saveError) { phase.errors.push(describe(saveError)); }
     }
   }
   finally {
-    try { phase.statistics = await stopSession(); } catch (error) { phase.errors.push(describe(error)); }
+    clearTimeout(windowTimer);
+    if (gate !== undefined) {
+      phase.gate = await gate.close();
+      phase.errors.push(...phase.gate.errors);
+      try { phase.gate.workerErrors = (await readFile(path.join(folder, "worker-errors.jsonl"), "utf8")).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); phase.errors.push(...phase.gate.workerErrors); }
+      catch (error) { if (error.code !== "ENOENT") phase.errors.push(describe(error)); }
+    }
+    if (captureStop !== undefined) try { await captureStop; } catch (error) { phase.errors.push(describe(error)); }
+    if (phase.statistics === null) try { phase.statistics = await stopSession(); } catch (error) { phase.errors.push(describe(error)); }
     if (companionCompletion !== undefined) try {
       const outcome = await companionCompletion;
       if (outcome.error !== undefined) phase.errors.push(describe(outcome.error));
@@ -280,6 +320,35 @@ const capture = async (name, args, targetBase) => {
       await save(path.join(resultDirectory, "companion.json"), phase.companion);
     } catch (error) { phase.errors.push(describe(error)); }
   }
+  // Test outcomes remain available even if ETW conversion or final suite JSON fails.
+  try {
+    phase.tests = await readCases(path.join(folder, "cases.jsonl"));
+    if (fullSuite) {
+      phase.observedTests = phase.tests;
+      phase.tests = phase.tests.filter(test => path.normalize(test.moduleId) === path.normalize(path.join(repository, fixturePath)) && new RegExp(prefix).test(test.name));
+      phase.originalCaseStatus = phase.tests.find(test => test.name.includes("unknown parent observation=true, then observes the same writer after browser disconnect"))?.status ?? null;
+    }
+    if (contextual) {
+      const originalCase = phase.tests.find(test => test.name.includes("unknown parent observation=true, then observes the same writer after browser disconnect"));
+      if (originalCase !== undefined) {
+        phase.companion.overlaps = overlappingCases(originalCase, phase.companion.tests, path.join(repository, companionPath));
+      }
+      phase.companion.overlapConfirmed = phase.companion.overlaps.length !== 0;
+      await save(path.join(resultDirectory, "companion.json"), phase.companion);
+    }
+    await save(path.join(resultDirectory, "tests.json"), phase.tests);
+  } catch (error) { phase.errors.push(describe(error)); }
+  try {
+    const vitestResult = JSON.parse(await readFile(path.join(folder, "original-vitest.json"), "utf8"));
+    if (fullSuite) {
+      phase.suite = { total: vitestResult.numTotalTests, passed: vitestResult.numPassedTests, failed: vitestResult.numFailedTests, pending: vitestResult.numPendingTests, modules: vitestResult.testResults.length,
+        failures: vitestResult.testResults.flatMap(file => file.assertionResults.filter(test => test.status === "failed").map(test => ({ moduleId: file.name, name: test.fullName }))) };
+    }
+    phase.failedTargets = vitestResult.testResults.flatMap(file => file.assertionResults).flatMap(test => test.failureMessages).flatMap(message => [...message.matchAll(/EBUSY[^\n]*?rmdir '([^']+)'/g)].map(match => match[1])).filter(target => {
+      const relative = path.win32.relative(targetBase, target);
+      return /^h-[A-Za-z0-9_-]+\\ordinary$/i.test(relative);
+    });
+  } catch (error) { phase.errors.push(describe(error)); }
   try {
     const info = await stat(etl);
     phase.etlBytes = info.size;
@@ -289,29 +358,14 @@ const capture = async (name, args, targetBase) => {
       await must("python.exe", [filter, "--validate-control-events", xml, "--file-schema", path.join(results, "file-schema.json"), "--thread-schema", path.join(results, "thread-schema.json"), "--output", observedSchema]);
       phase.decodedSchema = JSON.parse(await readFile(observedSchema, "utf8"));
     }
-    const vitestResult = JSON.parse(await readFile(path.join(folder, "original-vitest.json"), "utf8"));
-    phase.tests = await readCases(path.join(folder, "cases.jsonl"));
-    if (contextual) {
-      const originalCase = phase.tests.find(test => test.name.includes("unknown parent observation=true, then observes the same writer after browser disconnect"));
-      if (originalCase !== undefined) {
-        phase.companion.overlaps = overlappingCases(originalCase, phase.companion.tests, path.join(repository, companionPath));
-      }
-      phase.companion.overlapConfirmed = phase.companion.overlaps.length !== 0;
-      await save(path.join(resultDirectory, "companion.json"), phase.companion);
-    }
-    phase.failedTargets = vitestResult.testResults.flatMap(file => file.assertionResults).flatMap(test => test.failureMessages).flatMap(message => [...message.matchAll(/EBUSY[^\n]*?rmdir '([^']+)'/g)].map(match => match[1])).filter(target => {
-      const relative = path.win32.relative(targetBase, target);
-      return /^h-[A-Za-z0-9_-]+\\ordinary$/i.test(relative);
-    });
     const request = { aliases, targetBases: [targetBase], markers, initialThreads: JSON.parse(await readFile(path.join(folder, "initial-threads.json"), "utf8")), caseWindows: phase.tests, failedTargets: phase.failedTargets };
     await save(path.join(folder, "filter-request.json"), request);
     await must("python.exe", [filter, "--events", xml, "--request", path.join(folder, "filter-request.json"), "--output", path.join(resultDirectory, "events.json")], { timeoutMs: 30_000 });
     const filtered = JSON.parse(await readFile(path.join(resultDirectory, "events.json"), "utf8"));
     phase.expectedCaseCount = name === "control" ? 1 : 5;
-    phase.caseCountValid = phase.tests.length === phase.expectedCaseCount && phase.tests.every(test => path.normalize(test.moduleId) === path.normalize(path.join(repository, "packages/daynight", args[0])));
-    phase.complete = (!contextual || phase.companion.overlapConfirmed && phase.companion.command?.code === 0 && phase.companion.command.signal === null && phase.companion.command.descendantsStopped === true && phase.companion.command.forcedTermination === false) && (name !== "control" || phase.decodedSchema?.valid === true) && phase.caseCountValid && phase.command?.descendantsStopped === true && phase.command.forcedTermination === false && phase.errors.length === 0 && phase.statistics !== null && phase.statistics.eventsLost === 0 && phase.statistics.logBuffersLost === 0 && phase.statistics.realTimeBuffersLost === 0
+    phase.caseCountValid = Array.isArray(phase.tests) && phase.tests.length === phase.expectedCaseCount && phase.tests.every(test => path.normalize(test.moduleId) === path.normalize(path.join(repository, fullSuite ? fixturePath : path.join("packages/daynight", args[0]))));
+    phase.complete = (!fullSuite || phase.gate?.startSeen && phase.gate.endSeen) && (!contextual || phase.companion.overlapConfirmed && phase.companion.command?.code === 0 && phase.companion.command.signal === null && phase.companion.command.descendantsStopped === true && phase.companion.command.forcedTermination === false) && (name !== "control" || phase.decodedSchema?.valid === true) && phase.caseCountValid && phase.command?.descendantsStopped === true && phase.command.forcedTermination === false && phase.errors.length === 0 && phase.statistics !== null && phase.statistics.eventsLost === 0 && phase.statistics.logBuffersLost === 0 && phase.statistics.realTimeBuffersLost === 0
       && info.size < 64 * 1024 * 1024 && filtered.coverage.begin.seen && filtered.coverage.end.seen && filtered.ordering.complete;
-    await save(path.join(resultDirectory, "tests.json"), phase.tests);
     return { phase, filtered, stdout: await readFile(path.join(folder, "stdout.log"), "utf8") };
   } catch (error) { phase.errors.push(describe(error)); return { phase, filtered: null, stdout: "" }; }
   finally { phase.finishedAt = new Date().toISOString(); await save(path.join(resultDirectory, "result.json"), phase); if (!ownedExecutionUnconfirmed) await rm(folder, { recursive: true, force: true }); }
@@ -320,8 +374,12 @@ const capture = async (name, args, targetBase) => {
 let exitCode = 0;
 const errors = [];
 try {
-  if (!["original-prefix", "original-prefix-with-task-cli"].includes(profile)) throw new Error("An explicit original-fixture diagnostic profile is required.");
+  if (!["original-prefix", "original-prefix-with-task-cli", "full-normal-cli-context"].includes(profile)) throw new Error("An explicit original-fixture diagnostic profile is required.");
   if (profile === "original-prefix-with-task-cli" && receipt.companion.baseBlob !== receipt.companion.headBlob) throw new Error("The Task CLI companion does not match the selected original source.");
+  if (fullSuiteProfile) {
+    const allowed = new Map([[fixturePath, "M"], ["packages/daynight/test/commands/worker/bot-process-directory-lock.windows.test.ts", "A"], ["packages/daynight/test/commands/worker/fixtures/windows-directory-handles.mjs", "A"], ["packages/daynight/test/commands/worker/windows-directory-handles.fixtures.ts", "A"], ["packages/daynight/vitest.bot-directory-diagnostic.config.ts", "A"]]);
+    if (receipt.normalSuiteInputs.differences.some(change => change.names.length !== 1 || allowed.get(change.names[0]) !== change.status)) throw new Error("The normal suite has test/config/bootstrap/lock changes outside the exact diagnostic controls.");
+  }
   if (sourceKind !== "pull-request-head" || !/^[0-9a-f]{40}$/.test(expectedHead)) throw new Error("An exact diagnostic PR-head source identity is required.");
   if (head !== expectedHead) throw new Error("The diagnostic checkout does not match the selected PR head.");
   if (receipt.sourceTree.base !== receipt.sourceTree.head) throw new Error("Diagnostic production sources differ from the selected base.");
@@ -361,14 +419,14 @@ try {
   if (receipt.fixture.controlBlob !== receipt.fixture.baseBlob) throw new Error("The original fixture control did not match its selected Git blob.");
   receipt.fixture.intentionalDirtyStatus = await git(["status", "--porcelain", "--", fixturePath]);
   await persist();
-  const maximumRounds = profile === "original-prefix-with-task-cli" ? 2 : 5;
+  const maximumRounds = fullSuiteProfile ? 1 : profile === "original-prefix-with-task-cli" ? 2 : 5;
   for (let index = 0; index < maximumRounds; index++) {
     if (overallMs - (Date.now() - started) < roundBudgetMs + 60_000) { receipt.stopReason = "cleanup-reserve"; break; }
-    const result = await capture(`round-${index + 1}`, ["test/commands/worker/bot-process-integration.test.ts", "-t", prefix], path.join(repository, ".tmp/bot-process-integration"));
+    const result = await capture(fullSuiteProfile ? "full-suite" : `round-${index + 1}`, fullSuiteProfile ? ["--config", path.join(repository, "packages/daynight/vitest.bot-directory-diagnostic.config.ts")] : ["test/commands/worker/bot-process-integration.test.ts", "-t", prefix], path.join(repository, ".tmp/bot-process-integration"));
     receipt.rounds.push(result.phase);
     await persist();
     if (result.phase.command === null) { exitCode = 1; receipt.stopReason = "original-case-not-run"; break; }
-    if (result.phase.command.code !== 0 || result.phase.command.signal !== null) { exitCode = result.phase.command.code || 1; receipt.stopReason = "original-case-failure"; break; }
+    if (result.phase.command.code !== 0 || result.phase.command.signal !== null) { exitCode = result.phase.command.code || 1; receipt.stopReason = !fullSuiteProfile || result.phase.originalCaseStatus === "failed" ? "original-case-failure" : result.phase.originalCaseStatus === "passed" ? "normal-suite-failure" : "suite-failure-without-original-case-result"; break; }
     if (result.phase.companion !== undefined && (result.phase.companion.command?.code !== 0 || result.phase.companion.command.signal !== null)) { exitCode = result.phase.companion.command?.code || 1; receipt.stopReason = "companion-failure"; break; }
     if (!result.phase.complete) { exitCode = 1; receipt.stopReason = "incomplete-capture"; break; }
   }

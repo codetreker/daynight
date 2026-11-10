@@ -12,9 +12,12 @@ export default class BotDirectoryCaseReporter {
       this.readyFilename = path.resolve(ready);
       if (!this.readyFilename.startsWith(path.join(repository, ".tmp") + path.sep)) throw new Error("Diagnostic ready receipts must stay in the checkout's .tmp.");
     }
+    const modules = process.env.BOT_DIRECTORY_CASE_MODULES;
+    this.modules = modules === undefined ? null : new Set(JSON.parse(modules).map(value => path.normalize(value)));
     this.readyWritten = false;
   }
   onTestCaseReady(test) {
+    if (this.modules !== null && !this.modules.has(path.normalize(test.module.moduleId))) return;
     if (this.readyFilename === undefined || this.readyWritten) return;
     const temporary = `${this.readyFilename}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify({ kind: "ready", moduleId: test.module.moduleId, name: test.fullName, observedAt: new Date().toISOString() })}\n`, { flag: "wx" });
@@ -22,6 +25,7 @@ export default class BotDirectoryCaseReporter {
     this.readyWritten = true;
   }
   onTestCaseResult(test) {
+    if (this.modules !== null && !this.modules.has(path.normalize(test.module.moduleId))) return;
     const result = test.result();
     if (result.state !== "passed" && result.state !== "failed") return;
     const diagnostic = test.diagnostic();

@@ -194,14 +194,23 @@ exact `BOT_FIXTURE_BASE_SHA`, matching `BOT_DIRECTORY_DIAGNOSTIC_HEAD`,
 `BOT_DIRECTORY_DIAGNOSTIC_OUTPUT`.
 It requires native Windows x64, Node.js 24.22.2, Python 3, locked dependencies, a built
 CLI and ETW privileges. The workflow supplies those inputs and always invokes
-the entry's `--cleanup` mode. It starts file-event capture before Vitest and
-replays the original PR base fixture prefix in fresh processes.
+the entry's `--cleanup` mode. It replays the original PR base fixture and starts
+file-event capture before the captured fixture executes.
 `original-prefix` permits up to five serial rounds;
-`original-prefix-with-task-cli`, selected by the workflow, permits up to two
+`original-prefix-with-task-cli` permits up to two
 rounds alongside the unchanged baseline `test/cli/task.test.ts`. Bot starts after
 the companion's public case-ready receipt. Recorded case timings must confirm
 actual overlap with the interrupted-parent case. Both owned process trees finish
 cleanup before fixture restoration; capture ends immediately after Bot completion.
+`full-normal-cli-context`, selected by the workflow, runs the normal baseline CLI
+suite once, excluding only the added diagnostic holder test. An inherited custom
+runner uses bounded, awaited handshakes to start capture before the first Bot
+fixture and stop after the interrupted-parent case's real cleanup hooks. Stop
+acknowledgment precedes reporter finalization. The suite then completes all normal
+hooks before source restoration. The 20-second capture cap stops only the trace; missing handshakes or uncovered
+cleanup leave incomplete evidence. Post-task diagnostic errors preserve the
+original test result. Historical test
+and runner-input identities are verified, and normal suite budgets are retained.
 The entry keeps existing assertions and teardown, records source identities and
 restores the checked-out file. Raw system traces stay private; only exact owned
 directory history and coverage results are retained. The

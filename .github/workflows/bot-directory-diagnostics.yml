@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/bot-directory-diagnostics.yml'
       - 'packages/daynight/scripts/*bot*directory*'
+      - 'packages/daynight/vitest.bot-directory-diagnostic.config.ts'
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ jobs:
   directory-evidence:
     name: diagnose original Windows Bot directory cleanup
     runs-on: windows-latest
-    timeout-minutes: 22
+    timeout-minutes: 25
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
@@ -25,7 +26,7 @@ jobs:
       BOT_FIXTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       BOT_DIRECTORY_DIAGNOSTIC_HEAD: ${{ github.event.pull_request.head.sha }}
       BOT_DIRECTORY_DIAGNOSTIC_SOURCE_KIND: pull-request-head
-      BOT_DIRECTORY_DIAGNOSTIC_PROFILE: original-prefix-with-task-cli
+      BOT_DIRECTORY_DIAGNOSTIC_PROFILE: full-normal-cli-context
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 1
@@ -44,17 +45,16 @@ jobs:
           version: 11.28.6
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
-      - name: Install locked CLI dependencies
-        timeout-minutes: 1
-        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Validate diagnostic filters and build the CLI
+      - name: Install locked CLI dependencies, validate filters and build
         timeout-minutes: 1
         run: |
+          pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python packages/daynight/scripts/test_bot_directory_etw.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm build
-      - name: Capture the native sharing control and original fixture prefix
-        timeout-minutes: 12
+      - name: Capture the native control and one normal CLI context
+        timeout-minutes: 18
         run: node packages/daynight/scripts/diagnose-bot-directory-release.mjs
       - name: Independently close the owned trace and restore fixture bytes
         if: always()

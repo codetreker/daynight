@@ -13,7 +13,7 @@ its timing, limiting comparison with the original failing source.
 ## Decision
 
 The separate Windows Bot diagnostic entry starts a bounded Kernel-File ETW
-session before Vitest and Controller startup. A native known-holder control
+session before the captured fixture starts. A native known-holder control
 checks the actual Windows provider schema, PID observations, sharing data and
 open-to-cleanup/close history before original-case rounds are admitted. At least
 two same-target sharing violations must fall inside the selected holder
@@ -46,9 +46,31 @@ the baseline. Its first public case-ready receipt gates Bot startup, and public
 case timings must prove overlap with the interrupted-parent case. Each process
 has its own Windows Job and reports. File capture stops when Bot completes, while
 the companion finishes its real hooks before fixture restoration. Missing overlap
-or either process failure stops further rounds. Both profiles preserve original
-exit results and cleanup errors. Ordinary suite budgets and production code
-remain unchanged.
+or either process failure stops further rounds.
+
+The `full-normal-cli-context` profile runs the historical normal CLI suite once
+with its default configuration, discovery, concurrency and budgets. Only the
+added diagnostic holder test is excluded. It verifies baseline tests and runner
+inputs, accounting explicitly for the replayed Bot file and added observer
+helpers. A supported custom TestRunner inherits the normal runner and awaits its
+hooks. Before the first Bot task's clock and fixture hooks, a separate bounded
+request/acknowledgment enables the trace, records a thread snapshot and writes
+the begin marker. After the interrupted-parent task's real hooks finish, a
+second handshake writes the end marker and stops the trace. Stop acknowledgment
+precedes reporter finalization, which cannot occur until the runner returns.
+Public reporter notifications alone cannot establish this barrier because the
+worker does not await their delivery.
+
+The normal suite continues after capture and retains every original outcome.
+Post-task diagnostic failures are reported separately without hiding an original
+test failure. A 20-second capture bound stops only the trace, while the normal
+suite continues. Missing handshakes, target cases or complete boundary coverage
+leave incomplete evidence. The
+full owned suite Job must finish before the baseline fixture is restored. This
+profile retains normal scheduling mechanisms but adds an explicit observer gate;
+it cannot claim the exact schedule of a past main run. All profiles preserve
+original exit results and cleanup errors. Ordinary suite budgets and production
+code remain unchanged.
 
 Every ETW session has a unique persisted ownership receipt before startup.
 Capture is non-circular and capacity-bounded. Begin/end markers and final loss
@@ -84,6 +106,11 @@ retains FileObject and sharing data for lifecycle correlation.
 not identify the earlier holder, and the altered fixture would remain a
 different timing experiment. The explicit baseline replay states exactly which
 test bytes ran and preserves the existing acceptance workflow.
+
+**Enable capture from a public reporter notification.** Module collection and
+case-ready delivery do not block the worker before fixture execution. A fast
+open can precede capture. The supported awaited runner hook provides the required
+pre-fixture acknowledgment without editing the test or its budget.
 
 **Retain a JavaScript child reference as a cleanup fix.** Node's active native
 process wrapper already retains its owner; `unref` changes event-loop liveness.
