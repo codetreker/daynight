@@ -94,7 +94,6 @@ for (const width of [1440, 390, 320]) {
     expect(await page.evaluate(() => window.botViewport.metrics.resourceReads)).toBe(0);
     await page.evaluate(() => window.botViewport.releaseHistory());
     await expect(page.locator(`${row}[data-entry-key="${entryId(80)}"]`)).toContainText('Revision 2');
-    await expect.poll(() => page.evaluate(() => window.botViewport.metrics.resourceReads)).toBeGreaterThan(0);
     await expect(page.locator(row)).toHaveCount(100);
     expect(await page.locator(timeline).evaluate((node, original) => node === original, originalTimeline)).toBe(true);
     expect(await page.locator(`${row}[data-entry-key="${entryId(80)}"]`).evaluate((node, original) => node === original, originalRow)).toBe(true);
@@ -102,6 +101,15 @@ for (const width of [1440, 390, 320]) {
     expect(restored.key).toBe(reading.key);
     expect(Math.abs(restored.offset - reading.offset)).toBeLessThanOrEqual(3);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
+    expect(api.writes).toEqual([]); expect(errors).toEqual([]);
+    const imageFrame = page.locator(`${row}[data-entry-key="${entryId(80)}"] .session-image-frame`);
+    await imageFrame.scrollIntoViewIfNeeded();
+    await expect.poll(() => page.evaluate(() => window.botViewport.metrics.resourceReads)).toBeGreaterThan(0);
+    await expect.poll(() => imageFrame.locator('img').evaluateAll(nodes => nodes.map(node => {
+      const image = node as HTMLImageElement;
+      return { width: image.naturalWidth, height: image.naturalHeight };
+    }))).toEqual([{ width: 3, height: 2 }]);
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
     expect(api.writes).toEqual([]); expect(errors).toEqual([]);
     const evidence = { boundary: 'Production app/client/store/renderer; controlled HTTP and SessionApi; real Chrome localStorage and document reload, no real Worker/Provider.', width, reading, restored, writes: api.writes, errors };

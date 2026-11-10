@@ -94,6 +94,29 @@ describe('Bot display snapshot codec', () => {
     expect(decoded!.resources[0]).not.toBe(image);
   });
 
+  it('trims unified image and retained Markdown references without dropping shared originals', () => {
+    const owner = crypto.randomUUID(), old = { ...resource(1), revision: '1', width: 1, height: 1, frameCount: 1 }, shared = { ...resource(2), revision: '1', width: 1, height: 1, frameCount: 1 };
+    const image = (n: number, resourceId: string) => ({ type: 'image' as const, imageId: id(3_000 + n), resourceId, label: `image ${n}` });
+    const entries = Array.from({ length: 151 }, (_, index) => entry(index + 1));
+    entries[0] = { ...entry(1), kind: 'assistant_message', imageProjectionError: null, content: [image(1, old.resourceId), image(2, shared.resourceId)] };
+    const text = 'Revised body', markdown = { type: 'markdown' as const, text, partId: id(4_001), revision: '2', textSha256: createHash('sha256').update(text).digest('hex'), complete: true, truncated: false, bindings: [], retainedImages: [{ imageId: id(3_003), start: 0, end: 4, part: image(3, shared.resourceId), sourceRevision: '1', sourceTextSha256: 'a'.repeat(64), linkHref: null }] };
+    entries[150] = { ...entry(151), kind: 'assistant_message', imageProjectionError: null, content: [markdown] };
+    const value = preview(owner, 1, { entries, resources: [old, shared] });
+    const trimmed = prepareBotDisplayPreview(value, owner, value.botId)!;
+    expect(trimmed.entries).toEqual(entries.slice(1));
+    expect(trimmed.resources).toEqual([shared]);
+    expect(decodeBotDisplayPreview(JSON.stringify(trimmed), owner, value.botId)).toEqual(trimmed);
+    expect(prepareBotDisplayPreview({ ...value, resources: [old] }, owner, value.botId)).toBeNull();
+  });
+
+  it.each(['bytes', 'data', 'blobUrl', 'url', 'credential'])('refuses private payload field %s inside unified image occurrences', field => {
+    const owner = crypto.randomUUID(), descriptor = { ...resource(), revision: '1', width: 1, height: 1, frameCount: 1 };
+    const part = { type: 'image', imageId: id(3_001), resourceId: descriptor.resourceId, label: 'saved', [field]: 'blob:private-content' };
+    const value = preview(owner, 1, { resources: [descriptor] });
+    const entries = [{ ...entry(), imageProjectionError: null, content: [part] }];
+    expect(prepareBotDisplayPreview({ ...value, entries }, owner, value.botId)).toBeNull();
+  });
+
   it.each([
     ['schema version', (p: BotDisplayPreview) => ({ ...p, schemaVersion: 2 })],
     ['owner identity', (p: BotDisplayPreview) => ({ ...p, ownerUserId: id(99) })],
