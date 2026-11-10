@@ -24,7 +24,7 @@ type metadataReader interface {
 // A single instance shares the network concurrency limit and metadata cache.
 type Clients struct {
 	writer        store.OAuthClientWriter
-	admission     core.PublicAdmission
+	operations    clientOperations
 	fetch         metadataReader
 	preregistered map[string]core.ClientMetadata
 	now           func() time.Time
@@ -33,12 +33,16 @@ type Clients struct {
 // NewClients rejects malformed preregistration configuration at startup. The
 // map contains full metadata documents with a client_id matching each key.
 func NewClients(writer store.OAuthClientWriter, admission core.PublicAdmission, registered map[string][]byte) (*Clients, error) {
-	c := &Clients{writer: writer, admission: admission, fetch: NewMetadataFetcher(), preregistered: make(map[string]core.ClientMetadata), now: time.Now}
+	return newClients(writer, registered, clientOperations{take: admission.Take, parseMetadata: core.ParseClientMetadata, parseStoredMetadata: core.ParseStoredClientMetadata, freezeClient: core.FreezeClient})
+}
+
+func newClients(writer store.OAuthClientWriter, registered map[string][]byte, operations clientOperations) (*Clients, error) {
+	c := &Clients{writer: writer, operations: operations, fetch: NewMetadataFetcher(), preregistered: make(map[string]core.ClientMetadata), now: time.Now}
 	for id, data := range registered {
 		if id == "" {
 			return nil, core.ErrInvalidClientMetadata
 		}
-		m, err := core.ParseClientMetadata(data, id)
+		m, err := c.operations.parseMetadata(data, id)
 		if err != nil {
 			return nil, err
 		}
@@ -50,14 +54,14 @@ func NewClients(writer store.OAuthClientWriter, admission core.PublicAdmission, 
 // Register consumes the persistent registration budget before parsing or allocating.
 // It returns the actual public configuration only after a confirmed commit.
 func (c *Clients) Register(ctx context.Context, source string, data []byte) (core.ClientMetadata, error) {
-	allowed, err := c.admission.Take(ctx, "register", source, "")
+	allowed, err := c.operations.take(ctx, "register", source, "")
 	if err != nil {
 		return core.ClientMetadata{}, err
 	}
 	if !allowed {
 		return core.ClientMetadata{}, core.ErrRateLimited
 	}
-	m, err := core.ParseClientMetadata(data, "")
+	m, err := c.operations.parseMetadata(data, "")
 	if err != nil {
 		return core.ClientMetadata{}, err
 	}
@@ -93,7 +97,7 @@ func (c *Clients) Resolve(ctx context.Context, id, redirect string) (core.Valida
 		return core.ValidatedClient{}, core.ErrInvalidClient
 	}
 	if m, ok := c.preregistered[id]; ok {
-		return core.FreezeClient(id, "preregistered", m, time.Time{}, redirect)
+		return c.operations.freezeClient(id, "preregistered", m, time.Time{}, redirect)
 	}
 	now := c.now().UTC()
 	var result core.ValidatedClient
@@ -103,11 +107,11 @@ func (c *Clients) Resolve(ctx context.Context, id, redirect string) (core.Valida
 		if err != nil {
 			return err
 		}
-		m, err := core.ParseStoredClientMetadata(record.Metadata, id)
+		m, err := c.operations.parseStoredMetadata(record.Metadata, id)
 		if err != nil {
 			return core.ErrInvalidClient
 		}
-		result, err = core.FreezeClient(id, "dcr", m, record.ExpiresAt, redirect)
+		result, err = c.operations.freezeClient(id, "dcr", m, record.ExpiresAt, redirect)
 		if err != nil {
 			return err
 		}
@@ -128,12 +132,12 @@ func (c *Clients) Resolve(ctx context.Context, id, redirect string) (core.Valida
 		return core.ValidatedClient{}, err
 	}
 	var m core.ClientMetadata
-	_, deadline, err := c.fetch.Fetch(ctx, id, func(data []byte) error { var e error; m, e = core.ParseClientMetadata(data, id); return e })
+	_, deadline, err := c.fetch.Fetch(ctx, id, func(data []byte) error { var e error; m, e = c.operations.parseMetadata(data, id); return e })
 	if err != nil {
 		if ctx.Err() != nil {
 			return core.ValidatedClient{}, ctx.Err()
 		}
 		return core.ValidatedClient{}, core.ErrInvalidClient
 	}
-	return core.FreezeClient(id, "cimd", m, deadline, redirect)
+	return c.operations.freezeClient(id, "cimd", m, deadline, redirect)
 }
