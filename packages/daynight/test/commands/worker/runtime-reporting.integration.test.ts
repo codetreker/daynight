@@ -1,3 +1,4 @@
+import type { ArchiveProbeResult } from "../../../src/commands/controller/archive-error.js";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -673,4 +674,89 @@ describe("worker runtime configuration reporting", () => {
     f.signal.abort(); await rejected;
     expect(shutdown).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce(); expect(mocks.webClose).toHaveBeenCalledOnce();
   });
+});
+
+
+it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] as const)("backfill performs only low-frequency archive condition probes: %s", async outcome => {
+  const f = await fixture();
+  target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };
+  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  const startTime = now;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId, sessionId: launchId, claimId: uuid(3), executionGeneration: "1" }));
+  const probes: number[] = [];
+  mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
+    probes.push(now - startTime);
+    if (outcome === "cancelled") { f.signal.abort(); throw new Error("probe cancelled"); }
+    if (probes.length > 1 && outcome === "probe-error") throw new Error("metadata unavailable");
+    return probes.length > 1 && outcome === "receipt" ? { kind: "attempt" } : { kind: "blocked", code: "archive_incomplete" };
+  });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
+    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, updateConfiguration: update, shutdown };
+  });
+  await start(f);
+  if (outcome === "cancelled") {
+    expect(probes).toEqual([0]); expect(mocks.archive).not.toHaveBeenCalled();
+    expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+  } else {
+    expect(probes.slice(0, 2)).toEqual([0, 900000]);
+    if (outcome === "receipt") expect(mocks.archive).toHaveBeenCalledOnce();
+    else { expect(probes).toEqual([0, 900000, 1800000]); expect(mocks.archive).not.toHaveBeenCalled(); }
+    if (outcome === "persistence-error") {
+      const retries = mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry").map(([event]) => event);
+      expect(retries).toHaveLength(3);
+      expect(retries.every(event => event.error instanceof AggregateError && event.error.message.includes("not persisted"))).toBe(true);
+      expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+    }
+  }
+});
+
+
+it("retains backfill blocker and probe deadline across runtime restart without cleanup ownership", async () => {
+  const f = await fixture();
+  let now = Date.parse(workerTelemetryTime);
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const identity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", executionId: uuid(11), executionGeneration: "1", launchId: uuid(11) };
+  mocks.completed.mockReturnValue([{ ...identity, webExecution: { ...identity, sessionId: uuid(11), launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ ...identity, sessionId: uuid(11) });
+  mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
+  let stop = f.signal, rounds = 0;
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, updateConfiguration: update, shutdown }));
+  await start(f);
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  const readState = () => {
+    const db = openWorkerStore(f.paths.databaseFile);
+    try { expect(db.listCleanupSchedules()).toEqual([]); return db.getArchiveBackfillSchedule(identity); }
+    finally { db.close(); }
+  };
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  const restart = async () => { rounds = 0; stop = new AbortController(); await start({ ...f, signal: stop }); };
+  now += 60_000;
+  await restart();
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  expect(mocks.archive).not.toHaveBeenCalled();
+  now += 840_000;
+  mocks.archiveProbe.mockRejectedValue(new Error("metadata unavailable"));
+  await restart();
+  expect(mocks.archiveProbe).toHaveBeenCalledTimes(2);
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  expect(mocks.archive).not.toHaveBeenCalled();
+  now += 900_000;
+  mocks.archiveProbe.mockResolvedValue({ kind: "attempt" });
+  mocks.archive.mockRejectedValue(new Error("receipt mismatch"));
+  await restart();
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+  now += 900_000;
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  await restart();
+  expect(readState()).toBeNull();
+  expect(mocks.archive).toHaveBeenCalledTimes(2);
 });

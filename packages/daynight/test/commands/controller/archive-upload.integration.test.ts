@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
+import * as archives from "../../../src/commands/controller/archive-upload.js";
 import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion, upgradeSqlite } from "../../../src/platform/sqlite-format.js";
@@ -23,6 +24,51 @@ const fixture = async () => {
   return { home, ticket, journalPath, entry, sourceThrough };
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
+test.each(["archive_incomplete", "projection_gap"] as const)("rejects %s before reading pending content and preserves source bytes", async code => {
+  const f = await fixture(), db = new Database(f.journalPath);
+  db.prepare("UPDATE execution SET archive_incomplete=?,projection_gap=?").run(code === "archive_incomplete" ? 1 : 0, code === "projection_gap" ? "Native history was lost." : null); db.close();
+  const timeline = path.join(`${f.journalPath}.pending-content`, "timeline");
+  const entryFile = path.join(timeline, (await readdir(timeline))[0]!);
+  await writeFile(entryFile, "unreadable pending content");
+  const before = await readFile(f.journalPath), request = vi.fn<typeof fetch>();
+  for (let i = 0; i < 3; i++) await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ name: "ArchiveRepairRequiredError", code });
+  expect(request).not.toHaveBeenCalled();
+  expect(await readFile(f.journalPath)).toEqual(before);
+  expect(await readFile(entryFile, "utf8")).toBe("unreadable pending content");
+});
+
+test("probes a stopped source without mutating its journal or pending inventory", async () => {
+  const f = await fixture(), db = new Database(f.journalPath);
+  db.exec("UPDATE execution SET archive_incomplete=1,projection_gap=NULL"); db.close();
+  const before = await readFile(f.journalPath);
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "blocked", code: "archive_incomplete" });
+  expect(await readFile(f.journalPath)).toEqual(before);
+  await expect(archives.probeStoppedControllerArchive({ ...f, ticket: { ...f.ticket, executionGeneration: "2" } })).rejects.toThrow("original stopped");
+  const reason = new Error("probe cancelled");
+  await expect(archives.probeStoppedControllerArchive({ ...f, signal: AbortSignal.abort(reason) })).rejects.toBe(reason);
+  const edit = new Database(f.journalPath); edit.exec("UPDATE execution SET archive_incomplete=0,projection_gap='Recovered pending timeline requires full relay resynchronization.'"); edit.close();
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "attempt" });
+});
+
+test.each(["current", "legacy", "mismatch"] as const)("a repair probe admits only original receipt reconciliation: %s", async variant => {
+  const f = await fixture(), db = new Database(f.journalPath);
+  db.exec("UPDATE execution SET archive_incomplete=1,projection_gap=NULL"); db.close();
+  const receipt = { state: "ready", sha256: "1".repeat(64), byteLength: "72", errorCode: null, ...(variant === "legacy" ? {} : { schemaVersion: 3, completeness: "complete" }) };
+  const remote = variant === "legacy" ? { ...receipt, schemaVersion: 3, completeness: "complete", sha256: "2".repeat(64), byteLength: "96", migration: { migrationId: randomUUID(), sourceSha256: receipt.sha256, sourceByteLength: receipt.byteLength } } : { ...receipt, sha256: variant === "mismatch" ? "3".repeat(64) : receipt.sha256 };
+  const receiptPath = `${f.journalPath}.archive-receipt-${f.ticket.executionGeneration}.json`;
+  await writeFile(`${f.journalPath}.archive-receipt-2.json`, JSON.stringify(receipt));
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "blocked", code: "archive_incomplete" });
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  await rm(`${f.journalPath}.pending-content`, { recursive: true });
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "attempt" });
+  const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: remote }));
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  if (variant === "mismatch") { await expect(result).rejects.toThrow("differs"); expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(receipt); }
+  else expect(await result).toEqual(remote);
+  expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET"]);
+  const inspect = new Database(f.journalPath, { readonly: true });
+  try { expect(inspect.prepare("SELECT archive_incomplete FROM execution").get()).toEqual({ archive_incomplete: 1 }); } finally { inspect.close(); }
+});
 test.each(["original", "source-hash", "source-length", "missing-relation"])("reconciles a confirmed legacy receipt only through its persisted migration: %s", async variant => {
   const f = await fixture();
   const receiptPath = `${f.journalPath}.archive-receipt-${f.ticket.executionGeneration}.json`;
