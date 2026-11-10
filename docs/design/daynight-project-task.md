@@ -229,9 +229,22 @@ URL，由 Git 处理 `insteadOf`；不读取 push URL、不自行实现 Git 配�
 原因的错误链。操作不 clone、不 fetch。每个 Git 子进程最多使用 30 秒与共享总期限剩余值的
 较小者，stdout、stderr 分别最多捕获 1 MiB；超限或取消时终止任务拥有的执行。
 读取索引时以 `-c core.fsmonitor=false` 关闭外部 fsmonitor，避免优化工具继承管道
-或启动后台工作。POSIX 使用并等待独占进程组，Windows 使用系统目录下的
-`taskkill /T /F` 处理所属进程树。终止与管道收尾最多额外占用 2 秒；无法确认时
-保留原始错误并报告进程终止未确认，不能无限等待继承的输出句柄。
+或启动后台工作。POSIX 使用原有进程组政策。Windows 通过平台层可信 guardian，
+在实际 Git 执行前将入口归入禁止 breakaway 的私有匿名 Job；目标环境在归属核验后
+传入，实际 Git 结果来自独立 receipt，不能用 guardian 的退出码替代。
+仅 Git guardian 使用 Node detached 启动，避免额外加入 CLI 的隐式 kill-on-close Job
+而改变正常后台成员在 CLI 退出后的生命周期；它不请求原生 Job breakaway，也不解除真实
+外层 Job 的约束。pipes、IPC 与原进程引用仍需 join。准入前的可信入口通过 disconnect
+与已断开连接检查自行结束，不能将这段窗口描述为已有私有 Job 的 OS 强制清理。
+
+取消、期限、输出超限或通道失败先封闭 Job 的新进程准入，再终止 Job，等待实际捕获的
+原进程对象、已封闭 Job 的零 active 成员及真实管道关闭。捕获对象的 signaled 见证
+保存后释放观察引用，避免引用本身延迟 accounting；零计数不替代已捕获对象的退出证明。
+正常非强制 Git 结果（包括普通非零退出）在 receipt 和自然 EOF 后释放自有 kill-on-close，
+保留正常后台工作；它仍受外层 owner 约束。新的启动与准入占用原 command deadline，
+不提高原 1000ms native 与 1000ms 管道收尾预算。已开始的 native 调用需要 join，
+因此这些不是可抢占的总 wall-clock 上限。任何清理错误仍保留原始 cause 并报告终止未确认；
+Git 在同一次失败收尾中尽力关闭 Job，不向调用者交付没有恢复消费者的隐藏 owner。
 
 repo 正规化对本地 origin、每个列表 repoUrl 和详情 repoUrl 使用同一函数。返回值
 是可持久化的 `repoIdentity` 字符串；它不是替换原始 repoUrl 的提交字段。

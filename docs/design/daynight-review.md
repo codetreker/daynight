@@ -233,7 +233,8 @@ PR 预留，但不占审查 Worker 容量。待处理期间的多次更新合并
 | `runtime.ts` | review 模块组装、实例持有关系、信号与有序关闭 |
 | `skill.ts` 与 `skills/daynight-review/` | 发布资源校验、内容寻址快照、发现结果校验，以及内置审查方法 |
 | `processes.ts` | 本次执行的进程组或 Windows Job 停止与执行证据 |
-| `windows-phase.ts` 与 `windows-job-scope.ts` | Windows guardian 准入、原命令结果及持有的 Job 和进程对象 |
+| `windows-phase.ts` 与 `windows-job-scope.ts` | 对平台 owned-command 的 review 适配及既有严格 STOP/retain 政策 |
+| `platform/windows-owned-command.ts`、`windows-node-guardian.ts` 与 `windows-command-job.ts` | 共享 Windows 准入、目标 receipt、直接管道和持有的 Job/原进程对象；调用方显式选择完成政策 |
 | `publication.ts` | 稳定审查发布身份和完整远端结果的匹配规则 |
 | `adapters/github.ts` | 通过 `gh` 读取仓库、PR、分页、当前 CI、review 和 conversation 完整状态，不登记本地状态 |
 | `adapters/worktrees.ts` | 克隆校验、fetch、PR worktree 准备与清理 |
@@ -723,8 +724,11 @@ close 和 IPC disconnect 联合证明直接关闭，避免把 Node 的事件遗�
 空 PID 清单和 active count 为零都不能替代已捕获对象的 signaled 证明；未被观察的历史
 成员不获得逐对象 signaled 保证。盘点、身份、成员查询、wait、终止或 handle 释放错误
 均保留失败；已确认 signaled 的 handle 逐个释放，其余和 Job handle 保留，不释放执行
-归属。`platform/windows-job.ts` 复用既有 `koffi` 依赖提供 native 边界，Bot Job lease
-复用该边界，保留其原有生命周期。
+归属。平台 owned-command 提供共用的 guardian、receipt、管道与 Job 生命周期；review
+适配仍对正常与异常结束执行严格 STOP，并保留不确定 owner。repository Git 的正常
+RELEASE、停止前 seal 和失败时终结性收尾是独立政策，不迁移到 review。
+`platform/windows-job.ts` 复用既有 `koffi` 依赖提供 native 边界，Bot Job lease 复用
+该边界，保留其原有生命周期。
 
 旧的非 Job helper 仍以受核验的实时祖先关系盘点并使用 `taskkill`，其有界
 `Windows review ancestry` 诊断和 fail-closed 规则保持独立；产品的两个 review 阶段均

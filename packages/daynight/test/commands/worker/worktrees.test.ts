@@ -945,7 +945,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("exposes a real fetch timeout without creating a branch or registration", async () => {
     const f = await fixture(); const blocker = path.join(f.root, "block-fetch.cjs");
-    await writeFile(blocker, "setInterval(() => {}, 1000);\n");
+    const executed = path.join(f.root, "blocker-executed");
+    await writeFile(blocker, `require("node:fs").writeFileSync(${JSON.stringify(executed)}, "executed", { flag: "wx" });\nsetInterval(() => {}, 1000);\n`);
     git(f.repository, ["config", "remote.origin.uploadpack", `\"${process.execPath}\" \"${blocker}\"`]);
     const adapter = manager(f.root, { runGit: (cwd, args, op, options) => runRepositoryGit(cwd, args, op, args.includes("fetch") ? { ...options, timeoutMs: 1500 } : options) });
     const prepared = adapter.prepareWorktree(f.project, f.owner, operation()).catch((error: unknown) => {
@@ -953,6 +954,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       throw error;
     });
     await expect(prepared).rejects.toThrow("deadline exceeded");
+    expect(await readFile(executed, "utf8")).toBe("executed");
     expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
     expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
   });
