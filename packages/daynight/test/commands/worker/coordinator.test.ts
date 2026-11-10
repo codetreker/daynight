@@ -3436,7 +3436,7 @@ describe("real Git resource isolation", () => {
     } finally { op.dispose(); await git.dispose(); }
   }, 20000);
 
-  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected", "manual-alias", "manual-case", "manual-hardlink", "manual-raw", "manual-missing-case", "pointer-forward", "pointer-common", "pointer-reverse", "native-io", "native-io-wrapped", "native-io-parse"])("admits only with independently bounded ownership: %s", async proof => {
+  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected", "manual-alias", "manual-case", "manual-hardlink", "manual-raw", "manual-missing-case", "pointer-forward", "pointer-common", "pointer-reverse", "marker-before", "marker-confirmation", "native-io", "native-io-wrapped", "native-io-parse"])("admits only with independently bounded ownership: %s", async proof => {
     const f = await fixture(["capacity-full", "stopped", "unselected"].includes(proof) ? 1 : 2);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
     await mkdir(f.project.localPath);
@@ -3448,7 +3448,7 @@ describe("real Git resource isolation", () => {
     const op = createOperation();
     try {
       const binding = await git.prepareWorktree(f.project, owner, op);
-      if (!proof.startsWith("native-io")) execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+      if (!proof.startsWith("native-io") && !proof.startsWith("marker-")) execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
       let separateManualTarget = false;
       if (proof.startsWith("manual-")) {
         const manual = path.join(f.root, "manual"), alias = path.join(f.root, "alias");
@@ -3488,6 +3488,23 @@ describe("real Git resource isolation", () => {
         if (proof === "pointer-reverse") await rm(metadata);
         await writeFile(metadata, `${proof === "pointer-reverse" ? "gitdir: " : ""}${alias}/../${suffix}\n`);
       }
+      if (proof.startsWith("marker-")) {
+        const { readFile } = await import("node:fs/promises");
+        const admin = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: binding.worktreePath, encoding: "utf8", timeout: 10000 }).trim();
+        const locked = path.join(admin, "locked"), original = await readFile(locked, "utf8");
+        const replacement = `daynight-worker:${JSON.stringify({ ...JSON.parse(original.slice("daynight-worker:".length)), worktreeId: uuid(906) })}\n`;
+        let changed = false;
+        const change = async () => { if (!changed) { changed = true; await writeFile(locked, replacement); } };
+        const open = directoryIdentity.openDirectoryIdentity;
+        vi.spyOn(directoryIdentity, "openDirectoryIdentity").mockImplementation(async target => {
+          const lease = await open(target);
+          if (target === f.project.localPath) {
+            if (proof === "marker-before") await change();
+            else return { ...lease, verifyPath: async () => { await lease.verifyPath(); await change(); } };
+          }
+          return lease;
+        });
+      }
       if (proof.startsWith("native-io")) {
         const open = directoryIdentity.openDirectoryIdentity;
         vi.spyOn(directoryIdentity, "openDirectoryIdentity").mockImplementation(async target => {
@@ -3500,7 +3517,7 @@ describe("real Git resource isolation", () => {
         });
       }
       f.store.registerPending({ ...owner, agent: "codex" });
-      if (["current", "claim-unconfirmed", "conflict", "capacity-full"].includes(proof) || proof.startsWith("manual-") || proof.startsWith("pointer-") || proof.startsWith("native-io")) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      if (["current", "claim-unconfirmed", "conflict", "capacity-full"].includes(proof) || proof.startsWith("manual-") || proof.startsWith("pointer-") || proof.startsWith("marker-") || proof.startsWith("native-io")) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
       if (proof === "stopped" || proof === "unselected") {
         f.store.completeTask(owner);
         Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {} } });
@@ -3523,7 +3540,7 @@ describe("real Git resource isolation", () => {
             expect.objectContaining({ code: "claim-unconfirmed" }),
           ]));
         } else expect(f.remote.claim).not.toHaveBeenCalled();
-        if (proof.startsWith("manual-") && !separateManualTarget || proof.startsWith("pointer-") || proof.startsWith("native-io")) {
+        if (proof.startsWith("manual-") && !separateManualTarget || proof.startsWith("pointer-") || proof.startsWith("marker-") || proof.startsWith("native-io")) {
           expect(f.tasks.start).not.toHaveBeenCalled();
           expect(f.store.getTask(owner)?.status).toBe("pending");
           expect(monitor.capture("1").capacity?.quality).not.toBe("current");
