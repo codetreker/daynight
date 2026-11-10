@@ -69,6 +69,8 @@ describe('shared Session image preview', () => {
   it('opens inside the owner outside the timeline and owns only its inner Escape', async () => {
     const f = fixture(), outerEscape = vi.fn(), changed = vi.fn();
     render(<Surface scope={f.scope} onEscape={outerEscape} onPreviewChange={changed} />);
+    const idleDialog = screen.getByTestId('owner').querySelector('dialog')!;
+    expect(within(idleDialog).queryAllByRole('button', { hidden: true })).toHaveLength(0);
     const image = await screen.findByRole('img', { name: 'Image.png' });
     expect(image).toHaveAttribute('data-media-key', 'message/image');
     expect(screen.queryByRole('link')).toBeNull();
@@ -84,18 +86,30 @@ describe('shared Session image preview', () => {
     expect(within(dialog).getByRole('button', { name: 'Original size' })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.keyDown(within(dialog).getByRole('button', { name: 'Close image preview' }), { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(within(dialog).queryAllByRole('button', { hidden: true })).toHaveLength(0);
+    expect(dialog.querySelector('img')).toBeNull();
     expect(trigger).toHaveFocus(); expect(outerEscape).not.toHaveBeenCalled();
     expect(document.body.style.overflow).toBe('');
     expect(screen.getByTestId('timeline').style.overflow).toBe('');
     expect(changed).toHaveBeenLastCalledWith(false);
     fireEvent.keyDown(trigger, { key: 'Escape' }); expect(outerEscape).toHaveBeenCalledOnce();
+    fireEvent.click(trigger);
+    const reopened = screen.getByRole('dialog', { name: 'Image.png' });
+    expect(within(reopened).getByRole('button', { name: 'Close image preview' })).toHaveFocus();
+    expect(within(reopened).getByRole('button', { name: 'Download image: Image.png' })).toBeEnabled();
+    expect(document.body.style.overflow).toBe('hidden');
+    expect(screen.getByTestId('timeline').style.overflow).toBe('hidden');
+    expect(changed).toHaveBeenLastCalledWith(true);
   });
 
   it('keeps cached descriptors inert without reading or offering download controls', () => {
     const f = fixture(); render(<Surface scope={f.scope} access="none" />);
     expect(screen.getByText('Image unavailable in the recent preview')).toBeVisible();
-    expect(screen.queryByRole('img')).toBeNull(); expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(within(screen.getByTestId('owner')).queryAllByRole('button', { hidden: true })).toHaveLength(0);
     expect(f.acquire).not.toHaveBeenCalled();
+    expect(document.body.style.overflow).toBe('');
+    expect(screen.getByTestId('timeline').style.overflow).toBe('');
   });
 
   it('restores focus to the timeline when the original trigger is inside a hidden ancestor', async () => {

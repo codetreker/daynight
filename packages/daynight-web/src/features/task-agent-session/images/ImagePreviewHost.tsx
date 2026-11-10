@@ -166,6 +166,7 @@ export function ImagePreviewHost({ controller, rootRef, active, suspended, readA
     }).finally(() => { if (downloadRequest.current === pending) setDownloading(false); });
   };
   return <dialog ref={dialog} className="session-image-preview" aria-modal="true" aria-labelledby={titleId} onKeyDown={onKeyDown} onCancel={event => { event.preventDefault(); event.stopPropagation(); controller.close('user'); }}>
+    {request ? <>
     <header className="session-image-preview-heading"><h2 id={titleId} title={request?.label}>{request?.label || m.stage}</h2><button className="button" type="button" ref={closeButton} aria-label={m.close} onClick={() => controller.close('user')}>×</button></header>
     <div className="session-image-preview-controls"><button className="button" type="button" aria-pressed={mode === 'fit'} onClick={() => setMode('fit')}>{m.fit}</button><button className="button" type="button" aria-pressed={mode === 'original'} onClick={() => setMode('original')}>{m.original}</button><button className="button" type="button" aria-label={`${m.downloadImage}: ${request?.label || m.stage}`} disabled={!visible || !readAdmitted || !request?.asset.canDownload() || downloading} onClick={download}>{downloading ? m.downloading : m.download}</button></div>
     <div ref={stage} className={`session-image-preview-stage ${mode}`} tabIndex={0} role="region" aria-label={m.stage}>
@@ -173,5 +174,6 @@ export function ImagePreviewHost({ controller, rootRef, active, suspended, readA
       {visible && !decoded ? <div className="session-image-preview-status" role={displayed?.error ? 'alert' : 'status'}>{displayed?.error ? m[displayed.error] : m.loading}{displayed?.error ? <button className="button" type="button" disabled={!canRead} onClick={() => setRetry(value => value + 1)}>{m.retry}</button> : null}</div> : null}
     </div>
     {downloadError ? <p className="session-image-error" role="alert">{m[downloadError]}</p> : null}
+    </> : null}
   </dialog>;
 }
