@@ -950,6 +950,33 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Webhook retention configuration tests
+
+Retention binds one stateful Core configuration collector through its private
+Reconcile/Pass contract. The selected service tests control those operations and
+verify context, Store identity, exact quota, result aggregation, observations,
+internal timeouts and single-flight drain. Native ReceiptCollector work and
+history scope callbacks remain real. Configuration unknown-state and lifecycle
+cases keep the default collector and its state across passes.
+
+Core uses its existing strict collection plan for the original eligibility rules,
+pending barrier and all 125 configuration candidates. Complete context, identity
+and order checks supplement the original affected-row observation. Run the
+selected owners without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestConfigCollector|TestRetention)' \
+  ./internal/core/webhook ./internal/service/webhook
+```
+
+The [configuration operation test decision](../../.agents/notes/implemented/testing/2026-11-09-retention-config-operation-test-owners.md)
+records this allocation and the retained native-state proofs. Store continues to
+own actual SQL, locks, barriers, completion and persisted readback; stress cases
+retain their separate tagged entry.
+
 ### Worker admission tests
 
 The `internal/service/worker` admission subset controls directly invoked Core

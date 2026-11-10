@@ -26,6 +26,11 @@ SQLSTATE. The existing unknown-outcome case retains its cached candidate, blocks
 writes after an offline observation, and resumes scanning only after successful
 observation with the original candidate cursor.
 
+The [Retention configuration operation decision](2026-11-09-retention-config-operation-test-owners.md)
+uses the same plan for five eligibility rules, a pending barrier and all 125
+original configuration candidates. Its service tests supply operation results
+while retaining shared budgets, context and native unknown-state lifetime.
+
 PostgreSQL tests call the actual scan, barrier, write scope, lock and delete
 methods directly. An independently active earlier XID keeps the real barrier
 false. After that transaction commits, the test proves the candidate's locked
