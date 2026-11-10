@@ -1,7 +1,8 @@
 import path from "node:path";
-import { chmod, copyFile, link, mkdir, mkdtemp, open, realpath, rm, symlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, copyFile, link, mkdir, mkdtemp, open, realpath, readFile, rm, stat, symlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
 import { fstatSync, writeFileSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,16 @@ import { createOperation, type Operation } from "../../src/api/operation.js";
 import { probeResourceKey, resolveToolLaunch, toolCommand, verifyToolLaunch } from "../../src/platform/tool-executables.js";
 
 const execute = promisify(execFile);
+const removeFixtureRoot = async (root: string, remove: typeof rm = rm, wait: (ms: number) => Promise<void> = delay): Promise<void> => {
+  // Node's recursive retries apply at every depth; keep one budget for the root.
+  for (let retry = 0; ; retry++) {
+    try { await remove(root, { recursive: true, force: true, maxRetries: 0 }); return; }
+    catch (error) {
+      if (retry === 3 || !(error instanceof Error) || !("code" in error) || error.code !== "EBUSY") throw error;
+      await wait(100 * (retry + 1));
+    }
+  }
+};
 const roots: string[] = [], operations: Operation[] = [];
 const scratch = path.resolve(import.meta.dirname, "../../../../.tmp/tool-executables-tests");
 const fixture = async () => { await mkdir(scratch, { recursive: true }); const root = await mkdtemp(path.join(scratch, "launch-")); roots.push(root); return root; };
@@ -31,7 +42,7 @@ const codexFixture = async () => {
   await mkdir(path.dirname(runtime), { recursive: true }); await copyFile(process.execPath, runtime); await chmod(runtime, 0o755);
   return { root, entry, runtime, relativeRuntime, packageRoot };
 };
-afterEach(async () => { vi.restoreAllMocks(); for (const item of operations.splice(0)) item.dispose(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); for (const item of operations.splice(0)) item.dispose(); await Promise.all(roots.splice(0).map(root => removeFixtureRoot(root))); });
 
 describe("resolved tool commands", () => {
   it.skipIf(process.platform === "win32")("rejects FIFO entries and replacements without starving unrelated filesystem work", async () => {
@@ -230,4 +241,101 @@ describe("resolved tool commands", () => {
     const { root, entry, runtime } = await codexFixture(); await chmod(runtime, 0o644);
     await expect(resolve(entry, root)).rejects.toMatchObject({ stage: "resolve", code: "permission_denied" });
   });
+});
+
+describe("tool fixture cleanup", () => {
+  it("retries a busy root without multiplying waits by directory depth", async () => {
+    const root = await fixture(), nested = path.join(root, "a/b/c/d/file");
+    await mkdir(path.dirname(nested), { recursive: true }); await writeFile(nested, "owned");
+    const waits: number[] = [], targets: unknown[] = [];
+    const busy = Object.assign(new Error("Controlled busy fixture"), { code: "EBUSY" });
+    let attempts = 0;
+    await removeFixtureRoot(root, async (target, options) => {
+      targets.push(target);
+      expect(options).toEqual({ recursive: true, force: true, maxRetries: 0 });
+      if (++attempts < 4) throw busy;
+      await rm(target, options);
+    }, async ms => { waits.push(ms); });
+    expect(targets).toEqual([root, root, root, root]);
+    expect(waits).toEqual([100, 200, 300]);
+    await expect(realpath(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["EBUSY", "EPERM", "EACCES", "EIO"])("retains the original %s error after its permitted attempts", async code => {
+    const root = await fixture(), failures: Error[] = [], waits: number[] = [];
+    await writeFile(path.join(root, "preserved"), "owned");
+    await expect(removeFixtureRoot(root, async () => {
+      const failure = Object.assign(new Error("Controlled fixture refusal"), { code }); failures.push(failure); throw failure;
+    }, async ms => { waits.push(ms); })).rejects.toSatisfy(error => error === failures.at(-1));
+    expect(failures).toHaveLength(code === "EBUSY" ? 4 : 1);
+    expect(waits).toEqual(code === "EBUSY" ? [100, 200, 300] : []);
+    expect(await readFile(path.join(root, "preserved"), "utf8")).toBe("owned");
+  });
+
+  it.skipIf(process.platform !== "win32").each(["release", "retain"] as const)("keeps native executable cleanup bounded when the holder must %s its lock", async mode => {
+    const root = await fixture(), directory = path.join(root, "native-bin"); await mkdir(directory);
+    const entry = path.join(directory, "codex.exe"); await copyFile(process.execPath, entry);
+    const helper = fileURLToPath(new URL("./fixtures/tool-cleanup-holder.mjs", import.meta.url));
+    const child = spawn(process.execPath, [helper, entry], { cwd: scratch, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    let stderr = "", childError: Error | undefined, released = false, primary: unknown;
+    child.stdout!.resume(); child.stderr!.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-4096); });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+      child.once("error", error => { childError = error; });
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    const ready = new Promise<void>((resolve, reject) => {
+      child.on("message", message => {
+        if (typeof message !== "object" || message === null || !("kind" in message)) return;
+        if (message.kind === "held") resolve();
+        if (message.kind === "released") released = true;
+        if (message.kind === "failed") reject(new Error(JSON.stringify(message)));
+      });
+      child.once("error", reject);
+      child.once("close", () => reject(new Error(`Executable holder closed before readiness: ${stderr}`)));
+    });
+    // The parent owns a separate deadline; cleanup still joins the actual close.
+    const watchdog = setTimeout(() => { child.kill("SIGKILL"); }, 6000);
+    const release = async () => {
+      let sendError: unknown;
+      try { if (child.connected) await new Promise<void>((resolve, reject) => child.send({ kind: "release" }, error => error ? reject(error) : resolve())); }
+      catch (error) { sendError = error; }
+      const outcome = await closed;
+      if (sendError || childError || outcome.code !== 0 || outcome.signal !== null || !released) {
+        throw new Error(`Executable holder did not release and close: ${JSON.stringify({ ...outcome, released, sendError: String(sendError ?? ""), childError: childError?.message, stderr })}`);
+      }
+    };
+    const busy: unknown[] = [];
+    try {
+      await ready;
+      const removal = removeFixtureRoot(root, async (target, options) => {
+        try { await rm(target, options); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error) || error.code !== "EBUSY") throw error;
+          expect(error).toMatchObject({ code: "EBUSY", syscall: "unlink", path: entry });
+          busy.push(error);
+          // Release is triggered by an actual kernel refusal, never a timer.
+          if (mode === "release" && busy.length === 1) await release();
+          throw error;
+        }
+      });
+      if (mode === "release") {
+        await removal;
+        expect(busy.length).toBeGreaterThan(0);
+        await expect(realpath(root)).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        await expect(removal).rejects.toSatisfy(error => error === busy.at(-1));
+        expect(busy).toHaveLength(4);
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+        expect((await stat(entry)).isFile()).toBe(true);
+      }
+    } catch (error) { primary = error; }
+    finally {
+      let cleanup: unknown;
+      try { await release(); } catch (error) { cleanup = error; }
+      finally { clearTimeout(watchdog); }
+      if (cleanup !== undefined) throw new AggregateError(primary === undefined ? [cleanup] : [primary, cleanup], "Executable holder cleanup failed.");
+    }
+    if (primary !== undefined) throw primary;
+  }, 10_000);
 });
