@@ -1,0 +1,4 @@
+codex-*.js -text
+copilot -text -whitespace
+copilot.cmd -text -whitespace
+copilot.ps1 -text -whitespace

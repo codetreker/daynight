@@ -8,6 +8,7 @@ import { parseServerConfiguration } from "../../config/server.js";
 import type { ServerConfiguration } from "../../config/server.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
+import { parseLocalToolPaths, type ToolPaths } from "../../platform/tool-path-choice.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
@@ -26,6 +27,7 @@ export type WorkerRepositoryConfiguration = ExecutionConfiguration & {
 
 export type WorkerConfiguration = ExecutionConfiguration & {
   repositoryRoot: string;
+  readonly toolPaths: ToolPaths;
   maxConcurrent: number;
   pollIntervalMs: number;
   preferPlatformSpecificTasks: boolean;
@@ -144,7 +146,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     }
     return { ...agentConfiguration(repository, field, effective, local), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), repositories };
+  return { ...effective, repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), repositories };
 };
 
 const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {

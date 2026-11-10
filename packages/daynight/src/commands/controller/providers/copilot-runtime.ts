@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { CopilotClient } from "@github/copilot-sdk";
 import { startCopilotBridge, type CopilotBridgeMediaOptions } from "./copilot-bridge.js";
@@ -8,20 +7,13 @@ import type { ProviderOptions } from "./types.js";
 import { NativeRpcTimeoutError } from "./native-rpc.js";
 import type { CopilotAuthorityArtifacts } from "./copilot-read-authority-artifacts.js";
 import { CopilotReadAuthority } from "./copilot-read-authority.js";
+import { copilotExecutable } from "../../../platform/tool-executables.js";
+export { copilotExecutable } from "../../../platform/tool-executables.js";
 
 export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new NativeRpcTimeoutError(label)), ms);
   promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
 });
-
-// The npm loader uses spawnSync. Spawn its platform executable directly so the
-// child proof and shutdown signal identify the runtime, rather than a wrapper.
-export const copilotExecutable = (): string => {
-  const require = createRequire(createRequire(import.meta.url).resolve("@github/copilot/package.json"));
-  const platforms = process.platform === "linux" && (require("detect-libc") as { isNonGlibcLinuxSync(): boolean }).isNonGlibcLinuxSync() ? ["linuxmusl", "linux"] : [process.platform];
-  for (const platform of platforms) try { return require.resolve(`@github/copilot-${platform}-${process.arch}`); } catch { /* Try the CLI's supported platform fallback. */ }
-  throw new Error("The installed Copilot CLI has no native package for this platform.");
-};
 
 export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Error) => void, artifacts?: CopilotAuthorityArtifacts, media?: CopilotBridgeMediaOptions) => {
   const token = randomBytes(32).toString("hex"), executable = options.executable ?? copilotExecutable();

@@ -22,6 +22,18 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 机器遥测 `runtimeConfiguration` schemaVersion=1 独立报告全局 native 和逐 Project native 的 model/effort 值及 local/cloud/native 来源。null 与 native 来源表示交由原生解析，不证明实际原生模型。不可用配置用 native:null 表示；移除本地覆盖后的新报告必须更新来源。旧客户端省略该对象仍合法，新对象要求支持其格式的服务端。
 
+## 本地工具路径解析
+
+`worker.toolPaths` 是可省略的 mapping，仅允许 `codex`、`copilot`、`herdr` 三项。省略整个 mapping、缺少某项或某项为 YAML null 时，该项选择自动；空串、纯空白、错误类型、未知工具名及整个 mapping 为 null 均拒绝。两个本地配置入口必须输出完整三项 `ToolPathChoice`，每项为 `{kind:"auto"}` 或 `{kind:"path",path:string}`。
+
+显式值必须是 Worker 所在平台的绝对文件路径，每项最多 4096 个 UTF-8 字节，必须是合法 Unicode，且不含 NUL 或其它控制字符。Windows 路径必须带盘符或完整 UNC share，不能依赖当前盘符。路径中的合法空格、Unicode 和标点逐字保留，不 trim、不规范化、不展开 `~` 或环境变量、不拆分参数、不执行 shell。整个字符串作为一个文件路径，原生参数继续由既有参数配置拥有；文件存在性、可执行性、入口格式和解释器属于工具解析器的检查。
+
+本地配置识别和共享解析器是独立的基础能力。当前 Task、Bot、Herdr 运行入口和版本/能力探测尚未消费 `toolPaths`，云端配置协议也不发送此字段；保存或解析成功不得报告为路径已应用，不改变既有执行的工具选择。独立 Controller、Claude 和 Agent 内部 CLI aliases 保持各自既有配置归属。
+
+共享解析器必须只解析给定选择，显式路径失败不回退其它安装。自动 Codex、Herdr 从捕获的 Worker PATH 查找；自动 Copilot 的 Web 上下文选择随包 native，Herdr 上下文从捕获的 PATH 查找。Herdr 工具仅接受 Herdr 上下文。Node 脚本固定使用 Worker Node，不能因入口位于 nvm 目录便切换解释器。已知 npm shim 必须完整静态识别后解包，未知包装器明确拒绝；官方 loader 必须覆盖其实际选择的 native 身份，不能只记录 loader 内容。
+
+解析结果必须保留入口、真实路径、最终工具程序、解释器、结构化命令和参与文件的内容身份。核验不得重新读取当前配置或搜索 PATH；入口映射或文件内容改变时明确失败。命令构建返回 `file` 和独立 `args`，不能交给 shell。解析和身份核验均受 operation 预算约束，不启动工具；版本、协议、认证和真实会话可用性需要运行消费者独立验证。
+
 ## 必须满足的行为
 
 ### W-01：前台运行、配置与平台

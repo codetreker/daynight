@@ -1,24 +1,9 @@
 import type { Operation } from "../../api/operation.js";
 import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup } from "./herdr/command.js";
+export { captureToolEnvironment as captureCodexProbeEnvironment } from "../../platform/tool-environment.js";
 
 type CodexInvocation = { file: string; environment: NodeJS.ProcessEnv; workingDirectory: string };
 export type CodexProbeOwner = { observe<T>(invocation: CodexInvocation, operation: Operation, probe: () => Promise<T>): Promise<T> };
-
-/** Capture bare Codex search keys with Node's Windows environment selection before launching or matching. */
-export const captureCodexProbeEnvironment = (environment: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv => {
-  const captured = { ...environment };
-  if (platform === "win32") {
-    const keys = Object.keys(captured).sort();
-    for (const name of ["PATH", "PATHEXT"]) {
-      const matches = keys.filter(key => key.toUpperCase() === name);
-      if (matches.length === 0) continue;
-      const value = captured[matches[0]!];
-      for (const key of matches) delete captured[key];
-      captured[name] = value;
-    }
-  }
-  return captured;
-};
 
 const searchValue = (environment: NodeJS.ProcessEnv, name: string): string | undefined => {
   const key = process.platform === "win32" ? Object.keys(environment).filter(key => key.toUpperCase() === name).sort()[0] : name;
