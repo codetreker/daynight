@@ -108,7 +108,9 @@ Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reje
 
 兼容 profile 绑定实际 SDK/executable、backend、已确认 effective model、输入及接受事件、历史 schema。保留原生选择值 `default`，另存实际 resolved model；未知 backend、default 未解析、设置超时或 profile 不匹配时图片 unknown，不能隐式发一轮探测。图片 steer 固定 unsupported；文本 steer 保持原有能力，图片不入队、不 interrupt。
 
-实际 executable 从 SDK 的 `spawnClaudeCodeProcess` 观察，不猜测固定 `cli.js`。helper 在该入口探测版本，并结合实际 spawn 环境和 SDK effective settings 判断 backend；覆盖冲突、不可解析的设置来源或未执行的 policy helper 均不能证明 first-party backend。模型别名、点号与短横线拼写不自行等同，必须取得精确 resolved model 或经过独立验证的映射。
+实际 executable 从 SDK 的 `spawnClaudeCodeProcess` 观察，不猜测固定 `cli.js`。helper 在该入口探测版本，并结合实际 spawn 环境和 SDK effective settings 判断 backend；覆盖冲突、不可解析的设置来源或未执行的 policy helper 均不能证明 first-party backend。模型别名、点号与短横线拼写不自行等同，必须取得精确 resolved model 或经过独立验证的映射。这些运行时身份事实只定位待验证组合，不证明图片准入资格；版本匹配、模型目录及公开视觉限制不能替代该组合的原生接受、几何和平台证据。
+
+当前没有已完成资格验证的 Claude 图片 profile。因此即使 SDK、CLI、Anthropic backend 和精确模型均已确认，生产能力仍报告 `send:unknown`、未知 geometry、空媒体类型和零图片额度；adapter 在读取图片文件或原生提交前拒绝图片输入。模型 readback 仍更新真实模型身份，不会自行开放图片能力。受控 adapter 测试使用测试内的能力替身验证原生编码和接受处理，不提供生产配置开关；开放资格须先取得完整证据并更新相应 profile。
 
 原生限制单位必须明确；编码上限 L 按 `4 * ceil(rawBytes / 3) <= L` 换算，不把 5 MB 编码额度当 5 MiB 文件。请求整体还受历史、工具和文字影响。累计上下文超过某阈值的几何限制必须纳入公共 geometry，不能以单条图数或普通 decoder 的 16384 上限代替 backend profile。
 

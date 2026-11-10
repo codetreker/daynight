@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +10,14 @@ import { inspectProcessProof, type ProcessProof } from "../../../src/commands/co
 // The package test command builds these production helper entries before collection.
 const { queryClaudeLive, claudeLiveImage, releaseClaudeLiveRecord } = await import(new URL("../../../dist/commands/controller/providers/claude-live.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude-live.js");
 const { openClaudeProvider } = await import(new URL("../../../dist/commands/controller/providers/claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude.js");
+const { ClaudeControls } = await import(new URL("../../../dist/commands/controller/providers/controls-claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/controls-claude.js");
+
+const enableControlledImageInput = () => {
+  const original = ClaudeControls.prototype.imageCapabilities;
+  return vi.spyOn(ClaudeControls.prototype, "imageCapabilities").mockImplementation(function (this: InstanceType<typeof ClaudeControls>, ...args) {
+    return { ...original.apply(this, args), send: "supported", reasonCode: null, inputMediaTypes: ["image/png", "image/jpeg", "image/webp"], maxImageBytes: "3750000", maxMessageImageBytes: "20971520", maxImagesPerMessage: 8, geometry: { version: 1, known: true, maxWidth: 3000, maxHeight: 3000, maxPixels: 9_000_000, maxFrames: 1 } };
+  });
+};
 
 test("actual SDK helper joins its native child, preserves control RPC and transfers image bytes through bounded frames", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-process-")), log = path.join(root, "native.jsonl"), imagePath = path.join(root, "image.png"), spoolDirectory = path.join(root, "spools"); await mkdir(spoolDirectory);
@@ -116,6 +124,7 @@ test("the actual Claude adapter submits image-only input once and waits for dura
   const bytes = Buffer.from([137,80,78,71,13,10,26,10,1,2,3]), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), localPath: imagePath, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }; await writeFile(imagePath, bytes, { mode: 0o400 });
   const operationId = randomUUID(), saved = new Map<string, unknown>(), observed: unknown[] = [], children: ChildProcess[] = [];
   const command: any = { kind: "send_message", operationId, payload: { expectedTurnId: null, target: { expectedNativeSessionId: null }, content: [{ ...image, uploadId: randomUUID() }] } };
+  const capability = enableControlledImageInput(); onTestFinished(() => capability.mockRestore());
   const provider = await openClaudeProvider({ cwd: root, model: null, args: [], resumeNativeSessionId: null, executable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env: { ...process.env, ANTHROPIC_BASE_URL: "https://api.anthropic.com", CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0", DAYNIGHT_TEST_CLAUDE_LIVE_LOG: log },
     imageRuntime: { getIntent: id => id === operationId ? { command, sha256: "c".repeat(64), state: "unknown" } : null, readState: key => saved.get(key), writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => root, reserveIndex() {}, acquireIndexReservation: () => ({ release() {} }), createSpool: maximum => openNativeMediaSpool(path.join(spoolDirectory, randomUUID()), maximum, () => {}, () => {}) },
     onTimeline() {}, onState() {}, onSpawn: child => { children.push(child); }, onInputObserved: value => { observed.push(value); return observed.length > 1; }, imageOccurrenceAcknowledged: () => false,
@@ -134,6 +143,7 @@ test.each(["success", "blocked"])("the actual adapter never accepts a zero-turn 
   const bytes = Buffer.from([137,80,78,71,13,10,26,10,1,2,3]), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), localPath: imagePath, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }; await writeFile(imagePath, bytes, { mode: 0o400 });
   const operationId = randomUUID(), saved = new Map<string, unknown>(), observed: unknown[] = [], children: ChildProcess[] = [];
   const command: any = { kind: "send_message", operationId, payload: { expectedTurnId: null, target: { expectedNativeSessionId: null }, content: [{ ...image, uploadId: randomUUID() }] } };
+  const capability = enableControlledImageInput(); onTestFinished(() => capability.mockRestore());
   const provider = await openClaudeProvider({ cwd: root, model: null, args: [], resumeNativeSessionId: null, executable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env: { ...process.env, ANTHROPIC_BASE_URL: "https://api.anthropic.com", CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0", DAYNIGHT_TEST_CLAUDE_RESULT_ONLY: mode },
     imageRuntime: { getIntent: id => id === operationId ? { command, sha256: "c".repeat(64), state: "unknown" } : null, readState: key => saved.get(key), writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => root, reserveIndex() {}, acquireIndexReservation: () => ({ release() {} }), createSpool() { throw new Error("This terminal has no output images."); } },
     onTimeline() {}, onState() {}, onSpawn: child => { children.push(child); }, onInputObserved: value => { observed.push(value); return true; }, imageOccurrenceAcknowledged: () => false,

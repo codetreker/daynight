@@ -57,16 +57,12 @@ export class ClaudeControls {
   validateSelection(requested: NativeModelSelection): void {
     assertNativeModelSelection("Claude", requested, { model: this.appliedModel, effort: this.effort ?? null, models: this.models.map(item => ({ id: string(item.value), aliases: typeof item.resolvedModel === "string" ? [item.resolvedModel] : [], efforts: item.supportsEffort && Array.isArray(item.supportedEffortLevels) ? item.supportedEffortLevels.filter((value): value is string => typeof value === "string") : null })) });
   }
-  imageCapabilities(nativeSessionId: string | null, profile: ClaudeRuntimeProfile | null, available: boolean): Omit<ProviderImageCapabilities, "revision"> {
+  imageCapabilities(nativeSessionId: string | null, _profile: ClaudeRuntimeProfile | null, available: boolean): Omit<ProviderImageCapabilities, "revision"> {
     const selected = this.modelReadbackRequired ? null : this.appliedModel ?? this.actualModel ?? (this.appliedSettings && this.model === "default" ? "default" : null);
     const modelId = selected === null ? null : string(this.models.find(model => model.value === selected)?.resolvedModel) || selected;
-    // The pinned SDK/CLI image-block contract is paired with explicit model IDs
-    // from https://platform.claude.com/docs/en/about-claude/models/overview.
-    const supported = available && profile?.sdkVersion === "0.3.247" && profile.cliVersion === "2.1.247" && profile.backend === "anthropic" && modelId !== null && ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"].includes(modelId);
-    // https://platform.claude.com/docs/en/build-with-claude/vision bounds
-    // many-image contexts to 3000 px and Bedrock to 5 MB encoded per image.
-    // 3,750,000 raw bytes encode to at most 5,000,000 bytes, including padding.
-    return { expectedNativeSessionId: nativeSessionId, modelId, controlsRevision: this.store.value.revision, send: supported ? "supported" : "unknown", steer: "unsupported", reasonCode: supported ? null : available ? "capability_unknown" : "component_unsupported", inputMediaTypes: supported ? ["image/png", "image/jpeg", "image/webp"] : [], maxImageBytes: supported ? "3750000" : "0", maxMessageImageBytes: supported ? "20971520" : "0", maxImagesPerMessage: supported ? 8 : 0, geometry: { version: 1, known: supported, maxWidth: supported ? 3000 : 0, maxHeight: supported ? 3000 : 0, maxPixels: supported ? 9_000_000 : 0, maxFrames: supported ? 1 : 0 } };
+    // No Claude backend/model profile has completed image qualification.
+    // Native identity alone cannot establish geometry or input limits.
+    return { expectedNativeSessionId: nativeSessionId, modelId, controlsRevision: this.store.value.revision, send: "unknown", steer: "unsupported", reasonCode: available ? "capability_unknown" : "component_unsupported", inputMediaTypes: [], maxImageBytes: "0", maxMessageImageBytes: "0", maxImagesPerMessage: 0, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } };
   }
   async refresh() {
     try { const models: unknown = await controlDeadline(this.native.supportedModels(), "Claude model discovery"); if (!Array.isArray(models) || models.length > 500) throw new Error("Invalid Claude model catalog."); this.models = models.map(record); await this.readSettings(); this.describe(null); }

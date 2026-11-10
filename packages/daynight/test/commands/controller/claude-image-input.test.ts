@@ -1,7 +1,15 @@
 import { expect, test, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeImageInputs } from "../../../src/commands/controller/providers/claude-image-input.js";
-import type { NativeInput, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import { openClaudeProvider } from "../../../src/commands/controller/providers/claude.js";
+import { NativeRpcError } from "../../../src/commands/controller/providers/native-rpc.js";
+import type { NativeInput, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
+
+const nativeQuery = vi.hoisted(() => vi.fn());
+vi.mock("../../../src/commands/controller/providers/claude-live.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/claude-live.js")>(), queryClaudeLive: nativeQuery }));
 
 const fixture = () => {
   const operationId = randomUUID(), sessionId = randomUUID(), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), localPath: "/private/native-image" };
@@ -10,6 +18,45 @@ const fixture = () => {
   const options = { imageRuntime: { getIntent: (id: string) => id === operationId ? intent : null, readState: (key: string) => state.get(key) ?? null, writeState: (key: string, value: unknown) => state.set(key, structuredClone(value)) }, onInputObserved: vi.fn(() => true) } as unknown as ProviderOptions;
   return { operationId, sessionId, image, input, intent, state, options, inputs: new ClaudeImageInputs(options, sessionId) };
 };
+
+test("the production Claude provider refuses an unqualified image profile before native submission", async () => {
+  const f = fixture(), states: ProviderState[] = [];
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  await mkdir(path.resolve("../../.tmp"), { recursive: true });
+  const root = await mkdtemp(path.resolve("../../.tmp/claude-qualification-"));
+  let wake: (() => void) | undefined, ended = false;
+  const nativeSend = vi.fn(async () => { throw new Error("Unqualified native submission reached the transport."); });
+  nativeQuery.mockImplementation(({ options }: { options: Options }) => ({
+    profile: { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/private/sdk/cli.js", backend: "anthropic" },
+    async initializationResult() {
+      f.intent.command.payload.target.expectedNativeSessionId = options.sessionId;
+      await options.hooks!.SessionStart![0]!.hooks[0]!({ hook_event_name: "SessionStart", session_id: options.sessionId!, transcript_path: "", cwd: process.cwd(), source: "startup" }, undefined, { signal: new AbortController().signal });
+      return {};
+    },
+    supportedModels: async () => [{ value: "default", resolvedModel: "claude-sonnet-5-5", displayName: "Default" }],
+    getSettings: async () => ({ applied: { model: "claude-sonnet-5-5", effort: null } }),
+    supportedCommands: async () => [], reloadSkills: async () => {},
+    async *[Symbol.asyncIterator]() { if (!ended) await new Promise<void>(resolve => { wake = resolve; }); },
+    submit: nativeSend, close() { ended = true; wake?.(); },
+  }));
+  let provider: Awaited<ReturnType<typeof openClaudeProvider>> | undefined;
+  try {
+    Object.assign(f.image, { localPath: path.join(root, "input.png"), byteLength: String(png.length), sha256: createHash("sha256").update(png).digest("hex") });
+    Object.assign(f.intent.command.payload.content[1], f.image);
+    await writeFile(f.image.localPath, png, { mode: 0o400 });
+    provider = await openClaudeProvider({ ...f.options, cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState: state => states.push(structuredClone(state)), onSpawn() {} });
+    const error = await provider.send(f.input, f.operationId, null).catch(error => error);
+    expect.soft(error).toBeInstanceOf(NativeRpcError);
+    expect.soft(error.message).toContain("image capability is unavailable");
+    expect.soft(nativeSend).not.toHaveBeenCalled();
+    expect.soft(f.state.size).toBe(0);
+    expect.soft(states.at(-1)).toMatchObject({ nativeSessionId: provider.nativeSessionId, activity: "idle", images: { modelId: "claude-sonnet-5-5", send: "unknown", steer: "unsupported", maxImageBytes: "0", geometry: { known: false } } });
+    await rm(f.image.localPath);
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("image capability is unavailable");
+    expect(nativeSend).not.toHaveBeenCalled();
+    expect(f.options.onInputObserved).not.toHaveBeenCalled();
+  } finally { try { await provider?.close(); } finally { nativeQuery.mockReset(); await rm(root, { recursive: true, force: true }); } }
+});
 
 test("Claude image dispatch persists the complete ordered original intent and rejects repeat or image steer", () => {
   const f = fixture();

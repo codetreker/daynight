@@ -79,7 +79,9 @@ isolated readers therefore carry explicit frame, queue and process budgets.
 **Infer vision support from model names or missing negative flags.** Unknown
 backend, limits or cumulative context may reject otherwise small images. Exact
 profiles and conservative proven geometry envelopes trade availability for
-consistent, explainable rejection.
+consistent, explainable rejection. Matching SDK and CLI versions to a published
+model name also proves neither native acceptance nor the geometry of the actual
+backend and platform; public vision limits cannot substitute for qualification.
 
 ## Consequences
 
@@ -108,10 +110,15 @@ An image modality in a model catalog does not prove geometry. Codex binds the
 actual thread backend before applying a profile; Copilot combines its model
 catalog limits with an explicitly verified geometry profile. Claude observes the
 SDK-selected executable and effective backend settings rather than assuming a
-fixed JavaScript entry point or trusting the parent's environment alone. Unknown
-geometry or backend identity keeps image input unavailable, even when a direct
-native probe can describe a small image. Controlled profile injection belongs to
-tests and cannot widen production capability.
+fixed JavaScript entry point or trusting the parent's environment alone. These
+identity observations do not establish qualification. No Claude image profile
+currently has the required evidence, so production send support and geometry
+remain unknown, with empty media types and zero image limits. Native model
+readback updates identity without granting image admission; the adapter rejects
+images before file verification or native submission. Unknown geometry or backend
+identity keeps image input unavailable, even when a direct native probe can
+describe a small image. Controlled profile injection belongs to tests and cannot
+widen production capability.
 
 The design deliberately preserves unresolved sends, even when a local echo looks
 successful. A few Copilot late-response cases display two labelled image sources.
