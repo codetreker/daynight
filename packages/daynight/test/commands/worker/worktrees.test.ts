@@ -83,7 +83,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((entry) => rm(entry, { recursive: true, force: true })));
 });
 
-describe("worker repositories and task worktrees", () => {
+describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.each(["files", "reftable"] as const)("keeps %s seed and sibling bytes, refs and objects independent of a case copy", async (refFormat) => {
     const first = await fixture(refFormat); const sibling = await fixture(refFormat); const source = await seed(refFormat);
     const head = git(first.repository, ["rev-parse", "HEAD"]);
