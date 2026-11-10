@@ -36,8 +36,8 @@ func captureBoundaryRecords(t *testing.T, ctx context.Context, tx pgx.Tx, id str
 	return event, prepared
 }
 
-func TestCaptureBodyCapacityIsEnforcedByPostgreSQL(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testCaptureBodyCapacityIsEnforcedByPostgreSQL(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	for _, size := range []int{65536, 65537} {
 		tx, err := f.conn.Begin(ctx)
@@ -75,8 +75,8 @@ func TestCaptureBodyCapacityIsEnforcedByPostgreSQL(t *testing.T) {
 	}
 }
 
-func TestCaptureRejectsDuplicateEventWithoutAddingResponsibilities(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testCaptureRejectsDuplicateEventWithoutAddingResponsibilities(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.Begin(ctx)
 	if err != nil {

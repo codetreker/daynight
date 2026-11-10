@@ -93,8 +93,8 @@ func awaitWebhookRowBlock(t *testing.T, ctx context.Context, observer *pgx.Conn,
 	}
 }
 
-func TestActorAdmissionChecksAnchorsBeforeSourceLocks(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testActorAdmissionChecksAnchorsBeforeSourceLocks(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	locker, err := pgx.Connect(ctx, f.conn.Config().ConnString())
@@ -131,8 +131,8 @@ func TestActorAdmissionChecksAnchorsBeforeSourceLocks(t *testing.T) {
 	}
 }
 
-func TestActorAdmissionWaitsForCurrentTeamMembership(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testActorAdmissionWaitsForCurrentTeamMembership(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	for _, table := range []string{"webhook_endpoints", "webhook_subscriptions", "webhook_deliveries"} {
@@ -196,8 +196,8 @@ func TestActorAdmissionWaitsForCurrentTeamMembership(t *testing.T) {
 	}
 }
 
-func TestRetentionCandidateDeadlineAndActivityPredicates(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testRetentionCandidateDeadlineAndActivityPredicates(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	now := time.Now().UTC().Add(31 * 24 * time.Hour).Truncate(time.Microsecond)
 	for _, c := range []struct {
@@ -250,8 +250,8 @@ func TestRetentionCandidateDeadlineAndActivityPredicates(t *testing.T) {
 	}
 }
 
-func TestRetentionCandidateSkipsLockedDelivery(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testRetentionCandidateSkipsLockedDelivery(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	now := time.Now().UTC().Add(31 * 24 * time.Hour)
@@ -292,8 +292,8 @@ func TestRetentionCandidateSkipsLockedDelivery(t *testing.T) {
 	}
 }
 
-func TestHistoryMetadataExpiresUsingFreshTransactionClock(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryMetadataExpiresUsingFreshTransactionClock(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	var expiry time.Time
@@ -336,126 +336,122 @@ func TestHistoryMetadataExpiresUsingFreshTransactionClock(t *testing.T) {
 	}
 }
 
-func TestRetentionClosureAndLateAttemptUseRealLockOrder(t *testing.T) {
-	for _, first := range []string{"late", "close"} {
-		t.Run(first, func(t *testing.T) {
-			f := newDeliveryFailureFixture(t)
-			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
-			defer cancel()
-			setup, err := f.conn.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
+func testRetentionClosureAndLateAttemptUseRealLockOrder(t *testing.T, conn *pgx.Conn, first string) {
+	f := newDeliveryFailureFixture(t, conn)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	setup, err := f.conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := int16(1)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	attempt := store.WebhookAttempt{ID: uuid.NewString(), DeliveryID: f.delivery, EndpointID: f.endpoint, Trigger: "automatic", LeaseToken: uuid.NewString(), Generation: 1, DestinationRevision: 1, Sequence: 1, SigningKeyIDs: []string{uuid.NewString()}, AutomaticPlanSlot: &slot, ClaimedAt: now, AdmittedAt: now}
+	if err = New(setup).InsertAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	unknown := "unknown"
+	attempt.FinishedAt, attempt.RecoveredUnknownAt, attempt.Outcome = &now, &now, &unknown
+	if err = New(setup).UpdateAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err = setup.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	one, err := pgx.Connect(ctx, f.conn.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer one.Close(context.Background())
+	two, err := pgx.Connect(ctx, f.conn.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerTransferred := false
+	defer func() {
+		if !readerTransferred {
+			if err := two.Close(context.Background()); err != nil {
+				t.Error(err)
 			}
-			slot := int16(1)
-			now := time.Now().UTC().Truncate(time.Microsecond)
-			attempt := store.WebhookAttempt{ID: uuid.NewString(), DeliveryID: f.delivery, EndpointID: f.endpoint, Trigger: "automatic", LeaseToken: uuid.NewString(), Generation: 1, DestinationRevision: 1, Sequence: 1, SigningKeyIDs: []string{uuid.NewString()}, AutomaticPlanSlot: &slot, ClaimedAt: now, AdmittedAt: now}
-			if err = New(setup).InsertAttempt(ctx, attempt); err != nil {
-				t.Fatal(err)
-			}
-			unknown := "unknown"
-			attempt.FinishedAt, attempt.RecoveredUnknownAt, attempt.Outcome = &now, &now, &unknown
-			if err = New(setup).UpdateAttempt(ctx, attempt); err != nil {
-				t.Fatal(err)
-			}
-			if err = setup.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			one, err := pgx.Connect(ctx, f.conn.Config().ConnString())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer one.Close(context.Background())
-			two, err := pgx.Connect(ctx, f.conn.Config().ConnString())
-			if err != nil {
-				t.Fatal(err)
-			}
-			readerTransferred := false
-			defer func() {
-				if !readerTransferred {
-					if err := two.Close(context.Background()); err != nil {
-						t.Error(err)
-					}
+		}
+	}()
+	locked, err := one.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.Rollback(context.Background())
+	if first == "late" {
+		row, err := New(locked).LockOwnAttempt(ctx, attempt.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ack := "acknowledged"
+		row.LateObservedAt, row.LateOutcome = &now, &ack
+		if err = New(locked).UpdateAttempt(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err = New(locked).LockDelivery(ctx, f.delivery); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = New(locked).LockAttempts(ctx, f.delivery); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = New(locked).CloseRetention(ctx, f.delivery, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readerPID := two.PgConn().PID()
+	result, done := startWebhookBoundaryTransaction(ctx, two, func(tx pgx.Tx) (err error) {
+		if first == "late" {
+			if _, err = New(tx).LockDelivery(ctx, f.delivery); err == nil {
+				if _, err = New(tx).LockAttempts(ctx, f.delivery); err == nil {
+					_, err = New(tx).CloseRetention(ctx, f.delivery, now)
 				}
-			}()
-			locked, err := one.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
 			}
-			defer locked.Rollback(context.Background())
-			if first == "late" {
-				row, err := New(locked).LockOwnAttempt(ctx, attempt.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
+			if err == nil {
+				err = tx.Commit(ctx)
+			}
+		} else {
+			var row store.WebhookAttempt
+			row, err = New(tx).LockOwnAttempt(ctx, attempt.ID)
+			if err == nil && row.RetentionClosedAt == nil {
+				err = fmt.Errorf("late writer did not reread closed attempt")
+			}
+			if err == nil {
 				ack := "acknowledged"
 				row.LateObservedAt, row.LateOutcome = &now, &ack
-				if err = New(locked).UpdateAttempt(ctx, row); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				if _, err = New(locked).LockDelivery(ctx, f.delivery); err != nil {
-					t.Fatal(err)
-				}
-				if _, err = New(locked).LockAttempts(ctx, f.delivery); err != nil {
-					t.Fatal(err)
-				}
-				if _, err = New(locked).CloseRetention(ctx, f.delivery, now); err != nil {
-					t.Fatal(err)
+				if update := New(tx).UpdateAttempt(ctx, row); update == nil {
+					err = fmt.Errorf("late update accepted closed attempt")
 				}
 			}
-			readerPID := two.PgConn().PID()
-			result, done := startWebhookBoundaryTransaction(ctx, two, func(tx pgx.Tx) (err error) {
-				if first == "late" {
-					if _, err = New(tx).LockDelivery(ctx, f.delivery); err == nil {
-						if _, err = New(tx).LockAttempts(ctx, f.delivery); err == nil {
-							_, err = New(tx).CloseRetention(ctx, f.delivery, now)
-						}
-					}
-					if err == nil {
-						err = tx.Commit(ctx)
-					}
-				} else {
-					var row store.WebhookAttempt
-					row, err = New(tx).LockOwnAttempt(ctx, attempt.ID)
-					if err == nil && row.RetentionClosedAt == nil {
-						err = fmt.Errorf("late writer did not reread closed attempt")
-					}
-					if err == nil {
-						ack := "acknowledged"
-						row.LateObservedAt, row.LateOutcome = &now, &ack
-						if update := New(tx).UpdateAttempt(ctx, row); update == nil {
-							err = fmt.Errorf("late update accepted closed attempt")
-						}
-					}
-				}
-				return err
-			})
-			readerTransferred = true
-			defer drainWebhookBoundaryTransaction(t, cancel, locked, two, done)
-			awaitWebhookRowBlock(t, ctx, f.conn, one.PgConn().PID(), readerPID, result)
-			if err = locked.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case err = <-result:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			tx, err := f.conn.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback(context.Background())
-			closed, err := New(tx).LockOwnAttempt(ctx, attempt.ID)
-			if err != nil || closed.RetentionClosedAt == nil || ((closed.LateObservedAt != nil) != (first == "late")) {
-				t.Fatalf("late/close result: %+v %v", closed, err)
-			}
-			if _, err = New(tx).HistoryDelivery(ctx, wm.Owner{Kind: "personal", ID: f.user}, f.endpoint, f.delivery); !errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("late observation reopened closed history: %v", err)
-			}
-		})
+		}
+		return err
+	})
+	readerTransferred = true
+	defer drainWebhookBoundaryTransaction(t, cancel, locked, two, done)
+	awaitWebhookRowBlock(t, ctx, f.conn, one.PgConn().PID(), readerPID, result)
+	if err = locked.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	tx, err := f.conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	closed, err := New(tx).LockOwnAttempt(ctx, attempt.ID)
+	if err != nil || closed.RetentionClosedAt == nil || ((closed.LateObservedAt != nil) != (first == "late")) {
+		t.Fatalf("late/close result: %+v %v", closed, err)
+	}
+	if _, err = New(tx).HistoryDelivery(ctx, wm.Owner{Kind: "personal", ID: f.user}, f.endpoint, f.delivery); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("late observation reopened closed history: %v", err)
 	}
 }
