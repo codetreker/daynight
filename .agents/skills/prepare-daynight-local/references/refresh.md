@@ -321,9 +321,13 @@ state alone does not prove that the Agent resumed productive work.
 Ordinary Agent task execution does not require starting or upgrading a Worker.
 Use the scoped executable wrapper and development root for that Agent instead.
 An old Worker remains old after installation. Its managed startup prompt also
-uses the skill bundled in its own package. Existing Controller processes and
-Agent aliases can retain their original snapshot; use a new execution to verify
-the new chain, without deleting or silently retargeting old sessions.
+retains the behavior of its running package: a version that used a bundled
+managed skill continues to do so. Current Workers provide assignment and runtime
+constraints in the prompt assembled by their package; `daynight --skill` provides
+product operations, and repository rules govern delivery. Existing Controller
+processes and Agent aliases can retain their original snapshot; use a new
+execution to verify the new chain, without deleting or silently retargeting old
+sessions.
 
 ## Installed skill
 
