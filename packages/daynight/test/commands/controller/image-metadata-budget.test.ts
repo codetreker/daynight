@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
 import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, rm, stat, open, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -11,12 +12,12 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 test("real SQLite pages, WAL and pending timeline share the normal and settlement metadata limits", async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-metadata-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "m-")); roots.push(root);
-  const file = path.join(root, "journal.sqlite"), db = new Database(file);
+  const file = path.join(root, "journal.sqlite"), db = openSqliteDatabase({ file, format: controllerJournalFormat, allowCreate: true, onMigration: () => {} });
   try {
     db.pragma("journal_mode=WAL"); db.pragma("wal_autocheckpoint=0");
     db.exec("CREATE TABLE retained(value BLOB); INSERT INTO retained VALUES(zeroblob(1048576))");
-    const content = openPendingContent(file, "session");
-    content.saveEntry({ entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Retained history" }] });
+    const content = openPendingContent(file, "session", db);
+    db.transaction(() => content.saveEntry({ entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Retained history" }] })).immediate();
     const budget = controllerMetadataBudget(file, db);
     const physical = (await Promise.all([file, `${file}-wal`, `${file}-shm`].map(filename => stat(filename)))).reduce((sum, item) => sum + item.size, 0);
     const pending = `${file}.pending-content`;

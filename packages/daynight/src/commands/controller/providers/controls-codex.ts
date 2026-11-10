@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, sameControlValue, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError, type NativeRpc } from "./native-rpc.js";
 import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
+import { IMAGE_LIMITS, type ProviderImageCapabilities } from "../../../session/image-values.js";
+import { unknownCodexGeometry, type CodexImageProfile } from "./codex-image-profile.js";
 type Command = { kind: "compact" } | { kind: "skill"; name: string; path: string } | { kind: "prompt"; body: string };
 export class CodexControls {
   readonly store: ProviderControls;
@@ -16,7 +18,24 @@ export class CodexControls {
   private commands = new Map<string, Command>();
   private pending = new Map<string, { patch: Record<string, unknown>; resolve(): void; reject(error: Error): void }>();
   private closed = false;
-  constructor(private readonly rpc: NativeRpc, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); }
+  private turnModel: string | null = null;
+  private settingInFlight = false;
+  constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); }
+  beginTurn(): void { this.turnModel = string(this.native.model) || null; }
+  imageCapabilities(profile: CodexImageProfile | null): Omit<ProviderImageCapabilities, "revision"> {
+    const model = string(this.native.model) || null;
+    const matches = this.capabilityModels.filter(item => item.model === model || item.id === model);
+    const modalities = matches.length === 1 && Array.isArray(matches[0]!.inputModalities) ? matches[0]!.inputModalities : null;
+    const stable = !this.settingInFlight && this.pending.size === 0 && this.store.value.settingsError === null;
+    const bound = profile !== null && profile.modelProvider !== null && profile.modelProvider === this.native.modelProvider && profile.modelId === model;
+    const geometry = bound ? profile.geometry : unknownCodexGeometry;
+    const support = !profile || !stable || !model || !modalities ? "unknown" : !modalities.includes("image") ? "unsupported" : geometry.known ? "supported" : "unknown";
+    const activeUnknown = this.turn() !== null && this.turnModel !== model;
+    return { expectedNativeSessionId: this.session() || null, modelId: model, controlsRevision: this.store.value.revision, send: support, steer: activeUnknown ? "unknown" : support,
+      reasonCode: !profile ? "profile_disabled" : !stable || activeUnknown || support === "unknown" ? "capability_unknown" : support === "unsupported" ? "model_unsupported" : null,
+      inputMediaTypes: support === "supported" ? ["image/png", "image/jpeg", "image/webp"] : [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images,
+      geometry };
+  }
   seed(value: unknown) { const raw = record(value); this.observe({ ...raw, ...(raw.sandbox ? { sandboxPolicy: raw.sandbox } : {}), ...(raw.reasoningEffort ? { effort: raw.reasoningEffort } : {}) }); }
   observe(value: unknown) {
     this.native = { ...this.native, ...record(value) }; const sandbox = record(this.native.sandboxPolicy); if (typeof sandbox.type === "string") this.sandboxPolicies.set(sandbox.type, structuredClone(sandbox)); this.describe();
@@ -80,6 +99,13 @@ export class CodexControls {
     } catch (error) { this.commands.clear(); this.store.update({ commands: [], commandsError: controlError(error) }); }
   }
   async set(id: string, value: string, operationId: string, revision: string) {
+    if (this.settingInFlight) throw new NativeRpcError(-32602, "Native settings are busy.");
+    this.store.setting(id, value, revision); if (this.closed) throw new Error("Native session closed.");
+    this.settingInFlight = true; this.changed();
+    try { await this.applySetting(id, value, operationId, revision); }
+    finally { this.settingInFlight = false; this.changed(); }
+  }
+  private async applySetting(id: string, value: string, operationId: string, revision: string) {
     this.store.setting(id, value, revision); if (this.closed) throw new Error("Native session closed.");
     const patch: Record<string, unknown> = id === "model" ? { model: value } : id === "effort" ? { effort: value } : id === "approval" ? { approvalPolicy: value } : { sandboxPolicy: this.sandbox(value) };
     if (id === "model") { const selected = this.models.find(item => item.model === value), efforts = Array.isArray(selected?.supportedReasoningEfforts) ? selected.supportedReasoningEfforts.map(item => string(record(item).reasoningEffort)) : []; const effort = string(this.native.effort); if (!efforts.includes(effort) && selected?.defaultReasoningEffort) patch.effort = selected.defaultReasoningEffort; }
@@ -87,6 +113,7 @@ export class CodexControls {
     if (turnId && ["model", "effort"].includes(id)) {
       const result = record(await this.rpc.request("turn/settings/update", { threadId: this.session(), turnId, ...patch }));
       if (result.status !== "applied") throw new NativeRpcError(-32602, "Native live model switching is unavailable. Wait for the current turn to finish.");
+      if (id === "model") this.turnModel = value;
       liveApplied = true;
     }
     let resolve!: () => void, reject!: (error: Error) => void;
