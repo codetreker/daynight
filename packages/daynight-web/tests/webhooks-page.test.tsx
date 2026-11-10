@@ -23,6 +23,9 @@ const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = ne
 
 const mount = async ({ strict = false, initial = [endpoint()], expand = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
   const initialFailure = firstReadFailure !== undefined;
+  const first = initial.find(value => value.owner.kind === "personal");
+  const initialDetail = barrier<Response>();
+  let initializing = !initialFailure && first !== undefined, initialDetailRequested = false;
   const media = mockSidebarMediaQuery();
   vi.stubGlobal("crypto", { subtle: webcrypto.subtle, randomUUID });
   const lifetime = new AbortController();
@@ -49,6 +52,10 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true, fi
     const resourceId = /\/webhooks\/([^/]+)/.exec(target.pathname)?.[1] ?? null;
     if (target.pathname.endsWith("/signing-secret")) { secretReads++; const resource = resources.get(resourceId!) as WebhookActiveEndpoint; return Promise.resolve(response({ endpointId: resource.id, configVersion: resource.configVersion, keyId: resource.signing.activeKeyId, scheme: "standard-webhooks-v1", secret: `whsec_${Buffer.alloc(32, 7).toString("base64")}` })); }
     if (method === "GET") {
+      if (initializing && first !== undefined && target.pathname === `/api/v1/me/webhooks/${first.id}`) {
+        initialDetailRequested = true;
+        return initialDetail.promise.then(value => value.clone());
+      }
       if (resourceId !== null) return Promise.resolve(resources.has(resourceId) ? response(resources.get(resourceId)) : failure(404, "not_found"));
       const q = target.searchParams.get("q") ?? "", enabled = target.searchParams.get("enabled");
       const values = [...resources.values()].filter((value): value is WebhookActiveEndpoint => value.lifecycle === "active" && value.owner.kind === owner.kind && value.owner.id === owner.id && (value.name.includes(q) || value.destination.displayUrl.includes(q)) && (enabled === null || String(value.enabled) === enabled));
@@ -83,9 +90,13 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true, fi
   const rendered = renderWithLocale(content(), { locale: "en" });
   if (initialFailure) await screen.findByRole("alert");
   else {
-    const first = initial.find(value => value.owner.kind === "personal");
     if (first === undefined) await screen.findByText("No webhooks yet");
-    else await screen.findByRole("heading", { name: first.name, level: 2 });
+    else {
+      await waitForState(() => expect(initialDetailRequested).toBe(true));
+      await act(async () => { initialDetail.resolve(response(first)); });
+      initializing = false;
+      await screen.findByRole("heading", { name: first.name, level: 2 });
+    }
   }
   return { ...rendered, media, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setExpansion: (value: boolean) => { expansionAvailable = value; rendered.rerender(content()); }, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
 };
