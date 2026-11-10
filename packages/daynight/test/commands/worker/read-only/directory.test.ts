@@ -1,15 +1,30 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { browseWorkerDirectory, createWorkerDirectoryBrowser, type DirectoryFileSystem } from "../../../../src/commands/worker/read-only/directory.js";
+import { browseWorkerDirectory, createWorkerDirectoryBrowser, type DirectoryFileSystem, type WorkerDirectoryInput } from "../../../../src/commands/worker/read-only/directory.js";
+import { startWorkerReadonlyPeers, WorkerReadonlyCleanupError, type WorkerReadonlyFrame } from "../../../fixtures/worker-readonly-peer.js";
 
 let root: string;
+let childrenDrained: boolean;
+let encodingExecution: Promise<void> | undefined;
 beforeEach(async () => {
+  childrenDrained = true;
+  encodingExecution = undefined;
   const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp");
   await mkdir(scratch, { recursive: true });
   root = await realpath(await mkdtemp(path.join(scratch, "directory-read-")));
 });
-afterEach(async () => { vi.useRealTimers(); await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.useRealTimers();
+  await encodingExecution?.catch(() => {});
+  if (!childrenDrained) throw new Error(`Worker fixture directory retained because child shutdown was not confirmed: ${root}`);
+  await rm(root, { recursive: true, force: true });
+}, 90_000);
+const areChildrenDrained = (error: unknown): boolean => {
+  if (error instanceof WorkerReadonlyCleanupError && !error.childrenDrained) return false;
+  return !(error instanceof AggregateError) || error.errors.every(areChildrenDrained);
+};
 const options = () => ({ defaultCwd: root, signal: new AbortController().signal });
 const fakeFileSystem = (names: readonly string[] = []): DirectoryFileSystem => ({
   realpath: async value => value,
@@ -123,6 +138,93 @@ describe("Worker directory browsing", () => {
     const oversized = createWorkerDirectoryBrowser({ filesystem: fakeFileSystem(["x".repeat(1025)]) });
     await expect(oversized({}, options())).rejects.toMatchObject({ code: "limit_exceeded" });
   });
+
+  it("preserves exact encoded filenames across real Worker channel pages", () => {
+    encodingExecution = (async () => {
+      let expired = false;
+      const timer = setTimeout(() => { expired = true; }, 80_000);
+      const checkDeadline = () => { if (expired) throw new Error("Worker encoding test exceeded its execution budget."); };
+      try {
+        const cases = [
+          { id: "a", characters: "&".repeat(240) },
+          ...(process.platform === "win32" ? [] : [{ id: "b", characters: "<>".repeat(120) }]),
+          { id: "c", characters: "\u2028\u2029".repeat(40) },
+        ];
+        const paddingCount = 200 - Buffer.byteLength(path.join(root, "encoding-", "a"));
+        expect(paddingCount).toBeGreaterThanOrEqual(0);
+        const parentName = `encoding-${"p".repeat(paddingCount)}`;
+        expect(Buffer.byteLength(parentName)).toBeLessThanOrEqual(255);
+        const parent = path.join(root, parentName);
+        await mkdir(parent);
+        const actualParent = await realpath(parent);
+        const directories = [];
+        for (const item of cases) {
+          checkDeadline();
+          const directory = path.join(actualParent, item.id);
+          await mkdir(directory);
+          const actual = await realpath(directory);
+          expect(Buffer.byteLength(actual)).toBe(200);
+          expect(Buffer.byteLength(actual)).toBeLessThan(4096);
+          const names = Array.from({ length: 100 }, (_, index) => `${String(index).padStart(3, "0")}${item.characters}`);
+          for (const name of names) { checkDeadline(); await mkdir(path.join(actual, name)); }
+          directories.push({ actual, names });
+        }
+
+        const target = { ownerUserId: randomUUID(), workerId: randomUUID(), serverToken: `dnpat_${Buffer.alloc(32, 1).toString("base64url")}`, defaultCwd: actualParent };
+        let peers: Awaited<ReturnType<typeof startWorkerReadonlyPeers>> | undefined;
+        let primary: unknown;
+        try {
+          checkDeadline();
+          peers = await startWorkerReadonlyPeers([target]);
+          let pages = 0, challengeObserved = false;
+          let fence: WorkerReadonlyFrame | undefined;
+          for (const directory of directories) {
+            const names: string[] = [];
+            let cursor: string | null = null;
+            do {
+              checkDeadline();
+              const input: WorkerDirectoryInput = cursor === null
+                ? { path: directory.actual, limit: 100 }
+                : { path: directory.actual, limit: 100, cursor };
+              const requestId = randomUUID();
+              const { message, raw } = await peers.request(target.workerId, requestId, input);
+              checkDeadline();
+              expect(JSON.parse(raw.toString("utf8"))).toEqual(message);
+              expect(message).toMatchObject({ type: "result", protocol: "daynight.worker-readonly.v1", ownerUserId: target.ownerUserId, workerId: target.workerId, requestId });
+              expect(message.error).toBeUndefined();
+              const current: WorkerReadonlyFrame = { protocol: message.protocol, ownerUserId: message.ownerUserId, workerId: message.workerId, connectionId: message.connectionId, capabilityGeneration: message.capabilityGeneration };
+              expect(current.connectionId).toMatch(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+              expect(current.capabilityGeneration).toMatch(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+              if (fence) expect(current).toEqual(fence); else fence = current;
+              expect(message.result).toBeDefined();
+              const result = message.result!;
+              expect(result.path).toBe(directory.actual);
+              for (const entry of result.entries) {
+                expect(entry.path).toBe(path.join(directory.actual, entry.name));
+                names.push(entry.name);
+              }
+              const nativeResultBytes = Buffer.byteLength(JSON.stringify(result));
+              const legacyExpandedMessageBytes = Buffer.byteLength(raw.toString("utf8").replace(/[&<>\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`));
+              expect(nativeResultBytes).toBeLessThanOrEqual(65_536);
+              expect(raw.length).toBeLessThanOrEqual(256 * 1024);
+              if (nativeResultBytes >= 60 * 1024 && legacyExpandedMessageBytes > 256 * 1024) challengeObserved = true;
+              pages++;
+              expect(pages).toBeLessThanOrEqual(12);
+              cursor = result.nextCursor;
+            } while (cursor !== null);
+            expect(names).toEqual(directory.names);
+          }
+          expect(challengeObserved).toBe(true);
+        } catch (error) { primary = error; }
+        const errors: unknown[] = [];
+        try { await peers?.close(); } catch (error) { errors.push(error); }
+        if (primary !== undefined) errors.unshift(primary);
+        childrenDrained = errors.every(areChildrenDrained);
+        if (errors.length) throw new AggregateError(errors, "Worker encoding process test failed.");
+      } finally { clearTimeout(timer); }
+    })();
+    return encodingExecution;
+  }, 90_000);
 
   it("returns cancellation promptly and holds occupied slots until suspended syscalls settle", async () => {
     const pending: (() => void)[] = [];
