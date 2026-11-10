@@ -84,7 +84,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("task lifecycle", func(t *testing.T) {
 		project := createProject(t, f, "API lifecycle")
 		task := createTask(t, f, project, "Created task", nil)
-		if task.Status != "todo" || !task.Ready || task.Version != 1 {
+		if task.Status != "proposed" || task.Ready || task.Version != 1 {
 			t.Fatalf("initial task state differs: %+v", task)
 		}
 		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK), task)
@@ -96,6 +96,14 @@ func TestServerAPINormalFlows(t *testing.T) {
 		done := setStatus(t, f, started, "done", nil)
 		if done.Ready {
 			t.Fatal("completed task remains ready")
+		}
+		proposed := setStatus(t, f, done, "proposed", nil)
+		if proposed.Ready || proposed.StartedAt != nil || proposed.CompletedAt != nil {
+			t.Fatalf("returning to proposed retained execution state: %+v", proposed)
+		}
+		done = setStatus(t, f, proposed, "done", nil)
+		if done.StartedAt != nil || done.CompletedAt == nil {
+			t.Fatalf("direct proposed completion has invalid timing: %+v", done)
 		}
 		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(done), nil, http.StatusOK), done)
 		page := requestJSON[api.TaskPage](t, f, http.MethodGet, taskCollection(project.ID)+"?status=done&ready=false", nil, http.StatusOK)
@@ -260,7 +268,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	})
 	t.Run("worker claim and Agent discussion", func(t *testing.T) {
 		project := createProject(t, f, "API Worker claim")
-		task := createTask(t, f, project, "Worker task", map[string]any{"assignedTo": f.userID})
+		task := createTask(t, f, project, "Worker task", map[string]any{"assignedTo": f.userID, "status": "todo"})
 		task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
 		claimID, workerID := uuid.NewString(), uuid.NewString()
 		claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Integration machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)

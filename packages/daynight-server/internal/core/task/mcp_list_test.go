@@ -71,7 +71,7 @@ func TestMCPListCursorGroupsAndMalformedFences(t *testing.T) {
 		ready  bool
 		group  int
 	}{
-		{model.TaskInProgress, false, 0}, {model.TaskTodo, true, 1}, {model.TaskTodo, false, 2}, {model.TaskDone, false, 3},
+		{model.TaskInProgress, false, 0}, {model.TaskTodo, true, 1}, {model.TaskTodo, false, 2}, {model.TaskProposed, false, 3}, {model.TaskDone, false, 4}, {model.TaskCancelled, false, 4},
 	} {
 		task.Status, task.Ready = test.status, test.ready
 		encoded, err := page.CursorAfter(selection, task)
@@ -85,6 +85,16 @@ func TestMCPListCursorGroupsAndMalformedFences(t *testing.T) {
 		if decoded.query.After.Group != test.group {
 			t.Fatalf("%s group=%d", test.status, decoded.query.After.Group)
 		}
+	}
+	legacyScope := selection.scope
+	legacyScope.Version = 1
+	legacy, err := json.Marshal(mcpListCursor{Scope: legacyScope, Fence: page.fence, Position: store.TaskPriorityPosition{Group: 3, CreatedAt: task.CreatedAt, ID: task.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyCursor := base64.RawURLEncoding.EncodeToString(legacy)
+	if _, err := SelectMCPList(project, actor, MCPListRequest{Limit: 1, Cursor: &legacyCursor}); err == nil {
+		t.Fatal("old terminal cursor was interpreted as a proposed group")
 	}
 	for _, bad := range []string{"", "01", "-1", "12x"} {
 		c := mcpListCursor{Scope: selection.scope, Fence: store.TaskListFence{Count: bad, VersionSum: "1"}, Position: store.TaskPriorityPosition{Group: 1, CreatedAt: task.CreatedAt, ID: task.ID}}

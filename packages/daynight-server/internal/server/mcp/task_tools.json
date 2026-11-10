@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a todo Task with automation disabled; omitted assignee is the current account.",
+    "description": "Create a proposed Task with automation disabled; explicit status may be proposed or todo; omitted assignee is the current account.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -51,6 +51,14 @@
             "full"
           ],
           "default": "summary"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "proposed",
+            "todo"
+          ],
+          "default": "proposed"
         }
       },
       "required": [
@@ -203,6 +211,7 @@
                 },
                 "status": {
                   "enum": [
+                    "proposed",
                     "todo",
                     "in_progress",
                     "done",
@@ -555,6 +564,7 @@
                 },
                 "status": {
                   "enum": [
+                    "proposed",
                     "todo",
                     "in_progress",
                     "done",
@@ -1282,6 +1292,7 @@
         "status": {
           "type": "string",
           "enum": [
+            "proposed",
             "todo",
             "in_progress",
             "done",

@@ -9,8 +9,8 @@ import (
 )
 
 func TestGraphSummary(t *testing.T) {
-	summary := SummarizeGraph([]model.GraphTask{{Status: model.TaskTodo, Ready: true}, {Status: model.TaskTodo}, {Status: model.TaskInProgress}, {Status: model.TaskDone}, {Status: model.TaskCancelled}})
-	if summary.Total != 5 || summary.Todo != 2 || summary.Ready != 1 || summary.Blocked != 1 || summary.InProgress != 1 || summary.Done != 1 || summary.Cancelled != 1 {
+	summary := SummarizeGraph([]model.GraphTask{{Status: model.TaskProposed}, {Status: model.TaskTodo, Ready: true}, {Status: model.TaskTodo}, {Status: model.TaskInProgress}, {Status: model.TaskDone}, {Status: model.TaskCancelled}})
+	if summary.Total != 6 || summary.Proposed != 1 || summary.Todo != 2 || summary.Ready != 1 || summary.Blocked != 1 || summary.InProgress != 1 || summary.Done != 1 || summary.Cancelled != 1 {
 		t.Fatalf("summary: %+v", summary)
 	}
 }

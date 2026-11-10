@@ -40,12 +40,13 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 	project := testProject()
 	project.ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	root := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	result := model.TaskGraph{Project: project, ObservedAt: stamp, Summary: model.TaskGraphSummary{Total: 5, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}, Tasks: []model.GraphTask{
+	result := model.TaskGraph{Project: project, ObservedAt: stamp, Summary: model.TaskGraphSummary{Total: 6, Proposed: 1, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}, Tasks: []model.GraphTask{
 		{ID: root, TitlePreview: "root-private-title", Status: model.TaskDone, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
 		{ID: "55555555-5555-4555-8555-555555555555", TitlePreview: "active-private-title", Status: model.TaskInProgress, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp},
 		{ID: "66666666-6666-4666-8666-666666666666", TitlePreview: strings.Repeat("🙂", 160), TitleTruncated: true, Status: model.TaskTodo, Ready: true, DependsOn: []string{root}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 		{ID: "77777777-7777-4777-8777-777777777777", TitlePreview: "blocked-private-title", Status: model.TaskTodo, DependsOn: []string{"55555555-5555-4555-8555-555555555555", root}, BlockedBy: []string{"55555555-5555-4555-8555-555555555555"}, CreatedAt: stamp, UpdatedAt: stamp},
 		{ID: "88888888-8888-4888-8888-888888888888", TitlePreview: "done-private-title", Status: model.TaskDone, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "99999999-9999-4999-8999-999999999999", TitlePreview: "proposed-private-title", Status: model.TaskProposed, CreatedAt: stamp, UpdatedAt: stamp},
 	}}
 	handler.Tasks.GraphFunc = func(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
 		if principal != handler.principal || projectID != project.ID || taskID != strings.ToUpper(root) || ctx.Err() != nil {
@@ -55,7 +56,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 	}
 	response := projectRequest(handler, http.MethodGet, graphPath(strings.ToUpper(project.ID), strings.ToUpper(root)), "")
 	graph := decodeResponse[api.TaskGraph](t, response, http.StatusOK)
-	if graph.Project.ID != project.ID || graph.Project.Name != project.Name || graph.Project.RepoURL != project.RepoURL || graph.Project.CreatedAt != project.CreatedAt || graph.Project.UpdatedAt != project.UpdatedAt || graph.ObservedAt != stamp || graph.Summary != (api.TaskGraphSummary{Total: 5, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}) || len(graph.Tasks) != 5 || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Request-ID") != "project-test" {
+	if graph.Project.ID != project.ID || graph.Project.Name != project.Name || graph.Project.RepoURL != project.RepoURL || graph.Project.CreatedAt != project.CreatedAt || graph.Project.UpdatedAt != project.UpdatedAt || graph.ObservedAt != stamp || graph.Summary != (api.TaskGraphSummary{Total: 6, Proposed: 1, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}) || len(graph.Tasks) != 6 || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Request-ID") != "project-test" {
 		t.Fatalf("graph=%+v headers=%+v", graph, response.Header())
 	}
 	for i, task := range graph.Tasks {
@@ -74,7 +75,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if len(raw.Summary) != 7 {
+	if len(raw.Summary) != 8 {
 		t.Fatalf("summary=%+v", raw.Summary)
 	}
 	for _, task := range raw.Tasks {
@@ -87,7 +88,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 			}
 		}
 	}
-	for _, fragment := range []string{`"component":"task_graph"`, `"project_id":"` + project.ID + `"`, `"node_count":5`, `"edge_count":5`, `"duration":`, `"request_id":"project-test"`} {
+	for _, fragment := range []string{`"component":"task_graph"`, `"project_id":"` + project.ID + `"`, `"node_count":6`, `"edge_count":5`, `"duration":`, `"request_id":"project-test"`} {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("missing %s: %s", fragment, &logs)
 		}

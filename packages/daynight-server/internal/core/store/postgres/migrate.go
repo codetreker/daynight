@@ -186,6 +186,9 @@ var sessionArchiveBundlesMigration string
 //go:embed migrations/059_session_media_rates.sql
 var sessionMediaRatesMigration string
 
+//go:embed migrations/060_task_proposed.sql
+var taskProposedStateSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -253,6 +256,7 @@ var schemaMigrations = []migration{
 	{version: 57, sql: sessionImageResourcesMigration},
 	{version: 58, sql: sessionArchiveBundlesMigration},
 	{version: 59, sql: sessionMediaRatesMigration},
+	{version: 60, sql: taskProposedStateSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -75,7 +75,7 @@ const searchError = (body: unknown, source: string, httpStatus: number, query: s
 
 export const searchTasks = async (projectId: string, query: string, filters: TaskSearchFilters, cursor: string | null, signal: AbortSignal, admission: TaskResponseAdmission, correlation?: { readonly requestId: string; readonly onResponseId: (requestId: string) => void }): Promise<TaskSearchPage> => {
   const project = requestId(projectId), userId = requestId(admission.userId);
-  if (!query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done' && filters.status !== 'cancelled') throw new ApiError('protocol');
+  if (!query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'proposed' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done' && filters.status !== 'cancelled') throw new ApiError('protocol');
   const assignedTo = filters.assignedTo === '' ? undefined : filters.assignedTo === 'me' || filters.assignedTo === 'unassigned' ? filters.assignedTo : requestId(filters.assignedTo);
   if (cursor !== null && (cursor.trim() === '' || !cursor.isWellFormed() || cursor.includes('\0'))) throw new ApiError('protocol');
   const response = await request(`/api/v1/projects/${project}/tasks/search`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(correlation === undefined ? {} : { 'X-Request-ID': correlation.requestId }) }, body: JSON.stringify({ query, ...(filters.status === '' ? {} : { status: filters.status }), ...(assignedTo === undefined ? {} : { assignedTo }), limit: 15, ...(cursor === null ? {} : { cursor }) }) });

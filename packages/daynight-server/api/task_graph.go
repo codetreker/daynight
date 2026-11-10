@@ -23,6 +23,7 @@ type GraphTask struct {
 
 type TaskGraphSummary struct {
 	Total      int64 `json:"total"`
+	Proposed   int64 `json:"proposed"`
 	Todo       int64 `json:"todo"`
 	InProgress int64 `json:"inProgress"`
 	Done       int64 `json:"done"`

@@ -60,6 +60,15 @@ it('rejects non-object success and error bodies without scanning them as JSON ob
   }
 });
 
+it('sends an exact proposed filter and preserves proposed search results', async () => {
+  const body = JSON.parse(fixture('first-page'));
+  const proposed = { ...body, items: [{ ...body.items[0], status: 'proposed', cancelledAt: null }] };
+  const fetcher = vi.fn().mockResolvedValue(response(JSON.stringify(proposed))); vi.stubGlobal('fetch', fetcher);
+  await expect(searchTasks(project, 'cache', { status: 'proposed', assignedTo: '' }, null, new AbortController().signal, admission))
+    .resolves.toMatchObject({ items: [{ status: 'proposed', cancelledAt: null }] });
+  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ query: 'cache', status: 'proposed', limit: 15 });
+});
+
 it('requires cancellation time on search items and retains cancelled results', async () => {
   const body = JSON.parse(fixture('first-page'));
   const cancelled = { ...body, items: [{ ...body.items[0], status: 'cancelled', cancelledAt: '2026-11-06T00:00:00Z' }] };

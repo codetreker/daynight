@@ -32,7 +32,7 @@ Platform requirements must come only from confirmed task needs. Do not add depen
 
 ## Register and read back
 
-1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](task-management.md).
+1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](task-management.md). Creation defaults to proposed; explicitly pass `--status todo` for already-confirmed work, including internal multi-step tasks.
 2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](write-safety.md) for all writes.
 3. Read back the full task, required attachments, and shared inputs to verify sufficient content and valid resources. For delivery tasks, check the selected solution, detailed design, implementation steps and acceptance against the content standard; report concrete gaps before handoff.
    Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
@@ -40,5 +40,5 @@ Platform requirements must come only from confirmed task needs. Do not add depen
 4. Report the task ID, registration result, and specific gaps.
    After partial success, retain existing IDs and resume unfinished operations; unreadable required sources still mean failure.
 
-A registration-only request ends here, with the task remaining `todo`.
+A registration-only request ends here, with the task retaining its selected creation status: proposed by default, or todo when that confirmed work was explicitly registered as todo.
 When explicitly asked to start the current Goal discussion, pass the confirmed ID to [ordinary task execution](run-task.md) under the Goal protocol.

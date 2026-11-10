@@ -22,7 +22,7 @@ fall back to all. Storage failures leave the current session usable and show a
 localized preference error without claiming an unsuccessful save. Overview
 navigation persists an assignee condition it changes to reveal its target.
 Status remains in memory for the project visit, defaults to all, and can select
-`todo`, `in_progress`, `done` or `cancelled`; all history remains available. A standalone task must itself satisfy both
+`proposed`, `todo`, `in_progress`, `done` or `cancelled`; all history remains available. A standalone task must itself satisfy both
 conditions. A chain remains visible when one ordinary-component member satisfies
 both; its actual representative and all ordinary members remain visible even
 when they do not match. External prerequisites supply graph context but are not

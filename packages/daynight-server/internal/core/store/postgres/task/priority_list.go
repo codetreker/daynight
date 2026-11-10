@@ -18,7 +18,7 @@ func (s *Reader) TaskListFence(ctx context.Context, projectID string) (store.Tas
 	return fence, nil
 }
 
-const priorityGroup = `(CASE WHEN t.status='in_progress' THEN 0 WHEN ` + pg.TaskReady + ` THEN 1 WHEN t.status='todo' THEN 2 ELSE 3 END)`
+const priorityGroup = `(CASE WHEN t.status='in_progress' THEN 0 WHEN ` + pg.TaskReady + ` THEN 1 WHEN t.status='todo' THEN 2 WHEN t.status='proposed' THEN 3 ELSE 4 END)`
 
 func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
 	if q.Limit < 1 || q.Limit > 100 {

@@ -19,7 +19,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	row := f.target
 	row.AssignedTo, row.Title = nil, "Unrestricted default"
 	created := platformHTTPWrite(f, nil, platformHTTPValues(row), row, false)
-	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Unrestricted default"}`)
+	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Unrestricted default","status":"todo"}`)
 	task := decodeResponse[api.Task](t, response, http.StatusCreated)
 	platformHTTPCheck(t, task, platformHTTPAPI(*created))
 	row = *created
@@ -47,7 +47,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 			wanted.RequiredPlatform = &platform
 		}
 		result := platformHTTPWrite(f, nil, platformHTTPValues(wanted), wanted, false)
-		got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Explicit platform", "requiredPlatform": value})), http.StatusCreated)
+		got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Explicit platform", "requiredPlatform": value, "status": "todo"})), http.StatusCreated)
 		platformHTTPCheck(t, got, platformHTTPAPI(*result))
 		if value == nil && got.RequiredPlatform != nil || value != nil && (got.RequiredPlatform == nil || *got.RequiredPlatform != value) {
 			t.Fatal("creation lost platform")

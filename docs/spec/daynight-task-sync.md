@@ -24,7 +24,7 @@
 
 ## R3：变化与派生一致性
 
-创建、标题、description、完整 properties、四状态设置、Agent 许可、执行平台要求、负责人 assignedTo、依赖及外部性质变化通过任务摘要的业务 version 被发现。snapshot 和 delta 的每条任务记录都包含同一数据库快照中的 assignedTo 与完整当前 properties 对象；没有属性时为 {}，不补入缺失键。属性设置、删除与 Worker 生命周期变化沿用任务整体 version/updatedAt，普通属性变化不轮换 epoch。
+创建、标题、description、完整 properties、五状态设置、Agent 许可、执行平台要求、负责人 assignedTo、依赖及外部性质变化通过任务摘要的业务 version 被发现。snapshot 和 delta 的每条任务记录都包含同一数据库快照中的 assignedTo 与完整当前 properties 对象；没有属性时为 {}，不补入缺失键。属性设置、删除与 Worker 生命周期变化沿用任务整体 version/updatedAt，普通属性变化不轮换 epoch。
 
 客户端按任务 ID/version 替换整条摘要和属性对象，缺失键自然删除；不使用属性 tombstone。浏览器比较包括 assignedTo 在内的全部自身字段和全部属性键与 JSON 值，对象成员顺序无意义，数组顺序有意义，缺失、空数组与 null 不相等。同版本内容不同是协议错误，较旧响应不能复活已删除属性。图绘制投影去掉 properties，完整属性保留在摘要集合中。任务事实、所有依赖、阻塞列表、可执行性、统计、链成员与进度在一个本地快照中一致。前置done或cancelled后，后继即使自身未编辑也正确更新派生状态。取消不轮换epoch、不删除节点，也不清空仍可读的详情和附件。
 

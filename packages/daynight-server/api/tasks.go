@@ -35,6 +35,7 @@ type TaskPropertySchema struct {
 }
 
 type CreateTaskRequest struct {
+	Status            *string                `json:"status,omitempty"`
 	AssignedTo        *string                `json:"assignedTo,omitempty"`
 	RequiredPlatform  *string                `json:"requiredPlatform,omitempty"`
 	ExternalDependsOn []string               `json:"externalDependsOn,omitempty"`

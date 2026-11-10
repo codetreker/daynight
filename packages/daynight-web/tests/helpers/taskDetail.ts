@@ -24,7 +24,7 @@ export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
     tasks: current.map((task) => ({ assignedTo: task.assignedTo, id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160, status: task.status,
       allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
       blockedBy: task.blockedBy, ready: task.ready, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, createdAt: task.createdAt, updatedAt: task.updatedAt })),
-    summary: { total: details.length, todo: current.filter((task) => task.status === 'todo').length, inProgress: current.filter((task) => task.status === 'in_progress').length,
+    summary: { proposed: current.filter((task) => task.status === "proposed").length, total: details.length, todo: current.filter((task) => task.status === 'todo').length, inProgress: current.filter((task) => task.status === 'in_progress').length,
       done: current.filter((task) => task.status === 'done').length, cancelled: current.filter((task) => task.status === 'cancelled').length, ready: current.filter((task) => task.ready).length,
       blocked: current.filter((task) => task.status === 'todo' && !task.ready).length },
   };

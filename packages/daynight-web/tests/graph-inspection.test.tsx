@@ -25,7 +25,7 @@ const render = createLocaleRender('zh-CN');
 const time = '2026-10-22T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: 'Project', repoUrl: '', createdAt: time, updatedAt: time },
-  summary: { total: 5, todo: 2, inProgress: 0, done: 3, cancelled: 0, ready: 2, blocked: 0 },
+  summary: { proposed: 0, total: 5, todo: 2, inProgress: 0, done: 3, cancelled: 0, ready: 2, blocked: 0 },
   tasks: [
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'A', titlePreview: 'A', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'B', titlePreview: 'B', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },

@@ -21,7 +21,7 @@ import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
-import { isTaskStatus } from "../task/status.js";
+import { isTaskCreationStatus, isTaskStatus } from "../task/status.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "./thread.js";
 import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
@@ -574,7 +574,7 @@ export const createApiClient = (options: {
   };
   const taskAssignmentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
-    if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
+    if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
     if (filters.platformSpecific !== undefined && typeof filters.platformSpecific !== "boolean") throw new Error("Platform-specific filter must be boolean.");
@@ -1196,14 +1196,17 @@ export const createApiClient = (options: {
       return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project, expectedUserId) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
+      if (input.status !== undefined && !isTaskCreationStatus(input.status)) throw new Error("Initial task status must be proposed or todo.");
       const project = resourceId(projectId);
       const assignedTo = taskAssignmentInput(input.assignedTo);
       return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => {
         const task = parseTask(value, project);
+        if (task.status !== (input.status ?? "proposed")) throw new ProtocolError("Task does not confirm the requested initial status.");
         if (task.assignedTo !== (assignedTo === undefined ? null : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
         return task;
       }, {
         title: input.title,
+        ...(input.status === undefined ? {} : { status: input.status }),
         ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
         ...(input.description === undefined ? {} : { description: input.description }),
@@ -1438,7 +1441,7 @@ export const createApiClient = (options: {
     },
     setTaskStatus: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      if (!isTaskStatus(input.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
+      if (!isTaskStatus(input.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
       taskVersion(input.version);
       return exchange({ operation: "task.set-status", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/status`, "PUT", { kind: "json", parse: (value) => {
         const result = parseTask(value, project, task);

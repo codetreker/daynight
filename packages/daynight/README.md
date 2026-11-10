@@ -918,10 +918,10 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
-Creation starts in `todo` with `allowAgents=false` and unrestricted
+Creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Creation uses `allowAgents=false` and unrestricted
 `requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
-sets `todo`, `in_progress`, `done` or `cancelled`. The original three states retain
+sets `proposed`, `todo`, `in_progress`, `done` or `cancelled`. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
 reopening and direct completion; cancellation is irreversible and does not prove
 delivery. Cancelled records and materials remain readable.
 Every project member may use ordinary status setting. Active worker completion
@@ -953,14 +953,14 @@ Migration `014_task_status_assignment.sql` converts historical proposed rows
 to todo, increments only those versions and updates their update time while
 preserving every other field, including requiredPlatform and historical execution timestamps. Default,
 data, CHECK and ledger change atomically. Other rows and applied migrations remain
-unchanged; restart does not repeat the conversion. Runtime readers reject the old state.
+unchanged; restart does not repeat the conversion. A subsequent migration restores proposed as a current status and the creation default without changing existing rows or historical migrations.
 
 Task resources expose required nullable startedAt, completedAt and cancelledAt.
 Cancellation preserves both execution endpoints and records its own database
 time; a cancelled task never resumes execution or starts a new duration. Actual entry
-into in_progress starts a new interval and clears the end; return to todo clears
+into in_progress starts a new interval and clears the end; return to proposed or todo clears
 both. In-progress to done preserves a nullable start and records a real end;
-todo to done records only an end, leaving duration unknown. Metadata and same-state
+proposed/todo to done records only an end, leaving duration unknown. Metadata and same-state
 writes preserve time. Task-graph and task-sync responses supply a database
 `observedAt` sample; Web synchronization updates its separate clock without
 rebuilding unchanged graph/index data.

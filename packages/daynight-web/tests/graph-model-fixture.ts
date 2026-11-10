@@ -17,7 +17,7 @@ export const graph = (seeds: readonly Seed[]): TaskGraph => {
   return { observedAt: "2026-10-20T12:00:00Z",
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: id("P"), name: "Private project", repoUrl: "git@github.com:owner/repo.git", createdAt: time, updatedAt: time },
     tasks,
-    summary: {
+    summary: { proposed: tasks.filter((task) => task.status === "proposed").length,
       total: tasks.length, todo: todo.length, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       done: tasks.filter((task) => task.status === "done").length, cancelled: tasks.filter((task) => task.status === "cancelled").length,
       ready: todo.filter((task) => task.ready).length, blocked: todo.filter((task) => !task.ready).length,
