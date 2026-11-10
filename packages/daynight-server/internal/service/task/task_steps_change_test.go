@@ -1,8 +1,7 @@
-package task_test
+package task
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -15,426 +14,354 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
-
-type stepWriteCapture struct {
-	taskMockBase
-	CaptureBatchFn func(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
-}
-
-func (capture *stepWriteCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
-	capture.need("CaptureBatch", capture.CaptureBatchFn != nil)
-	return capture.CaptureBatchFn(ctx, dao, facts)
-}
-
-type stepWriteFixture struct {
-	T         *testing.T
-	Ctx       context.Context
-	Principal model.Principal
-	Header    model.TaskHeader
-	Current   []model.TaskStep
-	Writer    *taskWriterMock
-	Project   *projectWriterMock
-	Scope     *taskProjectScopeMock
-	Store     *taskStoreMock
-	Capture   *stepWriteCapture
-	Steps     *taskservice.TaskSteps
-}
-
-func newStepWriteFixture(t *testing.T, header model.TaskHeader, current []model.TaskStep, outcome store.TransactionOutcome) *stepWriteFixture {
-	t.Helper()
-	base := newTaskMockBase(t, "steps")
-	f := &stepWriteFixture{T: t, Ctx: t.Context(), Header: header, Current: current,
-		Principal: model.Principal{Kind: model.SessionCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "33333333-3333-4333-8333-333333333333"}}
-	f.Writer = &taskWriterMock{taskMockBase: base.withLabel("task")}
-	f.Project = &projectWriterMock{taskMockBase: base.withLabel("project")}
-	f.Scope = &taskProjectScopeMock{taskMockBase: base.withLabel("scope")}
-	f.Store = &taskStoreMock{taskMockBase: base.withLabel("store")}
-	f.Capture = &stepWriteCapture{taskMockBase: base.withLabel("capture")}
-	f.Scope.ProjectDAOFn = func() store.ProjectWriteDAO { return f.Project }
-	f.Scope.TaskDAOFn = func() store.TaskWriteDAO { return f.Writer }
-	f.Project.ProjectAccessFn = func(ctx context.Context, p model.Principal) (model.ProjectAccess, error) {
-		if ctx != f.Ctx || p != f.Principal {
-			t.Fatal("Step write changed authorization context or principal")
-		}
-		return model.ProjectAccess{ProjectID: f.Header.ProjectID, UserID: p.UserID, Role: model.ProjectMemberRole}, nil
-	}
-	f.Writer.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
-		if ctx != f.Ctx || id != f.Header.ID {
-			t.Fatal("Step write changed parent identity or context")
-		}
-		return f.Header, nil
-	}
-	f.Writer.TaskStepsFn = func(ctx context.Context, id string) ([]model.TaskStep, error) {
-		if ctx != f.Ctx || id != f.Header.ID {
-			t.Fatal("Step write changed collection identity or context")
-		}
-		return f.Current, nil
-	}
-	f.Store.WriteProjectFn = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		if ctx != f.Ctx || id != f.Header.ProjectID || work == nil {
-			t.Fatal("Step write changed Project scope or context")
-		}
-		if err := work(f.Scope); err != nil {
-			failure := &store.TransactionError{Phase: "operation", Cause: err, Outcome: store.TransactionNotCommitted}
-			return store.Completion{Outcome: store.TransactionNotCommitted}, failure
-		}
-		return store.Completion{Outcome: outcome}, nil
-	}
-	f.Steps = taskservice.NewTaskSteps(f.Store, f.Capture)
-	return f
-}
-
-func stepMutationHeader(version int64) model.TaskHeader {
-	return model.TaskHeader{ProjectID: "22222222-2222-4222-8222-222222222222", ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Version: version}
-}
-
-func stepMutationRows() []model.TaskStep {
-	return []model.TaskStep{
-		{ID: "00000000", Position: 0, Title: "same", Description: "original body", Status: model.TaskStepTodo, CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC), UpdatedAt: time.Date(2026, 2, 3, 4, 5, 6, 654321000, time.UTC)},
-		{ID: "abcdef01", Position: 1, Title: "same", Description: "other body", Status: model.TaskStepInProgress, CreatedAt: time.Date(2026, 1, 3, 3, 4, 5, 123456000, time.UTC), UpdatedAt: time.Date(2026, 2, 4, 4, 5, 6, 654321000, time.UTC)},
-	}
-}
-
-func (f *stepWriteFixture) ExpectCapture(post model.TaskHeader, check func(protocol.Fact)) {
-	f.T.Helper()
-	headerCalls, captures := 0, 0
-	f.Writer.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
-		if ctx != f.Ctx || id != f.Header.ID {
-			f.T.Fatal("Step capture changed parent identity or context")
-		}
-		headerCalls++
-		switch headerCalls {
-		case 1:
-			return f.Header, nil
-		case 2:
-			return post, nil
-		default:
-			f.T.Fatal("Step write unexpectedly reread its parent")
-			panic("unexpected parent read")
-		}
-	}
-	dao := &captureDAOMock{taskMockBase: f.Writer.taskMockBase.withLabel("captureDAO")}
-	f.Scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return dao }
-	f.Capture.CaptureBatchFn = func(ctx context.Context, actual store.WebhookCaptureDAO, facts []protocol.Fact) error {
-		if ctx != f.Ctx || actual != dao || len(facts) != 1 {
-			f.T.Fatal("Step write changed captured scope, context or fact count")
-		}
-		captures++
-		check(facts[0])
-		return nil
-	}
-	f.T.Cleanup(func() {
-		if headerCalls != 2 || captures != 1 {
-			f.T.Errorf("Step write capture calls: headers=%d captures=%d", headerCalls, captures)
-		}
-	})
-}
-
-func requireChangeCommitted(t *testing.T, result taskservice.StepsWriteResult, err error, changed bool) {
-	t.Helper()
-	if err != nil || result.Changed != changed || result.TransactionOutcome != store.TransactionCommitted || result.Phase != "commit" || result.CleanupFailed || len(result.JSON) == 0 {
-		t.Fatalf("change receipt: %+v %v", result, err)
-	}
-}
-
-func expectChangedStep(t *testing.T, f *stepWriteFixture, expected model.TaskStep, observed time.Time, factCheck func(protocol.Fact)) {
-	t.Helper()
-	calls := []string{}
-	f.Writer.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-		if ctx != f.Ctx {
-			t.Fatal("changed Step clock context changed")
-		}
-		calls = append(calls, "clock")
-		return observed, nil
-	}
-	f.Writer.UpdateTaskStepFn = func(ctx context.Context, id string, actual model.TaskStep) error {
-		calls = append(calls, "update")
-		if ctx != f.Ctx || id != f.Header.ID || actual != expected {
-			t.Fatalf("changed Step parameters: %+v want %+v", actual, expected)
-		}
-		return nil
-	}
-	f.Writer.TouchTaskFn = func(ctx context.Context, id string, at time.Time) error {
-		calls = append(calls, "touch")
-		if ctx != f.Ctx || id != f.Header.ID || at != observed {
-			t.Fatal("changed Step and parent clock differed")
-		}
-		return nil
-	}
-	post := f.Header
-	post.Version++
-	f.ExpectCapture(post, func(fact protocol.Fact) { calls = append(calls, "capture"); factCheck(fact) })
-	t.Cleanup(func() {
-		if !slices.Equal(calls, []string{"clock", "update", "touch", "capture"}) {
-			t.Errorf("changed Step call order: %v", calls)
-		}
-	})
-}
 
 func TestTaskStepsChangeNoOpPreservesAllBytesBeforeClockAndWrites(t *testing.T) {
 	for _, version := range []int64{9007199254740993, math.MaxInt64} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
-			header := stepMutationHeader(version)
-			current := stepMutationRows()
-			before := slices.Clone(current)
-			_, document, err := taskcodec.EncodeCollection(header, current)
+			h := writeHeader(version)
+			rows := writeRows()
+			original := slices.Clone(rows)
+			resource, document, err := taskcodec.EncodeCollection(h, rows)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, kind := range []string{"title", "description", "paired", "status"} {
-				f := newStepWriteFixture(t, header, current, store.TransactionCommitted)
-				var result taskservice.StepsWriteResult
-				if kind == "status" {
-					result, err = f.Steps.SetStatus(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.SetTaskStepStatus{Version: version, Status: model.TaskStepTodo})
-				} else {
-					input := taskservice.UpdateTaskStep{Version: version}
+				f := newStrictStepWrite(t, h, rows)
+				f.changeID = "00000000"
+				candidate := slices.Clone(rows)
+				candidate[0].Title = "different candidate"
+				f.mutation = tasksteps.Mutation{Candidate: candidate, To: 0, Changed: false}
+				input := UpdateTaskStep{Version: version}
+				if kind != "status" {
 					if kind != "description" {
-						input.Title = pointer("same")
+						input.Title = stepWritePtr("same")
 					}
 					if kind != "title" {
-						input.Description = pointer("original body")
+						input.Description = stepWritePtr("original body")
 					}
-					result, err = f.Steps.Update(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", input)
+					f.changes = tasksteps.Changes{Title: input.Title, Description: input.Description}
+				} else {
+					f.changes = tasksteps.Changes{Status: stepWritePtr(model.TaskStepTodo)}
 				}
-				requireChangeCommitted(t, result, err, false)
-				if !bytes.Equal(result.JSON, document) || !reflect.DeepEqual(current, before) {
-					t.Fatal("no-op changed resource or source collection")
+				f.begin(writePath("admit")...)
+				var r StepsWriteResult
+				if kind == "status" {
+					r, err = f.svc.SetStatus(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", SetTaskStepStatus{Version: version, Status: model.TaskStepTodo})
+				} else {
+					r, err = f.svc.Update(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", input)
+				}
+				f.end()
+				expectReceipt(t, r, err, false)
+				if !bytes.Equal(r.JSON, document) || !reflect.DeepEqual(r.Resource, resource) || !reflect.DeepEqual(rows, original) {
+					t.Fatal("no-op changed bytes, resource, or rows")
 				}
 			}
 			for _, status := range []bool{false, true} {
-				f := newStepWriteFixture(t, header, current, store.TransactionNotCommitted)
-				f.Writer.TaskStepsFn = nil
+				f := newStrictStepWrite(t, h, rows)
+				f.begin(writePath("header")...)
+				var r StepsWriteResult
 				if status {
-					_, err = f.Steps.SetStatus(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.SetTaskStepStatus{Version: version - 1, Status: model.TaskStepTodo})
+					r, err = f.svc.SetStatus(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", SetTaskStepStatus{Version: version - 1, Status: model.TaskStepTodo})
 				} else {
-					_, err = f.Steps.Update(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.UpdateTaskStep{Version: version - 1, Title: pointer("same")})
+					r, err = f.svc.Update(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", UpdateTaskStep{Version: version - 1, Title: stepWritePtr("same")})
 				}
-				requireThreadFault(t, err, "version_conflict")
+				f.end()
+				expectRefusal(t, r, err, "version_conflict")
 			}
 			if version == math.MaxInt64 {
 				for _, kind := range []string{"title", "status", "missing"} {
-					f := newStepWriteFixture(t, header, current, store.TransactionNotCommitted)
-					if kind == "status" {
-						_, err = f.Steps.SetStatus(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.SetTaskStepStatus{Version: version, Status: model.TaskStepDone})
-					} else {
-						id := "00000000"
-						if kind == "missing" {
-							id = "ffffffff"
-						}
-						_, err = f.Steps.Update(f.Ctx, f.Principal, header.ProjectID, header.ID, id, taskservice.UpdateTaskStep{Version: version, Title: pointer("changed")})
-					}
+					f := newStrictStepWrite(t, h, rows)
+					f.changeID = "00000000"
 					code := "version_exhausted"
-					if kind == "missing" {
-						code = "not_found"
+					if kind == "status" {
+						f.changes = tasksteps.Changes{Status: stepWritePtr(model.TaskStepDone)}
+					} else {
+						f.changes = tasksteps.Changes{Title: stepWritePtr("changed")}
+						if kind == "missing" {
+							f.changeID = "ffffffff"
+							code = "not_found"
+						}
 					}
-					requireThreadFault(t, err, code)
+					f.admitErr = &model.Fault{Code: code, Message: "controlled"}
+					f.begin(writePath("admit")...)
+					var r StepsWriteResult
+					if kind == "status" {
+						r, err = f.svc.SetStatus(f.ctx, f.principal, h.ProjectID, h.ID, f.changeID, SetTaskStepStatus{Version: version, Status: model.TaskStepDone})
+					} else {
+						r, err = f.svc.Update(f.ctx, f.principal, h.ProjectID, h.ID, f.changeID, UpdateTaskStep{Version: version, Title: stepWritePtr("changed")})
+					}
+					f.end()
+					expectRefusal(t, r, err, code)
 				}
 			}
-			if !reflect.DeepEqual(current, before) {
-				t.Fatal("refusal altered source rows")
+			if !reflect.DeepEqual(rows, original) {
+				t.Fatal("refusal altered rows")
 			}
 		})
 	}
 }
-
 func TestTaskStepsChangeUsesHeaderAndPreservesOtherRows(t *testing.T) {
-	header := stepMutationHeader(1)
-	current := stepMutationRows()
-	original := slices.Clone(current)
-	originalDocument, _, err := taskcodec.EncodeCollection(header, original)
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := writeHeader(1)
+	rows := writeRows()
+	original := slices.Clone(rows)
 	title, description := "  <原值&> 😀 \uFEFF  ", "  # Markdown\n\"\\\u2028\u2029  "
-	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
-	expected := current[0]
-	expected.Title, expected.Description, expected.UpdatedAt = title, description, observed
-	f := newStepWriteFixture(t, header, current, store.TransactionCommitted)
-	expectChangedStep(t, f, expected, observed, func(fact protocol.Fact) {
-		if fact.TaskVersion != header.Version+1 || fact.Action != "updated" || !slices.Equal(fact.ChangedFields, []string{"description", "title"}) || fact.OccurredAt != observed {
-			t.Fatalf("paired change fact: %+v", fact)
-		}
-	})
-	result, err := f.Steps.Update(f.Ctx, f.Principal, strings.ToUpper(header.ProjectID), strings.ToUpper(header.ID), "00000000", taskservice.UpdateTaskStep{Version: header.Version, Title: &title, Description: &description})
-	requireChangeCommitted(t, result, err, true)
-	target := result.Resource.Steps[0]
-	if target.Title != title || target.Description != description || target.CreatedAt != original[0].CreatedAt || target.UpdatedAt != observed || result.Resource.Steps[1] != originalDocument.Steps[1] || result.Resource.Version != header.Version+1 || !reflect.DeepEqual(current, original) {
-		t.Fatal("paired change changed unrelated fields or source rows")
+	at := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	desired := rows[0]
+	desired.Title, desired.Description = title, description
+	f := newStrictStepWrite(t, h, rows)
+	f.changeID = "00000000"
+	f.changes = tasksteps.Changes{Title: &title, Description: &description}
+	f.mutation = tasksteps.Mutation{Candidate: []model.TaskStep{desired, rows[1]}, To: 0, Changed: true}
+	written := desired
+	written.UpdatedAt = at
+	f.changed(written, at, "updated", []string{"description", "title"}, "", "")
+	f.begin(writePath("update")...)
+	r, err := f.svc.Update(f.ctx, f.principal, strings.ToUpper(h.ProjectID), strings.ToUpper(h.ID), "00000000", UpdateTaskStep{Version: h.Version, Title: &title, Description: &description})
+	f.end()
+	expectReceipt(t, r, err, true)
+	post := h
+	post.Version++
+	if !reflect.DeepEqual(r.Resource, taskcodec.ProjectCollection(post, []model.TaskStep{written, rows[1]})) || !reflect.DeepEqual(rows, original) {
+		t.Fatal("paired change altered content or rows")
 	}
 	for _, status := range []model.TaskStepStatus{model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped, model.TaskStepTodo} {
-		previous := expected
-		header.Version++
-		rows := []model.TaskStep{previous, original[1]}
-		observed = observed.Add(time.Microsecond)
-		expected.Status, expected.UpdatedAt = status, observed
-		f := newStepWriteFixture(t, header, rows, store.TransactionCommitted)
-		expectChangedStep(t, f, expected, observed, func(fact protocol.Fact) {
-			if fact.Action != "status_changed" || fact.PreviousStatus != string(previous.Status) || fact.Status != string(status) || fact.TaskVersion != header.Version+1 {
-				t.Fatalf("status change fact: %+v", fact)
-			}
-		})
-		result, err = f.Steps.SetStatus(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.SetTaskStepStatus{Version: header.Version, Status: status})
-		requireChangeCommitted(t, result, err, true)
-		got := result.Resource.Steps[0]
-		if result.Resource.Version != header.Version+1 || got.Status != status || got.Title != title || got.Description != description || got.CreatedAt != original[0].CreatedAt || got.UpdatedAt != observed || result.Resource.Steps[1] != originalDocument.Steps[1] || !reflect.DeepEqual(rows, []model.TaskStep{previous, original[1]}) {
-			t.Fatal("status change changed omitted content or other row")
+		h.Version++
+		previous := written
+		rows = []model.TaskStep{previous, original[1]}
+		before := slices.Clone(rows)
+		at = at.Add(time.Microsecond)
+		desired = previous
+		desired.Status = status
+		f = newStrictStepWrite(t, h, rows)
+		f.changeID = "00000000"
+		f.changes = tasksteps.Changes{Status: &status}
+		f.mutation = tasksteps.Mutation{Candidate: []model.TaskStep{desired, rows[1]}, To: 0, Changed: true}
+		written = desired
+		written.UpdatedAt = at
+		f.changed(written, at, "status_changed", nil, string(previous.Status), string(status))
+		f.begin(writePath("update")...)
+		r, err = f.svc.SetStatus(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", SetTaskStepStatus{Version: h.Version, Status: status})
+		f.end()
+		expectReceipt(t, r, err, true)
+		post = h
+		post.Version++
+		if !reflect.DeepEqual(r.Resource, taskcodec.ProjectCollection(post, []model.TaskStep{written, rows[1]})) || !reflect.DeepEqual(rows, before) {
+			t.Fatal("status change altered content or rows")
 		}
 	}
-	header.Version++
-	previous := expected
-	rows := []model.TaskStep{previous, original[1]}
-	observed = observed.Add(time.Microsecond)
-	expected.Description, expected.UpdatedAt = "", observed
-	f = newStepWriteFixture(t, header, rows, store.TransactionCommitted)
-	expectChangedStep(t, f, expected, observed, func(fact protocol.Fact) {
-		if !slices.Equal(fact.ChangedFields, []string{"description"}) {
-			t.Fatalf("clear fact: %+v", fact)
-		}
-	})
-	result, err = f.Steps.Update(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.UpdateTaskStep{Version: header.Version, Description: pointer("")})
-	requireChangeCommitted(t, result, err, true)
-	if result.Resource.Steps[0].Description != "" || result.Resource.Steps[0].Title != title || result.Resource.Steps[0].CreatedAt != original[0].CreatedAt || result.Resource.Steps[0].UpdatedAt != observed || result.Resource.Steps[1] != originalDocument.Steps[1] || !reflect.DeepEqual(rows, []model.TaskStep{previous, original[1]}) {
-		t.Fatal("clear altered omitted title")
+	h.Version++
+	previous := written
+	rows = []model.TaskStep{previous, original[1]}
+	before := slices.Clone(rows)
+	at = at.Add(time.Microsecond)
+	desired = previous
+	desired.Description = ""
+	f = newStrictStepWrite(t, h, rows)
+	f.changeID = "00000000"
+	f.changes = tasksteps.Changes{Description: stepWritePtr("")}
+	f.mutation = tasksteps.Mutation{Candidate: []model.TaskStep{desired, rows[1]}, To: 0, Changed: true}
+	written = desired
+	written.UpdatedAt = at
+	f.changed(written, at, "updated", []string{"description"}, "", "")
+	f.begin(writePath("update")...)
+	r, err = f.svc.Update(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", UpdateTaskStep{Version: h.Version, Description: stepWritePtr("")})
+	f.end()
+	expectReceipt(t, r, err, true)
+	post = h
+	post.Version++
+	if !reflect.DeepEqual(r.Resource, taskcodec.ProjectCollection(post, []model.TaskStep{written, rows[1]})) || !reflect.DeepEqual(rows, before) {
+		t.Fatal("clear altered title or rows")
 	}
 }
-
 func TestTaskStepsChangeAdmissionInputAndStorageFailures(t *testing.T) {
-	for _, input := range []taskservice.UpdateTaskStep{{Version: 1}, {Version: 1, Title: pointer("\u0085")}, {Version: 1, Title: pointer("\x00")}, {Version: 1, Title: pointer(string([]byte{0xff}))}, {Version: 1, Description: pointer("\x00")}, {Version: 1, Description: pointer(string([]byte{0xff}))}} {
-		f := newStepWriteFixture(t, stepMutationHeader(1), stepMutationRows(), store.TransactionNotCommitted)
-		f.Store.WriteProjectFn = nil
-		_, err := f.Steps.Update(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", input)
-		requireThreadFault(t, err, "invalid_input")
+	for _, input := range []UpdateTaskStep{{Version: 1}, {Version: 1, Title: stepWritePtr("\u0085")}, {Version: 1, Title: stepWritePtr("\x00")}, {Version: 1, Title: stepWritePtr(string([]byte{0xff}))}, {Version: 1, Description: stepWritePtr("\x00")}, {Version: 1, Description: stepWritePtr(string([]byte{0xff}))}} {
+		f := newStrictStepWrite(t, writeHeader(1), writeRows())
+		f.begin()
+		r, err := f.svc.Update(f.ctx, f.principal, f.projectID, f.taskID, "00000000", input)
+		f.end()
+		expectRefusal(t, r, err, "invalid_input")
 	}
-	f := newStepWriteFixture(t, stepMutationHeader(1), stepMutationRows(), store.TransactionNotCommitted)
-	f.Store.WriteProjectFn = nil
-	_, err := f.Steps.SetStatus(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.SetTaskStepStatus{Version: 1, Status: "invalid"})
-	requireThreadFault(t, err, "invalid_input")
+	f := newStrictStepWrite(t, writeHeader(1), writeRows())
+	f.begin()
+	r, err := f.svc.SetStatus(f.ctx, f.principal, f.projectID, f.taskID, "00000000", SetTaskStepStatus{Version: 1, Status: "invalid"})
+	f.end()
+	expectRefusal(t, r, err, "invalid_input")
 	for _, stage := range []string{"principal", "project ID", "task ID", "step ID", "version", "missing project", "missing task", "project access", "missing step", "deleted task"} {
 		t.Run(stage, func(t *testing.T) {
-			f := newStepWriteFixture(t, stepMutationHeader(1), stepMutationRows(), store.TransactionNotCommitted)
-			principal, projectID, taskID, stepID, version, code := f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", int64(1), "not_found"
+			f := newStrictStepWrite(t, writeHeader(1), writeRows())
+			p, project, task, id, version, code := f.principal, f.projectID, f.taskID, "00000000", int64(1), "not_found"
+			stop := ""
 			switch stage {
 			case "principal":
-				principal = model.Principal{}
+				p = model.Principal{}
 				code = "unauthenticated"
-				f.Store.WriteProjectFn = nil
 			case "project ID":
-				projectID = "bad"
+				project = "bad"
 				code = "invalid_input"
-				f.Store.WriteProjectFn = nil
 			case "task ID":
-				taskID = "bad"
+				task = "bad"
 				code = "invalid_input"
-				f.Store.WriteProjectFn = nil
 			case "step ID":
-				stepID = "bad"
+				id = "bad"
 				code = "invalid_input"
-				f.Store.WriteProjectFn = nil
 			case "version":
 				version = 0
 				code = "invalid_input"
-				f.Store.WriteProjectFn = nil
 			case "missing project":
-				projectID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-				f.Store.WriteProjectFn = func(ctx context.Context, id string, _ func(store.ProjectWriteScope) error) (store.Completion, error) {
-					if ctx != f.Ctx || id != projectID {
-						t.Fatal("missing Project scope or context changed")
-					}
-					return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.ErrNotFound}
-				}
+				project = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+				f.projectID = project
+				f.startErr = &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.ErrNotFound}
+				stop = "store"
 			case "missing task":
-				taskID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-				f.Writer.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
-					if ctx != f.Ctx || id != taskID {
-						t.Fatal("missing Task identity or context changed")
-					}
-					return model.TaskHeader{}, model.ErrNotFound
-				}
+				task = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+				f.taskID = task
+				f.headerErr = model.ErrNotFound
+				stop = "header"
 			case "project access":
-				principal.UserID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-				f.Project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
-					if ctx != f.Ctx || actual != principal {
-						t.Fatal("inaccessible Project principal or context changed")
-					}
-					return model.ProjectAccess{}, model.ErrNotFound
-				}
+				p.UserID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+				f.principal = p
+				f.authErr = &model.Fault{Code: "not_found", Message: "controlled"}
+				stop = "auth"
 			case "missing step":
-				stepID = "ffffffff"
+				id = "ffffffff"
+				f.changeID = id
+				f.changes = tasksteps.Changes{Title: stepWritePtr("changed")}
+				f.admitErr = tasksteps.NotFound(f.header.Version, model.ErrNotFound)
+				stop = "admit"
 			case "deleted task":
-				at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-				f.Header.DeletedAt = &at
-				stepID = "ffffffff"
+				d := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+				f.header.DeletedAt = &d
+				id = "ffffffff"
 				version = 99
 				code = "task_deleted"
+				stop = "header"
 			}
-			result, err := f.Steps.Update(f.Ctx, principal, projectID, taskID, stepID, taskservice.UpdateTaskStep{Version: version, Title: pointer("changed")})
-			requireThreadFault(t, err, code)
-			if result.JSON != nil || result.TransactionOutcome != store.TransactionNotCommitted {
-				t.Fatal("refusal exposed unconfirmed resource")
+			if stop == "" {
+				f.begin()
+			} else {
+				f.begin(writePath(stop)...)
+			}
+			r, err := f.svc.Update(f.ctx, p, project, task, id, UpdateTaskStep{Version: version, Title: stepWritePtr("changed")})
+			f.end()
+			expectRefusal(t, r, err, code)
+			if stage == "missing step" {
+				var absence *tasksteps.StepAbsence
+				if !errors.As(err, &absence) || absence.Version != f.header.Version {
+					t.Fatalf("missing child version: %v", err)
+				}
 			}
 		})
 	}
-	current := stepMutationRows()
-	current[1].Position = 3
-	f = newStepWriteFixture(t, stepMutationHeader(1), current, store.TransactionNotCommitted)
-	_, err = f.Steps.SetStatus(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.SetTaskStepStatus{Version: 1, Status: model.TaskStepDone})
-	if err == nil {
-		t.Fatal("corrupt storage concealed")
-	}
-	if _, pure := taskservice.TaskStepsFault(err); pure {
-		t.Fatal("corrupt storage became business refusal")
-	}
-	cause := errors.New("closed database")
-	f.Store.WriteProjectFn = func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, cause
-	}
-	_, err = f.Steps.Update(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.UpdateTaskStep{Version: 1, Title: pointer("changed")})
-	if !errors.Is(err, cause) {
-		t.Fatal("closed-store cause lost")
-	}
+	rows := writeRows()
+	rows[1].Position = 3
+	f = newStrictStepWrite(t, writeHeader(1), rows)
+	cause := errors.New("corrupt collection")
+	f.changeID = "00000000"
+	f.changes = tasksteps.Changes{Status: stepWritePtr(model.TaskStepDone)}
+	f.admitErr = cause
+	f.begin(writePath("admit")...)
+	r, err = f.svc.SetStatus(f.ctx, f.principal, f.projectID, f.taskID, "00000000", SetTaskStepStatus{Version: 1, Status: model.TaskStepDone})
+	f.end()
+	expectInternal(t, r, err, cause)
+	f = newStrictStepWrite(t, writeHeader(1), rows)
+	cause = errors.New("closed database")
+	f.startErr = cause
+	f.begin(writePath("store")...)
+	r, err = f.svc.Update(f.ctx, f.principal, f.projectID, f.taskID, "00000000", UpdateTaskStep{Version: 1, Title: stepWritePtr("changed")})
+	f.end()
+	expectInternal(t, r, err, cause)
 }
-
 func TestTaskStepsChangeQueryFailuresRemainInternal(t *testing.T) {
 	for _, stage := range []string{"header", "collection"} {
 		t.Run(stage, func(t *testing.T) {
-			f := newStepWriteFixture(t, stepMutationHeader(1), stepMutationRows(), store.TransactionNotCommitted)
+			f := newStrictStepWrite(t, writeHeader(1), writeRows())
 			cause := errors.New(stage + " query failed")
+			stop := "header"
 			if stage == "header" {
-				f.Writer.TaskHeaderFn = func(context.Context, string) (model.TaskHeader, error) { return model.TaskHeader{}, cause }
+				f.headerErr = cause
 			} else {
-				f.Writer.TaskStepsFn = func(context.Context, string) ([]model.TaskStep, error) { return nil, cause }
+				f.rowsErr = cause
+				stop = "rows"
 			}
-			result, err := f.Steps.Update(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.UpdateTaskStep{Version: 1, Title: pointer("changed")})
-			if !errors.Is(err, cause) || result.JSON != nil || result.TransactionOutcome != store.TransactionNotCommitted {
-				t.Fatal("query failure concealed")
-			}
-			if _, pure := taskservice.TaskStepsFault(err); pure {
-				t.Fatal("query failure became business refusal")
-			}
+			f.begin(writePath(stop)...)
+			r, err := f.svc.Update(f.ctx, f.principal, f.projectID, f.taskID, "00000000", UpdateTaskStep{Version: 1, Title: stepWritePtr("changed")})
+			f.end()
+			expectInternal(t, r, err, cause)
 		})
 	}
 }
-
 func TestTaskStepsChangeUnexpectedTargetDisappearanceStaysInternal(t *testing.T) {
-	f := newStepWriteFixture(t, stepMutationHeader(1), stepMutationRows(), store.TransactionNotCommitted)
+	h := writeHeader(1)
+	rows := writeRows()
+	f := newStrictStepWrite(t, h, rows)
 	at := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
-	f.Writer.ObservedAtFn = func(context.Context) (time.Time, error) { return at, nil }
-	calls := 0
-	f.Writer.UpdateTaskStepFn = func(ctx context.Context, id string, step model.TaskStep) error {
-		calls++
-		if ctx != f.Ctx || id != f.Header.ID || step.ID != "00000000" || step.Title != "changed" || step.UpdatedAt != at {
-			t.Fatal("unexpected-disappearance parameters changed")
+	desired := rows[0]
+	desired.Title = "changed"
+	f.changeID = desired.ID
+	f.changes = tasksteps.Changes{Title: stepWritePtr("changed")}
+	f.mutation = tasksteps.Mutation{Candidate: []model.TaskStep{desired, rows[1]}, To: 0, Changed: true}
+	desired.UpdatedAt = at
+	f.expectedWrite = desired
+	f.observed = at
+	f.writeErr = model.ErrNotFound
+	f.begin(writePath("updateFail")...)
+	r, err := f.svc.Update(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", UpdateTaskStep{Version: 1, Title: stepWritePtr("changed")})
+	f.end()
+	expectInternal(t, r, err, model.ErrNotFound)
+}
+
+func TestTaskStepsPublicWritesCompletionOverridesDocument(t *testing.T) {
+	cause := errors.New("completion-cause-sentinel")
+	cleanup := errors.New("cleanup-cause-sentinel")
+	refusal := &model.Fault{Code: "not_found", Message: "business refusal"}
+	for _, method := range []string{"add", "update"} {
+		for _, failure := range []*store.TransactionError{{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: cause}, {Phase: "cleanup", Outcome: store.TransactionCommitted, CommitAttempted: true, CleanupFailed: true, Cause: errors.Join(cause, cleanup)}, {Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: errors.Join(refusal, cleanup)}} {
+			t.Run(method+"/"+failure.Phase+"/"+string(failure.Outcome), func(t *testing.T) {
+				h := writeHeader(1)
+				rows := writeRows()
+				f := newStrictStepWrite(t, h, rows)
+				at := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+				f.outcome = failure.Outcome
+				f.completionErr = failure
+				var r StepsWriteResult
+				var err error
+				if method == "add" {
+					f.addStep = model.TaskStep{ID: "12345678", Title: "x", Status: model.TaskStepTodo}
+					f.mutation = tasksteps.Mutation{Candidate: []model.TaskStep{rows[0], rows[1], {ID: "12345678", Position: 2, Title: "x", Status: model.TaskStepTodo}}, To: 2, Changed: true}
+					written := f.mutation.Candidate[2]
+					written.CreatedAt = at
+					written.UpdatedAt = at
+					f.changed(written, at, "created", nil, "", "")
+					f.begin(writePath("insert")...)
+					r, err = f.svc.Add(f.ctx, f.principal, h.ProjectID, h.ID, AddTaskStep{Version: 1, ID: "12345678", Title: "x"})
+				} else {
+					desired := rows[0]
+					desired.Title = "changed"
+					f.changeID = desired.ID
+					f.changes = tasksteps.Changes{Title: stepWritePtr("changed")}
+					f.mutation = tasksteps.Mutation{Candidate: []model.TaskStep{desired, rows[1]}, To: 0, Changed: true}
+					desired.UpdatedAt = at
+					f.changed(desired, at, "updated", []string{"title"}, "", "")
+					f.begin(writePath("update")...)
+					r, err = f.svc.Update(f.ctx, f.principal, h.ProjectID, h.ID, "00000000", UpdateTaskStep{Version: 1, Title: stepWritePtr("changed")})
+				}
+				f.end()
+				phase := "persist"
+				if failure.CommitAttempted {
+					phase = "commit"
+				}
+				if !errors.Is(err, failure) || r.Phase != phase || !r.Changed || r.TransactionOutcome != failure.Outcome || r.CleanupFailed != failure.CleanupFailed || !reflect.DeepEqual(r.StepsDocument, StepsDocument{}) {
+					t.Fatalf("completion receipt: %+v %v", r, err)
+				}
+				if _, pure := TaskStepsFault(err); pure {
+					t.Fatal("completion became refusal")
+				}
+				if errors.Is(failure, cause) && !errors.Is(err, cause) || errors.Is(failure, cleanup) && !errors.Is(err, cleanup) || errors.Is(failure, refusal) && !errors.Is(err, refusal) {
+					t.Fatal("completion cause lost")
+				}
+			})
 		}
-		return model.ErrNotFound
-	}
-	result, err := f.Steps.Update(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.UpdateTaskStep{Version: 1, Title: pointer("changed")})
-	if calls != 1 || !errors.Is(err, model.ErrNotFound) || result.JSON != nil || result.TransactionOutcome != store.TransactionNotCommitted {
-		t.Fatalf("unexpected target result lost: %+v %v", result, err)
-	}
-	if _, pure := taskservice.TaskStepsFault(err); pure {
-		t.Fatal("unexpected zero-row persistence became child visibility refusal")
 	}
 }

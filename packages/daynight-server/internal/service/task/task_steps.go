@@ -20,13 +20,20 @@ type StepsStore interface {
 }
 
 type TaskSteps struct {
-	store          StepsStore
-	capturer       Capturer
-	readOperations taskStepReadOperations
+	store           StepsStore
+	capturer        Capturer
+	readOperations  taskStepReadOperations
+	writeOperations taskStepWriteOperations
 }
 
 type taskStepReadOperations struct {
 	requireProjectRead func(context.Context, projectcore.ProjectAccessReader, model.Principal, string) (model.ProjectAccess, error)
+}
+
+type taskStepWriteOperations struct {
+	requireProjectWrite func(context.Context, store.ProjectWriteDAO, model.Principal) (model.ProjectAccess, error)
+	admitAdd            func(model.TaskHeader, []model.TaskStep, model.TaskStep, *string, *string) (tasksteps.Mutation, error)
+	admitChange         func(model.TaskHeader, []model.TaskStep, string, tasksteps.Changes) (tasksteps.Mutation, error)
 }
 
 func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
@@ -34,6 +41,11 @@ func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
 		store:          database,
 		capturer:       capturer(capture),
 		readOperations: taskStepReadOperations{requireProjectRead: projectcore.RequireProjectRead},
+		writeOperations: taskStepWriteOperations{
+			requireProjectWrite: projectcore.RequireProjectWrite,
+			admitAdd:            tasksteps.AdmitAdd,
+			admitChange:         tasksteps.AdmitChange,
+		},
 	}
 }
 
@@ -276,7 +288,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 	projectLocked := false
 	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
 		projectLocked = true
-		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
+		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
 		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
@@ -287,7 +299,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		mutation, err := tasksteps.AdmitAdd(header, current, step, before, after)
+		mutation, err := s.writeOperations.admitAdd(header, current, step, before, after)
 		if err != nil {
 			return err
 		}

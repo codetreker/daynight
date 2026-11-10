@@ -2781,6 +2781,11 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. Step read service tests control Project authorization
 and snapshot completion independently while exercising the actual parent gate,
 DAO queries, paging and encoding; PostgreSQL tests own physical snapshot proof.
+Step Add and content/status change service tests control Project write
+authorization and collection admission while exercising the locked parent gate,
+DAO writes, real encoding, capture and transaction completion. Core tests own
+the corresponding collection decisions; controlled completion does not prove a
+physical commit.
 The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and

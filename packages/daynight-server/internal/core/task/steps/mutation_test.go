@@ -1,8 +1,12 @@
 package steps
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"math"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +253,358 @@ func TestWriteInputValidationAndCapacityFault(t *testing.T) {
 	var fault *model.Fault
 	if !errors.As(faultErr, &fault) || fault.Code != "steps_limit_exceeded" || fault.StepsLimit == nil || fault.StepsLimit.EncodedBytes != limit.EncodedBytes || fault.StepsLimit.MaxEncodedBytes != codec.MaxEncodedBytes || !errors.Is(faultErr, limit) {
 		t.Fatalf("capacity details: %v", faultErr)
+	}
+}
+
+func receiverHeader(version int64) model.TaskHeader {
+	return model.TaskHeader{ProjectID: "22222222-2222-4222-8222-222222222222", ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Version: version}
+}
+
+func receiverRows() []model.TaskStep {
+	return []model.TaskStep{
+		{ID: "00000000", Position: 0, Title: "same", Description: "original body", Status: model.TaskStepTodo, CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC), UpdatedAt: time.Date(2026, 2, 3, 4, 5, 6, 654321000, time.UTC)},
+		{ID: "abcdef01", Position: 1, Title: "same", Description: "other body", Status: model.TaskStepInProgress, CreatedAt: time.Date(2026, 1, 3, 3, 4, 5, 123456000, time.UTC), UpdatedAt: time.Date(2026, 2, 4, 4, 5, 6, 654321000, time.UTC)},
+	}
+}
+
+func receiverFault(t *testing.T, err error, code string) {
+	t.Helper()
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != code {
+		t.Fatalf("expected %s, got %v", code, err)
+	}
+}
+
+func receiverCandidate(t *testing.T, current, before []model.TaskStep, mutation Mutation) {
+	t.Helper()
+	if !reflect.DeepEqual(current, before) {
+		t.Fatal("admission changed source rows")
+	}
+	if len(current) > 0 && len(mutation.Candidate) > 0 && &current[0] == &mutation.Candidate[0] {
+		t.Fatal("candidate aliases source rows")
+	}
+}
+
+func receiverEncoded(t *testing.T, header model.TaskHeader, mutation Mutation, observed time.Time, kind string, expected []model.TaskStep) {
+	t.Helper()
+	resource, data, err := EncodeMutation(header, mutation, observed, kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutation.Changed {
+		header.Version++
+	}
+	wantResource, wantData, err := codec.EncodeCollection(header, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resource, wantResource) || !bytes.Equal(data, wantData) || !reflect.DeepEqual(mutation.Candidate, expected) {
+		t.Fatalf("encoded resource or candidate differs: got %+v want %+v", resource, wantResource)
+	}
+}
+
+func TestWriteReceiverAddCases(t *testing.T) {
+	header := receiverHeader(1)
+	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	current := []model.TaskStep{}
+	step, beforeAnchor, afterAnchor, err := PrepareAdd("ABCDEF01", "same", "", nil, nil, nil)
+	if err != nil || step != (model.TaskStep{ID: "abcdef01", Title: "same", Status: model.TaskStepTodo}) || beforeAnchor != nil || afterAnchor != nil {
+		t.Fatalf("first preparation: %+v %v", step, err)
+	}
+	mutation, err := AdmitAdd(header, current, step, beforeAnchor, afterAnchor)
+	if err != nil || !mutation.Changed || mutation.To != 0 {
+		t.Fatalf("first admission: %+v %v", mutation, err)
+	}
+	first := model.TaskStep{ID: "abcdef01", Position: 0, Title: "same", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}
+	receiverEncoded(t, header, mutation, observed, "add", []model.TaskStep{first})
+	if current == nil || len(current) != 0 {
+		t.Fatal("empty source changed")
+	}
+
+	header.Version++
+	current = []model.TaskStep{first}
+	original := slices.Clone(current)
+	anchor, status := "ABCDEF01", model.TaskStepSkipped
+	step, beforeAnchor, afterAnchor, err = PrepareAdd("00000000", "same", "  # 原值\n<>&  ", &status, &anchor, nil)
+	if err != nil || beforeAnchor == nil || *beforeAnchor != "abcdef01" || afterAnchor != nil || anchor != "ABCDEF01" {
+		t.Fatalf("second preparation: %+v %v", step, err)
+	}
+	mutation, err = AdmitAdd(header, current, step, beforeAnchor, afterAnchor)
+	if err != nil || !mutation.Changed || mutation.To != 0 {
+		t.Fatalf("second admission: %+v %v", mutation, err)
+	}
+	receiverCandidate(t, current, original, mutation)
+	observed = observed.Add(time.Microsecond)
+	inserted := model.TaskStep{ID: "00000000", Position: 0, Title: "same", Description: "  # 原值\n<>&  ", Status: status, CreatedAt: observed, UpdatedAt: observed}
+	first.Position = 1
+	receiverEncoded(t, header, mutation, observed, "add", []model.TaskStep{inserted, first})
+	receiverCandidate(t, current, original, mutation)
+}
+
+func TestWriteReceiverAddRefusals(t *testing.T) {
+	missing := "ffffffff"
+	for _, tc := range []struct {
+		name    string
+		version int64
+		id      string
+		before  *string
+		code    string
+	}{
+		{"duplicate", 2, "00000000", &missing, "step_id_conflict"},
+		{"anchor", 2, "12345678", &missing, "not_found"},
+		{"exhausted duplicate", math.MaxInt64, "00000000", nil, "step_id_conflict"},
+		{"exhausted anchor", math.MaxInt64, "12345678", &missing, "not_found"},
+		{"exhausted", math.MaxInt64, "12345678", nil, "version_exhausted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := receiverRows()[:1]
+			original := slices.Clone(current)
+			step, before, after, err := PrepareAdd(tc.id, "x", "", nil, tc.before, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutation, err := AdmitAdd(receiverHeader(tc.version), current, step, before, after)
+			receiverFault(t, err, tc.code)
+			if !reflect.DeepEqual(mutation, Mutation{}) || !reflect.DeepEqual(current, original) {
+				t.Fatal("refusal changed input or returned mutation")
+			}
+		})
+	}
+	current := receiverRows()[:1]
+	current[0].Position = 2
+	original := slices.Clone(current)
+	step, before, after, err := PrepareAdd("abcdef01", "x", "", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := AdmitAdd(receiverHeader(2), current, step, before, after)
+	var fault *model.Fault
+	if err == nil || errors.As(err, &fault) || !reflect.DeepEqual(mutation, Mutation{}) || !reflect.DeepEqual(current, original) {
+		t.Fatalf("corrupt add collection was not rejected as technical error: %v", err)
+	}
+}
+
+func TestWriteReceiverChangeNoOpAndRefusals(t *testing.T) {
+	for _, version := range []int64{9007199254740993, math.MaxInt64} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			header := receiverHeader(version)
+			for _, tc := range []struct {
+				name    string
+				changes Changes
+			}{
+				{"title", Changes{Title: new("same")}},
+				{"description", Changes{Description: new("original body")}},
+				{"paired", Changes{Title: new("same"), Description: new("original body")}},
+				{"status", Changes{Status: new(model.TaskStepTodo)}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					current := receiverRows()
+					original := slices.Clone(current)
+					if err := ValidateChanges(tc.changes); err != nil {
+						t.Fatal(err)
+					}
+					mutation, err := AdmitChange(header, current, "00000000", tc.changes)
+					if err != nil || mutation.Changed || mutation.To != 0 {
+						t.Fatalf("no-op: %+v %v", mutation, err)
+					}
+					receiverCandidate(t, current, original, mutation)
+					receiverEncoded(t, header, mutation, time.Time{}, "change", original)
+					receiverCandidate(t, current, original, mutation)
+				})
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, id, code string
+		changes        Changes
+	}{
+		{"changed title", "00000000", "version_exhausted", Changes{Title: new("changed")}},
+		{"changed status", "00000000", "version_exhausted", Changes{Status: new(model.TaskStepDone)}},
+		{"missing", "ffffffff", "not_found", Changes{Title: new("changed")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := receiverRows()
+			original := slices.Clone(current)
+			mutation, err := AdmitChange(receiverHeader(math.MaxInt64), current, tc.id, tc.changes)
+			receiverFault(t, err, tc.code)
+			if tc.name == "missing" {
+				var absence *StepAbsence
+				if !errors.As(err, &absence) || absence.Version != math.MaxInt64 || !errors.Is(err, ErrTargetNotFound) {
+					t.Fatalf("missing target: %v", err)
+				}
+			}
+			if !reflect.DeepEqual(mutation, Mutation{}) || !reflect.DeepEqual(current, original) {
+				t.Fatal("refusal changed source or returned mutation")
+			}
+		})
+	}
+	missingRows := receiverRows()
+	missingOriginal := slices.Clone(missingRows)
+	missingMutation, missingErr := AdmitChange(receiverHeader(1), missingRows, "ffffffff", Changes{Title: new("changed")})
+	receiverFault(t, missingErr, "not_found")
+	var absence *StepAbsence
+	if !errors.As(missingErr, &absence) || absence.Version != 1 || !errors.Is(missingErr, ErrTargetNotFound) || !reflect.DeepEqual(missingMutation, Mutation{}) || !reflect.DeepEqual(missingRows, missingOriginal) {
+		t.Fatalf("missing target at original version: %v", missingErr)
+	}
+	current := receiverRows()
+	current[1].Position = 3
+	original := slices.Clone(current)
+	mutation, err := AdmitChange(receiverHeader(1), current, "00000000", Changes{Status: new(model.TaskStepDone)})
+	var fault *model.Fault
+	if err == nil || errors.As(err, &fault) || !reflect.DeepEqual(mutation, Mutation{}) || !reflect.DeepEqual(current, original) {
+		t.Fatalf("corrupt change collection was not rejected as technical error: %v", err)
+	}
+}
+
+func TestWriteReceiverChangeSequence(t *testing.T) {
+	header := receiverHeader(1)
+	current := receiverRows()
+	original := slices.Clone(current)
+	title := "  <原值&> 😀 \uFEFF  "
+	description := "  # Markdown\n\"\\\u2028\u2029  "
+	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	changes := []Changes{{Title: &title, Description: &description}, {Status: new(model.TaskStepInProgress)}, {Status: new(model.TaskStepDone)}, {Status: new(model.TaskStepSkipped)}, {Status: new(model.TaskStepTodo)}, {Description: new("")}}
+	for _, change := range changes {
+		before := slices.Clone(current)
+		if err := ValidateChanges(change); err != nil {
+			t.Fatal(err)
+		}
+		mutation, err := AdmitChange(header, current, "00000000", change)
+		if err != nil || !mutation.Changed || mutation.To != 0 {
+			t.Fatalf("change admission: %+v %v", mutation, err)
+		}
+		receiverCandidate(t, current, before, mutation)
+		expected := slices.Clone(current)
+		if change.Title != nil {
+			expected[0].Title = *change.Title
+		}
+		if change.Description != nil {
+			expected[0].Description = *change.Description
+		}
+		if change.Status != nil {
+			expected[0].Status = *change.Status
+		}
+		expected[0].UpdatedAt = observed
+		receiverEncoded(t, header, mutation, observed, "change", expected)
+		receiverCandidate(t, current, before, mutation)
+		current = expected
+		header.Version++
+		observed = observed.Add(time.Microsecond)
+	}
+	if !reflect.DeepEqual(original, receiverRows()) {
+		t.Fatal("original rows changed")
+	}
+}
+
+func TestTaskStepsChildAbsenceKeepsIdentityAndCause(t *testing.T) {
+	absence := &StepAbsence{Version: 9007199254740993, Cause: model.ErrNotFound}
+	if absence.Version != 9007199254740993 || absence.Error() != "step is currently absent" || !errors.Is(absence, model.ErrNotFound) {
+		t.Fatal("child absence lost safe diagnostic or exact cause")
+	}
+}
+
+func TestWriteReceiverRootTextSequence(t *testing.T) {
+	header := model.TaskHeader{ProjectID: "c3333333-3333-4333-8333-333333333333", ID: "a7777777-7777-4777-8777-777777777777", Version: 1}
+	observed := time.Date(2026, 11, 8, 12, 0, 0, 123456000, time.UTC)
+	current := []model.TaskStep{}
+	for i, tc := range []struct{ field, valid, excess string }{
+		{"title", strings.Repeat("é", 512), strings.Repeat("é", 512) + "x"},
+		{"description", strings.Repeat("\x01", 65536), strings.Repeat("\x01", 65536) + "x"},
+	} {
+		id := fmt.Sprintf("%08x", i+1)
+		title, description := "x", ""
+		if tc.field == "title" {
+			title = tc.excess
+		} else {
+			description = tc.excess
+		}
+		step, before, after, err := PrepareAdd(id, title, description, nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := slices.Clone(current)
+		mutation, err := AdmitAdd(header, current, step, before, after)
+		assertReceiverTextRefusal(t, err, tc.field, mutation)
+		if !reflect.DeepEqual(current, original) {
+			t.Fatal("refused add changed source")
+		}
+
+		if tc.field == "title" {
+			title = tc.valid
+		} else {
+			description = tc.valid
+		}
+		step, before, after, err = PrepareAdd(id, title, description, nil, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutation, err = AdmitAdd(header, current, step, before, after)
+		if err != nil || !mutation.Changed || mutation.To != i {
+			t.Fatalf("boundary add: %+v %v", mutation, err)
+		}
+		receiverCandidate(t, current, original, mutation)
+		expected := slices.Clone(current)
+		expected = append(expected, model.TaskStep{ID: id, Position: int64(i), Title: title, Description: description, Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed})
+		receiverEncoded(t, header, mutation, observed, "add", expected)
+		receiverCandidate(t, current, original, mutation)
+		current = expected
+		header.Version++
+
+		var invalid Changes
+		if tc.field == "title" {
+			invalid.Title = &tc.excess
+		} else {
+			invalid.Description = &tc.excess
+		}
+		if err := ValidateChanges(invalid); err != nil {
+			t.Fatal(err)
+		}
+		original = slices.Clone(current)
+		mutation, err = AdmitChange(header, current, id, invalid)
+		assertReceiverTextRefusal(t, err, tc.field, mutation)
+		if !reflect.DeepEqual(current, original) {
+			t.Fatal("refused change changed source")
+		}
+
+		for _, value := range []string{"short", tc.valid} {
+			var change Changes
+			if tc.field == "title" {
+				change.Title = &value
+			} else {
+				change.Description = &value
+			}
+			if err := ValidateChanges(change); err != nil {
+				t.Fatal(err)
+			}
+			original = slices.Clone(current)
+			mutation, err = AdmitChange(header, current, id, change)
+			if err != nil || !mutation.Changed || mutation.To != i {
+				t.Fatalf("boundary update: %+v %v", mutation, err)
+			}
+			receiverCandidate(t, current, original, mutation)
+			expected = slices.Clone(current)
+			if tc.field == "title" {
+				expected[i].Title = value
+			} else {
+				expected[i].Description = value
+			}
+			expected[i].UpdatedAt = observed
+			receiverEncoded(t, header, mutation, observed, "change", expected)
+			receiverCandidate(t, current, original, mutation)
+			current = expected
+			header.Version++
+		}
+	}
+	if header.Version != 7 || current[0].Title != strings.Repeat("é", 512) || current[1].Description != strings.Repeat("\x01", 65536) {
+		t.Fatal("root text sequence lost version or original bytes")
+	}
+}
+
+func assertReceiverTextRefusal(t *testing.T, err error, field string, mutation Mutation) {
+	t.Helper()
+	receiverFault(t, err, "invalid_input")
+	var violation *limit.Violation
+	if !errors.As(err, &violation) || violation.Field != field || !strings.Contains(err.Error(), field) || !reflect.DeepEqual(mutation, Mutation{}) {
+		t.Fatalf("%s refusal: %+v %v", field, mutation, err)
 	}
 }
