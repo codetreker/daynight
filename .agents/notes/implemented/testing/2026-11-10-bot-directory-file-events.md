@@ -15,7 +15,9 @@ its timing, limiting comparison with the original failing source.
 The separate Windows Bot diagnostic entry starts a bounded Kernel-File ETW
 session before Vitest and Controller startup. A native known-holder control
 checks the actual Windows provider schema, PID observations, sharing data and
-open-to-cleanup/close history before original-case rounds are admitted. Raw
+open-to-cleanup/close history before original-case rounds are admitted. At least
+two same-target sharing violations must fall inside the selected holder
+incarnation, before its first cleanup or close event. Raw
 header PID and issuing thread fields remain observations when attribution is
 unresolved; an execution-context PID is not automatically a lock holder.
 Timestamp comparison normalizes explicit UTC offsets with integer nanoseconds,
@@ -35,9 +37,18 @@ The runner temporarily replays the PR base's Bot fixture, retaining its exact
 assertions and teardown. It records both source identities and restores the
 checked-out bytes on every path. Fresh Vitest processes execute the original
 prefix in order, including the successful Controller case before interrupted
-parent observation. Five serial rounds are an upper bound; the first failure
-stops further rounds, preserving its exit result and cleanup errors. Ordinary
-suite budgets and production code remain unchanged.
+parent observation. The explicit `original-prefix` profile permits at most five
+serial rounds. The `original-prefix-with-task-cli` profile permits at most two
+rounds and replays the existing Task CLI module concurrently. Both recorded main
+failures occurred before that module completed; this profile tests that observed
+context without adding artificial load. The companion source blob must match
+the baseline. Its first public case-ready receipt gates Bot startup, and public
+case timings must prove overlap with the interrupted-parent case. Each process
+has its own Windows Job and reports. File capture stops when Bot completes, while
+the companion finishes its real hooks before fixture restoration. Missing overlap
+or either process failure stops further rounds. Both profiles preserve original
+exit results and cleanup errors. Ordinary suite budgets and production code
+remain unchanged.
 
 Every ETW session has a unique persisted ownership receipt before startup.
 Capture is non-circular and capacity-bounded. Begin/end markers and final loss

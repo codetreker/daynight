@@ -4,10 +4,13 @@ import { appendFileSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { overlappingCases, waitCompanionReady } from "./bot-directory-context.mjs";
 import { fileURLToPath } from "node:url";
 
 const repository = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const fixturePath = "packages/daynight/test/commands/worker/bot-process-integration.test.ts";
+const companionPath = "packages/daynight/test/cli/task.test.ts";
+const profile = process.env.BOT_DIRECTORY_DIAGNOSTIC_PROFILE;
 const scripts = path.join(repository, "packages/daynight/scripts");
 const native = path.join(scripts, "bot-directory-etw.mjs"), filter = path.join(scripts, "filter-bot-directory-etw.py");
 const output = path.resolve(process.env.BOT_DIRECTORY_DIAGNOSTIC_OUTPUT);
@@ -199,7 +202,7 @@ const head = await git(["rev-parse", "HEAD"]), initialStatus = await git(["statu
 if (initialStatus !== "") throw new Error("Diagnostic source must be clean before the original-fixture control.");
 const before = await readFile(fixture), metadata = await stat(fixture);
 await writeFile(backup, before, { flag: "wx" });
-receipt = { head, base, initialStatus, context: { sourceKind, expectedHead, githubSha: process.env.GITHUB_SHA ?? null,
+receipt = { head, base, initialStatus, profile, context: { sourceKind, expectedHead, githubSha: process.env.GITHUB_SHA ?? null,
   node: process.version, platform: process.platform, architecture: process.arch, osRelease: os.release(),
   runnerOs: process.env.RUNNER_OS ?? null, runnerArchitecture: process.env.RUNNER_ARCH ?? null,
   imageOs: process.env.ImageOS ?? null, imageVersion: process.env.ImageVersion ?? null }, fixture: { path: fixturePath, savedSha256: hash(before), mode: metadata.mode, initialStatus: await git(["status", "--porcelain", "--", fixturePath]), restored: false }, jobs: [], rounds: [] };
@@ -211,10 +214,17 @@ for (const name of productionPaths) receipt.production[name] = { base: await git
 await persist();
 receipt.sourceTree = { base: await git(["rev-parse", `${base}:packages/daynight/src`]), head: await git(["rev-parse", "HEAD:packages/daynight/src"]) };
 await save(path.join(results, "source.json"), receipt);
+receipt.companion = { path: companionPath, baseBlob: await git(["rev-parse", `${base}:${companionPath}`]), headBlob: await git(["rev-parse", `HEAD:${companionPath}`]) };
+await persist();
+await save(path.join(results, "source.json"), receipt);
 let aliases;
 const vitest = path.join(repository, "packages/daynight/node_modules/vitest/vitest.mjs");
 const prefix = "fixture teardown isolation|joins the final process observation|launches one real Controller with no user turn after unknown parent observation=(false|true), then observes the same writer after browser disconnect";
 const started = Date.now(), overallMs = 12 * 60_000, roundBudgetMs = 9 * 60_000;
+
+const readCases = async filename => (await readFile(filename, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+const commandReceipt = result => ({ code: result.code, signal: result.signal, forcedTermination: result.forcedTermination, descendantsStopped: result.descendantsStopped });
+const vitestArguments = (args, folder, label) => [vitest, "run", ...args, "--bail=1", "--reporter=default", "--reporter=json", `--reporter=${path.join(scripts, "bot-directory-case-reporter.mjs")}`, `--outputFile=${path.join(folder, `${label}-vitest.json`)}`];
 
 const capture = async (name, args, targetBase) => {
   const folder = path.join(privateDirectory, name), resultDirectory = path.join(results, name);
@@ -224,20 +234,30 @@ const capture = async (name, args, targetBase) => {
   receipt.session = { name: `daynight-bot-directory-${randomUUID()}`, stopped: false, requestedAt: new Date().toISOString() };
   await persist();
   const phase = { name, startedAt: new Date().toISOString(), errors: [], command: null, statistics: null, complete: false };
+  const contextual = name !== "control" && profile === "original-prefix-with-task-cli";
+  let companionCompletion;
   try {
     await must(systemTool("logman"), ["create", "trace", receipt.session.name, "-ets", "-pf", path.join(privateDirectory, "providers.txt"), "-f", "bin", "-max", "64", "-bs", "64", "-nb", "16", "128", "-o", etl]);
     const initialThreads = JSON.parse((await must(process.execPath, [native, "threads"], { timeoutMs: 10_000 })).toString("utf8"));
     await save(path.join(folder, "initial-threads.json"), initialThreads);
     await writeFile(markers.begin, "begin\n");
-    const commandResult = await command(process.execPath, [vitest, "run", ...args, "--bail=1", "--reporter=default", "--reporter=json", `--reporter=${path.join(scripts, "bot-directory-case-reporter.mjs")}`, `--outputFile=${path.join(folder, "vitest.json")}`], { timeoutMs: roundBudgetMs, stream: true, ownedTree: true, environment: { ...process.env, BOT_DIRECTORY_CASE_REPORT: path.join(folder, "cases.jsonl") } });
-    phase.command = { code: commandResult.code, signal: commandResult.signal, forcedTermination: commandResult.forcedTermination, descendantsStopped: commandResult.descendantsStopped };
+    if (contextual) {
+      phase.companion = { ready: null, command: null, tests: [], overlaps: [], overlapConfirmed: false };
+      companionCompletion = command(process.execPath, vitestArguments(["test/cli/task.test.ts"], folder, "companion"), {
+        timeoutMs: roundBudgetMs, stream: true, ownedTree: true,
+        environment: { ...process.env, BOT_DIRECTORY_CASE_REPORT: path.join(folder, "companion-cases.jsonl"), BOT_DIRECTORY_CASE_READY_REPORT: path.join(folder, "companion-ready.json") },
+      }).then(result => ({ result }), error => ({ result: error.result, error }));
+      phase.companion.ready = await waitCompanionReady(path.join(folder, "companion-ready.json"), companionCompletion, path.join(repository, companionPath));
+    }
+    const commandResult = await command(process.execPath, vitestArguments(args, folder, "original"), { timeoutMs: roundBudgetMs, stream: true, ownedTree: true, environment: { ...process.env, BOT_DIRECTORY_CASE_REPORT: path.join(folder, "cases.jsonl") } });
+    phase.command = commandReceipt(commandResult);
     await writeFile(path.join(folder, "stdout.log"), commandResult.stdout);
     await writeFile(path.join(folder, "stderr.log"), commandResult.stderr);
     await writeFile(markers.end, "end\n");
   } catch (error) {
     phase.errors.push(describe(error));
     if (error.result !== undefined) {
-      phase.command = { code: error.result.code, signal: error.result.signal, forcedTermination: error.result.forcedTermination, descendantsStopped: error.result.descendantsStopped };
+      phase.command = commandReceipt(error.result);
       try {
         await writeFile(path.join(folder, "stdout.log"), error.result.stdout);
         await writeFile(path.join(folder, "stderr.log"), error.result.stderr);
@@ -247,6 +267,18 @@ const capture = async (name, args, targetBase) => {
   }
   finally {
     try { phase.statistics = await stopSession(); } catch (error) { phase.errors.push(describe(error)); }
+    if (companionCompletion !== undefined) try {
+      const outcome = await companionCompletion;
+      if (outcome.error !== undefined) phase.errors.push(describe(outcome.error));
+      if (outcome.result !== undefined) {
+        phase.companion.command = commandReceipt(outcome.result);
+        await writeFile(path.join(folder, "companion-stdout.log"), outcome.result.stdout);
+        await writeFile(path.join(folder, "companion-stderr.log"), outcome.result.stderr);
+      }
+      try { phase.companion.tests = await readCases(path.join(folder, "companion-cases.jsonl")); }
+      catch (error) { phase.errors.push(describe(error)); }
+      await save(path.join(resultDirectory, "companion.json"), phase.companion);
+    } catch (error) { phase.errors.push(describe(error)); }
   }
   try {
     const info = await stat(etl);
@@ -257,8 +289,16 @@ const capture = async (name, args, targetBase) => {
       await must("python.exe", [filter, "--validate-control-events", xml, "--file-schema", path.join(results, "file-schema.json"), "--thread-schema", path.join(results, "thread-schema.json"), "--output", observedSchema]);
       phase.decodedSchema = JSON.parse(await readFile(observedSchema, "utf8"));
     }
-    const vitestResult = JSON.parse(await readFile(path.join(folder, "vitest.json"), "utf8"));
-    phase.tests = (await readFile(path.join(folder, "cases.jsonl"), "utf8")).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+    const vitestResult = JSON.parse(await readFile(path.join(folder, "original-vitest.json"), "utf8"));
+    phase.tests = await readCases(path.join(folder, "cases.jsonl"));
+    if (contextual) {
+      const originalCase = phase.tests.find(test => test.name.includes("unknown parent observation=true, then observes the same writer after browser disconnect"));
+      if (originalCase !== undefined) {
+        phase.companion.overlaps = overlappingCases(originalCase, phase.companion.tests, path.join(repository, companionPath));
+      }
+      phase.companion.overlapConfirmed = phase.companion.overlaps.length !== 0;
+      await save(path.join(resultDirectory, "companion.json"), phase.companion);
+    }
     phase.failedTargets = vitestResult.testResults.flatMap(file => file.assertionResults).flatMap(test => test.failureMessages).flatMap(message => [...message.matchAll(/EBUSY[^\n]*?rmdir '([^']+)'/g)].map(match => match[1])).filter(target => {
       const relative = path.win32.relative(targetBase, target);
       return /^h-[A-Za-z0-9_-]+\\ordinary$/i.test(relative);
@@ -268,8 +308,8 @@ const capture = async (name, args, targetBase) => {
     await must("python.exe", [filter, "--events", xml, "--request", path.join(folder, "filter-request.json"), "--output", path.join(resultDirectory, "events.json")], { timeoutMs: 30_000 });
     const filtered = JSON.parse(await readFile(path.join(resultDirectory, "events.json"), "utf8"));
     phase.expectedCaseCount = name === "control" ? 1 : 5;
-    phase.caseCountValid = phase.tests.length === phase.expectedCaseCount;
-    phase.complete = (name !== "control" || phase.decodedSchema?.valid === true) && phase.caseCountValid && phase.command?.descendantsStopped === true && phase.command.forcedTermination === false && phase.errors.length === 0 && phase.statistics !== null && phase.statistics.eventsLost === 0 && phase.statistics.logBuffersLost === 0 && phase.statistics.realTimeBuffersLost === 0
+    phase.caseCountValid = phase.tests.length === phase.expectedCaseCount && phase.tests.every(test => path.normalize(test.moduleId) === path.normalize(path.join(repository, "packages/daynight", args[0])));
+    phase.complete = (!contextual || phase.companion.overlapConfirmed && phase.companion.command?.code === 0 && phase.companion.command.signal === null && phase.companion.command.descendantsStopped === true && phase.companion.command.forcedTermination === false) && (name !== "control" || phase.decodedSchema?.valid === true) && phase.caseCountValid && phase.command?.descendantsStopped === true && phase.command.forcedTermination === false && phase.errors.length === 0 && phase.statistics !== null && phase.statistics.eventsLost === 0 && phase.statistics.logBuffersLost === 0 && phase.statistics.realTimeBuffersLost === 0
       && info.size < 64 * 1024 * 1024 && filtered.coverage.begin.seen && filtered.coverage.end.seen && filtered.ordering.complete;
     await save(path.join(resultDirectory, "tests.json"), phase.tests);
     return { phase, filtered, stdout: await readFile(path.join(folder, "stdout.log"), "utf8") };
@@ -280,6 +320,8 @@ const capture = async (name, args, targetBase) => {
 let exitCode = 0;
 const errors = [];
 try {
+  if (!["original-prefix", "original-prefix-with-task-cli"].includes(profile)) throw new Error("An explicit original-fixture diagnostic profile is required.");
+  if (profile === "original-prefix-with-task-cli" && receipt.companion.baseBlob !== receipt.companion.headBlob) throw new Error("The Task CLI companion does not match the selected original source.");
   if (sourceKind !== "pull-request-head" || !/^[0-9a-f]{40}$/.test(expectedHead)) throw new Error("An exact diagnostic PR-head source identity is required.");
   if (head !== expectedHead) throw new Error("The diagnostic checkout does not match the selected PR head.");
   if (receipt.sourceTree.base !== receipt.sourceTree.head) throw new Error("Diagnostic production sources differ from the selected base.");
@@ -300,16 +342,18 @@ try {
   const pointer = value => { try { const parsed = BigInt(value); return parsed > 0n ? parsed.toString(16) : null; } catch { return null; } };
   const create = events.find(event => event.providerGuid === "edd08927-9cc4-4e65-b970-c2560fb5c289" && event.eventId === 12 && event.attributedPid === known?.holderPid && Number(event.fields.ShareAccess) === 3 && pointer(event.fields.FileObject) !== null);
   const related = [];
-  let lifetimeUnambiguous = true;
+  let lifetimeUnambiguous = true, denialWindowEnd = events.length;
   if (create !== undefined) for (const event of events.slice(events.indexOf(create) + 1)) {
     if (pointer(event.fields.FileObject) !== pointer(create.fields.FileObject)) continue;
-    if (event.eventId === 12) { lifetimeUnambiguous = false; break; }
+    if (event.eventId === 12) { lifetimeUnambiguous = false; denialWindowEnd = events.indexOf(event); break; }
     related.push(event);
+    if (denialWindowEnd === events.length && (event.eventId === 13 || event.eventId === 14)) denialWindowEnd = events.indexOf(event);
     if (event.eventId === 14) break;
   }
-  const validation = { knownHolder: known, create: create ?? null, cleanupSeen: related.some(event => event.eventId === 13), closeSeen: related.some(event => event.eventId === 14), lifetimeUnambiguous, complete: control.phase.complete, decodedSchemaValid: control.phase.decodedSchema?.valid === true };
+  const sharingViolationsSeen = create === undefined ? 0 : events.slice(events.indexOf(create) + 1, denialWindowEnd).filter(event => event.providerGuid === create.providerGuid && event.target === create.target && event.eventId === 24 && Number(event.fields.Status ?? event.fields.NtStatus) === 0xc0000043).length;
+  const validation = { sharingViolationsSeen, knownHolder: known, create: create ?? null, cleanupSeen: related.some(event => event.eventId === 13), closeSeen: related.some(event => event.eventId === 14), lifetimeUnambiguous, complete: control.phase.complete, decodedSchemaValid: control.phase.decodedSchema?.valid === true };
   await save(path.join(results, "control-validation.json"), validation);
-  if (control.phase.command?.code !== 0 || !known?.blockedBeforeTrace || !known?.blockedAfterTrace || !known?.removedAfterRelease || create === undefined || !validation.cleanupSeen || !validation.closeSeen || !validation.lifetimeUnambiguous || !validation.complete) throw new Error("Native ETW control did not establish the known holder's sharing and lifetime; original-case attribution is not admitted.");
+  if (sharingViolationsSeen < 2 || control.phase.command?.code !== 0 || !known?.blockedBeforeTrace || !known?.blockedAfterTrace || !known?.removedAfterRelease || create === undefined || !validation.cleanupSeen || !validation.closeSeen || !validation.lifetimeUnambiguous || !validation.complete) throw new Error("Native ETW control did not establish the known holder's sharing and lifetime; original-case attribution is not admitted.");
   const original = await must("git.exe", ["show", `${base}:${fixturePath}`]);
   await writeFile(fixture, original);
   receipt.fixture.replacementSha256 = hash(original);
@@ -317,12 +361,15 @@ try {
   if (receipt.fixture.controlBlob !== receipt.fixture.baseBlob) throw new Error("The original fixture control did not match its selected Git blob.");
   receipt.fixture.intentionalDirtyStatus = await git(["status", "--porcelain", "--", fixturePath]);
   await persist();
-  for (let index = 0; index < 5; index++) {
+  const maximumRounds = profile === "original-prefix-with-task-cli" ? 2 : 5;
+  for (let index = 0; index < maximumRounds; index++) {
     if (overallMs - (Date.now() - started) < roundBudgetMs + 60_000) { receipt.stopReason = "cleanup-reserve"; break; }
     const result = await capture(`round-${index + 1}`, ["test/commands/worker/bot-process-integration.test.ts", "-t", prefix], path.join(repository, ".tmp/bot-process-integration"));
     receipt.rounds.push(result.phase);
     await persist();
-    if (result.phase.command?.code !== 0 || result.phase.command.signal !== null) { exitCode = result.phase.command?.code || 1; receipt.stopReason = "original-case-failure"; break; }
+    if (result.phase.command === null) { exitCode = 1; receipt.stopReason = "original-case-not-run"; break; }
+    if (result.phase.command.code !== 0 || result.phase.command.signal !== null) { exitCode = result.phase.command.code || 1; receipt.stopReason = "original-case-failure"; break; }
+    if (result.phase.companion !== undefined && (result.phase.companion.command?.code !== 0 || result.phase.companion.command.signal !== null)) { exitCode = result.phase.companion.command?.code || 1; receipt.stopReason = "companion-failure"; break; }
     if (!result.phase.complete) { exitCode = 1; receipt.stopReason = "incomplete-capture"; break; }
   }
   if (receipt.rounds.length === 0) throw new Error("No original-prefix round ran within the cleanup reserve; diagnostic evidence is incomplete.");

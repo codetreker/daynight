@@ -25,6 +25,7 @@ jobs:
       BOT_FIXTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       BOT_DIRECTORY_DIAGNOSTIC_HEAD: ${{ github.event.pull_request.head.sha }}
       BOT_DIRECTORY_DIAGNOSTIC_SOURCE_KIND: pull-request-head
+      BOT_DIRECTORY_DIAGNOSTIC_PROFILE: original-prefix-with-task-cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 1
