@@ -125,11 +125,19 @@ ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
 and the total length.
 
-Attachment request-deadline tests control both the deadline timers and the
-`node:perf_hooks` monotonic clock. The blocked-sink fixture observes entry into
-its consumer before advancing to the deadline, then checks the timeout, sink
-abort and response cancellation. This keeps setup time from exercising an
-earlier timeout stage. The
+API deadline fixtures control both deadline timers and the `node:perf_hooks`
+monotonic clock when setup or pagination must complete before expiry. The
+continuous-cursor fixture advances time by 10 ms per response: three pages fit
+within its original 35 ms total limit, and the fourth response crosses that
+shared deadline. Exact cursor progression and a bounded response fixture expose
+incorrectly renewed budgets without relying on runner scheduling. The
+[API cursor deadline decision](../.agents/notes/implemented/testing/2026-11-10-api-cursor-deadline.md)
+records this pagination proof.
+
+The blocked-sink attachment fixture observes entry into its consumer before
+advancing to the request deadline, then checks the timeout, sink abort and
+response cancellation. This keeps setup time from exercising an earlier timeout
+stage. The
 [attachment deadline decision](../.agents/notes/implemented/testing/2026-11-07-attachment-sink-deadline.md)
 records the assertion and clock boundaries.
 
