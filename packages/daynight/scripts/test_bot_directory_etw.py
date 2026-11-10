@@ -51,6 +51,35 @@ class ParserTests(unittest.TestCase):
         ET.ElementTree(root).write(filename, encoding="utf-8")
         return etw.filter_events(filename, self.request)
 
+    def test_native_explicit_utc_timestamp_keeps_nanoseconds(self):
+        native = "2026-11-10T02:34:26.397381300+00:00"
+        expected = etw.timestamp("2026-11-10T02:34:26.397381300Z")
+        self.assertIsNotNone(expected)
+        self.assertEqual(etw.timestamp(native), expected)
+        self.assertEqual(etw.timestamp("2026-11-10T02:34:26.397381301+00:00"), expected + 1)
+        self.assertEqual(etw.timestamp("2026-11-10T04:04:26.397381300+01:30"), expected)
+        self.assertEqual(etw.timestamp("2026-11-09T22:34:26.397381300-04:00"), expected)
+        self.assertEqual(etw.timestamp("2026-11-10T02:34:26.397381300-00:00"), expected)
+        for invalid in ("2026-11-10T02:34:26.397381300+24:00", "2026-11-10T02:34:26.397381300+00:60",
+                        "2026-11-10T02:34:26.397381300+0000", "2026-11-10T02:34:26.397381300+0:00",
+                        "2026-11-10T02:34:26.397381300", "2026-11-10T02:34:26.3973813001Z"):
+            self.assertIsNone(etw.timestamp(invalid))
+
+    def test_native_explicit_utc_timestamps_enable_coverage_and_lifetimes(self):
+        rows = [event(12, 2, {"FileName": self.request["markers"]["begin"]}),
+                event(12, 3, {"FileName": TARGET, "FileObject": "10", "IssuingThreadId": "42"}),
+                event(13, 4, {"FileObject": "10", "IssuingThreadId": "42"}),
+                event(14, 5, {"FileObject": "10", "IssuingThreadId": "42"}),
+                event(12, 6, {"FileName": self.request["markers"]["end"]})]
+        for row in rows:
+            created = row.find("System/TimeCreated")
+            created.set("SystemTime", created.get("SystemTime").replace("Z", "+00:00"))
+        result = self.parse(rows)
+        self.assertTrue(result["ordering"]["complete"])
+        self.assertTrue(all(marker["seen"] for marker in result["coverage"].values()))
+        self.assertEqual([row["eventId"] for row in result["events"]], [12, 13, 14])
+        self.assertEqual([row["attributedPid"] for row in result["events"]], [100, 100, 100])
+
     def test_exact_device_alias_and_owned_path(self):
         aliases = self.request["aliases"]
         self.assertEqual(etw.canonical(r"\Device\HarddiskVolume3\repo\.tmp", aliases), r"c:\repo\.tmp")

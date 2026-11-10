@@ -18,6 +18,8 @@ checks the actual Windows provider schema, PID observations, sharing data and
 open-to-cleanup/close history before original-case rounds are admitted. Raw
 header PID and issuing thread fields remain observations when attribution is
 unresolved; an execution-context PID is not automatically a lock holder.
+Timestamp comparison normalizes explicit UTC offsets with integer nanoseconds,
+preserving tracerpt's sub-microsecond precision for lifecycle boundaries.
 
 Publisher metadata can expose event IDs and versions without payload templates.
 That descriptor preflight admits only the known-holder control. Its actual

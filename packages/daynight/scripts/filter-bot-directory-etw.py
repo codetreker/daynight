@@ -37,13 +37,20 @@ def pointer_key(value):
 
 
 def timestamp(value):
-    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z", value or "")
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)", value or "")
     if not match:
         return None
     try:
         seconds = calendar.timegm(datetime.strptime(match[1], "%Y-%m-%dT%H:%M:%S").timetuple())
     except ValueError:
         return None
+    zone = match[3]
+    if zone != "Z":
+        hours, minutes = int(zone[1:3]), int(zone[4:6])
+        if hours > 23 or minutes > 59:
+            return None
+        offset = (hours * 60 + minutes) * 60
+        seconds -= offset if zone[0] == "+" else -offset
     return seconds * 1_000_000_000 + int((match[2] or "").ljust(9, "0"))
 
 
