@@ -29,8 +29,13 @@ suppression of results after unknown or failed completion.
 The PostgreSQL Worker contract suite creates the initial Worker/configuration
 through direct Store operations, removes Task storage and writes revision 2.
 An independent snapshot reads the complete desired value and revision back.
-Core configuration rules and other historical bootstrap/CAS cases keep their
-existing owners. The [test-writing rules](../../../../docs/writing_tests.md)
+Cloud authority, first bootstrap, no-op, update and stale revision decisions
+execute in Core against independent DAO facts. Service tests supply complete
+configuration reads, write results and report receipts while exercising parsing
+and transaction coordination. Store tests independently observe legacy rows,
+configuration persistence after telemetry expiry, and owner isolation through
+real Reader and Writer queries. Concurrent bootstrap and independent CAS retain
+their existing service integration proof. The [test-writing rules](../../../../docs/writing_tests.md)
 define the layer boundaries; the [Worker admission decision](2026-11-09-worker-admission-test-owners.md)
 records the independent report/admission partition.
 
@@ -51,6 +56,6 @@ the original public refusal observations without adding more operation seams.
 
 The selected service subset executes without database or authentication fixtures.
 Physical configuration persistence remains tested with isolated PostgreSQL.
-Remaining bootstrap, CAS and capacity suites keep their current fixtures;
-source-bound measurements include the receiving Store cost and do not infer CI
+Concurrent bootstrap, CAS and capacity suites keep their existing fixtures.
+Source-bound measurements include the receiving Store cost and do not infer CI
 completion savings from one subset's elapsed time.

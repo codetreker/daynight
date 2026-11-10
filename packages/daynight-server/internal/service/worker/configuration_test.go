@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -395,4 +396,209 @@ func TestHistoricalConfigurationCandidateAdmissionAndRead(t *testing.T) {
 			t.Fatalf("repaired read: got=%+v want=%+v err=%v", got, expected, err)
 		}
 	})
+}
+
+const (
+	configurationOwnerProject   = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	configurationUnknownProject = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+)
+
+func authorityConfiguration(project string, maximum int64) model.WorkerConfiguration {
+	return model.WorkerConfiguration{
+		PreferPlatformSpecificTasks: false, MaxConcurrent: maximum, PollIntervalMs: 60000, RecoveryLimit: 3,
+		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+		Projects: []model.WorkerProjectConfiguration{{ProjectID: project, NativeOverrides: map[string]json.RawMessage{}}},
+	}
+}
+
+func authorityResource(revision string, at time.Time, maximum int64) model.WorkerConfigurationResource {
+	return model.WorkerConfigurationResource{
+		Desired:             &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: at, Value: authorityConfiguration(configurationOwnerProject, maximum)},
+		ObservationRevision: "0", Observation: nil,
+	}
+}
+
+func authorityReceipt(revision string, at time.Time, maximum int64) *model.WorkerConfigurationReceipt {
+	return &model.WorkerConfigurationReceipt{
+		Desired:             &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: at, Value: authorityConfiguration(configurationOwnerProject, maximum)},
+		ObservationRevision: "0", ObservationAccepted: false,
+	}
+}
+
+func authorityPrincipal() model.Principal {
+	return model.Principal{Kind: model.SessionCredential, UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CredentialID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}
+}
+
+func TestWorkerConfigurationAuthorityServiceReadAndPut(t *testing.T) {
+	t1 := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Minute)
+	foreign := model.Principal{Kind: model.SessionCredential, UserID: "ffffffff-ffff-4fff-8fff-ffffffffffff", CredentialID: "11111111-1111-4111-8111-111111111111"}
+	for _, tc := range []struct {
+		name      string
+		principal model.Principal
+		missing   bool
+	}{
+		{"unknown worker", authorityPrincipal(), true},
+		{"legacy", authorityPrincipal(), false},
+		{"other owner", foreign, true},
+	} {
+		t.Run("read/"+tc.name, func(t *testing.T) {
+			f := newConfigurationFixture(t)
+			f.calls.want = []string{"snapshot", "read dao", "read configuration", "read complete"}
+			f.readScope.dao.(*configurationDAO).read = func(_ context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+				if user != tc.principal.UserID || worker != f.worker {
+					t.Fatalf("reader arguments = %s/%s", user, worker)
+				}
+				if tc.missing {
+					return model.WorkerConfigurationResource{}, model.ErrNotFound
+				}
+				return model.WorkerConfigurationResource{Desired: nil, ObservationRevision: "0", Observation: nil}, nil
+			}
+			f.storage.read = func(_ context.Context, operation func(store.SnapshotScope) error) error {
+				err := operation(f.readScope)
+				f.calls.take("read complete", nil)
+				return err
+			}
+			got, err := f.workers.Configuration(f.calls.ctx, tc.principal, strings.ToUpper(f.worker))
+			if tc.missing {
+				fault := requireFault(t, err, "not_found")
+				if !errors.Is(err, model.ErrNotFound) || fault.Cause != model.ErrNotFound || !reflect.DeepEqual(got, model.WorkerConfigurationResource{}) {
+					t.Fatalf("missing read = %+v, %v", got, err)
+				}
+			} else if err != nil || !reflect.DeepEqual(got, model.WorkerConfigurationResource{ObservationRevision: "0"}) {
+				t.Fatalf("legacy read = %+v, %v", got, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, revision, code string
+		principal            model.Principal
+		maximum              int64
+		returnedRevision     string
+		returnedAt           time.Time
+	}{
+		{"uninitialized", "1", "configuration_not_initialized", authorityPrincipal(), 2, "", time.Time{}},
+		{"invalid revision", "0", "invalid_input", authorityPrincipal(), 2, "", time.Time{}},
+		{"no-op", "1", "", authorityPrincipal(), 2, "1", t1},
+		{"update", "1", "", authorityPrincipal(), 7, "2", t2},
+		{"stale", "1", "version_conflict", authorityPrincipal(), 7, "", time.Time{}},
+		{"other owner", "2", "not_found", foreign, 7, "", time.Time{}},
+	} {
+		t.Run("put/"+tc.name, func(t *testing.T) {
+			f := newConfigurationFixture(t)
+			input := authorityConfiguration(configurationOwnerProject, tc.maximum)
+			if tc.name == "invalid revision" {
+				got, err := f.workers.PutConfiguration(f.calls.ctx, tc.principal, strings.ToUpper(f.worker), tc.revision, input)
+				requireFault(t, err, tc.code)
+				if !reflect.DeepEqual(got, model.WorkerConfigurationResource{}) {
+					t.Fatalf("invalid revision returned %+v", got)
+				}
+				return
+			}
+			var refusal *model.Fault
+			var cause error
+			if tc.code != "" {
+				cause = errors.New("supplied refusal cause")
+				if tc.code == "not_found" {
+					cause = model.ErrNotFound
+				}
+				refusal = &model.Fault{Code: tc.code, Message: "supplied refusal", Cause: cause}
+			}
+			var provided model.WorkerConfigurationResource
+			if tc.code == "" {
+				provided = authorityResource(tc.returnedRevision, tc.returnedAt, tc.maximum)
+			}
+			f.workers.putConfiguration = func(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
+				f.calls.take("put", ctx)
+				wantRevision := int64(1)
+				if tc.revision == "2" {
+					wantRevision = 2
+				}
+				if dao != f.writeScope.dao || principal != tc.principal || worker != f.worker || revision != wantRevision || !reflect.DeepEqual(value, authorityConfiguration(configurationOwnerProject, tc.maximum)) {
+					t.Fatalf("put arguments = %p %+v %s %d %+v", dao, principal, worker, revision, value)
+				}
+				if refusal != nil {
+					return model.WorkerConfigurationResource{}, refusal
+				}
+				return provided, nil
+			}
+			if refusal != nil {
+				f.write(store.Completion{Outcome: store.TransactionNotCommitted}, refusal, refusal)
+			} else {
+				f.write(store.Completion{Outcome: store.TransactionCommitted}, nil, nil)
+			}
+			got, err := f.workers.PutConfiguration(f.calls.ctx, tc.principal, strings.ToUpper(f.worker), tc.revision, input)
+			if refusal != nil {
+				fault := requireFault(t, err, tc.code)
+				if err != refusal || fault.Cause != cause || !errors.Is(err, cause) || !reflect.DeepEqual(got, model.WorkerConfigurationResource{}) {
+					t.Fatalf("put refusal = %+v, %v", got, err)
+				}
+			} else {
+				expected := authorityResource(tc.returnedRevision, tc.returnedAt, tc.maximum)
+				if err != nil || !reflect.DeepEqual(got, expected) {
+					t.Fatalf("put = %+v, %v, want %+v", got, err, expected)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkerConfigurationAuthorityServiceReport(t *testing.T) {
+	t1 := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Minute)
+	for _, tc := range []struct {
+		name, candidate, revision string
+		at                        time.Time
+		maximum                   int64
+	}{
+		{"bootstrap", configurationOwnerProject, "1", t1, 2},
+		{"cloud authority", configurationUnknownProject, "2", t2, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAdmissionServiceFixture(t)
+			f.principal.Kind = model.SessionCredential
+			f.input = serviceWorkerReport()
+			f.normalized = serviceWorkerReport()
+			inputValue := authorityConfiguration(tc.candidate, 2)
+			normalizedValue := authorityConfiguration(tc.candidate, 2)
+			parsedValue := authorityConfiguration(tc.candidate, 2)
+			f.input.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &inputValue}
+			f.normalized.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &normalizedValue}
+			f.parsed = &model.WorkerConfigurationExchange{Bootstrap: &parsedValue}
+			f.input.TaskInventory, f.normalized.TaskInventory, f.items = nil, nil, nil
+			f.proposed.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
+			f.stored.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
+			f.proposed.Telemetry.AssistantHost, f.stored.Telemetry.AssistantHost = nil, nil
+			f.want = []string{"validate", "parse", "write", "dao", "admission", "admit", "snapshot", "upsert", "exchange", "clock", "completion"}
+			f.service.report.parseConfiguration = func(raw json.RawMessage) (*model.WorkerConfigurationExchange, error) {
+				f.take("parse")
+				want, err := json.Marshal(f.normalized.Configuration)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(raw) != string(want) {
+					t.Fatalf("parse input = %s, want %s", raw, want)
+				}
+				parsed, err := workercore.ParseWorkerConfigurationExchange(raw)
+				if err != nil || !reflect.DeepEqual(parsed, f.parsed) {
+					t.Fatalf("parsed = %+v, %v, want %+v", parsed, err, f.parsed)
+				}
+				return parsed, nil
+			}
+			provided := authorityReceipt(tc.revision, tc.at, tc.maximum)
+			f.service.report.exchangeConfiguration = func(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, worker string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
+				f.take("exchange")
+				f.checkContext(ctx)
+				if dao != f || principal != f.principal || worker != f.worker || !reflect.DeepEqual(input, *f.parsed) {
+					t.Fatalf("exchange arguments = %p %+v %s %+v", dao, principal, worker, input)
+				}
+				return provided, nil
+			}
+			got, err := f.service.Report(f.ctx, f.principal, strings.ToUpper(f.worker), f.input)
+			expected := WorkerReportResult{Configuration: authorityReceipt(tc.revision, tc.at, tc.maximum), LastReportedAt: f.stored.LastReportedAt, ObservedAt: f.observed}
+			if err != nil || !reflect.DeepEqual(got, expected) {
+				t.Fatalf("report = %+v, %v, want %+v", got, err, expected)
+			}
+		})
+	}
 }

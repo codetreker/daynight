@@ -1,29 +1,38 @@
 ---
 name: prepare-daynight-local
-description: Prepare or refresh isolated Daynight localhost development, run CLI/website/Agent test loops, or discover desktop and mobile usability issues through local fixtures and hand off each confirmed improvement separately. Use for repeatable local experience audits; excludes npm publication and production deployment.
+description: Use when preparing, refreshing or operating an isolated Daynight localhost environment — development CLI, local site, Worker, test repository, browser identity, managed CLI/website/Agent loops or `daynight controller` Test Sessions. Excludes deciding what to investigate, npm publication and production deployment.
 ---
 
 # Prepare Daynight Local Development
 
 Connect a known source revision to a local site, isolated development Worker and
-Agents using canonical `daynight` commands. Use the prepared environment to
-exercise real user paths, discover experience problems and produce independently
-actionable improvements. Keep local fixtures, production delivery and skill
-maintenance separate.
+Agents using canonical `daynight` commands, and operate them reliably. Every
+local verification, reproduction or investigation builds on this environment.
+Deciding what to investigate, judging findings and handing them off belong to
+[discover-daynight-improvements](../discover-daynight-improvements/SKILL.md) and
+its topic skills. Keep local fixtures, production delivery and skill maintenance
+separate.
+
+Links that leave the skills directory refer to the Daynight repository. When this
+skill is installed outside a checkout, resolve such links against the selected
+Daynight source checkout.
 
 ## Choose the workflow
 
 Read the selected checkout's `AGENTS.md` and only the references needed for the
 requested result. Reuse an established environment after verifying its identity;
-an audit is not a request to rebuild it.
+an investigation is not a request to rebuild it.
 
 | Requested result | Guidance |
 | --- | --- |
 | Prepare or refresh | Inventory below, [test repository and routing](references/test-repository.md), [refresh](references/refresh.md), [verification](references/verification.md) |
 | Test identity or background browser | [Local identity](references/local-identity.md); selected browser in an isolated headless instance, default Edge |
 | Complete CLI/website/Agent loop | [Local test loop](references/local-test-loop.md), [website controls and readback](references/website.md) |
-| Discover experience problems | [UI audit](references/ui-audit.md), then [fixtures](references/ui-fixtures.md) and [evidence capture](references/browser-evidence.md) as needed |
-| Deliver confirmed improvements | [One-finding package](references/ui-finding-package.md) and [individual production handoff](references/ui-handoff.md), using `using-daynight` |
+| Run a standalone Session with a native Provider | [Controller Test Sessions](references/test-sessions.md) |
+| Create local data or runtime fixtures | [Fixtures](references/fixtures.md) |
+| Capture or record page state | [Browser evidence](references/browser-evidence.md) |
+| Let other agents use the environment, or change it while they may | [Shared use](references/shared-use.md) |
+| Find problems, improvements or requirement candidates | [discover-daynight-improvements](../discover-daynight-improvements/SKILL.md) with its topic skill |
 
 The [development guide](../../../docs/development.md#local-development-cli-channel)
 owns maintained build and runtime mechanisms. This skill connects them; it does
@@ -38,14 +47,13 @@ the environment. Within an authorized preparation or update, perform necessary
 operations without asking again for each command; resolve missing resource
 ownership or the treatment of active executions before the affected operation.
 
-Keep environment-work records local; do not
-register Daynight tasks or upload attachments to track preparation itself.
-A requested complete test loop may create one bounded acceptance task and its
-evidence in the selected localhost test project. These are test fixtures, not
-environment-work tracking. No production Daynight records or GitHub writes are
-part of that loop. Production improvement tasks require their own authorized
-audit/handoff scope. Keep exactly one independently actionable improvement per
-task, even when several affect the same screen or source file.
+Keep environment-work records local; do not register Daynight tasks or upload
+attachments to track preparation itself. A requested complete test loop may
+create one bounded acceptance task and its evidence in the selected localhost
+test project. These are test fixtures, not environment-work tracking. No
+production Daynight records or GitHub writes are part of that loop. Production
+improvement tasks come from an authorized investigation under
+discover-daynight-improvements.
 
 Before preparing a test environment, first ask which GitHub repository to use
 (an `OWNER/REPO` or URL), unless the current request already supplies that choice.
@@ -80,6 +88,7 @@ not secrets or a task tracker.
 | Site | Exact public and backend origins, native/Compose/Vite mode, PID or container identity, executable/image, cwd, launcher or supervisor, logs and prepared versus running artifact |
 | Persistent services | Database and file-storage ownership, paths or volume names, private configuration location, UniAuth fixture or real gateway, registered callback origin and selected test persona; available paired backup |
 | Development state | Absolute `DN_CONFIG_DIR`, service origin, credential presence and known origin, Worker identity, cloud enrollment/target and active executions; never token values |
+| Other users | Online Test Sessions, Controllers using the development root and other agents' fixtures, checked under [shared use](references/shared-use.md) |
 | Repositories | Confirmed GitHub identity, independent test checkout and local project binding; Worker root, explicit paths and persisted prepared bindings, checked for overlap with state or another Worker |
 | Agent entry | Provider and mode, installed skill scope, terminal wrapper or hook, Agent aliases, and whether each process predates the new build |
 
@@ -113,6 +122,8 @@ The important boundaries are:
   PATs without interactive sign-in; it preserves authentication and permission
   checks. Real OAuth/device consent are separate checks. Keep the user's ordinary
   browser profiles, windows and focus undisturbed.
+- Other agents may be using a retained environment. Check for them under
+  [shared use](references/shared-use.md) before stopping or replacing a component.
 
 ## Verify and hand back
 
@@ -128,12 +139,9 @@ Worker controls, Session View and attachment readback. Browser exploration can
 proceed read-only before a test repository is chosen; dispatch still requires
 the selected repository and scheduling checks.
 
-For an audit, report confirmed issues, candidates needing evidence, ruled-out
-observations and untested paths. Use the [audit iteration loop](references/ui-audit.md)
-to turn reproducible lessons into better fixtures and guidance; keep run-specific
-IDs, measurements and dispatch outcomes in the private record and owning tasks.
 Script success establishes only its documented checks, not a good design,
-accessible product or completed implementation.
+accessible product or completed implementation. Investigations that use this
+environment report under discover-daynight-improvements.
 
 Keep long-lived build worktrees, snapshots and configuration needed by the
 environment. Remove only task-owned temporary probes whose users have stopped.

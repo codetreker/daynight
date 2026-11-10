@@ -1,3 +1,6 @@
+import { currentSqliteVersion } from "../../src/platform/sqlite-format.js";
+import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../src/platform/sqlite-sql.js";
+import { workerStoreFormat } from "../../src/commands/worker/store-format.js";
 import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -31,14 +34,19 @@ beforeAll(async () => {
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });
 
 it("ships exact SQL resources and initializes each installed store", () => {
+  const expectedResources = sqlDirectories.map(directory => ({ directory, source: files(path.join(packageDirectory, "src", directory)) }));
+  const expectedCount = expectedResources.reduce((sum, { source }) => sum + Object.keys(source).length, 0);
   let count = 0;
-  for (const directory of sqlDirectories) {
-    const source = files(path.join(packageDirectory, "src", directory));
+  for (const { directory, source } of expectedResources) {
     expect(Object.keys(source).every(name => name.endsWith(".sql"))).toBe(true);
-    count += Object.keys(source).length;
-    expect(files(path.join(installed, "dist", directory))).toEqual(source);
+    const installedResources = files(path.join(installed, "dist", directory));
+    count += Object.keys(installedResources).length;
+    expect(installedResources).toEqual(source);
   }
-  expect(count).toBe(21);
+  expect(count).toBe(expectedCount);
+  const workerVersion = currentSqliteVersion(workerStoreFormat);
+  const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))
+    .get(workerVersion)!.filter(object => object.type === "table").map(({ name }) => name);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -46,12 +54,13 @@ it("ships exact SQL resources and initializes each installed store", () => {
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-const [installed, directory] = process.argv.slice(1);
+const [installed, directory, workerExpectation] = process.argv.slice(1);
+const worker = JSON.parse(workerExpectation);
 const load = relative => import(pathToFileURL(path.join(installed, "dist", relative)).href);
 const { openSqliteDatabase } = await load("platform/sqlite-access.js");
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
-  ["commands/worker/store-format.js", "workerStoreFormat", 12, ["bot_executions", "bots", "claim_native_configurations", "cleanup_schedules", "projects", "tasks"]],
+  ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 3, ["executions", "orchestration_blockers"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 7, ["content_index", "execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_observations", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
@@ -68,7 +77,7 @@ for (const [module, name, version, tables] of owners) {
   } finally { db.close(); }
 }
 console.log(JSON.stringify(versions));
-`, [installed, databases], cwd);
+`, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, 12, 3, 7, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 3, 7, 1]);
 });
