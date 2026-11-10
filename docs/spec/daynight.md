@@ -210,8 +210,8 @@ npm 替换失败；该失败必须明确报告。
 `review add-repo --path` 的目录候选；zsh 同时展示候选说明。非重复选项使用后不再
 提供，已消耗的位置参数不重复提供候选，remote 不提供远端候选或无关文件候选。
 目录建议不约束运行时合法值，操作者仍能输入尚未创建的目标目录。状态的静态
-列表状态候选为`todo`、`in_progress`、`done`、`cancelled`，分离及内联形式使用同一候选；
-update 不声明 status，set-status 使用 task ID、四状态目标和可选精确版本。重复依赖选项
+列表状态候选为`proposed`、`todo`、`in_progress`、`done`、`cancelled`，分离及内联形式使用同一候选；
+create 的 --status 仅提供 proposed/todo；update 不声明 status，set-status 使用 task ID、五状态目标和可选精确版本。重复依赖选项
 使用后仍可继续补全；自由文本、project/task ID 和依赖 ID 不回落文件候选。空描述
 和已完成内联值之后，后续选项按共享语法继续补全。
 

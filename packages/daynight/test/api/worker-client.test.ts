@@ -347,7 +347,7 @@ describe("in-process worker task API", () => {
     const operation = createOperation();
     cleanups.push(() => operation.dispose());
     const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
-    for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: 1, cursor: "" }, { limit: 1, ready: 1 }, { limit: 1, platformSpecific: "false" }, { limit: 1, platformSpecific: null }, { limit: 1, allowAgents: "true" }, { limit: 1, compatiblePlatform: "win32" }, { limit: 1, status: "proposed" }]) {
+    for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: 1, cursor: "" }, { limit: 1, ready: 1 }, { limit: 1, platformSpecific: "false" }, { limit: 1, platformSpecific: null }, { limit: 1, allowAgents: "true" }, { limit: 1, compatiblePlatform: "win32" }, { limit: 1, status: "unknown" }]) {
       expect(() => client.listTaskPage(projectId, query as never)).toThrow();
     }
     expect(fetch).not.toHaveBeenCalled();

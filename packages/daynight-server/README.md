@@ -2463,11 +2463,11 @@ version/status input. Every project member can write tasks; administrator role
 additionally manages members, invitations and project settings. Status PUT and
 method-refusal handlers authenticate, require exact Cookie Origin and use no-store.
 
-Creation uses todo, version 1, nullable execution/cancellation timestamps, allowAgents=false
+Creation defaults to proposed and accepts an optional proposed/todo status, version 1, nullable execution/cancellation timestamps, allowAgents=false
 and unrestricted requiredPlatform=null unless explicitly supplied. Its
 assignedTo defaults to null; an explicitly supplied UUID must identify a current
 project member in the creation transaction.
-It rejects caller-supplied status, timing and permission; platform creation accepts
+It rejects other creation states and caller-supplied timing and permission; platform creation accepts
 null or windows/linux/macos. PATCH retains field presence separately from nullable value. Properties/PRs and both
 dependency collections have explicit empty defaults. Updates require a positive
 expected int64 version and at least one mutable field; omitted pointers preserve
@@ -2476,10 +2476,10 @@ requiredPlatform and assignedTo accept null to clear; other JSON null input is
 rejected.
 Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
-candidates require all predecessors done or cancelled; todo and cancelled may have unfinished predecessors.
+candidates require all predecessors done or cancelled; proposed, todo and cancelled may have unfinished predecessors.
 
 Ordinary tasks without active/released worker ownership retain the original
-transitions across todo/in_progress/done and may enter irreversible cancelled. The project write
+direct transitions across proposed/todo/in_progress/done without a mandatory stage and may enter irreversible cancelled. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
@@ -2494,9 +2494,9 @@ explicit owner/admin resume, with fresh claim and worktree IDs. The
 old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
-uses statement_timestamp() after the lock and clears the end; return to todo
+uses statement_timestamp() after the lock and clears the end; return to proposed or todo
 clears both. In-progress to done preserves its nullable start and records an end;
-todo to done records an end with null start. Cancellation records `cancelledAt`
+proposed/todo to done records an end with null start. Cancellation records `cancelledAt`
 and preserves both execution endpoints; done-to-cancelled does not erase its
 completion time. Metadata and same-state preserve time.
 No missing historical start is inferred. State, timing, version and update time
@@ -2505,7 +2505,7 @@ commit atomically. Details are owned by the [status architecture](../../docs/des
 Migration 014 converts historical proposed rows to todo, advancing only their
 version/update time and preserving every other field, including timing. It
 atomically changes the default, rows, CHECK and ledger; restart does not rerun it.
-Applied historical migrations are immutable. Runtime input and readers reject proposed.
+Applied historical migrations are immutable. A subsequent migration admits proposed again and sets it as the creation default, preserving all existing task rows, revisions, timestamps and materials.
 
 Migration 028_task_assignment.sql adds nullable assigned_to and a partial
 project/assignee/keyset index for undeleted tasks. All existing and soft-deleted
@@ -2573,8 +2573,8 @@ dependents are not added. Tasks outside the component that externally depend on
 a member are not selected. A standalone task forms its own component.
 
 The response remains `{project, summary, tasks, observedAt}`. Each selected task
-counts once; the summary requires total, todo, inProgress, done, cancelled, ready and blocked,
-including zero values. `total = todo + inProgress + done + cancelled` and
+counts once; the summary requires total, proposed, todo, inProgress, done, cancelled, ready and blocked,
+including zero values. `total = proposed + todo + inProgress + done + cancelled` and
 `todo = ready + blocked`. Only todo contributes to ready/blocked; readiness still
 uses every original direct prerequisite, including prerequisites outside this
 projection. Graph reads do not change stored status, revisions or timestamps.

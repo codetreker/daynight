@@ -48,7 +48,7 @@ its result.
 | Native session without a claim | Start a [controller Test Session](test-sessions.md) for the Provider in scope | Session View states, approvals, interruption and archives with a real Provider |
 | Assistant conversation | Create one test Bot through supported product controls on the verified development Worker; send only the bounded prompt the scenario needs | Assistant list/header/detail composition, switching, composer and long conversation behavior |
 
-Task creation defaults to `todo` and `allowAgents=false`; read back those fields
+Task creation defaults to `proposed` and `allowAgents=false`; use explicit `--status todo` when the fixture needs confirmed executable work. Always read back those fields
 instead of assuming the default survived concurrent changes. Do not manually
 mark a task `in_progress` to make a Session appear. Dependencies and task status
 alone do not create an Agent. A Test Session from `daynight controller` does not

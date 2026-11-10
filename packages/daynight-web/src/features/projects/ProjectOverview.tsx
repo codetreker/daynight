@@ -38,6 +38,7 @@ export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate, on
     <section className="stats" aria-label={m.statistics}>
       <div className="stat"><p className="stat-label">{m.totalTasks}</p><p className="stat-number">{format.number(summary.total)}</p><p className="stat-foot">{m.uniqueTasks}</p></div>
       <div className="stat done"><p className="stat-label">{summary.cancelled === 0 ? common.status.done : common.status.ended}</p><p className="stat-number">{format.number(summary.done + summary.cancelled)}</p><p className="stat-foot">{summary.cancelled === 0 ? m.completion({ percent: completion }) : m.endedBreakdown({ done: summary.done, cancelled: summary.cancelled, percent: completion })}</p></div>
+      <div className="stat proposed"><p className="stat-label">{common.status.proposed}</p><p className="stat-number">{format.number(summary.proposed)}</p></div>
       <div className="stat"><p className="stat-label">{common.status.todo}</p><p className="stat-number">{format.number(summary.todo)}</p><p className="stat-foot">{m.waiting}</p></div>
       <div className="stat active"><p className="stat-label">{common.status.in_progress}</p><p className="stat-number">{format.number(summary.inProgress)}</p><p className="stat-foot">{m.advancing}</p></div>
       <div className="stat ready"><p className="stat-label">{m.ready}</p><p className="stat-number">{format.number(summary.ready)}</p><p className="stat-foot">{m.todoSubset}</p></div>

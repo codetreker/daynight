@@ -139,7 +139,7 @@ const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskSt
   if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt && before.cancelledAt === after.cancelledAt;
   if (target === "cancelled") return after.cancelledAt !== null && after.startedAt === before.startedAt && after.completedAt === before.completedAt;
   if (after.cancelledAt !== null) return false;
-  if (target === "todo") return after.startedAt === null && after.completedAt === null;
+  if (target === "proposed" || target === "todo") return after.startedAt === null && after.completedAt === null;
   if (target === "in_progress") return after.startedAt !== null && after.completedAt === null;
   return after.completedAt !== null && after.startedAt === (before.status === "in_progress" ? before.startedAt : null);
 };
@@ -1048,7 +1048,7 @@ export class TaskDetailSessions {
   }
   setStatus(projectId: string, taskId: string, status: TaskStatus, version: bigint): void {
     const state = this.writableState(projectId, taskId);
-    if (!canSetStatus(state) || state.detail!.version !== version || !["todo", "in_progress", "done", "cancelled"].includes(status) || status === "cancelled" && readWorkerClaim(state.detail!.properties)?.state === "active") return;
+    if (!canSetStatus(state) || state.detail!.version !== version || !["proposed", "todo", "in_progress", "done", "cancelled"].includes(status) || status === "cancelled" && readWorkerClaim(state.detail!.properties)?.state === "active") return;
     this.performMutation(projectId, taskId, { action: "status", status, version });
   }
   setAgentPermission(projectId: string, taskId: string, allowAgents: boolean, version: bigint): void {

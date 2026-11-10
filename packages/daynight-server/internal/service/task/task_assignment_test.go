@@ -237,12 +237,13 @@ func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 			calls := 0
 			f.writer.CreateTaskFn = func(ctx context.Context, id string, v store.TaskWrite) (model.Task, error) {
 				calls++
-				if ctx != f.ctx || id == "" || !model.EqualOptional(v.AssignedTo, want) || v.AllowAgents || v.Status != model.TaskTodo || v.Title != "Assigned responsibility" || v.Description != "Preserved material" || !reflect.DeepEqual(v.Properties, base.Properties) {
+				if ctx != f.ctx || id == "" || !model.EqualOptional(v.AssignedTo, want) || v.AllowAgents || v.Status != model.TaskProposed || v.Title != "Assigned responsibility" || v.Description != "Preserved material" || !reflect.DeepEqual(v.Properties, base.Properties) {
 					t.Fatalf("creation write: %#v", v)
 				}
 				result := base
 				result.ID = id
 				result.AssignedTo = want
+				result.Status, result.Ready = model.TaskProposed, false
 				return result, nil
 			}
 			f.capture.fn = func(ctx context.Context, facts []protocol.Fact) error {
@@ -252,7 +253,7 @@ func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 				return nil
 			}
 			got, err := f.tasks.Create(f.ctx, actor, f.project.ID, taskcore.CreateTask{Title: "Assigned responsibility", Description: "Preserved material", AssignedTo: assigned, Properties: base.Properties})
-			if err != nil || calls != 1 || !model.EqualOptional(got.AssignedTo, want) || got.AllowAgents || got.Version != 1 || got.Status != model.TaskTodo {
+			if err != nil || calls != 1 || !model.EqualOptional(got.AssignedTo, want) || got.AllowAgents || got.Version != 1 || got.Status != model.TaskProposed || got.Ready {
 				t.Fatalf("creation result: %#v %v", got, err)
 			}
 		})

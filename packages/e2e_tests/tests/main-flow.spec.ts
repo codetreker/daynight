@@ -41,11 +41,14 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const taskId = creation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(taskId).toBeDefined();
   const task = JSON.parse((await cli(["task", "show", taskId!, "--project", projectId!, "--json"])).stdout) as Task;
+  expect(task).toMatchObject({ id: taskId, status: "proposed", version: 1 });
 
   const referenceTitle = `Reference ${task.id}`;
-  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle]);
+  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle, "--status", "todo"]);
   const referenceId = referenceCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(referenceId).toBeDefined();
+  const reference = JSON.parse((await cli(["task", "show", referenceId!, "--project", projectId!, "--json"])).stdout) as Task;
+  expect(reference).toMatchObject({ id: referenceId, status: "todo", version: 1 });
   const results = JSON.parse((await cli(["task", "search", task.id, "--project", projectId!, "--json"])).stdout) as SearchItem[];
   expect(results.map(({ id, title, match }) => ({ id, title, match }))).toEqual([
     { id: task.id, title: name, match: { fields: ["id"], descriptionSnippet: null } },
@@ -81,7 +84,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const detail = page.getByRole("dialog");
   await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
   await expect(detail.getByText("Shared E2E content", { exact: true })).toBeVisible();
-  await detail.getByRole("button", { name: "To do", exact: true }).click();
+  await detail.getByRole("button", { name: "Proposed", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "In progress", exact: true }).click();
   await page.getByRole("button", { name: "Confirm status", exact: true }).click();
   await expect.poll(async () => JSON.parse((await cli(["task", "show", task.id, "--project", projectId!, "--json"])).stdout).status).toBe("in_progress");

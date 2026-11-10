@@ -104,13 +104,13 @@ it("renders only returned graph nodes and their summary", async () => {
   const f = fixture();
   const otherId = "dddddddd-4444-4444-8444-444444444444";
   const node = { id: taskId, titlePreview: "First", titleTruncated: false, status: "todo", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time } as const;
-  const graph: TaskGraph = { observedAt: time, project: { ...project, settings: { ...project.settings, version: 9_007_199_254_740_993n } }, summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [node, { ...node, id: otherId, titlePreview: "Second", ready: true, dependsOn: [], blockedBy: [] }] };
+  const graph: TaskGraph = { observedAt: time, project: { ...project, settings: { ...project.settings, version: 9_007_199_254_740_993n } }, summary: { total: 2, proposed: 0, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [node, { ...node, id: otherId, titlePreview: "Second", ready: true, dependsOn: [], blockedBy: [] }] };
   f.api.getTaskGraph.mockResolvedValue(graph);
   await runTaskCommand(["graph", taskId, "--project", projectId], f.context, f.dependencies);
   const output = f.context.stdout.mock.calls[0]![0];
   expect(output).toContain("Todo: 2\n");
   expect(output).toContain(`ID: ${taskId}\n`); expect(output).toContain(`ID: ${otherId}\n`);
-  expect(output).not.toContain("Proposed:");
+  expect(output).toContain("Proposed: 0\n");
   expect(output.match(/^ID: /gm)).toHaveLength(2);
   await runTaskCommand(["graph", taskId, "--json", "--project", projectId], f.context, f.dependencies);
   expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(withGraphObservations(graph, taskId));
@@ -161,7 +161,7 @@ it("keeps external dependency classification across show, list and graph text", 
   const prerequisite = "dddddddd-4444-4444-8444-444444444444";
   const classified: Task = { ...task, dependsOn: [prerequisite], externalDependsOn: [prerequisite], blockedBy: [prerequisite], ready: false };
   const node = { id: taskId, titlePreview: task.title, titleTruncated: false, status: "todo", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [prerequisite], externalDependsOn: [prerequisite], blockedBy: [prerequisite], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time } as const;
-  const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [{ ...node, id: prerequisite, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }, node] };
+  const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, proposed: 0, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [{ ...node, id: prerequisite, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }, node] };
   f.api.getTask.mockResolvedValue(classified); f.api.listTasks.mockResolvedValue([classified]); f.api.getTaskGraph.mockResolvedValue(graph);
   for (const args of [["show", taskId], ["list"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
   for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`External dependencies (1): ${prerequisite}\n`);
@@ -173,7 +173,7 @@ it("keeps completed graph members and summary in JSON", async () => {
   const f = fixture();
   const prerequisite = "dddddddd-4444-4444-8444-444444444444";
   const node = { id: taskId, titlePreview: task.title, titleTruncated: false, status: "done", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [prerequisite], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time } as const;
-  const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 0, inProgress: 0, done: 2, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, id: prerequisite, dependsOn: [] }, node] };
+  const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, proposed: 0, todo: 0, inProgress: 0, done: 2, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, id: prerequisite, dependsOn: [] }, node] };
   f.api.getTaskGraph.mockResolvedValue(graph);
   await runTaskCommand(["graph", taskId, "--json", "--project", projectId], f.context, f.dependencies);
   expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withGraphObservations(graph, taskId));

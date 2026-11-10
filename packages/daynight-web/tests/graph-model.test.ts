@@ -48,6 +48,9 @@ describe("ordinary dependency components", () => {
   });
 
   it.each([
+    { root: "proposed", child: "proposed", done: 0, status: "proposed" },
+    { root: "proposed", child: "todo", done: 0, status: "todo" },
+    { root: "todo", child: "proposed", done: 0, status: "todo" },
     { root: "todo", child: "todo", done: 0, status: "todo" },
     { root: "in_progress", child: "todo", done: 0, status: "in_progress" },
     { root: "done", child: "todo", done: 1, status: "in_progress" },
@@ -153,7 +156,7 @@ describe("ordinary dependency components", () => {
       { id: E, status: "todo", dependsOn: [D] },
     ]);
     const index = buildGraphIndex(input);
-    expect(input.summary).toEqual({ total: 5, todo: 4, inProgress: 0, done: 1, cancelled: 0, ready: 2, blocked: 2 });
+    expect(input.summary).toEqual({ proposed: 0, total: 5, todo: 4, inProgress: 0, done: 1, cancelled: 0, ready: 2, blocked: 2 });
     expect(index.nodes.get(A)).toMatchObject({ ready: true, blockedBy: [] });
     expect(index.nodes.get(B)).toMatchObject({ ready: false, blockedBy: [A] });
     expect(index.nodes.get(E)).toMatchObject({ ready: true, blockedBy: [] });
@@ -374,7 +377,7 @@ describe("invalid graph snapshots", () => {
     changedTask(graph([{ id: A, status: "done" }]), A, { ready: true }),
     changedTask(graph([{ id: A, status: "in_progress" }]), A, { ready: true }),
     changedTask(valid, A, { status: "proposed" as TaskStatus }),
-    ...["total", "todo", "inProgress", "done", "ready", "blocked"].flatMap((field) => [-1, 99, null, undefined, "0"].map((value) =>
+    ...["total", "proposed", "todo", "inProgress", "done", "ready", "blocked"].flatMap((field) => [-1, 99, null, undefined, "0"].map((value) =>
       ({ ...valid, summary: { ...valid.summary, [field]: value } }))),
   ])("rejects incomplete or inconsistent input %# with a safe error", expectRejected);
 

@@ -105,14 +105,14 @@ daynight task ready --limit 20 --json
 daynight task show <task-id> --json
 ```
 
-New tasks start in `todo`, assigned to the signed-in account unless
+New tasks default to `proposed`; use `--status todo` for already-confirmed work, including internal multi-step tasks. Creation accepts only proposed or todo. Tasks are assigned to the signed-in account unless
 `--assigned-to <user-uuid>` selects another person, with automatic execution disabled. `task list` excludes
-`done` by default; `--all` and `--status` are mutually exclusive. List reads all
+`done` and `cancelled` by default; `--all` and `--status` are mutually exclusive. List reads all
 matching pages; JSON omits descriptions, so read `show --json` for a complete
 task and its version. Creation returns text and does not accept `--json`.
 
 `ready` reads one page, defaulting to 10 tasks; `--limit` accepts 1 through 100.
-A task is ready when it is todo and every prerequisite is done. Both list and
+A task is ready when it is todo and every prerequisite is done or cancelled. Proposed tasks are not ready or automatic-execution candidates. Both list and
 ready support `--allow-agents true|false` and
 `--compatible-platform windows|linux|macos`; filters combine with AND before
 pagination. Platform filtering includes unrestricted tasks and exact matches.
@@ -350,11 +350,10 @@ permission alone is not sufficient. Existing claim and manual-resume authority
 remain separate.
 
 Actual assignment, permission and platform changes are locked while in progress.
-These settings do not change status; `set-status` accepts `todo`, `in_progress`
-or `done`. Task and graph JSON always retain `assignedTo` as a UUID or null;
+These settings do not change status; `set-status` accepts `proposed`, `todo`, `in_progress`, `done` or `cancelled`. Proposed, todo, in_progress and done can be selected directly, subject to existing dependency and worker protections; cancelled is irreversible. Task and graph JSON always retain `assignedTo` as a UUID or null;
 text output shows `Assigned to: USER_UUID` or `Assigned to: unassigned`.
 
-Every direct prerequisite must be done before entering in_progress or done.
+Every direct prerequisite must be done or cancelled before entering in_progress or done.
 Reopening done work is refused while a direct successor is in_progress or done.
 A same-status request still checks the version. Text options accept
 `--option=value`; use that form for dash-prefixed values, such as

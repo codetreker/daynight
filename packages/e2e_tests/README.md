@@ -69,8 +69,9 @@ are not inserted directly to bypass these flows.
 ## Scenarios and fixtures
 
 `tests/main-flow.spec.ts` verifies browser login, CLI device login, CLI project
-and task creation, Web task-state modification, CLI readback and completion, and
-Web reload. The same resource IDs and content cross the clients and persist in
+and task creation, default proposed readback, explicit todo creation for confirmed
+reference work, direct Web proposed-to-in_progress modification, CLI readback and
+completion, and Web reload. The same resource IDs and content cross the clients and persist in
 the real database.
 
 Add normal sequential journeys under `tests/`, using `tests/fixtures.ts` for the

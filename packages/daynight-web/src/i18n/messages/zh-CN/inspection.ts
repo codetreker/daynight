@@ -105,6 +105,7 @@ export const inspection: InspectionMessages = {
     cancel: "取消",
     closeConfirmation: "关闭确认窗",
     unchanged: "状态和执行时间保持不变；仍会核验审阅时的精确版本。",
+    resetProposedTiming: "设为待确认会清空本次执行的开始与完成时间。",
     resetTiming: "退回待处理会清空本次执行的开始与完成时间。",
     startTiming: "进入进行中会开始新的执行区间，并清空完成时间。",
     finishTiming: "完成本次执行会保留已有开始时间，并记录完成时间。",

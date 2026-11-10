@@ -39,7 +39,7 @@ const snapshot = (items = seeds, id = project): TaskGraph => {
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
-    summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
+    summary: { proposed: 0, total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
       done: tasks.filter((item) => item.status === 'done').length, cancelled: tasks.filter((item) => item.status === 'cancelled').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
@@ -194,7 +194,7 @@ describe('project task views', () => {
     mount(); await findTab('chains');
     expectUnfinishedCounts(4, 1);
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
-    expect(stats.querySelectorAll('.stat')).toHaveLength(6);
+    expect(stats.querySelectorAll('.stat')).toHaveLength(7);
     expect(stats).toHaveTextContent('待处理5等待开始');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.parentElement!.querySelector('.root-status')).toHaveTextContent('待处理');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-progress-label')).toHaveTextContent('0/3 已完成');

@@ -396,7 +396,7 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 			t.Fatalf("capture queue=%d matches=%d/%d version=%d err=%v", queue, matchCount, actualMatches, version, err)
 		}
 		// Build the wire oracle from the persisted source, without the renderer.
-		wantBody := fmt.Sprintf(`{"specversion":"1.0","id":"%s","source":"urn:daynight:project:%s","type":"cc.daynight.task.created.v1","subject":"tasks/%s","time":"%s","datacontenttype":"application/json","data":{"projectId":"%s","taskId":"%s","taskVersion":"%d","status":"todo","paused":false}}`, eventID, project, created.ID, created.CreatedAt.UTC().Format(time.RFC3339Nano), project, created.ID, created.Version)
+		wantBody := fmt.Sprintf(`{"specversion":"1.0","id":"%s","source":"urn:daynight:project:%s","type":"cc.daynight.task.created.v1","subject":"tasks/%s","time":"%s","datacontenttype":"application/json","data":{"projectId":"%s","taskId":"%s","taskVersion":"%d","status":"proposed","paused":false}}`, eventID, project, created.ID, created.CreatedAt.UTC().Format(time.RFC3339Nano), project, created.ID, created.Version)
 		bodyDigest := sha256.Sum256([]byte(wantBody))
 		if !bytes.Equal(body, []byte(wantBody)) || !bytes.Equal(bodyHash, bodyDigest[:]) || !bytes.Equal(fact, []byte(wantBody)) || !bytes.Equal(factHash, bodyDigest[:]) {
 			t.Fatalf("captured wire bytes or digest differ: got %s want %s", body, wantBody)

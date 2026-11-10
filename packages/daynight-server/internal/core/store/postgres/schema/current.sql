@@ -1,4 +1,4 @@
--- Schema snapshot version: 59
+-- Schema snapshot version: 60
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -676,7 +676,7 @@ CREATE TABLE "tasks" (
     "project_id" "uuid" NOT NULL,
     "title" "text" NOT NULL,
     "description" "text" DEFAULT ''::"text" NOT NULL,
-    "status" "text" DEFAULT 'todo'::"text" NOT NULL,
+    "status" "text" DEFAULT 'proposed'::"text" NOT NULL,
     "version" bigint DEFAULT 1 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
@@ -689,7 +689,7 @@ CREATE TABLE "tasks" (
     "cancelled_at" timestamp with time zone,
     CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
     CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
-    CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
+    CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['proposed'::"text", 'todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
     CONSTRAINT "tasks_title_check" CHECK (("btrim"("title") <> ''::"text")),
     CONSTRAINT "tasks_version_check" CHECK (("version" > 0))
 );

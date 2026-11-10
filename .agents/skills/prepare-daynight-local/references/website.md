@@ -136,7 +136,7 @@ Do not add steps or discussion posts merely to navigate the fixture.
 
 ## Enable the fixture through the website
 
-For the test loop, the CLI-created task begins as `todo`, assigned to the signed-in
+For the test loop, explicitly create the confirmed fixture with `--status todo`; it is assigned to the signed-in
 account, with `allowAgents=false`. Confirm these facts before enabling it. The
 Ready/Blocked indication describes dependency readiness, not a running Agent.
 

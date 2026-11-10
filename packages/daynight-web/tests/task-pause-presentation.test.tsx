@@ -42,7 +42,7 @@ describe('paused task discovery', () => {
   it('derives only true pause flags without changing status statistics or graph node shape', () => {
     const value = snapshot();
     expect(value.pausedTaskIds).toEqual(new Set([id(1), id(2), id(3)]));
-    expect(value.graph.summary).toEqual({ total: 5, todo: 3, inProgress: 1, done: 1, cancelled: 0, ready: 3, blocked: 0 });
+    expect(value.graph.summary).toEqual({ proposed: 0, total: 5, todo: 3, inProgress: 1, done: 1, cancelled: 0, ready: 3, blocked: 0 });
     expect(value.graph.tasks[0]).not.toHaveProperty('properties');
     expect(value.index.nodes.get(id(1))).not.toHaveProperty('paused');
     expect(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))).pausedTaskIds.size).toBe(0);
@@ -80,12 +80,12 @@ describe('paused task discovery', () => {
     for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/Paused/);
   });
 
-  it('opens a specific paused task from the complete overview count without altering the six status cards', () => {
+  it('opens a specific paused task from the complete overview count without altering the seven status cards', () => {
     const value = snapshot();
     const onOpenTask = vi.fn();
     renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
       pagination={{ page: 1, pageCount: 1, total: 2, start: 1, end: 2, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en' });
-    expect(document.querySelectorAll('.stats .stat')).toHaveLength(6);
+    expect(document.querySelectorAll('.stats .stat')).toHaveLength(7);
     const open = screen.getByRole('button', { name: 'Open paused task: Task 1' });
     expect(open).toHaveTextContent('3 paused');
     fireEvent.click(open);

@@ -28,7 +28,7 @@ rotate the project epoch or close PRs and branches.
 
 A database-generated cancelledAt records the cancellation independently of
 startedAt and completedAt. The current terminal time is derived by status.
-Protocol producers and first-party readers use the same four-state contract,
+Protocol producers and first-party readers use the same five-state contract, including the later [proposed-state decision](2026-11-10-proposed-task-state.md),
 including released claim history on cancelled tasks. Persistent Web task caches
 use an explicit schema rebuild rather than missing-field fallback.
 
