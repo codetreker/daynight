@@ -14,7 +14,12 @@ const install = async (page: Page) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, json, headers: { 'Daynight-User-ID': state.userId, ...extra } });
     const missing = () => send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
-    if (request.method() !== 'GET') state.writes.push(`${request.method()} ${path}`);
+    const monitoringQuery = request.method() === 'POST' && path === '/api/v1/me/workers/monitoring/query';
+    if (request.method() !== 'GET' && !monitoringQuery) state.writes.push(`${request.method()} ${path}`);
+    if (monitoringQuery) {
+      const { workerIds } = request.postDataJSON() as { workerIds: string[] };
+      return send({ observedAt: WORKER_TIME, items: workerIds.map(workerId => ({ workerId, state: 'absent', revision: null, receivedAt: null, expiresAt: null, summary: null })) });
+    }
     if (path === '/api/v1/me') return send({ id: state.userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     const team = { ...personal, version: 1, createdAt: WORKER_TIME, updatedAt: WORKER_TIME, membership: { teamId: personalId, userId: state.userId, role: 'admin', version: 1, createdAt: WORKER_TIME, updatedAt: WORKER_TIME } };
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
