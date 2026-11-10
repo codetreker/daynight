@@ -2830,11 +2830,22 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts
 go test ./internal/core/store/postgres/... ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
-For the cross-process Step text admission check, build the CLI and set
-`DAYNIGHT_TEST_CLI_MAIN` to its absolute `dist/main.js` path. With the same
-database and UniAuth fixture, run `go test ./internal/server -run
-'^TestStepsCLITextAdmissionAcceptance$' -count=1 -timeout=5m`; use the normal
-unit overlay when the production Web bundle is unavailable.
+Step text boundaries are checked at their respective owners. From the repository
+root, `pnpm --filter @codetreker/daynight test test/cli/task-steps-text.test.ts`
+runs the built CLI's ten-process text sequence against controlled HTTP responses.
+From this module, the following commands exercise Core admission, Service
+coordination, HTTP parsing and physical Store readback and rollback. The Store
+commands require the isolated PostgreSQL database above; the other cases do not.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/core/task/steps ./internal/service/task ./internal/server/task -run '^(TestWriteReceiverRootTextSequence|TestTaskStepsTextLimitsOnAddAndChange|TestStepsHTTPTextAdmission)$' -count=1 -timeout=5m
+go test ./internal/core/store/postgres -run '^TestTaskSteps(ConfirmedRollbackAfterEachActualSQLWrite|PartialWritesAndSuppressedRowsRollBack)$' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/task -run '^TestTaskStepStore$' -count=1 -timeout=5m
+```
+
+Controlled CLI responses and Service completion do not establish physical
+persistence; the Store tests use actual SQL and read back the persisted state.
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:
