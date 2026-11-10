@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
+import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
@@ -329,22 +330,40 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (previous !== undefined && previous.worktreeId !== owner.worktreeId) throw new Error("The same claim has conflicting resource identities.");
       owners.set(key(owner), owner);
     };
-    for (const owner of responsibilities()) {
+    const nativeOwners = responsibilities();
+    for (const owner of nativeOwners) {
       recordOwner(owner); proven.add(key(owner));
     }
     for (const workspace of herdr) { recordOwner(workspace.owner); proven.add(key(workspace.owner)); }
     for (const task of options.webStore?.listUnfinishedTasks() ?? []) { recordOwner(task); proven.add(key(task)); }
-    const independentOwners = [...currentClaims, ...responsibilities(), ...herdr.map(item => item.owner), ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
+    const independentOwners = [...currentClaims, ...nativeOwners, ...herdr.map(item => item.owner), ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
     const provenQuarantine = async (owner: ResourceOwner, scannedProject: WorkerProject): Promise<boolean> => {
       const matches = independentOwners.filter(other => key(other) === key(owner));
       const mapping = options.store.getProject(owner);
       if (mapping === null || matches.length === 0 || matches.some(other => other.worktreeId !== owner.worktreeId)) return false;
       // A matching claim cannot bound a registration moved into another repo.
-      // Both the project mapping and any frozen Web binding must agree with
+      // The project mapping and original execution bindings must agree with
       // the physical repository that supplied this scan, including aliases.
       const root = await realpath(scannedProject.localPath);
       const remote = repositoryIdentity(scannedProject.repoUrl);
       if (await realpath(mapping.localPath) !== root || repositoryIdentity(mapping.repoUrl) !== remote) return false;
+      const native = lifecycle();
+      let nativePaths: string[];
+      if (native?.worktreePath !== undefined) {
+        const original = native.worktreePath(owner);
+        nativePaths = original === null ? [] : [original];
+      } else {
+        // Older adapters expose the original path through retained resources.
+        const records = native?.archive?.resources().filter(record => key(record.owner) === key(owner)) ?? [];
+        if (records.some(record => record.owner.worktreeId !== owner.worktreeId)) return false;
+        nativePaths = records.map(record => record.worktreePath);
+      }
+      for (const nativePath of nativePaths) {
+        if (!path.isAbsolute(nativePath)) return false;
+        const original = await resolvePhysicalDirectory(nativePath);
+        const expected = await resolvePhysicalDirectory(path.join(root, ".worktrees", "daynight", owner.taskId));
+        if (path.join(original.ancestorPath, ...original.missingComponents) !== path.join(expected.ancestorPath, ...expected.missingComponents)) return false;
+      }
       const web = options.webStore?.getTask(owner);
       if (web != null) {
         if (web.worktreeId !== owner.worktreeId || await realpath(web.repositoryPath) !== root || repositoryIdentity(web.repoUrl) !== remote) return false;
