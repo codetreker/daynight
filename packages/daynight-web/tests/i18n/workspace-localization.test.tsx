@@ -64,8 +64,8 @@ describe("workspace localization", () => {
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
     const statistics = screen.getByRole("region", { name: "Project task statistics" });
-    expect(statistics.querySelectorAll(".stat")).toHaveLength(6);
-    const waiting = statistics.querySelectorAll(".stat")[2]!;
+    expect(statistics.querySelectorAll(".stat")).toHaveLength(7);
+    const waiting = statistics.querySelectorAll(".stat")[3]!;
     expect(waiting).toHaveTextContent("To do1Waiting to start");
     await selectTaskList();
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
