@@ -34,6 +34,7 @@ type monitoringMock struct {
 	revision    *string
 	observation monitoring.Observation
 	detail      *monitoring.DetailResponse
+	query       *monitoring.QueryResponse
 	err         error
 	started     chan struct{}
 }
@@ -59,6 +60,9 @@ func (m *monitoringMock) GetMonitoring(ctx context.Context, p model.Principal, i
 func (m *monitoringMock) QueryMonitoring(_ context.Context, p model.Principal, ids []string) (monitoring.QueryResponse, error) {
 	m.calls++
 	m.principal, m.ids = p, ids
+	if m.query != nil {
+		return *m.query, m.err
+	}
 	return monitoring.QueryResponse{ObservedAt: time.Unix(1, 0).UTC(), Items: []monitoring.QueryItem{}}, m.err
 }
 func monitoringRouter(mock *monitoringMock, principal model.Principal) http.Handler {
@@ -288,4 +292,88 @@ func TestMonitoringDetailTransmitsBoundedEscapedTitles(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.Len() > monitoring.MaxDetail || !strings.Contains(w.Body.String(), `"detailCoverage":"partial"`) || !strings.Contains(w.Body.String(), `"kind":"labels-omitted"`) || !strings.Contains(w.Body.String(), `\u003c`) || mock.calls != 1 {
 		t.Fatalf("bounded detail: status=%d bytes=%d", w.Code, w.Body.Len())
 	}
+}
+
+func TestMonitoringQueryTransmitsMaximumPublicSummaries(t *testing.T) {
+	observedText := "9999-12-31T23:59:59.999999999Z"
+	observed, err := time.Parse(time.RFC3339Nano, observedText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := observed.Add(-time.Hour)
+	codes := []string{
+		"configuration-unavailable", "configuration-incomplete", "inventory-unavailable",
+		"project-unavailable", "project-preparation-failed", "resource-observation-unavailable",
+		"capacity-full", "cleanup-capacity-blocked", "no-projects-selected", "no-ready-tasks",
+		"claim-unconfirmed", "retained-resource-conflict", "stopping",
+	}
+	public := monitoring.PublicSummary{
+		CapturedAt: observedText, Lifecycle: "starting",
+		Scheduler:      monitoring.SummaryScheduler{Phase: "resource-observation", Coverage: "complete", LastSuccessfulAt: &observedText, NextPollAt: &observedText},
+		Capacity:       &monitoring.SummaryCapacity{ObservedAt: observedText, Quality: "current", Limit: 64, Occupied: 9007199254740991, Available: 0},
+		DetailCoverage: "complete",
+		Admission:      monitoring.PublicAdmission{ObservedAt: observedText, Coverage: "complete", ReasonCodes: codes, PermissionProjection: "restricted"},
+	}
+	raw, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The protocol codec owns public-summary validation; the HTTP adapter below
+	// receives the already projected result from its directly mocked service.
+	summary, err := monitoring.ParseSummary(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 100)
+	items := make([]monitoring.QueryItem, len(ids))
+	revision := "ffffffff-ffff-4fff-bfff-ffffffffffff"
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%08x-ffff-4fff-bfff-ffffffffffff", i+1)
+		items[i] = monitoring.QueryItem{WorkerID: ids[i], State: "available", Revision: &revision, ReceivedAt: &received, ExpiresAt: &observed, Summary: summary}
+	}
+	input, err := json.Marshal(map[string]any{"workerIds": ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := monitoring.QueryResponse{ObservedAt: observed, Items: items}
+	mock := &monitoringMock{query: &result}
+	principal := model.Principal{UserID: monitoringOtherID}
+	response := monitoringRequest(monitoringRouter(mock, principal), http.MethodPost, "/api/v1/me/workers/monitoring/query", string(input))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || mock.calls != 1 || mock.principal != principal {
+		t.Fatalf("query response: status=%d type=%q calls=%d", response.Code, response.Header().Get("Content-Type"), mock.calls)
+	}
+	wire := response.Body.Bytes()
+	if len(wire) == 0 || wire[len(wire)-1] != '\n' || len(wire) > monitoring.MaxQuery {
+		t.Fatalf("encoded query response including newline exceeds budget: %d bytes", len(wire))
+	}
+	var got monitoring.QueryResponse
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.ids) != len(ids) || len(got.Items) != len(ids) || !got.ObservedAt.Equal(observed) {
+		t.Fatalf("wrong query size or observation time: requested=%d received=%d observed=%v", len(mock.ids), len(got.Items), got.ObservedAt)
+	}
+	for i, item := range got.Items {
+		if mock.ids[i] != ids[i] || item.WorkerID != ids[i] || item.State != "available" || item.Revision == nil || *item.Revision != revision || item.ReceivedAt == nil || !item.ReceivedAt.Equal(received) || item.ExpiresAt == nil || !item.ExpiresAt.Equal(observed) {
+			t.Fatalf("wrong request or result order at %d: %+v", i, item)
+		}
+		if !bytes.Equal(item.Summary, summary) {
+			t.Fatalf("summary changed in HTTP transmission at %d", i)
+		}
+		parsed, err := monitoring.ParsePublicSummary(item.Summary)
+		if err != nil || len(parsed.Admission.ReasonCodes) != len(codes) || parsed.Admission.PermissionProjection != "restricted" {
+			t.Fatalf("invalid public summary at %d: %+v %v", i, parsed.Admission, err)
+		}
+		for index, code := range codes {
+			if parsed.Admission.ReasonCodes[index] != code {
+				t.Fatalf("wrong reason order at %d/%d", i, index)
+			}
+		}
+	}
+	for _, forbidden := range []string{`"scope"`, `"scopeToken"`, `"projectId"`, `"taskId"`, `"claimId"`, `"codeIndex"`, `"reasons"`} {
+		if bytes.Contains(wire, []byte(forbidden)) {
+			t.Fatalf("private field %s in public response", forbidden)
+		}
+	}
+	t.Logf("100-worker response including newline: %d bytes (limit %d)", len(wire), monitoring.MaxQuery)
 }

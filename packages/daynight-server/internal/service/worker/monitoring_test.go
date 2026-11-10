@@ -152,6 +152,15 @@ func serviceRules(t *testing.T, events *[]string) monitoringRules {
 		}
 		d.PermissionProjection = "restricted"
 		return nil
+	}, summaryScopes: func(summaries []monitoring.StoredSummary) ([]string, []string) {
+		*events = append(*events, "summary scopes")
+		return []string{serviceProject}, []string{serviceTask}
+	}, projectSummary: func(_ monitoring.StoredSummary, sources store.WorkerMonitoringSources) (json.RawMessage, error) {
+		*events = append(*events, "project summary")
+		if sources.Projects[serviceProject] != "project" {
+			t.Fatal("wrong summary sources")
+		}
+		return json.RawMessage(`{"public":true}`), nil
 	}}
 }
 func TestMonitoringServiceWriteCAS(t *testing.T) {
@@ -180,7 +189,7 @@ func TestMonitoringServiceWriteCAS(t *testing.T) {
 				if _, err := monitoring.ParseObservation(c.Body); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := monitoring.ParseSummary(c.Summary); err != nil {
+				if _, err := monitoring.ParseStoredSummary(c.Summary); err != nil {
 					t.Fatal(err)
 				}
 				var r *store.MonitoringReceipt
@@ -334,11 +343,22 @@ func TestMonitoringServiceReads(t *testing.T) {
 			}
 			return store.MonitoringSummariesResult{ObservedAt: serviceNow, Values: []*store.MonitoringValue{nil, {Receipt: store.MonitoringReceipt{Revision: serviceRevision, ReceivedAt: serviceNow, ExpiresAt: serviceNow.Add(time.Hour)}, Summary: summary}}}, nil
 		}})
-		out, err := s.QueryMonitoring(context.Background(), servicePrincipal(), []string{serviceWorker2, serviceWorker})
+		rules := serviceRules(t, &events)
+		rules.summaryScopes = func(summaries []monitoring.StoredSummary) ([]string, []string) {
+			events = append(events, "summary scopes")
+			if len(summaries) != 2 || summaries[0].Admission.ObservedAt != "" || summaries[1].Admission.ObservedAt != "2026-01-01T00:00:00Z" {
+				t.Fatalf("summary inputs %+v", summaries)
+			}
+			return []string{serviceProject}, []string{serviceTask}
+		}
+		out, err := s.queryMonitoring(context.Background(), servicePrincipal(), []string{serviceWorker2, serviceWorker}, rules)
 		if err != nil || len(out.Items) != 2 || out.Items[0].State != "absent" || out.Items[0].WorkerID != serviceWorker2 || out.Items[1].State != "available" || out.Items[1].WorkerID != serviceWorker {
 			t.Fatalf("query %+v %v", out, err)
 		}
-		if !reflect.DeepEqual(events, []string{"snapshot", "admit", "summaries"}) {
+		if string(out.Items[1].Summary) != `{"public":true}` {
+			t.Fatalf("summary was not projected: %s", out.Items[1].Summary)
+		}
+		if !reflect.DeepEqual(events, []string{"snapshot", "admit", "summaries", "summary scopes", "snapshot", "admit", "sources", "project summary"}) {
 			t.Fatal(events)
 		}
 		s.SetMonitoringStore(monitorStore{summaries: func(context.Context, []store.MonitoringIdentity) (store.MonitoringSummariesResult, error) {
@@ -419,4 +439,87 @@ func TestMonitoringServiceContextAndSnapshotCompletion(t *testing.T) {
 			t.Fatalf("permission failure suppressed: %v", err)
 		}
 	})
+}
+
+func TestMonitoringSummaryRechecksResourcesAndPropagatesProjectionFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name                                              string
+		deny, sourceFailure, projectionFailure, oversized bool
+	}{
+		{name: "worker withdrawn", deny: true},
+		{name: "permission read failed", sourceFailure: true},
+		{name: "projection failed", projectionFailure: true},
+		{name: "actual encoded response exceeds budget", oversized: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []string{}
+			s, r := monitorFixture(t, &events)
+			observed := serviceObservation(t)
+			summary, err := monitoring.Summary(observed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.SetMonitoringStore(monitorStore{summaries: func(ctx context.Context, ids []store.MonitoringIdentity) (store.MonitoringSummariesResult, error) {
+				events = append(events, "summaries")
+				if !reflect.DeepEqual(ids, []store.MonitoringIdentity{{UserID: serviceUser, WorkerID: serviceWorker}}) {
+					t.Fatalf("identities %v", ids)
+				}
+				return store.MonitoringSummariesResult{ObservedAt: serviceNow, Values: []*store.MonitoringValue{{Receipt: store.MonitoringReceipt{Revision: serviceRevision, ReceivedAt: serviceNow, ExpiresAt: serviceNow.Add(time.Hour)}, Summary: summary}}}, nil
+			}})
+			calls := 0
+			r.workers = func(_ context.Context, user string, ids []string, now time.Time) ([]string, error) {
+				events = append(events, "admit")
+				calls++
+				if user != serviceUser || now != serviceNow || !reflect.DeepEqual(ids, []string{serviceWorker}) {
+					t.Fatalf("admission %s %v %v", user, ids, now)
+				}
+				if tc.deny && calls == 2 {
+					return nil, nil
+				}
+				return ids, nil
+			}
+			failure := errors.New("controlled failure")
+			if tc.sourceFailure {
+				r.sources = func(context.Context, string, []string, []string) (store.WorkerMonitoringSources, error) {
+					events = append(events, "sources")
+					return store.WorkerMonitoringSources{}, failure
+				}
+			}
+			rules := serviceRules(t, &events)
+			if tc.projectionFailure {
+				rules.projectSummary = func(monitoring.StoredSummary, store.WorkerMonitoringSources) (json.RawMessage, error) {
+					events = append(events, "project summary")
+					return nil, failure
+				}
+			}
+			if tc.oversized {
+				rules.projectSummary = func(monitoring.StoredSummary, store.WorkerMonitoringSources) (json.RawMessage, error) {
+					events = append(events, "project summary")
+					return json.RawMessage(`"` + strings.Repeat("<", monitoring.MaxQuery) + `"`), nil
+				}
+			}
+			out, err := s.queryMonitoring(context.Background(), servicePrincipal(), []string{serviceWorker}, rules)
+			if tc.deny {
+				serviceFault(t, err, "not_found")
+			} else if tc.sourceFailure {
+				if !errors.Is(err, failure) {
+					t.Fatalf("lost source error: %v", err)
+				}
+			} else {
+				serviceFault(t, err, "monitoring_unavailable")
+				if tc.projectionFailure && !errors.Is(err, failure) {
+					t.Fatalf("lost projection error: %v", err)
+				}
+			}
+			if len(out.Items) != 0 {
+				t.Fatalf("published partial result: %+v", out)
+			}
+			if calls != 2 {
+				t.Fatalf("expected re-admission, got %v", events)
+			}
+			if tc.deny && !reflect.DeepEqual(events, []string{"snapshot", "admit", "summaries", "summary scopes", "snapshot", "admit"}) {
+				t.Fatalf("denial order %v", events)
+			}
+		})
+	}
 }

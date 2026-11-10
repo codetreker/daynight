@@ -26,7 +26,8 @@ summaries so remote status does not carry arbitrary local errors. The
 [contract](../../../../docs/spec/daynight-worker-monitoring.md) owns the exact
 fields, bounds and errors; the [design](../../../../docs/design/daynight-worker-monitoring.md)
 owns the server mechanisms. The existing [Worker boundary decision](2026-11-05-server-worker-boundaries.md)
-continues to own the organization of Worker report and configuration operations.
+continues to own the organization of Worker report and configuration operations. The [summary permission decision](2026-11-09-monitoring-summary-permissions.md)
+extends the header with private references for current list projection.
 
 ## Alternatives
 

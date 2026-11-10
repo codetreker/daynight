@@ -3,6 +3,8 @@ import { isWorkerOnline, isWorkerRecent, sortWorkers } from './observation';
 import { useWorkers } from './useWorkers';
 import { WorkerStatusBadge } from './WorkerStatusBadge';
 import { followWorkerLink, WorkerIcon, WorkerReadNotice, WorkerReadState, WorkerRefresh, WorkerTaskSummary, WorkerTimestamp } from './presentation';
+import { MonitoringCard, MonitoringListError } from './WorkerMonitoring';
+import { useWorkerMonitoringSummaries } from './useWorkerMonitoring';
 import './workers.css';
 
 export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) => {
@@ -11,12 +13,16 @@ export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) 
   const { snapshot, serverMilliseconds } = state;
   if (snapshot !== null && serverMilliseconds === null) throw new Error('A Worker snapshot requires its server observation time.');
   const workers = snapshot === null ? [] : sortWorkers(snapshot.items.filter(worker => isWorkerRecent(worker, serverMilliseconds!)), serverMilliseconds!);
+  const monitoringIds = snapshot === null ? [] : snapshot.items.filter(worker => isWorkerRecent(worker, serverMilliseconds!)).map(worker => worker.workerId);
+  const monitoring = useWorkerMonitoringSummaries(monitoringIds, { readEnabled });
+  const refresh = () => { state.refresh(); if (monitoringIds.length > 0) monitoring.refresh(); };
   const onlineCount = workers.filter(worker => isWorkerOnline(worker, serverMilliseconds!)).length;
   return <div className="worker-page">
     <div className="page-heading"><div><p className="eyebrow">{app.workspace}</p><h1 id="page-title" tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div>
-      <div className="heading-actions"><WorkerRefresh refresh={state.refresh} refreshing={state.refreshing} readEnabled={readEnabled} /></div></div>
-    {snapshot === null ? <WorkerReadState kind="list" {...state} readEnabled={readEnabled} /> : <>
-      <WorkerReadNotice {...state} observedAt={snapshot.observedAt} readEnabled={readEnabled} />
+      <div className="heading-actions"><WorkerRefresh refresh={refresh} refreshing={state.refreshing || monitoring.refreshing} readEnabled /></div></div>
+    {snapshot === null ? <WorkerReadState kind="list" {...state} readEnabled /> : <>
+      <WorkerReadNotice {...state} observedAt={snapshot.observedAt} readEnabled />
+      <MonitoringListError state={monitoring} readEnabled />
       {workers.length === 0 ? <section className="state-box" role="status"><div className="state-icon"><WorkerIcon /></div><h2>{m.empty}</h2><p>{m.emptyDetail}</p></section> : <>
         <div className="worker-summary-strip"><span>{m.count({ count: format.number(workers.length) })}</span><span>{m.onlineCount({ count: format.number(onlineCount) })}</span><span>{m.offlineCount({ count: format.number(workers.length - onlineCount) })}</span></div>
         <ul className="worker-grid" aria-label={m.list}>{workers.map(worker => <li key={worker.workerId}>
@@ -24,6 +30,7 @@ export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) 
             <div className="worker-card-top"><span className="worker-machine-icon"><WorkerIcon /></span><WorkerStatusBadge online={isWorkerOnline(worker, serverMilliseconds!)} stale={state.stale} /></div>
             <h2 className="worker-name">{worker.machine.name}</h2><p className="worker-platform">{platform.names[worker.platform]}</p>
             <p className="worker-workload"><WorkerTaskSummary worker={worker} serverMilliseconds={serverMilliseconds!} stale={state.stale} /></p>
+            {(() => { const entry = monitoring.snapshot?.items.find(value => value.item.workerId === worker.workerId); return <MonitoringCard expired={entry?.expired ?? false} item={entry?.item ?? null} now={entry === undefined ? null : Date.parse(entry.observedAt) + performance.now() - entry.receivedMonotonic} />; })()}
             <div className="worker-card-footer"><div className="worker-last-report">{m.lastReported} <span className="worker-last-time"><WorkerTimestamp value={worker.lastReportedAt} /></span></div>
               <span className="worker-open" aria-hidden="true">{m.viewDetails} <span>→</span></span></div>
           </a>

@@ -128,7 +128,7 @@ describe('Worker configuration navigation', () => {
 
   it('retains the hidden configuration and returns to its editor when leaving the overview is cancelled', async () => {
     await mount(); const input = edit();
-    fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' }));
     expect(screen.queryByRole('alertdialog')).toBeNull(); expect(unload()).toBe(true); expect(input).not.toBeVisible();
     leave(); expect(screen.getByRole('alertdialog')).toBeVisible();
     fireEvent.keyDown(document, { key: 'Escape' });

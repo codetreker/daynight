@@ -12,6 +12,10 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { isWorkerOnline, isWorkerRecent, sortWorkers, workerServerMilliseconds } from '../src/features/workers/observation';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerPage, workerResponse, workerSummary } from './helpers/workers';
 
+vi.mock('../src/features/workers/useWorkerMonitoring', () => ({
+  useWorkerMonitoringSummaries: () => ({ snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh: () => {} }),
+}));
+
 const scopes: TaskCacheScope[] = [];
 let monotonic: number;
 let visibility: DocumentVisibilityState;
@@ -88,7 +92,8 @@ describe('Worker observation time', () => {
     expect(result.current.serverMilliseconds).toBe(now + 1_000);
     expect(isWorkerOnline(recent, result.current.serverMilliseconds!)).toBe(false);
     expect(isWorkerRecent(old, result.current.serverMilliseconds!)).toBe(false);
-    await advance(19_000); expect(fetch).toHaveBeenCalledTimes(2);
+    await advance(28_999); expect(fetch).toHaveBeenCalledOnce();
+    await advance(1); expect(fetch).toHaveBeenCalledTimes(2);
     unmount(); expect(vi.getTimerCount()).toBe(0);
     pending.resolve(workerResponse(workerPage([]))); await flush();
   });
@@ -175,6 +180,55 @@ describe('complete Worker list reads', () => {
     await flush(); act(() => { result.current.refresh(); result.current.refresh(); }); await advance(20_000);
     expect(fetch).toHaveBeenCalledOnce(); expect(result.current.refreshing).toBe(true);
     pending.resolve(workerResponse(workerPage([]))); await flush(); expect(result.current.status).toBe('ready'); expect(result.current.snapshot?.items).toEqual([]);
+  });
+  it('keeps the refresh button focused and unchanged during a background read, then coalesces an explicit click', async () => {
+    const pending = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const view = renderWithLocale(<TaskCacheProvider scope={makeScope()}><WorkersPage readEnabled /></TaskCacheProvider>, { locale: 'en' });
+    await flush();
+    const button = screen.getByRole('button', { name: 'Refresh' }); button.focus();
+    await advance(30_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(button).toHaveFocus(); expect(button).toBeEnabled(); expect(button).toHaveTextContent('Refresh');
+    fireEvent.click(button); await flush();
+    expect(button).toBeDisabled(); expect(button).toHaveTextContent('Refreshing'); expect(fetch).toHaveBeenCalledTimes(2);
+    pending.resolve(workerResponse(workerPage())); await flush();
+    expect(button).toBeEnabled(); expect(button).toHaveTextContent('Refresh'); expect(fetch).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+  it('queues one explicit refresh while identity admission is closed and performs it only after reopening', async () => {
+    const pending = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender, unmount } = renderHook(({ enabled }) => useWorkers({ readEnabled: enabled }), { wrapper: wrapper(makeScope()), initialProps: { enabled: true } });
+    await flush(); expect(fetch).toHaveBeenCalledOnce();
+    rerender({ enabled: false });
+    act(() => { result.current.refresh(); result.current.refresh(); }); await flush();
+    expect(fetch).toHaveBeenCalledOnce(); expect(result.current.refreshing).toBe(true);
+    rerender({ enabled: true }); await flush();
+    expect(fetch).toHaveBeenCalledTimes(2); expect(result.current.refreshing).toBe(true);
+    pending.resolve(workerResponse(workerPage())); await flush();
+    expect(result.current.refreshing).toBe(false); expect(fetch).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+  it('does not carry a queued refresh into a different account scope', async () => {
+    const first = makeScope(), nextUser = workerId(999), next = makeScope(nextUser);
+    const fetch = vi.fn(async () => workerResponse(workerPage(), nextUser)); vi.stubGlobal('fetch', fetch);
+    const view = renderWithLocale(<TaskCacheProvider scope={first}><WorkersPage readEnabled={false} /></TaskCacheProvider>, { locale: 'en' });
+    await flush(); fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush();
+    expect(fetch).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+    view.rerender(<TaskCacheProvider scope={next}><WorkersPage readEnabled /></TaskCacheProvider>); await flush();
+    expect(fetch).toHaveBeenCalledOnce(); expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    view.unmount();
+  });
+  it('schedules the next automatic read 30 seconds after manual refresh', async () => {
+    const fetch = vi.fn(async () => workerResponse(workerPage())); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkers({ readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); await advance(29_000);
+    act(() => result.current.refresh()); await flush(); expect(fetch).toHaveBeenCalledTimes(2);
+    await advance(29_999); expect(fetch).toHaveBeenCalledTimes(2);
+    await advance(1); expect(fetch).toHaveBeenCalledTimes(3);
   });
 });
 

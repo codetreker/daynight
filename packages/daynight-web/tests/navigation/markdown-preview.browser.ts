@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 import { stableDiagrams } from './mermaid-stable-fixture';
 import { captureStableDependencyGeometry, checkDependencyGeometry, expectedDependencyTopology } from '../helpers/dependency-geometry';
@@ -31,7 +31,10 @@ async function install(page: Page, descriptionOverride = description, chain = fa
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
-    if (path === root) return send(task);
+    if (path === root) return route.fulfill({
+      body: stringifyWireJson(task),
+      headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': taskSyncEpoch(projectId) },
+    });
     if (path === `${root}/attachments`) { state.attachmentLists++; return send({ items: [{ path: 'plan.md', contentType: 'text/markdown', sizeBytes: 19, createdAt: time, updatedAt: time }], nextCursor: null }); }
     if (path === `${root}/attachments/files/plan.md`) return route.fulfill({ body: '# Plan\n\nReady.', headers: { 'Content-Type': 'text/markdown', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `${root}/sessions`) return send({ items: [], nextCursor: null });

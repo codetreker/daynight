@@ -8,6 +8,9 @@ import { useWorker } from './useWorker';
 import { WorkerStatusBadge } from './WorkerStatusBadge';
 import { followWorkerLink, formatWorkerBytes, WorkerReadNotice, WorkerReadState, WorkerRefresh, WorkerTimestamp } from './presentation';
 import { WorkerConfigurationPanel } from './configuration/WorkerConfigurationPanel';
+import { WorkerMonitoring } from './WorkerMonitoring';
+import { useWorkerPageAnchor } from './useWorkerPageAnchor';
+import { useWorkerMonitoring } from './useWorkerMonitoring';
 import './workers.css';
 
 const agentNames: Readonly<Record<WorkerAgent, string>> = { codex: 'Codex', claude: 'Claude Code', copilot: 'Copilot' };
@@ -44,6 +47,11 @@ const TaskRows = ({ tasks }: { readonly tasks: readonly WorkerTaskSnapshot[] }) 
 
 export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: { readonly workerId: string; readonly readEnabled: boolean; readonly onRetentionChange?: (retain: boolean) => void }) => {
   const state = useWorker(workerId, { readEnabled });
+  const monitoring = useWorkerMonitoring(workerId, { readEnabled });
+  const refresh = () => { state.refresh(); monitoring.refresh(); };
+  const monitoringAge = monitoring.snapshot?.state === 'available' && monitoring.serverMilliseconds !== null ? monitoring.serverMilliseconds - Date.parse(monitoring.snapshot.receivedAt) : null;
+  const ageClass = monitoringAge === null ? 'unknown' : monitoringAge >= 3_600_000 ? 'expired' : monitoringAge >= 90_000 ? 'stale' : 'current';
+  const page = useWorkerPageAnchor(monitoring.snapshot, monitoring.error, state.snapshot, ageClass);
   const { messages: { workers: m, platform }, locale, format } = useI18n();
   const { snapshot, serverMilliseconds } = state;
   if (snapshot !== null && serverMilliseconds === null) throw new Error('A Worker snapshot requires its server observation time.');
@@ -63,19 +71,20 @@ export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: {
     if (next === null) return;
     event.preventDefault(); selectSection(next); document.getElementById(`worker-tab-${next}`)!.focus();
   };
-  return <div className="worker-page">
+  return <div className="worker-page" ref={page}>
     <a className="worker-back-link" href="/workers" onClick={followWorkerLink}>← {m.back}</a>
     {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div><h1 id="page-title" tabIndex={-1}>{worker.machine.name}</h1>
         <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
-        <p className="worker-id">{m.workerId} · {worker.workerId}</p></div>{section === 'overview' && <div className="heading-actions"><WorkerRefresh refresh={state.refresh} refreshing={state.refreshing} readEnabled={readEnabled} /></div>}</div>}
+        <p className="worker-id">{m.workerId} · {worker.workerId}</p></div>{section === 'overview' && <div className="heading-actions"><WorkerRefresh refresh={refresh} refreshing={state.refreshing || monitoring.refreshing} readEnabled /></div>}</div>}
     {(worker === undefined || unavailable) && section === 'configuration' && <div className="page-heading worker-detail-heading"><h1 id="page-title" tabIndex={-1}>{m.workerId} · {workerId}</h1></div>}
     <div className="worker-tabs" role="tablist" aria-label={m.configuration.sections}>{(['overview', 'configuration'] as const).map(value => <button key={value} type="button" role="tab" id={`worker-tab-${value}`} aria-controls={`worker-panel-${value}`} aria-selected={section === value} tabIndex={section === value ? 0 : -1} onClick={() => selectSection(value)} onKeyDown={onTabKeyDown}>{m.configuration[value]}</button>)}</div>
     <section className="worker-section" id="worker-panel-overview" role="tabpanel" aria-labelledby="worker-tab-overview" hidden={section !== 'overview'}>
-    {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled={readEnabled} /> : <>
-      <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled={readEnabled} />
+    {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled /> : <>
+      <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
+      <WorkerMonitoring state={monitoring} readEnabled />
       <p className="worker-sample-time">{m.sampledAt}: <WorkerTimestamp value={worker.telemetry.sampledAt} /></p>
-      <div className="worker-metric-grid">
+      <div className="worker-metric-grid" data-worker-reading>
         <MetricCard title={m.cpuUsage} checkedAt={worker.telemetry.cpu.checkedAt}>{worker.telemetry.cpu.state === 'error' ? <ProbeFailure probe={worker.telemetry.cpu} /> : <>
           <p className="worker-metric-value">{percent(worker.telemetry.cpu.value.usagePercent)}<span className="worker-metric-unit">%</span></p><Meter value={worker.telemetry.cpu.value.usagePercent} label={m.cpuUsage} /><p className="worker-metric-detail">{worker.telemetry.cpu.value.model} · {m.logicalProcessors({ count: format.number(worker.telemetry.cpu.value.logicalProcessors) })}</p>
         </>}</MetricCard>
@@ -88,7 +97,7 @@ export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: {
           {worker.telemetry.disk.value.totalBytes > 0 && <Meter value={(worker.telemetry.disk.value.totalBytes - worker.telemetry.disk.value.availableBytes) / worker.telemetry.disk.value.totalBytes * 100} label={m.disk} high={worker.telemetry.disk.value.availableBytes / worker.telemetry.disk.value.totalBytes < .2} />}<p className="worker-metric-detail">{m.totalDisk({ total: bytes(worker.telemetry.disk.value.totalBytes) })}</p>
         </>}</MetricCard>
       </div>
-      <div className="worker-detail-columns">
+      <div className="worker-detail-columns" data-worker-reading>
         <section className="worker-panel"><h2 className="worker-panel-heading">{m.environment}</h2><dl className="worker-info-list">
           <div className="worker-info-row"><dt>{m.operatingSystem}</dt><dd>{worker.telemetry.os.state === 'error' ? <ProbeFailure probe={worker.telemetry.os} /> : <>{worker.telemetry.os.value.type}<br />{worker.telemetry.os.value.release}<br /><span className="worker-os-version">{worker.telemetry.os.value.version}</span></>}<CheckedAt value={worker.telemetry.os.checkedAt} /></dd></div>
           <div className="worker-info-row"><dt>{m.architecture}</dt><dd>{worker.telemetry.os.state === 'error' ? <ProbeFailure probe={worker.telemetry.os} /> : worker.telemetry.os.value.arch}</dd></div>
@@ -100,7 +109,7 @@ export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: {
           <SoftwareRow name="Herdr" probe={worker.telemetry.versions.herdr} /><SoftwareRow name="Codex" probe={worker.telemetry.versions.codex} /><SoftwareRow name="Copilot" probe={worker.telemetry.versions.copilot} />
         </dl></section>
       </div>
-      <section className="worker-panel"><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
+      <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
         {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
         <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>
         {worker.taskObservationState === 'unavailable' ? <p className="worker-task-empty">{m.tasksPending}</p> : <>

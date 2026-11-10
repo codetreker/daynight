@@ -34,7 +34,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ## 目标与现有基础
 
-浏览器提供“项目列表 → 项目统计 → 独立任务列表或根任务链 → 任务详情”和“我的 Worker → Worker 运行概况或配置”两条浏览路径。数据继续归属 `daynight-server`，不接入 客户端的 review 命令，不新增父子任务。任务有todo、in_progress、done、cancelled，创建默认todo，详情读取四态并保留取消资料；未取消任务菜单提供四种状态目标，提供
+浏览器提供“项目列表 → 项目统计 → 独立任务列表或根任务链 → 任务详情”和“我的 Worker → Worker 运行监控或配置”两条浏览路径。数据继续归属 `daynight-server`，不接入 客户端的 review 命令，不新增父子任务。任务有todo、in_progress、done、cancelled，创建默认todo，详情读取四态并保留取消资料；未取消任务菜单提供四种状态目标，提供
 版本化状态菜单；许可和平台使用各自确认入口，图和一般元数据继续保持读取。
 
 已有基础与集成位置：
@@ -113,7 +113,9 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 列表加载器逐页读取到 nextCursor 为 null，暂存所有摘要并拒绝循环游标或重复 Worker ID。只有整轮成功才一次发布，任何页失败都保留上次完整集合。快照的 items 始终保留服务端 (created_at, worker_id) 升序的跨页原始次序；created_at 是当前账号该 Worker 首次有效报告的持久化时间，后续报告不会更新。发布使用最后一页的 observedAt 与该响应接收时的 performance.now 建立统一锚点。WorkersPage 从原始快照筛选近期 Worker，再由 sortWorkers 复制数组并稳定地将 online 分组置前，组内不再比较 lastReportedAt 或 workerId。每次新快照或本地 ticker 重绘都从原始创建次序出发，因此尚未完成下次网络刷新时的 online 边界变化也能在新组内正确就位；已按 online 排列的数组不能作为后续分组的创建次序来源。摘要无需新增 createdAt，只有 machine、platform、上报时间及任务观测/计数，不执行逐 Worker 详情 fan-out，也不推断 OS release。
 
-每个可见页面的运行观测通道共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。`WorkerReadNotice` 仅在保留快照且已有读取错误时显示警告和重试入口；没有错误的陈旧状态沿用徽标、任务快照说明与来源时间，正常检查不插入提示区域，原内容及焦点保持稳定。重试开始不清除已有错误，成功发布才移除失败提示。可信当前身份 404 清空运行观测，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”；这些结果不替代独立配置资源的读取结果。
+每个可见页面的运行观测通道共享一个 30 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。`WorkerReadNotice` 仅在保留快照且已有读取错误时显示警告和重试入口；没有错误的陈旧状态沿用徽标、任务快照说明与来源时间，正常检查不插入提示区域，原内容及焦点保持稳定。重试开始不清除已有错误，成功发布才移除失败提示。可信当前身份 404 清空运行观测，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”；这些结果不替代独立配置资源的读取结果。
+
+`api/worker-monitoring.ts` 对详情与批量摘要执行闭合字段、枚举、固定诊断和当前 principal 校验；监控不改变原快照合同。`useWorkerMonitoring` 复用账号和 Project generation 准入，读取详情时过滤撤权 scope 和关联，批量摘要按已加载 ID 分组，每批最多 100 个并各自保存 Redis 时间锚点。摘要的 admission 消费权限过滤后的固定原因、观测时间和覆盖；因公共结果没有 scope 标识，项目撤权时使受影响的列表原因集合失效，保留总容量并以 generation fence 拒绝迟到响应。监控与原快照独立失败，保留主机资源及上次确认观测；监控年龄以 Redis `observedAt` 和接收时单调时钟推进，即使读取失败也可达到 90 秒陈旧及 3600 秒过期。普通后台检查不重挂载内容；实际撤权移除关联及展开错误，真实总容量和无身份原因保留。详情先显示运行质量、容量与准入、活动、异常与恢复，再显示原遥测；配置面板维持独立挂载与草稿。协议细节由[监控合同](../spec/daynight-worker-monitoring.md)拥有。
 
 列表卡片的上报时间使用 `WorkerTimestamp` 的绝对时间模式，复用 `format.dateTime` 的语言、浏览器时区和秒精度；标签与时间作为不可拆分的一组，卡片底部的详情入口可独立换行。ticker 仍用于在线状态与可见性，不改变同一上报时间的显示。
 
@@ -125,7 +127,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 ### Worker 云端配置编辑
 
-`WorkerDetailPage` 在运行概况与配置之间切换，原运行概况继续使用单调时钟及近期窗口。配置首次打开时挂载独立 `WorkerConfigurationPanel`，切回概况后保留组件与草稿，但暂停配置自动读取。配置返回值没有 observedAt，不能放入 `useWorkerObservation` 或生成伪服务端时钟。Worker ID 始终来自路由；概况超窗、404 或首次失败不成为配置请求的前置条件。
+`WorkerDetailPage` 在运行监控与配置之间切换，原运行监控继续使用单调时钟及近期窗口。配置首次打开时挂载独立 `WorkerConfigurationPanel`，切回运行监控后保留组件与草稿，但暂停配置自动读取。配置返回值没有 observedAt，不能放入 `useWorkerObservation` 或生成伪服务端时钟。Worker ID 始终来自路由；运行监控超窗、404 或首次失败不成为配置请求的前置条件。
 
 配置面板在整个草稿生命周期向 `BrowserNavigation` 注册原始草稿的实时 dirty 读取器，scope 由当前认证实例和 Worker ID 组成，与任务草稿隔离。同一 Worker 路由及本地页签切换保留注册；其他应用内目标通过既有导航准入确认，原生文档离开复用 `beforeunload`。确认复用 `TaskConfirmation` 的背景隔离和键盘约束，采用配置专用文案；显示前关闭配置的管理弹窗，避免背景隔离和焦点约束冲突。取消离开切回配置并恢复最近编辑控件或首字段焦点。确认离开沿用配置已有取消修改行为，最终卸载结束草稿生命周期，不将未知保存结果重分类或重放。认证信号失效或配置已确认不可用时撤销注册与待决确认；普通身份检查和运行观测过期不撤销草稿。历史保护沿用[任务步骤导航](daynight-task-steps.md#web-呈现导航与大集合)的索引段限制，不重建原生或跨段历史。
 

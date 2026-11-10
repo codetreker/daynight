@@ -361,7 +361,7 @@ describe('Worker detail configuration integration', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
     const args = input('Startup arguments'); change('Startup arguments', '[unfinished');
-    const overview = screen.getByRole('tab', { name: 'Runtime overview' }); fireEvent.click(overview); expect(args).not.toBeVisible();
+    const overview = screen.getByRole('tab', { name: 'Runtime monitoring' }); fireEvent.click(overview); expect(args).not.toBeVisible();
     fireEvent.keyDown(overview, { key: 'ArrowRight' }); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveFocus(); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[unfinished'); expect(args).toBeVisible();
   });
@@ -388,7 +388,7 @@ describe('Worker detail configuration integration', () => {
     expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(within(dialog).queryByRole('status')).toBeNull();
     projectsRead.resolve(projectPage([project(3), project(4)])); configRead.resolve(configurationResponse(configurationResource())); await flush();
     expect(search).toHaveValue('Project 4'); expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked();
-    fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' })); expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' })); expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[invalid');
   });
   it('preserves existing Task links while displaying a separate configuration panel', async () => {
@@ -397,7 +397,7 @@ describe('Worker detail configuration integration', () => {
     const taskLink = screen.getByRole('link', { name: 'Snapshot task' }), href = taskLink.getAttribute('href');
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByText('Snapshot task')).toBe(taskLink); expect(taskLink.getAttribute('href')).toBe(href); expect(taskLink).not.toBeVisible();
-    fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' })); expect(taskLink).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' })); expect(taskLink).toBeVisible();
   });
   it('keeps local editing while reads are paused and removes private draft on account change', async () => {
     const first = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }), nextUser = workerId(88), second = createTaskCacheScope({ userId: nextUser, onIdentityMismatch: vi.fn() }); scopes.push(first, second);

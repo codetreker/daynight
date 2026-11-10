@@ -4,12 +4,83 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
 )
+
+// monitoringScopeVisible uses the same current-resource rule for details and
+// compact summary references. A claim's former identity is not proof of access.
+func monitoringScopeVisible(projectID, taskID string, sources store.WorkerMonitoringSources) bool {
+	if projectID == "" {
+		return taskID == ""
+	}
+	if _, ok := sources.Projects[projectID]; !ok {
+		return false
+	}
+	if taskID == "" {
+		return true
+	}
+	task, ok := sources.Tasks[taskID]
+	return ok && task.Task.ProjectID == projectID
+}
+
+// MonitoringSummaryScopes returns unique resource IDs required to qualify the
+// private summary references against one current permission snapshot.
+func MonitoringSummaryScopes(summaries []monitoring.StoredSummary) ([]string, []string) {
+	projects, tasks := map[string]bool{}, map[string]bool{}
+	for _, summary := range summaries {
+		for _, reason := range summary.Admission.Reasons {
+			if reason.ProjectID != "" {
+				projects[reason.ProjectID] = true
+			}
+			if reason.TaskID != "" {
+				tasks[reason.TaskID] = true
+			}
+		}
+	}
+	p, t := make([]string, 0, len(projects)), make([]string, 0, len(tasks))
+	for id := range projects {
+		p = append(p, id)
+	}
+	for id := range tasks {
+		t = append(t, id)
+	}
+	sort.Strings(p)
+	sort.Strings(t)
+	return p, t
+}
+
+// ProjectMonitoringSummary filters before deduplicating so a visible reason
+// cannot reveal whether another, inaccessible scope reported the same code.
+func ProjectMonitoringSummary(summary monitoring.StoredSummary, sources store.WorkerMonitoringSources) (json.RawMessage, error) {
+	codes := make(map[int]string)
+	restricted := false
+	for _, reason := range summary.Admission.Reasons {
+		if !monitoringScopeVisible(reason.ProjectID, reason.TaskID, sources) {
+			restricted = true
+			continue
+		}
+		codes[reason.CodeIndex] = reason.Code
+	}
+	indexes := make([]int, 0, len(codes))
+	for index := range codes {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	visible := make([]string, 0, len(indexes))
+	for _, index := range indexes {
+		visible = append(visible, codes[index])
+	}
+	projection := "current"
+	if restricted {
+		projection = "restricted"
+	}
+	return monitoring.EncodePublicSummary(summary, visible, projection)
+}
 
 // MonitoringScopes returns the unique project and task IDs needed for current permission checks.
 func MonitoringScopes(o monitoring.Observation) ([]string, []string) {
@@ -99,16 +170,17 @@ func ProjectMonitoring(result *monitoring.DetailResponse, sources store.WorkerMo
 			return true
 		}
 		projectID := scope["projectId"].(string)
+		taskID, _ := scope["taskId"].(string)
+		if !monitoringScopeVisible(projectID, taskID, sources) {
+			return false
+		}
 		name, ok := sources.Projects[projectID]
 		if !ok {
 			return false
 		}
 		var label any = map[string]any{"kind": "project", "projectName": name}
 		if kind == "claim" {
-			source, ok := sources.Tasks[scope["taskId"].(string)]
-			if !ok || source.Task.ProjectID != projectID {
-				return false
-			}
+			source := sources.Tasks[taskID]
 			label = map[string]any{"kind": "task", "projectName": source.ProjectName, "title": source.Task.Title}
 		}
 		item["association"] = map[string]any{"kind": "labels-omitted"}

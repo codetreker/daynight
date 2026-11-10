@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { pauseAuthRequests } from '../src/api/client';
 import { navigate } from '../src/app/router';
+import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import type { CacheEvent } from '../src/features/task-cache/project-cache';
+import { useWorkerMonitoring } from '../src/features/workers/useWorkerMonitoring';
+import { WorkerMonitoring } from '../src/features/workers/WorkerMonitoring';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { mockSidebarMediaQuery } from './helpers/mediaQuery';
 import { viewerHeaders } from './helpers/taskSync';
@@ -34,14 +38,29 @@ const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principa
   } } }, 200, viewer);
 };
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
+const monitoringDetail = (viewer = principal) => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
+  runId: secondWorker, sequence: '1', capturedAt: observedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', cycleId: null, lastCompletedAt: null, lastSuccessfulAt: null, lastOutcome: null, nextPollAt: null },
+  capacity: { observedAt, quality: 'current', limit: 2, occupied: 1, available: 1, detailCoverage: 'complete' },
+  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [],
+  currentFailures: [{ operationId: firstWorker, component: 'execution', phase: 'executing', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, firstObservedAt: observedAt, lastObservedAt: observedAt, occurrencesInRun: 1, retryState: 'none', nextAttemptAt: null, association: { kind: 'task', projectName: 'Private project', title: 'Private failure task' } }],
+  lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: null, lastFailure: null },
+} }, 200, viewer);
 const defaults = (url: string): Response => {
   if (url === '/api/v1/me') return json(user(principal));
   if (url.startsWith('/api/v1/teams?')) return json(personalTeamPage(principal));
   if (url.startsWith('/api/v1/projects?')) return json({ items: [], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
 };
-const install = (handler: (url: string, options?: RequestInit) => Response | Promise<Response>) => {
-  const fetcher = vi.fn(async (url: string, options?: RequestInit) => handler(url, options));
+const install = (handler: (url: string, options?: RequestInit) => Response | Promise<Response>, monitoring?: (url: string, options?: RequestInit) => Response | Promise<Response>) => {
+  const fetcher = vi.fn(async (url: string, options?: RequestInit) => {
+    if (monitoring && (url === '/api/v1/me/workers/monitoring/query' || /^\/api\/v1\/me\/workers\/[^/]+\/monitoring$/.test(url))) return monitoring(url, options);
+    if (url === '/api/v1/me/workers/monitoring/query') {
+      const { workerIds } = JSON.parse(String(options?.body)) as { workerIds: string[] };
+      return json({ observedAt, items: workerIds.map(workerId => ({ workerId, state: 'absent', revision: null, receivedAt: null, expiresAt: null, summary: null })) });
+    }
+    if (/^\/api\/v1\/me\/workers\/[^/]+\/monitoring$/.test(url)) return json({ observedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' });
+    return handler(url, options);
+  });
   vi.stubGlobal('fetch', fetcher);
   return fetcher;
 };
@@ -58,6 +77,22 @@ beforeEach(() => {
 });
 
 describe('Worker pages in the authenticated workspace', () => {
+  it('can refresh an empty Worker list repeatedly without scheduling an empty monitoring batch', async () => {
+    window.history.replaceState(null, '', '/workers');
+    let listReads = 0, monitoringReads = 0;
+    install(url => {
+      if (url.startsWith('/api/v1/me/workers?')) { listReads++; return json({ observedAt, items: [], nextCursor: null }); }
+      return defaults(url);
+    }, () => { monitoringReads++; throw new Error('Empty lists cannot issue a monitoring query.'); });
+    render(<AuthenticatedApp />);
+    await screen.findByText('No active Workers in the last 72 hours');
+    for (let expected = 2; expected <= 3; expected++) {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => { expect(listReads).toBe(expected); expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled(); });
+    }
+    expect(monitoringReads).toBe(0);
+  });
+
   it('guards a configuration edited back to its original value while a save is in flight', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
     const pending = Promise.withResolvers<Response>();
@@ -258,22 +293,43 @@ describe('Worker pages in the authenticated workspace', () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    const heading = await screen.findByRole('heading', { name: 'Alice worker' }), cpu = screen.getByRole('meter', { name: 'CPU usage' });
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    const cpu = screen.getByRole('meter', { name: 'CPU usage' });
     const content = document.querySelector('.worker-page')!, sections = [...content.children];
-    heading.focus(); returnToWorkspace();
+    const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus(); returnToWorkspace();
     await screen.findByText('online · last confirmed');
-    expect(workerReads).toBe(1); expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(heading).toHaveFocus();
+    expect(workerReads).toBe(1); expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled();
     expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections);
     await act(async () => identity.resolve(json(user())));
     await waitFor(() => expect(workerReads).toBe(2));
-    expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(cpu).toHaveAttribute('aria-valuenow', '34');
+    expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled();
     expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections);
     const freshTime = '2026-10-29T11:01:00Z';
     await act(async () => replacement.resolve(detail(firstWorker, 'Alice worker', owner, { observedAt: freshTime, reportedAt: freshTime, cpu: 67 })));
     await screen.findByText('online');
     expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '67');
     expect(content.querySelector(`.worker-description time[datetime="${freshTime}"]`)).toBeInTheDocument();
-    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections); expect(heading).toHaveFocus();
+    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections); expect(refresh).toHaveFocus();
+  });
+
+  it('keeps refresh focus while only the background monitoring read remains pending', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>();
+    let monitoringReads = 0, workerReads = 0;
+    const absent = () => json({ observedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' });
+    install(url => {
+      if (url === `/api/v1/me/workers/${firstWorker}`) { workerReads++; return detail(); }
+      return defaults(url);
+    }, () => ++monitoringReads === 1 ? absent() : pending.promise);
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    await waitFor(() => expect(monitoringReads).toBe(1));
+    const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
+    returnToWorkspace();
+    await waitFor(() => { expect(workerReads).toBe(2); expect(monitoringReads).toBe(2); });
+    expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled(); expect(refresh).toHaveTextContent('Refresh');
+    await act(async () => pending.resolve(absent()));
+    expect(refresh).toHaveFocus(); expect(refresh).toBeEnabled();
   });
 
   it('retains the configuration editor and unapplied Project selection throughout identity and recovery reads', async () => {
@@ -355,7 +411,7 @@ describe('Worker pages in the authenticated workspace', () => {
     });
     render(<AuthenticatedApp />);
     await screen.findByRole('heading', { name: 'Initial observation' });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(workerReads).toBe(2));
     returnToWorkspace();
     await waitFor(() => expect(oldSignal?.aborted).toBe(true));
@@ -381,7 +437,7 @@ describe('Worker pages in the authenticated workspace', () => {
     });
     render(<AuthenticatedApp />);
     await screen.findByRole('heading', { name: 'Alice private worker' });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(oldReads).toBe(2));
     principal = other;
     returnToWorkspace();
@@ -390,6 +446,53 @@ describe('Worker pages in the authenticated workspace', () => {
     await act(async () => pending.resolve(list('Late Alice private worker', owner)));
     expect(screen.queryByRole('heading', { name: 'Late Alice private worker' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'Bob worker' })).toBeInTheDocument();
+  });
+
+  it('clears expanded private monitoring errors and rejects a late response on account change', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>(); let reads = 0;
+    install(url => {
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail(firstWorker, principal === owner ? 'Alice worker' : 'Bob worker', principal);
+      return defaults(url);
+    }, () => {
+      if (principal === other) return json({ observedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' });
+      return ++reads === 1 ? monitoringDetail(owner) : pending.promise;
+    });
+    render(<AuthenticatedApp />);
+    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' });
+    fireEvent.click(summary.closest('summary')!);
+    expect(await screen.findByText('Private failure task')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(reads).toBe(2));
+    principal = other; returnToWorkspace();
+    await screen.findByRole('heading', { name: 'Bob worker' });
+    expect(screen.queryByText('Private failure task')).toBeNull();
+    expect(screen.queryByText('The operation timed out.')).toBeNull();
+    await act(async () => pending.resolve(monitoringDetail(owner)));
+    expect(screen.queryByText('Private failure task')).toBeNull();
+    expect(screen.queryByText('The operation timed out.')).toBeNull();
+  });
+
+  it('withdraws an expanded scoped monitoring failure immediately and rejects its late response', async () => {
+    const project = '00000000-0000-4000-8000-000000000030';
+    const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: vi.fn() });
+    vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map([[project, 'a']]));
+    let publish!: (event: CacheEvent) => void;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    const pending = Promise.withResolvers<Response>(), newer = Promise.withResolvers<Response>();
+    let reads = 0;
+    vi.stubGlobal('fetch', vi.fn(() => ++reads === 1 ? Promise.resolve(monitoringDetail(owner)) : reads === 2 ? pending.promise : newer.promise));
+    const Monitor = () => { const state = useWorkerMonitoring(firstWorker, { readEnabled: true }); return <><button onClick={state.refresh}>Read again</button><WorkerMonitoring state={state} readEnabled /></>; };
+    const view = render(<TaskCacheProvider scope={scope}><Monitor /></TaskCacheProvider>);
+    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' }); fireEvent.click(summary.closest('summary')!);
+    expect(await screen.findByText('Private failure task')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Read again' })); await waitFor(() => expect(reads).toBe(2));
+    act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'a' }));
+    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.getByText('Some task details are not visible.')).toBeInTheDocument();
+    await act(async () => pending.resolve(monitoringDetail(owner)));
+    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    view.unmount(); scope.dispose(); newer.resolve(monitoringDetail(owner));
   });
 
   it.each([200, 404])('discards the rendered identity before an unadmitted %s detail response can publish', async (status) => {

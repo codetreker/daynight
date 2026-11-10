@@ -1,0 +1,108 @@
+import { fireEvent, screen, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../src/api/client';
+import type { WorkerMonitoringDetail, WorkerMonitoringItem } from '../src/api/worker-monitoring';
+import { taskDetailUrl } from '../src/app/router';
+import { MonitoringCard, WorkerMonitoring } from '../src/features/workers/WorkerMonitoring';
+import type { WorkerReadState } from '../src/features/workers/useWorkerObservation';
+import { renderWithLocale } from './helpers/renderWithLocale';
+
+const id = (n: number) => `0000000${n}-1111-4111-8111-111111111111`;
+const receivedAt = '2026-11-09T12:00:00Z';
+const time = Date.parse(receivedAt);
+const scope = { kind: 'claim' as const, projectId: id(1), taskId: id(2), claimId: id(3) };
+const association = { kind: 'task' as const, projectName: 'Private project', title: 'Private task' };
+const detail: WorkerMonitoringDetail = { observedAt: receivedAt, state: 'available', revision: id(4), runId: id(5), sequence: '1', receivedAt, expiresAt: '2026-11-09T13:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
+  runId: id(5), sequence: '1', capturedAt: receivedAt, lifecycle: 'running',
+  scheduler: { phase: 'waiting-poll', coverage: 'complete', cycleId: null, lastCompletedAt: receivedAt, lastSuccessfulAt: receivedAt, lastOutcome: 'completed', nextPollAt: null },
+  capacity: { observedAt: receivedAt, quality: 'current', limit: 2, occupied: 2, available: 0, detailCoverage: 'complete' },
+  admission: { observedAt: receivedAt, coverage: 'complete', reasons: [{ code: 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: receivedAt, nextAttemptAt: null }] }, reservations: [{ reservationId: id(7), scope, association, roles: ['cleanup'], occupied: true, observedAt: receivedAt }],
+  activities: [{ kind: 'cleanup', phase: 'worktree-removal', operationId: id(6), status: 'waiting', scope, association, startedAt: receivedAt, lastProgressAt: null, elapsedMs: 1000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: receivedAt }],
+  currentFailures: [{ operationId: id(6), component: 'cleanup', phase: 'worktree-removal', scope, association, error: { type: 'operation', code: 'command-failed', cause: 'A required command failed.', causeTruncated: false }, firstObservedAt: receivedAt, lastObservedAt: receivedAt, occurrencesInRun: 3, retryState: 'scheduled', nextAttemptAt: receivedAt }],
+  lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: receivedAt, lastFailure: null },
+} };
+const state = (snapshot: WorkerMonitoringDetail | null = detail, now: number | null = time): WorkerReadState<WorkerMonitoringDetail> => ({ snapshot, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh: vi.fn() });
+
+it('renders real capacity and cleanup details and preserves an expanded failure during background reads', () => {
+  const view = renderWithLocale(<WorkerMonitoring state={state()} readEnabled />, { locale: 'en' });
+  expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getByText(/Cleanup occupies capacity/)).toBeInTheDocument();
+  const issue = screen.getByText('Cleanup · Worktree removal', { selector: 'summary strong' }).closest('details')!;
+  fireEvent.click(issue.querySelector('summary')!); expect(issue).toHaveAttribute('open');
+  expect(within(issue).getAllByText('A required command failed.')).toHaveLength(2);
+  expect(within(issue).getByRole('link', { name: 'Private task' })).toHaveAttribute('href', taskDetailUrl(id(1), id(2), { tab: 'overview', path: null }));
+  view.rerender(<WorkerMonitoring state={{ ...state(), refreshing: true }} readEnabled />);
+  expect(issue).toHaveAttribute('open'); expect(screen.getByText('Cleanup · Worktree removal', { selector: 'summary strong' }).closest('details')).toBe(issue);
+  const restricted: WorkerMonitoringDetail = { ...detail, permissionProjection: 'restricted', data: { ...detail.data, admission: { ...detail.data.admission, coverage: 'partial', reasons: [] }, reservations: [], activities: [], currentFailures: [], lastRecovery: null } };
+  view.rerender(<WorkerMonitoring state={state(restricted)} readEnabled />);
+  expect(screen.getByText('Some task details are not visible.')).toBeInTheDocument(); expect(screen.queryByText('Private task')).toBeNull();
+  expect(screen.queryByText('A required command failed.')).toBeNull(); expect(screen.getByText('No visible activities in this observation.')).toBeInTheDocument();
+  expect(screen.getByText('No visible failures in this observation.')).toBeInTheDocument(); expect(screen.getByText('No visible recovery in this observation.')).toBeInTheDocument(); expect(screen.getByText('2 / 2')).toBeInTheDocument();
+});
+
+it('distinguishes loading, absent, read error, stale and expiry at their boundaries', () => {
+  const refresh = vi.fn();
+  const failed = { ...state(null, null), status: 'error' as const, error: new ApiError('network'), refresh };
+  const view = renderWithLocale(<WorkerMonitoring state={failed} readEnabled />, { locale: 'en' });
+  expect(screen.getByRole('alert')).toHaveTextContent('Runtime monitoring could not be updated'); expect(screen.queryByText('No recent runtime observation')).toBeNull();
+  fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
+  view.rerender(<WorkerMonitoring state={state(detail, time + 89_999)} readEnabled />); expect(screen.queryByText(/Runtime observation is stale/)).toBeNull();
+  view.rerender(<WorkerMonitoring state={state(detail, time + 90_000)} readEnabled />); expect(screen.getByText(/Runtime observation is stale/)).toBeInTheDocument();
+  view.rerender(<WorkerMonitoring state={state(detail, time + 3_599_999)} readEnabled />); expect(screen.getByText('2 / 2')).toBeInTheDocument();
+  view.rerender(<WorkerMonitoring state={state(detail, time + 3_600_000)} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument(); expect(screen.queryByText('2 / 2')).toBeNull();
+  const absent: WorkerMonitoringDetail = { observedAt: receivedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' };
+  view.rerender(<WorkerMonitoring state={state(absent)} readEnabled />); expect(screen.getByText('No recent runtime observation')).toBeInTheDocument();
+  view.rerender(<WorkerMonitoring state={{ ...state(absent), expired: true }} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument();
+});
+
+it('presents a batch summary without inventing a reason and localizes the available phase', () => {
+  const item: WorkerMonitoringItem = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: { capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: receivedAt, nextPollAt: null }, capacity: { observedAt: receivedAt, quality: 'current', limit: 2, occupied: 2, available: 0 }, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: [], permissionProjection: 'current' } } };
+  const view = renderWithLocale(<MonitoringCard item={item} now={time + 90_000} />, { locale: 'zh-CN' });
+  expect(screen.getByText('等待下次检查')).toBeInTheDocument(); expect(screen.getByText(/执行名额: 2 \/ 2 已占用/)).toBeInTheDocument(); expect(screen.getByText(/运行观测已陈旧/)).toBeInTheDocument();
+  expect(screen.queryByText(/清理占用容量/)).toBeNull();
+  view.rerender(<MonitoringCard item={item} now={time + 3_600_000} />); expect(screen.getByText('运行观测已过期')).toBeInTheDocument();
+});
+
+it.each([
+  ['configuration-unavailable', 'Configuration unavailable', '配置不可用'], ['configuration-incomplete', 'Configuration incomplete', '配置不完整'],
+  ['inventory-unavailable', 'Inventory unavailable', '资源清单不可用'], ['project-unavailable', 'Project unavailable', '项目不可用'],
+  ['project-preparation-failed', 'Project preparation failed', '项目准备失败'], ['resource-observation-unavailable', 'Resource observation unavailable', '资源观测不可用'],
+  ['capacity-full', 'Capacity full', '容量已满'], ['cleanup-capacity-blocked', 'Cleanup occupies capacity', '清理占用容量'],
+  ['no-projects-selected', 'No projects selected', '未选择项目'], ['no-ready-tasks', 'No ready tasks', '没有就绪任务'],
+  ['claim-unconfirmed', 'Claim unconfirmed', '领取结果未确认'], ['retained-resource-conflict', 'Retained resource conflict', '保留资源冲突'],
+  ['stopping', 'Stopping', '正在停止'],
+] as const)('presents the actual summary reason %s in both languages', (code, english, chinese) => {
+  const item: WorkerMonitoringItem = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {
+    capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: null, nextPollAt: null },
+    capacity: null, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: [code], permissionProjection: 'current' },
+  } };
+  const view = renderWithLocale(<MonitoringCard item={item} now={time} />, { locale: 'en' });
+  expect(screen.getByText(english)).toBeInTheDocument(); view.setLocale('zh-CN'); expect(screen.getByText(chinese)).toBeInTheDocument();
+});
+
+it('never presents missing, partial, restricted or withdrawn summary reasons as idle', () => {
+  const base: Extract<WorkerMonitoringItem, { state: 'available' }> = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {
+    capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: null, nextPollAt: null },
+    capacity: { observedAt: receivedAt, quality: 'current', limit: 2, occupied: 2, available: 0 }, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: [], permissionProjection: 'restricted' },
+  } };
+  const view = renderWithLocale(<MonitoringCard item={base} now={time} />, { locale: 'en' });
+  expect(screen.queryByText('No ready tasks')).toBeNull(); expect(screen.getByText('Admission reason unknown')).toBeInTheDocument();
+  expect(screen.getByText(/Some reasons are not visible/)).toBeInTheDocument();
+  view.rerender(<MonitoringCard item={{ ...base, summary: { ...base.summary, admission: { ...base.summary.admission, coverage: 'partial', reasonCodes: [] } } }} now={time} />);
+  expect(screen.getByText('Admission reason unknown')).toBeInTheDocument(); expect(screen.queryByText('No ready tasks')).toBeNull();
+  view.rerender(<MonitoringCard item={{ ...base, summary: { ...base.summary, admission: null } }} now={time} />);
+  expect(screen.getByText('Admission reason unknown')).toBeInTheDocument(); expect(screen.getByText(/2 \/ 2 occupied/)).toBeInTheDocument();
+});
+
+it('marks capacity responsibility truncation even with a nonempty list', () => {
+  const partial: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, capacity: { ...detail.data.capacity!, detailCoverage: 'partial' } } };
+  renderWithLocale(<WorkerMonitoring state={state(partial)} readEnabled />, { locale: 'en' });
+  expect(screen.getByText('Some details were omitted.')).toBeInTheDocument();
+  expect(screen.getAllByRole('link', { name: 'Private task' }).length).toBeGreaterThan(0);
+});
+
+it.each([['completed', 'Completed', '已完成'], ['failed', 'Failed', '失败'], ['cancelled', 'Cancelled', '已取消'], [null, 'Not observed', '尚未观测']] as const)('shows the actual scheduler result %s in both languages', (outcome, english, chinese) => {
+  const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, scheduler: { ...detail.data.scheduler, lastOutcome: outcome } } };
+  const view = renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale: 'en' });
+  const result = screen.getByText('Last check result').nextElementSibling; expect(result).toHaveTextContent(english);
+  view.setLocale('zh-CN'); expect(screen.getByText('最近检查结果').nextElementSibling).toHaveTextContent(chinese);
+});

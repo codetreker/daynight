@@ -3,7 +3,6 @@ package monitoring
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -450,39 +449,4 @@ func ParseObservation(raw json.RawMessage) (Observation, error) {
 		return nil, &model.Fault{Code: "payload_too_large", Message: "Monitoring observation exceeds its encoded limit."}
 	}
 	return o, nil
-}
-func Summary(o Observation) (json.RawMessage, error) {
-	s := o["scheduler"].(map[string]any)
-	var c any
-	if v, ok := o["capacity"].(map[string]any); ok {
-		c = map[string]any{"observedAt": v["observedAt"], "quality": v["quality"], "limit": v["limit"], "occupied": v["occupied"], "available": v["available"]}
-	}
-	b, e := json.Marshal(map[string]any{"capturedAt": o["capturedAt"], "lifecycle": o["lifecycle"], "scheduler": map[string]any{"phase": s["phase"], "coverage": s["coverage"], "lastSuccessfulAt": s["lastSuccessfulAt"], "nextPollAt": s["nextPollAt"]}, "capacity": c, "detailCoverage": o["detailCoverage"]})
-	if e != nil {
-		return nil, fmt.Errorf("encode summary: %w", e)
-	}
-	return b, nil
-}
-
-// ParseSummary rejects corrupt or private fields before a stored summary is exposed.
-func ParseSummary(raw json.RawMessage) (json.RawMessage, error) {
-	if !jsonunicode.Valid(raw) {
-		return nil, bad()
-	}
-	schema := object(map[string]parser{
-		"capturedAt":     timestamp,
-		"lifecycle":      enum("starting", "running", "stopping", "stopped"),
-		"scheduler":      object(map[string]parser{"phase": scheduler, "coverage": coverage, "lastSuccessfulAt": nullable(timestamp), "nextPollAt": nullable(timestamp)}),
-		"capacity":       nullable(object(map[string]parser{"observedAt": timestamp, "quality": enum("current", "stale"), "limit": number(1, 64), "occupied": number(0, safeInt), "available": number(0, safeInt)})),
-		"detailCoverage": detail,
-	})
-	value, err := schema(raw)
-	if err != nil {
-		return nil, err
-	}
-	m := value.(map[string]any)
-	if c, ok := m["capacity"].(map[string]any); ok && c["available"].(int64) != max(int64(0), c["limit"].(int64)-c["occupied"].(int64)) {
-		return nil, bad()
-	}
-	return json.Marshal(value)
 }
