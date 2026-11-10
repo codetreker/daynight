@@ -1,6 +1,7 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -319,7 +320,7 @@ func TestInvitationCreationInspectionAndExpiry(t *testing.T) {
 	membershipFault(t, ValidateInvitation(memberPrincipal, "invalid"), "invitation_unavailable")
 	d := &membershipDAO{}
 	minted, err := CreateInvitation(ctx, d, memberPrincipal, "p", clock)
-	if err != nil || len(d.invitation.TokenHash) == 0 || minted.Invitation.TokenHash != nil || !minted.Invitation.ExpiresAt.Equal(now.Add(InvitationLifetime)) {
+	if err != nil || !bytes.Equal(d.invitation.TokenHash, secretutil.Hash(minted.Secret)) || minted.Invitation.TokenHash != nil || !minted.Invitation.ExpiresAt.Equal(now.Add(InvitationLifetime)) {
 		t.Fatalf("minted %+v stored %+v error %v", minted, d.invitation, err)
 	}
 	d.failures = map[string]error{"createInvitation": membershipErr}

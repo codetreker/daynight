@@ -8,6 +8,24 @@ const render = createLocaleRender('en');
 const props = { active: true, canRespond: false, onRespond: async () => {}, hasOlder: false, loadingOlder: false, onLoadOlder: async () => {}, onLoadResource: async () => new Blob() };
 const message = (id: string, text: string): TimelineEntry => ({ kind: 'assistant_message', entryId: id, entrySeq: id, revision: '1', content: [{ type: 'text', text }] });
 const show = (entries: TimelineEntry[]) => render(<SessionTimeline state={{ ...emptySessionState(), entries }} {...props} />);
+it('renders a verified unavailable Markdown occurrence at its original message location', async () => {
+  const text = '![reference](https://example.com/image.png)';
+  const textSha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), b => b.toString(16).padStart(2, '0')).join('');
+  const id = '00000000-0000-4000-8000-000000000001';
+  show([{ kind: 'assistant_message', entryId: id, entrySeq: '1', revision: '1', content: [{ type: 'markdown', text, partId: id, revision: '1', textSha256, complete: true, truncated: false, retainedImages: [], bindings: [{ imageId: id, start: 0, end: text.length, part: { type: 'image_unavailable', imageId: id, label: 'reference', error: { code: 'source_unavailable', message: 'Saved image is missing.' } } }] }] }]);
+  await waitFor(() => expect(screen.getByText('Saved image is missing.')).toBeInTheDocument());
+});
+it('retains a tool disclosure when conversation filtering temporarily removes it', async () => {
+  const entry: TimelineEntry = { kind: 'tool_call', entryId: 'tool', entrySeq: '1', revision: '1', callId: 'call', name: 'tool', input: '{}', output: [{ type: 'text', text: 'saved output' }], status: 'completed', truncated: false };
+  const state = { ...emptySessionState(), entries: [entry] };
+  const view = render(<SessionTimeline state={state} {...props} />);
+  await expand(view.container.querySelector('details')!);
+  view.rerender(<SessionTimeline state={state} {...props} displayMode="conversation" />);
+  expect(view.container.querySelector('details')).toBeNull();
+  view.rerender(<SessionTimeline state={state} {...props} displayMode="standard" />);
+  expect(view.container.querySelector('details')).toHaveAttribute('open');
+  expect(screen.getByText('saved output')).toBeInTheDocument();
+});
 it('does not offer empty reasoning disclosures and shows later readable content', () => {
   const empty: TimelineEntry = { kind: 'reasoning', entryId: '2', entrySeq: '2', revision: '1', text: ' \n\t' };
   const view = show([message('1', 'Working'), empty]);

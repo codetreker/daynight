@@ -1,3 +1,4 @@
+import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { readWorkerClaim, readSessionStartupReport, readTaskPaused } from "../../api/task-properties.js";
 import { legacyBranchLatch } from "./backends/orchestration.js";
@@ -16,7 +17,7 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
-import { ensureCleanupSchedule } from "./cleanup-schedule.js";
+import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import { createCleanupDriver } from "./cleanup.js";
 import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
@@ -40,7 +41,7 @@ export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" 
 export type WorkerCoordinatorOptions = {
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
-  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver">>;
+  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
@@ -156,7 +157,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
   const ending = new Map<string, CleanupTarget>(options.store.listCleanupSchedules().map(record => [key(record), record]));
   let capacityWarning = "";
-  const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string }>();
+  const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string | null; archiveRepairCode?: ArchiveRepairCode | null }>();
+  const archiveProbes = new Set<string>();
   const failures = new Map<string, number>();
   const inputWaiting = new Map<string, string>();
   const snapshotWarnings = new Map<string, Set<string>>();
@@ -519,7 +521,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
       });
     }).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
-      if (isWorkerCancellation(error, signal)) return;
+      if (isWorkerCancellation(error, signal)) { archiveProbes.delete(identityKey); return; }
       if (!terminal && error instanceof HerdrInputWaitingError) {
         if (operationId !== undefined) observe(m => m.updateActivity(operationId!, pausedClaims.has(identityKey) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "waiting", status: "waiting", waitReason: "native-input" }));
         if (inputWaiting.get(identityKey) !== error.message) {
@@ -539,27 +541,30 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         let previous: ReturnType<WorkerStore["getCleanupSchedule"]> = null;
         try { previous = options.store.getCleanupSchedule(owner); count = Math.max(count, previous?.failures ?? 0); }
         catch (storageError) { reportedError = new AggregateError([error, storageError], "Cleanup failed and its retry state could not be read."); }
-        count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
-        const retryMs = Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6));
+        const probeOnly = archiveProbes.delete(identityKey);
+        const cause = error instanceof WorkerCleanupError ? error.cause : error;
         const stage = error instanceof WorkerCleanupError ? error.stage : "observation";
+        const repairCode = stage !== "archive" ? null : cause instanceof ArchiveRepairRequiredError ? cause.code : cleanupRetries.get(identityKey)?.archiveRepairCode ?? previous?.archiveRepairCode ?? null;
+        if (!probeOnly) count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
+        const retryMs = repairCode === null ? Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6)) : ARCHIVE_REPAIR_PROBE_INTERVAL_MS;
         const nextAttemptAt = now() + retryMs;
         if (operationId !== undefined) {
-          const failureKey = `true/${identityKey}/${stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          const failureKey = `true/${identityKey}/${repairCode !== null && !(cause instanceof ArchiveRepairRequiredError) ? "archive-observation" : stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
           monitoringFailures.set(failureKey, failureId);
           observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
           for (const [key, pending] of monitoringFailures) if (key.startsWith(`true/${identityKey}/`) && key !== failureKey) observe(m => m.updateFailureRetry(pending, "scheduled", new Date(nextAttemptAt).toISOString()));
-          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: "retry-backoff", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: repairCode === null ? "retry-backoff" : "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
         }
         // Storage failures must not reject the job or prevent shutdown from proving stop.
         const lastError = error instanceof Error ? error.message || error.name : String(error) || "Unknown cleanup error";
-        cleanupRetries.set(identityKey, { failures: count, nextAttemptAt, stage, lastError });
+        cleanupRetries.set(identityKey, { failures: count, nextAttemptAt, stage, lastError, archiveRepairCode: repairCode });
         try {
           if (previous === null && hasWorktreeIdentity(owner)) previous = ensureCleanupSchedule(options.store, owner, now());
-          if (previous !== null) options.store.saveCleanupSchedule(previous, { ...previous, failures: count, nextAttemptAt, stage, lastError });
+          if (previous !== null) options.store.saveCleanupSchedule(previous, { ...previous, failures: count, nextAttemptAt, stage, lastError, archiveRepairCode: repairCode });
           task = options.store.getTask(identity);
         } catch (storageError) { reportedError = new AggregateError([reportedError, storageError], "Cleanup failed; retry persistence is unconfirmed and in-process backoff remains active."); }
         const stopStatus = stage === "archive" || stage === "worktree-removal" || stage === "backend-close" ? "Agent stop confirmed; " : "";
-        cleanupMessage = `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources retain capacity; correct the reported cause and normal reconciliation retries automatically.`;
+        cleanupMessage = repairCode !== null ? `Archive requires repair (${repairCode}); originals and capacity retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.` : `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources retain capacity; correct the reported cause and normal reconciliation retries automatically.`;
       } else {
         task = options.store.getTask(identity);
         if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
@@ -658,12 +663,31 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (deleteWorktree && task !== null && task.status !== "done") options.store.completeTask(owner);
   };
 
+  const observeArchiveRepair = (owner: CleanupTarget, code: ArchiveRepairCode, nextAttemptAt: number): void => {
+    const identity = key(owner), failureKey = `true/${identity}/archive`, activityKey = `true/${identity}`;
+    const scope = { kind: "claim" as const, projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId };
+    observe(m => {
+      if (!monitoringFailures.has(failureKey)) {
+        const id = randomUUID(); monitoringFailures.set(failureKey, id);
+        m.fail({ operationId: id, component: "cleanup", phase: "archive", scope, error: new ArchiveRepairRequiredError(code), retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
+      }
+      if (!monitoringActivities.has(activityKey)) {
+        const id = m.startActivity({ kind: "cleanup", phase: "archive", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
+        monitoringActivities.set(activityKey, id);
+      }
+    });
+  };
+
   const launchCleanups = (): void => {
     for (const [identityKey, owner] of ending) {
       // A stopped archive owns its separate persisted retry schedule. Native
       // cleanup must not consume or erase that schedule after a runner restart.
       if (hasWorktreeIdentity(owner) && lifecycle()?.archive && isStopped(owner)) continue;
       if (jobs.has(identityKey)) continue;
+      let retained = cleanupRetries.get(identityKey);
+      try { retained ??= options.store.getCleanupSchedule(owner) ?? undefined; }
+      catch { /* Read failures are handled inside the isolated cleanup job. */ }
+      if (retained?.archiveRepairCode) observeArchiveRepair(owner, retained.archiveRepairCode, retained.nextAttemptAt);
       if (now() < (cleanupRetries.get(identityKey)?.nextAttemptAt ?? 0)) continue;
       // Creation and ownership validation run inside the isolated job's error boundary.
       let nextAttemptAt = 0;
@@ -671,6 +695,23 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       catch { /* The job records the storage failure without stopping other claims. */ }
       if (now() < nextAttemptAt) continue;
       startJob(owner, async (signal) => {
+        if (retained?.archiveRepairCode) {
+          archiveProbes.add(identityKey);
+          try {
+            const task = options.webStore?.getTask(owner);
+            if (!task || !hasWorktreeIdentity(owner) || task.worktreeId !== owner.worktreeId || !options.webBackend?.probeArchive) throw new Error("The original archive probe binding is unavailable.");
+            const result = await options.webBackend.probeArchive(task, signal);
+            signal.throwIfAborted();
+            if (result.kind === "blocked") throw new ArchiveRepairRequiredError(result.code);
+            if (result.kind === "complete") {
+              // Clear only the repaired condition; cleanup still owns the claim and worktree.
+              const schedule = ensureCleanupSchedule(options.store, owner, now());
+              const cleared = options.store.saveCleanupSchedule(owner, { ...schedule, ...retained, archiveRepairCode: null });
+              cleanupRetries.set(identityKey, cleared);
+            }
+          } catch (error) { throw new WorkerCleanupError("archive", error); }
+          archiveProbes.delete(identityKey);
+        }
         await runCleanup(owner, true, signal);
         options.store.deleteCleanupSchedule(owner);
         ending.delete(identityKey);
@@ -1067,6 +1108,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
       if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
+      const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
+      if (enroll) await cleanupOperation(operation => enroll.call(options.git, projectFor(owner), owner, operation), normalSignal);
       const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
       if (!ready) { observe(m => { const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { status: "waiting", waitReason: "unknown" }); if (failure !== undefined) m.updateFailureRetry(failure, "none"); }); return; }
       observe(m => {

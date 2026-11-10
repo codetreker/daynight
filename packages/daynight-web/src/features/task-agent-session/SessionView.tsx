@@ -14,6 +14,8 @@ import { matchingSessionHistoryPreview, selectSessionHistoryRows, type SessionHi
 import { emptySessionState, sessionRespondGate } from './state';
 import { operationNeedsAttention, operationPresentation } from './operation-presentation';
 import { sessionNativeLabels, useSessionMessages } from './messages';
+import { SessionImageScope } from './images/SessionImageScope';
+import { useInvalidImageBindings } from './useInvalidImageBindings';
 import '../../styles/task-session.css';
 
 const emptyView: SessionViewState = { actionAdmitted: false, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: { text: '', revision: '0', submission: null }, state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyLoaded: false, historySettled: false, historyCoverage: null, historyRevision: 0, connectionGeneration: 0 };
@@ -59,9 +61,11 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   const issue = error ?? view.error;
   const refresh = client?.refresh ?? onRetry ?? (() => {});
   const retry = error ? onRetry ?? refresh : refresh;
+  const invalidImageBindings = useInvalidImageBindings(client, s ? JSON.stringify([userId, sessionFenceKey(s), s.historyEpoch, s.identity.nativeSessionId]) : null, view.state.entries, active && current && !view.authPaused && view.historyLoaded && view.status !== 'unavailable', refresh);
   const fallbackOwner = useRef({});
   const display = useSessionDisplayPreference(s && view.status !== 'unavailable' ? { userId, sessionId: s.sessionId } : null);
   const [displayOpen, setDisplayOpen] = useState(false);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   useEffect(() => { setDisplayOpen(false); }, [active, userId, s?.sessionId]);
   const fullscreen = useSessionFullscreen({ client: previewEnabled ? fallbackOwner.current : client ?? fallbackOwner.current, userId, active, identity: previewEnabled ? s ? sessionFenceKey(s) : preview ? sessionFenceKey(preview.fence) : null : s?.sessionId ?? null, ...(fullscreenBoundary ? { fullscreenBoundary } : {}) });
   const connected = current && view.connected;
@@ -98,13 +102,14 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   } }) : null;
   const timelineAllowed = available && (!readOnly || view.archiveState === 'ready') || preview !== undefined || !readOnly && (slots?.renderPending !== undefined || slots?.variant === 'assistant' || client === null);
   const timelineKey = `${userId}/${s || preview ? sessionFenceKey(s ?? preview!.fence) : 'pending'}`;
-  const timeline = timelineAllowed ? <SessionTimeline key={timelineKey} {...(preview ? { historyPreview: preview } : {})} historyLoaded={view.historyLoaded} historyCoverage={view.historyCoverage} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={previewEnabled && previewMode || !readOnly && !runtimeReady || empty != null && empty !== false} state={timelineState} active={active} actionAdmitted={view.actionAdmitted} canRespond={sessionRespondGate(view.state, canInteract && active && runtimeReady && !view.authPaused)} onRespond={client?.respond ?? noAction} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client?.loadOlder() ?? noAction()} historyError={view.historyError} onLoadResource={client?.resource ?? noResource} /> : null;
+  const timeline = timelineAllowed ? <SessionTimeline key={timelineKey} {...(preview ? { historyPreview: preview } : {})} historyLoaded={view.historyLoaded} historyCoverage={view.historyCoverage} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={previewEnabled && previewMode || !readOnly && !runtimeReady || empty != null && empty !== false} state={timelineState} active={active} actionAdmitted={view.actionAdmitted} canRespond={sessionRespondGate(view.state, canInteract && active && runtimeReady && !view.authPaused)} onRespond={client?.respond ?? noAction} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client?.loadOlder() ?? noAction()} historyError={view.historyError} onLoadResource={client?.resource ?? noResource} onInvalidImageBindings={invalidImageBindings} /> : null;
   const loadingSlot = { phase, hasContent, retry };
   const pending = !hasContent && !issue && previewMode ? slots?.renderPending?.(loadingSlot) : null;
   const unavailable = issue ? slots?.renderUnavailable?.({ ...loadingSlot, error: issue }) : null;
   const assistantShell = slots?.variant === 'assistant' || historyPreview !== undefined || client === null;
 
   return <section className={`task-agent-session${defaultHeader ? ' session-default-header-layout' : ''}${slots?.variant === 'assistant' ? ' session-presentation-assistant' : ''}${fullscreen.fullscreen && !fullscreenBoundary ? ' session-fullscreen' : ''}`} aria-label={m.title} ref={fullscreen.sectionRef} tabIndex={-1} onKeyDown={fullscreen.onKeyDown}>
+    <SessionImageScope scope={client?.imageScope?.() ?? null} rootRef={fullscreen.sectionRef} active={active} readAdmitted={current && !view.authPaused} onPreviewChange={setImagePreviewOpen}>
     <header className={`session-header${defaultHeader ? ' session-header-default' : ''}`}>{slots?.renderHeader ? slots.renderHeader({ snapshot: available ? s : null, startupReport: available ? presentation?.report ?? null : null, active, current, available, readOnly, runtimeReady: available && runtimeReady, authPaused: view.authPaused, status: view.status, fullscreen: fullscreen.fullscreen, displayMode: display.mode, statusDescriptionId: statusId, provider, activity, display: displayControl, focus: focusControl, refresh: refreshControl }) : <><div className="session-header-identity">{provider}{activity}</div><div className="session-header-actions">{displayControl}{focusControl}{refreshControl}</div></>}</header>
     {!available && !assistantShell ? <div className="session-empty" role="status"><p>{view.status === 'loading' ? m.loading : view.status === 'not_registered' ? m.notRegistered : view.status === 'unavailable' ? view.error ?? m.unavailable : view.error}</p></div> : <>
     {showReason ? <details className="session-startup-details"><summary>{m.startupDetails}</summary>
@@ -123,8 +128,9 @@ export function SessionView({ client, userId, active, current, reading, fullscre
         {receipt === 'unknown' ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { void client.checkOperation(operation.operationId).then(() => setCheckErrors(previous => { const next = new Map(previous); next.delete(operation.operationId); return next; }), (error: unknown) => setCheckErrors(previous => new Map(previous).set(operation.operationId, error instanceof Error ? error.message : m.failure))); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}
       </div>;
     })}</div> : null}
-    {client && s && !readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} canInteract={canInteract} actionAdmitted={view.actionAdmitted} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen} key={s ? sessionFenceKey(s) : undefined} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : assistantShell ? <SessionComposerPlaceholder /> : null}
+    {client && s && !readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} canInteract={canInteract} actionAdmitted={view.actionAdmitted} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen || imagePreviewOpen} key={s ? sessionFenceKey(s) : undefined} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : assistantShell ? <SessionComposerPlaceholder /> : null}
     </>}
+    </SessionImageScope>
   </section>;
 }
 

@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, type RefObject, type ReactNode } from '
 import { createPortal } from 'react-dom';
 import { acquireInert } from '../../app/inert';
 import { dialogFocusables } from './focus';
+import { suspendSessionImagePreviews } from '../task-agent-session/images/image-preview';
 import '../../styles/auth.css';
 
 export const TaskConfirmation = ({ title, question, explanation, content, taskTitle, confirmLabel, cancelLabel, closeLabel, destructive = false, confirmDisabled = false, owner, fallbackFocus, onRestoreFocus, onCancel, onConfirm }: {
@@ -31,6 +32,7 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
   useLayoutEffect(() => {
     const parent = owner.current!;
     const opener = document.activeElement;
+    const resumeImages = suspendSessionImagePreviews();
     const wasInert = parent.hasAttribute('inert');
     parent.setAttribute('inert', '');
     const results = parent.closest('.standalone-task-route')?.querySelector<HTMLElement>('.standalone-deletion-slot');
@@ -56,8 +58,9 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
       releaseResults?.();
       const restore = () => {
         if (callbacks.current.onRestoreFocus !== undefined) callbacks.current.onRestoreFocus();
-        else if (restoreOpener.current && opener instanceof HTMLElement && opener.isConnected && !opener.matches(':disabled, [hidden] *, [inert] *')) opener.focus();
+        else if (restoreOpener.current && opener instanceof HTMLElement && opener.isConnected && !opener.matches(':disabled, [hidden] *, [inert] *') && !opener.closest('dialog:not([open])')) opener.focus();
         else fallbackFocus.current?.focus();
+        resumeImages();
       };
       // Session fullscreen releases its overlapping inert lease in its observer.
       if (opener instanceof HTMLElement && results?.contains(opener) && results.hasAttribute('inert')) queueMicrotask(restore);

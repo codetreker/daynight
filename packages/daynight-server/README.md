@@ -898,6 +898,26 @@ module validation. The final gate requires actual success for both selected Go
 jobs. Their separate [coverage partitions](#coverage) retain all production code
 and the same numerical thresholds.
 
+### Project HTTP tests
+
+`internal/server/project` tests use strict direct Project and Membership operation
+callbacks and the real request-authentication parser. They retain HTTP routing,
+parsing, argument propagation, DTOs, error/log classification, cancellation and
+response-write failure mechanisms. Their ordinary test binary clears database
+and UniAuth fixture configuration; run the complete adapter suite independently:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/server/project
+```
+
+Business decisions remain with Core and Service tests. PostgreSQL COMMIT response
+loss, transaction effects and independent persisted readback belong to Store
+owners; retained files and reopen behavior belong to local storage tests. The
+explicit `acceptance`-tagged process-restart witness retains its real isolated
+infrastructure and is excluded from the ordinary test binary's environment reset.
+
 ### Application service tests
 
 The root `internal/service` suite owns application composition, startup,

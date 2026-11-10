@@ -13,14 +13,13 @@ describe('session resource display', () => {
     await screen.findByRole('alert');
     expect(create).not.toHaveBeenCalled();
   });
-  it('renders only verified image bytes and revokes their object URL on unmount', async () => {
-    const load = vi.fn(async () => new Response('test').blob());
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:verified');
-    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-    const view = render(<SessionResourceView resource={{ ...resource, mediaType: 'image/png' }} label="Preview" active onLoad={load} />);
-    expect(await screen.findByRole('img', { name: 'Preview' })).toHaveAttribute('src', 'blob:verified');
-    view.unmount();
-    expect(revoke).toHaveBeenCalledWith('blob:verified');
+  it('requires an explicit image owner instead of inventing authorization from a descriptor', () => {
+    const load = vi.fn();
+    render(<SessionResourceView resource={{ ...resource, mediaType: 'image/png' }} label="Preview" active onLoad={load} />);
+    expect(screen.getByText('Image unavailable')).toBeVisible();
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(load).not.toHaveBeenCalled();
   });
   it('does not request a missing or unavailable resource', () => {
     const load = vi.fn();
