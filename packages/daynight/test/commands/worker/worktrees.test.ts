@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cpSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -84,6 +85,150 @@ afterEach(async () => {
 });
 
 describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
+  it.skipIf(process.platform !== "darwin")("persists stable ownership before returning a newly created worktree", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const admin = administrativeDirectory(binding.worktreePath);
+    expect(await readdir(admin)).toContain("daynight-identity.json");
+    const bytes = await readFile(path.join(admin, "locked"));
+    const sidecar = JSON.parse(await readFile(path.join(admin, "daynight-identity.json"), "utf8"));
+    expect(sidecar.owner).toEqual(f.owner);
+    await adapter.prepareWorktree(f.project, f.owner, operation());
+    expect(await readFile(path.join(admin, "locked"))).toEqual(bytes);
+  });
+  describe.skipIf(process.platform !== "darwin")("stable APFS worktree recovery", () => {
+    const drift = async (admin: string, sidecarPresent = true) => {
+      const markerPath = path.join(admin, "locked");
+      const marker = JSON.parse((await readFile(markerPath, "utf8")).slice("daynight-worker:".length));
+      for (const role of ["root", "common", "leaf"]) marker[role] = `1:${marker[role].split(":")[1]}`;
+      const bytes = Buffer.from(`daynight-worker:${JSON.stringify(marker)}\n`);
+      await writeFile(markerPath, bytes);
+      if (sidecarPresent) {
+        const target = path.join(admin, "daynight-identity.json");
+        const sidecar = JSON.parse(await readFile(target, "utf8"));
+        sidecar.markerSha256 = createHash("sha256").update(bytes).digest("hex");
+        await writeFile(target, JSON.stringify(sidecar));
+      }
+      return bytes;
+    };
+
+    it("accepts historical device drift without changing merge, index, dirty bytes or the legacy marker", async () => {
+      const f = await fixture(); const adapter = manager(f.root);
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
+      await writeFile(path.join(binding.worktreePath, "tracked.txt"), "ours\n"); git(binding.worktreePath, ["commit", "-am", "ours"]);
+      await writeFile(path.join(f.repository, "tracked.txt"), "theirs\n"); git(f.repository, ["commit", "-am", "theirs"]);
+      expect(() => git(binding.worktreePath, ["merge", "main", "--no-edit"])).toThrow();
+      await writeFile(path.join(binding.worktreePath, "untracked"), "keep this dirty work\n");
+      const files = [path.join(binding.worktreePath, "tracked.txt"), path.join(binding.worktreePath, "untracked"), ...["index", "MERGE_HEAD", "MERGE_MSG"].map(name => path.join(admin, name))];
+      const before = await Promise.all(files.map(file => readFile(file)));
+      const marker = await drift(admin);
+      const second = manager(f.root);
+      expect(await second.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
+      expect(await second.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
+      expect(await second.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
+      expect(await Promise.all(files.map(file => readFile(file)))).toEqual(before);
+      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
+      expect(git(binding.worktreePath, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/${binding.branch}`);
+      await second.removeWorktree(f.project, f.owner, operation());
+      await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("bootstraps a strictly verified legacy worktree only during prepare", async () => {
+      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const admin = administrativeDirectory(binding.worktreePath), sidecar = path.join(admin, "daynight-identity.json");
+      const marker = await readFile(path.join(admin, "locked")); await rm(sidecar);
+      await adapter.verifyWorktree(f.project, f.owner, operation()); await adapter.listWorktrees(f.project, operation());
+      await expect(lstat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
+      await adapter.prepareWorktree(f.project, f.owner, operation());
+      expect(JSON.parse(await readFile(sidecar, "utf8")).owner).toEqual(f.owner);
+      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
+    });
+
+    it("enrolls strictly verified terminal work before archive without deleting or changing it", async () => {
+      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const admin = administrativeDirectory(binding.worktreePath), sidecar = path.join(admin, "daynight-identity.json"); await rm(sidecar);
+      await writeFile(path.join(binding.worktreePath, "tracked.txt"), "unarchived dirty bytes\n");
+      const marker = await readFile(path.join(admin, "locked"));
+      git(f.repository, ["config", "extensions.worktreeConfig", "true"]);
+      git(binding.worktreePath, ["config", "--worktree", "remote.origin.url", "https://example.com/changed/origin.git"]);
+      expect(await adapter.enrollWorktreeIdentity(f.project, f.owner, operation())).toEqual(binding);
+      expect(JSON.parse(await readFile(sidecar, "utf8")).owner).toEqual(f.owner);
+      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
+      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("unarchived dirty bytes\n");
+      await rm(sidecar); await drift(admin, false);
+      await expect(adapter.enrollWorktreeIdentity(f.project, f.owner, operation())).rejects.toThrow("Historical stable identity evidence is missing");
+      await expect(lstat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("refuses drift without historical evidence instead of bootstrapping current facts", async () => {
+      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const admin = administrativeDirectory(binding.worktreePath), sidecar = path.join(admin, "daynight-identity.json"); await rm(sidecar);
+      const marker = await drift(admin, false);
+      await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("Historical stable identity evidence is missing");
+      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Historical stable identity evidence is missing");
+      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
+      await expect(lstat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    });
+
+    it.each(["volume", "file", "marker", "owner", "corrupt", "version"])("retains work after a conflicting %s sidecar", async kind => {
+      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const admin = administrativeDirectory(binding.worktreePath), target = path.join(admin, "daynight-identity.json");
+      const sidecar = JSON.parse(await readFile(target, "utf8"));
+      if (kind === "volume") sidecar.directories.root.volumeUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      if (kind === "file") sidecar.directories.leaf.fileId = "1";
+      if (kind === "marker") sidecar.markerSha256 = "a".repeat(64);
+      if (kind === "owner") sidecar.owner.claimId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      if (kind === "version") sidecar.version = 2;
+      const bytes = kind === "corrupt" ? "{" : JSON.stringify(sidecar); await writeFile(target, bytes);
+      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      expect(await readFile(target, "utf8")).toBe(bytes);
+      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    });
+
+    it("revalidates stable remaining resources after the original leaf disappeared", async () => {
+      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const admin = administrativeDirectory(binding.worktreePath); await drift(admin); await rm(binding.worktreePath, { recursive: true });
+      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated");
+      await adapter.removeWorktree(f.project, f.owner, operation());
+      await expect(lstat(admin)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it.each(["duplicate registration", "replacement directory"])("does not adopt a %s even with copied Git pointers", async kind => {
+      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const admin = administrativeDirectory(binding.worktreePath);
+      if (kind === "duplicate registration") cpSync(admin, path.join(path.dirname(admin), "duplicate"), { recursive: true });
+      else { await rename(binding.worktreePath, `${binding.worktreePath}.original`); cpSync(`${binding.worktreePath}.original`, binding.worktreePath, { recursive: true }); }
+      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow(kind === "duplicate registration" ? "ambiguous" : "volume or object identity changed");
+      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    });
+
+    it("stops deletion if the sidecar inode is replaced even with identical bytes", async () => {
+      const f = await fixture(); let sidecar = ""; let replaced = false;
+      const adapter = manager(f.root, { removeDirectory: async (target, options) => {
+        await rm(target, options);
+        if (!replaced) { replaced = true; const bytes = await readFile(sidecar); await rename(sidecar, `${sidecar}.original`); await writeFile(sidecar, bytes, { mode: 0o600 }); }
+      } });
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); sidecar = path.join(administrativeDirectory(binding.worktreePath), "daynight-identity.json");
+      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("sidecar changed");
+      expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toMatch(/^gitdir: /);
+      expect(await readFile(sidecar)).toEqual(await readFile(`${sidecar}.original`));
+    });
+    it("stops before the next deletion when only the raw marker line ending changes", async () => {
+      const f = await fixture(); let marker = "", deletions = 0;
+      const adapter = manager(f.root, { removeDirectory: async (target, options) => {
+        await rm(target, options); deletions++;
+        if (deletions === 1) await writeFile(marker, (await readFile(marker, "utf8")).replace(/\n$/, "\r\n"));
+      } });
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
+      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      expect(deletions).toBe(1);
+      expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toMatch(/^gitdir: /);
+    });
+  });
   it.each(["files", "reftable"] as const)("keeps %s seed and sibling bytes, refs and objects independent of a case copy", async (refFormat) => {
     const first = await fixture(refFormat); const sibling = await fixture(refFormat); const source = await seed(refFormat);
     const head = git(first.repository, ["rev-parse", "HEAD"]);
