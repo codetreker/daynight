@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { ApiError } from "../../../src/api/client.js";
@@ -20,7 +21,7 @@ const fixture = (settings: { retained?: boolean; pending?: boolean; prepareProje
   const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   let clock = 1_000;
   const monitor = createMonitoringObserver({ runId: uuid(1), now: () => clock, reservationKey: new Uint8Array(32) });
-  const git = { listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding: {} }] : []) } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding: {} }] : []) } as unknown as WorkerGitManager;
   const tasks = { pendingStops: vi.fn(() => settings.pending ? [{ context: { ...owner, cwd: "/isolated/repository" }, binding: {} }] : []), listResources: vi.fn(async () => settings.retained ? [{ owner, workspaceId: "workspace", panes: [] }] : []) };
   const herdr = { tasks, ensureInstance: vi.fn(async () => {}) } as unknown as WorkerHerdrAdapter;
   const ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [project.projectId], unavailableProjectIds: [] as string[] }));

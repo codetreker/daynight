@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
@@ -40,7 +41,7 @@ const fixture = async () => {
   gitCommand(repository, "worktree", "add", "-qb", `daynight/${owner.taskId}`, worktreePath);
   const sentinel = path.join(worktreePath, "uncommitted.txt"); await writeFile(sentinel, "retained\n");
   const store = openWorkerStore(path.join(alias, "worker.sqlite")); store.registerProject(project);
-  const git = { removeWorktree: vi.fn(), listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
+  const git = { removeWorktree: vi.fn(), scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
   const workerId = randomUUID();
   const common = { store, git, remote: {} as WorkerRemote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: randomUUID(), name: "test" }, repositories: [{ project, configuration: config }], targetProjectIds: [owner.projectId], readyProjectIds: [owner.projectId], globalConfiguration: config, maxConcurrent: 2, preferPlatformSpecificTasks: false, buildPrompt: () => "test", emit: () => {} };
   const exclude = { repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: config, maxConcurrent: 2, preferPlatformSpecificTasks: false };
