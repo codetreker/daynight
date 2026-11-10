@@ -2774,7 +2774,10 @@ raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage
 append/anchors/defaults, atomic content and four-state changes, dense moves,
 self/missing anchors, current-record deletion, ID reuse, no-op/exhaustion,
 concurrency, parent and Session preservation, rollback and completion facts, and
-safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
+safe response diagnostics. Step read service tests control Project authorization
+and snapshot completion independently while exercising the actual parent gate,
+DAO queries, paging and encoding; PostgreSQL tests own physical snapshot proof.
+The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
 `TestStepsHTTPDelete*`. Service Step cases run without a database:
