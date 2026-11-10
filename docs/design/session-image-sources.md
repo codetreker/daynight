@@ -1,6 +1,6 @@
 # Session 图片来源采集设计
 
-本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。Controller 包含来源解析、持久投影、采集协调、本地句柄 reader 和专用 HTTP(S) transport，并复用公共 capture、媒体预算和不可变资源存储。本地来源按精确 Provider 能力逐次取得原生读取许可；未支持的配置和缺少部署出口证明的外部来源拒绝新 IO。模块存在或某一 profile 可用，不表示完整来源验收已经完成。
+本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。Controller 包含来源解析、持久投影、采集协调、本地句柄 reader 和专用 HTTP(S) transport，并复用公共 capture、媒体预算和不可变资源存储。本地来源按精确 Provider 能力逐次取得原生读取许可；未支持的配置和缺少有效可信部署配置的外部来源拒绝新 IO。模块存在或某一 profile 可用，不表示完整来源验收已经完成。
 
 [历史规格](../spec/session-image-history.md)拥有所需显示、原内容和权限结果；[公共合同](session-image-contracts.md)拥有 ImageLocator、ImageOccurrence、capture/read/retry DTO、错误与存储，本文不另建协议或数据库。[Provider 设计](session-image-providers.md)提供可信原生来源，[浏览器设计](session-image-browser.md)负责渲染和预览，[归档设计](session-image-archives.md)负责封存、读取与清理。[来源决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-sources.md)保留替代方案及代价。
 
@@ -17,13 +17,14 @@
 | [coordinator.ts](../../packages/daynight/src/commands/controller/markdown/coordinator.ts) | `createMarkdownCaptureCoordinator` 拥有可信 context、持久 source intent、位置 ACK、原 capture 查询、权限复核、来源重试和取消后的 join。 |
 | [local-source.ts](../../packages/daynight/src/commands/controller/markdown/local-source.ts)、[local-source-proof.ts](../../packages/daynight/src/commands/controller/markdown/local-source-proof.ts)、[local-source-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-helper.ts)、[local-source-filesystem.ts](../../packages/daynight/src/commands/controller/markdown/local-source-filesystem.ts)、[local-source-windows.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows.ts)、[local-source-windows-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows-helper.ts) | `createLocalImageContext` 与 `copyLocalImage` 按平台选择独立 helper，以根和祖先句柄执行 no-follow/reparse-aware 组件遍历、链接解析和逐块复制；`LocalImageCheckpoint` 将有界的实际来源证明交给策略消费者。 |
 | [external-source.ts](../../packages/daynight/src/commands/controller/markdown/external-source.ts) | `createExternalImagePolicy` 与 `copyExternalImage` 将受信出口策略和逐次请求计费接入独立 DNS、TCP/TLS、HTTP/1.1 reader。 |
+| [external-policy.ts](../../packages/daynight/src/commands/controller/markdown/external-policy.ts)、[external-images.ts](../../packages/daynight/src/config/external-images.ts) | `createExternalImagePolicyProducer` 从有界可信配置与当前本机接口创建固定 generation 的目标策略，拒绝受保护域、地址及转换前缀，并在观察到变化或观察失败时取消活动采集。 |
 
 [runtime.ts](../../packages/daynight/src/commands/controller/runtime.ts) 将 Provider 的正文和完成元数据交给 pipeline，以 250 ms 周期分别推进解析与采集；原生回调不等待媒体工作。断线使活动来源失效；停止先取消并等待来源工作，再关闭 Provider、完成已有正文的投影结算和关闭媒体存储。停止后不启动来源请求或后台 query。已持久的 unknown、validated 和 retained 仍属于原执行的恢复与归档闭包。
 
 当前能力有以下未完成条件，不能据此缩小[验收规格](../spec/session-image-acceptance.md)：
 
-- Codex 的真实 runtime 只为下述 0.167.0 本地能力子集提供 `nativeReadPolicy`；不支持的版本、权限配置或 hooks 状态返回 `policy_restricted`。Claude 与 Copilot 的完整原生授权适配尚未交付。来源证明、`permissionMode`、启动时的 sandbox/profile 文案、同用户可读或一次工具读取均不能替代有效原生判定。
-- 真实 runtime 没有提供 `externalPolicy`，也没有取得部署级出口隔离证明。外部来源因此返回 `policy_restricted`。受控网络测试可注入 `controlledNetworkBoundary` 和 CA，但该配置不证明真实部署已阻断透明路由到本机、内网和元数据。
+- Codex 与 Copilot 的真实 runtime 仅为下述精确版本和能力子集提供 `nativeReadPolicy`；不支持的版本、权限配置或 hooks 状态返回 `policy_restricted`。Claude 的完整原生授权适配尚未交付。来源证明、`permissionMode`、启动时的 sandbox/profile 文案、同用户可读或一次工具读取均不能替代有效原生判定。
+- 真实 runtime 提供本地出口策略 producer；有效 profile 仍依赖部署所有者提供完整受保护目标和出口条件。缺失或未知条件返回 `policy_restricted`。配置解析、真实本机接口和受控 transport 测试分别证明对应机制，不能证明尚未配置的真实部署已阻断透明路由到本机、内网和元数据。
 
 这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此声明真实 Provider 或端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
 
@@ -36,6 +37,16 @@ Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd �
 [Codex authority](../../packages/daynight/src/commands/controller/providers/codex-read-authority.ts) 只接受实际 initialize 返回的 0.167.0 版本、Provider 独占的 stdio 进程、明确 disabled 的 remote control，以及原生 start/resume 已解析的同一 thread/cwd、`dangerFullAccess`、`activePermissionProfile=null`、`approvalPolicy=never` 和唯一同根 local environment。这组原生事实在该精确实现中证明 FS 不再额外缩小导出根；它不扩大 A3 的根或 OS 权限，也不为图片改变用户 sandbox。版本依赖可信 Provider executable 的原生响应，不是生产二进制签名或指纹验证。
 
 进程使用 0.167.0 的 `CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED` 关闭独立控制面，并读回真实状态。每个 checkpoint 再调用线程绑定的 `hooks/list`，只接受完整已知结构、同 cwd、没有 warnings/errors 且没有 enabled `PreToolUse` 的结果；不解释用户 hook 的脚本或 matcher，也不关闭它。后台新增 hook 不能被启动时的空列表掩盖，下一次查询必须重新判断。未知版本、格式、相关限制、协议失败或无法确认的变化均关闭本次 authority；关闭后同一 execution 不自动重开，原生进程重建须重新取得完整事实。RPC 设置变化、native 生命周期及同步 transport failure 走同一失效入口。
+
+[Copilot authority](../../packages/daynight/src/commands/controller/providers/copilot-read-authority.ts) 固定为 SDK 1.0.11、CLI 1.0.105、macOS ARM64。它核验安装的 SEA executable 以及私有有界解包得到的 `index.js`、`cli-main.js`、`runtime.node` 摘要，再由 Node 运行未修改的发行入口并加载 Daynight preload。父进程仍使用原 SDK/TCP 连接；preload 从同一真实 Session registry 调用固定 N-API 判定，不创建第二个授权 Session。未知版本、平台或摘要不匹配保留普通 Provider 路径，不发布图片来源策略。
+
+每个 checkpoint 核对真实 Session/cwd、账户身份、当前原生模式、完整 hooks snapshot、SDK callback registry 和 strict content-exclusion 结果，再调用该 Session 的原生 Read permission route；只有明确 `result + approved` 可以继续。来源只接受与 held proof 对应的普通组件链；alias、symlink、目录链接、parent 折返，以及显式 `.` 或空组件均拒绝；`./image.png` 不属于该 Copilot profile 的路径子集。内容排除结果按固定发行物的完整路径策略合同消费，不把路径判断说成 inode 或内容权限。未知、不可用和相关 hook 状态拒绝，既不实现自己的 permission matcher，也不关闭用户 hooks。
+
+支持的当前模式为 `manual` 或 `allow-all`。固定原生版本的 managed `defaultMode` 只影响新 Session，恢复保留原模式，动态 `permissions.disableAssistedPermissionsMode`/`permissions.disableBypassPermissionsMode` 只能收紧。独占 headless root Session 的 Host 模式变更先失效并 drain，权限变化事件也关闭 gate；每次原生 route 前再次读取实际模式，避免图片请求触发 assisted judge。模式值仅决定该无模型调用路径是否适用，不能代替完整 Read 判定。
+
+需要询问的图片请求由既有 SDK callback 精确拒绝，图片功能从不批准请求。每个请求预登记并签名绑定 native Session、execution、sequence、来源证明摘要及路径；live callback 还必须匹配 SDK context，且 request 与 `event.data.permissionRequest` 必须是同一个对象。拒绝 receipt 另签实际 native requestId。固定自有 ClientMetadata namespace 保存关联密钥，缺失时才初始化并读回，恢复保留原值，畸形或不确定状态不能覆盖、轮换或继续采集。密钥不进入 intention、事件、诊断或模型输入。历史只隐藏经两份签名验证的完整请求/拒绝对；未完成记录保留既有 expired/unknown 语义，不伪造完成，也不恢复为可批准的新请求。普通工具审批保持原流程，历史关联与当前图片模式资格分开。
+
+Copilot IPC 每次只允许一个在途判定。15 秒 deadline 或未知 IPC 状态关闭图片 authority、拒绝队列并丢弃迟到允许结果；仍可能到达的本图片权限 callback 继续拒绝。原生 N-API 无法取消时最多保留一条在途调用，不能为了普通图片超时终止整个文字 Session。真正的 Provider close 才负责关闭其拥有的 runtime 并回收正常解包资源；强制终止进程不能保证执行用户态临时目录清理。
 
 ## 来源与出现的职责
 
@@ -183,7 +194,28 @@ DNS 前拒绝 localhost/子域、`.local`、单标签内部名称及元数据名
 
 使用专用 HTTP/1.1，不用全局 fetch/Agent、环境/系统/浏览器代理、PAC、Cookie jar、自动认证、共享连接池、HTTP/2 coalescing 或 Alt-Svc；每跳新 socket。只 GET，不执行脚本、HTML/Refresh/meta refresh 或 401 challenge。HTTP 明文允许，保存后 hash 证明 byte 身份，不证明源站真实性。
 
-透明代理、NAT64 或内部路由可能把“公网 IP”改写成私网，应用地址检查无法证明这种部署的安全。必须有等价出口策略阻断本机、内网和元数据；不能证明时关闭新 external capture，报 policy_restricted。已有文本和已保存图片继续读，不 fallback 服务端代理。
+这里的受保护目标属于 Controller 所在的可信 OS 和部署：本机地址、接口所在网络、部署内部目标及云元数据。它不要求证明所有公网站点的后端结构。普通出站 SNAT 和外部站点自己的私有后端不因此成为禁止目标；将获批目的地址转换或透明转发至本部署受保护目标则必须被阻断。应用的 `remoteAddress` 只证明所选 socket peer，不能独自证明转换后的目标。
+
+可信本地配置声明这部分部署事实，目标 guard 再将它与当前本机接口、固定特殊地址规则共同执行。缺失、未知或失效的配置关闭新 external capture，报 policy_restricted。已保存图片继续按当前 Session 权限读取，不重新连接旧 URL，也不 fallback 服务端代理。[出口配置决策](../../.agents/notes/implemented/architecture/2026-11-10-image-egress-profiles.md)记录这项信任边界与替代方案。
+
+### 可信部署出口配置
+
+配置属于 Controller 本地的 `config.yml`，路径沿既有 `resolveConfigurationPaths()`：默认 `~/.daynight/config.yml`，或启动环境明确设置的 `DN_CONFIG_DIR/config.yml`。`controller.externalImages` 是独立拥有的小节，不能来自 Markdown、模型输出、URL、浏览器请求或云端任务参数。既有配置的其他小节保持原语义；图片小节严格解析并有读取大小上限，诊断不输出配置正文或凭据。配置只声明已存在的网络条件，不修改系统路由、防火墙或代理。
+
+| 字段 | 责任 |
+| --- | --- |
+| `schemaVersion: 1` | 固定配置表示；未知版本拒绝。 |
+| `profileId` | 本地部署配置的稳定标识；不作为图片或账户身份。 |
+| `protectedCidrs` | 部署所有者提供的完整额外受保护 IPv4/IPv6 CIDR，包括内部使用的公网段、平台目标和公网别名；必填空数组明确表示没有额外项。 |
+| `protectedDomains` | 额外受保护的规范域名及其子域；DNS 别名也接受同等检查，不能仅检查原始 URL hostname。 |
+| `egress.mode: direct` 与 `nat64Prefixes` | 所有者声明，除完整列出的 NAT64 前缀外，当前双栈 HTTP(S) 路径不会把获批目的地址转换或透明转发到受保护目标。已知转换前缀保守拒绝。 |
+| `egress.mode: enforced` 与 `policyId` | 所有者声明，指定的现有出口策略在目的地址转换后仍阻断同一受保护目标集合；标识本身不是程序独立核验防火墙的证据。 |
+
+配置 revision 来自该小节规范化内容的 SHA-256，不能靠忘记递增的手填版本延长许可。没有可确认的完整额外目标或转换条件时不得填空数组来启用；这些是部署所有者提供的事实，不是程序从一次公网 canary、清空代理环境变量或未观察到代理进程推导的结果。
+
+每个采集 attempt 绑定固定的策略实例。全部 DNS 候选、别名、每跳连接和实际 peer 均须通过目标检查；本机地址与接口 CIDR 是动态输入，包含公网接口和 IPv4-mapped IPv6 的等价表示。配置、网络上下文或读取可信度变化使原实例失效，取消并等待活动 socket 回收；后来的配置不能使原 attempt 自动重抓。Daynight 的账户、Session、执行和发布围栏独立生效，不能用部署配置替代它们。
+
+每个准入点重新观察配置与接口；存在活动 lease 时，每 250 ms 另作一次观察，以取消正在等待 DNS、连接、响应头或 body 的 socket。这是观察后的失效机制，不是原子的 OS 网络变更通知。单次配置观察最多等待 1 秒，关闭 producer 也会中断等待；超时立即拒绝准入并撤销原 generation，迟到结果不能复活它。支持的配置来源是可信本地普通文件。Node 不能强制回收永久卡住的内核文件 IO，因此同一 producer 最多保留一个尚未完成的读取，由 reader 的 finally 在返回后关闭 fd，不继续叠加读取，也不把 socket 已回收表述为该文件 IO 已完成。
 
 ### 无凭据请求与完整响应
 

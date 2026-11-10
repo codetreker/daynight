@@ -87,6 +87,13 @@ egress check and durable per-request charging. Successful bytes pass through the
 common complete decoder and service capture flow; later reads use the saved
 immutable resource.
 
+The [deployment-profile decision](2026-11-10-image-egress-profiles.md) supplies
+the production policy source. Trusted local configuration declares protected
+destinations and existing egress conditions; current host interfaces and all
+DNS, connection and peer targets participate in the guard. Configuration or
+network changes invalidate the attempt's generation. This does not claim that
+application checks independently verify the operator's deployment facts.
+
 Source writers reserve both the source and validation-copy peak through the
 existing media budget. `reserveCaptureSource` and relay block delivery share
 `tryAcquireMediaBlock`, keeping the Controller's total at two block slots.
@@ -180,10 +187,10 @@ stat identity is insufficient to identify ReFS files uniquely. Sharing conflicts
 remain observable. Its real-handle tests include an attribute-only junction
 mutation with unchanged file ID. Handle validation must execute on each supported
 platform; another platform's result or a source branch does not qualify it.
-Intel macOS is outside the current supported platform set. Native authorization
-and deployment egress remain unmet requirements, not approved deferrals. The
-source consumers do not yet establish complete automatic source capture or
-end-to-end availability.
+Intel macOS is outside the current supported platform set. Unsupported native
+profiles and unverified deployment facts remain unmet conditions, not approved
+deferrals. The source consumers and configured policy producers do not by
+themselves establish complete automatic source capture or end-to-end availability.
 
 Permission is checked throughout preparation and exported-block delivery, but
 already-lawfully-delivered bytes cannot be remotely erased. Local file checks

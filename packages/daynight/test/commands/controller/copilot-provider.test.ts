@@ -34,6 +34,16 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+test("Copilot still stops its owned runtime when image draining fails", async () => {
+  const error = new Error("Image cleanup failed"), policies: unknown[] = [];
+  const provider = await openCopilotProvider({ ...fixture.options, onNativeReadPolicy: policy => policies.push(policy), drainNativeReadPolicy: async () => { throw error; } });
+  await expect(provider.close()).rejects.toBe(error);
+  expect(fixture.native.disconnect).toHaveBeenCalledOnce();
+  expect(fixture.child.signalCode).toBe("SIGTERM");
+  expect(policies).toEqual([null]);
+  expect(fixture.states.at(-1)?.activity).toBe("stopped");
+});
+
 test("new Copilot selection cannot pass startup after the native catalog is unavailable", async () => {
   const result = await openCopilotProvider({ ...fixture.options, model: "requested", validateNativeSelection: true }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
   try { expect(result.error).toBeInstanceOf(Error); expect(fixture.native.send).not.toHaveBeenCalled(); }

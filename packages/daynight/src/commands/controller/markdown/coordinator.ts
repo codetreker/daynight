@@ -8,7 +8,8 @@ import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
 import type { LocalImageCheckpoint } from "./local-source-proof.js";
-import { copyExternalImage, createExternalImagePolicy, ExternalImageSourceError, parseExternalImageUrl, type ExternalImagePolicyOptions } from "./external-source.js";
+import type { ExternalImagePolicyLease } from "./external-policy.js";
+import { copyExternalImage, createExternalImagePolicy, ExternalImageSourceError, parseExternalImageUrl } from "./external-source.js";
 
 export type MarkdownSourceContext = {
   contextId: string; serverOrigin: string; ownerUserId: string; sessionId: string; executionId: string;
@@ -35,7 +36,7 @@ export const createMarkdownCaptureCoordinator = (options: {
   ticket: ControllerLaunchTicket; journal: ControllerLifecycleStore;
   bridge: Pick<ProviderOptions, keyof Hooks>; writable(): boolean; fence(): string | null;
   nativeReadPolicy?(): NativeReadPolicy | null;
-  externalPolicy?: Omit<ExternalImagePolicyOptions, "beforeRequest">;
+  acquireExternalPolicy?(): Promise<ExternalImagePolicyLease>;
   onReceipt(request: ImageCaptureRequest, receipt: ImageCaptureReceipt): void;
   onFailure?(occurrence: ImageOccurrence, error: ImageError): void;
 }) => {
@@ -168,12 +169,15 @@ export const createMarkdownCaptureCoordinator = (options: {
           } finally { await context.close(); }
         }
         if (request.locator.kind !== "external") return refuse("source_forbidden");
-        if (!options.externalPolicy) return refuse("policy_restricted");
-        const policy = createExternalImagePolicy({ ...options.externalPolicy,
-          assertEgressPolicy: async () => { checkContext(record.context, false, fence); await options.externalPolicy!.assertEgressPolicy(); },
-          beforeRequest: ({ hostname }) => { checkContext(record.context, false, fence); if (!store.rate(hostname)) throw new ExternalImageSourceError("source_rate_limited", 30); },
-        });
-        return copyExternalImage({ url: request.locator.url, outputPath, signal: joined, policy });
+        if (!options.acquireExternalPolicy) return refuse("policy_restricted");
+        const externalLease = await options.acquireExternalPolicy();
+        try {
+          const policy = createExternalImagePolicy({ ...externalLease,
+            assertEgressPolicy: async () => { checkContext(record.context, false, fence); await externalLease.assertEgressPolicy(); checkContext(record.context, false, fence); },
+            beforeRequest: ({ hostname }) => { checkContext(record.context, false, fence); if (!store.rate(hostname)) throw new ExternalImageSourceError("source_rate_limited", 30); },
+          });
+          return await copyExternalImage({ url: request.locator.url, outputPath, signal: joined, policy });
+        } finally { externalLease.release(); }
       });
       signal.throwIfAborted(); checkContext(record.context, false, fence);
       const result = await decode(async () => {

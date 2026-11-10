@@ -58,6 +58,40 @@ the [thread snapshot response](https://github.com/openai/codex/blob/086ccc833bc9
 [loaded hook enumeration](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/request_processors/catalog_processor.rs#L626),
 and [background hook refresh](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/effective_plugin_change.rs#L22).
 
+Copilot uses the actual root Session's native permission route through a private
+preload in the unmodified CLI distribution. This profile requires SDK 1.0.11,
+CLI 1.0.105 and macOS ARM64; executable and internal ABI artifacts are checked
+by digest before loading. The existing SDK/TCP connection remains the Session
+owner. Every checkpoint checks identity, current mode, complete hook state,
+strict path exclusions and the native Read result. Held-object proof must be an
+ordinary lexical chain without links, parent traversal, dot or empty components.
+Unsupported artifacts
+retain the ordinary text provider and do not receive image authority.
+
+Native permission routing may ask the SDK even when an API name suggests a
+check-only operation. Image requests therefore have precise, authenticated
+correlation and receive a rejection from that callback, never an approval.
+Only native automatic approval can admit source IO. The supported manual and
+allow-all modes, the pinned managed-mode lifecycle and the exclusive mutation
+boundary prevent the request from invoking an assisted model judge. Current
+mode is still queried for every checkpoint; a startup flag is insufficient.
+
+A fixed private ClientMetadata key authenticates request markers and refusal
+receipts across resume. Live matching also requires issuance, Session context
+and the same request object as `event.data.permissionRequest`. Historical
+suppression requires both a valid
+request marker and a refusal receipt bound to its actual native request ID.
+Unfinished records retain expired/unknown history rather than a fabricated
+completion. Ordinary tool interactions remain on their existing path. The key
+is initialized only when absent and read back; unknown writes are not replayed
+or repaired by rotating it. Historical association does not depend on the
+current Session still qualifying for image reads.
+
+An IPC deadline disables Copilot image authority without terminating a healthy
+text Session. At most one uncancellable native request may remain; late allows
+are ignored and its own late permission callback is still refused. Provider
+shutdown owns runtime termination and ordinary extraction cleanup.
+
 Only after final admission, successful helper completion, full image validation
 and a current Daynight scope does the coordinator persist `sourceAdmission`.
 The enclosing source record binds the capture and context; admission binds the
@@ -94,6 +128,17 @@ scope determines whether it may be transferred. Neither authorizes recapture.
 changes do not belong to the actual Session. Source decisions must use the live
 instance that owns the output and preserve its user configuration.
 
+**Infer that a permission route cannot ask, or precheck an allow-all snapshot.**
+The pinned Copilot routes can invoke the SDK callback, and a precheck does not
+remove the subsequent decision. Precise image-request rejection preserves the
+native decision without opening an interactive approval for background capture.
+
+**Hide all permission events with an image-looking intention prefix.** Ordinary
+tool requests can copy text. Authenticated issuance handles live events; a
+second signature binds a completed historical refusal to its native request ID.
+An incomplete crash record remains visible as expired/unknown when that proof
+is absent.
+
 ## Consequences
 
 The common consumer accepts asynchronous native decisions without weakening the
@@ -106,8 +151,10 @@ authority does not reopen within the same execution. This does not claim that
 other configurations are inherently unsupported; adding one requires native
 semantics and observable coverage, not another permissive flag.
 
-Claude and Copilot authority integration and deployment egress proof remain
-separate incomplete conditions of the full source capability. Native API shapes,
-controlled fixtures, OS handle tests and real Provider acceptance are distinct
-evidence. The [source design](../../../../docs/design/session-image-sources.md)
-owns the complete current mechanism and validation boundaries.
+Claude authority integration and real deployment egress validation remain
+separate incomplete conditions of the full source capability. The Copilot
+profile adds an internal ABI and signed-history maintenance cost; unsupported
+versions and platforms fail closed. Native API shapes, controlled fixtures, OS
+handle tests and real Provider acceptance are distinct evidence. The
+[source design](../../../../docs/design/session-image-sources.md) owns the complete
+current mechanism and validation boundaries.

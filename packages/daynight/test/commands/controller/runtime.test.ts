@@ -5,7 +5,9 @@ vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (val
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => fixture.journal() }));
-vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: () => ({ tick: async () => {}, stop: async () => {}, invalidate: () => {} }) }));
+const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
+vi.mock("../../../src/commands/controller/markdown/external-policy.js", () => ({ createExternalImagePolicyProducer: (options: unknown) => { externalRuntime.create(options); return { acquire: externalRuntime.acquire, close: externalRuntime.close }; } }));
+vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: (options: { acquireExternalPolicy(): Promise<unknown> }) => { externalRuntime.coordinatorOptions = options; return { tick: async () => {}, stop: async () => {}, invalidate: () => {} }; } }));
 vi.mock("../../../src/commands/controller/markdown/pipeline.js", () => ({ createMarkdownTimelinePipeline: ({ journal }: { journal: { projectTimeline(entry: unknown): void } }) => ({ accept: (entry: unknown) => journal.projectTimeline(entry), tick: async () => {}, stop: async () => {} }) }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: () => fixture.capture(), captureProcessProof: async () => ({ pid: 1 }) }));
 vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> }) => { fixture.relayCallbacks = callbacks; return { flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
@@ -17,7 +19,7 @@ const aliasFixture = vi.hoisted(() => ({ environment: undefined as NodeJS.Proces
 vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: aliasFixture.read }));
 vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases: async (options: { environment: NodeJS.ProcessEnv }) => ({ environment: aliasFixture.environment ?? options.environment, bindings: aliasFixture.environment ? [{ name: "daynight", target: "daynight-dev", executable: "/private/build/daynight-dev" }] : [], directory: null }) }));
 import { runController } from "../../../src/commands/controller/runtime.js";
-afterEach(() => { vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
+afterEach(() => { externalRuntime.coordinatorOptions = null; externalRuntime.close.mockReset(); externalRuntime.close.mockResolvedValue(); vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
 const setup = () => {
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
@@ -264,4 +266,29 @@ test("a subsequent shutdown error cannot replace the original initialization tim
     await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toThrow("Cleanup transport lost");
     expect(fixture.journal().getSnapshot().startup).toEqual({ state: "unknown", reasonCode: "native_timeout" });
   } finally { log.mockRestore(); }
+});
+
+
+test("runtime supplies a lazily acquired external policy from the trusted configuration path and closes its producer", async () => {
+  setup(); vi.stubEnv("DN_CONFIG_DIR", "/private/deployment-config");
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    expect(externalRuntime.create).toHaveBeenCalledWith({ paths: { stateDirectory: "/private/deployment-config", configFile: "/private/deployment-config/config.yml" } });
+    expect(externalRuntime.acquire).not.toHaveBeenCalled();
+    await expect(externalRuntime.coordinatorOptions!.acquireExternalPolicy()).resolves.toEqual({ marker: "external-generation" });
+    expect(externalRuntime.acquire).toHaveBeenCalledOnce();
+  } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
+  expect(externalRuntime.close).toHaveBeenCalledOnce();
+});
+
+test("an external producer close failure cannot skip provider and journal cleanup", async () => {
+  setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  externalRuntime.close.mockRejectedValueOnce(new Error("External policy close failed"));
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try { await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); process.emit("SIGTERM", "SIGTERM"); await running; }
+  finally { log.mockRestore(); }
+  expect(fixture.close).toHaveBeenCalledOnce(); expect(fixture.relayClose).toHaveBeenCalledOnce(); expect(fixture.closed).toBe(true);
 });

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
@@ -10,10 +10,12 @@ import { validateImageFile } from "../../../../src/commands/controller/media/ima
 import type { ControllerLaunchTicket } from "../../../../src/commands/controller/launch-ticket.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../../src/session/image-values.js";
 import type { LocalImageCheckpoint } from "../../../../src/commands/controller/markdown/local-source-proof.js";
+import { createExternalImagePolicyProducer, type ExternalImagePolicyLease } from "../../../../src/commands/controller/markdown/external-policy.js";
+import * as externalSource from "../../../../src/commands/controller/markdown/external-source.js";
 
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void | Promise<void>) => {
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
+const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void | Promise<void>, external: Pick<Parameters<typeof createMarkdownCaptureCoordinator>[0], "acquireExternalPolicy"> = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../../.tmp/a3-coordinator-tests");
   await mkdir(base, { recursive: true }); const home = await mkdtemp(path.join(base, "c-"));
   const workspace = path.join(home, "workspace"); await mkdir(workspace);
@@ -39,7 +41,7 @@ const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void 
       return receipt;
     } });
   let policy = { nativeSessionId: journal.getSnapshot().nativeSessionId!, cwd: workspace, revision: "verified-test-policy", verify: () => { if (!allowed) throw new Error("revoked"); }, authorizeCheckpoint: async (checkpoint: LocalImageCheckpoint) => { await checkSource?.(checkpoint); } };
-  const coordinator = createMarkdownCaptureCoordinator({ ticket: currentTicket, journal, bridge: bridge.providerOptions, writable: () => writable, fence: () => "test-fence", nativeReadPolicy: () => policy, onReceipt: (_request, value) => { changes.push(value); } });
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: currentTicket, journal, bridge: bridge.providerOptions, writable: () => writable, fence: () => "test-fence", nativeReadPolicy: () => policy, ...external, onReceipt: (_request, value) => { changes.push(value); } });
   cleanups.push(async () => { await coordinator.stop(); await journal.stopMedia(); journal.close(); });
   const context = coordinator.contextFor(occurrence);
   const committed = () => {
@@ -56,6 +58,36 @@ const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void 
   };
   return { journal, coordinator, occurrence, context, calls, changes, bytes, home: workspace, committed, serviceRetry, setLost: () => { loseRegister = true; }, revoke: () => { allowed = false; }, revokeScope: () => { writable = false; }, replacePolicy: (patch: Partial<typeof policy>) => { policy = { ...policy, ...patch }; } };
 };
+
+test("external admission acquires one lease and releases it before transferring the immutable copy", async () => {
+  let producer!: ReturnType<typeof createExternalImagePolicyProducer>, lease!: ExternalImagePolicyLease;
+  let acquisitions = 0, releases = 0;
+  const f = await fixture(undefined, { acquireExternalPolicy: async () => { acquisitions++; lease = await producer.acquire(); return { ...lease, release() { releases++; lease.release(); } }; } });
+  const configFile = path.join(f.home, "config.yml");
+  await writeFile(configFile, JSON.stringify({ controller: { externalImages: { schemaVersion: 1, profileId: "fixture", protectedCidrs: [], protectedDomains: [], egress: { mode: "enforced", policyId: "fixture-policy" } } } }));
+  producer = createExternalImagePolicyProducer({ paths: { stateDirectory: f.home, configFile } }); cleanups.push(() => producer.close());
+  // Source transport owns network admission. This assembly test keeps media
+  // staging real and controls only the directly invoked source collaborator.
+  vi.spyOn(externalSource, "copyExternalImage").mockImplementation(async input => {
+    await writeFile(input.outputPath, f.bytes); return { inputPath: input.outputPath, byteLength: String(f.bytes.length), sha256: createHash("sha256").update(f.bytes).digest("hex"), declaredMediaType: "image/png" };
+  });
+  f.coordinator.enqueue(f.occurrence, "https://images.example/original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); await f.coordinator.tick();
+  expect(f.calls).toEqual(["register", "commit"]); expect(acquisitions).toBe(1); expect(releases).toBe(1);
+  await expect(lease.assertEgressPolicy()).rejects.toMatchObject({ code: "policy_restricted" });
+  await rm(configFile); await f.coordinator.tick(); expect(acquisitions).toBe(1);
+  const record = f.coordinator.get(f.occurrence.imageId)!, readPolicy = f.coordinator.acquireReadPolicy(record.request!);
+  expect(() => readPolicy.verify()).not.toThrow();
+  f.revokeScope(); expect(() => readPolicy.verify()).toThrow(); readPolicy.close();
+});
+
+test("external failure releases its lease and a later profile does not restart the same attempt", async () => {
+  let acquisitions = 0, releases = 0;
+  const signal = new AbortController().signal;
+  const f = await fixture(undefined, { acquireExternalPolicy: async () => { acquisitions++; return { revision: "fixed", generation: "first", signal, async assertEgressPolicy() { throw new Error("revoked"); }, async assertTarget() {}, release() { releases++; } }; } });
+  f.coordinator.enqueue(f.occurrence, "https://images.example/original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); await f.coordinator.tick();
+  expect(f.calls).toEqual(["register", "failed"]); expect(f.coordinator.get(f.occurrence.imageId)?.error?.code).toBe("policy_restricted");
+  await f.coordinator.tick(); expect(acquisitions).toBe(1); expect(releases).toBe(1);
+});
 
 test("an unresolved native checkpoint cannot advance source capture or late-commit after revocation", async () => {
   let reached!: () => void, release!: () => void;

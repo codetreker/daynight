@@ -1,4 +1,5 @@
 import { createControllerCaptureBridge } from "./media/capture.js";
+import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
 import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
 import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
 import { textNativeInput } from "./providers/native-input.js";
@@ -136,10 +137,12 @@ export const runController = async (options: { homeDirectory: string; provider: 
     },
   });
   const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
     writable: () => !stopping && !cleaning && synchronized,
     fence: () => { const fence = relay.currentFence?.(); return fence ? JSON.stringify(fence) : null; },
     nativeReadPolicy: () => nativeReadPolicy,
+    acquireExternalPolicy: externalImages.acquire,
     onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
     onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
   });
@@ -194,6 +197,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     stopping = true;
     if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; }
     markdownCaptures.invalidate();
+    const externalImagesClosed = externalImages.close().catch(fail);
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     shutdownPromise = (async () => {
     try {
@@ -212,7 +216,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
       publishState(); await relay.flush().catch(fail);
     }
     catch (error) { fail(error); }
-    finally { await markdownCaptures.stop().catch(fail); await markdownTimeline.stop().catch(fail); historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
+    finally { await externalImagesClosed; await markdownCaptures.stop().catch(fail); await markdownTimeline.stop().catch(fail); historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
     })();
     return shutdownPromise;
   };

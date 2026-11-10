@@ -6,6 +6,7 @@ import { Agent, request, type IncomingMessage } from "node:http";
 import { isIP, connect, type Socket } from "node:net";
 import { connect as connectTls, checkServerIdentity } from "node:tls";
 import { performance } from "node:perf_hooks";
+import { parseImageNetworkAddress as addressBits } from "../../../config/external-images.js";
 import type { DisplayMime } from "../../../session/image-values.js";
 
 export type ExternalImageSourceErrorCode = "policy_restricted" | "source_forbidden" | "source_unavailable" | "source_not_found" | "permission_denied" | "source_rate_limited" | "source_busy" | "source_timeout" | "source_cancelled" | "source_too_large" | "invalid_image" | "unsupported_media_type";
@@ -19,23 +20,6 @@ export const EXTERNAL_IMAGE_ADDRESS_POLICY_REVISION = "iana-special-use-2026-11-
 // A special-purpose assignment is refused even when IANA marks it globally reachable.
 const IPV4_SPECIAL = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.31.196.0/24", "192.52.193.0/24", "192.88.99.0/24", "192.168.0.0/16", "192.175.48.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4"];
 const IPV6_SPECIAL = ["2001::/23", "2001:db8::/32", "2002::/16", "2620:4f:8000::/48", "3fff::/20"];
-function addressBits(input: string): { family: number; bits: bigint } | null {
-  if (input.includes("%")) return null;
-  const family = isIP(input);
-  if (family === 4) return { family, bits: input.split(".").reduce((n, octet) => (n << 8n) | BigInt(octet), 0n) };
-  if (family !== 6) return null;
-  let value = input.toLowerCase();
-  if (value.includes(".")) {
-    const pos = value.lastIndexOf(":"), v4 = addressBits(value.slice(pos + 1));
-    if (!v4) return null;
-    value = value.slice(0, pos + 1) + (v4.bits >> 16n).toString(16) + ":" + (v4.bits & 65535n).toString(16);
-  }
-  const halves = value.split("::"), left = halves[0] ? halves[0].split(":") : [], right = halves[1] ? halves[1].split(":") : [];
-  const words = halves.length === 2 ? [...left, ...Array<string>(8 - left.length - right.length).fill("0"), ...right] : left;
-  const bits = words.reduce((n, word) => (n << 16n) | BigInt("0x" + word), 0n);
-  if ((bits >> 32n) === 65535n) return { family: 4, bits: bits & 0xffffffffn };
-  return { family, bits };
-}
 function inRange(bits: bigint, cidr: string, width: number): boolean {
   const [address, prefix] = cidr.split("/"), base = addressBits(address!)!;
   const shift = BigInt(width - Number(prefix));
@@ -71,8 +55,19 @@ export interface ExternalImageDnsResolver {
   cancel(): void;
 }
 function checkSignal(signal: AbortSignal): void { if (signal.aborted) throw signal.reason instanceof ExternalImageSourceError ? signal.reason : failure("source_cancelled"); }
-export async function resolveExternalImageAddresses(hostname: string, signal: AbortSignal, resolver: ExternalImageDnsResolver = new Resolver({ timeout: 3000, tries: 1 })): Promise<string[]> {
-  if (isIP(hostname)) { if (!isPublicImageAddress(hostname)) throw failure("source_forbidden"); return [hostname]; }
+async function awaitAdmission(action: () => void | Promise<void>, signal: AbortSignal): Promise<void> {
+  checkSignal(signal);
+  let abort = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => { try { checkSignal(signal); } catch (error) { reject(error); } };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { await Promise.race([Promise.resolve().then(() => { checkSignal(signal); return action(); }), cancelled]); checkSignal(signal); }
+  finally { signal.removeEventListener("abort", abort); }
+}
+export async function resolveExternalImageAddresses(hostname: string, signal: AbortSignal, resolver: ExternalImageDnsResolver = new Resolver({ timeout: 3000, tries: 1 }), assertTarget?: (target: ExternalImageTarget) => void | Promise<void>): Promise<string[]> {
+  await awaitAdmission(() => assertTarget?.({ hostname }), signal);
+  if (isIP(hostname)) { if (!isPublicImageAddress(hostname)) throw failure("source_forbidden"); await awaitAdmission(() => assertTarget?.({ hostname, address: hostname }), signal); return [hostname]; }
   assertHostname(hostname); checkSignal(signal);
   const controller = new AbortController(), stop = () => controller.abort(signal.reason ?? failure("source_cancelled"));
   signal.addEventListener("abort", stop, { once: true });
@@ -81,7 +76,7 @@ export async function resolveExternalImageAddresses(hostname: string, signal: Ab
   const results: string[] = [], seen = new Set<string>(); let current = hostname;
   try {
     for (let depth = 0; depth <= 8; depth++) {
-      checkSignal(controller.signal); assertHostname(current);
+      checkSignal(controller.signal); assertHostname(current); await awaitAdmission(() => assertTarget?.({ hostname: current }), controller.signal);
       if (seen.has(current)) throw failure("source_forbidden"); seen.add(current);
       // All families and the alias query must settle before a socket can be opened.
       const answers = await Promise.allSettled([resolver.resolve4(current), resolver.resolve6(current), resolver.resolveCname(current)]);
@@ -92,7 +87,8 @@ export async function resolveExternalImageAddresses(hostname: string, signal: Ab
         throw failure((answer.reason as NodeJS.ErrnoException)?.code === "ETIMEOUT" ? "source_timeout" : "source_unavailable");
       });
       for (const address of [...values[0]!, ...values[1]!]) {
-        if (!isPublicImageAddress(address)) throw failure("source_forbidden"); results.push(address);
+        if (!isPublicImageAddress(address)) throw failure("source_forbidden");
+        await awaitAdmission(() => assertTarget?.({ hostname: current, address }), controller.signal); results.push(address);
         if (results.length > 32) throw failure("source_forbidden");
       }
       if (values[2]!.length > 1) throw failure("source_forbidden");
@@ -111,9 +107,14 @@ export interface ExternalImageControlledNetworkBoundary {
   port: number;
   ca?: string;
 }
+export type ExternalImageTarget = { hostname: string; address?: string };
 export interface ExternalImagePolicyOptions {
-  /** Must prove the deployed egress boundary and current authorization, including per-block revocation. */
+  /** Rechecks this fixed generation and the current Daynight authorization. */
   assertEgressPolicy(): void | Promise<void>;
+  /** Production checks every alias, DNS candidate, selected address and actual peer. */
+  assertTarget?(target: ExternalImageTarget): void | Promise<void>;
+  /** Revocation must also interrupt operations waiting without new body blocks. */
+  signal?: AbortSignal;
   /** Must durably charge every hop and address retry before any connection starts. */
   beforeRequest(input: { hostname: string }): void | Promise<void>;
   controlledNetworkBoundary?: ExternalImageControlledNetworkBoundary;
@@ -125,7 +126,7 @@ export function createExternalImagePolicy(options: ExternalImagePolicyOptions): 
   const policy = Object.freeze({ addressPolicyRevision: EXTERNAL_IMAGE_ADDRESS_POLICY_REVISION }); policies.set(policy, options); return policy;
 }
 async function assertPolicy(policy: ExternalImagePolicyOptions, signal: AbortSignal): Promise<void> {
-  checkSignal(signal); try { await policy.assertEgressPolicy(); } catch { throw failure("policy_restricted"); } checkSignal(signal);
+  checkSignal(signal); try { await awaitAdmission(() => policy.assertEgressPolicy(), signal); } catch { checkSignal(signal); throw failure("policy_restricted"); } checkSignal(signal);
 }
 function controlledBoundary(url: URL, policy: ExternalImagePolicyOptions): ExternalImageControlledNetworkBoundary | null {
   const b = policy.controlledNetworkBoundary;
@@ -143,6 +144,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
   const boundary = controlledBoundary(url, policy), host = url.hostname.replace(/^\[|\]$/g, ""), port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   const approved = (candidate: string) => isPublicImageAddress(candidate) || !!boundary && sameAddress(candidate, boundary.address);
   if (!approved(address)) throw failure("source_forbidden");
+  await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address }), signal);
   const socket = connect({ host: address, port, family: isIP(address) === 6 ? 6 : 4, autoSelectFamily: false });
   socket.on("error", () => {});
   let current: Socket = socket;
@@ -157,6 +159,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
     checkSignal(signal); await connected(socket, "connect");
     if (socket.readableHighWaterMark > 65536 || socket.writableHighWaterMark > 65536) throw failure("policy_restricted");
     assertExternalImageSocketPeer(socket, address, boundary?.address);
+    await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: socket.remoteAddress! }), signal);
     await assertPolicy(policy, signal);
     if (url.protocol === "https:") {
       const tls = connectTls({ socket, ...(isIP(host) ? {} : { servername: host }), rejectUnauthorized: true, minVersion: "TLSv1.2", ALPNProtocols: ["http/1.1"], ...(boundary?.ca ? { ca: boundary.ca } : {}), checkServerIdentity: (_servername, certificate) => checkServerIdentity(host, certificate) });
@@ -165,6 +168,7 @@ async function openVerifiedSocket(url: URL, address: string, policy: ExternalIma
       if (tls.readableHighWaterMark > 65536 || tls.writableHighWaterMark > 65536) throw failure("policy_restricted");
       if (!tls.authorized || (tls.alpnProtocol && tls.alpnProtocol !== "http/1.1")) throw failure("source_forbidden");
       assertExternalImageSocketPeer(tls, address, boundary?.address);
+      await awaitAdmission(() => policy.assertTarget?.({ hostname: host, address: tls.remoteAddress! }), signal);
       // Node skips the identity callback when no SNI is supplied for an IP SAN.
       const identityError = checkServerIdentity(host, tls.getPeerCertificate()); if (identityError) throw failure("source_forbidden");
     }
@@ -213,6 +217,8 @@ function retryAfter(value: string | string[] | undefined): number {
 export async function copyExternalImage(input: { url: string; outputPath: string; signal?: AbortSignal; policy?: ExternalImagePolicy }): Promise<{ inputPath: string; byteLength: string; sha256: string; declaredMediaType: DisplayMime | null }> {
   const policy = input.policy && policies.get(input.policy); if (!policy) throw failure("policy_restricted");
   const controller = new AbortController(), outerAbort = () => controller.abort(failure("source_cancelled"));
+  const policyAbort = () => controller.abort(failure("policy_restricted"));
+  policy.signal?.addEventListener("abort", policyAbort, { once: true }); if (policy.signal?.aborted) policyAbort();
   input.signal?.addEventListener("abort", outerAbort, { once: true }); if (input.signal?.aborted) outerAbort();
   const signal = controller.signal, started = performance.now(), totalTimeout = setTimeout(() => controller.abort(failure("source_timeout")), 30000);
   let active: Socket | null = null, handle: Awaited<ReturnType<typeof open>> | null = null;
@@ -230,7 +236,8 @@ export async function copyExternalImage(input: { url: string; outputPath: string
       const key = new URL(url); key.hash = "";
       if (visited.has(key.href)) throw failure("source_forbidden"); visited.add(key.href);
       const boundary = controlledBoundary(url, policy), hostname = url.hostname.replace(/^\[|\]$/g, "");
-      const addresses = boundary ? [boundary.address] : await resolveExternalImageAddresses(hostname, signal);
+      await awaitAdmission(() => policy.assertTarget?.({ hostname }), signal);
+      const addresses = boundary ? [boundary.address] : await resolveExternalImageAddresses(hostname, signal, undefined, policy.assertTarget);
       let lastError: unknown;
       for (const address of addresses.slice(0, 2)) {
         await assertPolicy(policy, signal); await policy.beforeRequest({ hostname }); checkSignal(signal);
@@ -298,7 +305,7 @@ export async function copyExternalImage(input: { url: string; outputPath: string
     if (error instanceof ExternalImageSourceError) throw error;
     throw failure("source_unavailable");
   } finally {
-    clearTimeout(totalTimeout); input.signal?.removeEventListener("abort", outerAbort); signal.removeEventListener("abort", abort);
+    clearTimeout(totalTimeout); policy.signal?.removeEventListener("abort", policyAbort); input.signal?.removeEventListener("abort", outerAbort); signal.removeEventListener("abort", abort);
     if (active) await destroyAndJoin(active); await handle?.close();
   }
 }

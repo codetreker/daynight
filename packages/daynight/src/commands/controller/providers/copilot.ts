@@ -10,7 +10,8 @@ import { nativeEntryId, parseProviderArguments, markdownTimelineMetadata } from 
 import { NativeTurns } from "./turns.js";
 import { CopilotInteractions } from "./copilot-interactions.js";
 import { CopilotProjection, copilotOwner } from "./copilot-projection.js";
-import { copilotDeadline, startCopilotRuntime } from "./copilot-runtime.js";
+import { copilotDeadline, copilotExecutable, startCopilotRuntime } from "./copilot-runtime.js";
+import { prepareCopilotAuthorityArtifacts } from "./copilot-read-authority-artifacts.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
 import { ControllerStartupError } from "../startup.js";
 
@@ -40,7 +41,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   const lost = new Promise<never>((_, reject) => { rejectLost = reject; }); void lost.catch(() => {});
   const disconnect = (error: Error) => {
     if (closed || disconnected) return;
-    disconnected = true; controls?.close(); if (heartbeat) clearInterval(heartbeat);
+    disconnected = true; runtime?.authority?.invalidate(); controls?.close(); if (heartbeat) clearInterval(heartbeat);
     rejectLost(error); interactions.dispose(error);
     if (currentTurnId) turns.complete(currentTurnId, error);
     for (const waiter of cancelWaiters) waiter.reject(error); cancelWaiters.clear();
@@ -93,14 +94,22 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     else if (event.type === "session.shutdown") disconnect(new Error("Native Copilot session closed; operation results are unknown."));
   };
   const onEvent = (event: SessionEvent) => {
+    runtime?.authority?.observe(event);
+    if (runtime?.authority?.suppressPermissionEvent(event)) return;
     if (closed || disconnected) return;
     try { interactions.accept(event); if (buffered) buffered.push(event); else accept(event); }
     catch { disconnect(new Error("Native Copilot event could not be processed; operation results are unknown.")); }
   };
-  const runtime = startCopilotRuntime({ ...options, cwd }, disconnect);
+  options.onNativeReadPolicy?.(null);
+  const artifacts = options.onNativeReadPolicy && !options.executable ? await prepareCopilotAuthorityArtifacts(copilotExecutable(), options.env ?? process.env, options.onDiagnostic) : undefined;
+  let runtime: ReturnType<typeof startCopilotRuntime>;
+  try { runtime = startCopilotRuntime({ ...options, cwd }, disconnect, artifacts); }
+  catch (error) { await artifacts?.cleanup(); throw error; }
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => closing ??= (async () => {
-    closed = true; controls?.close(); if (heartbeat) clearInterval(heartbeat);
+    closed = true; runtime.authority?.invalidate(); controls?.close(); if (heartbeat) clearInterval(heartbeat);
+    let drainError: unknown;
+    try { await options.drainNativeReadPolicy?.(); } catch (error) { drainError = error; }
     const error = new Error("Native Copilot process stopped; pending operation results are unknown.");
     rejectLost(error); interactions.dispose(error);
     if (currentTurnId) turns.complete(currentTurnId, error);
@@ -108,6 +117,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     try { if (native && !startupFailed) await copilotDeadline(native.disconnect(), "Copilot session disconnect", 2000); }
     catch { options.onDiagnostic?.("Copilot session disconnect was unconfirmed; stopping its owned runtime."); }
     await runtime.close(startupFailed); currentTurnId = null; activity = "stopped"; state();
+    if (drainError) throw drainError;
   })();
   try {
     state(); client = await runtime.ready;
@@ -125,7 +135,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     const config: SessionConfig = { ...(skillDirectories ? { skillDirectories } : {}), sessionId: nativeId, workingDirectory: cwd, streaming: true, includeSubAgentStreamingEvents: true,
       ...(options.instructions !== undefined ? { systemMessage: { mode: "append" as const, content: options.instructions } } : {}),
       ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && args.effort ? { reasoningEffort: args.effort as NonNullable<SessionConfig["reasoningEffort"]> } : {}),
-      onEvent, onPermissionRequest: () => interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
+      onEvent, onPermissionRequest: (request, context) => runtime.authority?.rejectPermission(request, context) ?? interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
       onElicitationRequest: request => interactions.bindElicitation(request), onExitPlanModeRequest: request => interactions.bindPlan(request) };
     const opening = options.resumeNativeSessionId ? client.resumeSession(nativeId, config) : client.createSession(config);
     void opening.then(async opened => { if (closed && !startupFailed) await copilotDeadline(opened.disconnect(), "Late Copilot session disconnect", 2000); }).catch(() => {});
@@ -135,12 +145,14 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     controls = new CopilotControls(native, state, options.onControlConfirmed, options.controlsRevisionFloor, skillDiscoveryError);
     await controls.initialize(options.resumeNativeSessionId !== null, options.unattended);
     if (options.validateNativeSelection && !options.resumeNativeSessionId) await controls.validateSelection({ model: options.model, ...(args.effort === undefined ? {} : { effort: args.effort }) });
+    await runtime.authority?.install(nativeId);
     const history = await call(native.getEvents(), "Copilot native history");
+    runtime.authority?.prepareHistory(history);
     const { processing } = await call(native.rpc.metadata.isProcessing(), "Copilot foreground activity");
     // Callbacks must bind immediately, but timeline replay precedes queued live
     // updates. Finalized projection IDs prevent old deltas overwriting history.
     const liveIds = new Set(buffered!.map(event => event.id));
-    for (const event of history) { if (!liveIds.has(event.id)) interactions.accept(event, true); accept(event, true); }
+    for (const event of history) { if (runtime.authority?.suppressPermissionEvent(event, true)) continue; if (!liveIds.has(event.id)) interactions.accept(event, true); accept(event, true); }
     if (processing) {
       const last = history.findLast(event => !copilotOwner(event) && (event.type === "user.message" || event.type === "assistant.turn_start"));
       currentTurnId = nativeEntryId(nativeId, `turn:${last?.id ?? "processing"}`); interactionId = last ? string(record(last.data).interactionId) || null : null;
@@ -187,9 +199,10 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   return {
     nativeSessionId: nativeId, send,
     async refreshControls() { await controls!.refresh(); return { disposition: "handled" }; },
-    async setSetting(id, value, operationId, revision) { if (closed || disconnected || dispatching) throw new NativeRpcError(-32602, "Native controls are unavailable."); await controls!.set(id, value, operationId, revision); return { disposition: "handled" }; },
+    async setSetting(id, value, operationId, revision) { if (closed || disconnected || dispatching) throw new NativeRpcError(-32602, "Native controls are unavailable."); runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); await controls!.set(id, value, operationId, revision); return { disposition: "handled" }; },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (closed || disconnected || dispatching || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
+      runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.();
       const result = await controls!.invoke(id, args, revision);
       if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(textNativeInput(result.prompt), operationId, null, result.displayPrompt); }
       if (result.kind !== "text" && result.kind !== "completed") throw new NativeRpcError(-32602, "Copilot command requires unsupported subcommand selection.");

@@ -1,9 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 import type { ProviderOptions } from "./types.js";
 import { NativeRpcTimeoutError } from "./native-rpc.js";
+import type { CopilotAuthorityArtifacts } from "./copilot-read-authority-artifacts.js";
+import { CopilotReadAuthority } from "./copilot-read-authority.js";
 
 export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new NativeRpcTimeoutError(label)), ms);
@@ -19,11 +22,17 @@ export const copilotExecutable = (): string => {
   throw new Error("The installed Copilot CLI has no native package for this platform.");
 };
 
-export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Error) => void) => {
+export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Error) => void, artifacts?: CopilotAuthorityArtifacts) => {
   const token = randomBytes(32).toString("hex"), executable = options.executable ?? copilotExecutable();
   const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), COPILOT_CONNECTION_TOKEN: token }; delete env.NODE_DEBUG;
+  const execution = randomUUID();
+  if (artifacts) {
+    env.DAYNIGHT_COPILOT_AUTHORITY = execution;
+    env.NODE_COMPILE_CACHE = join(dirname(artifacts.entry), ".node-compile-cache");
+  }
   const js = /\.[cm]?js$/i.test(executable);
-  const child = spawn(js ? process.execPath : executable, [...(js ? [executable] : []), "--headless", "--no-auto-update", ...(options.unattended && !options.resumeNativeSessionId ? ["--allow-all", "--no-ask-user", "--no-sandbox"] : [])], { cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
+  const entry = artifacts ? ["--import", new URL("./copilot-read-authority-preload.js", import.meta.url).href, artifacts.entry] : js ? [executable] : [];
+  const child = spawn(artifacts || js ? process.execPath : executable, [...entry, "--headless", "--no-auto-update", ...(options.unattended && !options.resumeNativeSessionId ? ["--allow-all", "--no-ask-user", "--no-sandbox"] : [])], { cwd: options.cwd, env, stdio: artifacts ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
   let closing = false, client: CopilotClient | undefined, closePromise: Promise<void> | undefined;
   let stopped = false;
   const exited = new Promise<void>(resolve => child.once("exit", () => { stopped = true; resolve(); }));
@@ -37,7 +46,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
   }));
   const listening = new Promise<number>((resolve, reject) => {
     let buffer = "", found = false;
-    child.stdout.on("data", chunk => {
+    child.stdout!.on("data", chunk => {
       if (found) return;
       buffer += String(chunk);
       if (Buffer.byteLength(buffer) > 65_536) { found = true; reject(new Error("Native Copilot startup output exceeds its limit.")); return; }
@@ -46,7 +55,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
       if (port) { found = true; const value = Number(port); if (value >= 1 && value <= 65535) resolve(value); else reject(new Error("Invalid native Copilot listener port.")); }
     });
   });
-  child.stderr.on("data", chunk => options.onDiagnostic?.(String(chunk).slice(0, 65_536)));
+  child.stderr!.on("data", chunk => options.onDiagnostic?.(String(chunk).slice(0, 65_536)));
   const ready = copilotDeadline(Promise.race([Promise.all([spawned, listening]), failed]), "Copilot runtime startup", 15_000).then(async ([, port]) => {
     if (closing) throw new Error("Copilot runtime closed during startup.");
     client = new CopilotClient({ connection: RuntimeConnection.forUri(`127.0.0.1:${port}`, { connectionToken: token }) });
@@ -56,6 +65,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
   });
   const close = (force = false): Promise<void> => closePromise ??= (async () => {
     closing = true;
+    authority?.invalidate();
     const errors: unknown[] = [];
     if (client) {
       if (force) {
@@ -76,7 +86,9 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
         child.kill("SIGKILL"); await copilotDeadline(exited, "Copilot process kill", 2000);
       }
     }
+    await artifacts?.cleanup();
     if (errors.length) options.onDiagnostic?.("Copilot SDK cleanup failed; the owned runtime was terminated.");
   })();
-  return { child, ready, close };
+  const authority = artifacts ? new CopilotReadAuthority({ child, execution, cwd: options.cwd, publish: policy => options.onNativeReadPolicy?.(policy) }) : undefined;
+  return { child, ready, close, authority };
 };

@@ -5,7 +5,7 @@ import { createServer as createTlsServer } from "node:https";
 import { createServer as createRawServer, connect, type Server, type Socket } from "node:net";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { assertExternalImageSocketPeer, copyExternalImage, createExternalImagePolicy, resolveExternalImageAddresses, type ExternalImageDnsResolver, type ExternalImagePolicy } from "../../../../src/commands/controller/markdown/external-source.js";
+import { assertExternalImageSocketPeer, copyExternalImage, createExternalImagePolicy, ExternalImageSourceError, resolveExternalImageAddresses, type ExternalImageDnsResolver, type ExternalImagePolicy, type ExternalImageTarget } from "../../../../src/commands/controller/markdown/external-source.js";
 
 const roots: string[] = [], servers: Server[] = [], sockets = new Set<Socket>();
 afterEach(async () => {
@@ -24,10 +24,10 @@ async function listen(server: Server) {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   return (server.address() as { port: number }).port;
 }
-async function fixture(handler: RequestListener, extra: { tls?: boolean; assertEgressPolicy?: () => void } = {}) {
+async function fixture(handler: RequestListener, extra: { tls?: boolean; assertEgressPolicy?: () => void; assertTarget?: (target: ExternalImageTarget) => void | Promise<void> } = {}) {
   const server = extra.tls ? createTlsServer({ key: TLS_KEY, cert: TLS_CERT }, handler) : createServer(handler), port = await listen(server);
   const charges: string[] = [];
-  const policy = createExternalImagePolicy({ assertEgressPolicy: extra.assertEgressPolicy ?? (() => {}), beforeRequest: ({ hostname }) => { charges.push(hostname); }, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port, ...(extra.tls ? { ca: TLS_CERT } : {}) } });
+  const policy = createExternalImagePolicy({ assertEgressPolicy: extra.assertEgressPolicy ?? (() => {}), ...(extra.assertTarget ? { assertTarget: extra.assertTarget } : {}), beforeRequest: ({ hostname }) => { charges.push(hostname); }, controlledNetworkBoundary: { hostname: "fixture.example", address: "127.0.0.1", port, ...(extra.tls ? { ca: TLS_CERT } : {}) } });
   return { url: `${extra.tls ? "https" : "http"}://fixture.example:${port}/original?token=source#fragment`, policy, charges };
 }
 const start = async (url: string, policy: ExternalImagePolicy, signal?: AbortSignal) => copyExternalImage({ url, outputPath: await output(), policy, ...(signal ? { signal } : {}) });
@@ -66,6 +66,20 @@ test("private redirects and credentials never reach the destination", async () =
   const f = await fixture((_req, res) => { res.writeHead(302, { Location: `http://127.0.0.1:${port}/metadata` }); res.end(); });
   await expect(start(f.url, f.policy)).rejects.toMatchObject({ code: "source_forbidden" });
   expect(forbiddenRequests).toBe(0);
+});
+
+test("the target guard rechecks the connected peer before sending HTTP bytes", async () => {
+  let requests = 0, addresses = 0;
+  const f = await fixture((_req, res) => { requests++; res.end("forbidden"); }, { assertTarget({ address }) { if (address && ++addresses === 2) throw new ExternalImageSourceError("source_forbidden"); } });
+  await expect(start(f.url, f.policy)).rejects.toMatchObject({ code: "source_forbidden" });
+  expect(addresses).toBe(2); expect(requests).toBe(0);
+  await vi.waitFor(() => expect([...sockets].every(socket => socket.destroyed)).toBe(true));
+});
+
+test("a redirect cannot bypass a changed target guard on the next hop", async () => {
+  let requests = 0, hostChecks = 0;
+  const f = await fixture((_req, res) => { requests++; res.writeHead(302, { Location: "/next" }); res.end(); }, { assertTarget({ address }) { if (address === undefined && ++hostChecks === 2) throw new ExternalImageSourceError("source_forbidden"); } });
+  await expect(start(f.url, f.policy)).rejects.toMatchObject({ code: "source_forbidden" }); expect(requests).toBe(1);
 });
 
 test("redirects stop after six total requests and loops do not request the repeated URL", async () => {
@@ -119,6 +133,17 @@ test("cancellation destroys and joins a real in-flight socket", async () => {
   // The reader has joined its socket; the server's peer observes closure in the next I/O turn.
   await new Promise(resolve => setImmediate(resolve));
   expect([...sockets].every(socket => socket.destroyed)).toBe(true);
+});
+
+test("caller cancellation does not wait for an unresolved policy admission", async () => {
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+  const policy = createExternalImagePolicy({ assertEgressPolicy: () => { entered(); return held; }, beforeRequest() {} });
+  const controller = new AbortController(), copying = start("https://images.example/a.png", policy, controller.signal);
+  const failure = copying.catch(error => error);
+  await ready; controller.abort();
+  try { expect(await Promise.race([failure, new Promise(resolve => setTimeout(() => resolve("still waiting"), 100))])).toMatchObject({ code: "source_cancelled" }); }
+  finally { release(); await failure; }
 });
 
 test("a header deadline destroys its real socket and returns a typed timeout", async () => {
