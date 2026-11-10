@@ -37,7 +37,9 @@ export type WorktreeIdentityContext = {
 const fingerprint = (entry: { dev: bigint; ino: bigint }): string => `${entry.dev}:${entry.ino}`;
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === "ENOENT";
-const sameFile = (entry: BigIntStats, original: BigIntStats): boolean => entry.isFile() && entry.dev === original.dev && entry.ino === original.ino;
+const sameFile = (entry: BigIntStats, original: BigIntStats): boolean => entry.isFile() && entry.dev === original.dev && entry.ino === original.ino
+  && entry.size === original.size && entry.mtimeNs === original.mtimeNs && entry.ctimeNs === original.ctimeNs
+  && entry.mode === original.mode && entry.uid === original.uid && entry.nlink === original.nlink;
 const privateFile = (entry: BigIntStats): void => {
   if (!entry.isFile() || entry.nlink !== 1n || typeof process.getuid !== "function" || entry.uid !== BigInt(process.getuid()) || (entry.mode & 0o7777n) !== 0o600n) throw new WorktreeValidationError("Worktree identity sidecar must be a private, owned regular file with one link.");
 };
@@ -45,19 +47,22 @@ const privateFile = (entry: BigIntStats): void => {
 const readFile = async (target: string, privateRequired: boolean): Promise<FileObservation | null> => {
   let initial: BigIntStats;
   try { initial = await lstat(target, { bigint: true }); } catch (error) { if (missing(error)) return null; throw error; }
-  if (!initial.isFile()) throw new WorktreeValidationError(`Worktree identity metadata ${target} must be an ordinary file.`);
+  // Marker reads confirm already observed ownership; malformed replacement
+  // bytes or file types cannot establish a resource-local validation failure.
+  const invalid = (message: string): Error => privateRequired ? new WorktreeValidationError(message) : new Error(message);
+  if (!initial.isFile()) throw invalid(`Worktree identity metadata ${target} must be an ordinary file.`);
   if (privateRequired) privateFile(initial);
   const file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
   try {
     const observed = await file.stat({ bigint: true });
-    if (!sameFile(observed, initial)) throw new WorktreeValidationError("Worktree identity metadata changed while opening.");
+    if (!sameFile(observed, initial)) throw new Error("Worktree identity metadata changed while opening.");
     if (privateRequired) privateFile(observed);
-    if (observed.size > 32768n) throw new WorktreeValidationError("Worktree identity metadata exceeds its size limit.");
+    if (observed.size > 32768n) throw invalid("Worktree identity metadata exceeds its size limit.");
     const buffer = Buffer.alloc(32769); let size = 0;
     while (size < buffer.length) { const result = await file.read(buffer, size, buffer.length - size, null); if (!result.bytesRead) break; size += result.bytesRead; }
-    if (size > 32768) throw new WorktreeValidationError("Worktree identity metadata exceeds its size limit.");
+    if (size !== Number(observed.size)) throw new Error("Worktree identity metadata changed while reading.");
     const after = await file.stat({ bigint: true }), current = await lstat(target, { bigint: true });
-    if (!sameFile(current, initial) || after.size !== observed.size || after.mtimeNs !== observed.mtimeNs || after.ctimeNs !== observed.ctimeNs) throw new WorktreeValidationError("Worktree identity metadata changed while reading.");
+    if (!sameFile(current, initial) || !sameFile(after, observed)) throw new Error("Worktree identity metadata changed while reading.");
     if (privateRequired) { privateFile(after); privateFile(current); }
     return { bytes: buffer.subarray(0, size), dev: initial.dev, ino: initial.ino };
   } finally { await file.close(); }
@@ -79,14 +84,28 @@ const parse = (bytes: Buffer): WorktreeIdentitySidecar => {
   return value as WorktreeIdentitySidecar;
 };
 
+export const verifyWorktreeMarker = async (admin: string, expected: string | FileObservation): Promise<FileObservation> => {
+  const marker = await readFile(path.join(admin, "locked"), false);
+  if (marker === null || (typeof expected === "string"
+    ? marker.bytes.toString("utf8").replace(/\r?\n$/, "") !== expected
+    : marker.dev !== expected.dev || marker.ino !== expected.ino || !marker.bytes.equals(expected.bytes))) throw new Error("Worktree ownership marker changed during identity inspection.");
+  return marker;
+};
+
 export const verifyWorktreeSidecar = async (admin: string, expected: FileObservation | null): Promise<void> => {
-  const current = await readFile(path.join(admin, filename), true);
-  if (expected === null ? current !== null : current === null || current.dev !== expected.dev || current.ino !== expected.ino || !current.bytes.equals(expected.bytes)) throw new WorktreeValidationError("Worktree identity sidecar changed during the operation.");
+  let current;
+  try { current = await readFile(path.join(admin, filename), true); }
+  catch (cause) {
+    // This is a recheck, so even newly invalid static attributes contradict
+    // the earlier observation rather than proving bounded local damage.
+    if (cause instanceof WorktreeValidationError) throw new Error("Worktree identity sidecar changed during the operation.", { cause });
+    throw cause;
+  }
+  if (expected === null ? current !== null : current === null || current.dev !== expected.dev || current.ino !== expected.ino || !current.bytes.equals(expected.bytes)) throw new Error("Worktree identity sidecar changed during the operation.");
 };
 
 export const verifyWorktreeIdentityMetadata = async (admin: string, expected: WorktreeIdentityEvidence): Promise<void> => {
-  const marker = await readFile(path.join(admin, "locked"), false);
-  if (marker === null || marker.dev !== expected.marker.dev || marker.ino !== expected.marker.ino || !marker.bytes.equals(expected.marker.bytes)) throw new WorktreeValidationError("Worktree ownership marker changed during the operation.");
+  await verifyWorktreeMarker(admin, expected.marker);
   await verifyWorktreeSidecar(admin, expected.sidecar);
 };
 
@@ -97,15 +116,18 @@ export const inspectWorktreeIdentity = async (context: WorktreeIdentityContext, 
       operation.check();
       if (role === "leaf" && !context.verifyLeaf) continue;
       const lease = await openDirectoryIdentity(context.paths[role]); leases.set(role, lease);
-      if (role !== "admin" && fingerprint(lease.runtime) !== context.runtime[role]) throw new WorktreeValidationError(`Worktree ${role} identity changed during inspection.`);
+      if (role !== "admin" && fingerprint(lease.runtime) !== context.runtime[role]) throw new Error(`Worktree ${role} identity changed during inspection.`);
     }
-    const marker = await readFile(path.join(context.paths.admin, "locked"), false);
-    if (marker === null || marker.bytes.toString("utf8").replace(/\r?\n$/, "") !== context.marker) throw new WorktreeValidationError("Worktree ownership marker changed during identity inspection.");
+    const marker = await verifyWorktreeMarker(context.paths.admin, context.marker);
     const sidecar = await readFile(path.join(context.paths.admin, filename), true);
     const directories = {} as Record<Role, StableDirectoryIdentity>;
     for (const [role, lease] of leases) if (lease.stable.kind === "supported") directories[role] = lease.stable.identity;
     const candidate: WorktreeIdentitySidecar | null = roles.every(role => directories[role] !== undefined)
       ? { version: 1, owner: canonicalResourceOwner(context.owner), markerSha256: digest(marker.bytes), directories } : null;
+    for (const lease of leases.values()) await lease.verifyPath();
+    await verifyWorktreeMarker(context.paths.admin, marker);
+    await verifyWorktreeSidecar(context.paths.admin, sidecar);
+    // Confirm current observations before classifying stored validation damage.
     if (sidecar !== null) {
       const stored = parse(sidecar.bytes);
       if (!isDeepStrictEqual(stored.owner, canonicalResourceOwner(context.owner)) || stored.markerSha256 !== digest(marker.bytes)) throw new WorktreeValidationError("Worktree identity sidecar does not match the original ownership marker.");
@@ -114,10 +136,6 @@ export const inspectWorktreeIdentity = async (context: WorktreeIdentityContext, 
         if (!isDeepStrictEqual(stored.directories[role], lease.stable.identity)) throw new WorktreeValidationError(`Stable worktree ${role} volume or object identity changed.`);
       }
     }
-    for (const lease of leases.values()) await lease.verifyPath();
-    const confirmedMarker = await readFile(path.join(context.paths.admin, "locked"), false);
-    if (confirmedMarker === null || !confirmedMarker.bytes.equals(marker.bytes)) throw new WorktreeValidationError("Worktree ownership marker changed during identity inspection.");
-    await verifyWorktreeSidecar(context.paths.admin, sidecar);
     operation.check();
     return { marker, sidecar, candidate };
   } finally {

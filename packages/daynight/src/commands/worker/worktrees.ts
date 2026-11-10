@@ -117,12 +117,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const readers = { directory, ordinaryFile, markerOwner: (marker: string) => coordinates(markerOwner(marker)) };
   const registrations = async (repository: WorkerRepository, target: string, operation: Operation, index?: RegistrationIndex): Promise<Registration[]> =>
     registrationsFor(index ?? await readRegistrationIndex(repository, readers, operation), target, readers);
-  const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean, index?: RegistrationIndex) => {
+  const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean, index?: RegistrationIndex, observedPointer?: string | null) => {
     const binding = bindingFor(project, identity, repository);
     for (const parent of [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")]) {
       await directory(parent);
     }
     const leaf = await directory(binding.worktreePath);
+    if (leaf === null && observedPointer !== undefined && observedPointer !== null) throw new Error("The worktree Git pointer disappeared during inspection.");
     const matches = await registrations(repository, binding.worktreePath, operation, index);
     if (matches.length > 1) throw new WorktreeValidationError("The task worktree registration is ambiguous.");
     const registration = matches[0] ?? null;
@@ -132,17 +133,19 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     }
     if (registration.marker === null) throw new WorktreeValidationError("The task worktree has no ownership marker; it was retained.");
     const owner = markerOwner(registration.marker);
-    if (!sameCoordinates(owner, identity) || await directory(registration.common) !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree ownership marker or repository identity does not match this claim.");
+    if (!sameCoordinates(owner, identity)) throw new WorktreeValidationError("The task worktree ownership marker or repository identity does not match this claim.");
+    if (await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree repository identity changed during inspection.");
     let verifyLeaf = false;
     if (leaf !== null) {
       const pointer = await ordinaryFile(path.join(binding.worktreePath, ".git"));
+      if (observedPointer !== undefined && pointer !== observedPointer) throw new Error("The worktree Git pointer changed during inspection.");
       if (pointer === null) {
         if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new WorktreeValidationError("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
       } else {
         verifyLeaf = true;
-        if (!pointer.startsWith("gitdir: ") || await resolveGitDirectory(binding.worktreePath, pointer.slice(8)) !== await resolveGitDirectory(registration.directory, ".")) throw new WorktreeValidationError("The original worktree Git pointer has changed.");
+        if (!pointer.startsWith("gitdir: ") || await resolveGitDirectory(binding.worktreePath, pointer.slice(8)) !== await resolveGitDirectory(registration.directory, ".")) throw new Error("The original worktree Git pointer has changed.");
         const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
-        if (await directory(common) !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree belongs to another Git repository.");
+        if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
         if (!terminal) await validateOrigin(binding.worktreePath, project.repoUrl, operation);
       }
     }
@@ -202,8 +205,8 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       }
       const repository = await inspectRepository(project, operation);
       const index = await readRegistrationIndex(repository, readers, operation);
-      return await scanRepositoryWorktrees(project, repository, index, operation, readers, async owner => {
-        const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true, index);
+      return await scanRepositoryWorktrees(project, repository, index, operation, readers, async (owner, observedPointer) => {
+        const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true, index, observedPointer);
         if (observed.registration === null) throw new Error("The owned task worktree registration disappeared.");
         return { owner, binding: observed.binding };
       }, includeOtherProjects);
