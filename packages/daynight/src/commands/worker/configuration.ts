@@ -229,7 +229,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   options.signal.throwIfAborted();
   if (migrated) await persist(options.file, `${JSON.stringify(cache)}\n`);
   options.signal.throwIfAborted();
-  const validatedNative = new Map<string, NativeProof>();
+  let validatedNative = new Map<string, NativeProof>();
   let synchronized = false, published = snapshot(cache, false, validatedNative, localMode), stopped = false, queued = false;
   let deferredDesired: WorkerCloudDesired | null = null;
   let tail = Promise.resolve(), fatal: { error: unknown } | undefined;
@@ -266,26 +266,31 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     queued = true;
     queueMicrotask(() => { queued = false; pump(); });
   };
-  const commit = (update: (current: Cache) => Cache, confirm = false, proof?: { key: WorkerCloudItemKey; revision: string; native: WorkerCloudNative; mode: AgentControlMode }): Promise<void> => {
+  const commit = (update: (current: Cache) => Cache, confirm = false, proof?: { key: WorkerCloudItemKey; revision: string; native: WorkerCloudNative; mode: AgentControlMode; accepted: () => boolean }): Promise<void> => {
     const operation = tail.then(async () => {
       check();
       let next = update(cache);
+      if (next !== cache) next = { ...next, nativeModes: Object.fromEntries(Object.entries(next.nativeModes).filter(([key]) => next.items.some(item => keyOf(item.value.key) === key))) };
+      const changedMode = cache.nativeModes["native:"] !== next.nativeModes["native:"] && supportsMode(next.desired) && next.desired?.value.agentControlMode != null;
+      const nextValidatedNative = new Map(validatedNative);
+      if (changedMode) for (const key of nextValidatedNative.keys()) if (key.startsWith("projectNative:")) nextValidatedNative.delete(key);
+      if (proof !== undefined && proof.accepted()) {
+        const item = findItem(next, proof.key);
+        if (item?.value.targetRevision === proof.revision && equal(item.value.appliedValue, proof.native) && next.nativeModes[keyOf(proof.key)] === proof.mode && (proof.key.kind === "native" || projectMode(next) === proof.mode)) nextValidatedNative.set(keyOf(proof.key), { mode: proof.mode, native: proof.native });
+      }
+      // Application state and execution authority must describe the same process proof.
+      for (const item of next.items) {
+        const key = item.value.key;
+        if ((key.kind === "native" || key.kind === "projectNative") && item.value.state === "applied" && target(next, key) !== null && !equal(nextValidatedNative.get(keyOf(key)), { mode: projectMode(next), native: item.value.appliedValue })) next = replaceItem(next, { ...item, value: { ...item.value, state: "pending" } });
+      }
       if (next !== cache) {
-        next = { ...next, nativeModes: Object.fromEntries(Object.entries(next.nativeModes).filter(([key]) => next.items.some(item => keyOf(item.value.key) === key))) };
         // All transitions calculate from this queue's current state; rename alone cannot prevent stale snapshots.
         await persist(options.file, `${JSON.stringify(next)}\n`);
-        const changedMode = cache.nativeModes["native:"] !== next.nativeModes["native:"];
         cache = freeze(next);
-        if (changedMode && supportsMode(cache.desired) && cache.desired?.value.agentControlMode != null) {
-          for (const [key, job] of jobs) if (key.startsWith("projectNative:")) job.controller.abort(new Error("Worker control mode changed."));
-          for (const key of validatedNative.keys()) if (key.startsWith("projectNative:")) validatedNative.delete(key);
-        }
       }
+      if (changedMode) for (const [key, job] of jobs) if (key.startsWith("projectNative:")) job.controller.abort(new Error("Worker control mode changed."));
+      validatedNative = nextValidatedNative;
       if (confirm) synchronized = true;
-      if (proof !== undefined) {
-        const item = findItem(cache, proof.key);
-        if (item?.value.targetRevision === proof.revision && equal(item.value.appliedValue, proof.native) && cache.nativeModes[keyOf(proof.key)] === proof.mode && (proof.key.kind === "native" || projectMode(cache) === proof.mode)) validatedNative.set(keyOf(proof.key), { mode: proof.mode, native: proof.native });
-      }
       published = snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode);
       options.onChange?.(published);
       kick();
@@ -392,7 +397,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       retryAt = new Date(now() + delay).toISOString();
       const result = { ...item, attempts, failureId: current.nextFailureId, value: { ...item.value, state: "error" as const, error: diagnostic, lastFailure: diagnostic, nextAttemptAt: retryAt } };
       return withModeResult({ ...replaceItem(current, result), nextFailureId: current.nextFailureId + 1 }, result);
-    }, false, validated === undefined ? undefined : { key, revision, ...validated }); }
+    }, false, validated === undefined ? undefined : { key, revision, ...validated, accepted: () => accepted }); }
     catch (error) { notifyNative({ kind: "cancelled" }); throw error; }
     if (nativeKey !== null) {
       if (!accepted || stopped || controller.signal.aborted) notifyNative({ kind: "cancelled" });
