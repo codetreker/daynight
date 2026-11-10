@@ -1,3 +1,4 @@
+import type { ArchiveProbeResult } from "../../../src/commands/controller/archive-error.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -243,7 +244,10 @@ describe("worker runtime configuration reporting", () => {
     const running = start(f);
     await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
     await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
-    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    // Startup may already have requested reconciliation; observe its GET before advancing time.
+    coordinatorOptions.onInventory!(null);
     await eventuallyWithoutAdvancingTime(() => expect(readStarted).toBe(true));
     await vi.advanceTimersByTimeAsync(7_000); releaseRead.resolve();
     await eventuallyWithoutAdvancingTime(() => expect(reportSignal).toBeDefined());
@@ -674,4 +678,146 @@ describe("worker runtime configuration reporting", () => {
     f.signal.abort(); await rejected;
     expect(shutdown).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce(); expect(mocks.webClose).toHaveBeenCalledOnce();
   });
+});
+
+
+it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] as const)("backfill performs only low-frequency archive condition probes: %s", async outcome => {
+  const f = await fixture();
+  target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };
+  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  const startTime = now;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId, sessionId: launchId, claimId: uuid(3), executionGeneration: "1" }));
+  const probes: number[] = [];
+  mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
+    probes.push(now - startTime);
+    if (outcome === "cancelled") { f.signal.abort(); throw new Error("probe cancelled"); }
+    if (probes.length > 1 && outcome === "probe-error") throw new Error("metadata unavailable");
+    return probes.length > 1 && outcome === "receipt" ? { kind: "attempt" } : { kind: "blocked", code: "archive_incomplete" };
+  });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
+    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, updateConfiguration: update, shutdown };
+  });
+  await start(f);
+  if (outcome === "cancelled") {
+    expect(probes).toEqual([0]); expect(mocks.archive).not.toHaveBeenCalled();
+    expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+  } else {
+    expect(probes.slice(0, 2)).toEqual([0, 900000]);
+    if (outcome === "receipt") expect(mocks.archive).toHaveBeenCalledOnce();
+    else { expect(probes).toEqual([0, 900000, 1800000]); expect(mocks.archive).not.toHaveBeenCalled(); }
+    if (outcome === "persistence-error") {
+      const retries = mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry").map(([event]) => event);
+      expect(retries).toHaveLength(3);
+      expect(retries.every(event => event.error instanceof AggregateError && event.error.message.includes("not persisted"))).toBe(true);
+      expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+    }
+  }
+});
+
+
+it("retains backfill blocker and probe deadline across runtime restart without cleanup ownership", async () => {
+  const f = await fixture();
+  let now = Date.parse(workerTelemetryTime);
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const identity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", executionId: uuid(11), executionGeneration: "1", launchId: uuid(11) };
+  mocks.completed.mockReturnValue([{ ...identity, webExecution: { ...identity, sessionId: uuid(11), launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ ...identity, sessionId: uuid(11) });
+  mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
+  let stop = f.signal, rounds = 0;
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, updateConfiguration: update, shutdown }));
+  await start(f);
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  const readState = () => {
+    const db = openWorkerStore(f.paths.databaseFile);
+    try { expect(db.listCleanupSchedules()).toEqual([]); return db.getArchiveBackfillSchedule(identity); }
+    finally { db.close(); }
+  };
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  const restart = async () => { rounds = 0; stop = new AbortController(); await start({ ...f, signal: stop }); };
+  now += 60_000;
+  await restart();
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  expect(mocks.archive).not.toHaveBeenCalled();
+  now += 840_000;
+  mocks.archiveProbe.mockRejectedValue(new Error("metadata unavailable"));
+  await restart();
+  expect(mocks.archiveProbe).toHaveBeenCalledTimes(2);
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  expect(mocks.archive).not.toHaveBeenCalled();
+  now += 900_000;
+  mocks.archiveProbe.mockResolvedValue({ kind: "attempt" });
+  mocks.archive.mockRejectedValue(new Error("receipt mismatch"));
+  await restart();
+  expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
+  expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+  now += 900_000;
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  await restart();
+  expect(readState()).toBeNull();
+  expect(mocks.archive).toHaveBeenCalledTimes(2);
+});
+
+
+it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
+  (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
+))("updates backfill scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
+  const f = await fixture();
+  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  const startTime = now;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const identity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", executionId: uuid(11), executionGeneration: "1", launchId: uuid(11) };
+  await mkdir(path.dirname(f.paths.databaseFile), { recursive: true });
+  const db = openWorkerStore(f.paths.databaseFile);
+  try { db.saveArchiveBackfillSchedule(identity, { archiveRepairCode: code, nextAttemptAt: now }); } finally { db.close(); }
+  mocks.completed.mockReturnValue([{ ...identity, webExecution: { ...identity, sessionId: uuid(11), launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ ...identity, sessionId: uuid(11) });
+  mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
+    if (outcome === "unconfirmed") throw new Error("metadata unavailable");
+    if (outcome === "blocked") return { kind: "blocked", code };
+    return { kind: outcome === "receipt" ? "attempt" : "complete" };
+  });
+  let store!: WorkerCoordinatorOptions["store"];
+  const attempts: number[] = [];
+  const admissions: ReturnType<typeof store.getArchiveBackfillSchedule>[] = [];
+  mocks.archive.mockImplementation(async () => {
+    attempts.push(now - startTime); admissions.push(store.getArchiveBackfillSchedule(identity));
+    if (outcome === "regressed") {
+      const { ArchiveRepairRequiredError } = await import("../../../src/commands/controller/archive-error.js");
+      throw new ArchiveRepairRequiredError(code);
+    }
+    if (attempts.length < 3) throw new Error("Session archive request failed (503).");
+    return { state: "ready" };
+  });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    store = options.store;
+    if (outcome === "clear-failed") vi.spyOn(store, "deleteArchiveBackfillSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
+    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, updateConfiguration: update, shutdown };
+  });
+  await start(f);
+  const read = openWorkerStore(f.paths.databaseFile);
+  try {
+    expect(read.listCleanupSchedules()).toEqual([]);
+    if (outcome === "complete") {
+      expect(attempts).toEqual([0, 60_000, 120_000]);
+      expect(admissions).toEqual([null, null, null]);
+      expect(read.getArchiveBackfillSchedule(identity)).toBeNull();
+      expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1);
+      expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry").every(([event]) => !event.message.includes("requires repair"))).toBe(true);
+    } else {
+      expect(read.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, nextAttemptAt: startTime + 900_000 });
+      expect(attempts).toEqual(outcome === "receipt" || outcome === "regressed" ? [0] : []);
+      expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+      expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+    }
+  } finally { read.close(); }
 });

@@ -2,6 +2,7 @@ import { ArchiveRepairRequiredError } from "../../controller/archive-error.js";
 import { ApiError } from "../../../api/client.js";
 import { OperationError } from "../../../api/operation.js";
 import { ProtocolError } from "../../../api/parse.js";
+import { RepositoryGitError } from "../../../repository/git.js";
 import { WorkerCleanupError } from "../cleanup-error.js";
 import { WorktreePreconditionError } from "../worktrees.js";
 import { NativeVersionOutputError } from "../herdr/version-probe.js";
@@ -70,5 +71,6 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
   if (error instanceof NativeVersionOutputError) return diagnostic("invalid-output");
   if (error instanceof HerdrCommandDeadlineError) return diagnostic("timeout");
   if (error instanceof HerdrCommandError && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
+  if (error instanceof RepositoryGitError && Number.isSafeInteger(error.exitCode) && error.exitCode !== null && error.exitCode > 0) return diagnostic("command-failed");
   return diagnostic("unknown");
 };
