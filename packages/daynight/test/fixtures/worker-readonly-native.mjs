@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { createWorkerReadOnlyChannel } from "../../dist/commands/worker/read-only/channel.js";
 import { browseWorkerDirectory } from "../../dist/commands/worker/read-only/directory.js";
 
-// The Go acceptance fixture sends the temporary credential over stdin only.
+// The process owner supplies the temporary credential over stdin only.
 const lines = createInterface({ input: process.stdin });
 const configuration = await new Promise((resolve, reject) => {
   lines.once("line", line => { try { resolve(JSON.parse(line)); } catch (error) { reject(error); } });

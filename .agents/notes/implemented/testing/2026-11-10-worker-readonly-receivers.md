@@ -38,3 +38,10 @@ constructor or moving broker state to HTTP. These receivers add test cost and
 do not alone establish live credential validity, SQL filtering, filesystem
 pagination, or browser decoding. The existing mixed channel fixtures still
 depend on real authentication and PostgreSQL.
+
+The CLI receiver runs two real Node children against a controlled WebSocket
+peer and real directories. It retains native pagination, filtering, file hashes,
+and process and socket shutdown. The peer validates connection identities but
+is not an authorization or SQL implementation; those remain Go responsibilities.
+The original optional Go native entry remains available while the remaining
+consumers establish their own evidence.
