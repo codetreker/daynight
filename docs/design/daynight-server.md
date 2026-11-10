@@ -230,13 +230,13 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 
 ## 状态与依赖不变量
 
-Task 使用 `todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 todo。
+Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。
 `014_task_status_assignment.sql` 将旧 proposed 行归类为 todo，对转换行 version+1、更新 updatedAt，
 保留执行时间及所有其他事实；默认、数据、CHECK 与 ledger 同一事务。已应用历史迁移保持不变。
-[状态架构](daynight-task-status.md)拥有四态转换、迁移和计时的完整机制与理由。
+[状态架构](daynight-task-status.md)拥有五态转换、迁移和计时的完整机制与理由。
 
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
-实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
+实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回proposed/todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
 同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
 
@@ -266,7 +266,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 同 project 的 task 写入由 project 行锁串行化，不同 project 可以并行。获得锁与读取
 任务不能合并为一个依赖同一旧快照的 SQL 语句：等待锁结束后，后续查询需要看到刚
 提交的 project 内写入。任务 UPDATE 依据实际旧/新状态维护时间：进入 in_progress 产生新起点并清空终点，
-退回 todo 清空两端，in_progress→done 保留可空起点并写真实终点，todo→done起点保持null。取消记录cancelledAt并保留原执行起止；同状态和普通编辑不刷新取消时间。
+退回 proposed/todo 清空两端，in_progress→done 保留可空起点并写真实终点，proposed/todo→done起点保持null。取消记录cancelledAt并保留原执行起止；同状态和普通编辑不刷新取消时间。
 普通编辑和同状态不改变执行时间。时间使用锁后的 `statement_timestamp()`，不使用可能早于锁等待结束的事务时间。该机制依赖 PostgreSQL 在 `READ COMMITTED` 下为每条命令
 取得新快照的语义，见[事务隔离文档](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED)
 及[行锁文档](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS)。
@@ -328,11 +328,11 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/projects/{projectId}/deletion-preview` | 当前 owner Team admin 的有界影响及阻塞观察 |
 | `DELETE /api/v1/projects/{projectId}` | 锁内复核权限和全部 claim，提交删除屏障并返回回执 |
 | `PATCH /api/v1/projects/{projectId}/settings` | 管理员按观察设置版本保存分钟阈值，返回完整 Project |
-| `POST /api/v1/projects/{projectId}/tasks` | 创建 `todo` task |
+| `POST /api/v1/projects/{projectId}/tasks` | 创建默认 `proposed` task，可显式指定 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
-| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标四状态，done 可带当前 claimId |
+| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
 | `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
@@ -369,7 +369,7 @@ Task PATCH 必须提交期望的 `version`，并至少提供 `title`、`descript
 }
 ```
 
-状态 PUT 严格接受正 int64 version 与四状态 status，返回 200 和完整 task。通用 PATCH 中出现
+状态 PUT 严格接受正 int64 version 与五状态 status，返回 200 和完整 task。通用 PATCH 中出现
 status 是输入错误，含其他合法字段也不写入。HTTP 与日志保留 invalid_transition
 用于 in_progress 的实际许可或平台切换拒绝；前置或受保护后继拒绝使用 dependency_unsatisfied。
 严格 request DTO 和具体服务 use case 共用原 project 锁。
@@ -571,7 +571,7 @@ fixture 不反向导入 `postgres` 根包。混合测试按独立证明拆分，
 和重启持久化由实际 process 所属测试证明；CLI/Web 与 Go 模块测试保持独立入口。
 
 正常资源操作、非法字段和地址、同 Project 限制、自身及重复依赖、环、完整依赖替换、
-四态转换、取消不可恢复、同状态 +0/实际改变 +1、PATCH status 拒绝、版本冲突、语义空
+五态转换、默认 proposed 与显式 todo 创建、取消不可恢复、同状态 +0/实际改变 +1、PATCH status 拒绝、版本冲突、语义空
 更新、原子起止时间、未知历史、锁等待后的实际开始、普通编辑保持计时及一致的
 `dependsOn`/`blockedBy`/`ready`，分别由对应规则、协议和 Store 所属测试验证。
 真实锁测试通过协调屏障证明反向依赖、同版本状态、依赖更新/状态竞争、重开与后继

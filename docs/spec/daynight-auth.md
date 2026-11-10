@@ -250,7 +250,7 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 | 邀请、移除成员、调整角色和撤销邀请 | 拒绝 | 允许 |
 | 项目提醒阈值修改 | 拒绝 | 允许 |
 
-新任务默认 todo，元数据 PATCH 不接受 status；set-status 使用
+新任务默认 proposed，创建可显式选择 proposed/todo；元数据 PATCH 不接受 status；set-status 使用
 独立的版本化状态设置。它们均按当前项目成员关系授权，管理员额外管理成员、邀请与项目提醒设置，
 不增加状态专属角色。生命周期状态、版本和依赖条件由服务需求拥有；项目访问权
 不等同于 Agent 执行或交付的会话授权。

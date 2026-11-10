@@ -77,12 +77,13 @@ func TestTaskResponseAdmissionPropagatesPostWriteFailure(t *testing.T) {
 				f.wantWrites = 1
 				f.dao.CreateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
 					f.writes++
-					if _, err := uuid.Parse(id); err != nil || ctx != f.ctx || values.Title != "Rejected" || values.Status != model.TaskTodo || !slices.Equal(values.DependsOn, []string{prerequisite.ID}) {
+					if _, err := uuid.Parse(id); err != nil || ctx != f.ctx || values.Title != "Rejected" || values.Status != model.TaskProposed || !slices.Equal(values.DependsOn, []string{prerequisite.ID}) {
 						t.Fatalf("response create candidate: %#v id=%s", values, id)
 					}
 					row := target
 					row.ID = id
 					row.Title = "Rejected"
+					row.Status = model.TaskProposed
 					row.DependsOn = []string{prerequisite.ID}
 					row.BlockedBy = []string{prerequisite.ID}
 					row.Ready = false

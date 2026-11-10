@@ -30,6 +30,8 @@ func SummarizeGraph(tasks []model.GraphTask) model.TaskGraphSummary {
 	summary := model.TaskGraphSummary{Total: int64(len(tasks))}
 	for _, task := range tasks {
 		switch task.Status {
+		case model.TaskProposed:
+			summary.Proposed++
 		case model.TaskTodo:
 			summary.Todo++
 			if task.Ready {

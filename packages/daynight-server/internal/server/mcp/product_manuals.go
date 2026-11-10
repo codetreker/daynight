@@ -41,13 +41,13 @@ type manualManifestEntry struct {
 // The manifest is explicit: public identifiers and metadata do not derive from
 // a request URI or the contents of the embedded directory.
 var productManualManifest = []manualManifestEntry{
-	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Product concepts", Description: "Objects, account and Project context, repository resolution, and host responsibilities.", MIMEType: "text/markdown", Size: 18423}},
-	{"manuals/queries-and-lifecycle.md", sdk.Resource{URI: "daynight://manuals/queries-and-lifecycle.md", Name: "queries-and-lifecycle", Title: "Queries and lifecycle", Description: "Choose Task and related reads, understand projections, pagination, statuses and properties.", MIMEType: "text/markdown", Size: 30931}},
+	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Product concepts", Description: "Objects, account and Project context, repository resolution, and host responsibilities.", MIMEType: "text/markdown", Size: 18435}},
+	{"manuals/queries-and-lifecycle.md", sdk.Resource{URI: "daynight://manuals/queries-and-lifecycle.md", Name: "queries-and-lifecycle", Title: "Queries and lifecycle", Description: "Choose Task and related reads, understand projections, pagination, statuses and properties.", MIMEType: "text/markdown", Size: 31431}},
 	{"manuals/dependencies.md", sdk.Resource{URI: "daynight://manuals/dependencies.md", Name: "dependencies", Title: "Dependency management", Description: "Read and replace ordinary and external prerequisites, reduce redundant edges and verify the graph.", MIMEType: "text/markdown", Size: 16389}},
 	{"manuals/write-safety.md", sdk.Resource{URI: "daynight://manuals/write-safety.md", Name: "write-safety", Title: "Write safety", Description: "Bind decisions to exact versions and distinguish confirmed, rejected and unknown write outcomes.", MIMEType: "text/markdown", Size: 19473}},
 	{"manuals/materials.md", sdk.Resource{URI: "daynight://manuals/materials.md", Name: "materials", Title: "Organizing task materials", Description: "Choose the owner of requirements, results, discussion, Steps and execution context.", MIMEType: "text/markdown", Size: 17927}},
 	{"manuals/files-and-references.md", sdk.Resource{URI: "daynight://manuals/files-and-references.md", Name: "files-and-references", Title: "Files and references", Description: "Read and upload complete attachments, preserve references and interpret transfer outcomes.", MIMEType: "text/markdown", Size: 20399}},
-	{"manuals/operation-boundaries.md", sdk.Resource{URI: "daynight://manuals/operation-boundaries.md", Name: "operation-boundaries", Title: "Operation boundaries", Description: "Distinguish access, authorization, confirmation, handoff, execution and Worker assignments.", MIMEType: "text/markdown", Size: 18259}},
+	{"manuals/operation-boundaries.md", sdk.Resource{URI: "daynight://manuals/operation-boundaries.md", Name: "operation-boundaries", Title: "Operation boundaries", Description: "Distinguish access, authorization, confirmation, handoff, execution and Worker assignments.", MIMEType: "text/markdown", Size: 18710}},
 }
 
 var manualURIReference = regexp.MustCompile(`daynight://manuals/[^\s\]\[()<>"` + "`" + `]+`)

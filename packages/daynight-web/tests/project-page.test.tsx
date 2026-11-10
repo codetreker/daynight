@@ -62,7 +62,7 @@ const graph = (items = seeds, id = projectId): TaskGraph => {
   });
   return { observedAt: "2026-10-20T12:00:00Z",
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id === projectId ? "核心项目" : "另一个项目", repoUrl: "git@github.com:example/project.git", createdAt: time, updatedAt: time }, tasks,
-    summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
+    summary: { proposed: 0, total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       done: tasks.filter((task) => task.status === "done").length, cancelled: 0, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === "todo" && !task.ready).length },
   };

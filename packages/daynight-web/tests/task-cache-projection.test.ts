@@ -25,7 +25,7 @@ it("derives complete dependency blocking, ordinary chains, all counts and precis
   const projection = projectSummaries(project, tasks, time);
   expect(projection.graph.tasks.map((row) => row.id)).toEqual([id(3), id(4), id(1), id(2)]);
   expect(projection.graph.tasks.find((row) => row.id === id(3))).toMatchObject({ blockedBy: [id(2)], ready: false });
-  expect(projection.graph.summary).toEqual({ total: 4, todo: 3, inProgress: 0, done: 1, cancelled: 0, ready: 2, blocked: 1 });
+  expect(projection.graph.summary).toEqual({ proposed: 0, total: 4, todo: 3, inProgress: 0, done: 1, cancelled: 0, ready: 2, blocked: 1 });
   expect(projection.versions.get(id(1))).toBe(1n);
   expect(projection.graph.tasks[0]).not.toHaveProperty("version");
   expect(projection.index.componentByTask.get(id(3))).toBe(id(1));
@@ -77,8 +77,19 @@ it("satisfies both edge kinds from cancelled predecessors without requiring the 
   const projection = projectSummaries(project, [task(1), cancelled, task(3, { dependsOn: [id(2)] }), task(4, { dependsOn: [id(2)], externalDependsOn: [id(2)] })], time);
   expect(projection.graph.tasks.find((row) => row.id === id(2))).toMatchObject({ blockedBy: [id(1)], ready: false });
   for (const n of [3, 4]) expect(projection.graph.tasks.find((row) => row.id === id(n))).toMatchObject({ blockedBy: [], ready: true });
-  expect(projection.graph.summary).toEqual({ total: 4, todo: 3, inProgress: 0, done: 0, cancelled: 1, ready: 3, blocked: 0 });
+  expect(projection.graph.summary).toEqual({ proposed: 0, total: 4, todo: 3, inProgress: 0, done: 0, cancelled: 1, ready: 3, blocked: 0 });
   expect(projection.index.components.get(id(1))!.progress).toEqual({ total: 3, done: 0, cancelled: 1, ended: 1, status: "in_progress" });
   expect(projection.index.components.get(id(4))!.progress.total).toBe(1);
   expect(sameSummary(cancelled, { ...cancelled, cancelledAt: "2026-10-20T12:00:00.000000001Z" })).toBe(false);
+});
+
+
+it("counts proposed separately and keeps both dependency kinds blocked until confirmation and completion", () => {
+  const projection = projectSummaries(project, [task(1, { status: "proposed" }), task(2, { status: "proposed", dependsOn: [id(1)] }),
+    task(3, { dependsOn: [id(1)] }), task(4, { dependsOn: [id(1)], externalDependsOn: [id(1)] })], time);
+  expect(projection.graph.summary).toEqual({ total: 4, proposed: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 2 });
+  expect(projection.graph.tasks[0]).toMatchObject({ status: "proposed", ready: false, blockedBy: [] });
+  expect(projection.graph.tasks[1]).toMatchObject({ status: "proposed", ready: false, blockedBy: [id(1)] });
+  for (const n of [3, 4]) expect(projection.graph.tasks.find((row) => row.id === id(n))).toMatchObject({ ready: false, blockedBy: [id(1)] });
+  expect(projection.index.components.get(id(1))!.progress).toMatchObject({ total: 3, done: 0, ended: 0, status: "todo" });
 });

@@ -129,7 +129,7 @@ members 返回 `{items,actorAccess}`，成员资料与本人 access 属于同一
 projectID, taskID, input) 沿用同一项目锁，在取锁后检查当前准入，再校验任务观察
 版本、目标状态与依赖。admin 和 member 都可执行这些资源操作；管理员角色额外
 管理成员、邀请与项目提醒设置。Worker 的 claim owner 操作路径和领取时的任务
-负责人要求保持各自原有规则。创建默认 todo，通用元数据更新不接收 status，没有
+负责人要求保持各自原有规则。创建默认 proposed，可显式选择 proposed/todo，通用元数据更新不接收 status，没有
 旧状态写入旁路。任务版本、int64、完整图范围和现有按条数分页合同保持。
 
 ### Team 元数据与生命周期事务
@@ -185,7 +185,7 @@ ownership 的写入必须先锁定并重读该 Team，和删除共享其存在�
 
 `RequestAuthentication` 拥有请求凭据的 HTTP 适配：Bearer 解析、会话 Cookie 选择、Cookie 写入的精确 Origin 校验、`AuthenticateRequest` 和 `Require`。它接收 `AuthenticateCredential` 操作，调用时传递原 request context、凭据种类和 secret，并保留 principal 或原错误。`ValidatePublicOrigin` 校验该 middleware 的公开 Origin 与 HTTP 测试配置。
 
-完整 `Authentication` 组合这个 middleware，并保留 concrete Identity、登录、账户、PAT 和 device 路由；其构造继续校验完整认证配置和 callback。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
+完整 `Authentication` 组合这个 middleware，通过私有 consumer 接口使用 Identity 的 17 个直接操作，并保留登录、账户、PAT 和 device 路由；其构造使用同一 Identity 对象校验完整认证配置和 callback，并绑定请求认证操作。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
 
 `RequestAuthentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
 从准入 principal 写入 `Daynight-User-ID`。因此 GET、空写结果及下游资源错误共用
@@ -406,7 +406,7 @@ HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由�
 | POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
-| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与四状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与五状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
 | POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |

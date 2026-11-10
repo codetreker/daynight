@@ -20,7 +20,7 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
       settings: { version: 1n, executionWarningMinutes: 1 } },
     observedAt: at(elapsed), tasks: [task('Goal', { dependsOn: [] }), ...tasks],
-    summary: { total: tasks.length + 1, todo: tasks.filter((item) => item.status === 'todo').length,
+    summary: { proposed: 0, total: tasks.length + 1, todo: tasks.filter((item) => item.status === 'todo').length,
       inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       done: tasks.filter((item) => item.status === 'done').length + 1, cancelled: 0,
       ready: tasks.filter((item) => item.ready).length, blocked: 0 },

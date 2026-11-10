@@ -58,3 +58,26 @@ describe('Worker configuration draft', () => {
     expect(mergeConfigurationResources(null, current)).toBe(current);
   });
 });
+
+
+describe('control mode draft state', () => {
+  it('keeps legacy absence and unadopted null separate from a chosen mode', () => {
+    expect(draftFromValue(configurationValue()).agentControlMode).toBeUndefined();
+    const value = { ...configurationValue(), agentControlMode: null };
+    const draft = draftFromValue(value);
+    expect(draft.agentControlMode).toBeNull();
+    expect(parseConfigurationDraft(draft).value).toEqual(value);
+    const edited = { ...draft, agentControlMode: 'web' as const };
+    expect(parseConfigurationDraft(edited).value!.agentControlMode).toBe('web');
+    expect(configurationFieldChanges(edited, value, {}).agentControlMode).toBe(true);
+    expect(configurationValuesEqual(value, { ...value, agentControlMode: 'herdr' })).toBe(false);
+  });
+  it('preserves negotiated capability when merging desired and observation revisions', () => {
+    const current = { ...configurationResource('3', { ...configurationValue(), agentControlMode: 'web' as const }), controlModeSupported: true };
+    const incoming = { ...configurationResource('2', { ...configurationValue(), agentControlMode: 'herdr' as const }), controlModeSupported: true, observationRevision: '2' };
+    const merged = mergeConfigurationResources(current, incoming);
+    expect(merged.controlModeSupported).toBe(true);
+    expect(merged.desired!.value.agentControlMode).toBe('web');
+    expect(merged.observationRevision).toBe('2');
+  });
+});

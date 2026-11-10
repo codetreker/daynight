@@ -17,6 +17,9 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
+	AgentControlMode *WorkerAgentControlMode `json:"agentControlMode"`
+	// Legacy replacements retain the locked cloud mode without synthesizing a default.
+	PreserveAgentControlMode    bool                         `json:"-"`
 	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
 	MaxConcurrent               int64                        `json:"maxConcurrent"`
 	PollIntervalMs              int64                        `json:"pollIntervalMs"`
@@ -65,8 +68,9 @@ type WorkerConfigurationReportedObservation struct {
 }
 
 type WorkerConfigurationExchange struct {
-	Bootstrap   *WorkerConfiguration            `json:"bootstrap"`
-	Observation *WorkerConfigurationObservation `json:"observation"`
+	ControlModeBootstrap *WorkerAgentControlMode         `json:"controlModeBootstrap,omitempty"`
+	Bootstrap            *WorkerConfiguration            `json:"bootstrap"`
+	Observation          *WorkerConfigurationObservation `json:"observation"`
 }
 
 type WorkerConfigurationResource struct {

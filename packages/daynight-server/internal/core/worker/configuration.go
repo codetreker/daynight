@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"reflect"
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
 func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfiguration, error) {
@@ -20,7 +22,9 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 	if err != nil {
 		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
 	}
-	return ParseWorkerConfiguration(raw)
+	normalized, err := ParseWorkerConfiguration(raw)
+	normalized.PreserveAgentControlMode = value.PreserveAgentControlMode
+	return normalized, err
 }
 
 func normalizeStoredConfiguration(value model.WorkerConfiguration) (model.WorkerConfiguration, error) {
@@ -73,6 +77,15 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
+	if value.PreserveAgentControlMode {
+		value.AgentControlMode = current.Desired.Value.AgentControlMode
+		value.PreserveAgentControlMode = false
+	} else if value.AgentControlMode == nil && current.Desired.Value.AgentControlMode != nil {
+		return model.WorkerConfigurationResource{}, invalidInput("An adopted agent control mode cannot be cleared.")
+	}
+	if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
+		return model.WorkerConfigurationResource{}, InputLimit(err)
+	}
 	if err := configurationProjects(ctx, dao, principal.UserID, current.Desired, value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
@@ -102,6 +115,22 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			return nil, err
 		}
 		desired, err := dao.SetWorkerConfiguration(ctx, principal.UserID, workerID, 1, *input.Bootstrap)
+		if err != nil {
+			return nil, err
+		}
+		current.Desired = &desired
+	}
+	if current.Desired != nil && current.Desired.Value.AgentControlMode == nil && input.ControlModeBootstrap != nil {
+		revision, _ := strconv.ParseInt(current.Desired.Revision, 10, 64)
+		if revision == math.MaxInt64 {
+			return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
+		}
+		value := current.Desired.Value
+		value.AgentControlMode = input.ControlModeBootstrap
+		if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
+			return nil, InputLimit(err)
+		}
+		desired, err := dao.SetWorkerConfiguration(ctx, principal.UserID, workerID, revision+1, value)
 		if err != nil {
 			return nil, err
 		}

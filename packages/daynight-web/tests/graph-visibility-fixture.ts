@@ -15,7 +15,7 @@ export const indexOf = (seeds: readonly Seed[], defaultStatus: TaskStatus = 'tod
   const count = (status: TaskStatus) => tasks.filter((task) => task.status === status).length;
   const graph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: 'Project', repoUrl: '', createdAt: '2026-10-22T00:00:00Z', updatedAt: '2026-10-22T00:00:00Z' }, tasks,
-    summary: { total: tasks.length, todo: count('todo'), inProgress: count('in_progress'), done: count('done'), cancelled: 0,
+    summary: { proposed: tasks.filter((task) => task.status === "proposed").length, total: tasks.length, todo: count('todo'), inProgress: count('in_progress'), done: count('done'), cancelled: 0,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === 'todo' && task.blockedBy.length > 0).length },
   };
   return buildGraphIndex(graph);

@@ -736,9 +736,16 @@ close 和 IPC disconnect 联合证明直接关闭，避免把 Node 的事件遗�
 并保留实例锁及状态供人工确认。系统只操作本次运行实时持有的进程和 Job，
 不根据持久化 PID 杀旧进程，也不重建已消失的任意进程树。Job 不是 sandbox；通过
 WMI、外部 broker 或特权创建而未继承 Job 的进程不在保证范围内。Windows 包装脚本、
-迟生后代、根退出和 owner 丢失的验证使用真实 native Job 与独立保留的 fixture handles；
-可移植协议测试和受控 native 接口测试分别验证流、准入顺序与 fail-closed 决策，
-不能替代 Windows 运行证据。
+迟生后代、根退出和 owner 丢失的验证使用真实 native Job 与独立保留的 fixture handles。
+显式 stop 场景在停止返回时立即核对 guardian 及产品实际盘点到的代表对象已 signaled；
+fixture 再通过独立保留的句柄观察盘点后的迟生对象。停止前用既有五秒 grace 计算的绝对
+期限限制后续额外等待；每轮先读取完成条件，若对象已 signaled，即使 join 停止过程已
+用完预算，也通过完成观察，否则到期后不再开始等待。该期限不抢占已开始的 native 调用
+或 join，不承诺严格的总 wall-clock 上界，也不在停止返回后另给五秒。每轮观察均要求
+无关进程仍存活。所有原退出和 bystander heartbeat 断言都在强制 fixture 清理前完成，
+不用额外清理帮助成功断言。准备、清理和 owner 丢失的十秒观察预算，以及 native case
+的 45 秒预算保留。可移植协议测试和受控 native 接口测试分别验证流、准入顺序与
+fail-closed 决策，不能替代 Windows 运行证据。
 
 每个状态目录只能由一个 daemon 实例持有。`instance.lock` 保存 `owner`、`pid` 和
 `startedAt`。读取既有锁时严格校验元数据，其中 PID 必须是正整数且不超过

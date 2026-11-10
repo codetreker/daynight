@@ -16,7 +16,7 @@ const input = (warningMinutes = 60): ClockInput => ({ observedAt: start, receive
 const snapshot = (observedAt = start, receivedMonotonic = 0, warningMinutes = 60, id = projectId): GraphSnapshot => {
   const graph: TaskGraph = {
     observedAt, project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id, name: "Project", repoUrl: "https://example.com/repo", settings: { version: 1n, executionWarningMinutes: warningMinutes }, createdAt: start, updatedAt: start },
-    tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 },
+    tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 },
   };
   return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt, receivedMonotonic, receivedAt: 123456, revision: 1 };
 };

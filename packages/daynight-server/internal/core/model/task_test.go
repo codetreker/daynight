@@ -13,7 +13,7 @@ func TestTaskStatusValidatesCanonicalWireValues(t *testing.T) {
 		{wire: "cancelled", valid: true},
 		{wire: "cancel", valid: false},
 		{wire: "Cancelled", valid: false},
-		{wire: "proposed", valid: false},
+		{wire: "proposed", valid: true},
 		{wire: "", valid: false},
 		{wire: "unknown", valid: false},
 		{wire: "TODO", valid: false},
@@ -36,6 +36,7 @@ func TestTaskStatusDistinguishesTerminalDependenciesFromExecution(t *testing.T) 
 		status                     TaskStatus
 		terminal, requires, starts bool
 	}{
+		{TaskProposed, false, false, false},
 		{TaskTodo, false, false, true},
 		{TaskInProgress, false, true, false},
 		{TaskDone, true, true, false},

@@ -26,16 +26,25 @@ type taskListOperations struct {
 	readList           func(context.Context, taskcore.ReadDAO, string, taskcore.ListSelection) (store.TaskPage, *model.Fault, error)
 }
 
+type taskWriteOperations struct {
+	requireProjectWrite func(context.Context, store.ProjectWriteDAO, model.Principal) (model.ProjectAccess, error)
+	prepareCreate       func(context.Context, store.TaskWriteDAO, string, store.TaskWrite) (taskcore.Mutation, error)
+	prepareUpdate       func(context.Context, store.TaskWriteDAO, string, taskcore.UpdateTask) (taskcore.Mutation, error)
+	prepareStatus       func(context.Context, store.TaskWriteDAO, model.Principal, string, taskcore.SetTaskStatus) (taskcore.Mutation, error)
+}
+
 type Tasks struct {
-	store          taskStore
-	capturer       Capturer
-	listOperations taskListOperations
+	store           taskStore
+	capturer        Capturer
+	listOperations  taskListOperations
+	writeOperations taskWriteOperations
 }
 
 func NewTasks(database taskStore, capture ...Capturer) *Tasks {
 	return &Tasks{
 		store: database, capturer: capturer(capture),
-		listOperations: taskListOperations{requireProjectRead: projectcore.RequireProjectRead, readList: taskcore.ReadList},
+		listOperations:  taskListOperations{requireProjectRead: projectcore.RequireProjectRead, readList: taskcore.ReadList},
+		writeOperations: taskWriteOperations{requireProjectWrite: projectcore.RequireProjectWrite, prepareCreate: taskcore.PrepareCreate, prepareUpdate: taskcore.PrepareUpdate, prepareStatus: taskcore.PrepareStatus},
 	}
 }
 
@@ -77,7 +86,7 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 		return model.Task{}, err
 	}
 	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
-		mutation, err := taskcore.PrepareCreate(ctx, tx.TaskDAO(), id.String(), values)
+		mutation, err := s.writeOperations.prepareCreate(ctx, tx.TaskDAO(), id.String(), values)
 		return mutation, err
 	})
 }
@@ -91,7 +100,7 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 		return model.Task{}, err
 	}
 	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
-		mutation, err := taskcore.PrepareUpdate(ctx, tx.TaskDAO(), id, input)
+		mutation, err := s.writeOperations.prepareUpdate(ctx, tx.TaskDAO(), id, input)
 		return mutation, err
 	})
 }
@@ -112,7 +121,7 @@ func (s *Tasks) UpdatePartitionedDependencies(ctx context.Context, principal mod
 			return taskcore.Mutation{}, err
 		}
 		input.DependsOn, input.ExternalDependsOn = all, ext
-		return taskcore.PrepareUpdate(ctx, tx.TaskDAO(), id, input)
+		return s.writeOperations.prepareUpdate(ctx, tx.TaskDAO(), id, input)
 	})
 }
 
@@ -120,7 +129,7 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 	var result model.Task
 	var refusal *model.Fault
 	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
-		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
+		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
