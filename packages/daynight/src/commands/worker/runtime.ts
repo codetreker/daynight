@@ -638,8 +638,11 @@ export const runWorker = async (options: {
               const project = await resolveProject({ repoUrl: mapping.remote }, signal);
               const operation = createOperation({ signal });
               try {
-                const worktrees = await getGit().listWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
-                if (worktrees.some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+                const scan = await getGit().scanWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
+                if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Local repository resource coverage is incomplete.");
+                if ([...scan.validated, ...scan.quarantined].some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+                // Mapping admission proves the project/path association only. The
+                // coordinator independently proves quarantined owners before claiming.
               } finally { operation.dispose(); }
               await admitLocalBinding({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, signal);
             }

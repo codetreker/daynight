@@ -85,6 +85,8 @@ export type WorkerHerdrLifecycle = {
   hasPreparedRun(owner: HerdrExecutionOwner): boolean;
   pendingInitialPrompt?(owner: HerdrExecutionOwner): string | null;
   responsibilities(): HerdrExecutionOwner[];
+  /** Original lifecycle path, without reading recording contents or archive state. */
+  worktreePath?(owner: HerdrExecutionOwner): string | null;
   isStopped(owner: HerdrExecutionOwner): boolean;
   stop(owner: HerdrExecutionOwner, reason: "shutdown" | "terminal", operation: Operation): Promise<void>;
   cleanup?(owner: HerdrExecutionOwner, prompt: string, operation: Operation): Promise<boolean>;
