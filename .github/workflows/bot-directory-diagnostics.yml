@@ -23,17 +23,19 @@ jobs:
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
       BOT_DIRECTORY_DIAGNOSTIC_OUTPUT: ${{ github.workspace }}/.tmp/bot-directory-diagnostic
       BOT_FIXTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      BOT_DIRECTORY_DIAGNOSTIC_HEAD: ${{ github.event.pull_request.head.sha }}
+      BOT_DIRECTORY_DIAGNOSTIC_SOURCE_KIND: pull-request-head
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 1
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 1
         with:
-          node-version: 24
-          check-latest: true
+          node-version: 24.22.2
           package-manager-cache: false
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         timeout-minutes: 1

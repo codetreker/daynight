@@ -188,8 +188,10 @@ regression verifies the candidate PID and release-before-delete transition.
 The original error remains observable even if the later removal succeeds.
 A separate [Windows Bot directory investigation](../.github/workflows/bot-directory-diagnostics.yml)
 runs `node packages/daynight/scripts/diagnose-bot-directory-release.mjs` with an
-exact `BOT_FIXTURE_BASE_SHA` and checkout-local `BOT_DIRECTORY_DIAGNOSTIC_OUTPUT`.
-It requires native Windows x64, Node.js 24, Python 3, locked dependencies, a built
+exact `BOT_FIXTURE_BASE_SHA`, matching `BOT_DIRECTORY_DIAGNOSTIC_HEAD`,
+`BOT_DIRECTORY_DIAGNOSTIC_SOURCE_KIND=pull-request-head`, and checkout-local
+`BOT_DIRECTORY_DIAGNOSTIC_OUTPUT`.
+It requires native Windows x64, Node.js 24.22.2, Python 3, locked dependencies, a built
 CLI and ETW privileges. The workflow supplies those inputs and always invokes
 the entry's `--cleanup` mode. It starts file-event capture before Vitest and
 replays the original PR base fixture prefix in fresh processes. It

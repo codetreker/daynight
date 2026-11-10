@@ -27,6 +27,10 @@ decoded records must verify the required payload fields and declared versions
 before the original fixture can run; missing templates do not become a claim
 that the payload schema is valid.
 
+The diagnostic job explicitly checks out the PR head and pins Node 24.22.2,
+matching the recorded failure environment. Its entire CLI production source
+tree must equal the selected baseline; later main changes cannot silently enter
+this historical comparison. Ordinary validation keeps its normal event checkout.
 The runner temporarily replays the PR base's Bot fixture, retaining its exact
 assertions and teardown. It records both source identities and restores the
 checked-out bytes on every path. Fresh Vitest processes execute the original

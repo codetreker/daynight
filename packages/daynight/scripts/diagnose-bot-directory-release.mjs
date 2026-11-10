@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const repository = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -180,6 +181,8 @@ if (process.argv[2] === "--cleanup") {
 }
 
 const base = process.env.BOT_FIXTURE_BASE_SHA;
+const expectedHead = process.env.BOT_DIRECTORY_DIAGNOSTIC_HEAD;
+const sourceKind = process.env.BOT_DIRECTORY_DIAGNOSTIC_SOURCE_KIND;
 if (!/^[0-9a-f]{40}$/.test(base)) throw new Error("An exact PR base SHA is required.");
 const productionPaths = [
   "packages/daynight/src/commands/worker/backends/controller-process.ts",
@@ -196,7 +199,10 @@ const head = await git(["rev-parse", "HEAD"]), initialStatus = await git(["statu
 if (initialStatus !== "") throw new Error("Diagnostic source must be clean before the original-fixture control.");
 const before = await readFile(fixture), metadata = await stat(fixture);
 await writeFile(backup, before, { flag: "wx" });
-receipt = { head, base, initialStatus, fixture: { path: fixturePath, savedSha256: hash(before), mode: metadata.mode, initialStatus: await git(["status", "--porcelain", "--", fixturePath]), restored: false }, jobs: [], rounds: [] };
+receipt = { head, base, initialStatus, context: { sourceKind, expectedHead, githubSha: process.env.GITHUB_SHA ?? null,
+  node: process.version, platform: process.platform, architecture: process.arch, osRelease: os.release(),
+  runnerOs: process.env.RUNNER_OS ?? null, runnerArchitecture: process.env.RUNNER_ARCH ?? null,
+  imageOs: process.env.ImageOS ?? null, imageVersion: process.env.ImageVersion ?? null }, fixture: { path: fixturePath, savedSha256: hash(before), mode: metadata.mode, initialStatus: await git(["status", "--porcelain", "--", fixturePath]), restored: false }, jobs: [], rounds: [] };
 await persist();
 receipt.fixture.baseBlob = await git(["rev-parse", `${base}:${fixturePath}`]);
 receipt.fixture.headBlob = await git(["rev-parse", `HEAD:${fixturePath}`]);
@@ -204,7 +210,6 @@ receipt.production = {};
 for (const name of productionPaths) receipt.production[name] = { base: await git(["rev-parse", `${base}:${name}`]), head: await git(["rev-parse", `HEAD:${name}`]) };
 await persist();
 receipt.sourceTree = { base: await git(["rev-parse", `${base}:packages/daynight/src`]), head: await git(["rev-parse", "HEAD:packages/daynight/src"]) };
-if (receipt.sourceTree.base !== receipt.sourceTree.head) throw new Error("Diagnostic production sources differ from the selected base.");
 await save(path.join(results, "source.json"), receipt);
 let aliases;
 const vitest = path.join(repository, "packages/daynight/node_modules/vitest/vitest.mjs");
@@ -275,6 +280,9 @@ const capture = async (name, args, targetBase) => {
 let exitCode = 0;
 const errors = [];
 try {
+  if (sourceKind !== "pull-request-head" || !/^[0-9a-f]{40}$/.test(expectedHead)) throw new Error("An exact diagnostic PR-head source identity is required.");
+  if (head !== expectedHead) throw new Error("The diagnostic checkout does not match the selected PR head.");
+  if (receipt.sourceTree.base !== receipt.sourceTree.head) throw new Error("Diagnostic production sources differ from the selected base.");
   aliases = JSON.parse((await must(process.execPath, [native, "aliases", repository], { timeoutMs: 10_000 })).toString("utf8"));
   for (const [label, provider] of [["file", "Microsoft-Windows-Kernel-File"], ["thread", "Microsoft-Windows-Kernel-Process"]]) {
     const manifest = path.join(results, `${label}-provider-manifest.xml`);
