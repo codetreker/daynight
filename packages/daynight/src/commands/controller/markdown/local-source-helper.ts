@@ -2,6 +2,8 @@ import { constants, closeSync, fstatSync, lstatSync, realpathSync, openSync, rea
 import { createHash } from "node:crypto";
 import * as koffi from "koffi";
 
+const { isSupportedLocalImageFilesystem }: typeof import("./local-source-filesystem.js") = await import(new URL(`./local-source-filesystem.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href);
+
 const darwin = process.platform === "darwin";
 const library = koffi.load(darwin ? "libSystem.B.dylib" : "libc.so.6");
 const openat = library.func("int openat(int fd, const char *path, int flags, int mode)");
@@ -25,12 +27,9 @@ const openRelative = (parent: number, name: string, directory: boolean): number 
 const safeFs = (fd: number): void => {
   const info = Buffer.alloc(4096);
   if ((fstatfs(fd, info) as number) !== 0) nativeError();
-  const type = info.readUInt32LE(darwin ? 60 : 0);
-  if (darwin && (info.readUInt32LE(64) & 0x1000) === 0) sourceError("policy_restricted");
   // Network filesystems and userspace mounts do not provide the required local
   // object semantics. Unknown filesystem types are deliberately fail closed.
-  const supported = darwin ? [0x1a, 0x11] : [0xef53, 0x58465342, 0x9123683e, 0x01021994];
-  if (!supported.includes(type >>> 0)) sourceError("policy_restricted");
+  if (!isSupportedLocalImageFilesystem(info, process.platform)) sourceError("policy_restricted");
 };
 const identity = (stat: { dev: number | bigint; ino: number | bigint }): string => `${stat.dev}:${stat.ino}`;
 const snapshot = (fd: number): string => {

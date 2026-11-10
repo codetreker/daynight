@@ -58,6 +58,10 @@ the helper, which compares the actual root fd before traversal. Opening a helper
 later cannot adopt a replacement directory at the same pathname. The POSIX
 helper retains root and ancestor fds, expands checked links and parent components,
 and checks file identity, length and nanosecond timestamps around copying.
+Darwin identifies APFS/HFS by the native `f_fstypename` and `MNT_LOCAL` fields
+and rejects userspace mounts marked `MNT_EXT_FSKIT` in the extended flags. Its
+`f_type` is a kernel registration number rather than a stable filesystem magic.
+Linux retains its filesystem-magic allowlist.
 Trusted document directories or additional roots still require explicit authority;
 text cannot supply them.
 
