@@ -1208,12 +1208,12 @@ to their production implementations; unit tests supply independent operation
 results and errors without running core business rules or preparing a database.
 Opaque Operation and Access values preserve the identity passed to callbacks.
 
-The existing tests verify current and parent credential checks, Bot/Session
-ordering, prepare/check/work short-circuiting, exact context and scope propagation,
-error preservation and exactly one operation close. The Session service still
-owns transaction completion and `Operation.Finish`; its production consumer
-coverage verifies the default Runtime binding. Run the ordinary module without
-PostgreSQL or UniAuth fixtures:
+The tests verify current and parent credential checks, Bot/Session ordering,
+prepare/check/work short-circuiting, exact context and scope propagation, error
+preservation and exactly one operation close. A constructor test checks the
+production bindings, Engine receiver, writer and deferred operation lifetime.
+The Session service still owns transaction completion and `Operation.Finish`.
+Run the ordinary module without PostgreSQL or UniAuth fixtures:
 
 ```bash
 source scripts/env.sh
@@ -1369,6 +1369,14 @@ write DTOs. A captured write is an intended operation, not proof of persistence;
 transaction completion separately selects `committed`, `not_committed` or
 `unknown`. Later reads and query decisions receive explicit scenario response
 facts; recording a write does not automatically change those responses.
+
+Bot registration checks its complete inserted identity, registration bytes and
+durable initial Snapshot independently from the returned initial Snapshot. Root
+Bot expiry HTTP tests supply direct operation outcomes while retaining routing,
+authentication, request parsing, response encoding and blocked-operation
+barriers. They do not prove a database lock or rollback. The
+[Bot expiry HTTP decision](../../.agents/notes/implemented/testing/2026-11-10-bot-expiry-http-test-owners.md)
+records the proof allocation.
 
 Session tests retain command admission and interaction-ID propagation,
 owner/credential/version rechecks, generation and fence transitions, archive

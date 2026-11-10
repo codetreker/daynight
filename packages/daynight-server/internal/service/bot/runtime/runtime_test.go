@@ -7,13 +7,81 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 var errRuntimeStage = errors.New("runtime stage failed")
+
+func TestRuntimeConstructorBindsCoreOperationsAndClosesOperation(t *testing.T) {
+	engine := sessioncore.NewEngine(nil)
+	idle := sessioncore.NewEngine(nil)
+	var operation *sessioncore.Operation
+	t.Cleanup(func() {
+		if operation != nil {
+			operation.Close()
+		}
+		for name, e := range map[string]*sessioncore.Engine{"runtime": engine, "idle": idle} {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err := e.Stop(ctx)
+			cancel()
+			if err != nil {
+				t.Errorf("cleanup %s Engine: %v", name, err)
+			}
+		}
+	})
+
+	ctx := t.Context()
+	sentinel := errors.New("controlled writer failure")
+	calls := 0
+	runtime := NewRuntime(engine, func(actual context.Context, op *sessioncore.Operation, callback func(store.SessionScope) error) error {
+		operation = op
+		calls++
+		if actual != ctx || op == nil || callback == nil || calls != 1 {
+			t.Fatal("writer changed context, Operation, callback, or call count")
+		}
+		probe, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cancel()
+		if err := engine.Stop(probe); err != context.Canceled {
+			t.Errorf("active Engine Stop = %v, want context.Canceled", err)
+		}
+		if err := idle.Stop(probe); err != nil {
+			t.Errorf("idle Engine Stop = %v, want nil", err)
+		}
+		return sentinel
+	})
+	bindings := []struct {
+		name      string
+		got, want any
+	}{
+		{"closeOperation", runtime.core.closeOperation, (*sessioncore.Operation).Close},
+		{"lockCredential", runtime.core.lockCredential, (*sessioncore.Operation).LockCredential},
+		{"authorizeRuntime", runtime.core.authorizeRuntime, botcore.AuthorizeRuntime},
+		{"checkBot", runtime.core.checkBot, (*sessioncore.Operation).CheckBot},
+		{"load", runtime.core.load, (*sessioncore.Operation).Load},
+		{"checkTestOwner", runtime.core.checkTestOwner, (*sessioncore.Operation).CheckTestOwner},
+		{"authority", runtime.core.authority, (*sessioncore.Access).Authority},
+	}
+	for _, binding := range bindings {
+		got, want := reflect.ValueOf(binding.got), reflect.ValueOf(binding.want)
+		if !got.IsValid() || got.Type() != want.Type() || got.IsNil() || got.Pointer() != want.Pointer() {
+			t.Errorf("%s is not bound to the production operation", binding.name)
+		}
+	}
+	if err := runtime.Run(ctx, model.Principal{}, "", "", nil, nil, nil); err != sentinel || calls != 1 {
+		t.Fatalf("Run error = %v, writer calls = %d; want sentinel and one call", err, calls)
+	}
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err := engine.Stop(stopCtx)
+	cancel()
+	if err != nil {
+		t.Fatalf("Engine retained an operation after Run: %v", err)
+	}
+}
 
 type runtimeScope struct {
 	store.SessionScope

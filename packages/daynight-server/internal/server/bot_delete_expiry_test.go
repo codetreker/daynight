@@ -1,13 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -27,9 +26,8 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 			t.Run(string(kind)+"/"+phase, func(t *testing.T) {
 				principal := defaultHTTPPrincipal()
 				principal.Kind = kind
-				tx := newHTTPTestStoreForPrincipal(t, principal)
-				h := resourceTestServerForPrincipal(t, tx, attachmentTestFiles(t), io.Discard, principal)
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				f := newBotExpiryFixture(t, principal)
+				ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), botExpiryContextKey{}, "request"), 5*time.Second)
 				defer cancel()
 				worker, sessionID, executionID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 				instant := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
@@ -38,67 +36,36 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				input := store.DeleteBot{Version: 2, DeletionID: uuid.NewString()}
 				path := "/api/v1/me/bots/" + bot.ID
 				body := jsonBody(t, map[string]any{"ifVersion": strconv.FormatInt(input.Version, 10), "deletionId": input.DeletionID})
-				request := func() *httptest.ResponseRecorder {
-					r := httptest.NewRequest(http.MethodDelete, path, strings.NewReader(body)).WithContext(ctx)
-					r.Header.Set("Content-Type", "application/json")
-					r.Header.Set("Origin", configuredTestConfig().PublicOrigin)
-					r.Header.Set("X-Request-ID", "project-test")
-					if kind == model.PATCredential {
-						r.Header.Set("Authorization", "Bearer "+httpTestToken(kind))
-					} else {
-						r.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(kind)})
-					}
-					response := httptest.NewRecorder()
-					h.ServeHTTP(response, r)
-					return response
+				deleted := func() model.Bot {
+					value := botExpiryCloneBot(bot)
+					value.Version, value.UpdatedAt = 3, instant.Add(time.Second)
+					value.Deletion = &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+					return value
 				}
-				deleted := bot
-				deleted.Version, deleted.UpdatedAt = 3, instant.Add(time.Second)
-				deleted.Deletion = &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
-				intentCalls := []string{"LockCredential", "Bot", "LockBotSessions", "RevokeBotSessions", "SaveBotDeletion", "LockCredential"}
-				replayCalls := []string{"LockCredential", "Bot", "LockCredential"}
-				configureIntent := func(d *botExpiryDAO) {
-					d.SessionsCall = func(id string) ([]store.BotSession, error) {
-						d.check(id == bot.ID, "LockBotSessions")
-						return []store.BotSession{{ID: sessionID, Owner: principal.UserID, Scope: "test", Backend: "web"}}, nil
-					}
-					d.RevokeCall = func(id string) error { d.check(id == bot.ID, "RevokeBotSessions"); return nil }
-					d.DeletionCall = func(id string, deletion *model.BotDeletion) (model.Bot, error) {
-						d.check(id == bot.ID && reflect.DeepEqual(deletion, deleted.Deletion), "SaveBotDeletion")
-						return deleted, nil
-					}
+				call := func(err error) *botExpiryCall {
+					return &botExpiryCall{method: "DeleteBot", bot: bot.ID, input: store.DeleteBot{Version: input.Version, DeletionID: input.DeletionID}, result: deleted(), err: err}
 				}
+				request := func(c *botExpiryCall) *httptest.ResponseRecorder {
+					return f.dispatch(ctx, http.MethodDelete, path, body, c)
+				}
+				want := api.Bot{ID: bot.ID, WorkerID: worker, Version: 3, Deletion: &api.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: 2, WorkerCleanup: api.BotResult{State: "pending"}, ServerCleanup: api.BotResult{State: "pending"}}}
 				if replay {
-					d := newBotExpiryPhase(t, tx, principal, bot, intentCalls, store.TransactionCommitted)
-					configureIntent(d)
-					out := decodeResponse[api.Bot](t, request(), http.StatusOK)
-					if out.Version != 3 || out.Deletion == nil || out.Deletion.DeletionID != input.DeletionID {
-						t.Fatal("deletion setup changed its requested identity")
+					out := decodeResponse[api.Bot](t, request(call(nil)), http.StatusOK)
+					if !reflect.DeepEqual(out, want) {
+						t.Fatalf("deletion setup changed its receipt: %+v", out)
 					}
-					bot = deleted
 				}
-				calls := intentCalls
-				if replay {
-					calls = replayCalls
-				}
-				d := newBotExpiryPhase(t, tx, principal, bot, calls, store.TransactionNotCommitted)
-				d.expired = true
-				if !replay {
-					configureIntent(d)
-				}
-				response := blockedBotExpiryResponse(t, ctx, cancel, d, request)
+				refused := call(&model.Fault{Code: "unauthenticated", Message: "Credential expired or was revoked."})
+				response := blockedBotExpiryResponse(t, ctx, cancel, refused, func() *httptest.ResponseRecorder { return request(refused) })
 				assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
-				valid := newBotExpiryPhase(t, tx, principal, bot, calls, store.TransactionCommitted)
-				if !replay {
-					configureIntent(valid)
+				outResponse := request(call(nil))
+				out := decodeResponse[api.Bot](t, outResponse, http.StatusOK)
+				if !reflect.DeepEqual(out, want) || outResponse.Body.String() != jsonBody(t, want)+"\n" {
+					t.Fatalf("valid deletion changed its receipt or redaction: %s", outResponse.Body)
 				}
-				out := decodeResponse[api.Bot](t, request(), http.StatusOK)
-				if out.Version != deleted.Version || out.Deletion == nil || out.Deletion.DeletionID != input.DeletionID || out.BotDefinition != nil {
-					t.Fatal("valid deletion changed the bound identity or receipt")
-				}
-				newBotExpiryPhase(t, tx, principal, deleted, replayCalls, store.TransactionCommitted)
-				repeated := decodeResponse[api.Bot](t, request(), http.StatusOK)
-				if jsonBody(t, repeated) != jsonBody(t, out) {
+				repeatedResponse := request(call(nil))
+				decodeResponse[api.Bot](t, repeatedResponse, http.StatusOK)
+				if !bytes.Equal(repeatedResponse.Body.Bytes(), outResponse.Body.Bytes()) {
 					t.Fatal("valid HTTP replay changed the confirmed result")
 				}
 			})
