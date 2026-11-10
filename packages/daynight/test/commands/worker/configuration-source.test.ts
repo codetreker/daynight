@@ -75,7 +75,7 @@ describe("Worker cloud configuration sources", () => {
   it("reads only local-owned values while obsolete managed values are invalid", async () => {
     const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories", agentControlMode: "web" } });
     const local = await readWorkerLocalConfiguration(f.paths);
-    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web" });
+    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
     expect(() => parseWorkerConfiguration(f.source, f.paths)).toThrow();
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toBeUndefined();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
