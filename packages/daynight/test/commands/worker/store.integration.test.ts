@@ -40,6 +40,28 @@ afterEach(() => {
 });
 
 describe("minimal worker SQLite schema", () => {
+  it("retains archive repair scheduling across reopen without changing the owner or deadline", () => {
+    const f = fixture(); f.register();
+    const owner = { ...claim, worktreeId: uuid(4) };
+    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 3, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: "archive_incomplete" });
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getCleanupSchedule(owner)).toMatchObject({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 901000, archiveRepairCode: "archive_incomplete" });
+    expect(() => reopened.saveCleanupSchedule({ ...owner, worktreeId: uuid(5) }, reopened.getCleanupSchedule(owner)!)).toThrow("different worktree");
+    expect(() => reopened.saveCleanupSchedule(owner, { ...reopened.getCleanupSchedule(owner)!, deadline: 101 })).toThrow("deadline");
+  });
+
+  it("upgrades a version 12 cleanup schedule without inventing an archive blocker", () => {
+    const f = fixture(); f.register();
+    f.store.saveCleanupSchedule({ ...claim, worktreeId: uuid(4) }, { deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+    close(f.store);
+    const db = connect(f.file);
+    if ((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).some(row => row.name === "archive_repair_code")) db.exec("ALTER TABLE cleanup_schedules DROP COLUMN archive_repair_code");
+    db.exec("DROP TABLE IF EXISTS archive_backfill_schedules");
+    db.pragma("user_version=12"); db.close();
+    expect(open(f.file).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+  });
+
   it("creates the project mapping, task index and cleanup schedule with WAL/FULL", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
@@ -240,4 +262,24 @@ describe("worker cleanup schedules", () => {
     f.store.saveCleanupSchedule(owner, { ...schedule, failures: 3 });
     expect(f.store.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule, failures: 3 });
   });
+});
+
+
+it("persists only backfill conditions with generation and claim fencing, without creating cleanup responsibility", () => {
+  const f = fixture();
+  const identity = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(80), executionGeneration: "1", launchId: uuid(81) };
+  const state = { archiveRepairCode: "archive_incomplete" as const, nextAttemptAt: 900_000 };
+  f.store.saveArchiveBackfillSchedule(identity, state);
+  close(f.store);
+  const reopened = open(f.file);
+  expect(reopened.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, ...state });
+  expect(reopened.listCleanupSchedules()).toEqual([]);
+  expect(reopened.listTasks()).toEqual([]);
+  for (const patch of [{ claimId: uuid(82) }, { launchId: uuid(83) }, { executionGeneration: "2" }]) {
+    expect(() => reopened.saveArchiveBackfillSchedule({ ...identity, ...patch }, state)).toThrow("identity");
+    expect(() => reopened.deleteArchiveBackfillSchedule({ ...identity, ...patch })).toThrow("identity");
+  }
+  expect(reopened.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, ...state });
+  reopened.deleteArchiveBackfillSchedule(identity);
+  expect(reopened.getArchiveBackfillSchedule(identity)).toBeNull();
 });

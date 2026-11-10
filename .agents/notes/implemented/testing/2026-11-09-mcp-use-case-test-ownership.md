@@ -38,6 +38,15 @@ service tests exercise the actual admission encoder, including exact and excess
 byte boundaries. Store tests retain physical rollback and committed readback.
 An operation mock's response is never treated as evidence of persistence.
 
+Project and Invitation adapters share the existing `personalTeamResolver`
+contract with Team tools. Their registration accepts the supplied resolver
+directly, while `ResolveTeamID` retains canonicalization and explicit selection
+behavior. Focused adapter and SDK/HTTP tests control that one operation and the
+direct Project or Team collaborator; they verify context, principal, canonical
+Team ID, failure propagation and registration binding without executing Identity
+business rules. Other Identity and application assembly tests retain their own
+responsibilities.
+
 Team protocol tests configure ordinary `List`, `Get`, `MembersPage` and scoped
 Project list operations through strict direct mocks. Service tests verify one
 snapshot and DAO batch per page, access before member reads, scoped cursors and

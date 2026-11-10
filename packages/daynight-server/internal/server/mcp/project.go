@@ -13,7 +13,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -31,7 +30,7 @@ type projectOperations interface {
 
 type projectTools struct {
 	projects projectOperations
-	identity *identity.Identity
+	identity personalTeamResolver
 	origin   string
 }
 type projectCreateInput struct {
@@ -58,7 +57,7 @@ type projectListInput struct {
 }
 
 // RegisterProjectTools exposes the Project operations through the shared MCP wrapper.
-func RegisterProjectTools(e *Entry, projects projectOperations, identity *identity.Identity, origin string) error {
+func RegisterProjectTools(e *Entry, projects projectOperations, identity personalTeamResolver, origin string) error {
 	var tools []*sdk.Tool
 	if err := json.Unmarshal(projectToolsJSON, &tools); err != nil {
 		return fmt.Errorf("decode Project tools: %w", err)

@@ -1510,6 +1510,12 @@ with all 360 combinations, complete returned Task data, pagination, Worker
 inventory, historical assignment and version-2 cursor scope. Shared platform and
 agent-permission service fixtures retain their DAO-based List scope.
 
+The Create, Update and SetStatus preparation-failure witnesses control project
+write authorization and the selected Task preparation operation inside the real
+write callback. They check input and scope capability identity, call order,
+error chains and completion facts. Core tests execute the preparation operations
+against controlled failing reads; neither fixture represents persistence.
+
 Run the service suite and receiving Core tests without database or UniAuth
 fixtures from the module:
 
@@ -1521,6 +1527,8 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 The [List test decision](../../.agents/notes/implemented/testing/2026-11-09-task-list-direct-operation-tests.md)
 records the direct-operation boundary and retained query/cursor proofs.
+The [write preparation test decision](../../.agents/notes/implemented/testing/2026-11-10-task-write-preparation-tests.md)
+records the selected failure witnesses and their Core recipients.
 
 PostgreSQL witnesses follow their implementation owners under
 `internal/core/store/postgres/`. Domain subpackages test direct DAO queries,

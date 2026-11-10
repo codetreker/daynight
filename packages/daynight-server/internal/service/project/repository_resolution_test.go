@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -70,67 +71,136 @@ func resolveFault(t *testing.T, err error, code string) {
 	}
 }
 
+// resolveSnapshot passes its own scope to the callback, so the DAO capability
+// observed by the operation is the one bound to this snapshot.
+type resolveSnapshot struct {
+	store.SnapshotScope
+	store.ProjectReader
+	t                           *testing.T
+	ctx                         context.Context
+	snapshots, daoCalls, writes int
+	callbackWant, completion    error
+}
+
+func (s *resolveSnapshot) ReadSnapshot(ctx context.Context, op func(store.SnapshotScope) error) error {
+	s.snapshots++
+	if ctx != s.ctx || s.snapshots != 1 {
+		s.t.Fatal("unexpected snapshot context or count")
+	}
+	err := op(s)
+	if err != s.callbackWant {
+		s.t.Fatalf("callback error = %v, want %v", err, s.callbackWant)
+	}
+	if s.completion != nil {
+		return s.completion
+	}
+	return err
+}
+func (s *resolveSnapshot) ProjectDAO() store.ProjectReader {
+	s.daoCalls++
+	if s.daoCalls != 1 {
+		s.t.Fatal("unexpected ProjectDAO call")
+	}
+	return s
+}
+func (s *resolveSnapshot) WriteProject(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
+	s.writes++
+	s.t.Fatal("unexpected Project write")
+	return store.Completion{}, nil
+}
+func (s *resolveSnapshot) WriteProjectCreation(context.Context, string, func(store.ProjectCreationDAO) error) (store.Completion, error) {
+	s.writes++
+	s.t.Fatal("unexpected Project creation")
+	return store.Completion{}, nil
+}
+
 func TestResolveRepositorySnapshotAndFailures(t *testing.T) {
 	first := resolveCandidate("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "git@github.com:Org/Repo.git")
-	other := resolveCandidate("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "https://github.com/other")
-	second := resolveCandidate("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "ssh://git@github.com:22/Org/Repo")
-	bad := resolveCandidate("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "https://github.com/%2f")
 	queryErr := errors.New("query failed")
 	completionErr := errors.New("snapshot completion failed")
-	page1 := store.Page{Limit: 100}
-	after := func(p model.Project) store.Page {
-		return store.Page{Limit: 100, After: &store.Position{ID: p.ID, CreatedAt: p.CreatedAt}}
-	}
+	conflict := &model.Fault{Code: "resource_conflict", Message: "ambiguous repository"}
+	invalid := &model.Fault{Code: "invalid_input", Message: "bad candidate"}
 	for _, tc := range []struct {
-		name                    string
-		calls                   []completionProjectReadCall
-		completion, callbackErr error
-		want                    model.Project
-		code                    string
-		cause                   error
+		name                                         string
+		result                                       model.Project
+		found                                        bool
+		operationErr, callbackErr, completion, cause error
+		want                                         model.Project
+		code                                         string
 	}{
-		{name: "missing", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{other}}, nil)}, code: "not_found"},
-		{name: "unique on later page", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{other}, HasMore: true}, nil), resolveCall(after(other), store.ProjectPage{Items: []model.Project{first}}, nil)}, want: first},
-		{name: "ambiguity on later page", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{first}, HasMore: true}, nil), resolveCall(after(first), store.ProjectPage{Items: []model.Project{second}}, nil)}, code: "resource_conflict"},
-		{name: "bad candidate", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{first, bad}}, nil)}, code: "invalid_input"},
-		{name: "query after match", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{first}, HasMore: true}, nil), resolveCall(after(first), store.ProjectPage{}, queryErr)}, callbackErr: queryErr, cause: queryErr},
-		{name: "cancellation after match", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{first}, HasMore: true}, nil), resolveCall(after(first), store.ProjectPage{}, context.Canceled)}, callbackErr: context.Canceled, cause: context.Canceled},
-		{name: "completion after match", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{first}}, nil)}, completion: completionErr, cause: completionErr},
-		{name: "completion overrides refusal", calls: []completionProjectReadCall{resolveCall(page1, store.ProjectPage{Items: []model.Project{first, second}}, nil)}, completion: completionErr, cause: completionErr},
+		{name: "missing", code: "not_found"},
+		{name: "unique on later page", result: first, found: true, want: first},
+		{name: "ambiguity on later page", operationErr: conflict, cause: conflict, code: "resource_conflict"},
+		{name: "bad candidate", operationErr: invalid, cause: invalid, code: "invalid_input"},
+		{name: "query after match", result: first, operationErr: queryErr, callbackErr: queryErr, cause: queryErr},
+		{name: "cancellation after match", result: first, operationErr: context.Canceled, callbackErr: context.Canceled, cause: context.Canceled},
+		{name: "completion after match", result: first, found: true, completion: completionErr, cause: completionErr},
+		{name: "completion overrides refusal", result: first, operationErr: conflict, completion: completionErr, cause: completionErr},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
-			plan := newCompletionProjectReadPlan(t, ctx, tc.calls)
-			plan.completion, plan.callbackErr = tc.completion, tc.callbackErr
-			fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
-			got, err := NewProjects(fixture).ResolveRepository(ctx, resolvePrincipal, resolveAddress)
-			if tc.code != "" {
-				resolveFault(t, err, tc.code)
-			} else if tc.cause != nil {
-				if !errors.Is(err, tc.cause) {
-					t.Fatalf("error = %v, want %v", err, tc.cause)
-				}
-			} else if err != nil {
+			fixture := &resolveSnapshot{t: t, ctx: ctx, callbackWant: tc.callbackErr, completion: tc.completion}
+			subject := NewProjects(fixture)
+			calls := 0
+			expectedMatch, err := core.NewRepositoryMatch(resolveAddress)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(got, tc.want) || fixture.writes != 0 {
-				t.Fatalf("result=%+v writes=%d", got, fixture.writes)
+			subject.findRepository = func(gotCtx context.Context, dao store.ProjectReader, principal model.Principal, match *core.RepositoryMatch) (model.Project, bool, error) {
+				calls++
+				if calls != 1 || gotCtx != ctx || dao != fixture || principal != resolvePrincipal || !reflect.DeepEqual(match, expectedMatch) {
+					t.Fatalf("unexpected operation input: calls=%d ctx=%v dao=%T principal=%+v match=%+v", calls, gotCtx, dao, principal, match)
+				}
+				return tc.result, tc.found, tc.operationErr
+			}
+			got, err := subject.ResolveRepository(ctx, resolvePrincipal, resolveAddress)
+			if tc.code != "" {
+				resolveFault(t, err, tc.code)
+			}
+			if tc.cause != nil && !errors.Is(err, tc.cause) {
+				t.Fatalf("error = %v, want %v", err, tc.cause)
+			}
+			if tc.code == "" && tc.cause == nil && err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) || fixture.snapshots != 1 || fixture.daoCalls != 1 || calls != 1 || fixture.writes != 0 {
+				t.Fatalf("result=%+v snapshots=%d dao=%d operations=%d writes=%d", got, fixture.snapshots, fixture.daoCalls, calls, fixture.writes)
 			}
 		})
 	}
 }
 
 func TestResolveRepositoryValidationBeforeSnapshot(t *testing.T) {
+	t.Run("constructor binding", func(t *testing.T) {
+		engine := session.NewEngine(nil)
+		for _, subject := range []*Projects{NewProjects(nil), NewProjects(nil, engine)} {
+			if subject.findRepository == nil || reflect.ValueOf(subject.findRepository).Pointer() != reflect.ValueOf(core.FindRepository).Pointer() {
+				t.Fatal("constructor did not bind FindRepository")
+			}
+		}
+		if NewProjects(nil, engine).engine != engine || NewProjects(nil).engine == nil || NewProjects(nil, nil).engine != nil {
+			t.Fatal("constructor changed optional engine semantics")
+		}
+	})
 	for _, tc := range []struct {
 		principal     model.Principal
 		address, code string
 	}{
 		{model.Principal{}, resolveAddress, "unauthenticated"}, {resolvePrincipal, "https://github.com/%2f", "invalid_input"},
 	} {
-		got, err := NewProjects(nil).ResolveRepository(t.Context(), tc.principal, tc.address)
+		ctx := t.Context()
+		fixture := &resolveSnapshot{t: t, ctx: ctx}
+		subject := NewProjects(fixture)
+		calls := 0
+		subject.findRepository = func(context.Context, store.ProjectReader, model.Principal, *core.RepositoryMatch) (model.Project, bool, error) {
+			calls++
+			t.Fatal("validation called FindRepository")
+			return model.Project{}, false, nil
+		}
+		got, err := subject.ResolveRepository(ctx, tc.principal, tc.address)
 		resolveFault(t, err, tc.code)
-		if !reflect.DeepEqual(got, model.Project{}) {
-			t.Fatalf("validation returned data: %+v", got)
+		if !reflect.DeepEqual(got, model.Project{}) || fixture.snapshots != 0 || fixture.daoCalls != 0 || fixture.writes != 0 || calls != 0 {
+			t.Fatalf("validation returned data or performed work: %+v", got)
 		}
 	}
 }
