@@ -101,9 +101,13 @@ Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力
 
 入口适配器支持 native、Node 入口及完整登记的 npm Node shim 模板。Node 入口使用 `workerNode`（缺省 `process.execPath`）的 realpath；shim 静态校验所有分支和参数后解包，不运行 shell 文本。官方 Copilot 根据入口所属 manifest 定位同一安装的 native；官方 Codex 保留 loader，并登记选中的平台 native 和 manifests。Codex loader 通过完整内容摘要识别，登记范围为 0.142.5、0.145.0、0.156.1 的发行字节；未知 loader、额外 shim 命令或 flags 返回 `unsupported_launcher`，调用者可指定受支持 Node 入口或最终 native。该静态识别不证明版本输出或协议兼容。
 
+shim 的 target 从已登记模板的 prefix 和同一份有界字节快照提取，再将 target 代回完整模板核对所有分支。后缀选择忽略大小写，保留 Windows `PATHEXT=.CMD` 返回的词法入口。`read-cmd-shim` 的公开接口按路径重复读取，并按大小写敏感后缀选择 parser，因此这里不调用该接口；这同时避免在安全读取后再次打开已被替换的路径。
+
 官方 Codex 的命令固定为 Worker Node 加 `["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`，loader 内容保持原发行字节。`NODE_PATH` 和保留符号链接的 Node 模式可以改变 loader 实际选中的平台包，因此这三个参数把运行时查找约束到静态解析采用的 canonical 文件语义。普通 Node 脚本仍使用 Node 加 canonical script，不附加这些 Codex 专用参数。静态 helper 沿实际 loader 目录的祖先 node_modules 顺序查找，并从 canonical manifest 所在目录构造 native 路径；任何属于另一安装的候选均明确拒绝，不能跳过它改用另一份程序。
 
 `ResolvedToolLaunch` 保存词法入口、canonical 入口、最终工具程序、可选解释器、结构化 `command`、`ToolArtifact[]` 和 `selectionKey`。artifact 记录角色、词法 path、realPath、size 与 SHA-256。哈希通过文件句柄流式读取，核对读取前后 stat、当前 path 的 stat 与 realpath；解析期间变化不能产生有效 launch。`verifyToolLaunch` 重新检查已冻结映射和内容，并从原冻结 entry 再次静态解析 launcher，比对命令及所选 artifacts；它不读取新配置或搜索 PATH。这样即使原 vendor binary 没变，后来安装的高优先级平台包改变了 loader 选择，旧 launch 也会被拒绝。`toolCommand` 仅拼接已有 prefixArgs 与调用方 argv；消费者仍须在启动前核验。
+
+元数据读取和 artifact hash 共用 `openRegularToolFile`。POSIX 使用 `O_RDONLY | O_NONBLOCK` 打开后才检查句柄是否为 regular file；不能仅依靠打开前的 stat，因为路径可能在检查后被换成 FIFO，而 operation 超时不能取消阻塞的内核 open 或释放其线程。错误、取消及晚到句柄仍启动关闭，并对等待设置 operation 边界；不禁止合同已支持的 symlink。
 
 摘要使用最多 128 项的进程内缓存，按 canonical path 与 dev/ino/mode/size/mtimeNs/ctimeNs 完整签名匹配。命中仍打开文件、确认 regular file 并核对句柄、路径 stat 和 realpath；解析所读前缀或完整内容也须与摘要一致。缓存只在稳定性检查通过后更新，不跨进程保存；它减少重复读取大型解释器和 native 文件，不替代映射核验。
 

@@ -3,6 +3,7 @@ import { chmod, copyFile, link, mkdir, mkdtemp, open, realpath, rm, symlink, uti
 import { fstatSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../src/api/operation.js";
 import { probeResourceKey, resolveToolLaunch, toolCommand, verifyToolLaunch } from "../../src/platform/tool-executables.js";
@@ -33,6 +34,18 @@ const codexFixture = async () => {
 afterEach(async () => { vi.restoreAllMocks(); for (const item of operations.splice(0)) item.dispose(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 describe("resolved tool commands", () => {
+  it.skipIf(process.platform === "win32")("rejects FIFO entries and replacements without starving unrelated filesystem work", async () => {
+    const root = await fixture(), fifos = Array.from({ length: 4 }, (_, i) => path.join(root, `fifo-${i}`));
+    await execute("mkfifo", [...fifos, path.join(root, "entry-replacement"), path.join(root, "artifact-replacement")], { timeout: 5000 });
+    await writeFile(path.join(root, "healthy"), "ready");
+    await script(root, "race-entry", "unused");
+    await writeFile(path.join(root, "race-artifact"), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]));
+    await chmod(path.join(root, "race-artifact"), 0o755);
+    const helper = fileURLToPath(new URL("./fixtures/tool-fifo.mjs", import.meta.url));
+    const { stdout } = await execute(process.execPath, [helper, root], { timeout: 8000, env: { ...process.env, UV_THREADPOOL_SIZE: "4" } });
+    expect(JSON.parse(stdout)).toEqual({ rejected: 4, replacementsRejected: 2, filesystemResponsive: true });
+  }, 12_000);
+
   it("passes literal arguments and path punctuation to the selected Node script", async () => {
     const root = await fixture();
     const name = process.platform === "win32" ? "Unicode 工具 $() & %.js" : "Unicode 工具 '$()\" & %.js";

@@ -1,13 +1,13 @@
 import path from "node:path";
 import { constants, type BigIntStats } from "node:fs";
-import { access, open, realpath, stat } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import which from "which";
 import { OperationError, type Operation } from "../api/operation.js";
 import { validateToolPath, type Tool, type ToolContext, type ToolPathChoice } from "./tool-path-choice.js";
 import { bundledCopilotEntry, identifyToolLauncher } from "./tool-launchers.js";
 import { captureToolEnvironment } from "./tool-environment.js";
-import { withinOperation } from "./tool-io.js";
+import { openRegularToolFile, withinOperation } from "./tool-io.js";
 
 export type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "./tool-path-choice.js";
 export { captureToolEnvironment } from "./tool-environment.js";
@@ -70,7 +70,7 @@ const selectionKey = (launch: Omit<ResolvedToolLaunch, "selectionKey">): string 
 const fingerprint = async (input: Pick<ToolArtifact, "role" | "path"> & { parsedPrefix?: { bytes: number; sha256: string } }, operation: Operation): Promise<ToolArtifact> => {
   operation.check();
   const realPath = await withinOperation(realpath(input.path), operation);
-  const handle = await withinOperation(open(realPath, "r"), operation, file => file.close());
+  const handle = await openRegularToolFile(realPath, operation);
   try {
     const before = await withinOperation(handle.stat({ bigint: true }), operation);
     if (!before.isFile()) throw Object.assign(new Error("Tool artifact must be a regular file."), { code: "not_executable" });

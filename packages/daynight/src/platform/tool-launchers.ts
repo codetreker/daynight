@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { open, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import readCmdShim from "read-cmd-shim";
 import type { Operation } from "../api/operation.js";
-import { withinOperation } from "./tool-io.js";
+import { openRegularToolFile, withinOperation } from "./tool-io.js";
 
 export type LauncherHost = { platform: NodeJS.Platform; arch: string; nonGlibcLinux: boolean };
 export type LauncherArtifact = { role: "entry" | "shim" | "runtime" | "manifest"; path: string; parsedSha256?: string; parsedPrefix?: { bytes: number; sha256: string } };
@@ -26,7 +25,7 @@ type Package = { root: string; manifestPath: string; value: Record<string, unkno
 
 const read = async (file: string, operation: Operation, prefix = false): Promise<Buffer> => {
   operation.check();
-  const handle = await withinOperation(open(file, "r"), operation, value => value.close());
+  const handle = await openRegularToolFile(file, operation);
   try {
     const info = await withinOperation(handle.stat(), operation);
     if (!info.isFile()) throw new LauncherError("not_executable", `Tool entry is not a regular file: ${file}.`);
@@ -250,12 +249,17 @@ const powershellTemplate = (target: string) => [
   "  # Support pipeline input", "  if ($MyInvocation.ExpectingInput) {", `    $input | & "node$exe"  "$basedir/${target}" $args`, "  } else {", `    & "node$exe"  "$basedir/${target}" $args`, "  }", "  $ret=$LASTEXITCODE", "}", "exit $ret", "",
 ].join("\n");
 
-const unwrapShim = async (entry: string, bytes: Buffer, operation: Operation): Promise<string> => {
-  let target: string;
-  try { target = await withinOperation(readCmdShim(entry), operation); } catch (error) { operation.check(); throw unsupported(entry); }
+const unwrapShim = (entry: string, bytes: Buffer): string => {
   const extension = path.extname(entry).toLowerCase();
-  const expected = extension === ".cmd" ? cmdTemplate(target) : extension === ".ps1" ? powershellTemplate(target) : posixTemplate(target);
-  if (bytes.toString("utf8").replaceAll("\r\n", "\n") !== expected) throw unsupported(entry);
+  const template = extension === ".cmd" ? cmdTemplate : extension === ".ps1" ? powershellTemplate : posixTemplate;
+  const text = bytes.toString("utf8").replaceAll("\r\n", "\n");
+  const prefix = template("\0").split("\0", 1)[0]!;
+  if (!text.startsWith(prefix)) throw unsupported(entry);
+  const end = text.indexOf('"', prefix.length);
+  if (end === -1) throw unsupported(entry);
+  const target = text.slice(prefix.length, end);
+  // Parsing must use the same bounded bytes as the digest, without reopening the pathname.
+  if (!target || text !== template(target)) throw unsupported(entry);
   const normalized = target.replaceAll("\\", "/");
   if (path.posix.isAbsolute(normalized) || path.win32.isAbsolute(target) || /[\0\r\n]/.test(target)) throw unsupported(entry);
   return path.resolve(path.dirname(entry), ...normalized.split("/"));
@@ -271,7 +275,7 @@ export const identifyToolLauncher = async (entryPath: string, tool: Tool, operat
   let artifactPath = entryPath;
   if (shim) {
     const bytes = await read(entryPath, operation);
-    artifactPath = await unwrapShim(entryPath, bytes, operation);
+    artifactPath = unwrapShim(entryPath, bytes);
     artifacts.push({ role: "shim", path: entryPath, parsedSha256: digest(bytes) });
     entry = await withinOperation(realpath(artifactPath), operation);
     header = await read(artifactPath, operation, true);

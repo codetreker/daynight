@@ -3,10 +3,18 @@
 The three `copilot` shims are unmodified output from npm's `cmd-shim` 8.0.0,
 generated for a `#!/usr/bin/env node` entry at
 `node_modules/@github/copilot/npm-loader.js`. Their complete text, including
-all branches, establishes the accepted npm template. `read-cmd-shim` 6.0.0 only
-extracts a target and does not validate the rest of a launcher.
-The local attributes preserve the official line endings and template whitespace
-on every checkout platform.
+all branches, establishes the accepted npm template. The adapter extracts the
+target from the registered template's prefix and validates the complete rendered
+template against the same bounded byte snapshot used for its digest. Filename
+suffix selection is case-insensitive, including Windows `PATHEXT` results such
+as `.CMD`.
+
+The parser does not call `read-cmd-shim`: version 6.0.0 exposes only pathname-based
+reads and selects its parser with case-sensitive suffixes. Using that API would
+reopen the file without the adapter's file-type and byte limits, and reject
+uppercase suffixes. No extraction code from that dependency is copied. The local
+attributes preserve the official line endings and template whitespace on every
+checkout platform.
 
 The `codex-*.js` files are complete loaders from the official `@openai/codex`
 npm releases 0.142.5, 0.145.0 and 0.156.1. All three choose a platform package's

@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
 import { chmod, copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../src/api/operation.js";
 import { identifyToolLauncher } from "../../src/platform/tool-launchers.js";
+import { resolveToolLaunch, toolCommand } from "../../src/platform/tool-executables.js";
 
 const fixtures = new URL("./fixtures/tool-launchers/", import.meta.url);
 const roots: string[] = [];
@@ -113,6 +115,60 @@ describe("static tool launchers", () => {
       expect.objectContaining({ role: "shim", path: shim }), expect.objectContaining({ role: "entry", path: cli.entry }),
     ]));
   });
+
+  it.each([
+    { entry: "copilot.CMD", fixture: "copilot.cmd" },
+    { entry: "copilot.PS1", fixture: "copilot.ps1" },
+  ])("unwraps a real uppercase $entry without dispatching it as a POSIX shim", async ({ entry, fixture }) => {
+    const directory = await root(); await copilot(directory); const runtime = await copilotNative(directory);
+    const shim = await put(path.join(directory, entry), await readFile(new URL(fixture, fixtures)));
+    const result = await identifyToolLauncher(shim, "copilot", operation(), host);
+    expect(result.executablePath).toBe(runtime);
+    expect(result.interpreterRequired).toBe(false);
+    expect(result.artifacts.find(item => item.role === "shim")?.path).toBe(shim);
+  });
+
+  it("parses the captured shim bytes when its pathname is replaced after the bounded read", async () => {
+    const directory = await root(); await copilot(directory); const runtime = await copilotNative(directory);
+    const bytes = await readFile(new URL("copilot.cmd", fixtures));
+    const shim = await put(path.join(directory, "copilot.cmd"), bytes), budget = operation();
+    let reads = 0;
+    const changing = { ...budget, consume: (count: number) => {
+      budget.consume(count);
+      if (count === bytes.length && ++reads === 2) {
+        renameSync(shim, `${shim}.original`);
+        writeFileSync(shim, "replaced after metadata read\n");
+      }
+    } };
+    const result = await identifyToolLauncher(shim, "copilot", changing, host);
+    expect(result.executablePath).toBe(runtime);
+    expect(result.artifacts.find(item => item.role === "shim")?.parsedSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(await readFile(shim, "utf8")).toBe("replaced after metadata read\n");
+  });
+
+  it.skipIf(process.platform !== "win32").each(["codex", "copilot"] as const)("launches %s through Windows PATH with uppercase PATHEXT", async tool => {
+    const directory = await root();
+    let runtime: string;
+    if (tool === "codex") {
+      const cli = await codex(directory);
+      runtime = await copyNode(codexRuntime(cli.packageRoot));
+    } else {
+      await copilot(directory);
+      runtime = await copilotNative(directory, process.platform, process.arch);
+      await copyNode(runtime);
+    }
+    let template = await readFile(new URL("copilot.cmd", fixtures), "utf8");
+    if (tool === "codex") template = template.replace("node_modules\\@github\\copilot\\npm-loader.js", "node_modules\\@openai\\codex\\bin\\codex.js");
+    await put(path.join(directory, `${tool}.cmd`), template);
+    const environment = { ...process.env, PATH: directory, PATHEXT: ".CMD" };
+    const launch = await resolveToolLaunch({ tool, context: "herdr", choice: { kind: "auto" }, cwd: directory, environment, workerNode: process.execPath }, operation());
+    expect(launch.entryPath.endsWith(".CMD")).toBe(true);
+    expect(launch.artifacts.some(item => item.role === "runtime" && item.realPath === runtime)).toBe(true);
+    const args = ["space and 中文", "%PATH%", "&", "$(echo unexpected)"];
+    const command = toolCommand(launch, ["--eval", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", "--", ...args]);
+    const { stdout } = await promisify(execFile)(command.file, command.args, { cwd: directory, env: environment, timeout: 5000, maxBuffer: 4096 });
+    expect(JSON.parse(stdout)).toEqual(args);
+  }, 20_000);
 
   // Budget all three bounded child launches plus fixture I/O, including a cold native start.
   it("runs the native selected through each standard npm shim with literal argv", async () => {

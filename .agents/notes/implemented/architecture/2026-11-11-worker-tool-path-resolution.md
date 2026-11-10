@@ -39,6 +39,19 @@ the loader while recording its selected native and manifests; complete known
 loader content identifies supported layouts. Unknown wrappers are refused rather
 than interpreted as shell commands. Native arguments remain separate.
 
+Shim target extraction and complete template validation use one bounded byte
+snapshot. The registered template supplies the prefix and validates the rendered
+target in every branch; suffix matching is case-insensitive without rewriting
+the selected pathname. The pathname-only `read-cmd-shim` API would reopen the file
+outside these bounds and dispatch uppercase `.CMD` names to the wrong parser.
+
+Both metadata reads and artifact hashes open POSIX files with `O_NONBLOCK` before
+checking the opened descriptor's regular-file type. A pathname precheck cannot
+prevent replacement with a FIFO before open, and an operation timeout cannot
+cancel a blocking kernel open or free its filesystem worker. Descriptor checks
+and bounded close retain ownership on errors and cancellation; supported symlink
+mapping checks remain independent.
+
 Official Codex alone uses the frozen Worker Node with
 `["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`.
 The official loader remains byte-for-byte unchanged. These options constrain its
