@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const projectId = '00000000-0000-4000-8000-000000000031', taskId = '00000000-0000-4000-8000-000000000041';
@@ -16,14 +16,14 @@ async function install(page: Page) {
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) { state.graphReads++; return state.failGraph ? send({ error: { code: 'internal_error', message: 'Failure', requestId: 'graph-error-123' } }, 500) : send(taskSyncFixture(currentGraph(), { query: taskSyncQuery(url), versionForTask: row => row.id === taskId ? state.current.version : successor.version, propertiesForTask: row => row.id === taskId ? state.current.properties : successor.properties })); }
-    if (path === base) return state.failDetail ? send({ error: { code: 'internal_error', message: 'Failure', requestId: 'detail-error-123' } }, 500) : send(state.current);
+    if (path === base) return state.failDetail ? send({ error: { code: 'internal_error', message: 'Failure', requestId: 'detail-error-123' } }, 500) : send(state.current, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${base}/sessions`) return send({ items: [], nextCursor: null });
     if (path === `${base}/attachments`) return send({ items: [{ path: 'index.html', contentType: 'text/html', sizeBytes: 40, createdAt: time, updatedAt: time }], nextCursor: null });
     if (path === `${base}/preview/index.html`) return route.fulfill({ body: request.method() === 'HEAD' ? '' : '<button id="inner" onclick="this.textContent=String(Number(this.textContent)+1)">0</button>', headers: { 'Content-Type': 'text/html', 'Daynight-User-ID': TEST_VIEWER_ID } });

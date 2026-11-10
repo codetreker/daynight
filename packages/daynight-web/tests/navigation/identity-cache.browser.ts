@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA } from '../../src/features/task-cache/database';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const alice = TEST_VIEWER_ID, bob = '00000000-0000-4000-8000-000000000202';
@@ -41,7 +41,7 @@ for (const outcome of ['new-account', 'revoked'] as const) test(`real tab return
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, observed = actor;
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': observed } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': observed, ...extra } });
     if (path === '/api/v1/me') { meReads++; events.push(`identity-start:${observed}`); if (hold) await hold; events.push(`identity-response:${observed}`); return send({ id: observed, personalTeam: { id: personalId, kind: 'personal', name: null }, name: observed === alice ? 'Alice' : 'Bob', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: observed === alice ? [graph.project] : [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
@@ -53,7 +53,7 @@ for (const outcome of ['new-account', 'revoked'] as const) test(`real tab return
     }
     if (path === `/api/v1/projects/${projectId}/access`) return observed === alice ? send(directAccessFixture(projectId)) : send({ error: { code: 'not_found', message: 'not found', requestId: 'denied' } }, 404);
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: alice, version: TEST_PROFILE_VERSION, name: 'Alice', avatarUrl: null, hasProjectAccess: true }], unresolvedUserIds: [] });
-    if (path === base) return send(task);
+    if (path === base) return send(task, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${base}/sessions`) return send({ items: [], nextCursor: null });
     if (path === `${base}/attachments`) return send({ items: [{ path: 'index.html', contentType: 'text/html', sizeBytes: 40, createdAt: time, updatedAt: time }], nextCursor: null });
     if (path === `${base}/preview/index.html`) return route.fulfill({ body: request.method() === 'HEAD' ? '' : '<button id="inner">Private reader</button>', headers: { 'Content-Type': 'text/html', 'Daynight-User-ID': observed } });

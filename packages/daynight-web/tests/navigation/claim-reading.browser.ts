@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
@@ -33,7 +33,10 @@ async function install(page: Page, state: 'active' | 'released') {
     if (path === `/api/v1/projects/${projectId}/members`) return send({ actorAccess: access, items: [{ inheritedFrom: null, userId: TEST_VIEWER_ID, profile: { name: ownerName, email: account, avatarUrl: null }, effectiveRole: 'admin', directGrant: access.directGrant }] });
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: ownerName, avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
-    if (path === base) return send(task);
+    if (path === base) return route.fulfill({
+      body: stringifyWireJson(task),
+      headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': taskSyncEpoch(projectId) },
+    });
     if (path === `${base}/attachments`) return send({ items: [{ path: 'guide.md', contentType: 'text/markdown', sizeBytes: content.length, createdAt: time, updatedAt: time }], nextCursor: null });
     if (path === `${base}/attachments/files/guide.md`) return route.fulfill({ body: content, headers: { 'Content-Type': 'text/markdown', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `${base}/sessions`) return send({ items: [], nextCursor: null });

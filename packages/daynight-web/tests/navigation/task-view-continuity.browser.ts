@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { TaskDetail } from '../../src/api/types';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 import { completeContextGraph } from '../helpers/graphData';
 import { captureStableDependencyGeometry, checkDependencyGeometry, expectedDependencyTopology } from '../helpers/dependency-geometry';
@@ -17,7 +17,7 @@ async function install(page: Page, initial: TaskDetail[]) {
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, graph = graphFixture(state.tasks);
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
@@ -27,7 +27,7 @@ async function install(page: Page, initial: TaskDetail[]) {
     const base = `/api/v1/projects/${projectId}/tasks/`;
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
-      if (detail && parts.length === 1) return send(detail);
+      if (detail && parts.length === 1) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       if (detail && (parts[1] === 'sessions' || parts[1] === 'attachments')) return send({ items: [], nextCursor: null });
     }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);

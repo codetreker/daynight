@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
@@ -22,7 +22,7 @@ async function install(page: Page, timing = false) {
   await page.context().route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
@@ -31,7 +31,7 @@ async function install(page: Page, timing = false) {
     if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: () => task.properties })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
-      if (path === base) return send(detail);
+      if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       if (path === `${base}/thread/messages`) return send({ items: url.searchParams.has('afterId') ? [] : [message], hasMoreBefore: false, hasMoreAfter: false });
       if (path === `${base}/sessions` || path === `${base}/attachments`) return send({ items: [], nextCursor: null });
     }
