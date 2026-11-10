@@ -46,12 +46,13 @@ describe('paused task discovery', () => {
     expect(value.graph.tasks[0]).not.toHaveProperty('properties');
     expect(value.index.nodes.get(id(1))).not.toHaveProperty('paused');
     expect(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))).pausedTaskIds.size).toBe(0);
+    expect(() => snapshot([summary(1, { properties: { paused: 'true' } })])).toThrow('The server returned an invalid response.');
   });
 
   it('shows complete-project counts and each paused standalone row through the production provider', () => {
     const value = snapshot();
     const view = renderWithLocale(workspace(value, 'standalone'), { locale: 'zh-CN', taskCache: true });
-    expect(screen.getByText('3 已暂停')).toBeVisible();
+    expect(screen.getByText('2 已暂停')).toBeVisible();
     const paused = document.getElementById(`standalone-task-${id(3)}`)!;
     expect(within(paused).getByText('已暂停')).toBeVisible();
     expect(document.getElementById(`standalone-task-${id(4)}`)).not.toHaveTextContent('已暂停');
@@ -61,12 +62,24 @@ describe('paused task discovery', () => {
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
   });
 
+  it('keeps project count across filtered and paginated lists', () => {
+    const value = snapshot();
+    const view = renderWithLocale(<ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="standalone"
+      unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
+      chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
+      standalone={{ projectId: project.id, taskIds: [id(4)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop,
+        pagination: { page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop } }} />, { locale: 'en', taskCache: true });
+    expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 paused');
+    expect(document.getElementById(`standalone-task-${id(3)}`)).toBeNull();
+    expect(document.getElementById(`standalone-task-${id(4)}`)).toBeVisible();
+  });
+
   it('counts whole chains, identifies the paused representative and child, and passes pause data into the graph', async () => {
     installGraphMeasurements();
     const value = snapshot();
     const view = renderWithLocale(workspace(value, 'chains'), { locale: 'zh-CN', taskCache: true });
     const root = document.getElementById(`task-root-${id(1)}`)!;
-    expect(within(root).getByText('2 已暂停')).toBeVisible();
+    expect(within(root).getByText('1 已暂停')).toBeVisible();
     expect(within(root).getByText('已暂停')).toBeVisible();
     fireEvent.click(root);
     expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
@@ -74,22 +87,85 @@ describe('paused task discovery', () => {
     const graph = await screen.findByRole('dialog');
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(2);
     expect(graph.querySelectorAll('.task-node .task-paused-badge')).toHaveLength(2);
-    expect(within(graph).getByText('2 已暂停')).toBeVisible();
+    expect(within(graph).getByText('1 已暂停')).toBeVisible();
     for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/已暂停/);
     view.setLocale('en');
     for (const body of graph.querySelectorAll('.task-node-paused .task-node-body')) expect(body).toHaveAccessibleName(/Paused/);
+  });
+
+  it('hides summary counts for done-only pause while retaining its raw badge', async () => {
+    installGraphMeasurements();
+    const value = snapshot([summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)] })]);
+    const onOpenTask = vi.fn();
+    const view = renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
+      pagination={{ page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en', taskCache: true });
+    expect(view.container.querySelector('.task-pause-count')).toBeNull();
+    view.rerender(workspace(value, 'chains', id(1)));
+    expect(view.container.querySelectorAll('.task-pause-count')).toHaveLength(0);
+    expect(document.getElementById(`task-root-${id(1)}`)).toHaveTextContent('Paused');
+    const graph = await screen.findByRole('dialog');
+    expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(1);
+    expect(graph.querySelectorAll('.task-node .task-paused-badge')).toHaveLength(1);
+  });
+
+  it('updates project and chain counts on status-only completion and reopening', async () => {
+    installGraphMeasurements();
+    const tasks = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { status: 'in_progress', dependsOn: [id(1)], properties: { paused: true } })];
+    const view = renderWithLocale(workspace(snapshot(tasks), 'chains', id(1)), { locale: 'en', taskCache: true });
+    const counts = () => [...view.container.querySelectorAll('.task-pause-count')].map((element) => element.textContent);
+    await screen.findByRole('dialog');
+    expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
+    view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)), 'chains', id(1)));
+    expect(counts()).toEqual([]);
+    expect(view.container.querySelectorAll('.task-node-paused')).toHaveLength(2);
+    view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: 'todo' } : task)), 'chains', id(1)));
+    expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
+  });
+
+  it('updates the overview entry when status alone completes and reopens its target', () => {
+    const tasks = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { status: 'in_progress', dependsOn: [id(1)], properties: { paused: true } })];
+    const onOpenTask = vi.fn();
+    const overview = (items: TaskSummary[]) => {
+      const value = snapshot(items);
+      return <ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
+        pagination={{ page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />;
+    };
+    const view = renderWithLocale(overview(tasks), { locale: 'en' });
+    expect(screen.getByRole('button', { name: 'Open paused task: Task 2' })).toHaveTextContent('1 paused');
+    view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)));
+    expect(view.container.querySelector('.task-pause-count')).toBeNull();
+    view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: 'todo' } : task)));
+    const entry = screen.getByRole('button', { name: 'Open paused task: Task 2' });
+    fireEvent.click(entry);
+    expect(onOpenTask).toHaveBeenCalledWith(id(2), entry);
+  });
+
+  it('counts the complete ordinary chain but excludes a visible external prerequisite', async () => {
+    installGraphMeasurements();
+    const value = snapshot([summary(1, { status: 'done', properties: { paused: true } }),
+      summary(2, { dependsOn: [id(1), id(3)], externalDependsOn: [id(3)], properties: { paused: true } }),
+      summary(3, { status: 'cancelled', properties: { paused: true } })]);
+    const view = renderWithLocale(workspace(value, 'chains', id(1)), { locale: 'en', taskCache: true });
+    expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 paused');
+    const root = document.getElementById(`task-root-${id(1)}`)!;
+    expect(within(root).getByText('1 paused')).toBeVisible();
+    const graph = await screen.findByRole('dialog');
+    expect(within(graph).getByText('1 paused')).toBeVisible();
+    expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(3);
+    fireEvent.click(root);
+    expect(within(root).getByText('1 paused')).toBeVisible();
   });
 
   it('opens a specific paused task from the complete overview count without altering the six status cards', () => {
     const value = snapshot();
     const onOpenTask = vi.fn();
     renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
-      pagination={{ page: 1, pageCount: 1, total: 2, start: 1, end: 2, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en' });
+      pagination={{ page: 1, pageCount: 2, total: 2, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en' });
     expect(document.querySelectorAll('.stats .stat')).toHaveLength(6);
-    const open = screen.getByRole('button', { name: 'Open paused task: Task 1' });
-    expect(open).toHaveTextContent('3 paused');
+    const open = screen.getByRole('button', { name: 'Open paused task: Task 2' });
+    expect(open).toHaveTextContent('2 paused');
     fireEvent.click(open);
-    expect(onOpenTask).toHaveBeenCalledWith(id(1), open);
+    expect(onOpenTask).toHaveBeenCalledWith(id(2), open);
   });
 });
 
