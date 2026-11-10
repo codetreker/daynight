@@ -127,23 +127,26 @@ test("metadata insertion failure cannot leave an unowned preparation file", asyn
   } finally { db.close(); await media.close(); f.store.close(); }
 });
 
-test.each(["unlink", "directoryFlush", "receipt"] as const)("release retains its original identity after a %s storage failure", async phase => {
-  const f = await fixture(); const media = f.store.media(); const db = new Database(f.file);
-  try {
-    await media.prepare(f.spec);
-    const request = { uploadId: f.spec.uploadId, spec: f.spec };
-    if (phase === "receipt") db.exec("BEGIN IMMEDIATE");
-    else if (phase === "unlink") faults.unlink = "EBUSY";
-    else faults.directoryFlush = true;
-    await expect(media.release(request)).rejects.toMatchObject({ name: "ImageReleaseStorageError", cause: expect.any(Error) });
-    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving", imageId: f.spec.imageId });
-    if (phase === "receipt") db.exec("ROLLBACK");
-    const released = await media.release(request);
-    expect(released).toMatchObject({ state: "released", imageId: f.spec.imageId });
-    expect(await media.prepare(f.spec)).toEqual(released);
-    expect((await readdir(`${f.file}.media-staging`)).filter(name => name.endsWith(".part"))).toEqual([]);
-  } finally { if (db.inTransaction) db.exec("ROLLBACK"); db.close(); await media.close(); f.store.close(); }
-}, 15_000);
+for (const phase of ["unlink", "directoryFlush", "receipt"] as const) {
+  // Windows does not flush directory descriptors; its unlink and receipt failures remain covered.
+  test.skipIf(phase === "directoryFlush" && process.platform === "win32")(`release retains its original identity after a ${phase} storage failure`, async () => {
+    const f = await fixture(); const media = f.store.media(); const db = new Database(f.file);
+    try {
+      await media.prepare(f.spec);
+      const request = { uploadId: f.spec.uploadId, spec: f.spec };
+      if (phase === "receipt") db.exec("BEGIN IMMEDIATE");
+      else if (phase === "unlink") faults.unlink = "EBUSY";
+      else faults.directoryFlush = true;
+      await expect(media.release(request)).rejects.toMatchObject({ name: "ImageReleaseStorageError", cause: expect.any(Error) });
+      expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving", imageId: f.spec.imageId });
+      if (phase === "receipt") db.exec("ROLLBACK");
+      const released = await media.release(request);
+      expect(released).toMatchObject({ state: "released", imageId: f.spec.imageId });
+      expect(await media.prepare(f.spec)).toEqual(released);
+      expect((await readdir(`${f.file}.media-staging`)).filter(name => name.endsWith(".part"))).toEqual([]);
+    } finally { if (db.inTransaction) db.exec("ROLLBACK"); db.close(); await media.close(); f.store.close(); }
+  }, 15_000);
+}
 
 test.each(["EPERM", "EACCES", "EROFS"])("release can reconcile an original filesystem %s refusal", async code => {
   const f = await fixture(); const media = f.store.media();
