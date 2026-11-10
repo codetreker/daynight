@@ -3369,6 +3369,69 @@ describe("worker monitoring of coordinator jobs", () => {
 
 
 describe("real Git resource isolation", () => {
+  it.each(["matching", "conflicting", "wrong-cwd", "pending-only", "pending-only-wrong-cwd", "capacity-full"])("reconciles closed-workspace pending-stop evidence: %s", async proof => {
+    const f = await fixture(proof === "capacity-full" ? 1 : 2);
+    await mkdir(f.project.localPath);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]);
+    run(["remote", "add", "origin", f.project.repoUrl]);
+    const owner = { projectId: f.project.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    for (const id of [owner.taskId, ...f.candidates.map(item => item.id)]) run(["branch", `daynight/${id}`]);
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "git-temp") }), op = createOperation();
+    try {
+      const binding = await git.prepareWorktree(f.project, owner, op);
+      execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+      const stop = { context: { ...owner, worktreeId: proof === "conflicting" ? uuid(903) : owner.worktreeId,
+        cwd: proof.endsWith("wrong-cwd") ? f.project.localPath : binding.worktreePath },
+        binding: { session: "w", workspaceId: "closed", paneId: "p", terminalId: "t" } };
+      let stops: typeof stop[] = [stop];
+      f.tasks.pendingStops.mockImplementation(() => [...stops]);
+      if (proof.startsWith("pending-only")) {
+        // A stop becomes pending between the reconciliation observation and
+        // the capacity snapshot. No claim, workspace or cleanup row proves it.
+        stops = [];
+        f.tasks.listResources.mockImplementationOnce(async () => []);
+        f.tasks.listResources.mockImplementation(async () => { stops = [stop]; return structuredClone([...f.resources.values()]); });
+      } else {
+        f.store.registerPending({ ...owner, agent: "codex" });
+        f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      }
+      const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+      let admission: ReturnType<typeof monitor.capture> | undefined;
+      const claim = vi.mocked(f.remote.claim).getMockImplementation()!;
+      vi.mocked(f.remote.claim).mockImplementation(async (...args) => { admission = monitor.capture("admission"); return claim(...args); });
+      const coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor });
+      try {
+        expect(f.resources.size).toBe(0);
+        await coordinator.tick();
+        if (proof === "conflicting" || proof.endsWith("wrong-cwd")) {
+          expect(f.remote.claim).not.toHaveBeenCalled();
+          expect(f.tasks.start).not.toHaveBeenCalled();
+          expect(monitor.capture("1").capacity?.quality).not.toBe("current");
+          expect(monitor.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "resources", scope: { kind: "project", projectId: owner.projectId } })]));
+        } else {
+          if (proof === "capacity-full") expect(f.remote.claim).not.toHaveBeenCalled();
+          else {
+            expect(f.remote.claim).toHaveBeenCalledOnce();
+            await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+            expect(f.tasks.start.mock.calls[0]![0].taskId).not.toBe(owner.taskId);
+          }
+          const observation = admission ?? monitor.capture("1");
+          expect(observation.capacity).toMatchObject({ quality: "current", occupied: 1, available: proof === "capacity-full" ? 0 : 1 });
+          expect(observation.reservations.filter(item => item.scope.kind === "claim" && item.scope.claimId === owner.claimId)).toEqual([
+            expect.objectContaining({ roles: expect.arrayContaining(["pending-stop", "resource-owner", "unresolved"]) }),
+          ]);
+        }
+        expect(f.store.listCleanupSchedules()).toEqual([]);
+        if (proof.startsWith("pending-only")) expect(f.store.getTask(owner)).toBeNull();
+        else expect(f.store.getTask(owner)?.status).toBe("pending");
+        expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+        await access(binding.worktreePath);
+        expect(f.tasks.pendingStops()).toEqual([stop]);
+      } finally { await coordinator.shutdown(); }
+    } finally { op.dispose(); await git.dispose(); }
+  }, 20000);
+
   it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected"])("admits only with independently bounded ownership: %s", async proof => {
     const f = await fixture(["capacity-full", "stopped", "unselected"].includes(proof) ? 1 : 2);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
