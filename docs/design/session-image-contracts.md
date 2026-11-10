@@ -213,7 +213,7 @@ Poll 先按当前 Session、claim/test execution 与 generation 筛选持久媒�
 
 旧账本中的完整 body/result 在 core 计算无 bytes 的等价元数据，并由 DAO 按读到的原 fence/body/result/error/complete 做精确 Expected CAS；冲突或 unknown 保留原身份与占用，不覆盖较新的结果。取消只结束该次 I/O 并等待执行单元退出；准备、unknown 和未完成清理继续保留其 reservation。
 
-Controller 释放原准备时，以类型化错误区分可恢复的文件访问/flush、SQLite busy/存储或元数据容量不足，以及身份、格式和安全拒绝。前者在 `action=release` 的响应中返回 `release_storage_unavailable`；短暂本地 reader 占用也使用该错误，真正 operation/native 引用仍拒绝为 `upload_in_use`。服务仅对 release 的该专用错误及既有 `rate_limited` 保持原持久请求 pending，沿同 requestId/action/body/fence 再次 offer；已经完成的成功或确定错误不被迟到暂拒改写，SQL 终态保护不放宽。未知、取消和重复暂拒期间仍保留原文件计量与 reservation；只有原远端 release 成功、本地文件删除及元数据提交全部确认才返还配额。`budget_exceeded`、`image_unavailable` 等通用错误不推断为可重试清理，其他 action 不因该专用 code 获得重放许可。
+Controller 释放原准备时，relay 与本地 release 使用同一存储错误分类，覆盖首次访问媒体目录、预算账本初始化以及实际释放；可恢复的文件访问/flush、SQLite busy/存储或元数据容量不足与身份、格式和安全拒绝分别处理。前者在 `action=release` 的响应中返回 `release_storage_unavailable`；短暂本地 reader 占用也使用该错误，真正 operation/native 引用仍拒绝为 `upload_in_use`。服务仅对 release 的该专用错误及既有 `rate_limited` 保持原持久请求 pending，沿同 requestId/action/body/fence 再次 offer；已经完成的成功或确定错误不被迟到暂拒改写，SQL 终态保护不放宽。未知、取消和重复暂拒期间仍保留原文件计量与 reservation；只有原远端 release 成功、本地文件删除及元数据提交全部确认才返还配额。`budget_exceeded`、`image_unavailable` 等通用错误不推断为可重试清理，其他 action 不因该专用 code 获得重放许可。
 
 ## 图片发送与 NativeProvider 入口
 

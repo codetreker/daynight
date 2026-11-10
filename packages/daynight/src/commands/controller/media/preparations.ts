@@ -1,6 +1,6 @@
 import { createImageCaptureSource } from "./capture-source.js";
-import { controllerMetadataBudget, ControllerMetadataBudgetError, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
-import { ImageReleaseStorageError } from "./release-error.js";
+import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
+import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./release-error.js";
 import { openMediaBudgetLedger } from "./budget-ledger.js";
 import { controllerMediaDiskBytes } from "./disk-budget.js";
 import type Database from "better-sqlite3";
@@ -29,13 +29,6 @@ const checkedDirectory = (directory: string) => {
   if (!stat.isDirectory() || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Media directory must be private.");
 };
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-const releaseStorageFailure = (error: unknown, depth = 0): boolean => {
-  if (depth > 6) return false;
-  if (error instanceof ControllerMetadataBudgetError) return true;
-  if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every((cause: unknown) => releaseStorageFailure(cause, depth + 1));
-  if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "string") return false;
-  return /^(SQLITE_(BUSY|LOCKED|FULL|IOERR|CANTOPEN|PROTOCOL)(_|$)|EPERM$|EACCES$|EROFS$|EINTR$|EBUSY$|EAGAIN$|ENOSPC$|EDQUOT$|EIO$|ENFILE$|EMFILE$|ETIMEDOUT$|ESTALE$|ENOENT$)/.test(error.code);
-};
 const snapshotTarget = (ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot) => ({ serverOrigin: ticket.serverOrigin, fence: { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: snapshot.nativeSessionId });
 
 /** Local validation never publishes a service-owned available resource receipt. */
@@ -196,7 +189,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     } catch (error) {
       // Only storage/busy failures permit repeating cleanup. Identity, format
       // and safety refusals must retain their definitive result.
-      if (releaseStorageFailure(error)) throw new ImageReleaseStorageError(error);
+      if (isImageReleaseStorageFailure(error)) throw new ImageReleaseStorageError(error);
       throw error;
     }
   };

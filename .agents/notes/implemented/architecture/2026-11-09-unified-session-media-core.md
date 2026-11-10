@@ -62,9 +62,10 @@ when no preparation exists, preventing delayed prepare replay. A successful
 prepare keeps its original release body; an unknown prepare must first finish.
 Preparation records name their random private path before creating or flushing
 the file, so an error leaves a reclaimable identity rather than a rowless file.
-Controller release reports typed temporary storage, metadata-capacity and local
-reader-busy failures separately from identity, format, safety and native-use
-refusals. Only that release-specific response keeps the original durable service
+Controller relay and local release share the temporary-storage classifier,
+including lazy media-directory and budget-ledger initialization before a local
+release can begin. Typed storage, metadata-capacity and local reader-busy failures
+remain separate from identity, format, safety and native-use refusals. Only that release-specific response keeps the original durable service
 request pending for cleanup under the same request ID, body and fence. Existing
 terminal results remain immutable. Files and quota stay charged through unknown,
 cancelled and failed cleanup until all release barriers confirm completion.

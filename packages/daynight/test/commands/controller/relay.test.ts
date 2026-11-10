@@ -241,6 +241,63 @@ test.each([
   await relay.close();
 });
 
+test.each([
+  ["EIO", Object.assign(new Error("Private media initialization failed."), { code: "EIO" })],
+  ["SQLITE_BUSY", Object.assign(new Error("Private media initialization failed."), { code: "SQLITE_BUSY" })],
+  ["storage-only AggregateError", new AggregateError([Object.assign(new Error("Directory sync failed."), { code: "EIO" }), Object.assign(new Error("Media ledger is locked."), { code: "SQLITE_BUSY" })], "Private media initialization failed.")],
+] as const)("reoffers the original release after %s prevents lazy media initialization", async (_name, error) => {
+  const { relay, journal, socket, emit, frame, callbacks, ticket } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const spec = { uploadId: randomUUID(), imageId: randomUUID(), target: { serverOrigin: ticket.serverOrigin, actorUserId: randomUUID(), fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: null }, name: "original.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) };
+  const released = { uploadId: spec.uploadId, imageId: spec.imageId, target: spec.target, state: "released", acceptedOffset: "0", validated: null, error: null };
+  let storageAvailable = false;
+  const release = vi.fn(async () => released);
+  Object.assign(journal, { media: () => {
+    if (!storageAvailable) throw error;
+    return { release };
+  } });
+  const prepareId = randomUUID(), releaseId = randomUUID();
+  const responses = () => socket.sent.filter(value => value.type === "image_response");
+  emit(frame("image_request", { requestId: prepareId, action: "prepare", body: spec }));
+  await vi.waitFor(() => expect(responses()).toHaveLength(1));
+  expect(responses()[0]).toMatchObject({ requestId: prepareId, action: "prepare", result: null, error: { code: "image_unavailable" } });
+  const request = frame("image_request", { requestId: releaseId, action: "release", body: { uploadId: spec.uploadId, spec } });
+  emit(request);
+  await vi.waitFor(() => expect(responses()).toHaveLength(2));
+  expect.soft(responses()[1]).toMatchObject({ requestId: releaseId, action: "release", result: null, error: { code: "release_storage_unavailable" } });
+  expect(release).not.toHaveBeenCalled();
+  storageAvailable = true;
+  emit(request);
+  await vi.waitFor(() => expect(responses()).toHaveLength(3));
+  expect(responses()[2]).toMatchObject({ requestId: releaseId, action: "release", result: released, error: null });
+  expect(release).toHaveBeenCalledExactlyOnceWith({ uploadId: spec.uploadId, spec });
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  await relay.close();
+});
+
+test.each([
+  ["owner mismatch", "release", new Error("Media preparation owner identity differs.")],
+  ["private symbolic link", "release", new Error("Media directory contains an untrusted symbolic link.")],
+  ["corrupt SQLite", "release", Object.assign(new Error("Media ledger is corrupt."), { code: "SQLITE_CORRUPT" })],
+  ["invalid SQLite", "release", Object.assign(new Error("Media ledger is not a database."), { code: "SQLITE_NOTADB" })],
+  ["symbolic link loop", "release", Object.assign(new Error("Too many symbolic links."), { code: "ELOOP" })],
+  ["mixed storage and safety AggregateError", "release", new AggregateError([Object.assign(new Error("Directory sync failed."), { code: "EIO" }), new Error("Media preparation owner identity differs.")], "Private media initialization failed.")],
+  ["non-release storage failure", "status", Object.assign(new Error("Private media initialization failed."), { code: "EIO" })],
+] as const)("lazy media initialization preserves the terminal response for %s", async (_name, action, error) => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  Object.assign(journal, { media: () => { throw error; } });
+  const requestId = randomUUID();
+  emit(frame("image_request", { requestId, action, body: { uploadId: randomUUID() } }));
+  await vi.waitFor(() => expect(socket.sent.filter(value => value.type === "image_response")).toEqual([
+    expect.objectContaining({ requestId, action, result: null, error: { code: "image_unavailable", message: "The Controller could not complete this image request." } }),
+  ]));
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  await relay.close();
+});
+
 test("concurrent completions retain their original identities while one decoder drains a bounded queue", async () => {
   const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
   const pending: (() => void)[] = [];
