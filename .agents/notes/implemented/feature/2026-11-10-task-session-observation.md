@@ -40,6 +40,10 @@ without substituting a later execution. Public CLI and MCP registration points
 expose only implemented consumers. History reading and sending remain separate
 capabilities with their own operation-time authorization.
 
+The Engine publishes observation and freshness timestamps in UTC, including
+values selected from persisted heartbeat and connection deadlines. It converts
+output copies without changing the source instants, precision or null values.
+
 ## Alternatives
 
 **Fetch the full current Session for every Task.** This repeats permission,
@@ -65,6 +69,13 @@ a generic read wrapper or restored runtime MCP output validation.
 policy but loses the overview's complete encoded-response guarantee. Its explicit
 byte budget therefore remains a scoped exception, with protocol overhead counted
 before selecting the final returned prefix.
+
+**Accept arbitrary timezone offsets in the shared CLI timestamp parser.**
+Persisted heartbeat values can retain a database-local timezone, while the CLI
+expects UTC output. Widening the shared parser would change unrelated API
+contracts and leave equivalent observations encoded differently by deployment.
+Normalizing the shared producer fixes both Task summaries and inspection while
+preserving the established client contract.
 
 ## Consequences
 

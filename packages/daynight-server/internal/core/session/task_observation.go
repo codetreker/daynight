@@ -165,17 +165,17 @@ func (s *Engine) observeTaskSession(p model.Principal, source store.TaskSessionS
 		return unavailableTaskObservation(now, "execution_changed")
 	}
 	setTaskObservationIdentity(&out, d)
-	out.LastSeenAt = copyObservationPointer(d.LastSeen)
 	if d.LastSeen == nil {
 		out.FreshUntil = nil
 	} else {
-		until := d.LastSeen.Add(HeartbeatTimeout)
+		out.LastSeenAt = observationPointer(d.LastSeen.UTC())
+		until := out.LastSeenAt.Add(HeartbeatTimeout)
 		if until.Before(*out.FreshUntil) {
 			out.FreshUntil = &until
 		}
 	}
 	if d.ConnectionExpiry != nil && out.FreshUntil != nil && d.ConnectionExpiry.Before(*out.FreshUntil) {
-		out.FreshUntil = copyObservationPointer(d.ConnectionExpiry)
+		out.FreshUntil = observationPointer(d.ConnectionExpiry.UTC())
 	}
 	if d.Backend == "herdr" {
 		out.ContentKind = observationPointer("terminal_recording")

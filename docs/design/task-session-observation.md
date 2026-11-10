@@ -16,6 +16,8 @@
 
 Engine 先取得 registry 引用，再在短 cell 锁下复制已提交标量；registry 重新检查发生在 cell 解锁后，保持现有锁顺序。live fence 与持久来源不符时不使用该 live 数据。新鲜度来自持久心跳和连接到期；客户端不能延长它。发送判断共享现有 permission 规则，并额外使用真实 actor、当前 Task 绑定和生命周期；它不授予后续写入许可。
 
+共享 Engine 将 `observedAt`、`lastSeenAt` 和 `freshUntil` 投影为 UTC 时间值，使批量观察与指定 Session inspection 均输出 CLI 可解析的 `Z` 表示。持久来源可能携带数据库本地时区；转换只作用于输出副本，保留原始时刻、精度与空值，心跳及连接到期的比较仍按实际时刻执行。
+
 批量读、live 采样或 fresh 读的普通失败可形成不可用观察；原 Task 仍存在。凭据或项目拒绝与请求取消中止整次结果。新快照完成失败同样不能发布成功观察。异常内部详情不进入局部错误正文。
 
 ## 普通 Task 输出
