@@ -7,14 +7,14 @@ import { performance } from "node:perf_hooks";
 import { createWindowsCommandJob, WindowsCommandCleanupError, WindowsCommandJobSetupError } from "./windows-command-job.js";
 import type { WindowsCommandOwnership } from "./windows-command-job.js";
 import { loadWindowsJobKernel } from "./windows-job.js";
-import type { WindowsCommandJobKernel } from "./windows-job.js";
-import type { SerializedSpawnError, WindowsOwnedCommand, WindowsOwnedCommandDependencies, WindowsOwnedCommandOptions, WindowsTargetReceipt } from "./windows-owned-command.js";
+import type { WindowsOwnedJobKernel } from "./windows-job.js";
+import type { SerializedSpawnError, WindowsOwnedCommand, WindowsOwnedCommandDependencies, WindowsNodeCommandOptions, WindowsTargetReceipt } from "./windows-owned-command.js";
 
 export const windowsNodeGuardianSource = String.raw`
 process.on('disconnect',()=>process.exit(1));
 if(!process.connected)process.exit(1);
-const nonce=process.argv[1],mode=process.argv[2];
-const spawn=mode==='node'?require('node:child_process').spawn:require(process.argv[3]);
+const nonce=process.argv[1];
+const spawn=require(process.argv[2]);
 let admitted=false;
 const send=(data,done)=>{if(process.connected)process.send({version:1,nonce,...data},done);else process.exit(1);};
 const serialize=error=>{
@@ -57,27 +57,24 @@ const targetReceipt = (value: unknown): value is WindowsTargetReceipt => record(
 );
 const errorsOf = (error: unknown): unknown[] => error instanceof WindowsCommandCleanupError ? [...error.errors] : [error];
 const pause = async (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
-let kernel: Promise<WindowsCommandJobKernel> | undefined;
+let kernel: Promise<WindowsOwnedJobKernel> | undefined;
 export type WindowsNodeGuardianDependencies = WindowsOwnedCommandDependencies & {
   createScope?: () => Promise<WindowsCommandOwnership>;
 };
 
 /** Node is only the trusted admission and byte-pipe backend, not the target's process identity. */
-export const spawnNodeGuardianCommand = (options: WindowsOwnedCommandOptions, dependencies: WindowsNodeGuardianDependencies = {}): {
+export const spawnNodeGuardianCommand = (options: WindowsNodeCommandOptions, dependencies: WindowsNodeGuardianDependencies = {}): {
   command: WindowsOwnedCommand; guardianChild: ChildProcess; physicalClosed: Promise<void>;
 } => {
-  if (options.normalDisposition === "release" && options.onReleased === undefined) throw new TypeError("Windows command release requires an atomic commit callback.");
   const nonce = randomUUID(), cwd = path.resolve(options.cwd), environment = { ...options.environment };
-  const resolverPath = options.resolver === "cross-spawn" ? createRequire(import.meta.url).resolve("cross-spawn") : "node:child_process";
-  const child = spawn(process.execPath, ["-e", windowsNodeGuardianSource, "--", nonce, options.resolver, resolverPath], {
-    // Git's background work must outlive the CLI's libuv Job after release; detached skips that extra Job assignment.
-    // https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/deps/uv/src/win/process.c#L1052-L1085
-    cwd, env: bootstrapEnvironment(), windowsHide: true, detached: options.normalDisposition === "release", stdio: [options.stdin, "pipe", "pipe", "ipc"],
+  const resolverPath = createRequire(import.meta.url).resolve("cross-spawn");
+  const child = spawn(process.execPath, ["-e", windowsNodeGuardianSource, "--", nonce, resolverPath], {
+    cwd, env: bootstrapEnvironment(), windowsHide: true, stdio: [options.stdin, "pipe", "pipe", "ipc"],
   });
   let result: WindowsTargetReceipt | undefined, scope: WindowsCommandOwnership | undefined;
-  let closed = false, exited = false, admitted = false, stopped = false, released = false, readySeen = false, assisted = false;
+  let closed = false, exited = false, admitted = false, stopped = false, readySeen = false;
   let lifecycleError: unknown;
-  let starting: Promise<void> | undefined, stopping: Promise<void> | undefined, releasing: Promise<void> | undefined;
+  let starting: Promise<void> | undefined, stopping: Promise<void> | undefined;
   let physicalResolve!: () => void, closeResolve!: () => void, closeReject!: (error: unknown) => void;
   const physicalClosed = new Promise<void>(resolve => { physicalResolve = resolve; });
   const completion = new Promise<void>((resolve, reject) => { closeResolve = resolve; closeReject = reject; });
@@ -120,27 +117,17 @@ export const spawnNodeGuardianCommand = (options: WindowsOwnedCommandOptions, de
   const createScope = dependencies.createScope ?? (async () => {
     const api = await (dependencies.loadKernel === undefined ? kernel ??= loadWindowsJobKernel() : dependencies.loadKernel());
     checkAdmission();
-    return options.normalDisposition === "release"
-      ? createWindowsCommandJob(api, { anonymous: true, seal: true, name: null })
-      : createWindowsCommandJob(api, { anonymous: false, seal: false, name: `Local\\Daynight-command-${randomUUID()}` });
+    return createWindowsCommandJob(api, { anonymous: false, seal: false, name: `Local\\Daynight-command-${randomUUID()}` });
   });
   const joinPipes = async (failures: unknown[], deadline: number): Promise<void> => {
     while (!closed && performance.now() < deadline) await pause(Math.min(25, options.pipeCloseMs));
     if (!closed) {
       failures.push(new Error("Windows command guardian and inherited streams did not close within the termination grace period."));
-      if (options.failureDisposition === "last-close") {
-        assisted = true;
-        child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy();
-        if (child.connected) child.disconnect();
-        child.unref();
-      }
     }
   };
   const stopOwned = async (failures: unknown[], deadline: number): Promise<void> => {
     try { await scope?.stopUntil(deadline); } catch (error) { failures.push(...errorsOf(error)); }
-    if (failures.length && options.failureDisposition === "last-close") failures.push(...scope?.requestFailureClose() ?? []);
     await joinPipes(failures, performance.now() + options.pipeCloseMs);
-    if (failures.length && options.failureDisposition === "last-close") failures.push(...scope?.closeObservations() ?? []);
   };
   const command: WindowsOwnedCommand = {
     stdin: child.stdin,
@@ -161,7 +148,6 @@ export const spawnNodeGuardianCommand = (options: WindowsOwnedCommandOptions, de
       return starting;
     },
     stop: () => {
-      if (released) return Promise.reject(new Error("Windows command ownership was already released."));
       stopping ??= (async () => {
         stopped = true; clearTimeout(timer); readyReject(new Error("Windows command admission is no longer available."));
         const failures: unknown[] = [];
@@ -173,37 +159,7 @@ export const spawnNodeGuardianCommand = (options: WindowsOwnedCommandOptions, de
       })();
       return stopping;
     },
-    release: () => {
-      if (releasing !== undefined) return releasing;
-      if (stopped || options.normalDisposition !== "release" || scope === undefined || !closed || result === undefined || lifecycleError !== undefined || assisted || !child.stdout!.readableEnded || !child.stderr!.readableEnded) {
-        const invalid = new Error("Windows command has not reached natural completion before release.");
-        if (options.normalDisposition !== "release" || stopped || released) return Promise.reject(invalid);
-        releasing = (async () => {
-          const failures: unknown[] = [invalid];
-          try { await command.stop(); } catch (error) { failures.push(...errorsOf(error)); }
-          throw new WindowsCommandCleanupError(failures);
-        })();
-        return releasing;
-      }
-      const deadline = performance.now() + options.graceMs;
-      let resolveRelease!: () => void, rejectRelease!: (error: unknown) => void;
-      releasing = new Promise<void>((resolve, reject) => { resolveRelease = resolve; rejectRelease = reject; });
-      try {
-        scope.release(() => { released = true; options.onReleased!(); });
-        resolveRelease();
-      } catch (error) {
-        const failures = errorsOf(error);
-        if (scope.killPolicy === "OFF") {
-          failures.push(...scope.closeObservations());
-          rejectRelease(new WindowsCommandCleanupError(failures));
-        } else {
-          failures.push(...scope.restoreKillOnCloseUntil(deadline));
-          stopped = true;
-          void stopOwned(failures, deadline).then(() => rejectRelease(new WindowsCommandCleanupError(failures)), rejectRelease);
-        }
-      }
-      return releasing;
-    },
+    release: () => Promise.reject(new Error("Review ownership cannot be released without stopping.")),
   };
   return { command, guardianChild: child, physicalClosed };
 };

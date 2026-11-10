@@ -6,6 +6,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadWindowsJobKernel } from "../../src/platform/windows-job.js";
+import { loadWindowsNativeProcessKernel } from "../../src/platform/windows-native-process.js";
 import type { WindowsCommandJobKernel } from "../../src/platform/windows-job.js";
 import { spawnWindowsOwnedCommand, WindowsCommandCleanupError } from "../../src/platform/windows-owned-command.js";
 import type { WindowsOwnedCommand } from "../../src/platform/windows-owned-command.js";
@@ -46,8 +47,8 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
     let bystander: ChildProcess | undefined, bystanderError: unknown;
     const record = (stage: string, extra: Record<string, unknown> = {}) => events.push({ stage, atNs: process.hrtime.bigint().toString(),
       members: members.map(member => ({ role: member.role, pid: member.pid, birth: member.birth, signaled: api.signaled(member.handle) })), ...extra });
-    const capture = (role: string, pid: number, birth?: string): Member => {
-      const handle = api.open(pid);
+    const capture = (role: string, pid: number, birth?: string, suppliedHandle?: unknown): Member => {
+      const handle = suppliedHandle === undefined ? api.open(pid) : suppliedHandle;
       if (handle === null) throw new Error("Native fixture disappeared before independent capture.");
       try {
         const identity = api.identity(handle), observedBirth = identity.birth.toString();
@@ -69,6 +70,11 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
     const declared = async (role: string): Promise<Member> => {
       const file = path.join(root, role + ".json"); await until(() => existsSync(file));
       const value = JSON.parse(await readFile(file, "utf8")) as { pid: number; birth: string };
+      if (role === "root") {
+        const original = members.find(member => member.role === "root");
+        if (original === undefined) throw new Error("Native target creation was not independently observed.");
+        expect(value.pid).toBe(original.pid); expect(value.birth).toBe(original.birth); return original;
+      }
       return capture(role, value.pid, value.birth);
     };
     try {
@@ -87,7 +93,6 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
           api.close(original); // Only the product duplicate remains: last-close behavior is not masked by a fixture Job handle.
           return job;
         },
-        assignHandle: (handle, process) => { api.assignHandle(handle, process); capture("guardian", api.identity(process).pid); },
         sealAdmissions: handle => {
           api.sealAdmissions(handle); sealed = true;
           if (scenario === "seal") {
@@ -112,7 +117,17 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
           if (handle === job) { closeAttempted = true; closeCalls++; record("product-job-close-request", { sealed, active: api.active(handle) }); }
           api.close(handle); if (handle === job) jobClosed = true;
         },
-      }) });
+      }), loadNative: async () => {
+        const native = await loadWindowsNativeProcessKernel();
+        return { ...native, duplicateProcess: original => {
+          const held = native.duplicateProcess(original);
+          let identity;
+          try { identity = api.identity(held); }
+          catch (error) { api.closeProcess(held); throw error; }
+          capture("root", identity.pid, identity.birth.toString(), held);
+          return native.duplicateProcess(original);
+        } };
+      } });
       command.stdout.resume(); command.stderr.resume(); await command.start();
       const target = await declared("root"); expect(api.contains(job, target.handle)).toBe(true);
       expect(api.contains(job, unrelated.handle)).toBe(false);
@@ -180,10 +195,72 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
   it("seals new user-code admission while an already admitted root remains alive", async () => exercise("seal"), 30_000);
   it("retains an actual native stop failure even when final last-owner close later kills the member", async () => exercise("last-owner-failure"), 30_000);
 
-  it("exits an unadmitted detached helper after its CLI exits while its ambient Job remains open", async () => {
+  it("preserves quoted argv, Unicode environment, NUL input, and a backpressured binary pipe tail", async () => {
+    const root = await mkdtemp(path.join(directory, "argv 中文 "));
+    const args = ["", "two words", 'embedded"quote', "trailing\\", "中文", "tab\tvalue"], tail = Buffer.alloc(256 * 1024, 0xab);
+    const source = "const fs=require('node:fs');process.stdout.end(Buffer.alloc(256*1024,0xab));process.stderr.end(JSON.stringify({args:process.argv.slice(1),value:process.env.DAYNIGHT_NATIVE_VALUE,cwd:process.cwd(),input:fs.readFileSync(0).length,path:process.env.PATH,systemRoot:process.env.SystemRoot,coverage:process.env.NODE_V8_COVERAGE}));";
+    const environment = { PATH: path.dirname(process.execPath), Path: "Z:\\not-the-executable-path", DAYNIGHT_NATIVE_VALUE: "中文=value" };
+    const file = path.basename(process.execPath), targetArgs = ["-e", source, "--", ...args];
+    const baseline = await new Promise<{ code: number | null; output: Buffer; metadata: unknown }>((resolve, reject) => {
+      const child = spawn(file, targetArgs, { cwd: root, env: environment, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const out: Buffer[] = [], err: Buffer[] = []; let expired = false;
+      const timer = setTimeout(() => { expired = true; child.kill("SIGKILL"); }, 15_000);
+      child.stdout.on("data", chunk => { out.push(chunk as Buffer); }); child.stderr.on("data", chunk => { err.push(chunk as Buffer); });
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("close", code => { clearTimeout(timer); if (expired) { reject(new Error("Native argv baseline did not finish.")); return; } try { resolve({ code, output: Buffer.concat(out), metadata: JSON.parse(Buffer.concat(err).toString("utf8")) }); } catch (error) { reject(error); } });
+    });
+    expect(baseline.code).toBe(0); expect(baseline.output).toEqual(tail);
+    let committed = false;
+    const command = spawnWindowsOwnedCommand({ file, args: targetArgs, cwd: root,
+      environment, stdin: "ignore", resolver: "node", deadline: performance.now() + 15_000,
+      graceMs: 1000, pipeCloseMs: 1000, normalDisposition: "release", stopAdmission: "seal", failureDisposition: "last-close", onReleased: () => { committed = true; } });
+    const errors: Buffer[] = []; let stderrEnded = false;
+    command.stderr.on("data", chunk => { errors.push(chunk as Buffer); }); command.stderr.once("end", () => { stderrEnded = true; });
+    try {
+      await command.start(); await until(() => stderrEnded);
+      expect(command.result).toBeUndefined();
+      const chunks: Buffer[] = []; for await (const chunk of command.stdout) chunks.push(chunk as Buffer);
+      await command.closed;
+      expect(Buffer.concat(chunks)).toEqual(tail);
+      expect(JSON.parse(Buffer.concat(errors).toString("utf8"))).toEqual(baseline.metadata);
+      expect(baseline.metadata).toMatchObject({ args, value: "中文=value", cwd: root, input: 0, path: environment.PATH });
+      expect(command.result).toEqual({ kind: "exit", code: 0, signal: null, failure: null });
+      await command.release(); expect(committed).toBe(true);
+    } finally { if (!committed) await command.stop(); }
+  }, 30_000);
+
+  it.each([7, 259])("reports actual DWORD exit %i from a signaled original process", async code => {
+    let committed = false;
+    const command = spawnWindowsOwnedCommand({ file: process.execPath, args: ["-e", `process.exit(${code})`], cwd: directory,
+      environment: process.env, stdin: "ignore", resolver: "node", deadline: performance.now() + 15_000,
+      graceMs: 1000, pipeCloseMs: 1000, normalDisposition: "release", stopAdmission: "seal", failureDisposition: "last-close", onReleased: () => { committed = true; } });
+    command.stdout.resume(); command.stderr.resume();
+    try { await command.start(); await command.closed; expect(command.result).toEqual({ kind: "exit", code, signal: null, failure: null }); await command.release(); }
+    finally { if (!committed) await command.stop(); }
+  }, 30_000);
+
+  it.each(["missing", "bad-image"])("keeps a genuine %s spawn failure aligned with Node", async profile => {
+    const file = path.join(directory, `${profile}.exe`), args = ["fixture argument"];
+    if (profile === "bad-image") writeFileSync(file, "This is an ordinary test file, not a PE executable.");
+    const baseline = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
+      const child = spawn(file, args, { cwd: directory, stdio: "ignore", windowsHide: true });
+      child.once("error", resolve); child.once("spawn", () => { child.kill("SIGKILL"); reject(new Error("Invalid image fixture unexpectedly executed.")); });
+    });
+    let committed = false;
+    const command = spawnWindowsOwnedCommand({ file, args, cwd: directory, environment: process.env, stdin: "ignore", resolver: "node", deadline: performance.now() + 15_000,
+      graceMs: 1000, pipeCloseMs: 1000, normalDisposition: "release", stopAdmission: "seal", failureDisposition: "last-close", onReleased: () => { committed = true; } });
+    command.stdout.resume(); command.stderr.resume();
+    try {
+      await command.start(); await command.closed;
+      expect(command.result).toMatchObject({ kind: "not-started", error: { code: baseline.code, errno: baseline.errno, syscall: `spawn ${file}`, path: file, spawnargs: args } });
+      await command.release();
+    } finally { if (!committed) await command.stop(); }
+  }, 30_000);
+
+  it("kills an unresumed native target after its CLI exits while its ambient Job remains open", async () => {
     const root = await mkdtemp(path.join(directory, "unadmitted-")), held: Member[] = [], events: unknown[] = [];
     const ambientJob = api.createAnonymousJob(); let child: ChildProcess | undefined, childClosed = false, primary: unknown, childError: unknown;
-    const capture = async (role: "cli" | "guardian", parentPid: number): Promise<Member> => {
+    const capture = async (role: "cli" | "root", parentPid: number): Promise<Member> => {
       const file = path.join(root, role + ".json"); await until(() => existsSync(file));
       const declaration = JSON.parse(await readFile(file, "utf8")) as { pid: number; birth: string };
       const handle = api.open(declaration.pid);
@@ -192,7 +269,7 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
         const identity = api.identity(handle);
         expect(identity.pid).toBe(declaration.pid); expect(identity.birth.toString()).toBe(declaration.birth);
         expect(identity.parentPid).toBe(parentPid); expect(api.signaled(handle)).toBe(false);
-        if (role === "guardian") expect(api.contains(ambientJob, handle)).toBe(true);
+        if (role === "root") expect(api.contains(ambientJob, handle)).toBe(true);
         const member: Member = { role, pid: identity.pid, birth: identity.birth.toString(), handle }; held.push(member); return member;
       } catch (error) {
         try { api.closeProcess(handle); }
@@ -210,15 +287,15 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
       child.once("error", error => { childError = error; }); child.once("close", () => { childClosed = true; });
       const cli = await capture("cli", process.pid); expect(cli.pid).toBe(child.pid);
       api.assignHandle(ambientJob, cli.handle); expect(api.contains(ambientJob, cli.handle)).toBe(true);
-      writeFileSync(path.join(root, "create-helper"), "release");
-      const guardian = await capture("guardian", cli.pid);
+      writeFileSync(path.join(root, "create-target"), "release");
+      const target = await capture("root", cli.pid);
       expect(existsSync(path.join(root, "unadmitted-target-marker"))).toBe(false);
-      record("unadmitted-helper-captured-in-live-ambient-job");
+      record("unresumed-native-target-captured-in-live-ambient-job");
       writeFileSync(path.join(root, "exit-cli"), "release");
       await until(() => api.signaled(cli.handle) && childClosed);
-      await until(() => api.signaled(guardian.handle));
+      await until(() => api.signaled(target.handle));
       expect(child.exitCode).toBe(0); expect(existsSync(path.join(root, "unadmitted-target-marker"))).toBe(false);
-      record("helper-exited-without-target-before-ambient-job-cleanup");
+      record("native-target-exited-without-payload-before-ambient-job-cleanup");
     } catch (error) { primary = error; throw error; }
     finally {
       const failures: unknown[] = [];

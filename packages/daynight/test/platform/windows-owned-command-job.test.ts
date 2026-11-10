@@ -26,6 +26,27 @@ const rejection = async (pending: Promise<void>): Promise<WindowsCommandCleanupE
 };
 
 describe("Windows command Job lifetime policies", () => {
+  it("adopts a duplicate of the original creation handle without reopening its PID", async () => {
+    const f = fixture(), scope = owner(f);
+    expect(scope.creationJob()).toBe(f.job);
+    scope.adoptCreatedTarget(10, { pid: 10, birth: 1n });
+    expect(f.api.open).not.toHaveBeenCalled(); expect(f.api.assignHandle).not.toHaveBeenCalled();
+    expect(() => scope.creationJob()).toThrow("admission is closed");
+    await scope.stopUntil(performance.now() + 100);
+    expect(f.api.closeProcess).toHaveBeenCalledWith(10);
+  });
+
+  it.each(["birth", "parent", "membership", "signaled"])("closes a rejected native %s observation without adopting it as a termination target", reason => {
+    const f = fixture(), scope = owner(f);
+    if (reason === "parent") f.api.identity = handle => ({ pid: handle as number, parentPid: process.pid + 1, birth: 1n });
+    if (reason === "membership") f.api.contains = () => false;
+    if (reason === "signaled") f.signaled.add(10);
+    expect(() => scope.adoptCreatedTarget(10, { pid: 10, birth: reason === "birth" ? 2n : 1n })).toThrow("identity or Job membership");
+    expect(f.api.closeProcess).toHaveBeenCalledExactlyOnceWith(10); expect(f.api.open).not.toHaveBeenCalled();
+    expect(f.api.terminate).not.toHaveBeenCalled(); scope.requestFailureClose(); scope.closeObservations();
+    expect(f.api.closeProcess).toHaveBeenCalledOnce();
+  });
+
   it("creates anonymous ownership and seals before inventory or termination", async () => {
     const f = fixture(), scope = owner(f); scope.assignGate(10);
     const pending = scope.stopUntil(performance.now() + 100);

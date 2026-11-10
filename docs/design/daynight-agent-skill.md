@@ -248,8 +248,8 @@ Job 的既有约束；`inherit` 字符串本身不构成可验证的外层 owner
 管道结束后释放内部 kill-on-close，中断和超时则封闭新成员、终止内部 Job 并确认结束，
 不按历史 PID 重建或终止进程树。此内部释放不能解除外层的终止政策；强制终止仍不能
 承诺 stage 清理或原子回滚。
-Git guardian 的 detached 启动只跳过额外的 Node 默认子进程 Job；实际外层 Job 约束
-仍由 Windows 保留，stdin/stdout/stderr 与 IPC 不因此脱离等待。
+Git 原生创建不额外赋入 Node 默认子进程 Job；实际外层 Job 约束仍由 Windows 保留，
+原始 process 对象和 stdout/stderr 不因此脱离等待。
 
 检测使用用户主目录和调用目录所属 Git worktree 根。先沿调用目录祖先检查 `.git`
 标记，存在时通过既有有界 Git 能力解析自身根；无标记只检查 User，读取错误继续抛出。

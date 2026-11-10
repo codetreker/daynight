@@ -903,8 +903,9 @@ in the root `.gitignore`. A cached binding is verified against the server on eac
 use and remains stable if another project later shares that repository.
 
 Repository Git commands share the invocation deadline, cap each command at
-30 seconds, and bound each output stream to 1 MiB. On Windows, a trusted entry
-joins a private Job before Git can execute. Cancellation and command failures
+30 seconds, and bound each output stream to 1 MiB. On Windows, native creation
+assigns Git to a private Job before its first instruction. Cancellation and
+command failures
 that require stopping retain the original cause when cleanup is uncertain;
 root or pipe closure alone does not establish descendant completion. Unforced
 Git completion joins the real output streams and releases its own ownership

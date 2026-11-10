@@ -1,7 +1,8 @@
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { spawnNodeGuardianCommand } from "../../dist/platform/windows-node-guardian.js";
+import { spawnWindowsOwnedCommand } from "../../dist/platform/windows-owned-command.js";
+import { loadWindowsNativeProcessKernel } from "../../dist/platform/windows-native-process.js";
 import { loadWindowsJobKernel } from "../../dist/platform/windows-job.js";
 
 const [directory] = process.argv.slice(2);
@@ -29,17 +30,38 @@ const wait = async name => {
 };
 
 publish("cli.json", identity(process.pid));
-await wait("create-helper");
+await wait("create-target");
 const marker = path.join(directory, "unadmitted-target-marker");
-const backend = spawnNodeGuardianCommand({
+const command = spawnWindowsOwnedCommand({
   file: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran')`],
   cwd: directory, environment: process.env, stdin: "ignore", resolver: "node",
   deadline: performance.now() + 15_000, graceMs: 1000, pipeCloseMs: 1000,
   normalDisposition: "release", stopAdmission: "seal", failureDisposition: "last-close",
   onReleased: () => { throw new Error("An unadmitted fixture cannot release ownership."); },
-}, { loadKernel: async () => { throw new Error("This fixture must never create or assign a product Job."); } });
-backend.command.stdout.resume(); backend.command.stderr.resume();
-if (backend.guardianChild.pid === undefined) throw new Error("Unadmitted command fixture helper did not spawn.");
-publish("guardian.json", identity(backend.guardianChild.pid));
-await wait("exit-cli");
-process.exit(0);
+}, { loadNative: async () => {
+  const native = await loadWindowsNativeProcessKernel();
+  return { ...native,
+    createSuspended: options => {
+      const result = native.createSuspended(options);
+      if (result.created !== null) {
+        const observation = native.duplicateProcess(result.created.process);
+        try {
+          const held = api.identity(observation);
+          publish("root.json", { pid: held.pid, parentPid: held.parentPid, birth: held.birth.toString() });
+        } finally { api.closeProcess(observation); }
+      }
+      return result;
+    },
+    resume: () => {
+      const deadline = performance.now() + 15_000;
+      while (!existsSync(path.join(directory, "exit-cli"))) {
+        if (performance.now() >= deadline) throw new Error("Suspended native owner exit gate did not open.");
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+      process.exit(0);
+    },
+  };
+} });
+command.stdout.resume(); command.stderr.resume();
+await command.start();
+throw new Error("The owner-loss control resumed unexpected target code.");

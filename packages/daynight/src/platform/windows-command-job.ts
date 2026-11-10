@@ -17,6 +17,10 @@ export type WindowsCommandOwnership = {
   requestFailureClose(): readonly unknown[];
   closeObservations(): readonly unknown[];
 };
+export type WindowsNativeCommandOwnership = WindowsCommandOwnership & {
+  creationJob(): unknown;
+  adoptCreatedTarget(observation: unknown, expected: { pid: number; birth: bigint }): void;
+};
 export class WindowsCommandJobSetupError extends Error {
   constructor(readonly scope: WindowsCommandOwnership, cause: unknown) {
     super("Windows command Job configuration failed.", { cause });
@@ -28,13 +32,13 @@ type GitPolicy = { anonymous: true; seal: true; name: null };
 type ReviewPolicy = { anonymous: false; seal: false; name: string };
 type Policy = GitPolicy | ReviewPolicy;
 type CreateWindowsCommandJob = {
-  (api: WindowsCommandJobKernel, policy: GitPolicy): WindowsCommandOwnership;
+  (api: WindowsCommandJobKernel, policy: GitPolicy): WindowsNativeCommandOwnership;
   (api: WindowsOwnedJobKernel, policy: ReviewPolicy): WindowsCommandOwnership;
 };
 const pause = async (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 /** A held Job owns ordinary inherited members; process-object proof applies to captured objects. */
-export const createWindowsCommandJob: CreateWindowsCommandJob = (api: WindowsOwnedJobKernel, policy: Policy): WindowsCommandOwnership => {
+export const createWindowsCommandJob: CreateWindowsCommandJob = (api: WindowsOwnedJobKernel, policy: Policy): WindowsNativeCommandOwnership => {
   const extended = api as WindowsCommandJobKernel;
   const job = policy.anonymous ? extended.createAnonymousJob() : api.create(policy.name);
   const members: Member[] = [];
@@ -69,8 +73,25 @@ export const createWindowsCommandJob: CreateWindowsCommandJob = (api: WindowsOwn
   const checkDeadline = (deadline: number, message: string): void => {
     if (performance.now() >= deadline) throw new Error(message);
   };
-  const scope: WindowsCommandOwnership = {
+  const scope: WindowsNativeCommandOwnership = {
     get killPolicy() { return killPolicy; },
+    creationJob: () => {
+      if (!policy.anonymous || assigned || stopping !== undefined || closeAttempted || killPolicy !== "ON") throw new Error("Windows native command Job admission is closed.");
+      return job;
+    },
+    adoptCreatedTarget: (handle, expected) => {
+      try {
+        if (!policy.anonymous || assigned || stopping !== undefined || closeAttempted || killPolicy !== "ON") throw new Error("Windows native command Job admission is closed.");
+        const identity = api.identity(handle);
+        if (identity.pid !== expected.pid || identity.birth !== expected.birth || identity.parentPid !== process.pid ||
+            !api.contains(job, handle) || api.signaled(handle)) throw new Error("Windows native command creation identity or Job membership is unconfirmed.");
+        members.push({ ...identity, handle, closeAttempted: false }); assigned = true;
+      } catch (error) {
+        try { api.closeProcess(handle); }
+        catch (closeError) { throw new WindowsCommandCleanupError([error, closeError]); }
+        throw error;
+      }
+    },
     assignGate: pid => {
       if (assigned || stopping !== undefined || closeAttempted) throw new Error("Windows command Job admission is closed.");
       const guardian = capture(pid);

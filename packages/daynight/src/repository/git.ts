@@ -83,8 +83,9 @@ const runWindowsRepositoryGit = (
     onReleased: () => { committed = true; detach(); },
   });
   const appendCleanup = (error: unknown): void => {
-    if (error instanceof WindowsCommandCleanupError) cleanupErrors.push(...error.errors);
-    else cleanupErrors.push(error);
+    for (const cause of error instanceof WindowsCommandCleanupError ? error.errors : [error]) {
+      if (!cleanupErrors.includes(cause)) cleanupErrors.push(cause);
+    }
   };
   const complete = (): void => {
     if (settled) return;
@@ -129,6 +130,15 @@ const runWindowsRepositoryGit = (
     if (failure === undefined) failureMessage = "Repository Git command deadline exceeded";
     stop();
   };
+  const executionFailed = (error: unknown): void => {
+    // Cleanup uncertainty survives an abort that already started STOP.
+    if (error instanceof WindowsCommandCleanupError) appendCleanup(error);
+    if (stopping || settled || committed) return;
+    failure = error;
+    // Synchronous native admission can cross the deadline before the timer dispatches.
+    if (performance.now() >= deadline) failureMessage = "Repository Git command deadline exceeded";
+    stop();
+  };
   const collect = (stream: "stdout" | "stderr", chunk: Buffer): void => {
     if (failure !== undefined || failureMessage !== undefined) return;
     const size = stream === "stdout" ? stdoutBytes : stderrBytes;
@@ -161,17 +171,9 @@ const runWindowsRepositoryGit = (
     try { await command.release(); }
     catch (error) { appendCleanup(error); }
     complete();
-  }, (error: unknown) => {
-    if (stopping || settled) return;
-    failure = error;
-    stop();
-  });
+  }, executionFailed);
   if (operation.signal.aborted) abort();
-  if (!stopping) void command.start().catch((error: unknown) => {
-    if (stopping || settled || committed) return;
-    failure = error;
-    stop();
-  });
+  if (!stopping) void command.start().catch(executionFailed);
 });
 
 export const runRepositoryGit = async (

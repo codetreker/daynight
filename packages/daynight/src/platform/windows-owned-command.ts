@@ -1,6 +1,8 @@
 import type { Readable, Writable } from "node:stream";
 import { spawnNodeGuardianCommand } from "./windows-node-guardian.js";
+import { spawnWindowsNativeCommand } from "./windows-native-command.js";
 import type { WindowsCommandJobKernel } from "./windows-job.js";
+import type { WindowsNativeProcessKernel } from "./windows-native-process.js";
 export { WindowsCommandCleanupError } from "./windows-command-job.js";
 
 export type SerializedSpawnError = {
@@ -11,6 +13,8 @@ export type SerializedSpawnError = {
   syscall?: string;
   path?: string;
   spawnargs?: string[];
+  win32Code?: number;
+  cause?: unknown;
 };
 export type WindowsTargetReceipt =
   | { kind: "exit"; code: number | null; signal: NodeJS.Signals | null; failure: SerializedSpawnError | null }
@@ -30,18 +34,19 @@ type WindowsCommandOptions = {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
-  stdin: "pipe" | "ignore";
-  resolver: "node" | "cross-spawn";
   deadline: number;
   graceMs: number;
   pipeCloseMs: number;
 };
 export type WindowsOwnedCommandOptions = WindowsCommandOptions & (
-  | { normalDisposition: "release"; stopAdmission: "seal"; failureDisposition: "last-close"; onReleased: () => void }
-  | { normalDisposition: "stop"; stopAdmission: "membership"; failureDisposition: "retain"; onReleased?: never }
+  | { stdin: "ignore"; resolver: "node"; normalDisposition: "release"; stopAdmission: "seal"; failureDisposition: "last-close"; onReleased: () => void }
+  | { stdin: "pipe"; resolver: "cross-spawn"; normalDisposition: "stop"; stopAdmission: "membership"; failureDisposition: "retain"; onReleased?: never }
 );
+export type WindowsNativeCommandOptions = Extract<WindowsOwnedCommandOptions, { normalDisposition: "release" }>;
+export type WindowsNodeCommandOptions = Extract<WindowsOwnedCommandOptions, { normalDisposition: "stop" }>;
 export type WindowsOwnedCommandDependencies = {
   loadKernel?: () => Promise<WindowsCommandJobKernel>;
+  loadNative?: () => Promise<WindowsNativeProcessKernel>;
 };
 
 export const restoreWindowsSpawnError = (value: SerializedSpawnError): Error & Omit<SerializedSpawnError, "name" | "message"> & { readonly origin: "windows-target" } =>
@@ -50,4 +55,6 @@ export const restoreWindowsSpawnError = (value: SerializedSpawnError): Error & O
 export const spawnWindowsOwnedCommand = (
   options: WindowsOwnedCommandOptions,
   dependencies: WindowsOwnedCommandDependencies = {},
-): WindowsOwnedCommand => spawnNodeGuardianCommand(options, dependencies).command;
+): WindowsOwnedCommand => options.normalDisposition === "release"
+  ? spawnWindowsNativeCommand(options, dependencies)
+  : spawnNodeGuardianCommand(options, dependencies).command;

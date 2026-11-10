@@ -229,13 +229,23 @@ URL，由 Git 处理 `insteadOf`；不读取 push URL、不自行实现 Git 配�
 原因的错误链。操作不 clone、不 fetch。每个 Git 子进程最多使用 30 秒与共享总期限剩余值的
 较小者，stdout、stderr 分别最多捕获 1 MiB；超限或取消时终止任务拥有的执行。
 读取索引时以 `-c core.fsmonitor=false` 关闭外部 fsmonitor，避免优化工具继承管道
-或启动后台工作。POSIX 使用原有进程组政策。Windows 通过平台层可信 guardian，
-在实际 Git 执行前将入口归入禁止 breakaway 的私有匿名 Job；目标环境在归属核验后
-传入，实际 Git 结果来自独立 receipt，不能用 guardian 的退出码替代。
-仅 Git guardian 使用 Node detached 启动，避免额外加入 CLI 的隐式 kill-on-close Job
-而改变正常后台成员在 CLI 退出后的生命周期；它不请求原生 Job breakaway，也不解除真实
-外层 Job 的约束。pipes、IPC 与原进程引用仍需 join。准入前的可信入口通过 disconnect
-与已断开连接检查自行结束，不能将这段窗口描述为已有私有 Job 的 OS 强制清理。
+或启动后台工作。POSIX 使用原有进程组政策。Windows 通过平台层原生后端，
+在 CreateProcessW 中以私有 Job-list、suspended 与受限
+handle-list 建立归属。父进程持有创建时返回的原始 process/thread capability，核验同一
+对象及 Job 成员身份后才 resume；Job scope 只接管观察 duplicate，不通过 PID 重开目标。
+stdout/stderr 由 Node 公有 named-pipe reader 与 native client writer 配对，私有握手在
+目标创建前消费，listener 停止接受后才运行目标；真实 EOF 与背压仍由原连接提供。
+执行、管道与 native 错误保留原始原因，不用额外解释器的退出码代替目标结果。
+`platform/windows-native-command.ts` 编排目标与管道生命期，`windows-native-process.ts`
+封装 Win32 ABI，`windows-native-command-data.ts` 保持 Node 参数、环境和查找语义；
+共同 Job 和错误合同由平台 owned-command 持有，不从 repository 反向依赖 review。
+Node permission 参数按 builtin 规则传播；启用 permission 时，同步观察 builtin 归一化
+是否读取原始 execArgv，stdio 解析开始即恢复原数组和 descriptor，早于可重入的权限诊断；
+提前失败也必须恢复。传播使用实际归一化输入，不依赖环境 clone 的可见副作用。原生创建前
+再以可信无副作用命令和无效 stdin descriptor 执行 builtin 权限检查，只接受未创建子进程的
+EBADF/pid0 结果，强制拒绝保留原 Node 错误，audit-only 保留审计语义；未知结果拒绝启动。
+该检查不执行观察子进程。实际 pipe transport
+错误和创建收尾错误独立保留，Operation 取消或到期选择主因时仍携带这些清理错误。
 
 取消、期限、输出超限或通道失败先封闭 Job 的新进程准入，再终止 Job，等待实际捕获的
 原进程对象、已封闭 Job 的零 active 成员及真实管道关闭。捕获对象的 signaled 见证

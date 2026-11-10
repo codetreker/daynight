@@ -59,11 +59,13 @@ IPC disconnect.
 
 The shared native boundary lives in `platform/windows-job.ts` and uses the
 existing dynamically loaded `koffi` dependency. Platform owned-command modules
-hold the common guardian, receipt, pipes and Job lifecycle; review adapters keep
-their strict stop and retained-owner policy. The
+share the completion contract and Job lifecycle. The review Node backend keeps
+its guardian, structured target receipt, inherited pipes and strict stop/retain
+policy. The
 [repository Git ownership decision](2026-11-10-repository-git-windows-job-ownership.md)
-uses that platform with separate admission sealing, natural release and terminal
-failure cleanup. Those policies do not replace review's completion contract.
+uses native suspended creation and named-pipe transport with separate admission
+sealing, natural release and terminal failure cleanup. Those policies do not
+replace review's completion contract.
 The Bot Job lease reuses the native boundary without adopting either command
 completion protocol. The older unowned review helper retains its ancestry checks
 and diagnostics independently.

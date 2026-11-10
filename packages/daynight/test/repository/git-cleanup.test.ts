@@ -1,5 +1,6 @@
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { performance } from "node:perf_hooks";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -150,15 +151,15 @@ describe("Windows Git owned-command confirmation", () => {
 
 const controlledOwner = (receipt: WindowsTargetReceipt | undefined, output = Buffer.alloc(0)) => {
   const stdout = new PassThrough(), stderr = new PassThrough();
-  let close!: () => void;
-  const closed = new Promise<void>(resolve => { close = resolve; });
+  let close!: () => void, rejectClose!: (error: unknown) => void;
+  const closed = new Promise<void>((resolve, reject) => { close = resolve; rejectClose = reject; });
   const start = vi.fn(async () => { stdout.end(output); stderr.end(); close(); });
   const stop = vi.fn(async () => {});
   const release = vi.fn(async () => { boundary.options!.onReleased!(); });
   const owner: WindowsOwnedCommand = { stdin: null, stdout, stderr, result: receipt, closed, start, stop, release };
   boundary.owner = owner;
   vi.stubGlobal("process", new Proxy(nativeProcess, { get: (target, key, receiver) => key === "platform" ? "win32" : Reflect.get(target, key, receiver) }));
-  return { owner, start, stop, release, close, stdout, stderr };
+  return { owner, start, stop, release, close, rejectClose, stdout, stderr };
 };
 
 describe("Windows Git target results and settlement", () => {
@@ -235,6 +236,102 @@ describe("Windows Git target results and settlement", () => {
       expect(fixture.start).toHaveBeenCalledOnce(); expect(fixture.stop).toHaveBeenCalledOnce(); expect(fixture.release).not.toHaveBeenCalled();
       expect(operation.signal.aborted).toBe(false);
     } finally { operation.dispose(); }
+  });
+
+  it.each(["start", "closed before start"] as const)("keeps the command deadline and native cause when %s rejects after it before timer dispatch", async rejection => {
+    const fixture = controlledOwner(undefined), native = new Error("Original native admission failure");
+    const operation = createOperation({ limits: { totalMs: 1000 } });
+    let now = performance.now(), timerDispatched = false;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const timer = setTimeout(() => { timerDispatched = true; }, 0);
+    fixture.start.mockImplementation(async () => {
+      now = boundary.options!.deadline + 1;
+      if (rejection === "closed before start") fixture.rejectClose(native);
+      throw native;
+    });
+    try {
+      const error: unknown = await runRepositoryGit(".", ["version"], operation, { timeoutMs: 50 }).catch((failure: unknown) => failure);
+      expect(timerDispatched).toBe(false);
+      expect(error).toBeInstanceOf(RepositoryGitError);
+      expect((error as Error).message).toContain("Repository Git command deadline exceeded");
+      expect((error as Error).cause).toBe(native);
+      expect(operation.signal.aborted).toBe(false); expect(() => operation.check()).not.toThrow();
+      expect(fixture.stop).toHaveBeenCalledOnce(); expect(fixture.release).not.toHaveBeenCalled();
+    } finally { clearTimeout(timer); clock.mockRestore(); fixture.stdout.destroy(); fixture.stderr.destroy(); operation.dispose(); }
+  });
+
+  it.each(["cancellation", "total deadline"] as const)("keeps the original Operation %s above a late native rejection", async reason => {
+    const fixture = controlledOwner(undefined), native = new Error("Original native admission failure");
+    const controller = new AbortController(), operation = createOperation({ signal: controller.signal, limits: { totalMs: 1000 } });
+    let now = performance.now();
+    const started = now, clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    fixture.start.mockImplementation(async () => {
+      now = reason === "total deadline" ? started + 1001 : boundary.options!.deadline + 1;
+      if (reason === "cancellation") controller.abort(new Error("Caller cancellation remains primary"));
+      throw native;
+    });
+    try {
+      const error: unknown = await runRepositoryGit(".", ["version"], operation, { timeoutMs: 50 }).catch((failure: unknown) => failure);
+      expect(error).toBe(operation.signal.reason);
+      expect(error).toMatchObject({ name: "OperationError", kind: reason === "cancellation" ? "cancelled" : "deadline" });
+      expect(fixture.stop).toHaveBeenCalledOnce(); expect(fixture.release).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); fixture.stdout.destroy(); fixture.stderr.destroy(); operation.dispose(); }
+  });
+
+  it.each([
+    { rejection: "start", reason: "cancellation" },
+    { rejection: "closed before start", reason: "cancellation" },
+    { rejection: "start", reason: "total deadline" },
+    { rejection: "closed before start", reason: "total deadline" },
+  ] as const)("retains creation cleanup from $rejection with the original Operation $reason", async ({ rejection, reason }) => {
+    const fixture = controlledOwner(undefined), cleanup = new Error("Creation attribute teardown failed");
+    const creationFailure = new WindowsCommandCleanupError([cleanup]);
+    const controller = new AbortController(), operation = createOperation({ signal: controller.signal, limits: { totalMs: 1000 } });
+    let now = performance.now();
+    const started = now, clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    fixture.start.mockImplementation(async () => {
+      now = reason === "total deadline" ? started + 1001 : boundary.options!.deadline + 1;
+      if (rejection === "closed before start") fixture.rejectClose(creationFailure);
+      if (reason === "cancellation") controller.abort(new Error("Caller cancellation remains primary"));
+      throw creationFailure;
+    });
+    try {
+      const error: unknown = await runRepositoryGit(".", ["version"], operation, { timeoutMs: 50 }).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toEqual([cleanup]);
+      expect((error as AggregateError).errors[0]).toBe(cleanup);
+      expect((error as AggregateError).cause).toBe(operation.signal.reason);
+      expect((error as AggregateError).cause).toMatchObject({ name: "OperationError", kind: reason === "cancellation" ? "cancelled" : "deadline" });
+      expect(fixture.stop).toHaveBeenCalledOnce(); expect(fixture.stop).toHaveResolved(); expect(fixture.release).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); fixture.stdout.destroy(); fixture.stderr.destroy(); operation.dispose(); }
+  });
+
+  it("deduplicates the same cleanup object across closed, start and STOP without merging distinct native errors", async () => {
+    const fixture = controlledOwner(undefined), cleanup = new Error("Native cleanup failed"), distinctCleanup = new Error("Native cleanup failed");
+    const creationFailure = new WindowsCommandCleanupError([cleanup]);
+    fixture.start.mockImplementation(async () => { fixture.rejectClose(creationFailure); throw creationFailure; });
+    fixture.stop.mockRejectedValue(new WindowsCommandCleanupError([cleanup, distinctCleanup]));
+    const operation = createOperation();
+    try {
+      const error: unknown = await runRepositoryGit(".", ["version"], operation).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toEqual([cleanup, distinctCleanup]);
+      expect((error as AggregateError).errors[0]).toBe(cleanup); expect((error as AggregateError).errors[1]).toBe(distinctCleanup);
+      expect(((error as AggregateError).cause as Error).cause).toBe(creationFailure);
+      expect(fixture.stop).toHaveBeenCalledOnce(); expect(fixture.release).not.toHaveBeenCalled();
+    } finally { fixture.stdout.destroy(); fixture.stderr.destroy(); operation.dispose(); }
+  });
+
+  it("keeps an ordinary launch error as the primary cause without classifying it as cleanup uncertainty", async () => {
+    const fixture = controlledOwner(undefined), launchFailure = new Error("Ordinary launch failed");
+    fixture.start.mockRejectedValue(launchFailure);
+    const operation = createOperation();
+    try {
+      const error: unknown = await runRepositoryGit(".", ["version"], operation).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(RepositoryGitError); expect(error).not.toBeInstanceOf(AggregateError);
+      expect((error as Error).cause).toBe(launchFailure);
+      expect(fixture.stop).toHaveBeenCalledOnce(); expect(fixture.release).not.toHaveBeenCalled();
+    } finally { fixture.stdout.destroy(); fixture.stderr.destroy(); operation.dispose(); }
   });
 
   it("does not STOP released background work when OFF close fails or cancellation arrives after commit", async () => {
