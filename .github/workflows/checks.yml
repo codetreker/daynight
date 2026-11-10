@@ -625,7 +625,7 @@ jobs:
         timeout-minutes: 3
       - name: Install the locked product E2E Chromium browser
         timeout-minutes: 4
-        run: pnpm --filter @codetreker/daynight-e2e exec playwright install --with-deps chromium
+        run: pnpm --filter @codetreker/daynight-e2e exec playwright install chromium
       - name: Verify product E2E types
         timeout-minutes: 1
         run: pnpm --filter @codetreker/daynight-e2e typecheck
