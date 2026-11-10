@@ -338,7 +338,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     for (const workspace of herdr) { recordOwner(workspace.owner); proven.add(key(workspace.owner)); }
     for (const task of options.webStore?.listUnfinishedTasks() ?? []) { recordOwner(task); proven.add(key(task)); }
-    const independentOwners = [...currentClaims, ...nativeOwners, ...herdr.map(item => item.owner), ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
+    // Closing a workspace does not confirm process stop; its original owner
+    // and execution path still constrain quarantine ownership.
+    const stopping = pendingStops().map(stop => stop.context);
+    const independentOwners = [...currentClaims, ...nativeOwners, ...herdr.map(item => item.owner), ...stopping, ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
     const provenQuarantine = async (owner: ResourceOwner, scannedProject: WorkerProject): Promise<boolean> => {
       const matches = independentOwners.filter(other => key(other) === key(owner));
       const mapping = options.store.getProject(owner);
@@ -360,6 +363,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (records.some(record => record.owner.worktreeId !== owner.worktreeId)) return false;
         nativePaths = records.map(record => record.worktreePath);
       }
+      nativePaths.push(...stopping.filter(context => key(context) === key(owner)).map(context => context.cwd));
       for (const nativePath of nativePaths) {
         if (!path.isAbsolute(nativePath)) return false;
         const original = await resolvePhysicalDirectory(nativePath);
