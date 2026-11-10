@@ -72,7 +72,7 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4, a5)
 		},
-		Connect: func(a0 context.Context, a1 string, a2 sp.ControllerMessage, a3 string) (sp.Snapshot, error) {
+		Connect: func(a0 context.Context, a1 string, a2 sp.ControllerMessage, a3 string, a4 int) (sp.Snapshot, error) {
 			b.mu.Lock()
 			fn := b.Funcs.Connect
 			b.mu.Unlock()
@@ -80,7 +80,7 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 				var result0 sp.Snapshot
 				return result0, err
 			}
-			return fn(a0, a1, a2, a3)
+			return fn(a0, a1, a2, a3, a4)
 		},
 		Current: func(a0 context.Context, a1 model.Principal, a2 string, a3 string) (map[string]any, error) {
 			b.mu.Lock()

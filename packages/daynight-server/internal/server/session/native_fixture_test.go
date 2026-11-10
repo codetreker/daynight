@@ -132,9 +132,13 @@ func (f *sessionHTTPFixture) ControllerWrite(t *testing.T, conn *websocket.Conn,
 	sessionWSWrite(t, conn, message)
 }
 
-func (f *sessionHTTPFixture) controller(t *testing.T, epoch string) (*websocket.Conn, sp.Snapshot) {
+func (f *sessionHTTPFixture) controller(t *testing.T, epoch string, contentVersions ...int) (*websocket.Conn, sp.Snapshot) {
 	t.Helper()
 	token := f.grant.Token
+	contentVersion := 0
+	if len(contentVersions) > 0 {
+		contentVersion = contentVersions[0]
+	}
 	snapshot := routeCopy(f.snapshot)
 	number, err := strconv.ParseInt(snapshot.ConnectionEpoch, 10, 64)
 	if err != nil {
@@ -151,8 +155,8 @@ func (f *sessionHTTPFixture) controller(t *testing.T, epoch string) (*websocket.
 		calls.AuthenticateController = func(ctx context.Context, actual string) error {
 			return f.require(ctx != nil && actual == token, "AuthenticateController changed native token")
 		}
-		calls.Connect = func(ctx context.Context, actual string, decoded sp.ControllerMessage, instance string) (sp.Snapshot, error) {
-			if err := f.require(ctx != nil && actual == token && decoded.Type == "hello" && decoded.Protocol == hello.Protocol && decoded.Fence == hello.Fence && decoded.ControllerID == hello.ControllerID && decoded.ControllerInstanceID == hello.ControllerInstanceID && decoded.Provider == hello.Provider && decoded.SourceEpoch == epoch && decoded.LastAckedSourceSeq == "0" && decoded.SchemaVersion == 1 && decoded.ProjectionVersion == 1 && bytes.Equal(decoded.Raw, helloWire) && instance != "", "Connect changed decoded hello, grant or Routes instance"); err != nil {
+		calls.Connect = func(ctx context.Context, actual string, decoded sp.ControllerMessage, instance string, actualVersion int) (sp.Snapshot, error) {
+			if err := f.require(ctx != nil && actualVersion == contentVersion && actual == token && decoded.Type == "hello" && decoded.Protocol == hello.Protocol && decoded.Fence == hello.Fence && decoded.ControllerID == hello.ControllerID && decoded.ControllerInstanceID == hello.ControllerInstanceID && decoded.Provider == hello.Provider && decoded.SourceEpoch == epoch && decoded.LastAckedSourceSeq == "0" && decoded.SchemaVersion == 1 && decoded.ProjectionVersion == 1 && bytes.Equal(decoded.Raw, helloWire) && instance != "", "Connect changed decoded hello, grant or Routes instance"); err != nil {
 				return sp.Snapshot{}, err
 			}
 			f.mu.Lock()
@@ -187,7 +191,11 @@ func (f *sessionHTTPFixture) controller(t *testing.T, epoch string) (*websocket.
 		f.nextCall(name)
 	}
 	f.backend.AllowRepeated("Poll")
-	conn := sessionDial(t, f.server.URL, "/api/v1/controller-channel", token, nil)
+	header := make(http.Header)
+	if contentVersion != 0 {
+		header.Set("X-Daynight-Content-Read-Version", strconv.Itoa(contentVersion))
+	}
+	conn := sessionDial(t, f.server.URL, "/api/v1/controller-channel", token, header)
 	f.ControllerWrite(t, conn, hello)
 	frame := sessionWSKind(t, conn, "welcome")
 	actual, err := sp.DecodeSnapshot(frame["session"])

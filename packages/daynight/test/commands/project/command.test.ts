@@ -23,6 +23,7 @@ const fixture = (projects: readonly Project[] = []) => {
     readTaskSessionOperation: async () => { throw new Error("Unexpected operation read"); },
     sendTaskSessionCommand: async () => { throw new Error("Unexpected Session send"); },
     inspectTaskSession: unavailable, getObservedTask: unavailable, listObservedTasks: unavailable, getObservedTaskGraph: unavailable, listTaskWork: unavailable,
+    currentTaskSession: unavailable, listTaskSessions: unavailable, readTaskSession: unavailable, readTaskSessionEntry: unavailable,
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: unavailable,

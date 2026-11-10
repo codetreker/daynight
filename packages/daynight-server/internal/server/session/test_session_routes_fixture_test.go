@@ -142,7 +142,7 @@ func (f *testSessionRouteFixture) controller(t *testing.T, snapshot, connected s
 			f.argument(ctx != nil && ctx.Err() == nil && token == grant.Token, "controller authentication")
 			return nil
 		}
-		c.Connect = func(ctx context.Context, token string, actual sp.ControllerMessage, instance string) (sp.Snapshot, error) {
+		c.Connect = func(ctx context.Context, token string, actual sp.ControllerMessage, instance string, contentReadVersion int) (sp.Snapshot, error) {
 			nonce, err := uuid.Parse(instance)
 			f.argument(ctx != nil && ctx.Err() == nil && token == grant.Token && actual.Type == "hello" && actual.Protocol == hello.Protocol && actual.Fence == hello.Fence && actual.ConnectionEpoch == "" && actual.SchemaVersion == 1 && actual.ProjectionVersion == 1 && actual.ControllerID == hello.ControllerID && actual.ControllerInstanceID == hello.ControllerInstanceID && actual.Provider == hello.Provider && actual.SourceEpoch == hello.SourceEpoch && actual.LastAckedSourceSeq == "0" && bytes.Equal(actual.Raw, helloWire) && err == nil && nonce.String() == instance, "controller hello/instance")
 			f.mu.Lock()

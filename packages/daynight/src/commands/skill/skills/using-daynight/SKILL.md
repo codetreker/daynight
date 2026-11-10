@@ -20,7 +20,7 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
 
-The CLI supports project registration and lookup, task creation, search and filtering, Task and chain Session observations, authorized Task Session messages and original-operation recovery, grouped in-progress work, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, Webhook management, and worker-managed execution.
+The CLI supports project registration and lookup, task creation, search and filtering, Task and chain Session observations, grouped in-progress work, explicit Session inspection and bounded history reads, authorized Task Session messages and original-operation recovery, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, Webhook management, and worker-managed execution.
 Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
 
 ## Setup and CLI
@@ -44,6 +44,7 @@ Read only the files and required references for the current operation, not every
 | Read and maintain ordered Task Steps | [Task management](references/task-management.md#task-steps): operations and identities; [task execution](references/task-execution.md#maintain-steps): project-defined maintenance |
 | Query tasks, edit metadata, properties, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
 | Locate Sessions and assess Task or chain activity | [Session observations](references/task-management.md#session-observations): independent status and send eligibility, freshness, partial results and grouped pagination |
+| Inspect a specific Session or read recent and earlier history | [Session inspection and history](references/session-intervention.md): current and historical identities, Web messages, Herdr limits, page cursors and complete-entry blocks |
 | Send an authorized message to a specific Task Session or recover its original result | [Session intervention](references/session-intervention.md): explicit targets, ordinary messages, durable operation identity and query-only recovery |
 | Read or post task discussion | [Task management](references/task-management.md#discussion-threads): bounded pages, author attribution, replies and read continuity |
 | Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |

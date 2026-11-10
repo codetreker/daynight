@@ -221,7 +221,8 @@ func (s *Execution) SetArchivePreflight(run ArchivePreflightRunner) { s.archiveP
 // Its result is only a permit key: the actual operation repeats all access checks.
 func (op *Operation) ArchivePreflight(ctx context.Context, scope store.SessionScope, p model.Principal, project, taskID, id string, mode ArchiveMode) (string, error) {
 	dao := scope.SessionDAO()
-	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
+	taskRead := project != "" && taskID != "" && mode == ArchiveV1Read
+	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && !(p.Kind == model.OAuthCredential && taskRead) {
 		return "", denied()
 	}
 	if err := dao.ReadCredential(ctx, p, op.engine.now()); err != nil {

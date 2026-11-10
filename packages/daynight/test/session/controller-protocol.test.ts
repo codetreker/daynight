@@ -51,3 +51,23 @@ it("validates online content messages, bounded resource chunks and live synchron
   expect(() => parseControllerMessage({ ...response, error: { code: "offline", message: "Offline" } })).toThrow();
   expect(parseRelayMessage({ ...fence, type: "sync_ack" })).toEqual({ ...fence, type: "sync_ack" });
 });
+
+it("keeps inspection pages and entry chunks separate from the existing display protocol", () => {
+  const fence = { protocol: "daynight.session.v1", sessionId: id, claimId: id, executionGeneration: "1", connectionEpoch: "1" };
+  const pageRequest = { ...fence, type: "content_request", requestId: id, kind: "inspect_page", historyEpoch: id, cursor: null, limit: 20, responseOverhead: 4096 };
+  expect(parseRelayMessage(pageRequest)).toEqual(pageRequest);
+  for (const change of [{ limit: 201 }, { responseOverhead: 262144 }, { direction: "tail" }]) expect(() => parseRelayMessage({ ...pageRequest, ...change })).toThrow();
+  const entry = { entryId: id, entrySeq: "1", revision: "1", kind: "reasoning", text: "original" };
+  const page = { kind: "inspect_page", historyEpoch: id, items: [{ entryId: id, entrySeq: "1", revision: "1", kind: "reasoning", role: null, timestamp: null, body: entry, truncated: false, contentRef: null, resources: [], resourcesTruncated: false }], beforeCursor: null, hasMoreBefore: false, coverage: { state: "partial", reason: "resource_unavailable" } };
+  const response = { ...fence, type: "content_response", requestId: id, sourceThrough: "1", result: page, error: null };
+  expect(parseControllerMessage(response)).toEqual(response);
+  expect(() => parseControllerMessage({ ...response, result: { ...page, items: [{ ...page.items[0], truncated: true }] } })).toThrow();
+  expect(() => parseControllerMessage({ ...response, result: { ...page, items: [{ ...page.items[0], body: { ...entry, entryId: "00000000-0000-4000-8000-000000000002" } }] } })).toThrow();
+  const cursor = "a".repeat(700);
+  const chunkRequest = { ...fence, type: "content_request", requestId: id, kind: "entry_chunk", historyEpoch: id, cursor, limit: 32768 };
+  expect(parseRelayMessage(chunkRequest)).toEqual(chunkRequest);
+  expect(() => parseRelayMessage({ ...chunkRequest, limit: 32769 })).toThrow();
+  const chunk = { kind: "entry_chunk", historyEpoch: id, entryId: id, revision: "1", sha256: "a".repeat(64), byteLength: "6", offset: "0", fragment: "原文", nextCursor: null, eof: true };
+  expect(parseControllerMessage({ ...response, result: chunk })).toEqual({ ...response, result: chunk });
+  for (const change of [{ fragment: "😀".repeat(8193) }, { fragment: "\ud800" }, { eof: false }, { byteLength: "5" }, { offset: "7" }]) expect(() => parseControllerMessage({ ...response, result: { ...chunk, ...change } })).toThrow();
+});

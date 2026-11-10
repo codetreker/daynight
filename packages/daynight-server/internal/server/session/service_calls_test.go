@@ -29,7 +29,7 @@ func TestCallsFromServiceKeepsDirectBindings(t *testing.T) {
 		"AuthenticateController":     service.AuthenticateController,
 		"BindTerminalConnection":     service.BindTerminalConnection,
 		"BrowserPoll":                service.BrowserPoll,
-		"Connect":                    service.Connect,
+		"Connect":                    service.ConnectWithContentRead,
 		"Current":                    service.Current,
 		"CurrentTerminal":            service.CurrentTerminal,
 		"CurrentWithStartup":         service.CurrentWithStartup,

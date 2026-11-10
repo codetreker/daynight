@@ -32,6 +32,7 @@ const relayWriteTimeout = 5 * time.Second
 const relayMaxConnections = 1024
 
 type Routes struct {
+	history         HistoryReader
 	service         serviceCalls
 	auth            *authhttp.RequestAuthentication
 	logger          *slog.Logger
@@ -47,7 +48,7 @@ type Routes struct {
 	drainErr        error
 }
 
-func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger *slog.Logger) *Routes {
+func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger *slog.Logger, history ...HistoryReader) *Routes {
 	if s != nil && auth != nil {
 		s.SetOrigin(auth.Origin())
 	}
@@ -55,7 +56,11 @@ func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger 
 	if auth != nil {
 		requestAuth = auth.RequestAuthentication
 	}
-	return newRoutes(callsFromService(s), requestAuth, logger)
+	routes := newRoutes(callsFromService(s), requestAuth, logger)
+	if len(history) > 0 {
+		routes.history = history[0]
+	}
+	return routes
 }
 
 func newRoutes(service serviceCalls, auth *authhttp.RequestAuthentication, logger *slog.Logger) *Routes {
@@ -123,6 +128,10 @@ func (h *Routes) Parameters(next httpx.AuthenticatedHandler) httpx.Authenticated
 				}
 				r.SetPathValue(name, id)
 			}
+		}
+		if r.Method == http.MethodGet && r.PathValue("sessionId") == "" && r.URL.Query().Has("view") && (strings.HasSuffix(r.URL.Path, "/sessions") || strings.HasSuffix(r.URL.Path, "/sessions/current")) {
+			h.inspectionDirectory(w, r, p, strings.HasSuffix(r.URL.Path, "/current"))
+			return
 		}
 		protocol, err := selectedSessionProtocol(r)
 		if err != nil {
@@ -541,6 +550,11 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 		h.Failure(w, r, err)
 		return
 	}
+	readVersion, err := contentReadVersion(r)
+	if err != nil {
+		h.Failure(w, r, err)
+		return
+	}
 	if err = h.origin(r, false); err != nil {
 		h.Failure(w, r, err)
 		return
@@ -561,7 +575,7 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 	if err != nil || hello.Type != "hello" {
 		return
 	}
-	snapshot, err := h.service.Connect(ctx, token, hello, h.instance)
+	snapshot, err := h.service.Connect(ctx, token, hello, h.instance, readVersion)
 	if err != nil {
 		return
 	}
