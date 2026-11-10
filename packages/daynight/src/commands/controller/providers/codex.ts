@@ -4,6 +4,7 @@ import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js"
 import { codexNativeHome } from "./codex-settings-metadata.js";
 import { CodexInterruptions } from "./codex-interruptions.js";
 import { CodexControls } from "./controls-codex.js";
+import { CodexReadAuthority } from "./codex-read-authority.js";
 import { persistCodexInitialSettings } from "./codex-initial-settings.js";
 import { CodexErrors } from "./codex-errors.js";
 import { codexApprovalDetail } from "./codex-approval-detail.js";
@@ -22,11 +23,13 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
   const executable = options.executable ?? "codex";
   const childEnvironment = { ...(options.env ?? process.env) };
+  if (options.onNativeReadPolicy) childEnvironment.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const nativeHome = codexNativeHome(childEnvironment, options.cwd);
   const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
   let projection: CodexProjection;
+  let authority: CodexReadAuthority | undefined;
   const interruptions = new CodexInterruptions(() => nativeId, options.onTimeline, options.hasTimelineEntry);
   const completing = new Set<string>();
   const terminalProjections = new Set<Promise<void>>();
@@ -102,7 +105,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`));
     if (!currentTurnId || turn.id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); }
   };
-  const rpc = new NativeRpc(child, message => {
+  const transport = new NativeRpc(child, message => {
+    authority?.observe(string(message.method), message.params);
     if (message.id !== undefined) { request(message); return; }
     const method = string(message.method), p = record(message.params);
     if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
@@ -137,7 +141,13 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "serverRequest/resolved") for (const [id, value] of pending) if (value.nativeId === p.requestId) { value.interaction = { ...value.interaction, state: "resolved", revision: "2" }; showInteraction(value); pending.delete(id); value.settled?.(); state(); }
     if (method === "error") { errors.notification(p, nativeId, currentTurnId); if (awaitingInitialSettings) initialSettingsAbort.abort(new Error("Native Codex rejected initial settings asynchronously.")); }
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
-  });
+  }, 30_000, () => authority?.invalidate());
+  const rpc = {
+    request: (method: string, params: unknown) => authority ? authority.request(method, params) : transport.request(method, params),
+    notify: transport.notify.bind(transport), respond: transport.respond.bind(transport), reject: transport.reject.bind(transport), dispose: transport.dispose.bind(transport),
+  };
+  if (options.onNativeReadPolicy) authority = new CodexReadAuthority({ cwd: options.cwd, request: transport.request.bind(transport), publish: options.onNativeReadPolicy,
+    ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}) });
   controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor);
   child.once("close", () => {
     initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
@@ -147,7 +157,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     currentTurnId = null; activity = closing ? "stopped" : "unknown"; expire(); state();
     if (!closing) options.onFatalError?.(error);
   });
-  const close = async () => {
+  const stop = async () => {
     initialSettingsAbort.abort(new Error("Native Codex stopped before initial settings persistence was confirmed."));
     closing = true; controls.close();
     if (closed) { rpc.dispose(); await Promise.all(terminalProjections); return; }
@@ -160,14 +170,25 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       await Promise.all(terminalProjections);
     }
   };
+  const close = async () => {
+    closing = true; authority?.invalidate();
+    try { await options.drainNativeReadPolicy?.(); }
+    finally { await stop(); }
+  };
   try {
-    await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } }); rpc.notify("initialized");
+    const initialized = await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } }); rpc.notify("initialized");
+    let remoteControl: unknown = null;
+    if (authority && CodexReadAuthority.supports(initialized)) {
+      try { remoteControl = await rpc.request("remoteControl/status/read", {}); }
+      catch { authority.invalidate(); }
+    }
     const aliasOverrides = options.agentCliEnvironment
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
     const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...(!options.resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}), ...aliasOverrides } }));
     const thread = record(response.thread); nativeId = string(thread.id);
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
+    authority?.install({ initialized, remoteControl, response, nativeSessionId: nativeId, nativeCwd: string(thread.cwd) });
     controls.seed({ ...response, ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}) });
     await controls.refresh();
     if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) });

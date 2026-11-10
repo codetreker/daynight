@@ -1,6 +1,6 @@
 # Session 图片来源采集设计
 
-本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。Controller 包含来源解析、持久投影、采集协调、本地句柄 reader 和专用 HTTP(S) transport，并复用公共 capture、媒体预算和不可变资源存储。真实 runtime 尚未取得原生读取权限与部署出口的可信证明，默认拒绝新的本地和外部来源 IO；这些模块的存在不表示完整来源能力或安全验收已经完成。
+本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。Controller 包含来源解析、持久投影、采集协调、本地句柄 reader 和专用 HTTP(S) transport，并复用公共 capture、媒体预算和不可变资源存储。本地来源按精确 Provider 能力逐次取得原生读取许可；未支持的配置和缺少部署出口证明的外部来源拒绝新 IO。模块存在或某一 profile 可用，不表示完整来源验收已经完成。
 
 [历史规格](../spec/session-image-history.md)拥有所需显示、原内容和权限结果；[公共合同](session-image-contracts.md)拥有 ImageLocator、ImageOccurrence、capture/read/retry DTO、错误与存储，本文不另建协议或数据库。[Provider 设计](session-image-providers.md)提供可信原生来源，[浏览器设计](session-image-browser.md)负责渲染和预览，[归档设计](session-image-archives.md)负责封存、读取与清理。[来源决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-sources.md)保留替代方案及代价。
 
@@ -22,10 +22,20 @@
 
 当前能力有以下未完成条件，不能据此缩小[验收规格](../spec/session-image-acceptance.md)：
 
-- 真实 runtime 没有向 coordinator 提供 `nativeReadPolicy`。私有策略调用点消费 context 与 helper 的来源 checkpoint；来源证明可以描述实际打开对象，但不能自行证明原生已允许该路径、链接目标和当前读取。真实 Provider 的完整有效读策略适配仍未实现；`permissionMode`、sandbox/profile 名、同用户可读或一次工具读取不能代替该证明。本地来源因此返回 `policy_restricted`，不把测试中的允许策略用于真实原生会话。
+- Codex 的真实 runtime 只为下述 0.167.0 本地能力子集提供 `nativeReadPolicy`；不支持的版本、权限配置或 hooks 状态返回 `policy_restricted`。Claude 与 Copilot 的完整原生授权适配尚未交付。来源证明、`permissionMode`、启动时的 sandbox/profile 文案、同用户可读或一次工具读取均不能替代有效原生判定。
 - 真实 runtime 没有提供 `externalPolicy`，也没有取得部署级出口隔离证明。外部来源因此返回 `policy_restricted`。受控网络测试可注入 `controlledNetworkBoundary` 和 CA，但该配置不证明真实部署已阻断透明路由到本机、内网和元数据。
 
-这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此开放真实自动采集或声明端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
+这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此声明真实 Provider 或端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
+
+### 原生单次读取准入
+
+Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd 和当前 authority 实例。`verify()` 只同步核对实例、连接和本地失效状态，不授予读取；`authorizeCheckpoint(checkpoint)` 异步取得该 checkpoint 的原生决定。coordinator 在等待前后核对同一 policy 对象、Session、执行身份和 Daynight fence；helper 每次只等待一个 checkpoint，拒绝或取消后，迟到答复不再发送 continue。新 attempt 使用当时有效的 policy，原正文 context 的 policy revision 仅保存来源时的观察，不能充当永久许可。
+
+`initial`、`opened`、每个 `block` 和 `final` 都独立判定，不预取或缓存允许结果。原生判定已经准入的单次操作可以完成；其后生效的原生拒绝约束下一次判定。Daynight 的账户、Session、执行或发布 fence 失效则立即阻止迟到结果继续读取或发布，不能用早先的原生允许恢复该 scope。Controller 自己发出的原生权限变化仍采用先同步失效、取消并 join writer，再发送原生变更的保守顺序。该区别及替代方案见[单次授权决策](../../.agents/notes/implemented/architecture/2026-11-10-single-checkpoint-native-read-authority.md)。
+
+[Codex authority](../../packages/daynight/src/commands/controller/providers/codex-read-authority.ts) 只接受实际 initialize 返回的 0.167.0 版本、Provider 独占的 stdio 进程、明确 disabled 的 remote control，以及原生 start/resume 已解析的同一 thread/cwd、`dangerFullAccess`、`activePermissionProfile=null`、`approvalPolicy=never` 和唯一同根 local environment。这组原生事实在该精确实现中证明 FS 不再额外缩小导出根；它不扩大 A3 的根或 OS 权限，也不为图片改变用户 sandbox。版本依赖可信 Provider executable 的原生响应，不是生产二进制签名或指纹验证。
+
+进程使用 0.167.0 的 `CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED` 关闭独立控制面，并读回真实状态。每个 checkpoint 再调用线程绑定的 `hooks/list`，只接受完整已知结构、同 cwd、没有 warnings/errors 且没有 enabled `PreToolUse` 的结果；不解释用户 hook 的脚本或 matcher，也不关闭它。后台新增 hook 不能被启动时的空列表掩盖，下一次查询必须重新判断。未知版本、格式、相关限制、协议失败或无法确认的变化均关闭本次 authority；关闭后同一 execution 不自动重开，原生进程重建须重新取得完整事实。RPC 设置变化、native 生命周期及同步 transport failure 走同一失效入口。
 
 ## 来源与出现的职责
 
@@ -139,7 +149,7 @@ realpath 仅用于诊断或选择候选根，不能作随后字符串 open 的�
 
 helper 将本次真实遍历产生的来源证明交给策略消费者：原 locator 与一次解码后的路径、已持有根的身份、组件及链接/reparse 展开记录和最终打开对象身份。证明来自执行打开操作的句柄遍历，不用另一次 `realpath` 猜测来源；路径随后变化也不能将其替换为另一个对象的证明。该数据只在 helper 与 Controller 内部使用，不写入 Session journal、timeline 或对外错误。
 
-`LocalImageCheckpoint` 的顺序为 `initial`、`opened`、一个或多个 `block`、`final`；initial 尚无最终来源对象，opened 的策略检查先于任何来源内容读取。父进程在放行前核验 checkpoint 的结构、关联、阶段顺序及证明稳定性，block/final 必须保留 opened 的同一来源。字符串必须为合法 Unicode、无控制字符且最多 8192 UTF-8 bytes；每个根或来源遍历集合最多 4096 条记录、编码最多 262144 bytes，包含消息类型的整个 checkpoint JSON 也最多 262144 bytes。追加遍历记录时即检查界限，发送及内容读取前再次核验完整证明；越限、失配或拒绝均停止来源读取。异步策略检查期间取消，仍须等 helper 真正退出，迟到检查成功不得继续 writer。证明传递及受控策略验证只建立消费机制，不能替代尚未交付的原生有效授权。
+`LocalImageCheckpoint` 的顺序为 `initial`、`opened`、一个或多个 `block`、`final`；initial 尚无最终来源对象，opened 的策略检查先于任何来源内容读取。父进程在放行前核验 checkpoint 的结构、关联、阶段顺序及证明稳定性，block/final 必须保留 opened 的同一来源。字符串必须为合法 Unicode、无控制字符且最多 8192 UTF-8 bytes；每个根或来源遍历集合最多 4096 条记录、编码最多 262144 bytes，包含消息类型的整个 checkpoint JSON 也最多 262144 bytes。追加遍历记录时即检查界限，发送及内容读取前再次核验完整证明；越限、失配或拒绝均停止来源读取。异步策略检查期间取消，仍须等 helper 真正退出，迟到检查成功不得继续 writer。证明传递本身不授予读取；实际 Provider 的单次原生判定必须覆盖该证明所描述的来源。Codex 无额外 FS 限制的子集覆盖整个可信导出根，路径型策略则还须证明其判定覆盖原路径及实际展开对象。
 
 ### 原件取得与本地资源界限
 
@@ -151,7 +161,11 @@ resolve/open 每次最多 5 秒，源复制最多 30 秒（含打开），解码
 
 source intent 先持久原 occurrence、destination、context、captureId/attemptId、phase、started、awaitingRetry 和冷却状态，再登记 `image_occurrences`；中断后由同一 intent 补登记并等待 `imageOccurrenceAcknowledged`。ACK 覆盖原正文位置后才通过公共 capture 桥 register，拿到 reserved 才执行 `reserveCaptureSource`。`CaptureSourceLease.runWriter` 交付调用方已创建、0600 的空私有普通文件；本地与外部 reader 都只写该文件，随后公共 `stageCapture` 完整验证并建立不可变 prepared 文件。运行中的 source writer、stage 和原预留由同一释放入口取消、join、刷盘删除后结算。
 
-`reserveCaptureSource` 在既有媒体账本预留来源与验证副本的最坏双份 10 MiB 空间，并使用媒体存储的 `tryAcquireMediaBlock()`。relay 的非解码媒体块也使用该入口，整个 Controller 合计最多两个槽；来源采集没有独立扩容的 semaphore。coordinator 最多两个活动来源，解析与来源索引每页最多 32 个身份，解码沿公共单 decoder 执行。`readCapture(input, acquirePolicy, deliver)` 在同步 policy lease 内读取并调用 `deliver`，再次验证到发送之间不跨 Promise continuation；权限撤销后不再交付新块。
+`reserveCaptureSource` 在既有媒体账本预留来源与验证副本的最坏双份 10 MiB 空间，并使用媒体存储的 `tryAcquireMediaBlock()`。relay 的非解码媒体块也使用该入口，整个 Controller 合计最多两个槽；来源采集没有独立扩容的 semaphore。coordinator 最多两个活动来源，解析与来源索引每页最多 32 个身份，解码沿公共单 decoder 执行。
+
+final 来源判定通过、helper 完成复制和校验、公共 decoder 成功且 Daynight scope 仍有效后，coordinator 才持久 `sourceAdmission`，绑定原 capture/source record、attempt、实际 policy revision、来源证明摘要和完整 `ValidatedImage`。原始路径遍历证明不持久化。中断后只有 stage 文件而没有匹配 admission，不能提交，也不重新读源；必须协调原 capture 的失败或未知结果。
+
+`readCapture(input, acquirePolicy, deliver)` 只传输 admission 所对应的不可变副本，逐次核对原 attempt、完整验证元数据和当前 Daynight scope，在同步 policy lease 内读取并调用 `deliver`，验证到发送之间不跨 Promise continuation。后来的原生源限制不重新授权、改写或删除已经合法取得的副本；Daynight 访问权限撤销仍立即拒绝新交付。新 attempt 或重新取源必须重新走原生准入。
 
 ## 外部 HTTP(S) 获取
 

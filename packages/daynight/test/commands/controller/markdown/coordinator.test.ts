@@ -13,7 +13,7 @@ import type { LocalImageCheckpoint } from "../../../../src/commands/controller/m
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void) => {
+const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void | Promise<void>) => {
   const base = path.resolve(import.meta.dirname, "../../../../../../.tmp/a3-coordinator-tests");
   await mkdir(base, { recursive: true }); const home = await mkdtemp(path.join(base, "c-"));
   const workspace = path.join(home, "workspace"); await mkdir(workspace);
@@ -27,7 +27,7 @@ const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void)
   journal.projectTimeline({ entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "markdown", text: body, partId, revision: "1", textSha256: occurrence.sourceTextSha256, complete: true, truncated: false, bindings: [{ imageId, start: 0, end: body.length, part: { type: "image_unavailable", imageId, label: "original", error: { code: "source_unavailable", message: "Not captured" } } }], retainedImages: [] }] });
   const bytes = await sharp({ create: { width: 8, height: 6, channels: 4, background: "blue" } }).png().toBuffer();
   await writeFile(path.join(workspace, "original.png"), bytes);
-  let receipt: ImageCaptureReceipt | null = null, loseRegister = false, allowed = true;
+  let receipt: ImageCaptureReceipt | null = null, loseRegister = false, allowed = true, writable = true;
   const calls: string[] = [], changes: ImageCaptureReceipt[] = [];
   const bridge = createControllerCaptureBridge({ journal, beforeCapture: async () => {}, provider: () => null, writable: () => true,
     capture: async (action, body) => {
@@ -38,7 +38,8 @@ const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void)
       if (action === "failed") receipt = { ...receipt, revision: String(BigInt(receipt.revision) + 1n), state: "failed", resourceId: null, error: (body as { error: { code: string; message: string } }).error };
       return receipt;
     } });
-  const coordinator = createMarkdownCaptureCoordinator({ ticket: currentTicket, journal, bridge: bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: () => ({ revision: "verified-test-policy", verify: (checkpoint?: LocalImageCheckpoint) => { if (!allowed) throw new Error("revoked"); if (checkpoint) checkSource?.(checkpoint); } }), onReceipt: (_request, value) => { changes.push(value); } });
+  let policy = { nativeSessionId: journal.getSnapshot().nativeSessionId!, cwd: workspace, revision: "verified-test-policy", verify: () => { if (!allowed) throw new Error("revoked"); }, authorizeCheckpoint: async (checkpoint: LocalImageCheckpoint) => { await checkSource?.(checkpoint); } };
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: currentTicket, journal, bridge: bridge.providerOptions, writable: () => writable, fence: () => "test-fence", nativeReadPolicy: () => policy, onReceipt: (_request, value) => { changes.push(value); } });
   cleanups.push(async () => { await coordinator.stop(); await journal.stopMedia(); journal.close(); });
   const context = coordinator.contextFor(occurrence);
   const committed = () => {
@@ -53,8 +54,47 @@ const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void)
     receipt = { ...receipt, attemptId, revision: String(BigInt(receipt.revision) + 1n), state: "reserved", resourceId: randomUUID(), resource: null, error: null };
     return attemptId;
   };
-  return { journal, coordinator, occurrence, context, calls, changes, bytes, home: workspace, committed, serviceRetry, setLost: () => { loseRegister = true; }, revoke: () => { allowed = false; } };
+  return { journal, coordinator, occurrence, context, calls, changes, bytes, home: workspace, committed, serviceRetry, setLost: () => { loseRegister = true; }, revoke: () => { allowed = false; }, revokeScope: () => { writable = false; }, replacePolicy: (patch: Partial<typeof policy>) => { policy = { ...policy, ...patch }; } };
 };
+
+test("an unresolved native checkpoint cannot advance source capture or late-commit after revocation", async () => {
+  let reached!: () => void, release!: () => void;
+  const opened = new Promise<void>(resolve => { reached = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const stages: string[] = [];
+  const f = await fixture(async checkpoint => { stages.push(checkpoint.stage); if (checkpoint.stage === "opened") { reached(); await pending; } });
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const work = f.coordinator.tick();
+  await Promise.race([opened, work]);
+  expect(stages).toEqual(["initial", "opened"]);
+  expect(f.calls).toEqual(["register"]);
+  f.revoke(); f.coordinator.invalidateNativeReadPolicy();
+  await f.coordinator.drainNativeReadPolicy(); await work;
+  release(); await Promise.resolve();
+  expect(f.calls).toEqual(["register", "failed"]);
+  const record = f.coordinator.get(f.occurrence.imageId)!;
+  expect(f.journal.media().captureStatus(record.request!.captureId, record.request!.attemptId)).toBeNull();
+});
+
+test.each(["nativeSessionId", "cwd"] as const)("a policy for another %s cannot authorize this source", async field => {
+  const f = await fixture();
+  f.replacePolicy({ [field]: field === "cwd" ? path.dirname(f.home) : randomUUID() });
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  await f.coordinator.tick();
+  expect(f.calls).toEqual(["register", "failed"]);
+  expect(f.coordinator.get(f.occurrence.imageId)?.error?.code).toBe("policy_restricted");
+});
+
+test("source authorization uses the current policy on an explicit service retry", async () => {
+  const f = await fixture();
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  await f.coordinator.tick();
+  f.serviceRetry(); await f.coordinator.tick();
+  f.replacePolicy({ revision: "new-native-authority" });
+  const request = f.coordinator.get(f.occurrence.imageId)!.request!;
+  const result = await f.coordinator.retry(request, new AbortController().signal);
+  expect(result.sha256).toBe(createHash("sha256").update(f.bytes).digest("hex"));
+});
 
 test("the source policy can refuse the actual opened object before capture validation", async () => {
   const stages: string[] = [];
@@ -88,8 +128,36 @@ test("the original position is acknowledged before source IO and copies remain i
   const validated = f.journal.media().captureStatus(record.request!.captureId, record.request!.attemptId)!;
   const chunk = await f.journal.media().readCapture({ captureId: record.request!.captureId, attemptId: record.request!.attemptId, ...validated, offset: "0", limit: 524288 }, f.coordinator.acquireReadPolicy);
   expect(Buffer.from(chunk.data, "base64")).toEqual(f.bytes);
-  f.revoke();
+  f.revokeScope();
   await expect(f.journal.media().readCapture({ captureId: record.request!.captureId, attemptId: record.request!.attemptId, ...validated, offset: "0", limit: 524288 }, f.coordinator.acquireReadPolicy)).rejects.toThrow();
+});
+
+test("later native source restrictions do not reauthorize or replace an admitted immutable copy", async () => {
+  const f = await fixture();
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); await f.coordinator.tick();
+  const record = f.coordinator.get(f.occurrence.imageId)!, request = record.request!;
+  const validated = f.journal.media().captureStatus(request.captureId, request.attemptId)!;
+  f.revoke(); await rm(path.join(f.home, "original.png"));
+  const chunk = await f.journal.media().readCapture({ captureId: request.captureId, attemptId: request.attemptId, ...validated, offset: "0", limit: 524288 }, f.coordinator.acquireReadPolicy);
+  expect(Buffer.from(chunk.data, "base64")).toEqual(f.bytes);
+  f.journal.markdownStore.put("source", f.occurrence.imageId, { ...record, sourceAdmission: null });
+  await expect(f.journal.media().readCapture({ captureId: request.captureId, attemptId: request.attemptId, ...validated, offset: "0", limit: 524288 }, f.coordinator.acquireReadPolicy)).rejects.toThrow();
+});
+
+test("an interrupted validation without its source admission is not committed or re-read", async () => {
+  const f = await fixture();
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); await f.coordinator.tick();
+  const record = f.coordinator.get(f.occurrence.imageId)!;
+  f.serviceRetry(); await f.coordinator.tick();
+  const request = f.coordinator.get(f.occurrence.imageId)!.request!;
+  await f.coordinator.retry(request, new AbortController().signal);
+  const retryRecord = f.coordinator.get(f.occurrence.imageId)!;
+  f.journal.markdownStore.put("source", f.occurrence.imageId, { ...retryRecord, sourceAdmission: null, awaitingRetry: false });
+  await rm(path.join(f.home, "original.png"));
+  await f.coordinator.tick();
+  expect(f.calls.at(-1)).toBe("failed");
+  expect(f.coordinator.get(f.occurrence.imageId)?.error?.code).toBe("source_unavailable");
+  expect(f.coordinator.get(f.occurrence.imageId)?.request?.captureId).toBe(record.request!.captureId);
 });
 
 test("a lost register response queries the same identity and never issues a second register", async () => {

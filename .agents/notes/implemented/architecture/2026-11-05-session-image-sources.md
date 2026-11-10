@@ -155,15 +155,18 @@ metadata maintenance. Network address checks need deployment egress guarantees
 where transparent routing could map public destinations into private networks.
 Without equivalent isolation, external capture stays disabled.
 
-The real runtime supplies neither `nativeReadPolicy` nor `externalPolicy`, so
-local and external source IO fails closed with `policy_restricted`. The private
-native policy consumer receives source checkpoints, but object evidence alone
-cannot prove effective native Read permission or revocation order. The native
-authority must provide a complete effective decision or verifiable capability
-and reliable change semantics; a full snapshot export or a per-block lease RPC
-is not the only possible interface. A sandbox/profile name, permission mode or
-successful tool read is not that proof. Controlled policy and network fixtures
-cannot enable real Provider collection or establish deployment egress isolation.
+The initial source foundation had no production native authority or deployment
+egress proof and therefore refused both kinds of source IO. The
+[single-checkpoint authority decision](2026-11-10-single-checkpoint-native-read-authority.md)
+adds a pinned Codex subset and separates native source admission from access to
+an already admitted immutable copy. Object evidence alone still grants no Read
+permission. Each checkpoint needs the native decision applicable to that
+operation; a complete snapshot export or per-block lease RPC is not mandatory.
+The Controller's own permission changes invalidate and drain writers first.
+Other native changes constrain subsequent admissions without retrospectively
+revoking completed source reads. Daynight scope revocation still prevents late
+publication. Unsupported Provider configurations and absent deployment egress
+proof remain explicit gaps; controlled fixtures cannot establish either.
 
 The Windows opener uses `CreateFileW` only for the initial local drive root.
 Every later component is opened with `NtCreateFile` relative to its held parent

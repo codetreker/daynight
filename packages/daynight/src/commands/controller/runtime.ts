@@ -24,7 +24,7 @@ import type { NativeInput } from "./providers/types.js";
 import type { NativeInputLease } from "./media/preparations.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
 import { syncControllerImageHistory } from "./media/history-sync.js";
-import type { NativeProvider, ProviderOptions } from "./providers/types.js";
+import type { NativeProvider, NativeReadPolicy, ProviderOptions } from "./providers/types.js";
 
 export const runController = async (options: { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string }): Promise<void> => {
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
@@ -32,6 +32,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
   const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
+  let nativeReadPolicy: NativeReadPolicy | null = null;
   let projectionFailure: string | null = null, providerFailure: string | null = null;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
@@ -138,6 +139,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
     writable: () => !stopping && !cleaning && synchronized,
     fence: () => { const fence = relay.currentFence?.(); return fence ? JSON.stringify(fence) : null; },
+    nativeReadPolicy: () => nativeReadPolicy,
     onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
     onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
   });
@@ -337,6 +339,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
       ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
+      onNativeReadPolicy: policy => { nativeReadPolicy = policy; if (!policy) markdownCaptures.invalidateNativeReadPolicy(); },
+      drainNativeReadPolicy: () => markdownCaptures.drainNativeReadPolicy(),
       onFatalError: error => {
         if (providerFailure) return;
         providerFailure = error.message; fail(error);

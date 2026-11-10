@@ -16,7 +16,7 @@ export class CodexControls {
   private commands = new Map<string, Command>();
   private pending = new Map<string, { patch: Record<string, unknown>; resolve(): void; reject(error: Error): void }>();
   private closed = false;
-  constructor(private readonly rpc: NativeRpc, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); }
+  constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); }
   seed(value: unknown) { const raw = record(value); this.observe({ ...raw, ...(raw.sandbox ? { sandboxPolicy: raw.sandbox } : {}), ...(raw.reasoningEffort ? { effort: raw.reasoningEffort } : {}) }); }
   observe(value: unknown) {
     this.native = { ...this.native, ...record(value) }; const sandbox = record(this.native.sandboxPolicy); if (typeof sandbox.type === "string") this.sandboxPolicies.set(sandbox.type, structuredClone(sandbox)); this.describe();

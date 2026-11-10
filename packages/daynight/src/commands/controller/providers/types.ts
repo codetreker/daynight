@@ -1,4 +1,5 @@
 import type { CaptureStageInput } from "../media/preparations.js";
+import type { LocalImageCheckpoint } from "../markdown/local-source-proof.js";
 import type { ImageCaptureRequest, ImageCaptureReceipt, ImageError, ImageOccurrence, NativeImageSource, InputObservation, ValidatedImage } from "../../../session/image-values.js";
 import type { SessionControls } from "../../../session/controls.js";
 import type { ChildProcess } from "node:child_process";
@@ -14,6 +15,15 @@ export type MarkdownTimelineMetadata = {
   truncated: boolean;
 };
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null };
+/** A native decision admits only the supplied checkpoint, never a later read. */
+export type NativeReadPolicy = {
+  readonly nativeSessionId: string;
+  readonly cwd: string;
+  readonly revision: string;
+  /** Synchronous connection and authority-generation check; grants no source IO. */
+  verify(): void;
+  authorizeCheckpoint(checkpoint: LocalImageCheckpoint): Promise<void>;
+};
 export type ProviderOptions = {
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
   /** Frozen role text for native prompt append on start and resume, separate from user input. */
@@ -29,6 +39,10 @@ export type ProviderOptions = {
   onSpawn(child: ChildProcess): void;
   onDiagnostic?(line: string): void;
   onFatalError?(error: Error): void;
+  /** Publish or synchronously invalidate this native instance's source authority. */
+  onNativeReadPolicy?(policy: NativeReadPolicy | null): void;
+  /** Join source writers after invalidation, before changing native permissions. */
+  drainNativeReadPolicy?(): Promise<void>;
   onControlConfirmed?(operationId: string): void;
   onInputObserved?(observation: string | InputObservation): void;
   /** Registration is durable; capture must wait until the original position is acknowledged. */

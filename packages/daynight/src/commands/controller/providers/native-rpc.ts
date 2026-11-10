@@ -17,9 +17,10 @@ export class NativeRpc {
   private sequence = 0;
   private closed = false;
   private readonly pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-  constructor(private readonly child: EventEmitter & { stdin: Writable; stdout: Readable }, onMessage: (value: NativeObject) => void, private readonly timeout = 30_000) {
+  constructor(private readonly child: EventEmitter & { stdin: Writable; stdout: Readable }, onMessage: (value: NativeObject) => void, private readonly timeout = 30_000, private readonly onFailure?: (error: Error) => void) {
     this.lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     this.lines.on("line", line => {
+      if (this.closed) return;
       if (Buffer.byteLength(line) > 16 * 1024 * 1024) { this.fail(new Error("Native protocol frame exceeds limit.")); return; }
       let message: NativeObject;
       try { message = record(JSON.parse(line)); } catch { this.fail(new Error("Invalid native protocol frame.")); return; }
@@ -33,6 +34,8 @@ export class NativeRpc {
     child.once("error", error => this.fail(error));
     child.once("close", () => this.fail(new Error("Native process closed; unconfirmed operations remain unknown.")));
     child.stdin.on("error", error => this.fail(error));
+    child.stdout.once("error", error => this.fail(error));
+    child.stdout.once("end", () => this.fail(new Error("Native output closed; unconfirmed operations remain unknown.")));
   }
   request(method: string, params: unknown): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("Native process is closed."));
@@ -47,6 +50,13 @@ export class NativeRpc {
   respond(id: unknown, result: unknown): void { this.write({ id, result }); }
   reject(id: unknown, message: string): void { this.write({ id, error: { code: -32601, message } }); }
   private write(value: unknown): void { if (this.closed) throw new Error("Native process is closed."); this.child.stdin.write(JSON.stringify(value) + "\n"); }
-  private fail(error: Error): void { this.closed = true; for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(error); } this.pending.clear(); }
+  private fail(error: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    // Revocation is synchronous, but a consumer failure cannot strand RPCs.
+    try { this.onFailure?.(error); } catch { /* Settle transport consumers below. */ }
+    for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(error); }
+    this.pending.clear();
+  }
   dispose(): void { this.fail(new Error("Native transport closed.")); this.lines.close(); }
 }
