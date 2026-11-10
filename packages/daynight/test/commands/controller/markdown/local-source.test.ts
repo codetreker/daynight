@@ -24,7 +24,7 @@ describe("local image source path parsing", () => {
   it.each(["//host/x", "file://host/a", "file:///x?y", "file:///x#y", "file://user@localhost/a", "file:///a%2fb", "a%5Cb", "a%00", "%zz", "a?b", "a#b", "https://example.com/a", "data:xxx", "a\u0000b", "a\u0085b", "a%C2%85b", "file:///a\\b", "\ud800"])("rejects forbidden path %s", value => {
     expect(() => parseLocalImagePath(value, "linux")).toThrow();
   });
-  it.each(["C:foo", "\\foo", "\\\\host\\x", "\\\\?\\C:\\x", "C:\\a:stream", "C:\\NUL.png", "C:\\a.\\x", "C:\\a \\x", "C:\\CONIN$", "C:\\CONOUT$", "C:\\CLOCK$", "C:\\NUL .png"])("rejects ambiguous Windows path %s", value => {
+  it.each(["C:foo", "\\foo", "\\\\host\\x", "\\\\?\\C:\\x", "C:\\a:stream", "C:\\NUL.png", "C:\\a.\\x", "C:\\a \\x", "C:\\CONIN$", "C:\\CONOUT$", "C:\\CLOCK$", "C:\\NUL .png", "C:\\a*", "C:\\a<", "C:\\a>", "C:\\a|", "C:\\a\""])("rejects ambiguous Windows path %s", value => {
     expect(() => parseLocalImagePath(value, "win32")).toThrow();
   });
 });
@@ -93,7 +93,7 @@ describe.skipIf(process.platform === "win32")("local image source handles", () =
 });
 it("refuses unknown native policy and unsupported platform contexts", async () => {
   await expect(createLocalImageContext({ cwd: process.cwd(), policyRevision: "1", nativeReadAllowed: undefined })).rejects.toMatchObject({ code: "policy_restricted" });
-  await expect(createLocalImageContext({ cwd: "C:\\project", platform: "win32", policyRevision: "1", nativeReadAllowed: true })).rejects.toMatchObject({ code: "policy_restricted" });
+  await expect(createLocalImageContext({ cwd: "C:\\project", platform: process.platform === "win32" ? "linux" : "win32", policyRevision: "1", nativeReadAllowed: true })).rejects.toMatchObject({ code: "policy_restricted" });
 });
 
 describe.skipIf(process.platform === "win32")("local image source races and special objects", () => {

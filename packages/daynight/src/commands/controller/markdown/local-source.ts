@@ -28,7 +28,7 @@ export function parseLocalImagePath(input: string, platform: NodeJS.Platform): s
   try { value = decodeURIComponent(value); } catch { refuse(); }
   if (!value.isWellFormed() || /\p{Cc}/u.test(value) || value.startsWith("//")) refuse();
   if (platform === "win32") {
-    if (/^[\\/]/.test(value) || /^[A-Za-z]:(?![\\/])/.test(value) || value.includes(":" , /^[A-Za-z]:/.test(value) ? 2 : 0)) refuse();
+    if (/[<>"|*]/u.test(value) || /^[\\/]/.test(value) || /^[A-Za-z]:(?![\\/])/.test(value) || value.includes(":" , /^[A-Za-z]:/.test(value) ? 2 : 0)) refuse();
     for (const component of value.split(/[\\/]/).filter(Boolean).slice(/^[A-Za-z]:/.test(value) ? 1 : 0)) {
       if (component === "." || component === "..") continue;
       const deviceBase = component.split(".", 1)[0]!.replace(/[ .]+$/u, "");
@@ -53,11 +53,11 @@ const send = (child: ChildProcess, message: object): void => {
   // observes child close or its deadline; a late EPIPE must not crash Controller.
   if (child.connected) child.send(message, () => {});
 };
-const helperPath = (): string => fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./local-source-helper.ts" : "./local-source-helper.js", import.meta.url));
+const helperPath = (): string => fileURLToPath(new URL(`./local-source-${process.platform === "win32" ? "windows-helper" : "helper"}.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url));
 
 export async function createLocalImageContext(options: { cwd: string; platform?: NodeJS.Platform; policyRevision: string; nativeReadAllowed: boolean | undefined; expectedRoot?: LocalImageRootIdentity }): Promise<LocalImageContext> {
   const platform = options.platform ?? process.platform;
-  if (options.nativeReadAllowed !== true || !options.policyRevision || platform !== process.platform || !["darwin", "linux"].includes(platform) || !["arm64", "x64"].includes(process.arch) || endianness() !== "LE" || !path.isAbsolute(options.cwd) || !options.cwd.isWellFormed() || /\p{Cc}/u.test(options.cwd)) refuse("policy_restricted");
+  if (options.nativeReadAllowed !== true || !options.policyRevision || platform !== process.platform || !["darwin", "linux", "win32"].includes(platform) || !["arm64", "x64"].includes(process.arch) || endianness() !== "LE" || !path.isAbsolute(options.cwd) || !options.cwd.isWellFormed() || /\p{Cc}/u.test(options.cwd)) refuse("policy_restricted");
   if (options.expectedRoot && [options.expectedRoot.dev, options.expectedRoot.ino].some(value => !/^(?:0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18_446_744_073_709_551_615n)) refuse("context_unavailable");
   const child = fork(helperPath(), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], env: { ...process.env, NODE_OPTIONS: "" } });
   const internal: InternalContext = { child, closed: new Promise(resolve => child.once("close", () => { internal.dead = true; resolve(); })), dead: false, busy: false };

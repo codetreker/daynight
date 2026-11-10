@@ -18,6 +18,11 @@ snapshots. Its original publication established the design before the source
 consumers existed; it did not establish runtime implementation or security
 acceptance.
 
+The [Windows ancestry decision](2026-11-10-windows-image-source-handles.md)
+partially replaces the original option to rely on write/delete sharing around
+complete pathname opens. It preserves that option's original rationale and the
+attribute-write failure that requires parent-handle traversal.
+
 The Controller's [Markdown modules](../../../../packages/daynight/src/commands/controller/markdown/)
 separate parsing, projection, durable source coordination and byte acquisition.
 The parser runs CommonMark/GFM analysis in a bounded, terminable worker. The
@@ -133,10 +138,20 @@ revocation generation. A sandbox/profile name, permission mode or successful too
 read is not that proof. Controlled policy and network fixtures cannot enable real
 Provider collection or establish deployment egress isolation.
 
-Windows path validation exists, but its reparse-aware opener is unimplemented
-and context creation refuses Windows. Linux and Intel macOS contain helper/ABI
-branches without actual platform execution evidence; macOS ARM64 mechanism
-validation does not qualify them. These are unmet implementation and acceptance
+The Windows opener uses `CreateFileW` only for the initial local drive root.
+Every later component is opened with `NtCreateFile` relative to its held parent
+handle and with `FILE_OPEN_REPARSE_POINT`. Denying write/delete sharing protects
+contents and renames but cannot stop attribute-only handles from changing a
+directory into a junction; pathname reopening would therefore be unsafe.
+Known symlink/junction substitutions and cwd aliases are resolved explicitly;
+absolute prefixes must reach the original root ID. Volume serial and complete
+file IDs preserve checked objects. Only NTFS is accepted: the persisted Node
+stat identity is insufficient to identify ReFS files uniquely. Sharing conflicts
+remain observable. Its real-handle tests, including an attribute-only junction
+mutation with unchanged file ID, have no Windows execution result yet.
+Linux and Intel macOS also lack actual platform execution evidence; macOS ARM64
+mechanism validation does not qualify these platforms. These are unmet
+implementation and acceptance
 requirements, not approved deferrals. The source consumers do not yet establish
 complete automatic source capture or end-to-end availability.
 

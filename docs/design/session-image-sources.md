@@ -15,7 +15,7 @@
 | [pipeline.ts](../../packages/daynight/src/commands/controller/markdown/pipeline.ts) | `createMarkdownTimelinePipeline.accept/tick/receipt/failure/stop` 将同步正文接收、异步解析、回执关联和停止结算分开；旧投影从持久索引重放。 |
 | [store.ts](../../packages/daynight/src/commands/controller/markdown/store.ts) | `createMarkdownSourceStore` 在既有 `image_runtime_state` 保存 `markdown:projection`、`markdown:source`、`markdown:context` 与 `markdown:rate`；按最多 32 个身份分页，计入既有元数据预算。 |
 | [coordinator.ts](../../packages/daynight/src/commands/controller/markdown/coordinator.ts) | `createMarkdownCaptureCoordinator` 拥有可信 context、持久 source intent、位置 ACK、原 capture 查询、权限复核、来源重试和取消后的 join。 |
-| [local-source.ts](../../packages/daynight/src/commands/controller/markdown/local-source.ts)、[local-source-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-helper.ts) | `createLocalImageContext` 与 `copyLocalImage` 通过持根 fd 的独立 helper 执行 no-follow 组件遍历、链接解析和逐块复制。 |
+| [local-source.ts](../../packages/daynight/src/commands/controller/markdown/local-source.ts)、[local-source-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-helper.ts)、[local-source-windows.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows.ts)、[local-source-windows-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows-helper.ts) | `createLocalImageContext` 与 `copyLocalImage` 按平台选择独立 helper，以根和祖先句柄执行 no-follow/reparse-aware 组件遍历、链接解析和逐块复制。 |
 | [external-source.ts](../../packages/daynight/src/commands/controller/markdown/external-source.ts) | `createExternalImagePolicy` 与 `copyExternalImage` 将受信出口策略和逐次请求计费接入独立 DNS、TCP/TLS、HTTP/1.1 reader。 |
 
 [runtime.ts](../../packages/daynight/src/commands/controller/runtime.ts) 将 Provider 的正文和完成元数据交给 pipeline，以 250 ms 周期分别推进解析与采集；原生回调不等待媒体工作。断线使活动来源失效；停止先取消并等待来源工作，再关闭 Provider、完成已有正文的投影结算和关闭媒体存储。停止后不启动来源请求或后台 query。已持久的 unknown、validated 和 retained 仍属于原执行的恢复与归档闭包。
@@ -24,7 +24,7 @@
 
 - 真实 runtime 没有向 coordinator 提供 `nativeReadPolicy`。现有私有调用点返回 `{revision,verify():void}`，本身不能证明某条路径、链接解析后的对象、独立 Read deny 和当前撤销代次均获准。真实 Provider 的完整有效读策略适配仍未实现；`permissionMode`、sandbox/profile 名、同用户可读或一次工具读取不能代替该证明。本地来源因此返回 `policy_restricted`，不把测试中的允许策略用于真实原生会话。
 - 真实 runtime 没有提供 `externalPolicy`，也没有取得部署级出口隔离证明。外部来源因此返回 `policy_restricted`。受控网络测试可注入 `controlledNetworkBoundary` 和 CA，但该配置不证明真实部署已阻断透明路由到本机、内网和元数据。
-- Windows 只有路径分类和拒绝规则，尚无 reparse-aware opener；`createLocalImageContext` 在 Windows 拒绝创建。Linux 与 Intel macOS 包含 helper/ABI 分支，但尚无真机执行证据；已有 macOS ARM64 机制测试不能替代这两个平台的验证。
+- Windows 包含 reparse-aware opener 和真实句柄测试，但尚未取得其真机执行结果。Linux 与 Intel macOS 包含 helper/ABI 分支，也尚无真机执行证据；已有 macOS ARM64 机制测试不能替代这些平台的验证。
 
 这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此开放真实自动采集或声明端到端验收通过。
 
@@ -128,9 +128,11 @@ realpath 仅用于诊断或选择候选根，不能作随后字符串 open 的�
 | --- | --- |
 | Linux | 根内相对目标可用 openat2 的 RESOLVE_BENEATH/RESOLVE_NO_MAGICLINKS；绝对 symlink 显式重新授权，不用 IN_ROOT 改写目标。 |
 | macOS | openat/fstatat/readlinkat + 目录句柄遍历及 no-follow，不能仅 fs.open(O_NOFOLLOW) 检查末组件。 |
-| Windows | reparse-aware handle 检查每个组件，只接受可理解的本机 symlink/junction；其他 tag 拒绝。用根 handle 相对遍历，或以禁止共享写/删除锁住全部祖先，按卷 ID/file ID 核验；共享冲突为暂时 unavailable。逐段完整 pathname CreateFile 不足以防中间替换。 |
+| Windows | reparse-aware handle 检查每个组件，只接受可理解的本机 symlink/junction；其他 tag 拒绝。以 `NtCreateFile(RootDirectory)` 相对已持有父目录 handle 打开单组件，并按卷 ID/file ID 核验；共享冲突为暂时 unavailable。禁止共享写/删除不能阻止属性写句柄原地设置 reparse，逐段完整 pathname CreateFile 不足以防中间替换。 |
 
-三者均不 fallback realpath+open。Linux/macOS 当前 helper 使用 `openat/fstatat/readlinkat` 与祖先 fd 栈，Intel macOS 使用对应 `$INODE64` ABI；这不表示未实现的 Windows opener 已满足上表。文件系统按句柄拒绝未知类型，当前允许本地 APFS/HFS 与 ext/XFS/Btrfs/tmpfs，并在 macOS 核验 `MNT_LOCAL`。最终对象必须为本机受支持文件系统的 regular file，no-follow/nonblocking 打开后 fstat，拒绝 FIFO/socket/设备/目录，不能在读取前被 FIFO 挂住。不创建、截断、chmod 或提权来源文件。EACCES 显示安全 permission_denied，不泄露私有路径。
+三者均不 fallback realpath+open。Linux/macOS helper 使用 `openat/fstatat/readlinkat` 与祖先 fd 栈，Intel macOS 使用对应 `$INODE64` ABI。Windows helper 仅以 `CreateFileW` 打开最初本地盘根，后续 cwd、绝对来源前缀、来源和输出组件均使用 `NtCreateFile(RootDirectory, FILE_OPEN_REPARSE_POINT)`，名称只含单组件，持有全部已检查祖先。内部 volume GUID 路径仅作诊断，后续打开不重新解析盘符或祖先 pathname。只共享读取以阻止源内容写入和 rename；属性写句柄仍可原地设置 reparse，安全边界来自父 handle 相对打开。只理解 symlink/junction 的 substitute name，手动展开链接和 `..`；cwd 别名最终须符合原 expectedRoot，绝对来源按实际组件到达同一 root ID 后才进入根内解析。未知 reparse tag 拒绝，共享冲突返回 `source_busy`。expectedRoot 与 Node journal 的 dev/ino 比对，遍历另保留完整 128-bit file ID。实现路径和所需真机验收仍须分别核验。 原共享锁方案的理由、属性写漏洞及替代选择见 [Windows 句柄决策](../../.agents/notes/implemented/architecture/2026-11-10-windows-image-source-handles.md)。
+
+文件系统按句柄拒绝未知类型，Linux/macOS 当前允许本地 APFS/HFS 与 ext/XFS/Btrfs/tmpfs，并在 macOS 核验 `MNT_LOCAL`；Windows 只接受 fixed 本地盘的 NTFS；ReFS 的 64-bit stat file ID 不保证唯一，在可信 execution-root 合同保存完整 128-bit 身份前拒绝。最终对象必须为本机受支持文件系统的 regular file，拒绝 FIFO/socket/设备/目录，不能在读取前被 FIFO 挂住。POSIX 使用 no-follow/nonblocking，Windows 使用 reparse-point/backup-semantics 句柄并核验 disk file 类型。不创建、截断、chmod 或提权来源文件。EACCES 显示安全 permission_denied，不泄露私有路径。
 
 句柄授权的是当时从允许根取得的目录对象；同用户随后重命名不会改变该对象。重命名即撤权、恶意同用户恢复时间戳或硬链接原始来源隔离需要额外 OS 沙箱，本机制不声称提供进程隔离。允许目录里的普通硬链接沿该目录授权，不能凭 inode 推断全部出处。
 
