@@ -1170,6 +1170,33 @@ with `go test ./internal/core/store/postgres/identity ./internal/core/store/post
 
 The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
 
+### OAuth service tests
+
+The complete `internal/service/oauth` suite runs without PostgreSQL or UniAuth
+fixtures. Clients and Authorizations use instance-owned direct Core/business
+operation bindings; tests execute their actual construction, callbacks and
+orchestration with independently configured callback errors, transaction
+completion and final writer errors. Scope capability identity, exact arguments,
+ordering and result/secret suppression are checked without a storage model.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/oauth
+```
+
+Core tests own metadata projection and freezing, code binding/expiry and
+credential issuance rules. Registration HTTP tests retain real request/response
+handling with controlled operation results. PostgreSQL DAO and AuthorizationScope
+tests retain actual advisory/row locks, fresh time, client pinning and cleanup,
+large JSONB readback, rollback and single-connection release. The service tests
+retain session rechecks, DCR pin ordering, code retry/admission and transaction
+completion precedence. MetadataFetcher keeps its real TLS/HTTP, DNS, cache,
+concurrency and cancellation tests. The
+[operation-boundary decision](../../.agents/notes/implemented/testing/2026-11-10-oauth-service-operation-boundaries.md)
+records ownership, receiver migration and verification cost.
+
 ### Bot management service tests
 
 The `internal/service/bot` suite executes actual snapshot/write callbacks,

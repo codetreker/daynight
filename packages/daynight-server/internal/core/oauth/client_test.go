@@ -2,6 +2,8 @@ package oauth
 
 import (
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,18 +22,19 @@ func TestClientMetadata(t *testing.T) {
 		`{"redirect_uris":["https://client.example/cb"],"scope":"other"}`,
 		`{"redirect_uris":["https://client.example/cb"],"response_types":["token"]}`,
 		`{"redirect_uris":["https://client.example/cb"],"redirect_uris":[]}`,
-		`{"redirect_uris":["https://client.example/cb"],"client_id":"own"}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_id":"supplied"}`,
 		`{"redirect_uris":["https://client.example/cb"],"client_name":"\ud800"}`,
 		`{"redirect_uris":["https://client.example/cb#fragment"]}`,
-		`{"redirect_uris":["https://client.example/cb"],"client_secret":"secret"}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_secret":"supplied"}`,
 		`{"redirect_uris":["https://client.example/cb"],"client_id_issued_at":0}`,
 		`{"redirect_uris":["https://client.example/cb"],"client_secret_expires_at":0}`,
 		`{"redirect_uris":["https://client.example/cb"],"registration_access_token":"x"}`,
 		`{"redirect_uris":["https://client.example/cb"],"registration_client_uri":"https://client.example/manage"}`,
 		`{"redirect_uris":["https://client.example/cb"],"extension":true,"extension":false}`,
 		strings.Repeat(" ", MetadataLimit+1),
+		`{"redirect_uris":[],"token_endpoint_auth_method":"client_secret_basic"}`,
 	} {
-		if _, err := ParseClientMetadata([]byte(raw), ""); err == nil {
+		if got, err := ParseClientMetadata([]byte(raw), ""); !errors.Is(err, ErrInvalidClientMetadata) || !reflect.DeepEqual(got, ClientMetadata{}) {
 			t.Errorf("accepted %s", raw[:min(len(raw), 100)])
 		}
 	}
@@ -41,7 +44,7 @@ func TestClientMetadata(t *testing.T) {
 		t.Fatalf("extension metadata: %+v %v", extended, err)
 	}
 	cimd := `{"client_id":"https://client.example/meta","redirect_uris":["http://127.0.0.1:123/cb"],"logo_uri":"https://ignored.example"}`
-	if _, err := ParseClientMetadata([]byte(cimd), "https://other.example/meta"); err == nil {
+	if _, err := ParseClientMetadata([]byte(cimd), "https://wrong.example/meta"); err == nil {
 		t.Fatal("accepted mismatched client_id")
 	}
 	m, err = ParseClientMetadata([]byte(cimd), "https://client.example/meta")

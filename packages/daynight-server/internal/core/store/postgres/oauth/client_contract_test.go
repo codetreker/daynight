@@ -14,6 +14,7 @@ import (
 	pgOAuth "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func isolatedStore(t *testing.T) *postgres.Store {
@@ -300,4 +301,77 @@ func TestOAuthClientStorageRefusals(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestPinnedClientCleanupObservesCommittedGrant(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	client := store.OAuthClient{ID: "pinned-issuance-client", Metadata: []byte(`{}`), CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	issue := family(now, client.ID)
+	_, err := db.Pool.Exec(ctx, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$1::uuid::text,$2,$2)`, issue.Grant.UserID, now)
+	check(t, err)
+	tx, err := db.Pool.Begin(ctx)
+	check(t, err)
+	defer tx.Rollback(context.Background())
+	inserted, err := pgOAuth.NewDAO(tx).InsertClient(ctx, client, 100, now)
+	check(t, err)
+	if !inserted {
+		t.Fatal("issuance client was not inserted")
+	}
+	check(t, tx.Commit(ctx))
+	holder, err := db.Pool.Begin(ctx)
+	check(t, err)
+	defer holder.Rollback(context.Background())
+	pinAt := now.Add(time.Minute)
+	pinned, err := pgOAuth.NewDAO(holder).PinClient(ctx, client.ID, pinAt)
+	check(t, err)
+	if !pinned.LastUsedAt.Equal(pinAt) || !pinned.ExpiresAt.Equal(pinAt.Add(7*24*time.Hour)) {
+		t.Fatalf("actual client pin did not touch retention: %+v", pinned)
+	}
+	check(t, pgOAuth.NewDAO(holder).IssueFamily(ctx, issue))
+	conn, err := db.Pool.Acquire(ctx)
+	check(t, err)
+	pid, socket := conn.Conn().PgConn().PID(), conn.Conn().PgConn().Conn()
+	workerCtx, stop := context.WithCancel(ctx)
+	type observation struct {
+		client store.OAuthClient
+		active bool
+	}
+	cleanupAt := now.Add(8 * 24 * time.Hour)
+	result, done := startOAuthReceiverTransaction(workerCtx, conn, func(tx pgx.Tx) (observation, error) {
+		dao := pgOAuth.NewDAO(tx)
+		if err := dao.LockClientCapacity(workerCtx); err != nil {
+			return observation{}, err
+		}
+		client, err := dao.Client(workerCtx, client.ID, true)
+		if err != nil {
+			return observation{}, err
+		}
+		active, err := dao.ActiveClientReferences(workerCtx, client.ID, cleanupAt)
+		return observation{client, active}, err
+	})
+	defer drainOAuthReceiverTransaction(t, stop, holder, socket, done)
+	awaitOAuthReceiverLock(t, ctx, db.Pool, holder.Conn().PgConn().PID(), pid, done)
+	check(t, holder.Commit(ctx))
+	select {
+	case out := <-result:
+		if out.err != nil || !out.value.active || out.value.client.ID != client.ID || !out.value.client.LastUsedAt.Equal(pinned.LastUsedAt) || !out.value.client.ExpiresAt.Equal(pinned.ExpiresAt) {
+			t.Fatalf("cleanup missed committed pinned grant: %+v error=%v", out.value, out.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var clients, grants, matchingGrants int
+	var lastUsed, expires time.Time
+	check(t, db.Pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM oauth_clients WHERE id=$1),
+ (SELECT count(*) FROM oauth_grants),
+ (SELECT count(*) FROM oauth_grants WHERE id=$2 AND client_id=$1),
+ (SELECT last_used_at FROM oauth_clients WHERE id=$1),
+ (SELECT expires_at FROM oauth_clients WHERE id=$1)`, client.ID, issue.Grant.ID).Scan(&clients, &grants, &matchingGrants, &lastUsed, &expires))
+	if clients != 1 || grants != 1 || matchingGrants != 1 || !lastUsed.Equal(pinned.LastUsedAt) || !expires.Equal(pinned.ExpiresAt) {
+		t.Fatalf("committed pin/issuance rows: clients=%d grants=%d matching=%d last=%s expiry=%s", clients, grants, matchingGrants, lastUsed, expires)
+	}
 }
