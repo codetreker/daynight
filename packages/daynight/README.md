@@ -2650,9 +2650,14 @@ A known incomplete Web archive enters a durable repair-required state. Every
 15 minutes the Worker checks the original stopped generation without loading
 pending timeline content or resource bytes. The claim, source and capacity remain
 reserved. A recovered receipt still enters the normal remote receipt validation;
-its presence alone never releases resources. Corrected source conditions permit
-a full cleanup attempt, which must pass every archive and ownership check.
-Repeated checks do not repair missing history or clear its completeness flags.
+its presence alone neither clears the repair classification nor releases resources.
+Confirmed complete source conditions clear the saved repair classification before
+a full cleanup attempt, which must pass every archive and ownership check. Later
+transient upload failures use normal cleanup backoff or the 60-second historical
+backfill retry. A failed classification write preserves the repair wait; successful
+classification changes still retain cleanup responsibility and capacity until
+complete cleanup succeeds. Repeated checks do not repair missing history or clear
+its completeness flags.
 
 On supported macOS APFS volumes, an immutable identity sidecar lets a newer
 Worker verify the original worktree after mount device numbers change. Existing
