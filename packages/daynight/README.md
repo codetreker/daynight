@@ -2667,8 +2667,12 @@ reconciliation; restarting cannot manufacture the missing proof. Other platforms
 retain strict identity checks. Keep the original marker and sidecar intact.
 
 A fully enumerated, independently attributed damaged worktree can be quarantined
-while unrelated tasks use remaining capacity. It retains its claim's slot and
-blocks reuse of the same task. Unreadable inventory or conflicting ownership
+only for static local validation failures under stable observations, while
+unrelated tasks use remaining capacity. It retains its claim's slot and blocks
+reuse of the same task. Observed changes to ownership, metadata, current directory
+objects or Git pointers during inspection leave coverage unknown. An early
+validation failure cannot bypass the scan's recheck of the indexed ownership
+marker. Unreadable inventory, changing observations or conflicting ownership
 still blocks new acquisition globally. An online heartbeat or zero remote active
 tasks does not establish that local capacity is available.
 

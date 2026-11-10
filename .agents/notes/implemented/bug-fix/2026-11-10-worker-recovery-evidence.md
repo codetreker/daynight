@@ -36,11 +36,20 @@ component must first be observed with `lstat` as an existing ordinary directory.
 A junction, symlink, missing component, non-directory or I/O failure leaves
 coverage unknown. Ordinary relative paths remain admissible when those checks
 succeed; passing the raw string alone cannot preserve Windows traversal semantics.
-Parent traversal through missing components remains unknown. Only explicitly classified validation failures from observed metadata
-can become quarantine candidates; filesystem reads, native queries, response
-parsing and otherwise unclassified failures retain unknown coverage. Mapping
-admission does not grant resource ownership. Strict readers used by cleanup
-cannot omit invalid records and infer absence.
+Parent traversal through missing components remains unknown. Only explicitly
+classified static, resource-local validation failures under stable observations
+can become quarantine candidates. A mismatch against historical identity evidence
+does not imply that observations changed during inspection. Observed changes to
+owner, marker or sidecar metadata, current directory objects or Git pointers retain
+unknown coverage instead of attributing the resource to its indexed owner. Before
+accepting an early branch or sidecar validation failure, the scan still reads the
+locked marker stably and checks it against the index; changed, missing or
+unconfirmed marker evidence cannot hide a new owner conflict. Filesystem reads,
+native queries, response parsing and otherwise unclassified failures also retain
+unknown coverage. These rechecks retain the controlled-writer assumption, not an
+atomic snapshot guarantee against malicious same-user replacement. Mapping
+admission does not grant resource ownership. Strict readers used by cleanup cannot
+omit invalid records and infer absence.
 
 Typed archive completeness blockers persist with their cleanup owner and a
 15-minute condition-probe schedule. Probes preserve original stopped-generation
