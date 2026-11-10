@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { record, string } from "./native-rpc.js";
-import type { ProviderEntry } from "./types.js";
+import type { MarkdownTimelineMetadata, ProviderEntry } from "./types.js";
 import { codexSubagentActivity } from "../../../session/codex-subagent-activity.js";
 
 // Native item IDs survive reconnects; transport IDs must never create new timeline rows.
@@ -15,6 +15,7 @@ export const limited = (value: string): string => {
   const end = /[\uD800-\uDBFF]/.test(value[199_999]!) && /[\uDC00-\uDFFF]/.test(value[200_000]!) ? 199_999 : 200_000;
   return value.slice(0, end) + "\n[Output truncated at 200000 characters]";
 };
+export const markdownTimelineMetadata = (text: string, complete: boolean, format: "markdown" | "plain" = "markdown"): MarkdownTimelineMetadata => ({ complete, format, truncated: text.length > 200_000 });
 export type ProviderArguments = { sandbox?: "read-only" | "workspace-write"; approvalPolicy?: "untrusted" | "on-request" | "never"; effort?: string; permissionMode?: "default" | "acceptEdits" | "plan"; additionalDirectories?: string[] };
 /** Dynamic effort text is accepted only when the caller validates the native model selection. */
 export const parseProviderArguments = (provider: "codex" | "claude" | "copilot", args: readonly string[], validateNativeSelection = false): ProviderArguments => {
@@ -34,31 +35,39 @@ export const parseProviderArguments = (provider: "codex" | "claude" | "copilot",
 export class CodexProjection {
   private readonly content = new Map<string, string>();
   private readonly tools = new Map<string, Extract<ProviderEntry, {kind: "tool_call"}>>();
-  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry) => void) {}
+  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry, metadata?: MarkdownTimelineMetadata) => void) {}
   private base(id: string) { return { entryId: nativeEntryId(this.sessionId, id), revision: "1" }; }
   delta(id: string, delta: string, kind: "assistant_message" | "reasoning"): void {
     const value = (this.content.get(id) ?? "") + delta; this.content.set(id, value);
     if (kind === "reasoning" && value.trim() === "") return;
-    this.emit(kind === "reasoning" ? { ...this.base(id), kind, text: limited(value) } : { ...this.base(id), kind, content: [{ type: "text", text: limited(value) }] });
+    this.emit(kind === "reasoning" ? { ...this.base(id), kind, text: limited(value) } : { ...this.base(id), kind, content: [{ type: "text", text: limited(value) }] }, markdownTimelineMetadata(value, false));
   }
   toolDelta(id: string, delta: string): void {
     const old = this.tools.get(id); if (!old) return;
     const prior = old.output.map(part => part.type === "text" ? part.text : "").join("");
     const output = prior + delta;
     const entry = { ...old, output: [{ type: "text" as const, text: limited(output) }], truncated: old.truncated || output.length > 200_000 };
-    this.tools.set(id, entry); this.emit(entry);
+    this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, false, "plain"));
   }
   item(value: unknown, completed: boolean): void {
     const item = record(value), id = string(item.id), type = string(item.type); if (!id) return;
     const base = this.base(id);
-    if (type === "agentMessage") { const text = string(item.text); this.content.set(id, text); this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(text) }] }); }
-    else if (type === "userMessage") this.emit({ ...base, kind: "user_message", content: (Array.isArray(item.content) ? item.content : []).flatMap(part => { const p = record(part); return p.type === "text" ? [{ type: "text" as const, text: limited(string(p.text)) }] : [{ type: "text" as const, text: `[${string(p.type) || "unsupported native content"}]` }]; }) });
+    if (type === "agentMessage") { const text = string(item.text); this.content.set(id, text); this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(text) }] }, markdownTimelineMetadata(text, completed)); }
+    else if (type === "userMessage") {
+      const content = (Array.isArray(item.content) ? item.content : []).map(record);
+      const texts = content.filter(part => part.type === "text");
+      this.emit({ ...base, kind: "user_message", content: content.map(part => part.type === "text" ? { type: "text" as const, text: limited(string(part.text)) } : { type: "text" as const, text: `[${string(part.type) || "unsupported native content"}]` }) }, { complete: completed, format: content.length === 1 && texts.length === 1 ? "markdown" : "plain", truncated: texts.some(part => string(part.text).length > 200_000) });
+    }
     else if (type === "reasoning") {
-      const text = [...(Array.isArray(item.summary) ? item.summary : []), ...(Array.isArray(item.content) ? item.content : [])].map(readable).join("\n");
-      // Empty native reasoning can contain only opaque provider state. It is
-      // neither displayable text nor evidence that streamed text was removed.
-      if (text.trim() === "") return;
-      this.content.set(id, text); this.emit({ ...base, kind: "reasoning", text: limited(text) });
+      const segments = [...(Array.isArray(item.summary) ? item.summary : []), ...(Array.isArray(item.content) ? item.content : [])];
+      const text = segments.map(readable).join("\n");
+      // Opaque completion closes the existing streamed body without replacing it.
+      if (text.trim() === "") {
+        const streamed = this.content.get(id);
+        if (completed && streamed?.trim()) this.emit({ ...base, kind: "reasoning", text: limited(streamed) }, markdownTimelineMetadata(streamed, true));
+        return;
+      }
+      this.content.set(id, text); this.emit({ ...base, kind: "reasoning", text: limited(text) }, markdownTimelineMetadata(text, completed, segments.every(value => typeof value === "string") ? "markdown" : "plain"));
     }
     else if (type === "subAgentActivity") {
       const activity = codexSubagentActivity(item)!;
@@ -74,9 +83,9 @@ export class CodexProjection {
     else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView", "collabAgentToolCall"].includes(type)) {
       const output = readable(item.aggregatedOutput ?? item.result ?? item.error ?? item.changes ?? "");
       const entry: Extract<ProviderEntry, { kind: "tool_call" }> = { ...base, kind: "tool_call", callId: id, name: string(item.tool) || type, input: limited(readable(item.command ?? item.arguments ?? item.query ?? item.changes ?? item)), output: [{ type: "text", text: limited(output) }], status: ["failed", "declined"].includes(string(item.status)) || item.error ? "failed" : completed ? "completed" : "running", truncated: output.length > 200_000 };
-      this.tools.set(id, entry); this.emit(entry);
+      this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, completed, "plain"));
     } else if (type === "contextCompaction") this.emit({ ...base, kind: "compaction", summary: "Native conversation context compacted." });
-    else if (type === "plan") this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(string(item.text) || readable(item)) }] });
+    else if (type === "plan") this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(string(item.text) || readable(item)) }] }, markdownTimelineMetadata(string(item.text) || readable(item), completed, typeof item.text === "string" ? "markdown" : "plain"));
     else this.emit({ ...base, kind: "error", code: "unsupported_native_item", message: `Unsupported native timeline item: ${type || "unknown"}. ${limited(readable(item))}` });
   }
 }

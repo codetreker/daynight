@@ -1,4 +1,5 @@
 import { createImageCaptureSource } from "./media/capture-source.js";
+import { createMarkdownSourceStore } from "./markdown/store.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { createImageHistorySource } from "./media/history-source.js";
 import { openControllerMediaStore, type ControllerMediaStore } from "./media/preparations.js";
@@ -148,6 +149,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   let mediaInstance: ControllerMediaStore | undefined;
   const media = () => mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory);
   return {
+    markdownStore: createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget),
     ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,

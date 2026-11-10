@@ -1,4 +1,6 @@
 import { createControllerCaptureBridge } from "./media/capture.js";
+import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
+import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
@@ -35,6 +37,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const historyAbort = new AbortController();
   let historyWork: Promise<void> | null = null, historyRequested = false;
   let historyTimer: NodeJS.Timeout | null = null;
+  let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
   let cleanupInputStarted = false;
   let cleaning = isCleaningGeneration(journal.listOperations(), ticket.executionGeneration);
@@ -89,7 +92,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   const relay = createControllerRelay(ticket, journal, {
-    onConnection: connected => { synchronized = connected; if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
+    onConnection: connected => { synchronized = connected; if (!connected) markdownCaptures.invalidate(); if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
     onError: diagnostic,
     readState,
     onAcknowledged: () => {
@@ -98,6 +101,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     },
     beforeImage: () => synchronizeImageHistory(),
     onRetryCapture: (body, signal) => captureBridge.retry(body, signal),
+    acquireCaptureReadPolicy: request => markdownCaptures.acquireReadPolicy(request),
     onCommand: async command => {
       if (command.sessionId !== ticket.sessionId || command.claimId !== ticket.claimId || command.testExecutionId !== ticket.testExecutionId || command.executionGeneration !== ticket.executionGeneration) throw new Error("Stale session command.");
       const operation = journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
@@ -130,7 +134,20 @@ export const runController = async (options: { homeDirectory: string; provider: 
       });
     },
   });
-  const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
+    writable: () => !stopping && !cleaning && synchronized,
+    fence: () => { const fence = relay.currentFence?.(); return fence ? JSON.stringify(fence) : null; },
+    onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
+    onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
+  });
+  const markdownTimeline = createMarkdownTimelinePipeline({ journal, captures: markdownCaptures, onError: error => nativeEvent(() => { throw error; }) });
+  // Source admission and AST analysis page the durable index independently;
+  // native callbacks only persist text and never wait for media work.
+  markdownTimer = setInterval(() => {
+    void markdownTimeline.tick().catch(fail);
+    void markdownCaptures.tick().catch(fail);
+  }, 250);
   async function synchronizeImageHistory(): Promise<void> {
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     if (stopping || !relay.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
@@ -173,12 +190,16 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     stopping = true;
+    if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; }
+    markdownCaptures.invalidate();
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     shutdownPromise = (async () => {
     try {
       await startup?.catch(() => {});
       journal.patchSnapshot({ lifecycle: "stopping" });
+      await markdownCaptures.stop();
       await provider?.close(); await Promise.all(processCaptures);
+      await markdownTimeline.stop();
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
       if (projectionFailure) {
         // Drain committed events before recording a visible gap. Never discard an
@@ -189,7 +210,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
       publishState(); await relay.flush().catch(fail);
     }
     catch (error) { fail(error); }
-    finally { historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
+    finally { await markdownCaptures.stop().catch(fail); await markdownTimeline.stop().catch(fail); historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
     })();
     return shutdownPromise;
   };
@@ -340,8 +361,9 @@ export const runController = async (options: { homeDirectory: string; provider: 
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
       hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
-      onTimeline: entry => nativeEvent(() => {
-        journal.projectTimeline(providerDisplayEntry(entry));
+      onTimeline: (entry, metadata) => nativeEvent(() => {
+        const displayed = providerDisplayEntry(entry);
+        markdownTimeline.accept(displayed, metadata && { ...metadata, truncated: metadata.truncated || JSON.stringify(displayed) !== JSON.stringify(entry) });
         if (entry.kind === "interaction") {
           const id = entry.interaction.interactionId;
           if (cleaning && cleanupInputStarted && !knownInteractions.has(id) && entry.interaction.state === "pending") cleanupInteractions.add(id);

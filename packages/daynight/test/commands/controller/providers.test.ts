@@ -35,11 +35,12 @@ test("an empty completed Codex reasoning item cannot erase streamed text", () =>
   const entries: ProviderEntry[] = []; const project = new CodexProjection("thread", entry => entries.push(entry));
   project.delta("reason", "checking", "reasoning");
   project.item({ id: "reason", type: "reasoning", summary: [], content: [] }, true);
-  expect(entries).toHaveLength(1);
-  expect(entries[0]).toMatchObject({ kind: "reasoning", text: "checking" });
-  project.item({ id: "reason", type: "reasoning", summary: ["checking complete"] }, true);
   expect(entries).toHaveLength(2);
-  expect(entries[1]).toMatchObject({ entryId: nativeEntryId("thread", "reason"), kind: "reasoning", text: "checking complete" });
+  expect(entries[0]).toEqual(entries[1]);
+  expect(entries[1]).toMatchObject({ kind: "reasoning", text: "checking" });
+  project.item({ id: "reason", type: "reasoning", summary: ["checking complete"] }, true);
+  expect(entries).toHaveLength(3);
+  expect(entries[2]).toMatchObject({ entryId: nativeEntryId("thread", "reason"), kind: "reasoning", text: "checking complete" });
 });
 test("web native options map explicit permissions and reject unsupported TUI arguments", () => {
   expect(parseProviderArguments("codex", ["--sandbox", "read-only", "--ask-for-approval", "on-request"])).toMatchObject({ sandbox: "read-only", approvalPolicy: "on-request" });

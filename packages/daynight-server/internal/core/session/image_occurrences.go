@@ -11,11 +11,12 @@ import (
 )
 
 func captureCanRetry(ctx context.Context, d store.SessionResourceDAO, c store.SessionCaptureRecord, writable bool) (bool, error) {
-	if !writable || c.Receipt.State != "failed" || c.Receipt.Resource != nil || c.Receipt.Error == nil || (c.Request.Locator.Kind != "local" && c.Request.Locator.Kind != "external") {
+	if !writable || c.Receipt.State != "failed" || c.Receipt.Resource != nil || c.Receipt.ResourceID != nil || c.Receipt.Error == nil || (c.Request.Locator.Kind != "local" && c.Request.Locator.Kind != "external") {
 		return false, nil
 	}
 	switch c.Receipt.Error.Code {
-	case "invalid_image", "unsupported_media_type", "decode_failed", "image_decode_failed":
+	case "invalid_image", "unsupported_media_type", "decode_failed", "image_decode_failed",
+		"source_not_found", "source_timeout", "source_changed", "source_busy", "source_rate_limited", "source_capacity", "source_queue_timeout":
 	default:
 		return false, nil
 	}

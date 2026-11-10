@@ -512,3 +512,26 @@ test("Claude subagent interruption does not replace the main turn marker identit
     expect(entries.filter(entry => entry.kind === "error")).toEqual([expect.objectContaining({ code: "turn_interrupted", entryId: nativeEntryId(provider.nativeSessionId, `${mainMarker}:0`) })]);
   } finally { await provider.close(); }
 });
+
+test("Claude native text and thinking become complete only at a block stop or completed SDK block", async () => {
+  const fixture = nativeFixture(), events: { entry: ProviderEntry; metadata: unknown }[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline: (entry, metadata) => events.push({ entry, metadata }), onState: () => {}, onSpawn: () => {} });
+  const stream = (event: unknown) => fixture.emit({ type: "stream_event", session_id: provider.nativeSessionId, event });
+  try {
+    stream({ type: "message_start", message: { id: "message" } });
+    stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "![image](local)" } });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0]!.metadata).toEqual({ complete: false, format: "markdown", truncated: false });
+    stream({ type: "content_block_stop", index: 0 });
+    fixture.emit({ type: "assistant", uuid: "assistant-body", session_id: provider.nativeSessionId, message: { id: "message", content: [{ type: "text", text: "![image](local)" }] } });
+    fixture.emit({ type: "assistant", uuid: "assistant-thought", session_id: provider.nativeSessionId, message: { id: "message", content: [{ type: "thinking", thinking: "reason" }] } });
+    fixture.emit({ type: "user", uuid: "tool-result", session_id: provider.nativeSessionId, message: { content: [{ type: "tool_result", tool_use_id: "tool", content: "![raw](local)" }] } });
+    await vi.waitFor(() => expect(events).toHaveLength(5));
+    expect(events.slice(1).map(event => event.metadata)).toEqual([
+      { complete: true, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }, { complete: true, format: "plain", truncated: false },
+    ]);
+    expect(events[0]!.entry.entryId).toBe(events[1]!.entry.entryId); expect(events[1]!.entry.entryId).toBe(events[2]!.entry.entryId);
+  } finally { await provider.close(); }
+});

@@ -37,6 +37,7 @@ for await (const line of createInterface({input:process.stdin})) {
   out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),...(process.env.CODEX_TEST_APPLY_EFFORT ? {reasoningEffort:m.params.config?.model_reasoning_effort ?? 'low'} : {}),thread:{id:'native-thread',cwd:process.cwd(),...(rollout?{path:rollout}:{})}}});
  }
  if(m.method==='thread/items/list') {
+  if(process.env.CODEX_TEST_MARKDOWN_HISTORY_STATUS) {out({id:m.id,result:{data:[{turnId:'markdown-history',item:{type:'agentMessage',id:'history-body',text:'![image](local)'},completedAtMs:null}],nextCursor:null}});continue;}
   if(interruptCase) {
    if(interruptCase==='history-read-failure'){out({id:m.id,error:{code:-32603,message:'History unavailable'}});continue;}
    const user={type:'userMessage',id:'user',clientId:interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'cancel'}]};
@@ -51,6 +52,7 @@ for await (const line of createInterface({input:process.stdin})) {
   } else out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]},...(process.env.CODEX_TEST_SLEEP ? [completedSleep] : [])],nextCursor:null}});
  }
  if(m.method==='thread/turns/list') {
+  if(process.env.CODEX_TEST_MARKDOWN_HISTORY_STATUS) {out({id:m.id,result:{data:[{id:'markdown-history',status:process.env.CODEX_TEST_MARKDOWN_HISTORY_STATUS}],nextCursor:null}});continue;}
   if(interruptCase==='large-history' && m.params.itemsView==='full'){out({id:m.id,error:{code:-32603,message:'Whole-turn history exceeds a bounded item page'}});continue;}
   if(interruptCase==='history-read-failure'){out({id:m.id,error:{code:-32603,message:'History unavailable'}});continue;}
   if(interruptCase==='history-delayed'){setTimeout(()=>out({id:m.id,result:{data:[{...interruptedHistory('native-turn'),items:[]}],nextCursor:null}}),200);continue;}

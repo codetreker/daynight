@@ -7,6 +7,12 @@ import type { InteractionResponse, SessionCapabilities, SessionSnapshot, Timelin
 export type NativeImagePart = { readonly type: "image"; readonly imageId: string; readonly resourceId: string; readonly mediaType: string; readonly byteLength: string; readonly sha256: string; readonly localPath: string };
 export type NativeInput = { readonly content: readonly (TextPart | NativeImagePart)[] };
 export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEntry ? Omit<T, "entrySeq"> : never : never;
+/** Native body lifecycle, supplied by the adapter rather than source text. */
+export type MarkdownTimelineMetadata = {
+  complete: boolean;
+  format: "markdown" | "plain";
+  truncated: boolean;
+};
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null };
 export type ProviderOptions = {
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
@@ -16,7 +22,7 @@ export type ProviderOptions = {
   validateNativeSelection?: true;
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
-  onTimeline(entry: ProviderEntry): void;
+  onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */
   hasTimelineEntry?(entryId: string): boolean;
   onState(state: ProviderState): void;

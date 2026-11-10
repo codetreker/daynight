@@ -9,7 +9,7 @@ import { query, getSessionInfo, getSessionMessages, type SDKUserMessage, type Pe
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
 import { record, string, NativeRpcError, NativeRpcTimeoutError } from "./native-rpc.js";
 import { ControllerStartupError } from "../startup.js";
-import { nativeEntryId, parseProviderArguments, readable, limited } from "./projection.js";
+import { nativeEntryId, parseProviderArguments, readable, limited, markdownTimelineMetadata } from "./projection.js";
 import { claudeApprovalDetail } from "./claude-approval-detail.js";
 import { formInteraction, validateResponse } from "./interactions.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
@@ -93,7 +93,14 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       if (e.type === "content_block_delta" && ["text_delta", "thinking_delta"].includes(string(delta.type))) {
         const value = textBlocks.get(key) ?? { text: "", kind: delta.type === "thinking_delta" ? "thinking" as const : "text" as const }; value.text += string(delta.text ?? delta.thinking); textBlocks.set(key, value);
         const canonicalKey = blockKey(streamKeys, streamOrdinals, key, streamingMessageId, value.kind);
-        options.onTimeline(value.kind === "thinking" ? { entryId: nativeEntryId(nativeId, canonicalKey), revision: "1", kind: "reasoning", text: limited(value.text) } : { entryId: nativeEntryId(nativeId, canonicalKey), revision: "1", kind: "assistant_message", content: [{ type: "text", text: limited(value.text) }] });
+        options.onTimeline(value.kind === "thinking" ? { entryId: nativeEntryId(nativeId, canonicalKey), revision: "1", kind: "reasoning", text: limited(value.text) } : { entryId: nativeEntryId(nativeId, canonicalKey), revision: "1", kind: "assistant_message", content: [{ type: "text", text: limited(value.text) }] }, markdownTimelineMetadata(value.text, false));
+      }
+      if (e.type === "content_block_stop") {
+        const value = textBlocks.get(key);
+        if (value) {
+          const canonicalKey = blockKey(streamKeys, streamOrdinals, key, streamingMessageId, value.kind);
+          options.onTimeline(value.kind === "thinking" ? { entryId: nativeEntryId(nativeId, canonicalKey), revision: "1", kind: "reasoning", text: limited(value.text) } : { entryId: nativeEntryId(nativeId, canonicalKey), revision: "1", kind: "assistant_message", content: [{ type: "text", text: limited(value.text) }] }, markdownTimelineMetadata(value.text, true));
+        }
       }
       if (currentTurnId) { accepted.get(currentTurnId)?.resolve(); accepted.delete(currentTurnId); }
       return;
@@ -119,10 +126,10 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
         // zero can refer to text after a streamed thinking block at index zero.
         const key = type === "assistant" ? blockKey(assistantKeys, assistantOrdinals, `${string(m.uuid) || id}:${index}`, id, string(part.type)) : `${id}:${index}`;
         const base = { entryId: nativeEntryId(nativeId, key), revision: "1" };
-        if (part.type === "text") options.onTimeline({ ...base, kind: type === "user" ? "user_message" : "assistant_message", content: [{ type: "text", text: limited(string(part.text)) }] });
-        else if (part.type === "thinking") options.onTimeline({ ...base, kind: "reasoning", text: limited(string(part.thinking)) });
-        else if (part.type === "tool_use") { const callId = string(part.id), tool = { name: string(part.name), input: limited(readable(part.input)) }; tools.set(callId, tool); options.onTimeline({ entryId: nativeEntryId(nativeId, callId), revision: "1", kind: "tool_call", callId, ...tool, output: [], status: "running", truncated: false }); }
-        else if (part.type === "tool_result") { const callId = string(part.tool_use_id); if (!history) for (const [id, pending] of interactions) if (pending.nativeToolId === callId) confirmInteraction(id, pending); const output = readable(part.content); const tool = tools.get(callId) ?? { name: "tool", input: "" }; options.onTimeline({ entryId: nativeEntryId(nativeId, callId), revision: "1", kind: "tool_call", callId, ...tool, output: [{ type: "text", text: limited(output) }], status: part.is_error ? "failed" : "completed", truncated: output.length > 200_000 }); }
+        if (part.type === "text") options.onTimeline({ ...base, kind: type === "user" ? "user_message" : "assistant_message", content: [{ type: "text", text: limited(string(part.text)) }] }, markdownTimelineMetadata(string(part.text), true));
+        else if (part.type === "thinking") options.onTimeline({ ...base, kind: "reasoning", text: limited(string(part.thinking)) }, markdownTimelineMetadata(string(part.thinking), true));
+        else if (part.type === "tool_use") { const callId = string(part.id), tool = { name: string(part.name), input: limited(readable(part.input)) }; tools.set(callId, tool); options.onTimeline({ entryId: nativeEntryId(nativeId, callId), revision: "1", kind: "tool_call", callId, ...tool, output: [], status: "running", truncated: false }, { complete: false, format: "plain", truncated: false }); }
+        else if (part.type === "tool_result") { const callId = string(part.tool_use_id); if (!history) for (const [id, pending] of interactions) if (pending.nativeToolId === callId) confirmInteraction(id, pending); const output = readable(part.content); const tool = tools.get(callId) ?? { name: "tool", input: "" }; options.onTimeline({ entryId: nativeEntryId(nativeId, callId), revision: "1", kind: "tool_call", callId, ...tool, output: [{ type: "text", text: limited(output) }], status: part.is_error ? "failed" : "completed", truncated: output.length > 200_000 }, markdownTimelineMetadata(output, true, "plain")); }
         else options.onTimeline({ ...base, kind: "error", code: "unsupported_native_content", message: `Native ${string(part.type)} content is unavailable in this text session.` });
       });
       if (!history && currentTurnId) { accepted.get(currentTurnId)?.resolve(); accepted.delete(currentTurnId); }
@@ -232,7 +239,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
         if (!capabilities.steer) throw new NativeRpcError(-32602, "This Claude version cannot accept input during an active turn.");
         const confirmation = new Promise<ProviderReceipt>((resolve, reject) => steered.set(operationId, { text, started: false, resolve, reject }));
         input.push({ type: "user", uuid: operationId as ReturnType<typeof randomUUID>, session_id: nativeId, message: { role: "user", content: text }, parent_tool_use_id: null });
-        options.onTimeline({ entryId: nativeEntryId(nativeId, `${operationId}:0`), revision: "1", kind: "user_message", content: [{ type: "text", text: limited(text) }] });
+        options.onTimeline({ entryId: nativeEntryId(nativeId, `${operationId}:0`), revision: "1", kind: "user_message", content: [{ type: "text", text: limited(text) }] }, markdownTimelineMetadata(text, true));
         return deadline(confirmation, "Claude steering acceptance is unknown.", 60_000);
       }
       if ([...steered.values()].some(item => !item.started)) throw new NativeRpcError(-32602, "Claude has pending native input.");
@@ -242,7 +249,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       // SDK input is not echoed in every live stream. Display the dispatch with
       // the same identity used by native echo/history, without recording an ACK
       // or feeding locally submitted content into native recovery evidence.
-      options.onTimeline({ entryId: nativeEntryId(nativeId, `${operationId}:0`), revision: "1", kind: "user_message", content: [{ type: "text", text: limited(text) }] });
+      options.onTimeline({ entryId: nativeEntryId(nativeId, `${operationId}:0`), revision: "1", kind: "user_message", content: [{ type: "text", text: limited(text) }] }, markdownTimelineMetadata(text, true));
       await deadline(Promise.all([identity, receipt]), "Claude input result or native session identity is unknown.", 60_000); return { disposition: "started", turnId: operationId };
   };
   return {

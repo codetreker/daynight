@@ -66,7 +66,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (item.type === "userMessage" && typeof item.clientId === "string") options.onInputObserved?.(item.clientId);
     projection?.item(item, completed);
   };
-  const readItems = async (turnId?: string, usersOnly = false): Promise<boolean> => {
+  const readItems = async (turnId?: string, usersOnly = false, turnComplete = false): Promise<boolean> => {
     let cursor: string | null = null;
     do {
       const page = record(await rpc.request("thread/items/list", { threadId: nativeId, ...(turnId ? { turnId } : {}), cursor, limit: 100, sortDirection: "asc" }));
@@ -74,7 +74,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       for (const raw of Array.isArray(page.data) ? page.data : []) {
         const entry = record(raw), item = record(entry.item ?? raw);
         if (turnId && entry.turnId && entry.turnId !== turnId) continue;
-        if (!usersOnly || item.type === "userMessage") projectItem(item, true, string(entry.turnId) || turnId || "");
+        if (!usersOnly || item.type === "userMessage") projectItem(item, item.type === "userMessage" || turnComplete || typeof entry.completedAtMs === "number", string(entry.turnId) || turnId || "");
       }
       cursor = string(page.nextCursor) || null;
     } while (cursor);
@@ -181,7 +181,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
           for (const raw of Array.isArray(page.data) ? page.data : []) {
             const turn = record(raw), id = string(turn.id);
             if (!id) throw new Error("Native history turn identity is unavailable.");
-            const completeHistory = await readItems(id);
+            const completeHistory = await readItems(id, false, ["completed", "interrupted", "failed"].includes(string(turn.status)));
             interruptions.completed(turn, completeHistory);
           }
           cursor = string(page.nextCursor) || null;

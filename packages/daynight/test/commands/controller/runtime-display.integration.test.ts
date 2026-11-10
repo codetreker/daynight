@@ -150,6 +150,28 @@ for (const provider of ["codex", "claude", "copilot"] as const) {
   });
 }
 
+test("runtime waits for trusted completion and retains withdrawn Markdown image occurrences", async () => {
+  const v = await setup("codex"), entryId = randomUUID();
+  const emit = (text: string, complete: boolean) => f.options!.onTimeline({ entryId, revision: "1", kind: "assistant_message", content: [{ type: "text", text }] }, { complete, format: "markdown", truncated: false });
+  try {
+    emit("![original](missing.png)", false);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(f.journal!.markdownStore.listIds("source", { limit: 32 })).toEqual([]);
+    emit("![original](missing.png)", true);
+    // The parser owns a two-second deadline independently of the 250 ms poll.
+    await vi.waitFor(() => expect(f.journal!.markdownStore.listIds("source", { limit: 32 })).toHaveLength(1), { timeout: 4000 });
+    const imageId = f.journal!.markdownStore.listIds("source", { limit: 32 })[0]!;
+    emit("Image was withdrawn.", true);
+    await vi.waitFor(() => {
+      const current = f.journal!.readTimeline({ historyEpoch: "fixture", direction: "tail", cursor: null, limit: 20 }).items.find(item => item.entryId === entryId);
+      expect(current).toMatchObject({ content: [{ type: "markdown", complete: true, bindings: [], retainedImages: [{ imageId }] }] });
+    }, { timeout: 4000 });
+    expect(f.journal!.markdownStore.listIds("source", { limit: 32 })).toEqual([imageId]);
+  } finally { await v.stop(); }
+  const recovered = openPendingContent(v.journalFile, v.ticket.sessionId).entries.get(entryId);
+  expect(recovered).toMatchObject({ content: [{ type: "markdown", text: "Image was withdrawn.", bindings: [], retainedImages: [expect.objectContaining({ imageId: expect.any(String) })] }] });
+}, 10_000);
+
 test.each(["identity", "interaction"] as const)("runtime still stops for invalid authoritative %s", async kind => {
   const diagnostic = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   const v = await setup("codex");

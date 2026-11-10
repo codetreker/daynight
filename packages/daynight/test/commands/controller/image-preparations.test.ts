@@ -93,10 +93,10 @@ test("capture staging waits for the original occurrence ACK and keeps immutable 
     f.store.registerImageCaptureRequest(request);
     expect(await media.stageCapture(input)).toMatchObject({ width: 23, height: 19, sha256: f.spec.sha256 });
     await (await import("node:fs/promises")).chmod(inputPath, 0o600); await writeFile(inputPath, Buffer.from("changed"));
-    expect(await media.readCapture({ captureId, attemptId, sha256: input.sha256, byteLength: input.byteLength, offset: "0", limit: 524288 })).toMatchObject({ preparationId: attemptId, data: f.bytes.toString("base64"), eof: true });
+    expect(await media.readCapture({ captureId, attemptId, sha256: input.sha256, byteLength: input.byteLength, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).toMatchObject({ preparationId: attemptId, data: f.bytes.toString("base64"), eof: true });
     await media.close(); f.store.close();
     const reopened = openControllerLifecycleStore(f.file, f.ticket, f.options); const saved = reopened.media();
-    try { expect(await saved.readCapture({ captureId, attemptId, sha256: input.sha256, byteLength: input.byteLength, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64") }); }
+    try { expect(await saved.readCapture({ captureId, attemptId, sha256: input.sha256, byteLength: input.byteLength, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).toMatchObject({ data: f.bytes.toString("base64") }); }
     finally { await saved.close(); reopened.close(); }
   } finally { await f.store.stopMedia(); f.store.close(); }
 });

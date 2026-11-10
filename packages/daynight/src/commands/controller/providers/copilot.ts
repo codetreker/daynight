@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { realpath, stat } from "node:fs/promises";
 import type { CopilotClient, CopilotSession, SessionConfig, SessionEvent } from "@github/copilot-sdk";
 import { NativeRpcError, record, string } from "./native-rpc.js";
-import { nativeEntryId, parseProviderArguments } from "./projection.js";
+import { nativeEntryId, parseProviderArguments, markdownTimelineMetadata } from "./projection.js";
 import { NativeTurns } from "./turns.js";
 import { CopilotInteractions } from "./copilot-interactions.js";
 import { CopilotProjection, copilotOwner } from "./copilot-projection.js";
@@ -194,7 +194,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(textNativeInput(result.prompt), operationId, null, result.displayPrompt); }
       if (result.kind !== "text" && result.kind !== "completed") throw new NativeRpcError(-32602, "Copilot command requires unsupported subcommand selection.");
       const text = result.kind === "text" ? result.text : result.message;
-      if (text) options.onTimeline({ entryId: nativeEntryId(nativeId, `command:${operationId}`), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
+      if (text) options.onTimeline({ entryId: nativeEntryId(nativeId, `command:${operationId}`), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] }, markdownTimelineMetadata(text, true, "plain"));
       return { disposition: "handled" };
     },
     async cancel(expectedTurnId): Promise<ProviderReceipt> {

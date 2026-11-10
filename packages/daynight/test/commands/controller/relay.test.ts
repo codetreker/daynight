@@ -25,6 +25,17 @@ const setup = async (operations: ControllerOperation[] = [], live = false, image
   files.lstat.mockResolvedValue({ isFile: () => true, isSymbolicLink: () => false, size: 100, mode: 0o600 });
   files.readFile.mockResolvedValue(JSON.stringify({ token: "private-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }));
   const journal = { acknowledgeEvents: vi.fn(), drainProjectionGap: vi.fn(), getLastAcknowledgedSequence: () => "8", pendingEvents: () => [], markOperationAcknowledged: vi.fn(), listUnacknowledgedOperations: (limit: number, after?: string) => operations.slice(after ? operations.findIndex(o => o.operationId === after) + 1 : 0, (after ? operations.findIndex(o => o.operationId === after) + 1 : 0) + limit) } as unknown as ControllerLifecycleStore;
+  let activeMediaBlocks = 0;
+  const tryAcquireMediaBlock = () => {
+    if (activeMediaBlocks === 2) return null;
+    activeMediaBlocks++;
+    let closed = false;
+    return { close: () => { if (!closed) { closed = true; activeMediaBlocks--; } } };
+  };
+  const setMedia = (source: Record<string, unknown> | (() => Record<string, unknown>)) => {
+    Object.assign(journal, { media: () => ({ ...(typeof source === "function" ? source() : source), tryAcquireMediaBlock }) });
+  };
+  setMedia({});
   const callbacks = { onConnection: vi.fn(), onCommand: vi.fn().mockResolvedValue(undefined), onError: vi.fn(), onRetryCapture: vi.fn<({ captureId, attemptId }: { captureId: string; attemptId: string }, signal: AbortSignal) => Promise<import("../../../src/session/image-values.js").ValidatedImage>>() };
   const relay = createControllerRelay(ticket, journal, callbacks); cleanup.push(relay.close);
   await vi.waitFor(() => expect(transport.sockets.length).toBe(1));
@@ -32,7 +43,7 @@ const setup = async (operations: ControllerOperation[] = [], live = false, image
   const frame = (type: string, extra = {}) => ({ protocol: snapshot.protocol, sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, connectionEpoch: "3", type, ...extra });
   const emit = (value: unknown) => socket.emit("message", Buffer.from(JSON.stringify(value)));
   emit({ type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: { ...snapshot, historyEpoch, ...(images ? { contentRevision: 2, imageBudget: { revision: "1", maxBytes: "0", committedBytes: "0", reservedBytes: "0", maxResources: 0, committedResources: 0, reservedResources: 0 }, capabilities: { ...snapshot.capabilities, images: { revision: "1", providerRevision: "1", expectedNativeSessionId: null, modelId: null, controlsRevision: null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: "0", maxMessageImageBytes: "0", maxImagesPerMessage: 0, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } } } } : {}) }, lastAckedSourceSeq: "8", limits: RELAY_LIMITS, ...(live ? { requiresLiveSync: true } : {}) });
-  return { relay, journal, callbacks, ticket, socket, emit, frame, historyEpoch };
+  return { relay, journal, callbacks, ticket, socket, emit, frame, historyEpoch, setMedia };
 };
 
 test("reconciliation waits for all bounded pages and retains unknown without native dispatch", async () => {
@@ -206,10 +217,10 @@ test("does not HTML-expand or replace pending approval content in live sync", as
 });
 
 test("media capacity is bounded independently while authorization remains responsive", async () => {
-  const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
+  const { relay, socket, emit, frame, setMedia } = await setup(); emit(frame("reconcile_result", { operations: [] }));
   const pending: (() => void)[] = [];
   const status = vi.fn(() => new Promise<null>(resolve => { pending.push(() => resolve(null)); }));
-  Object.assign(journal, { media: () => ({ status }) });
+  setMedia({ status });
   for (let i = 0; i < 3; i++) emit(frame("image_request", { requestId: randomUUID(), action: "status", body: { uploadId: randomUUID() } }));
   await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
   expect(socket.sent.filter(value => value.type === "image_response")).toEqual([expect.objectContaining({ action: "status", result: null, error: expect.objectContaining({ code: "rate_limited" }) })]);
@@ -229,9 +240,9 @@ test.each([
   ["release", new Error("Image preparation is unavailable."), "image_unavailable"],
   ["release", new Error("Image preparation target_changed."), "target_changed"],
 ] as const)("%s preserves the release error classification %s as %s", async (action, error, code) => {
-  const { relay, journal, socket, emit, frame, callbacks } = await setup();
+  const { relay, socket, emit, frame, callbacks, setMedia } = await setup();
   emit(frame("reconcile_result", { operations: [] }));
-  Object.assign(journal, { media: () => ({ [action]: async () => { throw error; } }) });
+  setMedia({ [action]: async () => { throw error; } });
   const requestId = randomUUID(), body = { uploadId: randomUUID() };
   emit(frame("image_request", { requestId, action, body }));
   await vi.waitFor(() => expect(socket.sent.filter(value => value.type === "image_response")).toEqual([
@@ -246,16 +257,16 @@ test.each([
   ["SQLITE_BUSY", Object.assign(new Error("Private media initialization failed."), { code: "SQLITE_BUSY" })],
   ["storage-only AggregateError", new AggregateError([Object.assign(new Error("Directory sync failed."), { code: "EIO" }), Object.assign(new Error("Media ledger is locked."), { code: "SQLITE_BUSY" })], "Private media initialization failed.")],
 ] as const)("reoffers the original release after %s prevents lazy media initialization", async (_name, error) => {
-  const { relay, journal, socket, emit, frame, callbacks, ticket } = await setup();
+  const { relay, socket, emit, frame, callbacks, ticket, setMedia } = await setup();
   emit(frame("reconcile_result", { operations: [] }));
   const spec = { uploadId: randomUUID(), imageId: randomUUID(), target: { serverOrigin: ticket.serverOrigin, actorUserId: randomUUID(), fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: null }, name: "original.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) };
   const released = { uploadId: spec.uploadId, imageId: spec.imageId, target: spec.target, state: "released", acceptedOffset: "0", validated: null, error: null };
   let storageAvailable = false;
   const release = vi.fn(async () => released);
-  Object.assign(journal, { media: () => {
+  setMedia(() => {
     if (!storageAvailable) throw error;
     return { release };
-  } });
+  });
   const prepareId = randomUUID(), releaseId = randomUUID();
   const responses = () => socket.sent.filter(value => value.type === "image_response");
   emit(frame("image_request", { requestId: prepareId, action: "prepare", body: spec }));
@@ -299,10 +310,10 @@ test.each([
 });
 
 test("concurrent completions retain their original identities while one decoder drains a bounded queue", async () => {
-  const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
+  const { relay, socket, emit, frame, setMedia } = await setup(); emit(frame("reconcile_result", { operations: [] }));
   const pending: (() => void)[] = [];
   const complete = vi.fn(() => new Promise<null>(resolve => { pending.push(() => resolve(null)); }));
-  Object.assign(journal, { media: () => ({ complete }) });
+  setMedia({ complete });
   const bodies = Array.from({ length: 34 }, () => ({ uploadId: randomUUID(), sha256: "a".repeat(64), byteLength: "1" })), ids = bodies.map(() => randomUUID());
   bodies.forEach((body, index) => emit(frame("image_request", { requestId: ids[index], action: "complete", body })));
   await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
@@ -318,10 +329,10 @@ test("concurrent completions retain their original identities while one decoder 
 });
 
 test("disconnect removes queued decoders before their preparation can be read", async () => {
-  const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
+  const { relay, socket, emit, frame, setMedia } = await setup(); emit(frame("reconcile_result", { operations: [] }));
   let release!: () => void;
   const complete = vi.fn(() => new Promise<null>(resolve => { release = () => resolve(null); }));
-  Object.assign(journal, { media: () => ({ complete }) });
+  setMedia({ complete });
   for (let i = 0; i < 2; i++) emit(frame("image_request", { requestId: randomUUID(), action: "complete", body: { uploadId: randomUUID(), sha256: "a".repeat(64), byteLength: "1" } }));
   await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
   socket.close(); release(); await relay.close();
