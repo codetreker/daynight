@@ -167,10 +167,12 @@ the original assignment, and submits `done` with the original claim ID and exact
 observed version as the final task mutation. A rejected or unknown write requires
 observation before another decision; never automatically replay it or fall back to
 ordinary completion. When necessary human intervention cannot be supplied within
-the assignment's authority, the Agent pauses its own task and confirms the pause;
-it verifies resolution and authorization before clearing the pause and reading it
-back. Pending review or CI remains an ordinary wait. Preserve the controller-owned
-worktree, branch and workspace throughout.
+the assignment's authority, the Agent rereads the task, verifies the original
+assignment, and pauses its own task using that observation's exact version. It
+reads back the pause and assignment, then verifies resolution, authorization and
+the original assignment before clearing the pause with a newly observed version
+and reading it back. Pending review or CI remains an ordinary wait. Preserve the
+controller-owned worktree, branch and workspace throughout.
 
 From the coordinator, read the task and `acceptance/result.md` with the explicit
 development CLI/root. In the website, verify the same task is done and open the
