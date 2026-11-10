@@ -198,7 +198,7 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
   it("preserves quoted argv, Unicode environment, NUL input, and a backpressured binary pipe tail", async () => {
     const root = await mkdtemp(path.join(directory, "argv 中文 "));
     const args = ["", "two words", 'embedded"quote', "trailing\\", "中文", "tab\tvalue"], tail = Buffer.alloc(256 * 1024, 0xab);
-    const source = "const fs=require('node:fs');process.stdout.end(Buffer.alloc(256*1024,0xab));process.stderr.end(JSON.stringify({args:process.argv.slice(1),value:process.env.DAYNIGHT_NATIVE_VALUE,cwd:process.cwd(),input:fs.readFileSync(0).length,path:process.env.PATH,systemRoot:process.env.SystemRoot,coverage:process.env.NODE_V8_COVERAGE}));";
+    const source = "const fs=require('node:fs');process.stderr.end(JSON.stringify({args:process.argv.slice(1),value:process.env.DAYNIGHT_NATIVE_VALUE,cwd:process.cwd(),input:fs.readFileSync(0).length,path:process.env.PATH,systemRoot:process.env.SystemRoot,coverage:process.env.NODE_V8_COVERAGE})+'\\n');process.stdout.end(Buffer.alloc(256*1024,0xab));";
     const environment = { PATH: path.dirname(process.execPath), Path: "Z:\\not-the-executable-path", DAYNIGHT_NATIVE_VALUE: "中文=value" };
     const file = path.basename(process.execPath), targetArgs = ["-e", source, "--", ...args];
     const baseline = await new Promise<{ code: number | null; output: Buffer; metadata: unknown }>((resolve, reject) => {
@@ -214,11 +214,13 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
     const command = spawnWindowsOwnedCommand({ file, args: targetArgs, cwd: root,
       environment, stdin: "ignore", resolver: "node", deadline: performance.now() + 15_000,
       graceMs: 1000, pipeCloseMs: 1000, normalDisposition: "release", stopAdmission: "seal", failureDisposition: "last-close", onReleased: () => { committed = true; } });
-    const errors: Buffer[] = []; let stderrEnded = false;
+    const errors: Buffer[] = []; let stderrEnded = false, primary: unknown, stage = "start";
     command.stderr.on("data", chunk => { errors.push(chunk as Buffer); }); command.stderr.once("end", () => { stderrEnded = true; });
     try {
-      await command.start(); await until(() => stderrEnded);
+      await command.start(); stage = "metadata-frame-and-backpressure";
+      await until(() => Buffer.concat(errors).includes(10) && command.stdout.readableLength >= command.stdout.readableHighWaterMark);
       expect(command.result).toBeUndefined();
+      stage = "drain-binary-tail";
       const chunks: Buffer[] = []; for await (const chunk of command.stdout) chunks.push(chunk as Buffer);
       await command.closed;
       expect(Buffer.concat(chunks)).toEqual(tail);
@@ -226,7 +228,18 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
       expect(baseline.metadata).toMatchObject({ args, value: "中文=value", cwd: root, input: 0, path: environment.PATH });
       expect(command.result).toEqual({ kind: "exit", code: 0, signal: null, failure: null });
       await command.release(); expect(committed).toBe(true);
-    } finally { if (!committed) await command.stop(); }
+    } catch (error) { primary = error; throw error; }
+    finally {
+      const failures: unknown[] = [];
+      if (!committed) {
+        command.stdout.resume(); command.stderr.resume();
+        try { await command.stop(); } catch (error) { failures.push(error); }
+      }
+      console.error("WINDOWS_NATIVE_PIPE_PARITY_DIAGNOSTIC " + JSON.stringify({ stage, primaryError: primary instanceof Error ? { name: primary.name } : null,
+        cleanupErrors: failures.map(error => error instanceof Error ? { name: error.name } : { type: typeof error }), stderrFrameBytes: Buffer.concat(errors).length,
+        stderrEnded, stdoutEnded: command.stdout.readableEnded, stdoutBufferedBytes: command.stdout.readableLength, stdoutHighWaterMark: command.stdout.readableHighWaterMark, committed }));
+      if (failures.length) throw new AggregateError(primary === undefined ? failures : [primary, ...failures], "Native pipe parity fixture cleanup failed.", primary === undefined ? undefined : { cause: primary });
+    }
   }, 30_000);
 
   it.each([7, 259])("reports actual DWORD exit %i from a signaled original process", async code => {
@@ -242,9 +255,20 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
   it.each(["missing", "bad-image"])("keeps a genuine %s spawn failure aligned with Node", async profile => {
     const file = path.join(directory, `${profile}.exe`), args = ["fixture argument"];
     if (profile === "bad-image") writeFileSync(file, "This is an ordinary test file, not a PE executable.");
+    let delivery: "synchronous" | "error-event" | undefined;
     const baseline = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
-      const child = spawn(file, args, { cwd: directory, stdio: "ignore", windowsHide: true });
-      child.once("error", resolve); child.once("spawn", () => { child.kill("SIGKILL"); reject(new Error("Invalid image fixture unexpectedly executed.")); });
+      const failed = (error: unknown, observed: typeof delivery): void => {
+        if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "string" || !("errno" in error) || typeof error.errno !== "number") { reject(error); return; }
+        delivery = observed; resolve(error as NodeJS.ErrnoException);
+      };
+      let child: ChildProcess;
+      try { child = spawn(file, args, { cwd: directory, stdio: "ignore", windowsHide: true }); }
+      catch (error) { failed(error, "synchronous"); return; }
+      child.once("error", error => { failed(error, "error-event"); });
+      child.once("spawn", () => {
+        child.once("close", () => { reject(new Error("Invalid image fixture unexpectedly executed.")); });
+        child.kill("SIGKILL");
+      });
     });
     let committed = false;
     const command = spawnWindowsOwnedCommand({ file, args, cwd: directory, environment: process.env, stdin: "ignore", resolver: "node", deadline: performance.now() + 15_000,
@@ -252,6 +276,9 @@ describe.skipIf(process.platform !== "win32")("native platform Windows command o
     command.stdout.resume(); command.stderr.resume();
     try {
       await command.start(); await command.closed;
+      const receipt = command.result;
+      console.error("WINDOWS_NATIVE_SPAWN_PARITY_DIAGNOSTIC " + JSON.stringify({ profile, delivery, baseline: { code: baseline.code, errno: baseline.errno },
+        candidate: receipt?.kind === "not-started" ? { kind: receipt.kind, code: receipt.error.code, errno: receipt.error.errno, win32Code: receipt.error.win32Code } : { kind: receipt?.kind } }));
       expect(command.result).toMatchObject({ kind: "not-started", error: { code: baseline.code, errno: baseline.errno, syscall: `spawn ${file}`, path: file, spawnargs: args } });
       await command.release();
     } finally { if (!committed) await command.stop(); }

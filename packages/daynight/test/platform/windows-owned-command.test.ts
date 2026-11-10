@@ -96,6 +96,24 @@ describe("Windows native command ownership with controlled Win32 calls and real 
     await expect(f.command.release()).rejects.toBeInstanceOf(WindowsCommandCleanupError);
   });
 
+  it("joins actual pipe EOF during STOP when the public output is deliberately backpressured", async () => {
+    const f = fixture(); f.command.stderr.resume(); let primary: unknown;
+    try {
+      await f.command.start(); f.endOutputs(Buffer.alloc(256 * 1024, 0xab), Buffer.alloc(0));
+      await expect.poll(() => f.command.stdout.readableLength >= f.command.stdout.readableHighWaterMark, { timeout: 1000, interval: 10 }).toBe(true);
+      f.jobs.terminate = () => { f.exit(1); };
+      await f.command.stop();
+      expect(f.command.stdout.readableEnded).toBe(true); expect(f.command.stderr.readableEnded).toBe(true);
+      expect(f.command.result).toBeUndefined(); expect(f.commit).not.toHaveBeenCalled(); expect(f.accepted.every(socket => socket.readableEnded)).toBe(true);
+    } catch (error) { primary = error; throw error; }
+    finally {
+      f.command.stdout.resume(); f.command.stderr.resume();
+      const cleanup = await f.command.stop().then(() => undefined, error => error);
+      for (const client of f.clients) client.socket.destroy();
+      if (cleanup !== undefined && cleanup !== primary) throw new AggregateError(primary === undefined ? [cleanup] : [primary, cleanup], "Backpressure fixture cleanup failed.");
+    }
+  });
+
   it("retains an accepted socket read error during STOP and refuses close without actual EOF", async () => {
     const f = fixture(), error = new Error("actual accepted socket read failed"); f.command.stdout.resume(); f.command.stderr.resume();
     await f.command.start();

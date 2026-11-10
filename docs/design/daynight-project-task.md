@@ -239,12 +239,15 @@ stdout/stderr 由 Node 公有 named-pipe reader 与 native client writer 配对�
 `platform/windows-native-command.ts` 编排目标与管道生命期，`windows-native-process.ts`
 封装 Win32 ABI，`windows-native-command-data.ts` 保持 Node 参数、环境和查找语义；
 共同 Job 和错误合同由平台 owned-command 持有，不从 repository 反向依赖 review。
-Node permission 参数按 builtin 规则传播；启用 permission 时，同步观察 builtin 归一化
-是否读取原始 execArgv，stdio 解析开始即恢复原数组和 descriptor，早于可重入的权限诊断；
-提前失败也必须恢复。传播使用实际归一化输入，不依赖环境 clone 的可见副作用。原生创建前
-再以可信无副作用命令和无效 stdin descriptor 执行 builtin 权限检查，只接受未创建子进程的
-EBADF/pid0 结果，强制拒绝保留原 Node 错误，audit-only 保留审计语义；未知结果拒绝启动。
-该检查不执行观察子进程。实际 pipe transport
+Node permission 传播直接使用当前 builtin 实际追加的参数，保留其 flags、条件 allowance
+与 target opt-out，不维护版本镜像。同步观察中，窄 string-like 参数保持 startsWith 与
+primitive 值，只记录实际 append 分支的 coercion；原 target argv 位于可信脚本的 `--` 后，
+原 NODE_OPTIONS 仅参加归一化，不被观察子进程执行。stdio 解析开始即恢复原数组和
+descriptor，早于可重入的权限诊断；提前失败也必须恢复。原生创建前再以可信无副作用
+命令和无效 stdin descriptor 执行权限检查，只接受未创建子进程的 EBADF/pid0 结果，强制
+拒绝保留原 Node 错误，audit-only 保留审计语义；未知结果拒绝启动。
+异常 STOP 主动恢复公共输出的读取，已销毁输出则从真实 socket 排空，避免上层背压阻塞
+清理；两者都要求底层实际 EOF。实际 pipe transport
 错误和创建收尾错误独立保留，Operation 取消或到期选择主因时仍携带这些清理错误。
 
 取消、期限、输出超限或通道失败先封闭 Job 的新进程准入，再终止 Job，等待实际捕获的

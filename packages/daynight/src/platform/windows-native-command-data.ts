@@ -49,21 +49,22 @@ export const quoteWindowsNativeArgument = (value: string): string => {
 };
 
 const requiredEnvironment = ["HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR"] as const;
-const permissionFlags = ["--allow-fs-read", "--allow-fs-write", "--allow-addons", "--allow-child-process", "--allow-inspector", "--allow-wasi", "--allow-worker", "--allow-openssl-store", "--permission"] as const;
 type ChildCreationDeniedError = Error & { code: "ERR_ACCESS_DENIED"; permission: "ChildProcess" };
 const deniedChildCreation = (error: unknown): error is ChildCreationDeniedError => error instanceof Error && "code" in error && error.code === "ERR_ACCESS_DENIED" &&
   "permission" in error && error.permission === "ChildProcess";
 
 // The public permission object exists in both enforcement and audit mode; only Node's
-// own normalizer knows whether to propagate flags. Observe its actual argv iteration,
-// then restore argv before stdio validation enters the binding or emits diagnostics.
-// https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/lib/child_process.js#L541-L584
+// own normalizer knows each runtime's flags and opt-outs. Record only the argv values
+// it actually appends, then restore argv before binding permission diagnostics.
+// https://github.com/nodejs/node/blob/27f213124280b4db4cd1e3dd42f6f8afd01ceff7/lib/child_process.js#L550-L563
+// https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/child_process.js#L569-L586
 // https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/lib/child_process.js#L885-L933
-const checkChildPermission = (observePropagation: boolean): readonly string[] => {
+type PermissionPropagationTarget = { args: readonly string[]; nodeOptions: string | undefined };
+const checkChildPermission = (target?: PermissionPropagationTarget): readonly string[] => {
   const captured: string[] = [];
   const stdio: [number, "ignore", "ignore"] = [0x7fff_ffff, "ignore", "ignore"];
   let restore = (): void => {};
-  if (observePropagation) {
+  if (target !== undefined) {
     const descriptor = Object.getOwnPropertyDescriptor(process, "execArgv");
     if (descriptor === undefined || !("value" in descriptor) || !descriptor.configurable) {
       throw new Error("Node execArgv cannot be observed before native command admission.");
@@ -78,11 +79,13 @@ const checkChildPermission = (observePropagation: boolean): readonly string[] =>
     const observed = new Proxy(argv, { get: (target, key, receiver) => {
       const value = Reflect.get(target, key, receiver) as unknown;
       if (key !== Symbol.iterator) return value;
-      return function* (): Generator<string> {
+      return function* (): Generator<{ startsWith(prefix: string): boolean; [Symbol.toPrimitive](): string }> {
         const iterator = Reflect.apply(value as (...args: never[]) => Iterator<string>, receiver, []) as Iterator<string>;
         for (const argument of { [Symbol.iterator]: () => iterator }) {
-          if (observing) captured.push(argument);
-          yield argument;
+          yield {
+            startsWith: (prefix: string) => argument.startsWith(prefix),
+            [Symbol.toPrimitive]: () => { if (observing) captured.push(argument); return argument; },
+          };
         }
       };
     } });
@@ -91,8 +94,8 @@ const checkChildPermission = (observePropagation: boolean): readonly string[] =>
   }
   let result: ReturnType<typeof spawnSync>;
   try {
-    result = spawnSync(process.execPath, ["-e", "process.exit(125)"], {
-      env: { NODE_OPTIONS: "", NODE_V8_COVERAGE: undefined }, stdio, timeout: 1000,
+    result = spawnSync(process.execPath, ["-e", "process.exit(125)", ...(target === undefined ? [] : ["--", ...target.args])], {
+      env: { NODE_OPTIONS: target === undefined ? "" : target.nodeOptions, NODE_V8_COVERAGE: undefined }, stdio, timeout: 1000,
     });
   } catch (error) {
     if (deniedChildCreation(error)) throw error;
@@ -111,17 +114,13 @@ const checkChildPermission = (observePropagation: boolean): readonly string[] =>
 // https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/src/spawn_sync.cc#L380-L404
 // https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/deps/uv/src/win/process.c#L1005-L1076
 export const assertWindowsNativeChildPermission = (): void => {
-  if (process.permission !== undefined) checkChildPermission(false);
+  if (process.permission !== undefined) checkChildPermission();
 };
 
 const copyPermissionFlags = (environment: NodeJS.ProcessEnv, args: readonly string[]): void => {
-  if (process.permission === undefined || args.includes("--permission") || args.includes("--permission-audit")) return;
-  const options = environment.NODE_OPTIONS;
-  if (options?.split(/\s+/).some(token => token === "--permission" || token.startsWith("--permission=") || token === "--permission-audit" || token.startsWith("--permission-audit="))) return;
-  for (const argument of checkChildPermission(true)) {
-    for (const flag of permissionFlags) {
-      if (argument.startsWith(flag)) environment.NODE_OPTIONS = environment.NODE_OPTIONS ? `${environment.NODE_OPTIONS} ${argument}` : argument;
-    }
+  if (process.permission === undefined) return;
+  for (const argument of checkChildPermission({ args, nodeOptions: environment.NODE_OPTIONS })) {
+    environment.NODE_OPTIONS = environment.NODE_OPTIONS ? `${environment.NODE_OPTIONS} ${argument}` : argument;
   }
 };
 type EnvironmentEntry = { name: string; value: string };

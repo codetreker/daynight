@@ -36,19 +36,22 @@ stops before target creation, while connected sockets retain their actual EOF
 and backpressure. Handshake bytes do not enter Git output. Inheritable stdio
 copies exist only during the synchronous creation interval and are closed in the
 parent immediately afterward. Node's argv, executable search, environment and
-native error rules remain the compatibility boundary. Node permission flags
-propagate before environment-key deduplication. A synchronous builtin check with
-a trusted, harmless Node command and invalid stdin descriptor observes whether
-Node actually reads the parent permission arguments during normalization. The
-original argument array and descriptor are restored as stdio parsing begins,
+native error rules remain the compatibility boundary. Node permission propagation is delegated to the running builtin normalizer before
+environment-key deduplication. During a synchronous invalid-stdin-descriptor
+check, narrow string-like argument records return the original primitive for
+prefix checks and capture only the coercions in actual append branches. This
+preserves each runtime's flag selection, conditional allowances and target
+opt-out rules without maintaining a version-specific mirror. Original target
+arguments follow the harmless probe script's `--`; original `NODE_OPTIONS`
+participates in normalization but is never executed by an observer child.
+
+The original argument array and descriptor are restored as stdio parsing begins,
 before the binding can publish reentrant permission diagnostics; a finally path
-also restores them after an earlier error. Captured normalization inputs determine
-propagation without relying on a cloned environment's mutation or mutable flags
-to infer the active mode. The same builtin permission check runs before native
-creation; only its pre-creation EBADF result with no child PID admits the target.
-Enforced denial preserves the original Node error, audit-only policy retains its
-warning semantics, and an unexpected result refuses native launch. No observer
-child interprets the copied options. Node's
+also restores them after an earlier error. The same builtin permission check
+runs again before native creation. Only a pre-creation EBADF result with no child
+PID admits the target. Enforced denial preserves the original Node error,
+audit-only policy keeps its warning semantics, and an unexpected result refuses
+native launch. Node's
 [normalization and stdio ordering](https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/lib/child_process.js#L885-L933)
 precedes its
 [synchronous permission diagnostics](https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/src/permission/permission.cc#L248-L278).
@@ -84,9 +87,10 @@ before failure cleanup.
 Failed Git stop uses terminal best-effort cleanup within the existing budgets.
 It preserves the original error and uncertainty, attempts the remaining Job
 close without clearing kill-on-close, joins observable resources, and releases
-its observation handles. Assisted pipe closure is recorded as such; an errored
-public output is drained through its real socket rather than used to invent
-EOF. Actual transport failures remain in a separate cleanup journal across
+its observation handles. Assisted pipe closure is recorded as such. Abnormal stop resumes intact public
+outputs so unread backpressure cannot prevent pipe completion. A destroyed
+public output is instead unpiped and drained through its real socket. Both paths
+still require actual socket EOF; neither invents it. Actual transport failures remain in a separate cleanup journal across
 STOP; public capture failure alone does not establish a transport failure.
 Creation-finalization failures enter that journal before fallible process
 observation. Repository error classification retains these original objects

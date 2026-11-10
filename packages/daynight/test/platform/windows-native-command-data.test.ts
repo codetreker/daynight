@@ -23,11 +23,26 @@ const api = (files: readonly string[], inherited: NodeJS.ProcessEnv = {}): Windo
 });
 const input = (environment: NodeJS.ProcessEnv = {}) => ({ file: "git", args: [] as string[], cwd: "C:\\work", environment });
 const block = (value: Buffer): string[] => value.toString("utf16le").split("\0").filter(Boolean);
+type PermissionProbeOptions = { env: NodeJS.ProcessEnv; stdio: [number, string, string] };
+const normalizedArguments = (call: unknown[], flags: readonly string[]): void => {
+  const args = call[1] as string[], options = call[2] as PermissionProbeOptions;
+  const policy = options.env.NODE_OPTIONS;
+  const explicitPolicy = args.includes("--permission") || args.includes("--permission-audit") ||
+    policy?.split(/\s+/).some(token => token === "--permission" || token.startsWith("--permission=") || token === "--permission-audit" || token.startsWith("--permission-audit="));
+  if (explicitPolicy) return;
+  for (const argument of process.execArgv) {
+    for (const flag of flags) {
+      if (argument.startsWith(flag)) options.env.NODE_OPTIONS = `${options.env.NODE_OPTIONS ? options.env.NODE_OPTIONS + " " + argument : argument}`;
+    }
+  }
+};
 const permissionContext = <T>(args: readonly string[], active: boolean, read: () => T, propagates = true): T => {
   const original = process;
   boundary.check = (...call) => {
-    if (propagates) [...process.execArgv];
-    const options = call[2] as { stdio: [number, string, string] };
+    expect(call[0]).toBe(process.execPath);
+    expect((call[1] as string[]).slice(0, 3)).toEqual(["-e", "process.exit(125)", "--"]);
+    if (propagates) normalizedArguments(call, ["--permission", "--allow-"]);
+    const options = call[2] as PermissionProbeOptions;
     expect(options.stdio[0]).toBe(0x7fff_ffff);
     return qualifiedCheck();
   };
@@ -165,7 +180,13 @@ describe("Windows native target permission propagation", () => {
     "does not turn actual %s audit diagnostics into permission propagation", origin => {
       const moduleUrl = pathToFileURL(path.resolve("dist/platform/windows-native-command-data.js")).href;
       const source = `const {prepareWindowsNativeCommand}=await import(${JSON.stringify(moduleUrl)});
-        const {channel}=await import('node:diagnostics_channel');
+        const {spawnSync}=await import('node:child_process');const {channel}=await import('node:diagnostics_channel');
+        const observe=(options,args=[])=>{
+          const child=spawnSync(process.execPath,['-e','process.stdout.write(JSON.stringify(process.env.NODE_OPTIONS))',...args],
+            {env:{NODE_OPTIONS:options},encoding:'utf8',timeout:1000});
+          if(child.error)throw child.error;if(child.status!==0)throw new Error(child.stderr);return JSON.parse(child.stdout);
+        };
+        const input=observe('--trace-warnings',['--','--permission']),expected=observe(input);
         const argv=process.execArgv,descriptor=Object.getOwnPropertyDescriptor(process,'execArgv');let diagnostics=0;
         channel('node:permission-model:child').subscribe(()=>{
           diagnostics++;if(process.execArgv!==argv)throw new Error('argv identity changed during diagnostics');
@@ -173,16 +194,18 @@ describe("Windows native target permission propagation", () => {
         });
         const api={environmentValue:()=>undefined,compareOrdinal:(a,b)=>a.toUpperCase().localeCompare(b.toUpperCase()),
           needCurrentDirectory:()=>true,fileExists:()=>true,shortPath:file=>file};
-        const data=prepareWindowsNativeCommand({file:'git',args:[],cwd:'C:/work',environment:{NODE_OPTIONS:'--trace-warnings'}},api);
+        const data=prepareWindowsNativeCommand({file:'git',args:[],cwd:'C:/work',environment:{NODE_OPTIONS:input}},api);
         const actual=data.environment.toString('utf16le').split('\\0').find(v=>v.startsWith('NODE_OPTIONS=')).slice(13);
-        process.stdout.write(JSON.stringify({actual,diagnostics,restored:process.execArgv===argv,
+        process.stdout.write(JSON.stringify({actual,expected,diagnostics,restored:process.execArgv===argv,
           descriptor:Object.getOwnPropertyDescriptor(process,'execArgv').value===descriptor.value}));`;
       const flags = ["--permission-audit", "--allow-addons", "--allow-fs-read=*"];
       const reference = spawnSync(process.execPath, [...(origin === "execArgv" ? flags : []), "--input-type=module", "-e", source], {
         env: { ...process.env, NODE_OPTIONS: origin === "NODE_OPTIONS" ? flags.join(" ") : "" }, encoding: "utf8", timeout: 3500,
       });
       expect(reference.error).toBeUndefined(); expect(reference.status, reference.stderr).toBe(0);
-      expect(JSON.parse(reference.stdout)).toEqual({ actual: "--trace-warnings", diagnostics: 1, restored: true, descriptor: true });
+      const observed = JSON.parse(reference.stdout) as { actual: string; expected: string; diagnostics: number; restored: boolean; descriptor: boolean };
+      expect(observed.actual).toBe(observed.expected);
+      expect(observed).toMatchObject({ diagnostics: 1, restored: true, descriptor: true });
     });
 
   it("copies literal allowed paths containing whitespace without starting an interpreter", () => {
@@ -190,11 +213,48 @@ describe("Windows native target permission propagation", () => {
     expect(permissionContext(args, true, () => targetNodeOptions({}))).toBe(args.join(" "));
   });
 
-  it("copies all pinned permission flags and audit mode while ignoring unrelated exec flags", () => {
+  it("copies only the flags the builtin appends, including allowances beyond the pinned Node 24 list", () => {
     const args = ["--trace-warnings", "--permission-audit", "--allow-fs-read=C:\\one", "--allow-fs-write=C:\\two", "--allow-addons",
-      "--allow-child-process", "--allow-inspector", "--allow-wasi", "--allow-worker", "--allow-openssl-store"];
-    const expected = "--permission-audit --allow-fs-read=C:\\one --allow-fs-write=C:\\two --allow-addons --allow-child-process --allow-inspector --allow-wasi --allow-worker --allow-openssl-store";
+      "--allow-child-process", "--allow-inspector", "--allow-wasi", "--allow-worker", "--allow-openssl-store", "--allow-net", "--allow-fs-vfs", "--allow-ffi"];
+    const expected = "--permission-audit --allow-fs-read=C:\\one --allow-fs-write=C:\\two --allow-addons --allow-child-process --allow-inspector --allow-wasi --allow-worker --allow-openssl-store --allow-net --allow-fs-vfs --allow-ffi";
     expect(permissionContext(args, true, () => targetNodeOptions({}))).toBe(expected);
+  });
+
+  it("does not copy unmatched argv and preserves actual duplicate-match order", () => {
+    permissionContext(["--unmatched", "--allow-net", "--permission"], true, () => {
+      boundary.check = (...call) => {
+        normalizedArguments(call, ["--allow", "--allow-net", "--permission"]);
+        (call[2] as PermissionProbeOptions).stdio[0];
+        return qualifiedCheck();
+      };
+      expect(targetNodeOptions({})).toBe("--allow-net --allow-net --permission");
+    });
+  });
+
+  it("passes the complete target argv and literal options to the builtin opt-out decision", () => {
+    permissionContext(parentFlags, true, () => {
+      boundary.check = (...call) => {
+        expect(call[1]).toEqual(["-e", "process.exit(125)", "--", "git", "fetch", "--permission-audit"]);
+        const options = call[2] as PermissionProbeOptions;
+        expect(options.env).toEqual({ NODE_OPTIONS: "--require=literal-preload --title=--permission", NODE_V8_COVERAGE: undefined });
+        options.stdio[0];
+        return qualifiedCheck();
+      };
+      expect(targetNodeOptions({ NODE_OPTIONS: "--require=literal-preload --title=--permission" }, ["fetch", "--permission-audit"]))
+        .toBe("--require=literal-preload --title=--permission");
+    });
+  });
+
+  it("keeps a builtin's older substring opt-out without imposing current token rules", () => {
+    permissionContext(parentFlags, true, () => {
+      boundary.check = (...call) => {
+        const options = call[2] as PermissionProbeOptions;
+        if (!options.env.NODE_OPTIONS?.includes("--permission")) normalizedArguments(call, ["--permission", "--allow-"]);
+        options.stdio[0];
+        return qualifiedCheck();
+      };
+      expect(targetNodeOptions({ NODE_OPTIONS: "--title=--permission" })).toBe("--title=--permission");
+    });
   });
 
   it("does not propagate an audit-only normalizer's argv even when the public permission object exists", () => {
@@ -225,7 +285,7 @@ describe("Windows native target permission propagation", () => {
   it("uses values actually copied before diagnostics mutate argv", () => {
     permissionContext(parentFlags, true, () => {
       boundary.check = (...call) => {
-        [...process.execArgv];
+        normalizedArguments(call, ["--permission", "--allow-"]);
         const options = call[2] as { stdio: [number, string, string] };
         options.stdio[0]; process.execArgv.splice(0, process.execArgv.length, "--permission-audit");
         return qualifiedCheck();

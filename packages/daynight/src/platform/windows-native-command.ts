@@ -21,7 +21,7 @@ type OutputPipe = {
   takeWriter(): unknown;
   closeWriter(): readonly unknown[];
   stopListening(): void;
-  drainFailedOutput(): void;
+  drainOutput(): void;
   readonly natural: boolean;
   readonly closed: boolean;
   missingEof(): Error | undefined;
@@ -111,7 +111,12 @@ const createOutputPipe = (
       try { api.close(writer); return []; } catch (error) { return [error]; }
     },
     stopListening,
-    drainFailedOutput: () => { if (output.destroyed) { socket?.unpipe(output); socket?.resume(); } },
+    drainOutput: () => {
+      // Abnormal completion must release backpressure so real EOF and pending native I/O can finish.
+      // https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/lib/internal/child_process.js#L347-L361
+      if (output.destroyed) { socket?.unpipe(output); socket?.resume(); }
+      else output.resume();
+    },
     get natural() { return ended; }, get closed() { return serverClosed && (socket === undefined || socketClosed); }, missingEof,
     destroy: () => { assisting = true; stopListening(); socket?.destroy(); output.destroy(); },
   };
@@ -269,7 +274,7 @@ export const spawnWindowsNativeCommand = (options: WindowsNativeCommandOptions, 
         const failures: unknown[] = [];
         for (const pipe of pipes) {
           failures.push(...pipe.closeWriter());
-          try { pipe.stopListening(); pipe.drainFailedOutput(); } catch (error) { failures.push(error); }
+          try { pipe.stopListening(); pipe.drainOutput(); } catch (error) { failures.push(error); }
         }
         if (pipes.length === 0) stdout.end();
         if (pipes.length < 2) stderr.end();
