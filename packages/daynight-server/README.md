@@ -1872,6 +1872,16 @@ records directory and consolidation choices. Selected error matrices reuse
 restored or read-only fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
 records their isolation and expiry guarantees.
 
+The Webhook DAO package groups schema-stable capture, delivery, history and
+retention cases under explicit parent-owned schemas and native connections.
+Case boundaries retain real commits and independent readers. Before reuse, the
+fixture checks connection and auxiliary-backend release, compares all preserved
+seed rows, truncates mutable tables and restores every sequence's captured state.
+The final case also runs release and seed checks. Historical schemas, permanent
+catalog faults and custom concurrent lifetimes keep their independent fixtures.
+The [Webhook grouping decision](../../.agents/notes/implemented/testing/2026-11-10-webhook-dao-group-fixtures.md)
+records reset ownership and failure behavior.
+
 Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:
 
 ```bash

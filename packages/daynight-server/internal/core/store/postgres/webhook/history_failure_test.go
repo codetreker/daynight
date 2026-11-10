@@ -47,8 +47,8 @@ func (r *historyFaultRows) Err() error {
 	return r.iterationFailure
 }
 
-func TestHistoryReadersPropagateDatabaseAndPartialReadFailures(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryReadersPropagateDatabaseAndPartialReadFailures(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := context.Background()
 	owner := wm.Owner{Kind: "personal", ID: f.user}
 	if _, err := f.conn.Exec(ctx, `INSERT INTO webhook_attempts(id,delivery_id,endpoint_id,generation,sequence,trigger,lease_token,destination_revision,signing_key_ids,automatic_plan_slot,claimed_at,admitted_at) SELECT gen_random_uuid(),d.id,d.endpoint_id,d.generation,1,'automatic',gen_random_uuid(),d.destination_revision,ARRAY[e.active_key_id],1,now(),now() FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id WHERE d.id=$1`, f.delivery); err != nil {
@@ -112,8 +112,8 @@ func (tx missingEventClockFaultTx) QueryRow(ctx context.Context, sql string, arg
 	return tx.Tx.QueryRow(ctx, sql, args...)
 }
 
-func TestMissingAdmissionEventRetentionAndStorageFailures(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testMissingAdmissionEventRetentionAndStorageFailures(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := context.Background()
 	for _, scenario := range []string{"runner", "missing delivery", "purging", "expired metadata", "expired payload", "open corruption", "attempt storage", "clock"} {
 		t.Run(scenario, func(t *testing.T) {
