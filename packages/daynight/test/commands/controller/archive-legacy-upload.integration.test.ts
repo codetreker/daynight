@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
+import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
@@ -314,4 +314,13 @@ test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypo
     expect(db.prepare("SELECT archive_incomplete FROM execution").get()).toEqual({ archive_incomplete: 1 });
     expect(db.prepare("SELECT value FROM outbox").all()).toEqual(drained || entrypoint === "writer" ? [] : [{ value: JSON.stringify({ kind: "timeline_upsert", payload: f.entry }) }]);
   });
+});
+
+
+test.each([2, 3, 4, 5] as const)("probing legacy v%i leaves schema and original SQL content untouched", async version => {
+  const f = await fixture(version), before = await readFile(f.journalPath);
+  expect(await probeStoppedControllerArchive(f)).toEqual({ kind: "attempt" });
+  expect(await readFile(f.journalPath)).toEqual(before);
+  expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(version);
+  await expect(stat(`${f.journalPath}.pending-content`)).rejects.toMatchObject({ code: "ENOENT" });
 });

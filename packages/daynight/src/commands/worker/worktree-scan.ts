@@ -1,13 +1,13 @@
 import path from "node:path";
-import { readdir } from "node:fs/promises";
-import { OperationError, type Operation } from "../../api/operation.js";
-import { RepositoryGitError } from "../../repository/git.js";
+import { lstat, readdir } from "node:fs/promises";
+import type { Operation } from "../../api/operation.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
+import { WorktreeValidationError } from "./worktree-errors.js";
 import type { ResourceOwner, WorkerProject } from "./types.js";
 import type { OwnedWorktree, WorkerRepository } from "./worktrees.js";
 
 export type Registration = { directory: string; marker: string | null; pointer: string; common: string };
-type Entry = { directory: string; marker: string | null; pointer: string | null; common: string | null; owner: ResourceOwner | null; managed: boolean; errors: unknown[] };
+type Entry = { directory: string; marker: string | null; pointer: string | null; physicalPointer: string | null; common: string | null; owner: ResourceOwner | null; managed: boolean; errors: unknown[] };
 export type RegistrationIndex = { entries: Entry[] };
 export type WorktreeScan = {
   enumerationComplete: boolean;
@@ -21,6 +21,17 @@ type Readers = {
   markerOwner(marker: string): ResourceOwner;
 };
 const prefix = "daynight-worker:";
+const physicalPointer = async (target: string): Promise<string> => {
+  const parent = await resolvePhysicalDirectory(path.dirname(target));
+  const resolved = path.join(parent.ancestorPath, ...parent.missingComponents, path.basename(target));
+  try {
+    const entry = await lstat(resolved);
+    if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("A Git registration target must be an ordinary file.");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  return resolved;
+};
 
 // Keep entry failures until their target is known; unrelated target validation
 // must not consume another registration's metadata failure.
@@ -31,7 +42,7 @@ export const readRegistrationIndex = async (repository: WorkerRepository, reader
   const entries: Entry[] = [];
   for (const dirent of await readdir(family, { withFileTypes: true })) {
     operation.check();
-    const entry: Entry = { directory: path.join(family, dirent.name), marker: null, pointer: null, common: null, owner: null, managed: false, errors: [] };
+    const entry: Entry = { directory: path.join(family, dirent.name), marker: null, pointer: null, physicalPointer: null, common: null, owner: null, managed: false, errors: [] };
     try {
       // An unreadable admin entry cannot prove that it is merely a manual
       // worktree. Never follow a redirected directory to obtain that proof.
@@ -49,6 +60,9 @@ export const readRegistrationIndex = async (repository: WorkerRepository, reader
       const pointer = await readers.ordinaryFile(path.join(entry.directory, "gitdir"));
       entry.pointer = pointer === null ? null : path.resolve(entry.directory, pointer);
       if (entry.pointer === null && entry.managed) throw new Error("The owned task worktree registration has no Git pointer.");
+      // Manual registrations can alias a managed target too. Resolve every
+      // pointer once, retaining missing descendants without following .git.
+      if (entry.pointer !== null) entry.physicalPointer = await physicalPointer(entry.pointer);
     } catch (error) { operation.check(); entry.errors.push(error); }
     if (entry.managed) {
       if (entry.marker !== null) try { entry.owner = readers.markerOwner(entry.marker); } catch (error) { entry.errors.push(error); }
@@ -65,12 +79,11 @@ export const readRegistrationIndex = async (repository: WorkerRepository, reader
 };
 
 export const registrationsFor = async (index: RegistrationIndex, target: string, readers: Readers): Promise<Registration[]> => {
-  const parent = await resolvePhysicalDirectory(path.dirname(target));
-  const pointer = path.join(parent.ancestorPath, ...parent.missingComponents, path.basename(target), ".git");
+  const pointer = await physicalPointer(path.join(target, ".git"));
   const result: Registration[] = [];
   for (const entry of index.entries) {
-    if (entry.pointer === null && entry.errors.length > 0) throw entry.errors[0];
-    if (entry.pointer !== pointer) continue;
+    if (entry.physicalPointer === null && entry.errors.length > 0) throw entry.errors[0];
+    if (entry.physicalPointer !== pointer) continue;
     if (entry.errors.length > 0) throw entry.errors[0];
     const common = entry.common ?? await readers.ordinaryFile(path.join(entry.directory, "commondir"));
     if (common === null) throw new Error("The task worktree registration is missing its common-directory pointer.");
@@ -96,9 +109,9 @@ export const scanRepositoryWorktrees = async (
     const owner = entry.owner;
     if (owner === null) { result.unknown.push({ error: new Error("The owned registration has no recognized owner.") }); continue; }
     try {
-      if (index.entries.some(other => other.pointer === null && other.errors.length > 0)) throw new Error("An unreadable registration prevents proving unique worktree ownership.");
+      if (index.entries.some(other => other.physicalPointer === null && other.errors.length > 0)) throw new Error("An unreadable registration prevents proving unique worktree ownership.");
       if (entry.pointer !== path.join(physicalNamespace, owner.taskId, ".git")) throw new Error("The owned task worktree registration does not point to its fixed task path.");
-      if (index.entries.filter(other => other.pointer === entry.pointer).length !== 1
+      if (index.entries.filter(other => other.physicalPointer === entry.physicalPointer).length !== 1
         || index.entries.some(other => other !== entry && other.owner?.projectId === owner.projectId && other.owner.taskId === owner.taskId && other.owner.claimId === owner.claimId)) throw new Error("The owned task worktree registration is ambiguous.");
       if (entry.common === null || await readers.directory(entry.common) !== repository.commonIdentity) throw new Error("The task worktree registration points to another Git repository.");
       const leaf = path.join(namespace, owner.taskId);
@@ -113,9 +126,10 @@ export const scanRepositoryWorktrees = async (
       if (includeOtherProjects || owner.projectId === project.projectId) result.validated.push(found);
     } catch (error) {
       operation.check();
-      // I/O failures do not establish complete coverage, even for known IDs.
-      if (error instanceof OperationError || error instanceof RepositoryGitError || error instanceof AggregateError || error instanceof Error && "code" in error && typeof error.code === "string" && /^E[A-Z]+$/.test(error.code)) result.unknown.push({ error });
-      else result.quarantined.push({ owner, error });
+      // Unknown errors, including native failures without a code or wrapped
+      // filesystem errors, cannot establish bounded resource failure.
+      if (error instanceof WorktreeValidationError) result.quarantined.push({ owner, error });
+      else result.unknown.push({ error });
     }
   }
   operation.check();
