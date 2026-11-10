@@ -43,7 +43,8 @@ func TestTaskWritesPreserveDatabaseFailuresBeforeMutation(t *testing.T) {
 			tasks := taskservice.NewTasks(f.database)
 			switch method {
 			case "create":
-				got, err = tasks.Create(ctx, f.principal, f.project.ID, taskcore.CreateTask{Title: "Unwritten task"})
+				status := model.TaskTodo
+				got, err = tasks.Create(ctx, f.principal, f.project.ID, taskcore.CreateTask{Title: "Unwritten task", Status: &status})
 			case "update":
 				got, err = tasks.Update(ctx, f.principal, f.project.ID, f.target.ID, taskcore.UpdateTask{Version: f.target.Version, Title: pointer("Unwritten update")})
 			case "status":
