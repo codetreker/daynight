@@ -1,13 +1,16 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -32,9 +35,11 @@ func scanWorkerConfiguration(row pgx.Row) (model.WorkerConfigurationResource, er
 		}
 	}
 	if observation != nil {
-		if err := json.Unmarshal(observation, &resource.Observation); err != nil {
+		decoded, err := workerprotocol.DecodeStoredObservation(observation)
+		if err != nil {
 			return resource, err
 		}
+		resource.Observation = decoded
 	}
 	return resource, nil
 }
@@ -79,11 +84,12 @@ func (w *Writer) SetWorkerConfigurationObservation(ctx context.Context, userID, 
 	if err != nil {
 		return err
 	}
-	encoded, err := json.Marshal(model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: value, ReportedAt: reportedAt})
+	var encoded bytes.Buffer
+	_, err = workerprotocol.EncodeObservation(&encoded, model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: value, ReportedAt: reportedAt}, math.MaxInt64)
 	if err != nil {
 		return pg.QueryError("encode worker configuration observation", err)
 	}
-	_, err = w.tx.Exec(ctx, `UPDATE workers SET configuration_observation_revision=$3,configuration_observation=$4 WHERE user_id=$1 AND worker_id=$2`, userID, workerID, revision, encoded)
+	_, err = w.tx.Exec(ctx, `UPDATE workers SET configuration_observation_revision=$3,configuration_observation=$4 WHERE user_id=$1 AND worker_id=$2`, userID, workerID, revision, encoded.Bytes())
 	if err != nil {
 		return pg.QueryError("save worker configuration observation", err)
 	}

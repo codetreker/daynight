@@ -285,7 +285,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const mode = task.agentControlMode ?? "herdr";
     const repository = configuration.repositories.find(repository => repository.project.projectId === task.projectId);
     const current = repository?.configuration ?? configuration.globalConfiguration;
-    const frozen = mode === "web" ? options.webStore?.getTask(task)?.configuration : options.store.getNativeConfiguration(task);
+    // Fresh claims freeze native settings before their Web execution record exists.
+    const frozen = (mode === "web" ? options.webStore?.getTask(task)?.configuration : undefined) ?? options.store.getNativeConfiguration(task);
     const recoveryLimit = configuration.recoveryLimit ?? current?.recoveryLimit ?? (frozen != null && "recoveryLimit" in frozen ? frozen.recoveryLimit as number : undefined);
     if (frozen != null && recoveryLimit !== undefined) return { ...frozen, agentControlMode: mode, recoveryLimit };
     if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;

@@ -26,6 +26,14 @@ preserves the current mode inside the existing row lock and target CAS. A
 separate bootstrap candidate can fill an unadopted mode without replacing any
 other cloud setting. A previously saved non-null choice wins over late candidates.
 
+Persisted observation items remain readable by the pre-capability service. The
+mode item and its original index occupy a private `controlModeObservation` slot
+in the existing JSONB; new readers reconstruct the public item list, while old
+struct decoders ignore the extension. One protocol codec owns both persistence
+and the stored-byte budget. An old service replacing the observation discards
+that extension; after upgrade its absence means no current mode evidence, not
+permission to revive a stale applied result.
+
 Mode and global native settings form one application unit. Validation receives
 the target mode explicitly, including local model and effort normalization. The
 existing serialized cache owner persists the successful pair before publishing
@@ -37,6 +45,9 @@ New claims consume the applied mode. Existing claims retain their frozen mode,
 native configuration, session and worktree through advancement, retry, recovery
 and cleanup. Their frozen configuration is consulted before new-mode Project
 native qualification, while Project removal and permission gates still apply.
+Before a Web execution record exists, the main store already owns the tuple
+frozen when the claim was registered. That snapshot remains authoritative during
+configuration changes between the claim response and first execution.
 Backend availability follows actual claim ownership: switching defaults does not
 stop a backend with live claims, and Herdr can start lazily when newly required.
 
@@ -62,6 +73,11 @@ their actual local setting and allows explicit cloud choices to win races.
 clients would reject the additional field, and old full replacements could erase
 it. Independent capability negotiation protects both prompt-protocol versions
 without making mode support depend on prompt support.
+
+**Protect rollback only in the new HTTP projection.** A rolled-back binary does
+not execute that projection. Persisting a new key directly in the old item array
+would let it return an unknown kind to strict clients. A private stored extension
+keeps the legacy reader valid without relaxing public parsing.
 
 **Apply mode as an independent scalar.** A new mode could be published alongside
 native arguments validated only for the old mode. Grouping mode and global native

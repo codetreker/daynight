@@ -56,6 +56,9 @@ func TestWorkerControlModeHTTPProjectionAndDiscovery(t *testing.T) {
 			if contains != aware || (response.Header().Get(controlModeHeader) == "1") != aware {
 				t.Fatalf("capability projection: %s %v", response.Body, response.Header())
 			}
+			if strings.Contains(response.Body.String(), `"controlModeObservation"`) {
+				t.Fatalf("private storage slot leaked through HTTP: %s", response.Body)
+			}
 			if len(resource.Observation.Items) != 2 || resource.Desired.Value.AgentControlMode == nil {
 				t.Fatal("projection mutated shared resource")
 			}

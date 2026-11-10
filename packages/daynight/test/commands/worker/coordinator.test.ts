@@ -2653,6 +2653,61 @@ describe("cloud project removal", () => {
 });
 
 describe("Web acquisition configuration changes", () => {
+  it("does not reinterpret an unfrozen Web claim with current Herdr parameters", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const granted = f.grant(f.candidates[0]!, { claimId: uuid(991), worktreeId: uuid(992), workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    f.candidates.splice(0);
+    const row = f.store.activateTask(f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(991), agent: "codex", agentControlMode: "web" }));
+    const current: ExecutionConfiguration = { ...configuration, agentControlMode: "herdr", args: [] };
+    const advance = vi.fn(async (record: WebTask) => record);
+    const runner = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current, webStore,
+      verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: async record => ({ task: record, complete: true }) } });
+    try {
+      await runner.tick();
+      expect(f.store.getNativeConfiguration(row)).toBeNull(); expect(webStore.getTask(row)).toBeNull();
+      expect(f.store.getTask(row)).toEqual(row); expect(advance).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
+  it.each(["mode", "native", "project removed", "project unavailable"] as const)("preserves a granted Web claim's frozen settings after an in-flight %s change", async change => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(); f.candidates.splice(1);
+    const webStore = openWebExecutionStore(createMemoryDatabase());
+    const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: "claim-model", args: ["--effort", "low"], recoveryLimit: 2 };
+    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, preferPlatformSpecificTasks: false };
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await waiting; return f.grant(candidate, descriptor); });
+    const advance = vi.fn(async (record: WebTask) => record);
+    const runner = createWorkerCoordinator({ ...f.options, ...current, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+      webBackend: { advance, cleanup: async record => ({ task: record, complete: true }) } });
+    const ticking = runner.tick(); void ticking.catch(() => {});
+    try {
+      await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+      expect(f.store.listTasks()).toEqual([]); expect(webStore.listUnfinishedTasks()).toEqual([]);
+      const changed: ExecutionConfiguration = { ...native, agentControlMode: change === "mode" ? "herdr" : "web", model: "later-model", args: ["--effort", "high"], recoveryLimit: 7 };
+      const next = { ...current, repositories: [{ project: f.project, configuration: changed }], globalConfiguration: changed };
+      const gated = change === "project removed" || change === "project unavailable";
+      runner.updateConfiguration({ ...next, ...(change === "project removed" ? { repositories: [], targetProjectIds: [] } : change === "project unavailable" ? { repositories: [], readyProjectIds: [] } : {}) });
+      release(); await ticking;
+      const row = f.store.listTasks()[0]!;
+      expect(row).toMatchObject({ agent: "codex", agentControlMode: "web", sessionId: null, status: "pending" });
+      expect(webStore.getTask(row)).toBeNull();
+      expect(f.store.getNativeConfiguration(row)).toEqual({ agent: "codex", model: "claim-model", args: ["--effort", "low"] });
+      if (gated) {
+        expect(row.status).toBe("pending"); expect(webStore.getTask(row)).toBeNull(); expect(advance).not.toHaveBeenCalled();
+        await runner.tick();
+        expect(webStore.getTask(row)).toBeNull(); expect(advance).not.toHaveBeenCalled();
+        runner.updateConfiguration(next); await runner.tick();
+      } else await runner.tick();
+      await eventually(() => expect(advance).toHaveBeenCalledOnce());
+      expect(webStore.getTask(row)?.configuration).toEqual({ agent: "codex", agentControlMode: "web", model: "claim-model", args: ["--effort", "low"], recoveryLimit: 7 });
+      expect(f.store.getTask(row)).toMatchObject({ claimId: row.claimId, agentControlMode: "web", status: "active" });
+      expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.tasks.start).not.toHaveBeenCalled();
+    } finally { release(); await ticking; await runner.shutdown(); webStore.close(); }
+  });
+
   it.each(["equivalent", "changed", "changed and restored"] as const)("handles %s updates during capability validation", async mode => {
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
     const f = await fixture(); f.candidates.splice(1);

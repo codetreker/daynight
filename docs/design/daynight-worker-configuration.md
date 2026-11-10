@@ -25,6 +25,8 @@ workers 增加 configuration_revision、configuration_updated_at、desired_confi
 
 目标和观测保存受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。preferPlatformSpecificTasks 是独立布尔标量，不进入原生配置元组；应用观测的同名 key 接受 true、false 或 null。agentControlMode 作为同一目标 JSONB 中的 nullable 字段存储，只有旧目标未采纳时为 null。专用存储升级解码识别旧行缺字段，不改变新写入严格结构。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值；mode 不属于项目覆盖。
 
+configuration_observation 的 items 只保存旧协议可识别的项；mode 观测及其原序号保存在同一 JSONB 的私有 controlModeObservation 扩展槽。internal/protocol/worker 的存储 codec 拥有该表示，DAO 写入与实际存储字节预算使用同一编码，读取时按序号恢复公开 items。旧服务的结构体解码会忽略扩展槽，回退后不会把未知 mode key 返回给严格旧客户端。旧服务接受新报告并完整替换观测时会移除该扩展；再次升级后没有 mode 应用证据，必须等待 Worker 重新报告，不能复活旧 applied 值。此表示不增加业务列，也不改变公开协议。
+
 数据库迁移为已初始化且缺少 preferPlatformSpecificTasks 的目标 JSON 补入 false，保留目标版本、修改时间、观测版本与原应用结果。缺少同名应用观测仍表示等待 Worker 确认，不从迁移后的目标推导已应用。当前完整目标解析始终要求该布尔字段。
 
 配置 GET 按认证 userId/workerId 读取，不施加近期窗口，不续活。快照列表与详情继续使用[快照设计](daynight-worker-snapshots.md)的时间及权限规则。 Bot 创建只读取所选 Worker 的原生配置和成功偏好，其选择规则与完整默认目录由[助手设计](assistant.md#默认解析与偏好事务)维护。
