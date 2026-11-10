@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,226 @@ func TestBrokerRoutesAndFencesResults(t *testing.T) {
 	}
 	if err = b.Deliver(context.Background(), c, good); err == nil {
 		t.Fatal("accepted late duplicate")
+	}
+}
+
+type routingContextKey struct{}
+
+type routingMarker struct {
+	target int
+	phase  string
+	page   int
+}
+
+// TestBrokerRoutesTwoLiveWorkers exercises both connections across the complete
+// pagination sequence. The supplied directory pages are independent inputs to
+// the broker; the test does not model filesystem or cursor generation.
+func TestBrokerRoutesTwoLiveWorkers(t *testing.T) {
+	type target struct {
+		principal model.Principal
+		worker    string
+		hello     Hello
+		requests  []Request
+		results   []json.RawMessage
+		want      []json.RawMessage
+	}
+	targets := []target{
+		{
+			principal: model.Principal{UserID: "10000000-0000-4000-8000-000000000001", CredentialID: "20000000-0000-4000-8000-000000000001", Kind: model.PATCredential},
+			worker:    "30000000-0000-4000-8000-000000000001",
+			hello:     Hello{Type: "hello", Protocol: Protocol, CapabilityGeneration: "40000000-0000-4000-8000-000000000001", Operations: []string{"directory.list"}},
+			requests: []Request{
+				{RequestID: "50000000-0000-4000-8000-000000000001", Operation: "directory.list", Input: json.RawMessage(`{"limit":1}`)},
+				{RequestID: "50000000-0000-4000-8000-000000000002", Operation: "directory.list", Input: json.RawMessage(`{"limit":1,"cursor":"alpha-first"}`)},
+				{RequestID: "50000000-0000-4000-8000-000000000003", Operation: "directory.list", Input: json.RawMessage(`{"limit":1,"cursor":"alpha-second"}`)},
+			},
+			results: []json.RawMessage{
+				json.RawMessage(`{"path":"/native/alpha","parentPath":"/native","entries":[{"name":"alpha-a","path":"/native/alpha/alpha-a"}],"nextCursor":"alpha-first"}`),
+				json.RawMessage(`{"path":"/native/alpha","parentPath":"/native","entries":[{"name":"alpha-b","path":"/native/alpha/alpha-b"}],"nextCursor":"alpha-second"}`),
+				json.RawMessage(`{"path":"/native/alpha","parentPath":"/native","entries":[{"name":"alpha-c","path":"/native/alpha/alpha-c"}],"nextCursor":null}`),
+			},
+			want: []json.RawMessage{
+				json.RawMessage(`{"path":"/native/alpha","parentPath":"/native","entries":[{"name":"alpha-a","path":"/native/alpha/alpha-a"}],"nextCursor":"alpha-first"}`),
+				json.RawMessage(`{"path":"/native/alpha","parentPath":"/native","entries":[{"name":"alpha-b","path":"/native/alpha/alpha-b"}],"nextCursor":"alpha-second"}`),
+				json.RawMessage(`{"path":"/native/alpha","parentPath":"/native","entries":[{"name":"alpha-c","path":"/native/alpha/alpha-c"}],"nextCursor":null}`),
+			},
+		},
+		{
+			principal: model.Principal{UserID: "10000000-0000-4000-8000-000000000002", CredentialID: "20000000-0000-4000-8000-000000000002", Kind: model.PATCredential},
+			worker:    "30000000-0000-4000-8000-000000000002",
+			hello:     Hello{Type: "hello", Protocol: Protocol, CapabilityGeneration: "40000000-0000-4000-8000-000000000002", Operations: []string{"directory.list"}},
+			requests: []Request{
+				{RequestID: "50000000-0000-4000-8000-000000000004", Operation: "directory.list", Input: json.RawMessage(`{"limit":1}`)},
+				{RequestID: "50000000-0000-4000-8000-000000000005", Operation: "directory.list", Input: json.RawMessage(`{"limit":1,"cursor":"beta-first"}`)},
+				{RequestID: "50000000-0000-4000-8000-000000000006", Operation: "directory.list", Input: json.RawMessage(`{"limit":1,"cursor":"beta-second"}`)},
+			},
+			results: []json.RawMessage{
+				json.RawMessage(`{"path":"/native/beta","parentPath":"/native","entries":[{"name":"beta-a","path":"/native/beta/beta-a"}],"nextCursor":"beta-first"}`),
+				json.RawMessage(`{"path":"/native/beta","parentPath":"/native","entries":[{"name":"beta-b","path":"/native/beta/beta-b"}],"nextCursor":"beta-second"}`),
+				json.RawMessage(`{"path":"/native/beta","parentPath":"/native","entries":[{"name":"beta-c","path":"/native/beta/beta-c"}],"nextCursor":null}`),
+			},
+			want: []json.RawMessage{
+				json.RawMessage(`{"path":"/native/beta","parentPath":"/native","entries":[{"name":"beta-a","path":"/native/beta/beta-a"}],"nextCursor":"beta-first"}`),
+				json.RawMessage(`{"path":"/native/beta","parentPath":"/native","entries":[{"name":"beta-b","path":"/native/beta/beta-b"}],"nextCursor":"beta-second"}`),
+				json.RawMessage(`{"path":"/native/beta","parentPath":"/native","entries":[{"name":"beta-c","path":"/native/beta/beta-c"}],"nextCursor":null}`),
+			},
+		},
+	}
+	var mu sync.Mutex
+	calls := map[routingMarker]int{}
+	requestContexts := map[routingMarker]context.Context{}
+	b := New(func(ctx context.Context, p model.Principal, worker string) error {
+		marker, ok := ctx.Value(routingContextKey{}).(routingMarker)
+		if !ok || marker.target < 0 || marker.target >= len(targets) || (marker.phase != "connect" && marker.phase != "check" && marker.phase != "request" && marker.phase != "deliver") || (marker.phase == "request" || marker.phase == "deliver") && (marker.page < 0 || marker.page >= 3) {
+			t.Errorf("unexpected authorization context: %#v", marker)
+			return fmt.Errorf("unexpected authorization context")
+		}
+		if p != targets[marker.target].principal || worker != targets[marker.target].worker {
+			t.Errorf("unexpected authorization target: principal=%+v worker=%s marker=%+v", p, worker, marker)
+			return fmt.Errorf("unexpected authorization target")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		calls[marker]++
+		if marker.phase == "request" {
+			if _, ok := ctx.Deadline(); !ok || ctx.Err() != nil {
+				t.Errorf("request authorization lacks live derived deadline: %v", ctx.Err())
+				return fmt.Errorf("invalid request context")
+			}
+			if previous := requestContexts[marker]; previous != nil && previous != ctx {
+				t.Errorf("request authorization context changed for %+v", marker)
+				return fmt.Errorf("request context changed")
+			}
+			requestContexts[marker] = ctx
+		}
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	var requests sync.WaitGroup
+	t.Cleanup(func() {
+		cancel()
+		b.Close()
+		done := make(chan struct{})
+		go func() { requests.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("request goroutines did not exit")
+		}
+	})
+	marked := func(marker routingMarker) context.Context {
+		return context.WithValue(ctx, routingContextKey{}, marker)
+	}
+	connections := make([]*Connection, len(targets))
+	for i, target := range targets {
+		var err error
+		connections[i], err = b.Connect(marked(routingMarker{i, "connect", 0}), target.principal, target.worker, target.hello)
+		if err != nil {
+			t.Fatalf("connect target %d: %v", i, err)
+		}
+		c := connections[i]
+		id, err := uuid.Parse(c.ConnectionID)
+		if err != nil || id == uuid.Nil || id.String() != c.ConnectionID {
+			t.Fatalf("invalid connection ID %q", c.ConnectionID)
+		}
+		wantFence := Fence{Protocol: Protocol, OwnerUserID: target.principal.UserID, WorkerID: target.worker, ConnectionID: c.ConnectionID, CapabilityGeneration: target.hello.CapabilityGeneration}
+		if c.Fence != wantFence || c.Principal != target.principal {
+			t.Fatalf("connection %d: got %+v principal %+v", i, c.Fence, c.Principal)
+		}
+	}
+	if connections[0].ConnectionID == connections[1].ConnectionID {
+		t.Fatal("connections share an ID")
+	}
+	for i, c := range connections {
+		select {
+		case <-c.Done:
+			t.Fatalf("connection %d is closed", i)
+		default:
+		}
+	}
+	type answer struct {
+		message Message
+		err     error
+	}
+	for i, target := range targets {
+		for page, input := range target.requests {
+			answers := make(chan answer, 1)
+			requests.Add(1)
+			go func() {
+				defer requests.Done()
+				m, err := b.Request(marked(routingMarker{i, "request", page}), target.principal, target.worker, input)
+				answers <- answer{m, err}
+			}()
+			var frame Message
+			select {
+			case frame = <-connections[i].Messages:
+			case result := <-answers:
+				t.Fatalf("target %d page %d returned before dispatch: %v", i, page, result.err)
+			case <-time.After(3 * time.Second):
+				t.Fatalf("target %d page %d not dispatched", i, page)
+			}
+			wantFence := Fence{Protocol: Protocol, OwnerUserID: target.principal.UserID, WorkerID: target.worker, ConnectionID: connections[i].ConnectionID, CapabilityGeneration: target.hello.CapabilityGeneration}
+			wantFrame := Message{Fence: wantFence, Type: "request", RequestID: input.RequestID, Operation: "directory.list", Input: input.Input, TimeoutMs: int(RequestTimeout / time.Millisecond)}
+			if !reflect.DeepEqual(frame, wantFrame) {
+				t.Fatalf("target %d page %d frame: got %+v want %+v", i, page, frame, wantFrame)
+			}
+			select {
+			case extra := <-connections[1-i].Messages:
+				t.Fatalf("message entered other queue: %+v", extra)
+			default:
+			}
+			result := Message{Fence: wantFence, Type: "result", RequestID: input.RequestID, Result: target.results[page]}
+			wantResult := Message{Fence: wantFence, Type: "result", RequestID: input.RequestID, Result: target.want[page]}
+			if err := b.Deliver(marked(routingMarker{i, "deliver", page}), connections[i], result); err != nil {
+				t.Fatalf("target %d page %d delivery: %v", i, page, err)
+			}
+			select {
+			case got := <-answers:
+				if got.err != nil || !reflect.DeepEqual(got.message, wantResult) {
+					t.Fatalf("target %d page %d result: got %+v, %v; want %+v", i, page, got.message, got.err, wantResult)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("target %d page %d did not complete", i, page)
+			}
+			if err := b.Deliver(marked(routingMarker{i, "deliver", page}), connections[i], result); ErrorCode(err) != "cancelled" {
+				t.Fatalf("duplicate delivery accepted: %v", err)
+			}
+			select {
+			case extra := <-answers:
+				t.Fatalf("duplicate completion: %+v", extra)
+			case extra := <-connections[i].Messages:
+				t.Fatalf("extra queue message: %+v", extra)
+			default:
+			}
+		}
+	}
+	for i, c := range connections {
+		if err := b.Check(marked(routingMarker{i, "check", 0}), c); err != nil {
+			t.Fatalf("connection %d is not current: %v", i, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i := range targets {
+		for _, phase := range []string{"connect", "check"} {
+			marker := routingMarker{i, phase, 0}
+			if calls[marker] != 1 {
+				t.Errorf("authorization %+v: got %d calls, want 1", marker, calls[marker])
+			}
+			delete(calls, marker)
+		}
+		for page := range 3 {
+			for phase, want := range map[string]int{"request": 4, "deliver": 3} {
+				marker := routingMarker{i, phase, page}
+				if calls[marker] != want {
+					t.Errorf("authorization %+v: got %d calls, want %d", marker, calls[marker], want)
+				}
+				delete(calls, marker)
+			}
+		}
+	}
+	if len(calls) != 0 {
+		t.Errorf("unexpected authorization calls: %+v", calls)
 	}
 }
 
