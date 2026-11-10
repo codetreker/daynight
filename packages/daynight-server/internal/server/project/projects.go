@@ -5,9 +5,6 @@ import (
 	"net/http"
 
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -17,12 +14,12 @@ import (
 )
 
 type projectHandler struct {
-	projects *projectservice.Projects
+	projects ProjectOperations
 	logger   *slog.Logger
 }
 
 // RegisterRoutes mounts the authenticated Project endpoints.
-func RegisterRoutes(mux *http.ServeMux, projects *projectservice.Projects, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, projects ProjectOperations, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &projectHandler{projects: projects, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects", auth.Require(handler.list))

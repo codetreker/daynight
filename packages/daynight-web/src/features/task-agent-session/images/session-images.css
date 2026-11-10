@@ -1,0 +1,28 @@
+.session-image-frame { display: inline-flex; vertical-align: top; flex-direction: column; width: min(100%, 420px); max-width: 100%; min-width: 0; gap: 6px; margin-block: 6px; color: inherit; }
+.session-image-canvas { display: flex; position: relative; align-items: center; justify-content: center; width: 100%; aspect-ratio: var(--session-image-ratio, 1.33333); max-height: 320px; min-width: 0; overflow: hidden; border: 1px solid #dfe3e9; border-radius: 8px; background: #f3f5f8; box-sizing: border-box; }
+.session-image-canvas > img { display: block; flex: none; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+.session-image-placeholder { padding: 18px; font-size: 12px; line-height: 1.5; color: #68758a; text-align: center; overflow-wrap: anywhere; }
+.session-image-open { display: block; width: 100%; min-width: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 8px; color: inherit; background: transparent; cursor: zoom-in; text-align: inherit; }
+.session-image-open:disabled { cursor: default; }
+.session-image-caption, .session-image-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.session-image-name { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; }
+.session-image-actions .button, .session-image-preview .button { min-width: 44px; min-height: 44px; }
+.session-image-actions { width: auto; }
+.session-image-actions.session-image-frame { width: auto; display: inline-flex; }
+.session-image-error { margin: 0; color: #9c3d48; font-size: 12px; overflow-wrap: anywhere; }
+.session-image-open:focus-visible, .session-image-frame .button:focus-visible, .session-image-preview :is(button, [tabindex]):focus-visible { outline: 3px solid #7777cf; outline-offset: 3px; }
+.session-image-preview { position: fixed; inset: auto; top: calc(var(--image-viewport-top, 0px) + 8px); left: calc(var(--image-viewport-left, 0px) + 8px); box-sizing: border-box; width: calc(var(--image-viewport-width, 100vw) - 16px); max-width: none; height: calc(var(--image-viewport-height, 100dvh) - 16px); max-height: none; margin: 0; padding: 16px; border: 1px solid #d4d9e3; border-radius: 12px; background: #fff; color: #263248; overflow: hidden; box-shadow: 0 16px 70px #18223855; }
+.session-image-preview[open] { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 10px; }
+.session-image-preview::backdrop { background: #101827c9; }
+.session-image-preview-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.session-image-preview-heading h2 { flex: 1; min-width: 0; max-height: 4.5em; overflow: auto; margin: 0; padding-block: 9px; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.session-image-preview-heading > button { flex: none; font-size: 24px; }
+.session-image-preview-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.session-image-preview-controls [aria-pressed="true"] { background: #ececf8; color: #373778; border-color: #9c9cc5; }
+.session-image-preview-stage { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; border-radius: 6px; background: #e8ebf0; }
+.session-image-preview-stage.fit { display: flex; justify-content: center; align-items: center; }
+.session-image-preview-stage.fit > img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+.session-image-preview-stage.original > img { display: block; max-width: none; max-height: none; margin: 0; }
+.session-image-preview-status { display: flex; flex-direction: column; gap: 12px; align-items: center; padding: 24px; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .session-image-preview { padding: 10px; gap: 8px; } .session-image-preview-heading { gap: 8px; } .session-image-name { flex-basis: 100%; } }
+@media (prefers-reduced-motion: reduce) { .session-image-frame *, .session-image-preview * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

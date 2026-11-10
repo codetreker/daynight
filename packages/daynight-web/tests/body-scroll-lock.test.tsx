@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
+import { acquireBodyScrollLock, useBodyScrollLock } from '../src/app/useBodyScrollLock';
 
 const Lock = ({ active = true, freezePosition = false }: { active?: boolean; freezePosition?: boolean }) => {
   useBodyScrollLock(active, freezePosition);
@@ -21,6 +21,19 @@ afterEach(() => {
 });
 
 describe('body scroll locks', () => {
+  it('lets an imperative modal release synchronously without releasing a surrounding owner', () => {
+    position(0, 120); document.body.style.overflow = 'scroll';
+    const surrounding = render(<Lock />);
+    const release = acquireBodyScrollLock(true);
+    expect(document.body.style.position).toBe('fixed');
+    release();
+    expect(document.body.style.position).toBe('');
+    expect(document.body.style.overflow).toBe('hidden');
+    release();
+    expect(document.body.style.overflow).toBe('hidden');
+    surrounding.unmount();
+    expect(document.body.style.overflow).toBe('scroll');
+  });
   it.each(['first', 'second'] as const)('restores the original overflow only after both locks release when %s exits first', (firstRelease) => {
     document.body.style.overflow = 'scroll';
     const first = render(<Lock />);
