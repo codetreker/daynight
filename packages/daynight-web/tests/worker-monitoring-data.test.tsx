@@ -24,6 +24,12 @@ const detail = () => ({ observedAt: time, state: 'available', revision: workerId
 } });
 const absent = (workerId: string) => ({ workerId, state: 'absent', revision: null, receivedAt: null, expiresAt: null, summary: null });
 const absentDetail = (observedAt: string) => ({ observedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' });
+const availableSummary = (id: string, codes = ['project-unavailable']) => ({ workerId: id, state: 'available', revision: workerId(10), receivedAt: time, expiresAt: '2026-10-29T13:00:00Z', summary: {
+  capturedAt: time, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: null, nextPollAt: null },
+  capacity: { observedAt: time, quality: 'current', limit: 2, occupied: 2, available: 0 }, detailCoverage: 'complete',
+  admission: { observedAt: time, coverage: 'complete', reasonCodes: codes, permissionProjection: 'current' },
+} });
+const summaryBatch = (ids: readonly string[], codes?: string[]) => ({ observedAt: time, items: ids.map(id => availableSummary(id, codes)) });
 beforeEach(() => { monotonic = 0; visible = 'visible'; vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] }); vi.spyOn(performance, 'now').mockImplementation(() => monotonic); vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible); });
 afterEach(() => { for (const s of scopes.splice(0)) s.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
@@ -92,6 +98,83 @@ describe('Worker monitoring reads', () => {
     const { result } = renderHook(() => useWorkerMonitoringSummaries(ids, { readEnabled: true }), { wrapper: wrapper(scope()) });
     await flush(); expect(result.current.snapshot?.items.map(entry => entry.expired)).toEqual([false, false]);
     act(() => result.current.refresh()); await flush(); expect(result.current.snapshot?.items.map(entry => entry.expired)).toEqual([true, true]);
+  });
+  it('retains surviving summaries and their original time through membership changes, late responses and a 503', async () => {
+    const a = workerId(1), b = workerId(2), c = workerId(3), obsolete = deferred<Response>(), current = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(summaryBatch([a, b])))
+      .mockImplementationOnce(() => obsolete.promise).mockImplementationOnce(() => current.promise).mockResolvedValueOnce(workerError(503));
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ ids }) => useWorkerMonitoringSummaries(ids, { readEnabled: true }), { wrapper: wrapper(scope()), initialProps: { ids: [a, b] } });
+    await flush();
+    const initial = result.current.snapshot!.items[0]!;
+    monotonic += 100;
+    rerender({ ids: [a, b, c] }); await flush();
+    expect(result.current.snapshot?.items.map(entry => entry.item.workerId)).toEqual([a, b]);
+    expect(JSON.parse(String(fetch.mock.calls[1]![1].body)).workerIds).toEqual([a, b, c]);
+    rerender({ ids: [a, c] }); await flush();
+    expect((fetch.mock.calls[1]![1].signal as AbortSignal).aborted).toBe(true);
+    expect(result.current.snapshot?.items.map(entry => entry.item.workerId)).toEqual([a]);
+    expect(JSON.parse(String(fetch.mock.calls[2]![1].body)).workerIds).toEqual([a, c]);
+    obsolete.resolve(workerResponse(summaryBatch([a, b, c], ['stopping']))); await flush();
+    expect(result.current.snapshot?.items.map(entry => entry.item.workerId)).toEqual([a]);
+    current.resolve(workerError(503)); await flush();
+    expect(result.current.error).toMatchObject({ status: 503 });
+    const retained = result.current.snapshot!.items[0]!;
+    expect(retained.item).toEqual(initial.item); expect(retained.observedAt).toBe(initial.observedAt); expect(retained.receivedMonotonic).toBe(initial.receivedMonotonic);
+    rerender({ ids: [a, b, c] }); await flush();
+    expect(result.current.error).toMatchObject({ status: 503 });
+    expect(result.current.snapshot?.items.map(entry => entry.item.workerId)).toEqual([a]);
+  });
+  it('forgets a removed Worker across an empty list and does not restore its older response or expiry', async () => {
+    const a = workerId(1), obsolete = deferred<Response>(), current = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(summaryBatch([a])))
+      .mockImplementationOnce(() => obsolete.promise).mockImplementationOnce(() => current.promise)
+      .mockResolvedValueOnce(workerResponse({ observedAt: '2026-10-29T13:00:00Z', items: [absent(a)] }));
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ ids }) => useWorkerMonitoringSummaries(ids, { readEnabled: true }), { wrapper: wrapper(scope()), initialProps: { ids: [a] } });
+    await flush(); act(() => result.current.refresh()); await flush();
+    rerender({ ids: [] }); await flush();
+    expect(result.current.snapshot).toBeNull(); expect((fetch.mock.calls[1]![1].signal as AbortSignal).aborted).toBe(true);
+    rerender({ ids: [a] }); await flush(); expect(result.current.snapshot).toBeNull();
+    obsolete.resolve(workerResponse(summaryBatch([a]))); await flush(); expect(result.current.snapshot).toBeNull();
+    current.resolve(workerError(503)); await flush(); expect(result.current.snapshot).toBeNull(); expect(result.current.error).toMatchObject({ status: 503 });
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.snapshot?.items[0]?.item.state).toBe('absent'); expect(result.current.snapshot?.items[0]?.expired).toBe(false);
+  });
+  it('withdraws retained reasons during a membership change and fences the older response', async () => {
+    const currentScope = scope(), project = workerId(30), a = workerId(1), b = workerId(2), obsolete = deferred<Response>(), current = deferred<Response>(); let publish!: (event: CacheEvent) => void;
+    vi.spyOn(currentScope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.mocked(currentScope.prepareProjection).mockResolvedValue(new Map([[project, 'a']]));
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(summaryBatch([a])))
+      .mockImplementationOnce(() => obsolete.promise).mockImplementationOnce(() => current.promise); vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ ids }) => useWorkerMonitoringSummaries(ids, { readEnabled: true }), { wrapper: wrapper(currentScope), initialProps: { ids: [a] } });
+    await flush(); rerender({ ids: [a, b] }); await flush();
+    act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'a' })); await flush();
+    const before = result.current.snapshot!.items[0]!.item;
+    expect(before.state === 'available' && before.summary.admission).toBeNull();
+    expect(before.state === 'available' && before.summary.capacity?.occupied).toBe(2);
+    obsolete.resolve(workerResponse(summaryBatch([a, b]))); await flush();
+    current.resolve(workerError(503)); await flush();
+    const after = result.current.snapshot!.items[0]!.item;
+    expect(result.current.error).toMatchObject({ status: 503 });
+    expect(after.state === 'available' && after.summary.admission).toBeNull();
+    expect(result.current.snapshot?.items.map(entry => entry.item.workerId)).toEqual([a]);
+  });
+  it('does not carry retained summaries or late responses to a different account during membership changes', async () => {
+    const firstScope = scope(), otherUser = workerId(90), nextScope = createTaskCacheScope({ userId: otherUser, onIdentityMismatch: vi.fn() });
+    vi.spyOn(nextScope, 'prepareProjection').mockResolvedValue(new Map()); scopes.push(nextScope);
+    let activeScope = firstScope;
+    const dynamicWrapper = ({ children }: { children: ReactNode }) => <TaskCacheProvider scope={activeScope}>{children}</TaskCacheProvider>;
+    const a = workerId(1), b = workerId(2), obsolete = deferred<Response>(), current = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(summaryBatch([a])))
+      .mockImplementationOnce(() => obsolete.promise).mockImplementationOnce(() => current.promise); vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ ids }) => useWorkerMonitoringSummaries(ids, { readEnabled: true }), { wrapper: dynamicWrapper, initialProps: { ids: [a] } });
+    await flush(); rerender({ ids: [a, b] }); await flush();
+    activeScope = nextScope; rerender({ ids: [a, b] }); await flush();
+    expect(result.current.snapshot).toBeNull();
+    obsolete.resolve(workerResponse(summaryBatch([a, b]))); await flush();
+    current.resolve(workerError(503, otherUser)); await flush();
+    expect(result.current.snapshot).toBeNull(); expect(result.current.error).toMatchObject({ status: 503 });
   });
   it('withdraws unscoped reason codes immediately and fences a late batch while retaining total capacity', async () => {
     const currentScope = scope(), project = workerId(30), id = workerId(1), old = deferred<Response>(), fresh = deferred<Response>(); let publish!: (event: CacheEvent) => void;

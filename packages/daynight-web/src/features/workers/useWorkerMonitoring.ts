@@ -61,8 +61,14 @@ const filterSummaries = (scope: TaskCacheScope, snapshot: WorkerMonitoringSummar
 export const useWorkerMonitoringSummaries = (workerIds: readonly string[], options: WorkerReadOptions) => {
   const scope = useTaskCacheScope();
   const key = workerIds.join(',');
-  const history = useRef<{ scope: TaskCacheScope; key: string; snapshot: WorkerMonitoringSummaries | null; expiry: Map<string, string>; expired: Set<string> }>({ scope, key, snapshot: null, expiry: new Map(), expired: new Set() });
-  if (history.current.scope !== scope || history.current.key !== key) history.current = { scope, key, snapshot: null, expiry: new Map(), expired: new Set() };
+  const history = useRef<{ scope: TaskCacheScope; snapshot: WorkerMonitoringSummaries | null; expiry: Map<string, string>; expired: Set<string> }>({ scope, snapshot: null, expiry: new Map(), expired: new Set() });
+  if (history.current.scope !== scope) history.current = { scope, snapshot: null, expiry: new Map(), expired: new Set() };
+  const retain = useCallback((snapshot: WorkerMonitoringSummaries): WorkerMonitoringSummaries | null => {
+    const ids = new Set(key === '' ? [] : key.split(','));
+    const items = snapshot.items.filter(entry => ids.has(entry.item.workerId));
+    if (items.length === 0) return null;
+    return items.length === snapshot.items.length ? snapshot : { ...snapshot, items };
+  }, [key]);
   const load = useCallback(async (scope: TaskCacheScope, signal: AbortSignal) => {
     const ids = key.split(','), items: WorkerMonitoringSummaryEntry[] = [];
     let observedAt = '', receivedMonotonic = 0;
@@ -74,8 +80,11 @@ export const useWorkerMonitoringSummaries = (workerIds: readonly string[], optio
     }
     return { snapshot: { observedAt, items }, receivedMonotonic };
   }, [key]);
-  const state = useWorkerObservation(`monitoring-list:${key}`, { readEnabled: options.readEnabled && key !== '' }, load, false, withdrawSummaries, filterSummaries, true);
+  const state = useWorkerObservation(key === '' ? 'monitoring-list:empty' : 'monitoring-list', { readEnabled: options.readEnabled && key !== '' }, load, false, withdrawSummaries, filterSummaries, true, retain);
   const known = history.current;
+  const currentIds = new Set(workerIds);
+  for (const id of known.expiry.keys()) if (!currentIds.has(id)) known.expiry.delete(id);
+  for (const id of known.expired) if (!currentIds.has(id)) known.expired.delete(id);
   if (state.snapshot !== known.snapshot) {
     known.snapshot = state.snapshot;
     if (state.snapshot === null) { known.expiry.clear(); known.expired.clear(); }

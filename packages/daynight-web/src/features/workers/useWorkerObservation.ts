@@ -22,8 +22,9 @@ type Loader<T> = (scope: TaskCacheScope, signal: AbortSignal) => Promise<WorkerO
 type Outcome<T> = { readonly ok: true; readonly value: WorkerObservation<T> } | { readonly ok: false; readonly error: unknown };
 const initialState = <T>(scope: TaskCacheScope, resource: string): State<T> => ({ scope, resource, fence: null, snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null });
 const matches = (scope: TaskCacheScope, fence: Fence, event: CacheEvent) => fence === null || scope.projectionEventMatches(fence, event);
+const retainAll = <T,>(snapshot: T): T | null => snapshot;
 
-export const useWorkerObservation = <T extends { readonly observedAt: string }>(resource: string, { readEnabled }: WorkerReadOptions, load: Loader<T>, missingIsUnavailable: boolean, withdraw: (snapshot: T, projectId: string) => T, filterDenied: (scope: TaskCacheScope, snapshot: T, fence: ReadonlyMap<string, string>) => T, advanceOnError = false): WorkerReadState<T> => {
+export const useWorkerObservation = <T extends { readonly observedAt: string }>(resource: string, { readEnabled }: WorkerReadOptions, load: Loader<T>, missingIsUnavailable: boolean, withdraw: (snapshot: T, projectId: string) => T, filterDenied: (scope: TaskCacheScope, snapshot: T, fence: ReadonlyMap<string, string>) => T, advanceOnError = false, retainSnapshot: (snapshot: T) => T | null = retainAll): WorkerReadState<T> => {
   const scope = useTaskCacheScope();
   const [state, setState] = useState<State<T>>(() => initialState(scope, resource));
   const refreshAction = useRef<() => void>(() => {});
@@ -171,7 +172,13 @@ export const useWorkerObservation = <T extends { readonly observedAt: string }>(
       });
       if (!(event.error instanceof TaskCacheError) && (cancelRequest || controller === null)) recheck();
     });
-    setState(old => old.scope === scope && old.resource === resource ? { ...old, refreshing: manualRequest.pending, stale: old.snapshot !== null } : initialState(scope, resource));
+    setState(old => {
+      if (old.scope !== scope || old.resource !== resource) return initialState(scope, resource);
+      const snapshot = old.snapshot === null ? null : retainSnapshot(old.snapshot);
+      const discarded = old.snapshot !== null && snapshot === null;
+      return { ...old, snapshot, status: discarded ? 'loading' : old.status, error: discarded ? null : old.error,
+        refreshing: manualRequest.pending, stale: snapshot !== null, serverMilliseconds: discarded ? null : old.serverMilliseconds };
+    });
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     refreshAction.current = refresh;
@@ -186,8 +193,10 @@ export const useWorkerObservation = <T extends { readonly observedAt: string }>(
       unsubscribe();
       refreshAction.current = () => {};
     };
-  }, [scope, resource, readEnabled, load, missingIsUnavailable, withdraw, filterDenied, advanceOnError]);
+  }, [scope, resource, readEnabled, load, missingIsUnavailable, withdraw, filterDenied, advanceOnError, retainSnapshot]);
 
   const current = state.scope === scope && state.resource === resource && !scope.isInvalidated ? state : initialState<T>(scope, resource);
-  return { snapshot: current.snapshot, status: current.status, refreshing: current.refreshing, error: current.error, stale: current.stale, serverMilliseconds: current.serverMilliseconds, refresh };
+  const snapshot = current.snapshot === null ? null : retainSnapshot(current.snapshot);
+  const discarded = current.snapshot !== null && snapshot === null;
+  return { snapshot, status: discarded ? 'loading' : current.status, refreshing: current.refreshing, error: discarded ? null : current.error, stale: discarded ? false : current.stale, serverMilliseconds: discarded ? null : current.serverMilliseconds, refresh };
 };
