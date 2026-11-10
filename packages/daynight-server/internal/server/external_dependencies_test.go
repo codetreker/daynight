@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
@@ -22,8 +23,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	current := externalHTTPRecord(f.project.ID, "", "External dependencies")
 	current.Description = "initial description"
 	current.DependsOn, current.BlockedBy, current.Ready = []string{done.ID, pending.ID}, []string{pending.ID}, false
-	values := externalHTTPWrite(current)
-	f.mutation(nil, &values, &current, []model.Task{done, pending}, true)
+	current = *expectMutationHTTPCreate(f.taskHTTPFixture, taskcore.CreateTask{Title: current.Title, Description: "initial description", Status: platformHTTPPointer(model.TaskTodo), DependsOn: []string{pending.ID, done.ID}, Properties: model.TaskProperties{}}, current, nil)
 	target := createHTTPTask(t, f.handler, f.project.ID, current.Title, pending.ID, done.ID)
 	externalHTTPCheck(t, target, externalHTTPAPI(current))
 	if target.ExternalDependsOn == nil || len(target.ExternalDependsOn) != 0 {
@@ -31,7 +31,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	}
 	enabled := externalHTTPChanged(current)
 	enabled.AllowAgents = true
-	target = f.update(current, enabled, map[string]any{"allowAgents": true}, []model.Task{done, pending}, true)
+	target = f.update(current, enabled, map[string]any{"allowAgents": true}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(true)})
 	current = enabled
 	expected := []string{done.ID, pending.ID}
 	current.ExternalDependsOn = slices.Clone(expected)
@@ -44,7 +44,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 		before := target
 		after := externalHTTPChanged(current)
 		after.AllowAgents = allowed
-		target = f.update(current, after, map[string]any{"allowAgents": allowed}, []model.Task{done, pending}, true)
+		target = f.update(current, after, map[string]any{"allowAgents": allowed}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(allowed)})
 		current = after
 		preserved := target
 		preserved.AllowAgents, preserved.Version, preserved.UpdatedAt = before.AllowAgents, before.Version, before.UpdatedAt
@@ -60,7 +60,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	references := []api.PullRequestProperty{{URL: "https://example.test/pr", Title: "Evidence"}}
 	after := externalHTTPChanged(current)
 	after.Properties = model.TaskProperties{"pullRequests": rawProperty(t, references)}
-	target = f.update(current, after, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, references)}}, []model.Task{done, pending}, true)
+	target = f.update(current, after, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, references)}}, taskcore.UpdateTask{Properties: model.TaskPropertiesPatch{"pullRequests": rawProperty(t, references)}})
 	current = after
 	preserved := target
 	preserved.Properties, preserved.Version, preserved.UpdatedAt = before.Properties, before.Version, before.UpdatedAt
@@ -72,10 +72,14 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 		t.Fatal("property read projection lost classified task")
 	}
 	for _, value := range []any{nil, false, []string{target.ID}, []string{done.ID, strings.ToUpper(done.ID)}} {
-		f.noStorage()
+		f.clearOperations()
+		var expected *taskcore.UpdateTask
+		if stringsValue, semantic := value.([]string); semantic {
+			expectMutationHTTPCreate(f.taskHTTPFixture, taskcore.CreateTask{Title: "Invalid external subset", DependsOn: []string{done.ID}, ExternalDependsOn: copyTaskHTTPSlice(stringsValue), Properties: model.TaskProperties{}}, model.Task{}, mutationHTTPFault("invalid_input"))
+			expected = &taskcore.UpdateTask{Version: target.Version, ExternalDependsOn: platformHTTPPointer(copyTaskHTTPSlice(stringsValue))}
+		}
 		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Invalid external subset", "dependsOn": []string{done.ID}, "externalDependsOn": value})), http.StatusBadRequest, "invalid_input")
-		_, semantic := value.([]string)
-		f.rejectedPatch(current, jsonBody(t, map[string]any{"version": target.Version, "externalDependsOn": value}), semantic, "invalid_input")
+		f.rejectedPatch(current, jsonBody(t, map[string]any{"version": target.Version, "externalDependsOn": value}), expected, "invalid_input")
 	}
 	f.read(current)
 	if after := readHTTPTask(t, f.handler, target); !reflect.DeepEqual(after, target) {
@@ -83,7 +87,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	}
 	renamed := externalHTTPChanged(current)
 	renamed.Title = "Preserved classification"
-	target = f.update(current, renamed, map[string]any{"title": "Preserved classification"}, []model.Task{done, pending}, true)
+	target = f.update(current, renamed, map[string]any{"title": "Preserved classification"}, taskcore.UpdateTask{Title: platformHTTPPointer("Preserved classification")})
 	current = renamed
 	if !slices.Equal(target.ExternalDependsOn, expected) {
 		t.Fatal("HTTP mutation response lost supplied classification")
@@ -92,11 +96,11 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, expected) {
 		t.Fatal("todo response lost classification")
 	}
-	f.mutation(&current, nil, nil, nil, false)
+	expectMutationHTTPStatus(f.taskHTTPFixture, current.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskInProgress}, model.Task{}, mutationHTTPFault("dependency_unsatisfied"))
 	assertProjectError(t, projectRequest(f.handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"})), http.StatusConflict, "dependency_unsatisfied")
 	f.page([]model.Task{done, pending, current}, nil, nil)
 	page := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), ""), http.StatusOK)
-	f.graph(current.ID, []model.Task{done, pending, current})
+	f.graph(current.ID, []model.Task{done, pending, current}, model.TaskGraphSummary{Total: 3, Todo: 2, Done: 1, Ready: 1, Blocked: 1})
 	graph := decodeResponse[api.TaskGraph](t, projectRequest(f.handler, http.MethodGet, graphPath(f.project.ID, current.ID), ""), http.StatusOK)
 	if len(page.Items) != 3 || !reflect.DeepEqual(page.Items[2], target) || len(graph.Tasks) != 3 || !slices.Equal(graph.Tasks[2].ExternalDependsOn, expected) || graph.ObservedAt.IsZero() {
 		t.Fatalf("HTTP list/graph lost classification or observation: %#v %#v", page, graph)

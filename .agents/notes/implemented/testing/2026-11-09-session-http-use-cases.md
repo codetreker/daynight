@@ -22,11 +22,17 @@ HTTP unit responsibilities follow the
 ## Decision
 
 The regular `internal/server/session` suite executes actual routes with direct
-Session use-case mocks. The private
-[service binding](../../../../packages/daynight-server/internal/server/session/service_calls.go)
-projects existing production methods into typed callbacks. Test-only aliases
-provide those same calls without constructing a real service, engine or DAO.
-No whole-application interface or persistence simulator is introduced.
+Session use-case mocks. The
+[operation table](../../../../packages/daynight-server/internal/server/session/service_calls.go)
+exposes the existing sixty typed callbacks as `Operations`, together with the
+archive operation/content resource types. `NewRoutesWithOperations` constructs
+the actual adapter with RequestAuthentication and its existing defaults. The
+production `NewRoutes` wrapper keeps real Service origin binding and private
+`callsFromService` assembly. Root protocol fixtures use the same operation entry
+without constructing a Service, Engine or DAO merely for fixed results.
+No persistence simulator is introduced. The later
+[Root fixture decision](2026-11-11-root-server-operation-fixtures.md) records why
+this consumer boundary is shared with the root package.
 
 Production `RequestAuthentication` retains Bearer, cookie, Origin and request
 identity handling with a configured credential callback. The

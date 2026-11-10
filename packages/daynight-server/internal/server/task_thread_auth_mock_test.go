@@ -3,9 +3,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,16 +14,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
+
+type taskCredentialContextKey struct{}
 
 type taskCredentialFixture struct {
 	t                   *testing.T
-	database            *httpTestStore
+	tasks               *taskHTTPOperations
+	threads             *taskHTTPThreadOperations
 	server              *httptest.Server
 	client              *http.Client
 	requestMu           sync.Mutex
@@ -37,24 +38,10 @@ type taskCredentialFixture struct {
 	authenticationError error
 }
 
-type taskCredentialDAO struct {
-	httpRejectedIdentityDAO
-	fixture *taskCredentialFixture
-}
-
-func (d *taskCredentialDAO) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
-	f := d.fixture
-	f.plan.Called("authenticate")
-	if kind != f.actor.Kind || !bytes.Equal(hash, secret.Hash(httpTestToken(kind))) || now.IsZero() || now.Location() != time.UTC || ctx.Err() != nil {
-		f.fail("authentication changed credential kind/hash/time/context: %s %v", kind, now)
-	}
-	return f.actor, f.authenticationError
-}
-
 func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
 	t.Helper()
 	project, task, _ := taskHTTPMockModels()
-	f := &taskCredentialFixture{t: t, database: newHTTPTestStore(t), project: project, task: task}
+	f := &taskCredentialFixture{t: t, tasks: &taskHTTPOperations{t: t}, threads: &taskHTTPThreadOperations{t: t}, project: project, task: task}
 	f.server = httptest.NewUnstartedServer(nil)
 	t.Cleanup(f.server.Close)
 	config := configuredTestConfig()
@@ -62,12 +49,18 @@ func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
 	config.PublicOrigin = f.origin
 	config.UniAuthCallbackURL = f.origin + "/api/v1/auth/callback"
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	logger := slog.New(slog.NewJSONHandler(&f.logs, nil))
-	handler, err := newTestHandler(Dependencies{Store: f.database, Files: attachmentTestFiles(t)}, config, logger)
-	if err != nil {
-		t.Fatal(err)
+	identity := &operationHTTPIdentity{t: t, CallbackURLFn: func() string { return config.UniAuthCallbackURL }}
+	identity.AuthenticateFn = func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+		f.plan.Called("authenticate")
+		if kind != f.actor.Kind || token != httpTestToken(kind) {
+			f.fail("authentication changed raw credential kind/token: %s", kind)
+		}
+		f.requireContext(ctx)
+		return f.actor, f.authenticationError
 	}
-	logged := httpx.RequestLogging(logger, handler)
+	handler := newOperationHTTPServerWithConfig(t, identity, func(deps *httpDependencies) {
+		deps.Tasks, deps.TaskThreads = f.tasks, f.threads
+	}, &f.logs, defaultHTTPPrincipal(), config)
 	f.server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		f.requestMu.Lock()
 		finished := f.requestFinished
@@ -76,26 +69,12 @@ func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
 			unexpectedHTTPCall(t, "HTTP request without an active fixture plan")
 		}
 		defer close(finished)
-		logged.ServeHTTP(response, request)
+		request = request.WithContext(context.WithValue(request.Context(), taskCredentialContextKey{}, finished))
+		handler.ServeHTTP(response, request)
 	})
 	f.server.StartTLS()
 	f.client = f.server.Client()
 	f.client.Timeout = 5 * time.Second
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := handler.(*sessionApplication).Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	f.database.WriteIdentityCall = func(ctx context.Context, run func(store.IdentityScope) error) (store.Completion, error) {
-		f.plan.Called("identity")
-		err := run(httpAuthenticationScope{t: t, dao: &taskCredentialDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, fixture: f}})
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
 	return f
 }
 
@@ -153,180 +132,75 @@ func (f *taskCredentialFixture) request(actor model.Principal, method, path stri
 }
 
 func taskCredentialCalls(methods ...string) map[string]int {
-	calls := map[string]int{"identity": 1, "authenticate": 1}
+	calls := map[string]int{"authenticate": 1}
 	for _, method := range methods {
 		calls[method]++
 	}
 	return calls
 }
 
-func (f *taskCredentialFixture) expectRead(current model.Task, items []model.ThreadMessage, accessError error) {
-	current = copyTaskHTTPTask(current)
-	items = copyThreadAuthenticationMessages(items)
-	base := newTaskHTTPMockBase(f.t, "Thread HTTP read")
-	project := &taskHTTPProjectReaderMock{taskHTTPMockBase: base}
-	project.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
-		f.plan.Called("access")
-		if actor != f.actor || id != f.project.ID || ctx.Err() != nil {
-			f.fail("read authorization changed actor or Project")
-		}
-		access := taskHTTPMockAccess(f.project, actor)
-		access.Role = model.ProjectMemberRole
-		return access, accessError
-	}
-	credentials := &taskHTTPCredentialReaderMock{taskHTTPMockBase: base}
-	credentials.CredentialFn = func(ctx context.Context, actor model.Principal) (store.ThreadCredential, error) {
-		f.plan.Called("credential")
-		if actor != f.actor || ctx.Err() != nil {
-			f.fail("Thread read changed credential identity")
-		}
-		return store.ThreadCredential{}, nil
-	}
-	reader := &taskHTTPReaderMock{taskHTTPMockBase: base}
-	reader.TaskPresenceFn = func(ctx context.Context, project, task string) (store.TaskPresence, error) {
-		f.plan.Called("presence")
-		f.requireAddress(ctx, project, task)
-		return store.TaskPresence{Found: true}, nil
-	}
-	reader.TaskFn = func(ctx context.Context, project, task string) (model.Task, error) {
-		f.plan.Called("task")
-		f.requireAddress(ctx, project, task)
-		return copyTaskHTTPTask(current), nil
-	}
-	reader.TaskCacheEpochFn = func(ctx context.Context, project string) (string, error) {
-		f.plan.Called("epoch")
-		if project != f.project.ID || ctx.Err() != nil {
-			f.fail("Task cache Project identity changed")
-		}
-		return "7", nil
-	}
-	reader.ThreadCandidatesFn = func(ctx context.Context, task string, anchor *model.ThreadPosition, before bool, count int) ([]model.ThreadMessage, error) {
-		f.plan.Called("candidates")
-		if task != f.task.ID || anchor != nil || !before || count != 51 || ctx.Err() != nil {
-			f.fail("Thread page selection changed")
-		}
-		return copyThreadAuthenticationMessages(items), nil
-	}
-	reader.ThreadSidesFn = func(ctx context.Context, task string, first, last model.ThreadPosition) (bool, bool, error) {
-		f.plan.Called("sides")
-		if task != f.task.ID || len(items) != 2 || first != items[1].Position() || last != items[0].Position() || ctx.Err() != nil {
-			f.fail("Thread page sides changed anchors")
-		}
-		return false, false, nil
-	}
-	snapshot := newHTTPTestSnapshot(f.t)
-	snapshot.Credentials, snapshot.Projects, snapshot.Tasks = credentials, project, reader
-	f.database.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
-		f.plan.Called("snapshot")
-		return run(snapshot)
-	}
-	f.database.WriteThreadCall = nil
-}
-
-func (f *taskCredentialFixture) requireAddress(ctx context.Context, project, task string) {
+func (f *taskCredentialFixture) requireContext(ctx context.Context) {
 	f.t.Helper()
-	if project != f.project.ID || task != f.task.ID || ctx.Err() != nil {
-		f.fail("Thread DAO address/context changed")
+	requireOperationHTTPContext(f.t, ctx)
+	if ctx.Err() != nil || ctx.Value(taskCredentialContextKey{}) != f.requestFinished {
+		f.fail("business operation lost the active HTTP request context")
 	}
 }
 
-func (f *taskCredentialFixture) expectPost(current model.Task, message model.ThreadMessage, accessError error) {
+func (f *taskCredentialFixture) requireOperation(ctx context.Context, actor model.Principal, project, task string) {
+	f.t.Helper()
+	f.requireContext(ctx)
+	if actor != f.actor || project != f.project.ID || task != f.task.ID {
+		f.fail("HTTP operation changed principal or Project/Task address")
+	}
+}
+
+func (f *taskCredentialFixture) expectTaskRead(current model.Task, finalError error) {
 	current = copyTaskHTTPTask(current)
+	f.tasks.ObserveCall = func(ctx context.Context, actor model.Principal, project, task string) (taskservice.TaskObservation, error) {
+		f.plan.Called("task-observe")
+		f.requireOperation(ctx, actor, project, task)
+		return taskservice.TaskObservation{Task: copyTaskHTTPTask(current), Epoch: "7"}, finalError
+	}
+}
+
+func (f *taskCredentialFixture) expectThreadRead(input taskservice.ThreadListRequest, page model.ThreadPage, encoded api.ThreadPage, finalError error) {
+	input.BeforeID, input.AfterID = copyTaskHTTPPointer(input.BeforeID), copyTaskHTTPPointer(input.AfterID)
+	page.Items = copyThreadAuthenticationMessages(page.Items)
+	data := taskCredentialJSON(f.t, encoded)
+	f.threads.ListCall = func(ctx context.Context, actor model.Principal, project, task string, actual taskservice.ThreadListRequest) (taskservice.ThreadPageDocument, error) {
+		f.plan.Called("thread-list")
+		f.requireOperation(ctx, actor, project, task)
+		if !reflect.DeepEqual(actual, input) {
+			f.fail("Thread list input=%#v, want=%#v", actual, input)
+		}
+		out := page
+		out.Items = copyThreadAuthenticationMessages(page.Items)
+		return taskservice.ThreadPageDocument{Page: out, JSON: bytes.Clone(data)}, finalError
+	}
+}
+
+func (f *taskCredentialFixture) expectPost(input taskservice.CreateThreadMessage, message model.ThreadMessage, encoded api.ThreadMessage, finalError error) {
+	input.ReplyTo, input.ClaimID = copyTaskHTTPPointer(input.ReplyTo), copyTaskHTTPPointer(input.ClaimID)
 	message = copyThreadAuthenticationMessage(message)
-	base := newTaskHTTPMockBase(f.t, "Thread HTTP post")
-	tasks := &taskHTTPThreadTaskMock{taskHTTPMockBase: base}
-	tasks.LockTaskPresenceFn = func(ctx context.Context, project, task string) (store.TaskPresence, error) {
-		f.plan.Called("presence")
-		f.requireAddress(ctx, project, task)
-		return store.TaskPresence{Found: true}, nil
-	}
-	tasks.SourceTaskFn = func(ctx context.Context, project, task string) (model.Task, error) {
-		f.plan.Called("source")
-		f.requireAddress(ctx, project, task)
-		return copyTaskHTTPTask(current), nil
-	}
-	credentials := &taskHTTPThreadCredentialMock{taskHTTPMockBase: base}
-	credentials.CredentialFn = func(ctx context.Context, actor model.Principal) (store.ThreadCredential, error) {
-		f.plan.Called("credential")
-		if actor != f.actor || ctx.Err() != nil {
-			f.fail("Thread post changed credential identity")
+	data := taskCredentialJSON(f.t, encoded)
+	f.threads.PostCall = func(ctx context.Context, actor model.Principal, project, task string, actual taskservice.CreateThreadMessage) (taskservice.ThreadMessageDocument, error) {
+		f.plan.Called("thread-post")
+		f.requireOperation(ctx, actor, project, task)
+		if !reflect.DeepEqual(actual, input) {
+			f.fail("Thread post input=%#v, want=%#v", actual, input)
 		}
-		return store.ThreadCredential{}, nil
+		return taskservice.ThreadMessageDocument{Message: copyThreadAuthenticationMessage(message), JSON: bytes.Clone(data)}, finalError
 	}
-	credentials.AuthorNameFn = func(ctx context.Context, user string) (*string, error) {
-		f.plan.Called("author")
-		if user != f.actor.UserID || ctx.Err() != nil {
-			f.fail("Thread author lookup changed identity")
-		}
-		name := "Member"
-		return &name, nil
+}
+
+func taskCredentialJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
 	}
-	credentials.CredentialValidFn = func(ctx context.Context, credential store.ThreadCredential) (bool, error) {
-		f.plan.Called("valid")
-		if credential.ExpiresAt != nil || ctx.Err() != nil {
-			f.fail("Thread final admission changed locked credential")
-		}
-		return true, nil
-	}
-	projects := &taskHTTPThreadProjectMock{taskHTTPMockBase: base}
-	projects.LockProjectAuthorizationFn = func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
-		f.plan.Called("access")
-		if actor != f.actor || project != f.project.ID || ctx.Err() != nil {
-			f.fail("Thread write authorization changed actor/Project")
-		}
-		access := taskHTTPMockAccess(f.project, actor)
-		access.Role = model.ProjectMemberRole
-		return access, accessError
-	}
-	dao := &taskHTTPThreadDAOMock{taskHTTPMockBase: base}
-	dao.LockHeadFn = func(ctx context.Context, task string) (*model.ThreadPosition, error) {
-		f.plan.Called("head")
-		if task != f.task.ID || ctx.Err() != nil {
-			f.fail("Thread head lock changed Task")
-		}
-		return nil, nil
-	}
-	dao.InsertMessageFn = func(ctx context.Context, candidate model.ThreadMessage) (model.ThreadMessage, error) {
-		f.plan.Called("insert")
-		expected := copyThreadAuthenticationMessage(message)
-		expected.ID, expected.CreatedAt = "", time.Time{}
-		if !reflect.DeepEqual(candidate, expected) || ctx.Err() != nil {
-			f.fail("candidate=%#v want=%#v", candidate, expected)
-		}
-		return copyThreadAuthenticationMessage(message), nil
-	}
-	dao.PrepareTimestampFn = func(ctx context.Context, candidate *model.ThreadMessage, head *model.ThreadPosition) error {
-		f.plan.Called("timestamp")
-		if !reflect.DeepEqual(*candidate, message) || head != nil || ctx.Err() != nil {
-			f.fail("timestamp changed inserted message or head")
-		}
-		return nil
-	}
-	dao.AdvanceHeadFn = func(ctx context.Context, task string, position model.ThreadPosition) error {
-		f.plan.Called("advance")
-		if task != f.task.ID || position != message.Position() || ctx.Err() != nil {
-			f.fail("Thread head advanced to a different message")
-		}
-		return nil
-	}
-	capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base}
-	capture.FreezeAudienceFn = func(ctx context.Context, project string, types []string) ([]store.WebhookAudience, error) {
-		f.plan.Called("capture")
-		if project != f.project.ID || !reflect.DeepEqual(types, []string{protocol.ThreadPosted}) || ctx.Err() != nil {
-			f.fail("Thread notification source changed")
-		}
-		return []store.WebhookAudience{}, nil
-	}
-	scope := &taskHTTPThreadScopeMock{taskHTTPMockBase: base, TaskDAOFn: func() store.ThreadTaskDAO { return tasks }, CredentialDAOFn: func() store.ThreadCredentialDAO { return credentials }, ProjectDAOFn: func() store.ThreadProjectDAO { return projects }, ThreadDAOFn: func() store.ThreadDAO { return dao }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
-	f.database.WriteThreadCall = func(ctx context.Context, run func(store.ThreadScope) error) (store.Completion, error) {
-		f.plan.Called("write")
-		err := run(scope)
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
-	f.database.ReadSnapshotCall = nil
+	return data
 }
 
 func taskCredentialDecode[T any](t *testing.T, response *httptest.ResponseRecorder) T {

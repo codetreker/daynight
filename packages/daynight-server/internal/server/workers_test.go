@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/google/uuid"
 )
 
@@ -45,7 +45,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	body := workerSnapshotReportBody()
 	body["taskInventory"] = nil
 	unknownSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}}
-	reported := f.report(t, strings.ToUpper(id), body, nil, nil, unknownSnapshot)
+	reported := f.report(t, strings.ToUpper(id), body, unknownSnapshot)
 	if reported.ObservedAt.IsZero() || reported.LastReportedAt.IsZero() {
 		t.Fatal("report lacks server timestamps")
 	}
@@ -56,7 +56,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	body = workerSnapshotReportBody()
 	inventoryAt := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
 	idleSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: []model.WorkerObservedTask{}}}
-	f.report(t, id, body, nil, []model.WorkerObservedTask{}, idleSnapshot)
+	f.report(t, id, body, idleSnapshot)
 	idle := f.detail(t, id, idleSnapshot)
 	if idle.Worker.ActiveTaskCount == nil || *idle.Worker.ActiveTaskCount != 0 || idle.Worker.TaskObservationState != "observed" || idle.Worker.TaskObservedAt == nil || idle.Worker.InventoryObservedAt == nil || idle.Worker.Telemetry.CPU.Value == nil || idle.Worker.Telemetry.Versions.Codex.State != "not_installed" || idle.Worker.Telemetry.Versions.Copilot.Code == nil {
 		t.Fatalf("idle or telemetry shape incorrect: %+v", idle)
@@ -67,7 +67,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": projectID, "taskId": taskID, "claimId": claimID}}}
 	expectedItems := []model.WorkerObservedTask{{ProjectID: projectID, TaskID: taskID, ClaimID: claimID, Title: task.Title, ProjectName: "Project", Status: model.TaskInProgress, Phase: model.WorkerPreparing, Agent: model.AgentClaude}}
 	activeSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: expectedItems}}
-	f.report(t, id, body, []store.WorkerTaskSource{{Task: task, ProjectName: "Project"}}, expectedItems, activeSnapshot)
+	f.report(t, id, body, activeSnapshot)
 	active := f.detail(t, id, activeSnapshot)
 	if active.Worker.ActiveTaskCount == nil || *active.Worker.ActiveTaskCount != 1 || len(active.Worker.Tasks) != 1 || active.Worker.Tasks[0].Agent != "claude" || active.Worker.Tasks[0].Title != task.Title {
 		t.Fatalf("authorized task snapshot missing: %+v", active)
@@ -75,7 +75,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	body["taskInventory"] = nil
 	staleSnapshot := activeSnapshot
 	staleSnapshot.TaskSnapshot.State = model.WorkerTasksStale
-	f.report(t, id, body, nil, nil, staleSnapshot)
+	f.report(t, id, body, staleSnapshot)
 	stale := f.detail(t, id, staleSnapshot)
 	if stale.Worker.TaskObservationState != "stale" || len(stale.Worker.Tasks) != 1 || stale.Worker.Tasks[0].Status != "in_progress" || stale.Worker.TaskObservedAt == nil || !stale.Worker.TaskObservedAt.Equal(*active.Worker.TaskObservedAt) {
 		t.Fatalf("historical snapshot was overwritten by current task state: %+v", stale)
@@ -88,7 +88,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	secondBody := workerSnapshotReportBody()
 	secondBody["versions"].(map[string]any)["herdr"] = map[string]any{"state": "not_running", "checkedAt": "2026-10-29T00:00:00Z"}
 	secondSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: second, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, secondBody), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: []model.WorkerObservedTask{}}}
-	f.report(t, second, secondBody, nil, []model.WorkerObservedTask{}, secondSnapshot)
+	f.report(t, second, secondBody, secondSnapshot)
 	count := 1
 	summaries := []store.WorkerSummary{{WorkerID: id, CreatedAt: staleSnapshot.CreatedAt, LastReportedAt: lastSeen, Machine: staleSnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksStale, TaskObservedAt: &f.now, ActiveTaskCount: &count}, {WorkerID: second, CreatedAt: secondSnapshot.CreatedAt, LastReportedAt: secondSnapshot.LastReportedAt, Machine: secondSnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksObserved}}
 	page := f.list(t, "/api/v1/me/workers?limit=1", store.Page{Limit: 1}, summaries)
@@ -113,7 +113,7 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", body), http.StatusBadRequest, "invalid_input")
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", strings.Repeat(" ", httpx.MaxJSONBody)+"{}"), http.StatusRequestEntityTooLarge, "payload_too_large")
-	for _, mutate := range []func(map[string]any){
+	for index, mutate := range []func(map[string]any){
 		func(b map[string]any) { b["userId"] = uuid.NewString() }, func(b map[string]any) { b["workingDirectory"] = "NUL\x00" }, func(b map[string]any) { b["platform"] = "unknown" },
 		func(b map[string]any) { b["cpu"].(map[string]any)["value"].(map[string]any)["usagePercent"] = 101 },
 		func(b map[string]any) { b["memory"].(map[string]any)["value"].(map[string]any)["usedBytes"] = 99 },
@@ -124,7 +124,13 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 	} {
 		body := workerSnapshotReportBody()
 		mutate(body)
-		assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
+		var response *httptest.ResponseRecorder
+		if index == 0 {
+			response = projectRequest(handler, http.MethodPost, path+"/report", jsonBody(t, body))
+		} else {
+			response = f.reportResult(t, id, body, workerservice.WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker report is invalid."})
+		}
+		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
 	for _, stamp := range []string{"2026-10-29T00:00:00+24:00", "2026-10-29T00:00:00+00:60", "2026-10-29T00:00:00,1Z"} {
 		for _, field := range []string{"sampledAt", "checkedAt", "observedAt"} {
@@ -144,24 +150,21 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/me/workers/"+target, jsonBody(t, workerSnapshotReportBody())), http.StatusBadRequest, "invalid_input")
 	}
 	for _, target := range []string{"?limit=0", "?limit=101", "?limit=1&limit=2", "?cursor=bad", "?unknown=x", "?limit=%zz"} {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers"+target, ""), http.StatusBadRequest, "invalid_input")
+		var response *httptest.ResponseRecorder
+		if target == "?cursor=bad" {
+			response = f.invalidCursor(t, "/api/v1/me/workers"+target)
+		} else {
+			response = projectRequest(handler, http.MethodGet, "/api/v1/me/workers"+target, "")
+		}
+		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
 	for _, target := range []string{"not-uuid", id + "?", id + "?x=1"} {
 		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers/"+target, ""), http.StatusBadRequest, "invalid_input")
 	}
-	calls := 0
-	f.read(t, &workerHTTPReader{t: t, WorkerCall: func(_ context.Context, u, w string, now time.Time) (model.WorkerSnapshot, error) {
-		calls++
-		if u != handler.principal.UserID || w != id || now != f.now {
-			t.Fatal("wrong missing-worker query")
-		}
-		return model.WorkerSnapshot{}, model.ErrNotFound
-	}}, func() {
-		assertProjectError(t, projectRequest(handler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
+	response := f.getResult(t, id, model.WorkerSnapshot{}, &model.Fault{Code: "not_found", Message: "Worker was not found."}, func() *httptest.ResponseRecorder {
+		return projectRequest(handler, http.MethodGet, path, "")
 	})
-	if calls != 1 {
-		t.Fatalf("missing-worker calls: %d", calls)
-	}
+	assertProjectError(t, response, http.StatusNotFound, "not_found")
 	for _, test := range []struct{ path, method, allow string }{{"/api/v1/me/workers", http.MethodPost, "GET, HEAD"}, {path, http.MethodPatch, "GET, HEAD"}, {path + "/report", http.MethodGet, "POST"}} {
 		response := projectRequest(handler, test.method, test.path, "")
 		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -172,7 +175,7 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, path+"/report", strings.NewReader(jsonBody(t, workerSnapshotReportBody())))
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "text/plain")
-	response := httptest.NewRecorder()
+	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatal("non-JSON report accepted")

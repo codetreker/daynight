@@ -1,16 +1,14 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 func assignmentHTTPAPI(t *testing.T, row model.Task) api.Task {
@@ -23,82 +21,30 @@ func assignmentHTTPAPI(t *testing.T, row model.Task) api.Task {
 		}
 		legacy := make(map[string]json.RawMessage, 13)
 		for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
-			legacy[field] = stored[field]
+			legacy[field] = copyTaskHTTPSlice(stored[field])
 		}
 		result.Properties["worker"] = rawProperty(t, legacy)
 	}
 	return result
 }
 
-type assignmentHTTPProjectDAO struct {
-	store.ProjectWriteDAO
-	f      *taskHTTPFixture
-	target string
-	err    error
-	plan   *httpCallPlan
-}
-
-func (d assignmentHTTPProjectDAO) ProjectAccess(ctx context.Context, principal model.Principal) (model.ProjectAccess, error) {
-	if principal == d.f.principal {
-		return d.ProjectWriteDAO.ProjectAccess(ctx, principal)
-	}
-	d.f.require(ctx, d.f.project.ID)
-	d.plan.Called("target")
-	platformHTTPCheck(d.f.t, principal, model.Principal{UserID: d.target})
-	return model.ProjectAccess{ProjectID: d.f.project.ID, UserID: d.target, Role: model.ProjectMemberRole}, d.err
-}
-
-type assignmentHTTPWriteScope struct {
-	store.ProjectWriteScope
-	project store.ProjectWriteDAO
-}
-
-func (s assignmentHTTPWriteScope) ProjectDAO() store.ProjectWriteDAO { return s.project }
-
-func assignmentHTTPMutation(f *taskHTTPFixture, current *model.Task, values *store.TaskWrite, result *model.Task, dependencies []model.Task, validate bool, target *string, targetError error) {
+func assignmentHTTPCreate(f *taskHTTPFixture, declared model.Task, body string, input taskcore.CreateTask) (model.Task, *httptest.ResponseRecorder) {
 	f.t.Helper()
-	extended := &externalHTTPFixture{f}
-	extended.mutation(current, values, result, dependencies, validate)
-	if target == nil {
-		return
-	}
-	plan := newHTTPCallPlan(f.t, map[string]int{"target": 1})
-	write := f.store.WriteProjectCall
-	f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return write(ctx, project, func(scope store.ProjectWriteScope) error {
-			dao := assignmentHTTPProjectDAO{ProjectWriteDAO: scope.ProjectDAO(), f: f, target: *target, err: targetError, plan: plan}
-			return run(assignmentHTTPWriteScope{ProjectWriteScope: scope, project: dao})
-		})
-	}
-}
-
-func assignmentHTTPCreate(f *taskHTTPFixture, declared model.Task, body string, dependencies []model.Task) (model.Task, *httptest.ResponseRecorder) {
-	f.t.Helper()
-	declared = copyTaskHTTPTask(declared)
-	values := platformHTTPValues(declared)
-	assignmentHTTPMutation(f, nil, &values, &declared, dependencies, true, declared.AssignedTo, nil)
+	result := expectMutationHTTPCreate(f, input, declared, nil)
 	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), body)
 	got := decodeResponse[api.Task](f.t, response, http.StatusCreated)
-	platformHTTPCheck(f.t, got, assignmentHTTPAPI(f.t, declared))
-	return declared, response
+	platformHTTPCheck(f.t, got, assignmentHTTPAPI(f.t, *result))
+	return copyTaskHTTPTask(*result), response
 }
 
-func assignmentHTTPUpdate(f *taskHTTPFixture, before, after model.Task, patch map[string]any, dependencies []model.Task, changed bool) model.Task {
+func assignmentHTTPUpdate(f *taskHTTPFixture, before, after model.Task, patch map[string]any, input taskcore.UpdateTask) model.Task {
 	f.t.Helper()
 	before, after = copyTaskHTTPTask(before), copyTaskHTTPTask(after)
-	values := platformHTTPValues(after)
-	var result *model.Task
-	if changed {
-		result = &after
-	}
-	var target *string
-	if !reflect.DeepEqual(before.AssignedTo, after.AssignedTo) {
-		target = after.AssignedTo
-	}
-	assignmentHTTPMutation(f, &before, &values, result, dependencies, true, target, nil)
+	input.Version = before.Version
+	expectMutationHTTPUpdate(f, before.ID, input, after, nil)
 	got := updateHTTPTask(f.t, f.handler, assignmentHTTPAPI(f.t, before), patch)
 	platformHTTPCheck(f.t, got, assignmentHTTPAPI(f.t, after))
-	return after
+	return copyTaskHTTPTask(after)
 }
 
 func assignmentHTTPGraphRow(row model.Task) model.GraphTask {

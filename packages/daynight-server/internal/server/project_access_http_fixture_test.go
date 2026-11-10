@@ -2,215 +2,153 @@ package server
 
 import (
 	"context"
+	"io"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-type accessHTTPProjectReader struct {
-	projectHTTPReader
-	participants func(context.Context, string) ([]model.ProjectParticipant, error)
+type projectAccessHTTPFixture struct {
+	t              *testing.T
+	principal      model.Principal
+	projects       *projectHTTPOperations
+	teams          *teamHTTPOperations
+	identity       *operationHTTPIdentity
+	tasks          *taskHTTPOperations
+	memberships    *projectHTTPMembershipOperations
+	sync           func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error)
+	handler        *resourceTestHandler
+	requestContext context.Context
+	authenticated  map[context.Context]bool
 }
 
-func (d accessHTTPProjectReader) ProjectParticipants(ctx context.Context, id string) ([]model.ProjectParticipant, error) {
-	return d.participants(ctx, id)
+func newProjectAccessHTTPFixture(t *testing.T, principal model.Principal, output io.Writer) *projectAccessHTTPFixture {
+	t.Helper()
+	f := &projectAccessHTTPFixture{t: t, principal: principal, projects: newProjectHTTPOperations(t), teams: &teamHTTPOperations{t: t}, tasks: &taskHTTPOperations{t: t}, memberships: &projectHTTPMembershipOperations{t: t}}
+	f.authenticated = make(map[context.Context]bool)
+	f.identity = &operationHTTPIdentity{t: t}
+	f.identity.CallbackURLFn = func() string { return configuredTestConfig().UniAuthCallbackURL }
+	f.identity.AuthenticateFn = func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+		if f.authenticated[ctx] {
+			unexpectedHTTPCall(t, "duplicate Authenticate for one request")
+		}
+		f.authenticated[ctx] = true
+		f.requestContext = ctx
+		projectHTTPCheck(t, kind, principal.Kind)
+		projectHTTPCheck(t, token, httpTestToken(principal.Kind))
+		if ctx.Err() != nil {
+			t.Fatalf("authentication received canceled context: %v", ctx.Err())
+		}
+		return principal, nil
+	}
+	f.handler = newOperationHTTPServerWithIdentity(t, f.identity, func(deps *httpDependencies) {
+		deps.Projects, deps.Memberships, deps.Tasks, deps.Teams = f.projects, f.memberships, f.tasks, f.teams
+		deps.TaskSync = func(ctx context.Context, actor model.Principal, id string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+			if f.sync == nil {
+				unexpectedHTTPCall(t, "TaskSync")
+			}
+			return f.sync(ctx, actor, id, input)
+		}
+	}, output, principal)
+	return f
 }
 
-type accessHTTPSnapshot struct {
-	store.SnapshotScope
-	project  store.ProjectReader
-	task     store.TaskReader
-	session  store.SessionReader
-	observed func(context.Context) (time.Time, error)
+func (f *projectAccessHTTPFixture) require(ctx context.Context, actor, expected model.Principal, id, expectedID string) {
+	f.t.Helper()
+	requireOperationHTTPContext(f.t, ctx)
+	if ctx != f.requestContext || ctx.Err() != nil {
+		f.t.Fatalf("operation lost authenticated request context: %v", ctx.Err())
+	}
+	projectHTTPCheck(f.t, actor, expected)
+	projectHTTPCheck(f.t, id, expectedID)
 }
 
-func (s accessHTTPSnapshot) ProjectDAO() store.ProjectReader { return s.project }
-func (s accessHTTPSnapshot) TaskDAO() store.TaskReader       { return s.task }
-func (s accessHTTPSnapshot) SessionDAO() store.SessionReader { return s.session }
-func (s accessHTTPSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
-	return s.observed(ctx)
-}
-
-type accessHTTPTaskReader struct {
-	store.TaskReader
-	epoch    func(context.Context, string) (string, error)
-	sync     func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
-	people   func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	presence func(context.Context, string, string) (store.TaskPresence, error)
-	graph    func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
-}
-
-func (d accessHTTPTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, error) {
-	return d.epoch(ctx, id)
-}
-func (d accessHTTPTaskReader) TaskSyncTasks(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
-	return d.sync(ctx, id, lower, preview)
-}
-func (d accessHTTPTaskReader) TaskAssignees(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
-	return d.people(ctx, id)
-}
-func (d accessHTTPTaskReader) TaskPresence(ctx context.Context, project, id string) (store.TaskPresence, error) {
-	return d.presence(ctx, project, id)
-}
-func (d accessHTTPTaskReader) TaskGraphTasks(ctx context.Context, project, id string, selection store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
-	return d.graph(ctx, project, id, selection, preview)
-}
-
-type accessHTTPSessionReader struct {
-	store.SessionReader
-	sources func(context.Context, string) ([]store.TaskSessionSource, error)
-}
-
-func (d accessHTTPSessionReader) CurrentTaskSessionSources(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-	return d.sources(ctx, id)
-}
-
-type accessHTTPIdentityUserDAO struct {
-	httpRejectedIdentityDAO
-	user func(context.Context, string) (model.User, store.PersonalTeamFacts, error)
-}
-
-func (d accessHTTPIdentityUserDAO) IdentityUser(ctx context.Context, id string) (model.User, store.PersonalTeamFacts, error) {
-	return d.user(ctx, id)
-}
-
-func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v model.Project, access model.ProjectAccess, kind string, lower *time.Time, graphTask *model.GraphTask) {
+func accessHTTPProject(t *testing.T, f *projectAccessHTTPFixture, p model.Principal, v model.Project, access model.ProjectAccess, kind string, input taskservice.TaskSyncRequest, graphTask *model.GraphTask, syncMode ...string) {
 	t.Helper()
 	access = projectHTTPCopyAccess(access)
-	lower = projectHTTPCopyPointer(lower)
-	if graphTask != nil {
-		facts := projectHTTPCopyGraphTask(*graphTask)
-		graphTask = &facts
-	}
-	snapshotCalls := projectHTTPCount(t, 1)
-	reader := accessHTTPProjectReader{}
-	if kind != "list" {
-		calls := projectHTTPCount(t, 1)
-		reader.ProjectAccessCall = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
-			calls()
-			projectHTTPCheck(t, actor, p)
-			projectHTTPCheck(t, id, v.ID)
+	input.Since = projectHTTPCopyPointer(input.Since)
+	called := projectHTTPCount(t, 1)
+	switch kind {
+	case "access":
+		f.projects.AccessCall = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+			called()
+			f.require(ctx, actor, p, id, v.ID)
 			return projectHTTPCopyAccess(access), nil
 		}
-	}
-	if kind == "project" || kind == "sync" || kind == "graph" {
-		calls := projectHTTPCount(t, 1)
-		reader.ProjectCall = func(ctx context.Context, id string) (model.Project, error) {
-			calls()
-			projectHTTPCheck(t, id, v.ID)
-			return v, nil
+	case "project":
+		f.projects.GetWithAccessCall = func(ctx context.Context, actor model.Principal, id string) (model.Project, model.ProjectAccess, error) {
+			called()
+			f.require(ctx, actor, p, id, v.ID)
+			return v, projectHTTPCopyAccess(access), nil
 		}
-	}
-	if kind == "list" {
-		calls := projectHTTPCount(t, 1)
-		reader.ScopedProjectsCall = func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
-			calls()
-			projectHTTPCheck(t, actor, p)
-			projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeAll, ""))
-			projectHTTPCheck(t, page, store.Page{Limit: 50})
-			return store.ProjectPage{Items: []model.Project{v}}, nil
+	case "list":
+		f.projects.ListScopedCall = func(ctx context.Context, actor model.Principal, got coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+			called()
+			f.require(ctx, actor, p, "", "")
+			projectHTTPCheck(t, got, coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 50}})
+			return coreproject.ProjectPage{Items: []model.Project{v}}, nil
 		}
-	}
-	if kind == "members" {
-		calls := projectHTTPCount(t, 1)
-		reader.participants = func(ctx context.Context, id string) ([]model.ProjectParticipant, error) {
-			calls()
-			projectHTTPCheck(t, id, v.ID)
+	case "members":
+		f.memberships.ListWithAccessCall = func(ctx context.Context, actor model.Principal, id string) (coreproject.ProjectParticipants, error) {
+			called()
+			f.require(ctx, actor, p, id, v.ID)
 			owner := access.OwnerTeam
 			owner.Name = projectHTTPCopyPointer(owner.Name)
-			return []model.ProjectParticipant{{UserID: p.UserID, Profile: model.ProjectParticipantProfile{}, EffectiveRole: model.ProjectAdmin, InheritedFrom: &model.ProjectInheritance{Team: owner, Role: model.ProjectAdmin}}}, nil
+			return coreproject.ProjectParticipants{ActorAccess: projectHTTPCopyAccess(access), Items: []model.ProjectParticipant{{UserID: p.UserID, Profile: model.ProjectParticipantProfile{}, EffectiveRole: model.ProjectAdmin, InheritedFrom: &model.ProjectInheritance{Team: owner, Role: model.ProjectAdmin}}}}, nil
 		}
-	}
-	snapshot := accessHTTPSnapshot{project: reader}
-	if kind == "sync" || kind == "graph" {
-		observed := projectHTTPCount(t, 1)
-		snapshot.observed = func(context.Context) (time.Time, error) { observed(); return v.UpdatedAt, nil }
-	}
-	if kind == "sync" {
-		epoch, sync, people, sources := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-		snapshot.task = accessHTTPTaskReader{
-			epoch: func(ctx context.Context, id string) (string, error) {
-				epoch()
-				projectHTTPCheck(t, id, v.ID)
-				return "e5555555-5555-4555-8555-555555555555", nil
-			},
-			sync: func(ctx context.Context, id string, gotLower *time.Time, preview int) ([]model.TaskViewRecord, error) {
-				sync()
-				projectHTTPCheck(t, id, v.ID)
-				projectHTTPCheck(t, gotLower, lower)
-				projectHTTPCheck(t, preview, projection.TitlePreviewCharacters)
-				return []model.TaskViewRecord{}, nil
-			},
-			people: func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
-				people()
-				projectHTTPCheck(t, id, v.ID)
-				return []model.TaskAssigneeFact{}, nil
-			},
-		}
-		snapshot.session = accessHTTPSessionReader{sources: func(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-			sources()
-			projectHTTPCheck(t, id, v.ID)
-			return []store.TaskSessionSource{}, nil
-		}}
-	}
-	if kind == "graph" {
-		presence, tasks := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-		selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
-		snapshot.task = accessHTTPTaskReader{
-			presence: func(ctx context.Context, project, id string) (store.TaskPresence, error) {
-				presence()
-				projectHTTPCheck(t, project, v.ID)
-				projectHTTPCheck(t, id, graphTask.ID)
-				return store.TaskPresence{Found: true}, nil
-			},
-			graph: func(ctx context.Context, project, id string, gotSelection store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
-				tasks()
-				projectHTTPCheck(t, project, v.ID)
-				projectHTTPCheck(t, id, graphTask.ID)
-				projectHTTPCheck(t, gotSelection, selection)
-				projectHTTPCheck(t, preview, projection.TitlePreviewCharacters)
-				return []model.GraphTask{projectHTTPCopyGraphTask(*graphTask)}, nil
-			},
-		}
-	}
-	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshotCalls()
-		return op(snapshot)
-	}
-}
-func accessHTTPRefusal(t *testing.T, tx *httpTestStore, p model.Principal, id string, err error) {
-	t.Helper()
-	snapshot, called := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
-		return op(accessHTTPSnapshot{project: projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
+	case "sync":
+		f.sync = func(ctx context.Context, actor model.Principal, id string, got taskservice.TaskSyncRequest) (model.TaskSync, error) {
 			called()
-			projectHTTPCheck(t, actor, p)
-			projectHTTPCheck(t, project, id)
-			return model.ProjectAccess{}, err
-		}}})
+			f.require(ctx, actor, p, id, v.ID)
+			projectHTTPCheck(t, got, input)
+			if len(syncMode) != 1 {
+				t.Fatal("sync requires one explicitly configured result mode")
+			}
+			mode := syncMode[0]
+			return model.TaskSync{Mode: mode, Epoch: "e5555555-5555-4555-8555-555555555555", Project: v, ActorAccess: projectHTTPCopyAccess(access), ObservedAt: v.UpdatedAt, Tasks: []model.TaskViewRecord{}, AssigneeVersions: []model.TaskAssigneeVersion{}, Sessions: map[string]model.SessionListState{}}, nil
+		}
+	case "graph":
+		row := projectHTTPCopyGraphTask(*graphTask)
+		f.tasks.GraphCall = func(ctx context.Context, actor model.Principal, id, root string) (model.TaskGraph, error) {
+			called()
+			f.require(ctx, actor, p, id, v.ID)
+			projectHTTPCheck(t, root, row.ID)
+			return model.TaskGraph{Project: v, ObservedAt: v.UpdatedAt, Summary: model.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1}, Tasks: []model.GraphTask{projectHTTPCopyGraphTask(row)}}, nil
+		}
+	default:
+		t.Fatalf("unknown access projection %q", kind)
 	}
 }
-func accessHTTPUser(t *testing.T, tx *httpTestStore, p model.Principal, v model.Project, facts store.PersonalTeamFacts) {
+
+func accessHTTPRefusal(t *testing.T, f *projectAccessHTTPFixture, p model.Principal, id string, failure error) {
 	t.Helper()
-	authentication := newHTTPTestStoreForPrincipal(t, p).WriteIdentityCall
-	write, user := projectHTTPCount(t, 2), projectHTTPCount(t, 1)
-	phase := 0
-	tx.WriteIdentityCall = func(ctx context.Context, op func(store.IdentityScope) error) (store.Completion, error) {
-		write()
-		phase++
-		if phase == 1 {
-			return authentication(ctx, op)
-		}
-		dao := accessHTTPIdentityUserDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, user: func(ctx context.Context, id string) (model.User, store.PersonalTeamFacts, error) {
-			user()
-			projectHTTPCheck(t, id, p.UserID)
-			return model.User{ID: p.UserID, UniAuthID: "fixture-owner", CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}, facts, nil
-		}}
-		err := op(httpAuthenticationScope{t: t, dao: dao})
-		return store.Completion{Outcome: store.TransactionCommitted}, err
+	called := projectHTTPCount(t, 1)
+	f.projects.AccessCall = func(ctx context.Context, actor model.Principal, got string) (model.ProjectAccess, error) {
+		called()
+		f.require(ctx, actor, p, got, id)
+		return model.ProjectAccess{}, failure
+	}
+}
+
+func accessHTTPUser(t *testing.T, f *projectAccessHTTPFixture, p model.Principal, expected model.User, failure error) {
+	t.Helper()
+	called := projectHTTPCount(t, 1)
+	expected.Email = projectHTTPCopyPointer(expected.Email)
+	expected.EmailVerified = projectHTTPCopyPointer(expected.EmailVerified)
+	expected.Name = projectHTTPCopyPointer(expected.Name)
+	expected.AvatarURL = projectHTTPCopyPointer(expected.AvatarURL)
+	expected.PersonalTeam.Name = projectHTTPCopyPointer(expected.PersonalTeam.Name)
+	f.identity.UserFn = func(ctx context.Context, actor model.Principal) (model.User, error) {
+		called()
+		f.require(ctx, actor, p, "", "")
+		value := expected
+		value.Email = projectHTTPCopyPointer(value.Email)
+		value.EmailVerified = projectHTTPCopyPointer(value.EmailVerified)
+		value.Name = projectHTTPCopyPointer(value.Name)
+		value.AvatarURL = projectHTTPCopyPointer(value.AvatarURL)
+		value.PersonalTeam.Name = projectHTTPCopyPointer(value.PersonalTeam.Name)
+		return value, failure
 	}
 }

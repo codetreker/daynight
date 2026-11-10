@@ -12,6 +12,7 @@ import (
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 
 	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
@@ -31,6 +32,15 @@ func TestControllerChannelRejectsInvalidGrantsBeforeUpgrade(t *testing.T) {
 				f.record.Consumed = true
 			case "revoked":
 				f.credentialRevoked = true
+			}
+			expectedToken := token
+			authenticated := sessionHTTPOnce(t)
+			f.ops.AuthenticateController = func(ctx context.Context, actual string) error {
+				authenticated()
+				if actual != expectedToken || ctx.Err() != nil {
+					unexpectedHTTPCall(t, "rejected controller grant input/context")
+				}
+				return &model.Fault{Code: "unauthenticated", Message: "Controller grant is unavailable."}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -55,7 +65,11 @@ func TestControllerChannelStaleOfferRejectsOnlyOperation(t *testing.T) {
 	native := "native-session"
 	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true}}
 	publish := func(seq string) {
-		sessionWSWrite(t, conn, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: seq, Kind: "state", Payload: json.RawMessage(jsonBody(t, state))}}})
+		message := sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: seq, Kind: "state", Payload: json.RawMessage(jsonBody(t, state))}}}
+		ack := f.frame(snapshot, "events_ack")
+		ack["batchId"], ack["sourceEpoch"], ack["lastAckedSourceSeq"], ack["lastEventSeq"] = message.BatchID, epoch, seq, seq
+		f.expectHandle(t, message, ack)
+		sessionWSWrite(t, conn, message)
 		sessionWSKind(t, conn, "events_ack")
 		f.supplyState(state)
 		source, _ := strconv.ParseInt(seq, 10, 64)
@@ -77,19 +91,30 @@ func TestControllerChannelStaleOfferRejectsOnlyOperation(t *testing.T) {
 	command := submit()
 	state.Activity = "unknown"
 	publish("2")
-	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
+	begin := sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID}
+	rejected := sp.Operation{Fence: snapshot.Fence, Protocol: sp.Protocol, OperationID: command.OperationID, Kind: command.Kind, State: "rejected", Error: &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}}
+	rejectedFrame := f.frame(snapshot, "receipt_ack")
+	rejectedFrame["operation"] = rejected
+	f.expectHandle(t, begin, rejectedFrame)
+	sessionWSWrite(t, conn, begin)
 	frame := sessionWSKind(t, conn, "receipt_ack")
 	var receipt sp.Operation
 	if err := json.Unmarshal(frame["operation"], &receipt); err != nil || receipt.State != "rejected" || receipt.OperationID != command.OperationID {
 		t.Fatal(receipt, err)
 	}
 	f.supplyReceipt(t, receipt)
-	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "heartbeat", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence})
+	heartbeat := sp.ControllerMessage{Type: "heartbeat", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence}
+	f.expectHandle(t, heartbeat, f.frame(snapshot, "heartbeat_ack"))
+	sessionWSWrite(t, conn, heartbeat)
 	sessionWSKind(t, conn, "heartbeat_ack")
 	state.Activity = "idle"
 	publish("3")
 	command = submit()
-	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
+	begin = sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID}
+	authorized := f.frame(snapshot, "operation_authorized")
+	authorized["operationId"] = command.OperationID
+	f.expectHandle(t, begin, authorized)
+	sessionWSWrite(t, conn, begin)
 	sessionWSKind(t, conn, "operation_authorized")
 }
 

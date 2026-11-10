@@ -17,6 +17,11 @@ import (
 //go:embed task_queries.json
 var taskQueryToolDefinitions []byte
 
+type taskQueryTasks interface {
+	Graph(context.Context, model.Principal, string, string) (model.TaskGraph, error)
+	MCPReady(context.Context, model.Principal, string, taskcore.MCPReadyRequest) ([]store.TaskPriorityItem, error)
+}
+
 type taskQueryService interface {
 	graphReader
 	ObservedMCPList(context.Context, model.Principal, string, taskcore.MCPListRequest) (taskservice.ObservedMCPPage, error)
@@ -66,9 +71,9 @@ type taskListFull struct {
 }
 
 // RegisterTaskQueryTools publishes only fully implemented task query tools.
-func RegisterTaskQueryTools(entry *Entry, tasks *taskservice.Tasks, observations taskQueryObservations) error {
+func RegisterTaskQueryTools(entry *Entry, tasks taskQueryTasks, observations taskQueryObservations) error {
 	return registerTaskQueryTools(entry, struct {
-		*taskservice.Tasks
+		taskQueryTasks
 		taskQueryObservations
 	}{tasks, observations})
 }

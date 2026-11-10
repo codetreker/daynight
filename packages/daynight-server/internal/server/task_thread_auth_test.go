@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
@@ -32,6 +34,7 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 	current.Properties = model.TaskProperties{"worker": encoded}
 	path := "/api/v1/projects/" + f.project.ID + "/tasks/" + f.task.ID + "/thread/messages"
 	body := map[string]any{"body": "Explicit authenticated discussion"}
+	input := taskservice.CreateThreadMessage{Body: "Explicit authenticated discussion"}
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodDelete} {
 		code := "unauthenticated"
 		if method == http.MethodHead {
@@ -42,62 +45,70 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 			t.Fatal("anonymous HEAD returned a body")
 		}
 	}
-	f.expectRead(current, nil, model.ErrNotFound)
-	f.request(outsider, http.MethodGet, path, nil, session, 403, "forbidden", taskCredentialCalls("snapshot", "credential", "access"))
-	f.expectPost(current, model.ThreadMessage{}, model.ErrNotFound)
-	f.request(outsider, http.MethodPost, path, body, session, 403, "forbidden", taskCredentialCalls("write", "presence", "credential", "access"))
+	list := taskservice.ThreadListRequest{Count: 50}
+	empty := api.ThreadPage{Items: []api.ThreadMessage{}}
+	f.expectThreadRead(list, model.ThreadPage{Items: []model.ThreadMessage{}}, empty, &model.Fault{Code: "forbidden", Message: "Project access is required."})
+	f.request(outsider, http.MethodGet, path, nil, session, 403, "forbidden", taskCredentialCalls("thread-list"))
+	f.expectPost(input, model.ThreadMessage{}, api.ThreadMessage{}, &model.Fault{Code: "forbidden", Message: "Project access is required."})
+	f.request(outsider, http.MethodPost, path, body, session, 403, "forbidden", taskCredentialCalls("thread-post"))
 	f.request(memberSession, http.MethodPost, path, body, foreign, 403, "forbidden", taskCredentialCalls())
 	name := "Member"
 	plain := model.ThreadMessage{TaskID: f.task.ID, ID: "00000000-0000-4000-8000-000000000001", Author: model.ThreadAuthor{UserID: member.UserID, DisplayName: &name}, Body: "Explicit authenticated discussion", CreatedAt: time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC)}
-	f.expectPost(current, plain, nil)
-	response := f.request(member, http.MethodPost, path, body, bearer, 201, "", taskCredentialCalls("write", "presence", "credential", "access", "author", "head", "insert", "timestamp", "valid", "advance", "capture"))
+	plainJSON := api.ThreadMessage{ID: "00000000-0000-4000-8000-000000000001", Author: api.ThreadAuthor{UserID: member.UserID, DisplayName: copyTaskHTTPPointer(&name)}, Body: "Explicit authenticated discussion", CreatedAt: "2026-01-02T03:04:06.000Z"}
+	f.expectPost(input, plain, plainJSON, nil)
+	response := f.request(member, http.MethodPost, path, body, bearer, 201, "", taskCredentialCalls("thread-post"))
 	plainResource := taskCredentialDecode[api.ThreadMessage](t, response)
+	if !reflect.DeepEqual(plainResource, plainJSON) {
+		t.Fatalf("ordinary message wire=%#v, want=%#v", plainResource, plainJSON)
+	}
 	if plainResource.Author.UserID != member.UserID || plainResource.Author.Agent || plainResource.Author.Execution != nil {
 		t.Fatal("PAT author was not derived from authenticated account")
 	}
 	body["claimId"] = claim.ClaimID
+	input.ClaimID = copyTaskHTTPPointer(&claim.ClaimID)
 	agent := model.ThreadMessage{TaskID: f.task.ID, ID: "00000000-0000-4000-8000-000000000002", Author: model.ThreadAuthor{UserID: member.UserID, DisplayName: &name, Agent: true, Execution: &model.ThreadExecution{ClaimID: claim.ClaimID, WorkerID: claim.WorkerID, Provider: "codex"}}, Body: "Explicit authenticated discussion", CreatedAt: time.Date(2026, 1, 2, 3, 4, 7, 0, time.UTC)}
-	f.expectPost(current, agent, nil)
-	f.request(admin, http.MethodPost, path, body, session, 403, "forbidden", taskCredentialCalls("write", "presence", "credential", "access", "author", "source"))
-	f.expectPost(current, agent, nil)
-	response = f.request(member, http.MethodPost, path, body, bearer, 201, "", taskCredentialCalls("write", "presence", "credential", "access", "author", "source", "head", "insert", "timestamp", "valid", "advance", "capture"))
+	agentJSON := api.ThreadMessage{ID: "00000000-0000-4000-8000-000000000002", Author: api.ThreadAuthor{UserID: member.UserID, DisplayName: copyTaskHTTPPointer(&name), Agent: true}, Body: "Explicit authenticated discussion", CreatedAt: "2026-01-02T03:04:07.000Z"}
+	f.expectPost(input, agent, agentJSON, &model.Fault{Code: "forbidden", Message: "Only the current execution owner may post as the agent."})
+	f.request(admin, http.MethodPost, path, body, session, 403, "forbidden", taskCredentialCalls("thread-post"))
+	f.expectPost(input, agent, agentJSON, nil)
+	response = f.request(member, http.MethodPost, path, body, bearer, 201, "", taskCredentialCalls("thread-post"))
 	agentResource := taskCredentialDecode[api.ThreadMessage](t, response)
+	if !reflect.DeepEqual(agentResource, agentJSON) {
+		t.Fatalf("agent message wire=%#v, want=%#v", agentResource, agentJSON)
+	}
 	if !agentResource.Author.Agent || agentResource.Author.UserID != member.UserID || agentResource.Author.Execution != nil {
 		t.Fatal("default author resource exposed details or lost Agent marker")
 	}
-	messages := []model.ThreadMessage{agent, plain}
-	f.expectRead(current, messages, nil)
-	response = f.request(member, http.MethodGet, path+"?details=true", nil, bearer, 200, "", taskCredentialCalls("snapshot", "credential", "access", "presence", "candidates", "sides"))
+	messages := model.ThreadPage{Items: []model.ThreadMessage{plain, agent}}
+	detailedAgentJSON := api.ThreadMessage{ID: "00000000-0000-4000-8000-000000000002", Author: api.ThreadAuthor{UserID: member.UserID, DisplayName: copyTaskHTTPPointer(&name), Agent: true, Execution: &api.ThreadExecution{ClaimID: claim.ClaimID, WorkerID: claim.WorkerID, Provider: "codex"}}, Body: "Explicit authenticated discussion", CreatedAt: "2026-01-02T03:04:07.000Z"}
+	detailedJSON := api.ThreadPage{Items: []api.ThreadMessage{plainJSON, detailedAgentJSON}}
+	f.expectThreadRead(taskservice.ThreadListRequest{Count: 50, Details: true}, messages, detailedJSON, nil)
+	response = f.request(member, http.MethodGet, path+"?details=true", nil, bearer, 200, "", taskCredentialCalls("thread-list"))
 	if response.Header().Get("Daynight-User-ID") != member.UserID {
 		t.Fatal("Thread response lost authenticated identity header")
 	}
 	page := taskCredentialDecode[api.ThreadPage](t, response)
+	if !reflect.DeepEqual(page, detailedJSON) {
+		t.Fatalf("detailed page wire=%#v, want=%#v", page, detailedJSON)
+	}
 	if len(page.Items) != 2 || page.Items[0].Author.Execution != nil || page.Items[1].Author.Execution == nil || page.Items[1].Author.Execution.ClaimID != claim.ClaimID || page.Items[1].Author.Execution.WorkerID != claim.WorkerID || page.Items[1].Author.Execution.Provider != "codex" {
 		t.Fatal("detailed author did not retain bounded verified execution source")
 	}
-	f.expectRead(current, nil, nil)
-	response = f.request(member, http.MethodGet, "/api/v1/projects/"+f.project.ID+"/tasks/"+f.task.ID, nil, bearer, 200, "", taskCredentialCalls("snapshot", "access", "task", "epoch"))
+	f.expectTaskRead(current, nil)
+	response = f.request(member, http.MethodGet, "/api/v1/projects/"+f.project.ID+"/tasks/"+f.task.ID, nil, bearer, 200, "", taskCredentialCalls("task-observe"))
 	observed := taskCredentialDecode[api.Task](t, response)
 	if observed.Version != current.Version || observed.UpdatedAt != current.UpdatedAt {
 		t.Fatal("Thread Task observation changed metadata")
 	}
-	releasedClaim := claim
-	releasedClaim.State = model.WorkerReleased
-	releasedWorker, err := taskproperty.EncodeWorker(&releasedClaim)
-	if err != nil {
-		t.Fatal(err)
-	}
-	released := current
-	released.Properties = model.TaskProperties{"worker": releasedWorker}
-	f.expectPost(released, model.ThreadMessage{}, nil)
-	f.request(member, http.MethodPost, path, body, bearer, 409, "claim_conflict", taskCredentialCalls("write", "presence", "credential", "access", "author", "source"))
-	f.expectRead(released, messages, nil)
-	response = f.request(member, http.MethodGet, path+"?details=true", nil, bearer, 200, "", taskCredentialCalls("snapshot", "credential", "access", "presence", "candidates", "sides"))
+	f.expectPost(input, model.ThreadMessage{}, api.ThreadMessage{}, &model.Fault{Code: "claim_conflict", Message: "Task worker claim does not match the active execution."})
+	f.request(member, http.MethodPost, path, body, bearer, 409, "claim_conflict", taskCredentialCalls("thread-post"))
+	f.expectThreadRead(taskservice.ThreadListRequest{Count: 50, Details: true}, messages, detailedJSON, nil)
+	response = f.request(member, http.MethodGet, path+"?details=true", nil, bearer, 200, "", taskCredentialCalls("thread-list"))
 	if taskCredentialDecode[api.ThreadPage](t, response).Items[1].Author.Execution.ClaimID != claim.ClaimID {
 		t.Fatal("current claim state changed historical author attribution")
 	}
-	f.expectRead(released, messages, nil)
-	response = f.request(member, http.MethodHead, path, nil, bearer, 200, "", taskCredentialCalls("snapshot", "credential", "access", "presence", "candidates", "sides"))
+	f.expectThreadRead(list, messages, api.ThreadPage{Items: []api.ThreadMessage{plainJSON, agentJSON}}, nil)
+	response = f.request(member, http.MethodHead, path, nil, bearer, 200, "", taskCredentialCalls("thread-list"))
 	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "application/json" {
 		t.Fatal("HEAD returned a body or lost response metadata")
 	}

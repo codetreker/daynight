@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 const uiTestShell = "<html><body>server test shell</body></html>\n"
@@ -23,13 +22,7 @@ const uiTestScriptPath = "/assets/app-12345678.js"
 
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
-	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = handler.(Handler).Shutdown(context.Background()) })
-	return httpx.RequestLogging(logger, handler)
+	return newOperationHTTPServer(t, func(*httpDependencies) {}, output, defaultHTTPPrincipal())
 }
 
 func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
@@ -225,17 +218,26 @@ func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
 	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + f.project.ID, "/api/v1/projects/" + f.project.ID + "/members", taskCollection(f.project.ID), path, graph} {
 		switch target {
 		case "/api/v1/projects":
-			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "list", nil, nil)
+			projectHTTPPage(t, f.projects, f.principal, coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 50}}, []model.Project{f.project}, nil)
 		case "/api/v1/projects/" + f.project.ID:
-			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "project", nil, nil)
+			projectHTTPGetResult(t, f.projects, f.principal, f.project.ID, f.project, taskHTTPMockAccess(f.project, f.principal), nil)
 		case "/api/v1/projects/" + f.project.ID + "/members":
-			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
+			called := projectHTTPCount(t, 1)
+			expectedAccess := projectHTTPCopyAccess(taskHTTPMockAccess(f.project, f.principal))
+			f.memberships.ListWithAccessCall = func(ctx context.Context, principal model.Principal, id string) (coreproject.ProjectParticipants, error) {
+				called()
+				projectHTTPContext(t, ctx, principal, f.principal)
+				projectHTTPCheck(t, id, f.project.ID)
+				owner := expectedAccess.OwnerTeam
+				owner.Name = projectHTTPCopyPointer(owner.Name)
+				return coreproject.ProjectParticipants{ActorAccess: projectHTTPCopyAccess(expectedAccess), Items: []model.ProjectParticipant{{UserID: f.principal.UserID, Profile: model.ProjectParticipantProfile{}, EffectiveRole: model.ProjectAdmin, InheritedFrom: &model.ProjectInheritance{Team: owner, Role: model.ProjectAdmin}}}}, nil
+			}
 		case taskCollection(f.project.ID):
-			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{f.target}}})
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}, taskservice.TaskPage{Items: []model.Task{f.target}}, nil)
 		case path:
 			f.expectRead(f.target)
 		case graph:
-			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}})
+			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}}, model.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1})
 		}
 		response := projectRequest(f.handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {

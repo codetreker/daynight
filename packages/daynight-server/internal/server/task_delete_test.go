@@ -3,136 +3,79 @@ package server
 import (
 	"bytes"
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 	var logs bytes.Buffer
 	f, handler, task := stepsHTTPFixture(t, &logs)
 	path := taskPath(task)
-	current := f.target
+	current := copyTaskHTTPTask(f.target)
 	current.Title = "Private deleted body"
-	deletedAt := current.UpdatedAt.Add(time.Minute)
-	prepareWrite := func(success bool, readError error) {
-		base := newTaskHTTPMockBase(t, "Task deletion")
-		want := map[string]int{"write": 1, "access": 1, "task": 1}
-		if success {
-			for _, name := range []string{"dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
-				want[name] = 1
-			}
-		}
-		plan := newHTTPCallPlan(t, want)
-		projects := &taskHTTPProjectWriterMock{taskHTTPMockBase: base}
-		projects.ProjectAccessFn = func(ctx context.Context, p model.Principal) (model.ProjectAccess, error) {
-			plan.Called("access")
-			if p != f.principal || ctx.Err() != nil {
-				unexpectedHTTPCall(t, "delete actor")
-			}
-			return taskHTTPMockAccess(f.project, p), nil
-		}
-		projects.InvalidateTaskCacheFn = func(ctx context.Context) error { plan.Called("invalidate"); return ctx.Err() }
-		writer := &taskHTTPWriterMock{taskHTTPMockBase: base}
-		writer.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
-			plan.Called("task")
-			if id != current.ID || ctx.Err() != nil {
-				unexpectedHTTPCall(t, "delete Task identity")
-			}
-			return copyTaskHTTPTask(current), readError
-		}
-		writer.DependentIDsFn = func(ctx context.Context, id string) ([]string, error) {
-			plan.Called("dependents")
-			if id != current.ID || ctx.Err() != nil {
-				unexpectedHTTPCall(t, "dependent Task identity")
-			}
-			return []string{}, nil
-		}
-		writer.DeleteTaskFn = func(ctx context.Context, id string, remove bool) (model.TaskTombstone, error) {
-			plan.Called("delete")
-			if id != current.ID || remove || ctx.Err() != nil {
-				unexpectedHTTPCall(t, "delete arguments")
-			}
-			return model.TaskTombstone{ProjectID: current.ProjectID, ID: current.ID, Version: 2, DeletedAt: deletedAt}, nil
-		}
-		sessions := &taskHTTPProjectSessionMock{taskHTTPMockBase: base}
-		sessions.DrainTaskSessionsFn = func(ctx context.Context, id string, v store.TaskSessionDrain) error {
-			plan.Called("drain")
-			if id != current.ID || v.ActiveClaim != nil || v.SourceLifecycle != "active" || v.GraceSeconds != 60 || v.TimelineField != "lastTimelineSeq" || v.LifecycleField != "lifecycle" || !reflect.DeepEqual(v.RemoveFields, []string{"cleanupInteractionIds", "controls", "turnStartedAt", "currentTurnId"}) || !reflect.DeepEqual(v.SnapshotValues, map[string]any{"lifecycle": "draining", "synchronized": false, "connectionState": "disconnected", "activity": "unknown"}) {
-				unexpectedHTTPCall(t, "delete Session drain")
-			}
-			return ctx.Err()
-		}
-		sessions.TransitionTaskSessionReceiptsFn = func(ctx context.Context, id string, v store.TaskSessionReceiptTransition) error {
-			plan.Called("receipts")
-			if id != current.ID || v.LifecycleField != "lifecycle" || v.Lifecycle != "draining" || v.StateField != "state" || v.PreviousState != "accepted" || v.NextState != "rejected" || !reflect.DeepEqual(v.RemoveFields, []string{"error"}) {
-				unexpectedHTTPCall(t, "delete receipt transition")
-			}
-			return ctx.Err()
-		}
-		capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base, FreezeAudienceFn: func(ctx context.Context, id string, types []string) ([]store.WebhookAudience, error) {
-			plan.Called("capture")
-			if id != current.ProjectID || !reflect.DeepEqual(types, []string{protocol.Deleted}) || ctx.Err() != nil {
-				unexpectedHTTPCall(t, "delete source")
-			}
-			return []store.WebhookAudience{}, nil
-		}}
-		scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return projects }, TaskDAOFn: func() store.TaskWriteDAO { return writer }, SessionDAOFn: func() store.ProjectSessionDAO { return sessions }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
-		f.store.WriteProjectCall = func(ctx context.Context, id string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
-			plan.Called("write")
-			if id != current.ProjectID || run == nil {
-				unexpectedHTTPCall(t, "delete Project scope")
-			}
-			err := run(scope)
-			if err != nil {
-				return store.Completion{Outcome: store.TransactionNotCommitted}, err
-			}
-			return store.Completion{Outcome: store.TransactionCommitted}, nil
+	prepareDelete := func(input taskcore.DeleteTask, failure error) {
+		called := projectHTTPCount(t, 1)
+		f.tasks.DeleteCall = func(ctx context.Context, actor model.Principal, project, id string, actual taskcore.DeleteTask) error {
+			called()
+			f.requireOperation(ctx, actor, project)
+			platformHTTPCheck(t, id, current.ID)
+			platformHTTPCheck(t, actual, input)
+			return failure
 		}
 	}
-	prepareWrite(false, nil)
+	prepareDelete(taskcore.DeleteTask{Version: 2}, mutationHTTPFault("version_conflict"))
 	assertProjectError(t, projectRequest(handler, http.MethodDelete, path, `{"version":2}`), 409, "version_conflict")
-	prepareWrite(true, nil)
+	prepareDelete(taskcore.DeleteTask{Version: task.Version}, nil)
 	response := projectRequest(handler, http.MethodDelete, path, jsonBody(t, api.TaskDeleteRequest{Version: task.Version}))
 	if response.Code != 204 || response.Body.Len() != 0 || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("delete result: %d %s %v", response.Code, response.Body, response.Header())
 	}
 	for _, call := range []struct{ method, suffix, body string }{{http.MethodGet, "", ""}, {http.MethodDelete, "", `{"version":2}`}, {http.MethodPatch, "", `{"version":2,"title":"Changed"}`}, {http.MethodPut, "/status", `{"version":2,"status":"done"}`}, {http.MethodGet, "/attachments", ""}, {http.MethodGet, "/attachments/files/evidence.txt", ""}, {http.MethodGet, "/preview/evidence.txt", ""}} {
-		if call.method == http.MethodGet {
-			counts := map[string]int{"task": 1}
-			if call.suffix != "" {
-				counts = map[string]int{"presence": 1}
+		switch {
+		case call.method == http.MethodGet && call.suffix == "":
+			called := projectHTTPCount(t, 1)
+			f.tasks.ObserveCall = func(ctx context.Context, actor model.Principal, project, id string) (taskservice.TaskObservation, error) {
+				called()
+				f.requireOperation(ctx, actor, project)
+				platformHTTPCheck(t, id, task.ID)
+				return taskservice.TaskObservation{}, mutationHTTPFault("task_deleted")
 			}
-			f.expectSnapshot(counts, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-				reader.TaskFn = func(ctx context.Context, project, id string) (model.Task, error) {
-					f.require(ctx, project)
-					plan.Called("task")
-					if id != task.ID {
-						unexpectedHTTPCall(t, "deleted Task read")
-					}
-					return model.Task{}, model.ErrTaskDeleted
-				}
-				reader.TaskPresenceFn = func(ctx context.Context, project, id string) (store.TaskPresence, error) {
-					f.require(ctx, project)
-					plan.Called("presence")
-					if id != task.ID {
-						unexpectedHTTPCall(t, "deleted attachment parent")
-					}
-					return store.TaskPresence{Found: true, DeletedAt: &deletedAt}, nil
-				}
-			})
-		} else {
-			prepareWrite(false, model.ErrTaskDeleted)
+		case call.method == http.MethodGet && call.suffix == "/attachments":
+			called := projectHTTPCount(t, 1)
+			f.attachments.ListCall = func(ctx context.Context, actor model.Principal, project, id string, input model.PageRequest) (attachmentcore.Page, error) {
+				called()
+				f.requireOperation(ctx, actor, project)
+				platformHTTPCheck(t, id, task.ID)
+				platformHTTPCheck(t, input, model.PageRequest{Limit: 50})
+				return attachmentcore.Page{}, mutationHTTPFault("task_deleted")
+			}
+		case call.method == http.MethodGet:
+			called := projectHTTPCount(t, 1)
+			f.attachments.OpenCall = func(ctx context.Context, actor model.Principal, project, id, file string) (model.Attachment, filestorage.Object, error) {
+				called()
+				f.requireOperation(ctx, actor, project)
+				platformHTTPCheck(t, id, task.ID)
+				platformHTTPCheck(t, file, "evidence.txt")
+				return model.Attachment{}, filestorage.Object{}, mutationHTTPFault("task_deleted")
+			}
+		case call.method == http.MethodDelete:
+			prepareDelete(taskcore.DeleteTask{Version: 2}, mutationHTTPFault("task_deleted"))
+		case call.method == http.MethodPatch:
+			expectMutationHTTPUpdate(f.taskHTTPFixture, task.ID, taskcore.UpdateTask{Version: 2, Title: platformHTTPPointer("Changed")}, model.Task{}, mutationHTTPFault("task_deleted"))
+		case call.method == http.MethodPut:
+			expectMutationHTTPStatus(f.taskHTTPFixture, task.ID, taskcore.SetTaskStatus{Version: 2, Status: model.TaskDone}, model.Task{}, mutationHTTPFault("task_deleted"))
 		}
 		assertProjectError(t, projectRequest(handler, call.method, path+call.suffix, call.body), 410, "task_deleted")
 	}
-	f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{}}})
+	f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}, taskservice.TaskPage{Items: []model.Task{}}, nil)
 	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(task.ProjectID), ""), 200)
 	if len(page.Items) != 0 {
 		t.Fatal("deleted Task is still listed")

@@ -53,7 +53,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	httpwebhook.NewRoutes(&service.Service{DB: db, ConfigurationExpansionAvailable: true, DispatchEnabled: false}, authenticator, logger).RegisterRoutes(mux)
+	httpwebhook.NewRoutes(httpwebhook.Adapter{Service: &service.Service{DB: db, ConfigurationExpansionAvailable: true, DispatchEnabled: false}}, authenticator, logger).RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return &httpFixture{ctx: ctx, db: db, server: server}

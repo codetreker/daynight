@@ -11,14 +11,15 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	f := newTaskHTTPFixture(t)
 	row := f.target
 	row.AssignedTo, row.Title = nil, "Unrestricted default"
-	created := platformHTTPWrite(f, nil, platformHTTPValues(row), row, false)
+	created := expectMutationHTTPCreate(f, taskcore.CreateTask{Title: row.Title, Status: platformHTTPPointer(model.TaskTodo), DependsOn: []string{}, Properties: model.TaskProperties{}}, row, nil)
 	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Unrestricted default","status":"todo"}`)
 	task := decodeResponse[api.Task](t, response, http.StatusCreated)
 	platformHTTPCheck(t, task, platformHTTPAPI(*created))
@@ -26,7 +27,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	if task.RequiredPlatform != nil || !strings.Contains(response.Body.String(), `"requiredPlatform":null`) {
 		t.Fatalf("missing mandatory nullable requirement: %s", response.Body)
 	}
-	f.store.WriteProjectCall = nil
+	clearMutationHTTPOperations(f)
 	for _, value := range []string{`""`, `"darwin"`, `"Linux"`, `"linux "`, `true`, `0`, `[]`, `{}`} {
 		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Invalid platform","requiredPlatform":`+value+`}`), http.StatusBadRequest, "invalid_input")
 		assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), `{"version":1,"requiredPlatform":`+value+`}`), http.StatusBadRequest, "invalid_input")
@@ -37,7 +38,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), `{"version":1,"requiredPlatform":"linux","requiredPlatform":null}`), http.StatusBadRequest, "invalid_input")
 	f.expectRead(row)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, task), task)
-	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, RequiredPlatform: platformHTTPPointer[*model.TaskPlatform](nil)}, row, nil)
 	platformHTTPCheck(t, updateHTTPTask(t, f.handler, task, map[string]any{"requiredPlatform": nil}), task)
 	for _, value := range []any{nil, "windows", "linux", "macos"} {
 		wanted := f.target
@@ -46,7 +47,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 			platform := model.TaskPlatform(value.(string))
 			wanted.RequiredPlatform = &platform
 		}
-		result := platformHTTPWrite(f, nil, platformHTTPValues(wanted), wanted, false)
+		result := expectMutationHTTPCreate(f, taskcore.CreateTask{Title: wanted.Title, Status: platformHTTPPointer(model.TaskTodo), RequiredPlatform: copyTaskHTTPPointer(wanted.RequiredPlatform), DependsOn: []string{}, Properties: model.TaskProperties{}}, wanted, nil)
 		got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Explicit platform", "requiredPlatform": value, "status": "todo"})), http.StatusCreated)
 		platformHTTPCheck(t, got, platformHTTPAPI(*result))
 		if value == nil && got.RequiredPlatform != nil || value != nil && (got.RequiredPlatform == nil || *got.RequiredPlatform != value) {
@@ -57,9 +58,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	next := row
 	next.RequiredPlatform, next.AllowAgents = &windows, true
 	next = platformHTTPResult(row, next)
-	values := platformHTTPValues(row)
-	values.RequiredPlatform, values.AllowAgents = &windows, true
-	platformHTTPWrite(f, &row, values, next, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, RequiredPlatform: platformHTTPPointer(&windows), AllowAgents: platformHTTPPointer(true)}, next, nil)
 	task = updateHTTPTask(t, f.handler, platformHTTPAPI(row), map[string]any{"requiredPlatform": "windows", "allowAgents": true})
 	platformHTTPCheck(t, task, platformHTTPAPI(next))
 	row = next
@@ -69,9 +68,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	next = row
 	next.Description = "Omitted requirement"
 	next = platformHTTPResult(row, next)
-	values = platformHTTPValues(row)
-	values.Description = "Omitted requirement"
-	platformHTTPWrite(f, &row, values, next, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, Description: platformHTTPPointer("Omitted requirement")}, next, nil)
 	task = updateHTTPTask(t, f.handler, task, map[string]any{"description": "Omitted requirement"})
 	platformHTTPCheck(t, task, platformHTTPAPI(next))
 	row = next
@@ -83,11 +80,11 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	if task.RequiredPlatform == nil || *task.RequiredPlatform != "windows" {
 		t.Fatal("manual start discarded requirement")
 	}
-	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, RequiredPlatform: platformHTTPPointer(&windows)}, row, nil)
 	platformHTTPCheck(t, updateHTTPTask(t, f.handler, task, map[string]any{"requiredPlatform": "windows"}), task)
-	platformHTTPRefusal(f, row)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: task.Version - 1, RequiredPlatform: platformHTTPPointer(&windows)}, model.Task{}, mutationHTTPFault("version_conflict"))
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version - 1, "requiredPlatform": "windows"})), http.StatusConflict, "version_conflict")
-	platformHTTPRefusal(f, row)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: task.Version, RequiredPlatform: platformHTTPPointer[*model.TaskPlatform](nil), Description: platformHTTPPointer("Must not save")}, model.Task{}, mutationHTTPFault("invalid_transition"))
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "requiredPlatform": nil, "description": "Must not save"})), http.StatusConflict, "invalid_transition")
 	f.expectRead(row)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, task), task)
@@ -96,9 +93,9 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 		case taskPath(task):
 			f.expectRead(row)
 		case taskCollection(f.project.ID):
-			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{row}}})
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}, taskservice.TaskPage{Items: []model.Task{row}}, nil)
 		default:
-			f.expectGraph(row.ID, []model.GraphTask{platformHTTPProjection(row)})
+			f.expectGraph(row.ID, []model.GraphTask{platformHTTPProjection(row)}, model.TaskGraphSummary{Total: 1, InProgress: 1})
 		}
 		read := projectRequest(f.handler, http.MethodGet, path, "")
 		if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"requiredPlatform":"windows"`) {
@@ -110,9 +107,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	next = row
 	next.RequiredPlatform = nil
 	next = platformHTTPResult(row, next)
-	values = platformHTTPValues(row)
-	values.RequiredPlatform = nil
-	platformHTTPWrite(f, &row, values, next, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, RequiredPlatform: platformHTTPPointer[*model.TaskPlatform](nil)}, next, nil)
 	cleared := updateHTTPTask(t, f.handler, task, map[string]any{"requiredPlatform": nil})
 	platformHTTPCheck(t, cleared, platformHTTPAPI(next))
 	if cleared.RequiredPlatform != nil || !cleared.AllowAgents || !reflect.DeepEqual(cleared.StartedAt, task.StartedAt) || !reflect.DeepEqual(cleared.CompletedAt, task.CompletedAt) {
@@ -136,11 +131,12 @@ func TestTaskHTTPPlatformFilteringAndCursorScopes(t *testing.T) {
 	collection, query, cursor := taskCollection(f.project.ID), "?limit=1&ready=true&allowAgents=true&compatiblePlatform=linux", ""
 	var ids []string
 	for index, row := range selected {
-		expected := store.TaskQuery{Page: store.Page{Limit: 1}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(true), CompatiblePlatform: platformHTTPPointer(model.PlatformLinux)}
-		if index > 0 {
-			expected.Page.After = &store.Position{CreatedAt: selected[index-1].CreatedAt, ID: selected[index-1].ID}
+		expected := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: mutationHTTPCursorInput(cursor)}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(true), CompatiblePlatform: platformHTTPPointer(model.PlatformLinux)}
+		var next *string
+		if index < len(selected)-1 {
+			next = platformHTTPPointer(mutationHTTPCursor(index + 1))
 		}
-		f.expectList([]store.TaskQuery{expected}, []store.TaskPage{{Items: []model.Task{row}, HasMore: index < len(selected)-1}})
+		f.expectListRequest(expected, taskservice.TaskPage{Items: []model.Task{row}, NextCursor: next}, nil)
 		suffix := query
 		if cursor != "" {
 			suffix += "&cursor=" + url.QueryEscape(cursor)
@@ -161,20 +157,29 @@ func TestTaskHTTPPlatformFilteringAndCursorScopes(t *testing.T) {
 			t.Fatal("compatible page lost cursor")
 		}
 		cursor = *page.NextCursor
-		f.store.ReadSnapshotCall = nil
+		clearMutationHTTPOperations(f)
 		for _, platform := range []string{"", "windows", "macos"} {
 			changed := "?limit=1&ready=true&allowAgents=true&cursor=" + url.QueryEscape(cursor)
 			if platform != "" {
 				changed += "&compatiblePlatform=" + platform
 			}
+			rejected := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: mutationHTTPCursorInput(cursor)}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(true)}
+			if platform != "" {
+				rejected.CompatiblePlatform = platformHTTPPointer(model.TaskPlatform(platform))
+			}
+			f.expectListRequest(rejected, taskservice.TaskPage{}, mutationHTTPFault("invalid_input"))
 			assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+changed, ""), http.StatusBadRequest, "invalid_input")
 		}
 	}
 	if !slices.Equal(ids, want) {
 		t.Fatalf("compatible response sequence: got %v want %v", ids, want)
 	}
-	f.store.ReadSnapshotCall = nil
+	clearMutationHTTPOperations(f)
 	for _, query := range []string{"compatiblePlatform=", "compatiblePlatform=null", "compatiblePlatform=darwin", "compatiblePlatform=Linux", "compatiblePlatform=true", "compatiblePlatform=linux&compatiblePlatform=macos", "CompatiblePlatform=linux"} {
+		if query != "compatiblePlatform=" && !strings.Contains(query, "&") && !strings.HasPrefix(query, "CompatiblePlatform=") {
+			value := strings.TrimPrefix(query, "compatiblePlatform=")
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}, CompatiblePlatform: platformHTTPPointer(model.TaskPlatform(value))}, taskservice.TaskPage{}, mutationHTTPFault("invalid_input"))
+		}
 		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
 }

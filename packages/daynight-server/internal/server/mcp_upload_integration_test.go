@@ -16,9 +16,10 @@ import (
 	"testing"
 	"time"
 
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	uploadservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -91,14 +92,15 @@ func (d *dropUploadResponses) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
-	database := newHTTPTestStore(t)
 	principal := defaultHTTPPrincipal()
 	token := defaultHTTPToken()
 	files := attachmentTestFiles(t)
-	production, _ := newMCPHTTPServer(t, database, files)
+	uploads := &mcpUploadOperations{t: t}
+	production, _ := newMCPOperationServer(t, map[string]model.Principal{token: principal}, files, func(app *service.App) { app.Uploads = uploads })
 	origin := production.URL
 	project := model.Project{ID: "e5555555-5555-4555-8555-555555555555"}
 	task := model.Task{ID: "f6666666-6666-4666-8666-666666666666", ProjectID: project.ID, Title: "MCP upload owner", Version: 1}
+	actor := transfer.Actor{Principal: principal, AuthorityKind: "pat", AuthorityID: principal.CredentialID}
 	client := mcpPATClient(t, origin, token)
 	drop := &dropUploadResponses{base: mcpPATTransport{token: token}}
 	lossClient := sdk.NewClient(&sdk.Implementation{Name: "mcp-response-loss", Version: "1"}, nil)
@@ -108,7 +110,11 @@ func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = lossSession.Close() })
+	t.Cleanup(func() {
+		if err := lossSession.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	call := func(session *sdk.ClientSession, args map[string]any, wantError bool) map[string]any {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
@@ -138,79 +144,19 @@ func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
 	args := func(action string) map[string]any {
 		return map[string]any{"projectId": project.ID, "taskId": task.ID, "action": action}
 	}
-
 	transferID := uuid.NewString()
 	baseTime := time.Now().UTC()
-	row := func(id, path string, version, offset, reserved, outstanding int64) model.PrivateTransfer {
-		data := json.RawMessage(`{}`)
-		if offset > 0 {
-			data = json.RawMessage(fmt.Sprintf(`{"nextOffset":%d}`, offset))
-		}
-		return model.PrivateTransfer{ID: id, UserID: principal.UserID, AuthorityKind: "pat", AuthorityID: principal.CredentialID, Direction: "upload", ProjectID: project.ID, TaskID: task.ID, Path: path, ContentType: "application/octet-stream", Binding: json.RawMessage(`{}`), Data: data, State: "receiving", Version: version, ReservedBytes: reserved, OutstandingBytes: outstanding, CreatedAt: baseTime, UpdatedAt: baseTime, ExpiresAt: baseTime.Add(time.Hour), HardExpiresAt: baseTime.Add(24 * time.Hour)}
-	}
-	initial := row(transferID, "binary/combined.bin", 1, 0, 0, 0)
-	dataOf := func(raw json.RawMessage) map[string]any {
-		t.Helper()
-		var data map[string]any
-		if err := json.Unmarshal(raw, &data); err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
-	put := func(dao *mcpTransferDAO, before func() model.PrivateTransfer, after func() model.PrivateTransfer, check func(model.PrivateTransfer)) {
-		t.Helper()
-		counts := newHTTPCallPlan(t, map[string]int{"put": 1})
-		dao.PutCall = func(ctx context.Context, input model.PrivateTransfer, version int64) (model.PrivateTransfer, error) {
-			counts.Called("put")
-			original := before()
-			mcpAttachmentCheck(t, version, original.Version)
-			mcpAttachmentCheck(t, []string{input.ID, input.UserID, input.AuthorityKind, input.AuthorityID, input.ProjectID, input.TaskID, input.Path, input.ContentType}, []string{original.ID, principal.UserID, "pat", principal.CredentialID, project.ID, task.ID, original.Path, "application/octet-stream"})
-			if check != nil {
-				check(input)
-			}
-			return mcpCloneFixture(after()), nil
-		}
-	}
-	renew := func(before, after model.PrivateTransfer) *mcpTransferDAO {
-		dao := mcpTransferRead(t, principal, 1, 0, mcpTransferRow(before), mcpTransferRow(before))
-		put(dao, mcpTransferRow(before), mcpTransferRow(after), func(input model.PrivateTransfer) {
-			mcpAttachmentCheck(t, input.State, "receiving")
-			mcpAttachmentCheck(t, dataOf(input.Data), dataOf(before.Data))
-			if input.ExpiresAt.Before(baseTime.Add(time.Hour)) {
-				t.Errorf("permit did not renew expiry: %v", input.ExpiresAt)
-			}
-		})
-		return dao
+	expiry := baseTime.Add(time.Hour)
+	receiving := func(offset int64) map[string]any {
+		return map[string]any{"transferId": transferID, "direction": "upload", "state": "receiving", "nextOffset": strconv.FormatInt(offset, 10), "expiresAt": expiry, "cleanupState": "pending"}
 	}
 	begin := args("begin")
 	begin["transferId"], begin["path"], begin["contentType"] = transferID, "binary/combined.bin", "application/octet-stream"
-	open := mcpTransferMissing(t, transferID)
-	creation := newHTTPCallPlan(t, map[string]int{"authorize": 1, "insert": 1, "ledger": 1, "active": 1})
-	open.AuthorizeCall = func(ctx context.Context, actor model.Principal, kind, id, pid, tid string) error {
-		creation.Called("authorize")
-		mcpAttachmentCheck(t, actor, principal)
-		mcpAttachmentCheck(t, []string{kind, id, pid, tid}, []string{"pat", principal.CredentialID, project.ID, task.ID})
-		return nil
-	}
-	open.InsertCall = func(ctx context.Context, input model.PrivateTransfer) (model.PrivateTransfer, bool, error) {
-		creation.Called("insert")
-		mcpAttachmentCheck(t, []string{input.ID, input.UserID, input.AuthorityKind, input.AuthorityID, input.Direction, input.ProjectID, input.TaskID, input.Path, input.ContentType, input.State}, []string{transferID, principal.UserID, "pat", principal.CredentialID, "upload", project.ID, task.ID, "binary/combined.bin", "application/octet-stream", "receiving"})
-		mcpAttachmentCheck(t, []int64{input.ReservedBytes, input.OutstandingBytes}, []int64{0, 0})
-		mcpAttachmentCheck(t, dataOf(input.Data), map[string]any{})
-		return mcpCloneFixture(initial), true, nil
-	}
-	open.LockLedgerCall = func(context.Context) error { creation.Called("ledger"); return nil }
-	open.CountActiveCall = func(ctx context.Context, user string) (int, error) {
-		creation.Called("active")
-		mcpAttachmentCheck(t, user, principal.UserID)
-		return 1, nil
-	}
+	beginInput := uploadservice.UploadInput{Action: "begin", TransferID: transferID, Path: "binary/combined.bin", ContentType: "application/octet-stream"}
+	beginResult := receiving(0)
+	beginResult["maxChunkBytes"] = 512 << 10
+	uploads.expect(actor, project.ID, task.ID, beginInput, beginResult, nil, 3)
 	for i := int32(1); i <= 2; i++ {
-		if i == 1 {
-			mcpTransferPlan(t, database, open)
-		} else {
-			mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, mcpTransferRow(initial)))
-		}
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		_, err := lossSession.CallTool(ctx, &sdk.CallToolParams{Name: "task_attachment_put", Arguments: begin})
 		cancel()
@@ -218,17 +164,15 @@ func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
 			t.Fatalf("begin response %d was not lost: %v", i, err)
 		}
 	}
-	mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, mcpTransferRow(initial)))
 	started := object(call(client, begin, false)["data"])
 	if started["transferId"] != transferID || started["state"] != "receiving" || started["nextOffset"] != "0" {
 		t.Fatalf("begin: %#v", started)
 	}
+	mcpAttachmentCheck(t, started, mcpUploadExpectedData(beginResult))
 	parts := [][]byte{bytes.Repeat([]byte{0, 0xff, 0x7f, 0x41}, (512<<10)/4), bytes.Repeat([]byte{0x80, 0, 0xfe}, 171)}
 	all := bytes.Join(parts, nil)
 	offset := int64(0)
-	receipts := make([]model.UploadChunk, 2)
-	before := initial
-	for index, part := range parts {
+	for _, part := range parts {
 		chunk := args("chunk")
 		chunkID := uuid.NewString()
 		digest := sha256.Sum256(part)
@@ -236,293 +180,92 @@ func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
 		size := int64(len(part))
 		chunk["transferId"], chunk["chunkId"], chunk["offset"] = transferID, chunkID, strconv.FormatInt(offset, 10)
 		chunk["contentBase64"], chunk["sha256"] = base64.StdEncoding.EncodeToString(part), hash
-		acquired := row(transferID, initial.Path, before.Version+1, offset, offset, 0)
-		reserved := row(transferID, initial.Path, before.Version+2, offset, offset+size, size)
-		materialized := row(transferID, initial.Path, before.Version+3, offset, offset+size, 0)
-		accepted := row(transferID, initial.Path, before.Version+4, offset+size, offset+size, 0)
-		prior := mcpTransferRead(t, principal, 0, 1, mcpTransferRow(acquired))
-		priorCalls := newHTTPCallPlan(t, map[string]int{"receipt": 1})
-		prior.UploadChunkCall = func(ctx context.Context, id, gotChunk string) (model.UploadChunk, error) {
-			priorCalls.Called("receipt")
-			mcpAttachmentCheck(t, []string{id, gotChunk}, []string{transferID, chunkID})
-			return model.UploadChunk{}, model.ErrNotFound
-		}
-		reservation := mcpTransferRead(t, principal, 0, 1, mcpTransferRow(acquired), mcpTransferRow(acquired))
-		reservationCalls := newHTTPCallPlan(t, map[string]int{"ledger": 2, "outstanding": 1, "reserved": 1, "add": 1})
-		reservation.LockLedgerCall = func(context.Context) error { reservationCalls.Called("ledger"); return nil }
-		reservation.OutstandingTotalCall = func(context.Context) (int64, error) { reservationCalls.Called("outstanding"); return 0, nil }
-		reservation.ReservedTotalCall = func(context.Context) (int64, error) { reservationCalls.Called("reserved"); return offset, nil }
-		reservation.AddReservationCall = func(ctx context.Context, id string, n int64) (model.PrivateTransfer, error) {
-			reservationCalls.Called("add")
-			mcpAttachmentCheck(t, id, transferID)
-			mcpAttachmentCheck(t, n, size)
-			return mcpCloneFixture(reserved), nil
-		}
-		accept := mcpTransferRead(t, principal, 0, 1, mcpTransferRow(reserved), mcpTransferRow(reserved), mcpTransferRow(materialized))
-		acceptCalls := newHTTPCallPlan(t, map[string]int{"insert receipt": 1, "ledger": 1, "consume": 1})
-		accept.InsertUploadChunkCall = func(ctx context.Context, receipt model.UploadChunk) error {
-			acceptCalls.Called("insert receipt")
-			mcpAttachmentCheck(t, []string{receipt.TransferID, receipt.ChunkID, receipt.SHA256}, []string{transferID, chunkID, hash})
-			mcpAttachmentCheck(t, []int64{receipt.Offset, receipt.Size}, []int64{offset, size})
-			parsed, err := uuid.Parse(receipt.ObjectID)
-			if err != nil || parsed.Version() != 4 {
-				t.Errorf("invalid staged object ID: %s", receipt.ObjectID)
-			}
-			receipts[index] = receipt
-			return nil
-		}
-		accept.LockLedgerCall = func(context.Context) error { acceptCalls.Called("ledger"); return nil }
-		accept.SubtractOutstandingCall = func(ctx context.Context, id string, n int64) (model.PrivateTransfer, error) {
-			acceptCalls.Called("consume")
-			mcpAttachmentCheck(t, id, transferID)
-			mcpAttachmentCheck(t, n, size)
-			return mcpCloneFixture(materialized), nil
-		}
-		put(accept, mcpTransferRow(materialized), mcpTransferRow(accepted), func(input model.PrivateTransfer) {
-			mcpAttachmentCheck(t, input.State, "receiving")
-			mcpAttachmentCheck(t, dataOf(input.Data), map[string]any{"nextOffset": float64(offset + size)})
-		})
-		mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, mcpTransferRow(before)), renew(before, acquired), mcpTransferRead(t, principal, 0, 0, mcpTransferRow(acquired)), prior, reservation, accept)
+		input := uploadservice.UploadInput{Action: "chunk", TransferID: transferID, ChunkID: chunkID, Offset: strconv.FormatInt(offset, 10), ContentBase64: base64.StdEncoding.EncodeToString(part), SHA256: hash}
+		result := map[string]any{"transferId": transferID, "state": "receiving", "chunkId": chunkID, "offset": strconv.FormatInt(offset, 10), "acceptedBytes": strconv.FormatInt(size, 10), "nextOffset": strconv.FormatInt(offset+size, 10), "sha256": hash, "receipt": "accepted", "expiresAt": expiry}
+		uploads.expect(actor, project.ID, task.ID, input, result, nil, 1)
 		receipt := object(call(client, chunk, false)["data"])
+		mcpAttachmentCheck(t, receipt, mcpUploadExpectedData(result))
 		offset += size
 		if receipt["receipt"] != "accepted" || receipt["sha256"] != hash || receipt["nextOffset"] != strconv.FormatInt(offset, 10) {
 			t.Fatalf("chunk: %#v", receipt)
 		}
-		before = accepted
 	}
 	status := args("status")
 	status["transferId"] = transferID
-	mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, mcpTransferRow(before)))
+	statusInput := uploadservice.UploadInput{Action: "status", TransferID: transferID}
+	uploads.expect(actor, project.ID, task.ID, statusInput, receiving(offset), nil, 1)
 	observed := object(call(client, status, false)["data"])
 	if observed["state"] != "receiving" || observed["nextOffset"] != strconv.Itoa(len(all)) {
 		t.Fatalf("before commit: %#v", observed)
 	}
-
+	mcpAttachmentCheck(t, observed, mcpUploadExpectedData(receiving(offset)))
 	whole := sha256.Sum256(all)
 	wholeHash := hex.EncodeToString(whole[:])
 	total := int64(len(all))
 	commit := args("commit")
 	commit["transferId"], commit["totalBytes"], commit["sha256"] = transferID, strconv.FormatInt(total, 10), wholeHash
-	acquired := row(transferID, initial.Path, before.Version+1, total, total, 0)
-	reserved := row(transferID, initial.Path, before.Version+2, total, total*2, total)
-	// Correlate the generated operation ID; progress and outcomes are supplied independently.
-	operationID := ""
-	metadata := model.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: initial.Path, ContentType: initial.ContentType, SizeBytes: total, CreatedAt: baseTime, UpdatedAt: baseTime}
-	committedRow := func(version int64, state, outcome string) model.PrivateTransfer {
-		value := row(transferID, initial.Path, version, total, total*2, total)
-		value.State = state
-		data := map[string]any{"nextOffset": total, "operationId": operationID, "totalBytes": total, "sha256": wholeHash, "writeOutcome": outcome}
-		if outcome == "confirmed" {
-			data["attachment"] = metadata
-			data["created"] = true
-		}
-		raw, err := json.Marshal(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		value.Data = raw
-		if state == "committing" {
-			deadline := baseTime.Add(time.Minute)
-			value.LeaseUntil = &deadline
-		}
-		if state == "cleanup_pending" {
-			previous := "committed"
-			value.CleanupFromState = &previous
-		}
-		return value
-	}
-	committing := func() model.PrivateTransfer { return committedRow(reserved.Version+1, "committing", "unknown") }
-	completed := func() model.PrivateTransfer { return committedRow(reserved.Version+2, "committed", "confirmed") }
-	cleanup := func() model.PrivateTransfer { return committedRow(reserved.Version+3, "cleanup_pending", "confirmed") }
-	chunkReader := func(receipt model.UploadChunk) *mcpTransferDAO {
-		dao := mcpTransferRead(t, principal, 0, 0, mcpTransferRow(acquired))
-		calls := newHTTPCallPlan(t, map[string]int{"read chunk": 1})
-		dao.UploadChunkAtCall = func(ctx context.Context, id string, offset int64) (model.UploadChunk, error) {
-			calls.Called("read chunk")
-			mcpAttachmentCheck(t, id, transferID)
-			mcpAttachmentCheck(t, offset, receipt.Offset)
-			return receipt, nil
-		}
-		return dao
-	}
-	reservation := mcpTransferRead(t, principal, 0, 1, mcpTransferRow(acquired), mcpTransferRow(acquired))
-	reservationCalls := newHTTPCallPlan(t, map[string]int{"ledger": 2, "outstanding": 1, "reserved": 1, "add": 1})
-	reservation.LockLedgerCall = func(context.Context) error { reservationCalls.Called("ledger"); return nil }
-	reservation.OutstandingTotalCall = func(context.Context) (int64, error) { reservationCalls.Called("outstanding"); return 0, nil }
-	reservation.ReservedTotalCall = func(context.Context) (int64, error) { reservationCalls.Called("reserved"); return total, nil }
-	reservation.AddReservationCall = func(ctx context.Context, id string, n int64) (model.PrivateTransfer, error) {
-		reservationCalls.Called("add")
-		mcpAttachmentCheck(t, id, transferID)
-		mcpAttachmentCheck(t, n, total)
-		return mcpCloneFixture(reserved), nil
-	}
-	start := mcpTransferRead(t, principal, 0, 1, mcpTransferRow(reserved), mcpTransferRow(reserved))
-	put(start, mcpTransferRow(reserved), committing, func(input model.PrivateTransfer) {
-		mcpAttachmentCheck(t, input.State, "committing")
-		data := dataOf(input.Data)
-		id, ok := data["operationId"].(string)
-		parsed, err := uuid.Parse(id)
-		if !ok || err != nil || parsed.Version() != 4 || operationID != "" {
-			t.Errorf("invalid commit operation identity: %s", id)
-			panic("invalid commit operation identity")
-		}
-		operationID = id
-		mcpAttachmentCheck(t, data, map[string]any{"nextOffset": float64(total), "operationId": id, "totalBytes": float64(total), "sha256": wholeHash, "writeOutcome": "unknown"})
-		if input.LeaseUntil == nil || !input.LeaseUntil.After(baseTime) {
-			t.Errorf("commit missing valid lease: %+v", input)
-		}
-	})
-	finish := mcpTransferRead(t, principal, 0, 0, committing, committing)
-	put(finish, committing, completed, func(input model.PrivateTransfer) {
-		mcpAttachmentCheck(t, input.State, "committed")
-		mcpAttachmentCheck(t, dataOf(input.Data), dataOf(completed().Data))
-		mcpAttachmentCheck(t, input.LeaseUntil, (*time.Time)(nil))
-	})
-	clean := mcpTransferRead(t, principal, 0, 0, completed, completed)
-	put(clean, completed, cleanup, func(input model.PrivateTransfer) {
-		mcpAttachmentCheck(t, input.State, "cleanup_pending")
-		mcpAttachmentCheck(t, dataOf(input.Data), dataOf(completed().Data))
-		previous := "committed"
-		mcpAttachmentCheck(t, input.CleanupFromState, &previous)
-	})
-	mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, mcpTransferRow(before)), renew(before, acquired), mcpTransferRead(t, principal, 0, 0, mcpTransferRow(acquired)), chunkReader(receipts[0]), chunkReader(receipts[1]), reservation, start, finish, clean)
-	mutationCalls := newHTTPCallPlan(t, map[string]int{"mutation": 2, "presence": 2, "authorization": 1, "live": 1, "conflict": 2, "receipt": 2, "metadata": 1})
-	expectedConflict := store.AttachmentConflictQuery{Ancestors: []string{"binary"}, DescendantPrefix: "binary/combined.bin/"}
-	mutationDAO := &mcpAttachmentDAO{t: t, ConflictCall: func(ctx context.Context, pid, tid string, q store.AttachmentConflictQuery) (bool, error) {
-		mutationCalls.Called("conflict")
-		mcpAttachmentCheck(t, []string{pid, tid}, []string{project.ID, task.ID})
-		mcpAttachmentCheck(t, q, expectedConflict)
-		return false, nil
-	}, PutCall: func(ctx context.Context, input model.Attachment) (model.Attachment, bool, error) {
-		mutationCalls.Called("metadata")
-		mcpAttachmentCheck(t, input, model.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: initial.Path, ContentType: initial.ContentType, SizeBytes: total})
-		return metadata, true, nil
-	}}
-	receiptIndex := 0
-	scope := &mcpAttachmentScope{t: t, DAO: mutationDAO, PresenceCall: func(ctx context.Context, pid, tid string) (store.TaskPresence, error) {
-		mutationCalls.Called("presence")
-		mcpAttachmentCheck(t, []string{pid, tid}, []string{project.ID, task.ID})
-		return store.TaskPresence{Found: true}, nil
-	}, AuthorizationCall: func(ctx context.Context, actor model.Principal, pid string) (model.ProjectAccess, error) {
-		mutationCalls.Called("authorization")
-		mcpAttachmentCheck(t, actor, principal)
-		mcpAttachmentCheck(t, pid, project.ID)
-		return model.ProjectAccess{ProjectID: project.ID, UserID: principal.UserID, Role: model.ProjectAdmin}, nil
-	}, LiveCall: func(ctx context.Context, pid string) error {
-		mutationCalls.Called("live")
-		mcpAttachmentCheck(t, pid, project.ID)
-		return nil
-	}, ChunkCall: func(ctx context.Context, id string, offset int64) (model.UploadChunk, error) {
-		mutationCalls.Called("receipt")
-		mcpAttachmentCheck(t, id, transferID)
-		receipt := receipts[receiptIndex]
-		receiptIndex++
-		mcpAttachmentCheck(t, offset, receipt.Offset)
-		return receipt, nil
-	}}
-	database.WriteAttachmentMutationCall = func(ctx context.Context, op func(store.AttachmentMutationScope) error) (store.Completion, error) {
-		mutationCalls.Called("mutation")
-		err := op(scope)
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
+	operationID := uuid.NewString()
+	metadata := map[string]any{"path": "binary/combined.bin", "contentType": "application/octet-stream", "sizeBytes": strconv.FormatInt(total, 10), "createdAt": baseTime, "updatedAt": baseTime}
+	confirmed := map[string]any{"transferId": transferID, "direction": "upload", "state": "cleanup_pending", "nextOffset": strconv.FormatInt(total, 10), "expiresAt": expiry, "cleanupState": "pending", "operationId": operationID, "totalBytes": strconv.FormatInt(total, 10), "sha256": wholeHash, "writeOutcome": "confirmed", "attachment": metadata, "created": true}
+	commitInput := uploadservice.UploadInput{Action: "commit", TransferID: transferID, TotalBytes: strconv.FormatInt(total, 10), SHA256: wholeHash}
+	uploads.expect(actor, project.ID, task.ID, commitInput, confirmed, nil, 1)
 	ctx, cancel = context.WithTimeout(t.Context(), 15*time.Second)
 	_, err = lossSession.CallTool(ctx, &sdk.CallToolParams{Name: "task_attachment_put", Arguments: commit})
 	cancel()
 	if err == nil || drop.commitDrops.Load() != 1 {
 		t.Fatalf("commit response was not lost: %v", err)
 	}
-	mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, cleanup))
+	uploads.expect(actor, project.ID, task.ID, statusInput, confirmed, nil, 1)
 	recovered := object(call(client, status, false)["data"])
 	if recovered["transferId"] != transferID || recovered["writeOutcome"] != "confirmed" || recovered["operationId"] != operationID || recovered["sha256"] != wholeHash || recovered["totalBytes"] != strconv.Itoa(len(all)) || recovered["attachment"] == nil {
 		t.Fatalf("recovered status: %#v", recovered)
 	}
-	mcpTransferPlan(t, database, mcpTransferRead(t, principal, 1, 0, cleanup))
+	mcpAttachmentCheck(t, recovered, mcpUploadExpectedData(confirmed))
+	uploads.expect(actor, project.ID, task.ID, commitInput, confirmed, &model.Fault{Code: "transfer_state_conflict", Message: "Transfer state does not permit this operation."}, 1)
 	replayed := object(call(client, commit, true)["error"])
 	refs := object(replayed["refs"])
 	if replayed["writeOutcome"] != "confirmed" || refs["transferId"] != transferID || refs["operationId"] != recovered["operationId"] {
 		t.Fatalf("replayed commit: %#v", replayed)
 	}
-	address, err := attachmentcore.NewAddress(project.ID, task.ID, "binary/combined.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := files.Open(t.Context(), attachmentcore.Bucket, address.StoragePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, readErr := io.ReadAll(opened.Body)
-	closeErr := opened.Body.Close()
-	if readErr != nil || closeErr != nil || !bytes.Equal(got, all) || opened.Info.Size != total || sha256.Sum256(got) != whole {
-		t.Fatalf("uploaded bytes: len=%d info=%+v read=%v close=%v", len(got), opened.Info, readErr, closeErr)
-	}
 	missing := args("status")
 	missingID := uuid.NewString()
 	missing["transferId"] = missingID
-	mcpTransferPlan(t, database, mcpTransferMissing(t, missingID))
+	uploads.expect(actor, project.ID, task.ID, uploadservice.UploadInput{Action: "status", TransferID: missingID}, nil, &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound}, 1)
 	if failure := object(call(client, missing, true)["error"]); failure["code"] != "not_found" {
 		t.Fatalf("missing transfer: %#v", failure)
 	}
 	pendingID := uuid.NewString()
-	pendingRow := row(pendingID, "pending.bin", 1, 0, 0, 0)
 	pending := args("begin")
 	pending["transferId"], pending["path"], pending["contentType"] = pendingID, "pending.bin", "application/octet-stream"
-	pendingDAO := mcpTransferMissing(t, pendingID)
-	pendingCalls := newHTTPCallPlan(t, map[string]int{"authorize": 1, "insert": 1, "ledger": 1, "active": 1})
-	pendingDAO.AuthorizeCall = func(ctx context.Context, actor model.Principal, kind, id, pid, tid string) error {
-		pendingCalls.Called("authorize")
-		mcpAttachmentCheck(t, actor, principal)
-		mcpAttachmentCheck(t, []string{kind, id, pid, tid}, []string{"pat", principal.CredentialID, project.ID, task.ID})
-		return nil
-	}
-	pendingDAO.InsertCall = func(ctx context.Context, input model.PrivateTransfer) (model.PrivateTransfer, bool, error) {
-		pendingCalls.Called("insert")
-		mcpAttachmentCheck(t, []string{input.ID, input.Path}, []string{pendingID, "pending.bin"})
-		return mcpCloneFixture(pendingRow), true, nil
-	}
-	pendingDAO.LockLedgerCall = func(context.Context) error { pendingCalls.Called("ledger"); return nil }
-	pendingDAO.CountActiveCall = func(ctx context.Context, user string) (int, error) {
-		pendingCalls.Called("active")
-		mcpAttachmentCheck(t, user, principal.UserID)
-		return 2, nil
-	}
-	mcpTransferPlan(t, database, pendingDAO)
-	call(client, pending, false)
+	pendingResult := map[string]any{"transferId": pendingID, "direction": "upload", "state": "receiving", "nextOffset": "0", "expiresAt": expiry, "cleanupState": "pending", "maxChunkBytes": 512 << 10}
+	uploads.expect(actor, project.ID, task.ID, uploadservice.UploadInput{Action: "begin", TransferID: pendingID, Path: "pending.bin", ContentType: "application/octet-stream"}, pendingResult, nil, 1)
+	pendingReceipt := object(call(client, pending, false)["data"])
+	mcpAttachmentCheck(t, pendingReceipt, mcpUploadExpectedData(pendingResult))
 	for _, action := range []string{"status", "abort", "chunk", "commit", "begin", "inline"} {
 		input := args(action)
+		expected := uploadservice.UploadInput{Action: action}
 		switch action {
 		case "status", "abort":
 			input["transferId"] = pendingID
+			expected.TransferID = pendingID
 		case "chunk":
-			input["transferId"], input["chunkId"], input["offset"], input["contentBase64"] = pendingID, uuid.NewString(), "0", base64.StdEncoding.EncodeToString([]byte("x"))
+			chunkID := uuid.NewString()
+			content := base64.StdEncoding.EncodeToString([]byte("x"))
+			input["transferId"], input["chunkId"], input["offset"], input["contentBase64"] = pendingID, chunkID, "0", content
+			expected.TransferID, expected.ChunkID, expected.Offset, expected.ContentBase64 = pendingID, chunkID, "0", content
 		case "commit":
 			input["transferId"], input["totalBytes"] = pendingID, "0"
+			expected.TransferID, expected.TotalBytes = pendingID, "0"
 		case "begin":
-			input["transferId"], input["path"], input["contentType"] = uuid.NewString(), "new.bin", "text/plain"
+			id := uuid.NewString()
+			input["transferId"], input["path"], input["contentType"] = id, "new.bin", "text/plain"
+			expected.TransferID, expected.Path, expected.ContentType = id, "new.bin", "text/plain"
 		case "inline":
-			input["path"], input["contentType"], input["contentBase64"] = "new.bin", "text/plain", base64.StdEncoding.EncodeToString([]byte("x"))
+			content := base64.StdEncoding.EncodeToString([]byte("x"))
+			input["path"], input["contentType"], input["contentBase64"] = "new.bin", "text/plain", content
+			expected.Path, expected.ContentType, expected.ContentBase64 = "new.bin", "text/plain", content
 		}
-		if action == "inline" {
-			mcpAttachmentDenyRead(t, database, principal, project.ID)
-			mcpAttachmentDenyMutation(t, database, principal, project.ID, task.ID)
-		} else {
-			var denied *mcpTransferDAO
-			if action == "begin" {
-				denied = mcpTransferMissing(t, input["transferId"].(string))
-			} else {
-				denied = mcpTransferRead(t, principal, 0, 0, mcpTransferRow(pendingRow))
-			}
-			deniedCalls := newHTTPCallPlan(t, map[string]int{"deny": 1})
-			denied.AuthorizeCall = func(ctx context.Context, actor model.Principal, kind, id, pid, tid string) error {
-				deniedCalls.Called("deny")
-				mcpAttachmentCheck(t, actor, principal)
-				mcpAttachmentCheck(t, []string{kind, id, pid, tid}, []string{"pat", principal.CredentialID, project.ID, task.ID})
-				return model.ErrNotFound
-			}
-			mcpTransferPlan(t, database, denied)
-		}
+		uploads.expect(actor, project.ID, task.ID, expected, nil, &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound}, 1)
 		if failure := object(call(client, input, true)["error"]); failure["code"] != "not_found" {
 			t.Fatalf("deleted Project %s: %#v", action, failure)
 		}

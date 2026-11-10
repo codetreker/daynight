@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -65,7 +63,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	value := configurationHTTPValue()
 	missing := f.read(t, model.WorkerConfigurationResource{}, model.ErrNotFound, func() *httptest.ResponseRecorder { return projectRequest(f.handler, http.MethodGet, f.path(), "") })
 	assertProjectError(t, missing, http.StatusNotFound, "not_found")
-	f.report(t, model.WorkerConfigurationResource{}, workerSnapshotReportBody(), nil, nil, nil, nil, nil, http.StatusOK, "")
+	f.report(t, model.WorkerConfigurationResource{}, workerSnapshotReportBody(), nil, nil, nil, nil, http.StatusOK, "")
 	uninitialized := model.WorkerConfigurationResource{ObservationRevision: "0"}
 	response := f.read(t, uninitialized, nil, func() *httptest.ResponseRecorder { return projectRequest(f.handler, http.MethodGet, f.path(), "") })
 	resource := decodeResponse[model.WorkerConfigurationResource](t, response, http.StatusOK)
@@ -73,8 +71,11 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	if len(fields) != 3 || string(fields["desired"]) != "null" || string(fields["observation"]) != "null" || string(fields["observationRevision"]) != `"0"` || resource.Desired != nil || resource.Observation != nil || response.Header().Get(workerConfigurationHeader) != "1" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != f.handler.principal.UserID {
 		t.Fatalf("legacy worker configuration must be explicitly uninitialized: %s", response.Body)
 	}
-	f.put(t, uninitialized, configurationHTTPModel(t, value), "1", nil, nil, nil, http.StatusConflict, "configuration_not_initialized")
-	assertProjectError(t, projectRequest(f.handler, http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": "0", "value": value})), http.StatusBadRequest, "invalid_input")
+	f.put(t, uninitialized, configurationHTTPModel(t, value), "1", nil, nil, http.StatusConflict, "configuration_not_initialized")
+	response = f.invalidRevision(t, "0", configurationHTTPModel(t, value), func() *httptest.ResponseRecorder {
+		return projectRequest(f.handler, http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": "0", "value": value}))
+	})
+	assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	projectID := "d4444444-4444-4444-8444-444444444444"
 	value["projects"] = []any{map[string]any{"projectId": strings.ToUpper(projectID), "nativeOverrides": map[string]any{"model": nil, "args": []any{}}}}
 	value["preferPlatformSpecificTasks"] = true
@@ -83,7 +84,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: canonical}
 	exchange := &model.WorkerConfigurationExchange{Bootstrap: &canonical}
 	body := configurationHTTPReportBody(value, nil)
-	receipt := f.report(t, uninitialized, body, exchange, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
+	receipt := f.report(t, uninitialized, body, exchange, &initial, nil, nil, http.StatusOK, "")
 	if !reflect.DeepEqual(receipt.Configuration.Desired, &initial) || receipt.Configuration.ObservationRevision != "0" || receipt.Configuration.ObservationAccepted {
 		t.Fatalf("bootstrap receipt: %+v", receipt)
 	}
@@ -97,24 +98,24 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	changed := configurationHTTPModel(t, value)
 	changed.Projects[0].ProjectID = projectID
 	saved := model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: f.now.Add(time.Second), Value: changed}
-	resource = f.put(t, current, changed, "1", &saved, nil, nil, http.StatusOK, "")
+	resource = f.put(t, current, changed, "1", &saved, nil, http.StatusOK, "")
 	if !reflect.DeepEqual(resource.Desired, &saved) || !resource.Desired.UpdatedAt.After(initial.UpdatedAt) {
 		t.Fatalf("target change did not advance revision: %+v", resource.Desired)
 	}
 	current = model.WorkerConfigurationResource{Desired: &saved, ObservationRevision: "0"}
-	resource = f.put(t, current, changed, "2", nil, nil, nil, http.StatusOK, "")
+	resource = f.put(t, current, changed, "2", nil, nil, http.StatusOK, "")
 	if !reflect.DeepEqual(resource, current) {
 		t.Fatal("equal canonical configuration changed its revision or timestamp")
 	}
-	f.put(t, current, changed, "1", nil, nil, nil, http.StatusConflict, "version_conflict")
+	f.put(t, current, changed, "1", nil, nil, http.StatusConflict, "version_conflict")
 	staleBootstrap := configurationHTTPValue()
 	staleBootstrap["maxConcurrent"] = 9
 	stale := configurationHTTPModel(t, staleBootstrap)
-	receipt = f.report(t, current, configurationHTTPReportBody(staleBootstrap, nil), &model.WorkerConfigurationExchange{Bootstrap: &stale}, nil, nil, nil, nil, http.StatusOK, "")
+	receipt = f.report(t, current, configurationHTTPReportBody(staleBootstrap, nil), &model.WorkerConfigurationExchange{Bootstrap: &stale}, nil, nil, nil, http.StatusOK, "")
 	if !reflect.DeepEqual(receipt.Configuration.Desired, &saved) {
 		t.Fatal("repeated bootstrap overwrote the cloud target")
 	}
-	f.report(t, current, workerSnapshotReportBody(), nil, nil, nil, nil, nil, http.StatusOK, "")
+	f.report(t, current, workerSnapshotReportBody(), nil, nil, nil, nil, http.StatusOK, "")
 	f.get(t, current)
 }
 
@@ -145,7 +146,7 @@ func TestWorkerConfigurationHTTPObservationCASAndHeartbeatIndependence(t *testin
 	canonical := configurationHTTPModel(t, value)
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: canonical}
 	current := model.WorkerConfigurationResource{ObservationRevision: "0"}
-	f.report(t, current, configurationHTTPReportBody(value, nil), &model.WorkerConfigurationExchange{Bootstrap: &canonical}, &initial, nil, nil, nil, http.StatusOK, "")
+	f.report(t, current, configurationHTTPReportBody(value, nil), &model.WorkerConfigurationExchange{Bootstrap: &canonical}, &initial, nil, nil, http.StatusOK, "")
 	current.Desired = &initial
 	projectID, removedID := uuid.NewString(), uuid.NewString()
 	preparation := configurationHTTPItem("projectPreparation", nil)
@@ -163,7 +164,7 @@ func TestWorkerConfigurationHTTPObservationCASAndHeartbeatIndependence(t *testin
 	reportedAt := f.now.Add(time.Second)
 	f.now = reportedAt
 	accepted := model.WorkerConfigurationResource{Desired: &initial, ObservationRevision: "1", Observation: &model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: *exchange.Observation, ReportedAt: reportedAt}}
-	receipt := f.report(t, current, configurationHTTPReportBody(nil, observation), exchange, nil, nil, nil, &accepted, http.StatusOK, "")
+	receipt := f.report(t, current, configurationHTTPReportBody(nil, observation), exchange, nil, nil, &accepted, http.StatusOK, "")
 	if !receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" {
 		t.Fatalf("initial observation CAS: %+v", receipt.Configuration)
 	}
@@ -178,15 +179,15 @@ func TestWorkerConfigurationHTTPObservationCASAndHeartbeatIndependence(t *testin
 	value["maxConcurrent"] = 4
 	changed := configurationHTTPModel(t, value)
 	desired := model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: f.now.Add(2 * time.Second), Value: changed}
-	f.put(t, accepted, changed, "1", &desired, nil, nil, http.StatusOK, "")
+	f.put(t, accepted, changed, "1", &desired, nil, http.StatusOK, "")
 	f.now = desired.UpdatedAt
 	current = model.WorkerConfigurationResource{Desired: &desired, ObservationRevision: "1", Observation: accepted.Observation}
 	stale := configurationHTTPObservation(configurationHTTPItem("maxConcurrent", 1))
-	receipt = f.report(t, current, configurationHTTPReportBody(nil, stale), configurationHTTPExchange(t, map[string]any{"bootstrap": nil, "observation": stale}), nil, nil, nil, nil, http.StatusOK, "")
+	receipt = f.report(t, current, configurationHTTPReportBody(nil, stale), configurationHTTPExchange(t, map[string]any{"bootstrap": nil, "observation": stale}), nil, nil, nil, http.StatusOK, "")
 	if receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, &desired) {
 		t.Fatalf("stale observation did not return current target and CAS: %+v", receipt.Configuration)
 	}
-	f.report(t, current, workerSnapshotReportBody(), nil, nil, nil, nil, nil, http.StatusOK, "")
+	f.report(t, current, workerSnapshotReportBody(), nil, nil, nil, nil, http.StatusOK, "")
 	f.get(t, current)
 	response = f.read(t, current, nil, func() *httptest.ResponseRecorder { return projectRequest(f.handler, http.MethodGet, f.path(), "") })
 	if !configurationHTTPObservationReportedAt(t, response).Equal(reportedAt) {
@@ -198,7 +199,7 @@ func TestWorkerConfigurationHTTPObservationCASAndHeartbeatIndependence(t *testin
 	freshExchange := configurationHTTPExchange(t, map[string]any{"bootstrap": nil, "observation": fresh})
 	final := model.WorkerConfigurationResource{Desired: &desired, ObservationRevision: "2", Observation: &model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: *freshExchange.Observation, ReportedAt: f.now.Add(3 * time.Second)}}
 	f.now = final.Observation.ReportedAt
-	receipt = f.report(t, current, configurationHTTPReportBody(nil, fresh), freshExchange, nil, nil, nil, &final, http.StatusOK, "")
+	receipt = f.report(t, current, configurationHTTPReportBody(nil, fresh), freshExchange, nil, nil, &final, http.StatusOK, "")
 	if !receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "2" {
 		t.Fatalf("fresh observation CAS: %+v", receipt.Configuration)
 	}
@@ -215,7 +216,7 @@ func TestWorkerConfigurationHTTPStrictInputAndNegotiation(t *testing.T) {
 	value := configurationHTTPValue()
 	canonical := configurationHTTPModel(t, value)
 	desired := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: canonical}
-	f.report(t, model.WorkerConfigurationResource{ObservationRevision: "0"}, configurationHTTPReportBody(value, nil), &model.WorkerConfigurationExchange{Bootstrap: &canonical}, &desired, nil, nil, nil, http.StatusOK, "")
+	f.report(t, model.WorkerConfigurationResource{ObservationRevision: "0"}, configurationHTTPReportBody(value, nil), &model.WorkerConfigurationExchange{Bootstrap: &canonical}, &desired, nil, nil, http.StatusOK, "")
 	valid := jsonBody(t, map[string]any{"revision": "1", "value": value})
 	for name, body := range map[string]string{
 		"unknown root":         strings.Replace(valid, `"revision":"1"`, `"revision":"1","localPath":"/private"`, 1),
@@ -234,7 +235,15 @@ func TestWorkerConfigurationHTTPStrictInputAndNegotiation(t *testing.T) {
 		})
 	}
 	for _, revision := range []any{"0", "+1", "01", " 1", "1.0", "9223372036854775808", 1, nil} {
-		assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/configuration", jsonBody(t, map[string]any{"revision": revision, "value": value})), http.StatusBadRequest, "invalid_input")
+		var response *httptest.ResponseRecorder
+		if text, ok := revision.(string); ok {
+			response = f.invalidRevision(t, text, configurationHTTPModel(t, value), func() *httptest.ResponseRecorder {
+				return projectRequest(handler, http.MethodPut, path+"/configuration", jsonBody(t, map[string]any{"revision": revision, "value": value}))
+			})
+		} else {
+			response = projectRequest(handler, http.MethodPut, path+"/configuration", jsonBody(t, map[string]any{"revision": revision, "value": value}))
+		}
+		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
 	for _, overrides := range []string{`null`, `{"model":false}`, `{"args":null}`, `{"agent":null}`, `{"model":null,"model":null}`, `{"repositoryRoot":"/private"}`} {
 		projects := `[{"projectId":"` + uuid.NewString() + `","nativeOverrides":` + overrides + `}]`
@@ -275,7 +284,7 @@ func TestWorkerConfigurationHTTPResourceAdmission(t *testing.T) {
 	value := configurationHTTPModel(t, configurationHTTPValue())
 	desired := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: value}
 	current := model.WorkerConfigurationResource{Desired: &desired, ObservationRevision: "0"}
-	f.report(t, model.WorkerConfigurationResource{ObservationRevision: "0"}, configurationHTTPReportBody(configurationHTTPValue(), nil), &model.WorkerConfigurationExchange{Bootstrap: &value}, &desired, nil, nil, nil, http.StatusOK, "")
+	f.report(t, model.WorkerConfigurationResource{ObservationRevision: "0"}, configurationHTTPReportBody(configurationHTTPValue(), nil), &model.WorkerConfigurationExchange{Bootstrap: &value}, &desired, nil, nil, http.StatusOK, "")
 	server := httptest.NewServer(f.handler)
 	t.Cleanup(server.Close)
 	var head *http.Response
@@ -317,7 +326,6 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPLegacyValue(t, value)})
 	}
 	f.headers = http.Header{}
-	f.tx.WriteIdentityCall = nil
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
 		assertProjectError(t, f.request(method, f.path(), putBody("1")), http.StatusUnauthorized, "unauthenticated")
 	}
@@ -329,14 +337,14 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	}
 	f.actor(t, alice, cookieHeaders(origin))
 	uninitialized := model.WorkerConfigurationResource{ObservationRevision: "0"}
-	f.report(t, uninitialized, workerSnapshotReportBody(), nil, nil, nil, nil, nil, http.StatusOK, "")
+	f.report(t, uninitialized, workerSnapshotReportBody(), nil, nil, nil, nil, http.StatusOK, "")
 	projectID := "d4444444-4444-4444-8444-444444444444"
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}}}
 	bootstrap := &model.WorkerConfigurationExchange{Bootstrap: &value}
-	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, nil, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
 	f.get(t, uninitialized)
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: value}
-	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, &initial, nil, nil, http.StatusOK, "")
 	current := model.WorkerConfigurationResource{Desired: &initial, ObservationRevision: "0"}
 	f.actor(t, bob, cookieHeaders(origin))
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
@@ -344,19 +352,9 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 		if method == http.MethodGet {
 			response = f.read(t, model.WorkerConfigurationResource{}, model.ErrNotFound, func() *httptest.ResponseRecorder { return f.request(method, f.path(), putBody("1")) })
 		} else {
-			called, verify := configurationHTTPCalls(t, []string{"write", "configuration"})
-			dao := &workerHTTPWriteDAO{t: t, WorkerConfigurationCall: func(_ context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
-				called("configuration")
-				configurationHTTPCheck(t, []string{user, worker}, []string{bob.UserID, f.workerID})
-				return model.WorkerConfigurationResource{}, model.ErrNotFound
-			}}
-			f.tx.WriteWorkerCall = func(ctx context.Context, op func(store.WorkerScope) error) (store.Completion, error) {
-				called("write")
-				return store.Completion{Outcome: store.TransactionNotCommitted}, op(&workerHTTPWriteScope{t: t, DAO: dao})
-			}
-			response = f.request(method, f.path(), putBody("1"))
-			verify()
-			f.tx.WriteWorkerCall = nil
+			response = f.putResult(t, value, "1", model.WorkerConfigurationResource{}, &model.Fault{Code: "not_found", Message: "Worker was not found."}, func() *httptest.ResponseRecorder {
+				return f.request(method, f.path(), putBody("1"))
+			})
 		}
 		assertProjectError(t, response, http.StatusNotFound, "not_found")
 		if response.Header().Get("Daynight-User-ID") != bob.UserID || response.Header().Get("Cache-Control") != "no-store" {
@@ -369,28 +367,28 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	}
 	alice.Kind = model.PATCredential
 	f.actor(t, alice, http.Header{"Authorization": {"Bearer " + defaultHTTPToken()}, "Origin": {"https://foreign.example"}, "Daynight-User-ID": {bob.UserID}})
-	f.put(t, current, value, "1", nil, nil, nil, http.StatusOK, "")
+	f.put(t, current, value, "1", nil, nil, http.StatusOK, "")
 	alice.Kind = model.SessionCredential
 	f.actor(t, alice, cookieHeaders(origin))
 	value.MaxConcurrent = 4
 	second := model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: f.now.Add(time.Second), Value: value}
-	resource := f.put(t, current, value, "1", &second, nil, nil, http.StatusOK, "")
+	resource := f.put(t, current, value, "1", &second, nil, http.StatusOK, "")
 	if resource.Desired.Revision != "2" || len(resource.Desired.Value.Projects) != 1 || len(resource.Desired.Value.Projects[0].NativeOverrides) != 0 || strings.Contains(jsonBody(t, resource), "Private configuration project") || strings.Contains(jsonBody(t, resource), "private-configuration-repository") {
 		t.Fatal("retaining a revoked project blocked unrelated settings or exposed project details")
 	}
 	current = model.WorkerConfigurationResource{Desired: &second, ObservationRevision: "0"}
 	changed := value
 	changed.Projects = []model.WorkerProjectConfiguration{{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{"model": json.RawMessage("null")}}}
-	f.put(t, current, changed, "2", nil, []string{projectID}, model.ErrNotFound, http.StatusNotFound, "not_found")
+	f.put(t, current, changed, "2", nil, model.ErrNotFound, http.StatusNotFound, "not_found")
 	removed := value
 	removed.Projects = []model.WorkerProjectConfiguration{}
 	third := model.WorkerDesiredConfiguration{Revision: "3", UpdatedAt: f.now.Add(2 * time.Second), Value: removed}
-	resource = f.put(t, current, removed, "2", &third, nil, nil, http.StatusOK, "")
+	resource = f.put(t, current, removed, "2", &third, nil, http.StatusOK, "")
 	if resource.Desired.Revision != "3" || len(resource.Desired.Value.Projects) != 0 {
 		t.Fatal("revoked project could not be removed")
 	}
 	current = model.WorkerConfigurationResource{Desired: &third, ObservationRevision: "0"}
-	f.put(t, current, value, "3", nil, []string{projectID}, model.ErrNotFound, http.StatusNotFound, "not_found")
+	f.put(t, current, value, "3", nil, model.ErrNotFound, http.StatusNotFound, "not_found")
 	if strings.Contains(logs.String(), defaultHTTPToken()) || strings.Contains(logs.String(), httpTestToken(model.SessionCredential)) || strings.Contains(logs.String(), "private-configuration-repository") {
 		t.Fatal("configuration requests leaked credentials or private repository details to logs")
 	}

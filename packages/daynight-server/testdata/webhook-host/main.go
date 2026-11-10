@@ -216,7 +216,7 @@ func startWithAdmin(ctx context.Context, databaseURL, token, pat, memberToken, m
 	mux := http.NewServeMux()
 	auth.RegisterRoutes(mux)
 	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(f.db), auth, logger)
-	webhookhttp.NewRoutes(svc, auth, logger).RegisterRoutes(mux)
+	webhookhttp.NewRoutes(webhookhttp.Adapter{Service: svc}, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(f.db), auth, logger)
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(f.db), auth, logger).RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, taskservice.NewTasks(f.db, capture), auth, logger)

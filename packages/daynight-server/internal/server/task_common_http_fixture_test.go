@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
+
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 const taskHTTPEpoch = "88888888-8888-4888-8888-888888888888"
@@ -55,15 +55,6 @@ func copyTaskHTTPTask(row model.Task) model.Task {
 	return row
 }
 
-func copyTaskHTTPWrite(values store.TaskWrite) store.TaskWrite {
-	values.Properties = copyTaskHTTPProperties(values.Properties)
-	values.DependsOn = copyTaskHTTPSlice(values.DependsOn)
-	values.ExternalDependsOn = copyTaskHTTPSlice(values.ExternalDependsOn)
-	values.AssignedTo = copyTaskHTTPPointer(values.AssignedTo)
-	values.RequiredPlatform = copyTaskHTTPPointer(values.RequiredPlatform)
-	return values
-}
-
 func copyTaskHTTPRows(rows []model.Task) []model.Task {
 	result := copyTaskHTTPSlice(rows)
 	for index := range result {
@@ -93,6 +84,7 @@ func copyTaskHTTPSyncRows(rows []model.TaskViewRecord) []model.TaskViewRecord {
 	for index := range result {
 		row := &result[index]
 		row.Properties = copyTaskHTTPProperties(row.Properties)
+		row.Properties = copyTaskHTTPProperties(row.Properties)
 		row.DependsOn = copyTaskHTTPSlice(row.DependsOn)
 		row.ExternalDependsOn = copyTaskHTTPSlice(row.ExternalDependsOn)
 		row.AssignedTo = copyTaskHTTPPointer(row.AssignedTo)
@@ -104,28 +96,23 @@ func copyTaskHTTPSyncRows(rows []model.TaskViewRecord) []model.TaskViewRecord {
 	return result
 }
 
-func copyTaskHTTPAssigneeFacts(rows []model.TaskAssigneeFact) []model.TaskAssigneeFact {
-	result := copyTaskHTTPSlice(rows)
-	for index := range result {
-		row := &result[index]
-		row.ProfileID = copyTaskHTTPPointer(row.ProfileID)
-		row.Name = copyTaskHTTPPointer(row.Name)
-		row.AvatarURL = copyTaskHTTPPointer(row.AvatarURL)
-	}
-	return result
+type taskHTTPFixture struct {
+	t            *testing.T
+	tasks        *taskHTTPOperations
+	projects     *projectHTTPOperations
+	memberships  *projectHTTPMembershipOperations
+	observations *taskHTTPObservationOperations
+	steps        *taskHTTPStepOperations
+	threads      *taskHTTPThreadOperations
+	handler      *resourceTestHandler
+	project      model.Project
+	target       model.Task
+	principal    model.Principal
+	observed     time.Time
+	syncCall     func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error)
 }
 
-type taskHTTPFixture struct {
-	t         *testing.T
-	store     *httpTestStore
-	handler   *resourceTestHandler
-	project   model.Project
-	target    model.Task
-	principal model.Principal
-	observed  time.Time
-	ctx       context.Context
-	active    bool
-}
+const taskHTTPAdminProfileVersion = "c554c9691e1e5ad076b8c86c361ac25469470abf9bae8fc7d540c2e41bf60dee"
 
 func newTaskHTTPFixture(t *testing.T) *taskHTTPFixture {
 	return newTaskHTTPFixtureForPrincipal(t, defaultHTTPPrincipal())
@@ -134,173 +121,122 @@ func newTaskHTTPFixture(t *testing.T) *taskHTTPFixture {
 func newTaskHTTPFixtureForPrincipal(t *testing.T, principal model.Principal) *taskHTTPFixture {
 	t.Helper()
 	project, target, _ := taskHTTPMockModels()
-	f := &taskHTTPFixture{t: t, store: newHTTPTestStoreForPrincipal(t, principal), project: project, target: target, principal: principal, observed: project.UpdatedAt.Add(time.Minute)}
-	f.handler = resourceTestServerForPrincipal(t, f.store, attachmentTestFiles(t), io.Discard, principal)
+	f := &taskHTTPFixture{t: t, tasks: &taskHTTPOperations{t: t}, projects: &projectHTTPOperations{t: t}, memberships: &projectHTTPMembershipOperations{t: t}, observations: &taskHTTPObservationOperations{t: t}, steps: &taskHTTPStepOperations{t: t}, threads: &taskHTTPThreadOperations{t: t}, project: project, target: target, principal: principal, observed: project.UpdatedAt.Add(time.Minute)}
+	f.handler = newOperationHTTPServer(t, func(deps *httpDependencies) {
+		deps.Tasks, deps.TaskObservations, deps.TaskSteps, deps.TaskThreads = f.tasks, f.observations, f.steps, f.threads
+		deps.Projects, deps.Memberships = f.projects, f.memberships
+		deps.TaskSync = func(ctx context.Context, p model.Principal, pid string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+			if f.syncCall == nil {
+				unexpectedHTTPCall(t, "TaskSync")
+			}
+			return f.syncCall(ctx, p, pid, input)
+		}
+	}, io.Discard, principal)
 	return f
 }
 
-func (f *taskHTTPFixture) require(ctx context.Context, projectID string) {
+func (f *taskHTTPFixture) requireOperation(ctx context.Context, principal model.Principal, projectID string) {
 	f.t.Helper()
-	if !f.active || ctx != f.ctx || projectID != f.project.ID {
-		f.t.Errorf("DAO context, scope or Project changed: active=%t, project=%q", f.active, projectID)
-		panic("invalid Task HTTP DAO scope")
-	}
-}
-
-func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*taskHTTPReaderMock, *taskHTTPProjectReaderMock, *taskHTTPSessionReaderMock, *taskHTTPSnapshotScopeMock, *httpCallPlan)) {
-	f.t.Helper()
-	counts := make(map[string]int, len(want)+2)
-	for name, count := range want {
-		counts[name] = count
-	}
-	counts["snapshot"], counts["access"] = 1, 1
-	plan := newHTTPCallPlan(f.t, counts)
-	base := newTaskHTTPMockBase(f.t, "Task HTTP snapshot")
-	reader := &taskHTTPReaderMock{taskHTTPMockBase: base.withLabel("tasks")}
-	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: base.withLabel("projects")}
-	sessions := &taskHTTPSessionReaderMock{taskHTTPMockBase: base.withLabel("sessions")}
-	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base.withLabel("scope")}
-	projects.ProjectAccessFn = func(ctx context.Context, principal model.Principal, id string) (model.ProjectAccess, error) {
-		f.require(ctx, id)
-		plan.Called("access")
-		if principal != f.principal {
-			unexpectedHTTPCall(f.t, "ProjectAccess principal")
-		}
-		return taskHTTPMockAccess(f.project, principal), nil
-	}
-	if counts["project"] != 0 {
-		projects.ProjectFn = func(ctx context.Context, id string) (model.Project, error) {
-			f.require(ctx, id)
-			plan.Called("project")
-			return f.project, nil
-		}
-	}
-	if counts["observed"] != 0 {
-		scope.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-			f.require(ctx, f.project.ID)
-			plan.Called("observed")
-			return f.observed, nil
-		}
-	}
-	scope.ProjectDAOFn = func() store.ProjectReader { return projects }
-	scope.TaskDAOFn = func() store.TaskReader { return reader }
-	scope.SessionDAOFn = func() store.SessionReader { return sessions }
-	configure(reader, projects, sessions, scope, plan)
-	f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
-		plan.Called("snapshot")
-		if run == nil || f.active {
-			unexpectedHTTPCall(f.t, "snapshot callback")
-		}
-		f.ctx, f.active = ctx, true
-		defer func() { f.active = false }()
-		return run(scope)
+	requireOperationHTTPContext(f.t, ctx)
+	if principal != f.principal || projectID != f.project.ID {
+		f.t.Errorf("Task operation changed principal or project: principal=%#v project=%q", principal, projectID)
+		panic("invalid Task HTTP operation")
 	}
 }
 
 func (f *taskHTTPFixture) expectRead(target model.Task) {
 	f.t.Helper()
 	target = copyTaskHTTPTask(target)
-	f.expectSnapshot(map[string]int{"task": 1, "epoch": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		reader.TaskFn = func(ctx context.Context, projectID, id string) (model.Task, error) {
-			f.require(ctx, projectID)
-			plan.Called("task")
-			if id != target.ID {
-				unexpectedHTTPCall(f.t, "Task identity")
-			}
-			return copyTaskHTTPTask(target), nil
-		}
-		reader.TaskCacheEpochFn = func(ctx context.Context, projectID string) (string, error) {
-			f.require(ctx, projectID)
-			plan.Called("epoch")
-			return taskHTTPEpoch, nil
-		}
-	})
+	calls := projectHTTPCount(f.t, 1)
+	f.tasks.ObserveCall = func(ctx context.Context, principal model.Principal, pid, id string) (taskservice.TaskObservation, error) {
+		calls()
+		f.requireOperation(ctx, principal, pid)
+		projectHTTPCheck(f.t, id, target.ID)
+		return taskservice.TaskObservation{Task: copyTaskHTTPTask(target), Epoch: taskHTTPEpoch}, nil
+	}
 }
 
-func (f *taskHTTPFixture) expectList(want []store.TaskQuery, pages []store.TaskPage) {
+func cloneTaskHTTPListRequest(input taskservice.TaskListRequest) taskservice.TaskListRequest {
+	input.AssignedTo = copyTaskHTTPPointer(input.AssignedTo)
+	input.Cursor = copyTaskHTTPPointer(input.Cursor)
+	input.Status = copyTaskHTTPPointer(input.Status)
+	input.Ready = copyTaskHTTPPointer(input.Ready)
+	input.AllowAgents = copyTaskHTTPPointer(input.AllowAgents)
+	input.CompatiblePlatform = copyTaskHTTPPointer(input.CompatiblePlatform)
+	input.PlatformSpecific = copyTaskHTTPPointer(input.PlatformSpecific)
+	input.WorkerID = copyTaskHTTPPointer(input.WorkerID)
+	return input
+}
+
+func (f *taskHTTPFixture) expectListRequest(want taskservice.TaskListRequest, result taskservice.TaskPage, err error) {
 	f.t.Helper()
-	if len(want) != len(pages) || len(want) == 0 {
-		f.t.Fatal("a Task HTTP page requires an explicit query and result for every DAO read")
+	want = cloneTaskHTTPListRequest(want)
+	result.Items = copyTaskHTTPRows(result.Items)
+	result.NextCursor = copyTaskHTTPPointer(result.NextCursor)
+	calls := projectHTTPCount(f.t, 1)
+	f.tasks.ListCall = func(ctx context.Context, principal model.Principal, pid string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+		calls()
+		f.requireOperation(ctx, principal, pid)
+		projectHTTPCheck(f.t, input, want)
+		return taskservice.TaskPage{Items: copyTaskHTTPRows(result.Items), NextCursor: copyTaskHTTPPointer(result.NextCursor)}, err
 	}
-	want = copyTaskHTTPSlice(want)
-	pages = copyTaskHTTPSlice(pages)
-	for index := range want {
-		query := &want[index]
-		query.Page.After = copyTaskHTTPPointer(query.Page.After)
-		query.Status = copyTaskHTTPPointer(query.Status)
-		query.Ready = copyTaskHTTPPointer(query.Ready)
-		query.AllowAgents = copyTaskHTTPPointer(query.AllowAgents)
-		query.CompatiblePlatform = copyTaskHTTPPointer(query.CompatiblePlatform)
-		query.Worker = copyTaskHTTPPointer(query.Worker)
-		pages[index].Items = copyTaskHTTPRows(pages[index].Items)
-	}
-	f.expectSnapshot(map[string]int{"tasks": len(want)}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		index := 0
-		reader.TasksFn = func(ctx context.Context, projectID string, query store.TaskQuery) (store.TaskPage, error) {
-			f.require(ctx, projectID)
-			plan.Called("tasks")
-			if index >= len(want) || !reflect.DeepEqual(query, want[index]) {
-				f.t.Errorf("Task query %d: got %#v, want %#v", index, query, want)
-				panic("unexpected Task HTTP page query")
-			}
-			result := pages[index]
-			result.Items = copyTaskHTTPRows(result.Items)
-			index++
-			return result, nil
-		}
-	})
 }
 
-func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
+func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask, summary model.TaskGraphSummary) {
 	f.t.Helper()
 	rows = copyTaskHTTPGraphRows(rows)
-	f.expectSnapshot(map[string]int{"project": 1, "presence": 1, "graph": 1, "observed": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
-		reader.TaskPresenceFn = func(ctx context.Context, projectID, id string) (store.TaskPresence, error) {
-			f.require(ctx, projectID)
-			plan.Called("presence")
-			if id != root {
-				unexpectedHTTPCall(f.t, "Graph root identity")
-			}
-			return store.TaskPresence{Found: true}, nil
-		}
-		reader.TaskGraphTasksFn = func(ctx context.Context, projectID, id string, got store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
-			f.require(ctx, projectID)
-			plan.Called("graph")
-			if id != root || got != selection || preview != projection.TitlePreviewCharacters {
-				unexpectedHTTPCall(f.t, "Graph projection arguments")
-			}
-			return copyTaskHTTPGraphRows(rows), nil
-		}
-	})
+	project, observed := f.project, f.observed
+	calls := projectHTTPCount(f.t, 1)
+	f.tasks.GraphCall = func(ctx context.Context, principal model.Principal, pid, id string) (model.TaskGraph, error) {
+		calls()
+		f.requireOperation(ctx, principal, pid)
+		projectHTTPCheck(f.t, id, root)
+		return model.TaskGraph{Project: project, ObservedAt: observed, Tasks: copyTaskHTTPGraphRows(rows), Summary: summary}, nil
+	}
 }
 
-func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.TaskAssigneeFact, lower *time.Time) {
+func cloneTaskHTTPSync(result model.TaskSync) model.TaskSync {
+	result.Tasks = copyTaskHTTPSyncRows(result.Tasks)
+	for i := range result.Tasks {
+		result.Tasks[i].Properties = copyTaskHTTPProperties(result.Tasks[i].Properties)
+	}
+	result.ActorAccess = projectHTTPCopyAccess(result.ActorAccess)
+	result.AssigneeVersions = copyTaskHTTPSlice(result.AssigneeVersions)
+	if result.Sessions != nil {
+		sessions := make(map[string]model.SessionListState, len(result.Sessions))
+		for id, state := range result.Sessions {
+			sessions[id] = state
+		}
+		result.Sessions = sessions
+	}
+	return result
+}
+
+func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, versions []model.TaskAssigneeVersion, lower *time.Time) {
 	f.t.Helper()
-	rows, facts, lower = copyTaskHTTPSyncRows(rows), copyTaskHTTPAssigneeFacts(facts), copyTaskHTTPPointer(lower)
-	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
-			f.require(ctx, id)
-			plan.Called("epoch")
-			return taskHTTPEpoch, nil
+	want := taskservice.TaskSyncRequest{}
+	mode := "snapshot"
+	if lower != nil {
+		since := lower.Add(10 * time.Second)
+		want = taskservice.TaskSyncRequest{Epoch: taskHTTPEpoch, Since: &since}
+		mode = "delta"
+	}
+	result := cloneTaskHTTPSync(model.TaskSync{Mode: mode, Epoch: taskHTTPEpoch, Project: f.project, ActorAccess: taskHTTPMockAccess(f.project, f.principal), ObservedAt: f.observed, Tasks: rows, AssigneeVersions: versions, Sessions: map[string]model.SessionListState{}})
+	f.expectSyncRequest(want, result, nil)
+}
+
+func (f *taskHTTPFixture) expectSyncRequest(want taskservice.TaskSyncRequest, result model.TaskSync, err error) {
+	f.t.Helper()
+	want.Since = copyTaskHTTPPointer(want.Since)
+	result = cloneTaskHTTPSync(result)
+	calls := projectHTTPCount(f.t, 1)
+	f.syncCall = func(ctx context.Context, principal model.Principal, pid string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		calls()
+		f.requireOperation(ctx, principal, pid)
+		if !reflect.DeepEqual(input, want) {
+			f.t.Errorf("TaskSync input=%#v want=%#v", input, want)
+			panic("unexpected TaskSync input")
 		}
-		reader.TaskSyncTasksFn = func(ctx context.Context, id string, since *time.Time, preview int) ([]model.TaskViewRecord, error) {
-			f.require(ctx, id)
-			plan.Called("sync")
-			if !reflect.DeepEqual(since, lower) || preview != projection.TitlePreviewCharacters {
-				unexpectedHTTPCall(f.t, "TaskSync arguments")
-			}
-			return copyTaskHTTPSyncRows(rows), nil
-		}
-		reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
-			f.require(ctx, id)
-			plan.Called("people")
-			return copyTaskHTTPAssigneeFacts(facts), nil
-		}
-		sessions.CurrentTaskSessionSourcesFn = func(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-			f.require(ctx, id)
-			plan.Called("sessions")
-			return []store.TaskSessionSource{}, nil
-		}
-	})
+		return cloneTaskHTTPSync(result), err
+	}
 }

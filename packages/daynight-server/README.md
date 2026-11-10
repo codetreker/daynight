@@ -1701,45 +1701,54 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Root `internal/server` unit tests assemble actual modules, routes and HTTP
-authentication over controlled collaborators. The MCP Step lifecycle supplies
-direct Identity and Step operations after application assembly and before Server
-construction; its Service, Core, Capturer and Store receivers retain lower
-coordination, rules and persistence proofs. Other DAO/scope fixtures supply fixed
-domain records, query results, proposed writes, call counts and transaction
-completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
-state. The complete ordinary root selection executes with
-`DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
-SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
-pinned auth fixture as described in [validation](#validate).
+Ordinary `internal/server` HTTP fixtures use the same private router builder as
+production `New`, with controlled direct business operations and Identity
+results. Actual routes, authentication parsing, request decoding, response
+encoding, Web/health handling and path guards execute without registering
+unrelated MCP tools. Returned records and later reads are independent facts;
+proposed writes and mock completion do not establish persistence.
 
-Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
-remain real where they are the mechanism being verified. Root HTTP control and
-WebSocket traffic share one actual application and Engine. Startup, channel,
-serialization and shutdown cases retain their private composition observations
-and capacity boundaries. Store tests own actual SQL, database-clock expiry after
-locks, transaction outcomes and committed readback; process tests own complete
-entry-point drain and restart persistence. The
-[root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
-records these fixtures and the distinction between logical and physical evidence.
+Complete production assembly tests still construct real modules, authentication,
+all fourteen MCP adapter groups and schemas, Session and Worker read-only
+adapters. Their Application instance business outputs are controlled before
+Server construction. Default-binding tests distinguish the actual Store,
+Capturer, Engine, observers, files and transfer leases, shared HTTP/MCP output
+instances and two independent Applications.
 
-Domain packages own their HTTP adapters. Task and Session HTTP unit tests
-control directly called service/use-case results while retaining actual
-credential middleware, HTTP encoding, response loss and socket/resource
-handling. Their [Task](#business-rules-and-dao-mocks) and
-[Session](#session-http-tests) guides identify those boundaries. Attachment
-fixtures retain their own [protocol and native-resource scope](#attachment-http-tests).
-Normal assembled API flows run separately in `cmd/integration_tests`, including
-`TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`.
+The ordinary root package runs with Daynight PostgreSQL and Redis variables
+unset. Four provider SDK/gateway tests retain their pinned UniAuth executable,
+private SQLite, real PKCE/state, browser/result consumption and wire-loss
+mechanisms. Configuration constructors retain all accepted callback aliases and
+refuse invalid settings before resource opening. Prepare the pinned fixture as
+described in [validation](#validate); the module temporary directory must be
+writable by the test user.
 
-Shared scenario bodies have one owner; distinct internal composition assertions
-remain in the root package. The
+Native HTTP/TCP, complete MCP SDK exchanges, WebSockets, Session Engine, retained
+files/leases and shutdown remain real where they are the mechanism under test.
+Ordinary Session protocol fixtures supply direct Operations through the real
+Routes adapter; dedicated lifecycle fixtures retain the real Service/Engine
+relationship. SDK users and protocol handlers stop before resources close, and
+cleanup errors remain failures. Tagged SQL/process/stress entries retain their
+separate selection and original data.
+
+Core and Service owners retain the original independent business and
+coordination assertions, including complete mutable DTOs, exact malicious and
+large inputs, cursor/no-op/version facts, token admission and native projection.
+Expected values and supplied inputs/results are copied independently so mutation
+cannot change its own oracle. PostgreSQL and process owners retain actual SQL,
+locks, commit/rollback, fresh readback and entry-point persistence. No new SQL
+proofs follow from these database-independent Root fixtures.
+
+The [operation fixture decision](../../.agents/notes/implemented/testing/2026-11-11-root-server-operation-fixtures.md)
+records the common router, direct dependencies and preserved mechanisms. The
+[earlier DAO decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
+retains the rationale for removing root database preparation. The
 [scenario consolidation](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
-preserves the original rationale. The
-[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
-owns responsibility boundaries; the
-[Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
-records the direct Session binding and retained proofs.
+and [Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
+retain their separate ownership rules. Domain adapter tests continue at their
+[Task](#business-rules-and-dao-mocks), [Session](#session-http-tests) and
+[Attachment](#attachment-http-tests) entries; normal fully assembled flows remain
+in `cmd/integration_tests`.
 
 ### MCP transfer service tests
 
@@ -1825,9 +1834,12 @@ separate API integration entry.
 
 The regular `internal/server/session` suite executes actual routes and
 `RequestAuthentication` with controlled credential results and direct typed
-Session use-case callbacks. The private `serviceCalls` binding projects existing
-production service methods; test-only aliases supply the same calls without
-starting the service, engine, DAO or gateway. Tests supply valid principals,
+Session use-case callbacks. The public `Operations` table preserves all sixty
+existing typed function members; `NewRoutesWithOperations` constructs the real
+adapter from those operations and RequestAuthentication. The production
+`NewRoutes` wrapper retains real Service origin binding and private
+`callsFromService` assembly. Ordinary fixtures need no service, engine, DAO or
+gateway merely to obtain fixed results. Tests supply valid principals,
 snapshots, events and returned bytes and verify context, canonical addresses,
 fences, inputs, outputs and call counts.
 

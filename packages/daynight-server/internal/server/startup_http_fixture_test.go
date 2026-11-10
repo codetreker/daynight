@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -10,9 +11,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func startupTaskModel(value api.Task) model.Task {
@@ -30,8 +32,8 @@ func startupTaskModel(value api.Task) model.Task {
 
 func startupReportValue(t *testing.T, body map[string]any) sp.StartupReport {
 	t.Helper()
-	value, err := sp.DecodeStartupReport([]byte(jsonBody(t, body)))
-	if err != nil {
+	var value sp.StartupReport
+	if err := json.Unmarshal([]byte(jsonBody(t, body)), &value); err != nil {
 		t.Fatal(err)
 	}
 	return value
@@ -56,246 +58,201 @@ func startupReplaceWorker(t *testing.T, current model.Task, change func(*api.Wor
 	return result
 }
 
-// Each request installs a complete plan. A captured write cannot populate the
-// facts supplied to a later Task or Session read.
-func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task, report *sp.StartupReport, matched bool, returned *model.Task, observed *time.Time, principal model.Principal, beforeMatch func()) {
-	t.Helper()
-	base := newTaskHTTPMockBase(t, "startup")
-	project := &taskHTTPProjectWriterMock{taskHTTPMockBase: base.withLabel("project")}
-	tasks := &taskHTTPWriterMock{taskHTTPMockBase: base.withLabel("task")}
-	sessions := &taskHTTPProjectSessionMock{taskHTTPMockBase: base.withLabel("session")}
-	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base.withLabel("scope"),
-		ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return tasks },
-		SessionDAOFn: func() store.ProjectSessionDAO { return sessions }}
-	counts := map[string]int{}
-	var requestContext context.Context
-	check := func(ctx context.Context, name string, valid bool) {
-		counts[name]++
-		if ctx != requestContext || counts[name] != 1 || !valid {
-			t.Errorf("startup %s changed context, arguments or count", name)
-			panic("invalid startup DAO call")
-		}
-	}
-	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
-		check(ctx, "access", reflect.DeepEqual(actual, principal))
-		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
-	}
-	tasks.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
-		check(ctx, "task", id == current.ID && counts["access"] == 1)
-		return current, nil
-	}
-	if report != nil {
-		sessions.MatchSessionStartupFn = func(ctx context.Context, id string, worker *model.WorkerClaim, actual sp.StartupReport) (bool, error) {
-			expectedWorker, err := taskproperty.Worker(current.Properties)
-			check(ctx, "match", err == nil && id == current.ID && reflect.DeepEqual(worker, expectedWorker) && reflect.DeepEqual(actual, *report) && counts["task"] == 1)
-			if beforeMatch != nil {
-				beforeMatch()
-			}
-			return matched, nil
-		}
-	}
-	if observed != nil {
-		tasks.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-			check(ctx, "observed", counts["task"] == 1)
-			return *observed, nil
-		}
-	}
-	if returned != nil {
-		wanted := taskcore.CurrentWrite(*returned)
-		tasks.UpdateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
-			check(ctx, "update", id == current.ID && reflect.DeepEqual(values, wanted) && counts["task"] == 1)
-			return *returned, nil
-		}
-		var active *string
-		worker, err := taskproperty.Worker(returned.Properties)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if returned.Status == model.TaskInProgress && worker != nil && worker.State == model.WorkerActive && worker.AgentControlMode == model.AgentControlModeWeb {
-			active = &worker.ClaimID
-		}
-		wantDrain := store.TaskSessionDrain{ActiveClaim: active, SourceLifecycle: "active", GraceSeconds: 60,
-			TimelineField: "lastTimelineSeq", LifecycleField: "lifecycle", RemoveFields: []string{"cleanupInteractionIds", "controls", "turnStartedAt", "currentTurnId"},
-			SnapshotValues: map[string]any{"lifecycle": "draining", "synchronized": false, "connectionState": "disconnected", "activity": "unknown"}}
-		sessions.DrainTaskSessionsFn = func(ctx context.Context, id string, value store.TaskSessionDrain) error {
-			check(ctx, "drain", id == current.ID && counts["update"] == 1 && reflect.DeepEqual(value, wantDrain))
-			return nil
-		}
-		wantTransition := store.TaskSessionReceiptTransition{LifecycleField: "lifecycle", Lifecycle: "draining", StateField: "state", PreviousState: "accepted", NextState: "rejected", RemoveFields: []string{"error"}}
-		sessions.TransitionTaskSessionReceiptsFn = func(ctx context.Context, id string, value store.TaskSessionReceiptTransition) error {
-			check(ctx, "receipts", id == current.ID && counts["drain"] == 1 && reflect.DeepEqual(value, wantTransition))
-			return nil
-		}
-		if returned.Status != current.Status {
-			capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base.withLabel("capture")}
-			capture.FreezeAudienceFn = func(ctx context.Context, project string, kinds []string) ([]store.WebhookAudience, error) {
-				check(ctx, "capture", project == current.ProjectID && counts["receipts"] == 1 && reflect.DeepEqual(kinds, []string{protocol.StatusChanged}))
-				return []store.WebhookAudience{}, nil
-			}
-			scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return capture }
-		}
-	}
-	calls := 0
-	f.store.WriteProjectCall = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		calls++
-		if calls != 1 || id != current.ProjectID || work == nil {
-			unexpectedHTTPCall(t, "startup WriteProject")
-		}
-		requestContext = ctx
-		err := work(scope)
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
-	t.Cleanup(func() {
-		if calls != 1 || counts["access"] != 1 || counts["task"] != 1 {
-			t.Errorf("startup scope not consumed: calls=%d counts=%v", calls, counts)
-		}
-		if report != nil && counts["match"] != 1 {
-			t.Errorf("startup matcher calls=%d, want1", counts["match"])
-		}
-		if returned != nil && (counts["update"] != 1 || counts["drain"] != 1 || counts["receipts"] != 1) {
-			t.Errorf("startup write incomplete: %v", counts)
-		}
-		if observed != nil && counts["observed"] != 1 {
-			t.Errorf("startup claim time calls=%d, want1", counts["observed"])
-		}
-		if returned != nil && returned.Status != current.Status && counts["capture"] != 1 {
-			t.Errorf("startup status capture calls=%d, want1", counts["capture"])
-		}
-	})
-}
-
-func startupExpectTaskRead(t *testing.T, f *sessionHTTPFixture, value model.Task) {
-	t.Helper()
-	base := newTaskHTTPMockBase(t, "startup read")
-	project := &taskHTTPProjectReaderMock{taskHTTPMockBase: base.withLabel("project")}
-	task := &taskHTTPReaderMock{taskHTTPMockBase: base.withLabel("task")}
-	access, reads, epochs, snapshots := 0, 0, 0, 0
-	var requestContext context.Context
-	project.ProjectAccessFn = func(ctx context.Context, principal model.Principal, id string) (model.ProjectAccess, error) {
-		access++
-		if ctx != requestContext || access != 1 || principal != f.handler.principal || id != value.ProjectID {
-			unexpectedHTTPCall(t, "startup read access")
-		}
-		return model.ProjectAccess{ProjectID: id, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
-	}
-	task.TaskFn = func(ctx context.Context, project, id string) (model.Task, error) {
-		reads++
-		if ctx != requestContext || access != 1 || reads != 1 || project != value.ProjectID || id != value.ID {
-			unexpectedHTTPCall(t, "startup Task read")
-		}
-		return value, nil
-	}
-	task.TaskCacheEpochFn = func(ctx context.Context, project string) (string, error) {
-		epochs++
-		if ctx != requestContext || reads != 1 || epochs != 1 || project != value.ProjectID {
-			unexpectedHTTPCall(t, "startup Task epoch")
-		}
-		return "startup-epoch", nil
-	}
-	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectReader { return project }, TaskDAOFn: func() store.TaskReader { return task }}
-	f.store.ReadSnapshotCall = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		snapshots++
-		if snapshots != 1 || work == nil {
-			unexpectedHTTPCall(t, "startup snapshot")
-		}
-		requestContext = ctx
-		return work(scope)
-	}
-	t.Cleanup(func() {
-		if snapshots != 1 || access != 1 || reads != 1 || epochs != 1 {
-			t.Errorf("startup Task read counts=%d/%d/%d/%d", snapshots, access, reads, epochs)
-		}
-	})
-}
-
-func startupExpectCurrent(t *testing.T, f *sessionHTTPFixture, task store.SessionTask, record store.SessionRecord) {
-	t.Helper()
-	calls := map[string]int{}
-	var requestContext context.Context
-	dao := &startupCurrentDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, t: t, f: f, task: task, record: record, calls: calls, context: &requestContext}
-	snapshots := 0
-	f.store.WriteSessionCall = func(ctx context.Context, work func(store.SessionScope) error) (store.Completion, error) {
-		snapshots++
-		if snapshots != 1 || work == nil {
-			unexpectedHTTPCall(t, "startup current scope")
-		}
-		requestContext = ctx
-		err := work(startupCurrentScope{dao})
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
-	t.Cleanup(func() {
-		for _, name := range []string{"task", "credential", "access", "current", "bot", "session"} {
-			if calls[name] != 1 {
-				t.Errorf("startup current %s calls=%d, want1", name, calls[name])
-			}
-		}
-		if snapshots != 1 {
-			t.Errorf("startup current scope calls=%d, want1", snapshots)
-		}
-	})
-}
-
-type startupCurrentScope struct{ dao *startupCurrentDAO }
-
-func (s startupCurrentScope) SessionDAO() store.SessionDAO { return s.dao }
-func (s startupCurrentScope) BotDAO() store.BotWriteDAO {
-	return sessionHTTPRejectedBotDAO{t: s.dao.t}
-}
-
-type startupCurrentDAO struct {
-	sessionHTTPRejectedDAO
+// Every request supplies its own immutable business result; a returned mutation
+// never supplies the later HTTP readback.
+type startupHTTPOperations struct {
 	t       *testing.T
-	f       *sessionHTTPFixture
-	task    store.SessionTask
-	record  store.SessionRecord
-	calls   map[string]int
-	context *context.Context
+	observe func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error)
+	update  func(context.Context, model.Principal, string, string, taskcore.UpdateWorker) (model.Task, error)
+	claim   func(context.Context, model.Principal, string, string, taskcore.ClaimWorker) (model.Task, error)
+	release func(context.Context, model.Principal, string, string, taskcore.ReleaseWorker) (model.Task, error)
 }
 
-func (d *startupCurrentDAO) check(ctx context.Context, name string, valid bool) {
-	d.calls[name]++
-	if ctx != *d.context || d.calls[name] != 1 || !valid {
-		unexpectedHTTPCall(d.t, "startup current "+name)
+func startupTaskOperations(t *testing.T, f *sessionHTTPFixture) taskhttp.TaskService {
+	f.startup = &startupHTTPOperations{t: t}
+	return f.startup
+}
+func (s *startupHTTPOperations) Get(context.Context, model.Principal, string, string) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.Get")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) Observe(ctx context.Context, p model.Principal, project, id string) (taskservice.TaskObservation, error) {
+	if s.observe == nil {
+		unexpectedHTTPCall(s.t, "startup Task.Observe")
 	}
+	return s.observe(ctx, p, project, id)
 }
-func (d *startupCurrentDAO) LockTask(ctx context.Context, project, task string) (store.SessionTask, error) {
-	d.check(ctx, "task", project == d.f.task.ProjectID && task == d.f.task.ID)
-	return d.task, nil
+func (s *startupHTTPOperations) UpdateWorker(ctx context.Context, p model.Principal, project, id string, in taskcore.UpdateWorker) (model.Task, error) {
+	if s.update == nil {
+		unexpectedHTTPCall(s.t, "startup Task.UpdateWorker")
+	}
+	return s.update(ctx, p, project, id, in)
 }
-func (d *startupCurrentDAO) LockCredential(ctx context.Context, principal model.Principal, now time.Time) error {
-	d.check(ctx, "credential", principal == d.f.handler.principal && !now.IsZero() && d.calls["task"] == 1)
-	return nil
+func (s *startupHTTPOperations) ClaimWorker(ctx context.Context, p model.Principal, project, id string, in taskcore.ClaimWorker) (model.Task, error) {
+	if s.claim == nil {
+		unexpectedHTTPCall(s.t, "startup Task.ClaimWorker")
+	}
+	return s.claim(ctx, p, project, id, in)
 }
-func (d *startupCurrentDAO) ProjectAccess(ctx context.Context, owner, project string) (model.ProjectAccess, error) {
-	d.check(ctx, "access", project == d.f.task.ProjectID && owner == d.f.handler.principal.UserID && d.calls["credential"] == 1)
-	return model.ProjectAccess{ProjectID: project, UserID: owner, Role: model.ProjectMemberRole}, nil
-}
-func (d *startupCurrentDAO) CurrentTaskSession(ctx context.Context, project, task, claim string) (string, error) {
-	d.check(ctx, "current", project == d.f.task.ProjectID && task == d.f.task.ID && claim == d.record.Snapshot.ClaimID && d.calls["access"] == 1)
-	return d.record.Snapshot.SessionID, nil
-}
-func (d *startupCurrentDAO) SessionBotID(ctx context.Context, id string) (*string, error) {
-	d.check(ctx, "bot", id == d.record.Snapshot.SessionID && d.calls["current"] == 1)
-	return nil, nil
-}
-func (d *startupCurrentDAO) LockSession(ctx context.Context, id string) (store.SessionRecord, error) {
-	d.check(ctx, "session", id == d.record.Snapshot.SessionID && d.calls["bot"] == 1)
-	return d.record, nil
+func (s *startupHTTPOperations) ReleaseWorker(ctx context.Context, p model.Principal, project, id string, in taskcore.ReleaseWorker) (model.Task, error) {
+	if s.release == nil {
+		unexpectedHTTPCall(s.t, "startup Task.ReleaseWorker")
+	}
+	return s.release(ctx, p, project, id, in)
 }
 
-func startupSessionTask(t *testing.T, current model.Task, report *sp.StartupReport) store.SessionTask {
+func startupClone[T any](t *testing.T, value T) T {
 	t.Helper()
-	worker, err := taskproperty.Worker(current.Properties)
+	raw, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store.SessionTask{Worker: worker, Status: string(current.Status), StartupReport: report}
+	var out T
+	if err = json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func startupUpdateInput(f *sessionHTTPFixture, report *sp.StartupReport) taskcore.UpdateWorker {
+	return taskcore.UpdateWorker{Version: f.task.Version, ClaimID: f.snapshot.ClaimID, StartupReport: report}
+}
+func startupConflict() error {
+	return &model.Fault{Code: "claim_conflict", Message: "The Worker claim changed."}
+}
+func startupCheckCall(t *testing.T, f *sessionHTTPFixture, ctx context.Context, p model.Principal, project, id string, want model.Principal) {
+	t.Helper()
+	if ctx == nil || ctx.Err() != nil || httpx.RequestID(ctx) != "project-test" || p != want || project != f.task.ProjectID || id != f.task.ID {
+		t.Errorf("startup operation changed request context, principal or resource: %v, %#v, %q, %q", ctx, p, project, id)
+		panic("invalid startup operation")
+	}
+	requireOperationHTTPContext(t, ctx)
+}
+func startupOnce(t *testing.T) func() {
+	t.Helper()
+	calls := 0
+	t.Cleanup(func() {
+		if calls != 1 {
+			t.Errorf("startup operation calls=%d, want 1", calls)
+		}
+	})
+	return func() {
+		calls++
+		if calls != 1 {
+			unexpectedHTTPCall(t, "extra startup operation")
+		}
+	}
+}
+func startupExpectUpdate(t *testing.T, f *sessionHTTPFixture, in taskcore.UpdateWorker, result model.Task, resultErr error, principal model.Principal, beforeReturn func()) {
+	t.Helper()
+	// Copy each nullable level: omitted, explicit null, and a value are distinct.
+	expected := in
+	if in.Phase != nil {
+		v := *in.Phase
+		expected.Phase = &v
+	}
+	if in.Herdr != nil {
+		var v *model.WorkerHerdr
+		if *in.Herdr != nil {
+			h := **in.Herdr
+			v = &h
+		}
+		expected.Herdr = &v
+	}
+	if in.NativeSessionID != nil {
+		var v *string
+		if *in.NativeSessionID != nil {
+			q := **in.NativeSessionID
+			v = &q
+		}
+		expected.NativeSessionID = &v
+	}
+	if in.StartupReport != nil {
+		v := startupClone(t, *in.StartupReport)
+		expected.StartupReport = &v
+	}
+	result = startupClone(t, result)
+	called := startupOnce(t)
+	f.startup.update = func(ctx context.Context, p model.Principal, project, id string, actual taskcore.UpdateWorker) (model.Task, error) {
+		called()
+		startupCheckCall(t, f, ctx, p, project, id, principal)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Errorf("startup parsed UpdateWorker=%#v, want %#v", actual, expected)
+			panic("startup input changed")
+		}
+		if beforeReturn != nil {
+			beforeReturn()
+		}
+		return startupClone(t, result), resultErr
+	}
+}
+func startupExpectRelease(t *testing.T, f *sessionHTTPFixture, in taskcore.ReleaseWorker, result model.Task) {
+	t.Helper()
+	expected := in
+	result = startupClone(t, result)
+	called := startupOnce(t)
+	f.startup.release = func(ctx context.Context, p model.Principal, project, id string, actual taskcore.ReleaseWorker) (model.Task, error) {
+		called()
+		startupCheckCall(t, f, ctx, p, project, id, f.handler.principal)
+		if actual != expected {
+			t.Errorf("startup parsed ReleaseWorker=%#v, want %#v", actual, expected)
+			panic("release input changed")
+		}
+		return startupClone(t, result), nil
+	}
+}
+func startupExpectClaim(t *testing.T, f *sessionHTTPFixture, in taskcore.ClaimWorker, result model.Task) {
+	t.Helper()
+	expected := in
+	result = startupClone(t, result)
+	called := startupOnce(t)
+	f.startup.claim = func(ctx context.Context, p model.Principal, project, id string, actual taskcore.ClaimWorker) (model.Task, error) {
+		called()
+		startupCheckCall(t, f, ctx, p, project, id, f.handler.principal)
+		if actual != expected {
+			t.Errorf("startup parsed ClaimWorker=%#v, want %#v", actual, expected)
+			panic("claim input changed")
+		}
+		return startupClone(t, result), nil
+	}
+}
+func startupExpectTaskRead(t *testing.T, f *sessionHTTPFixture, value model.Task) {
+	t.Helper()
+	supplied := taskservice.TaskObservation{Task: startupClone(t, value), Epoch: "startup-epoch"}
+	called := startupOnce(t)
+	f.startup.observe = func(ctx context.Context, p model.Principal, project, id string) (taskservice.TaskObservation, error) {
+		called()
+		startupCheckCall(t, f, ctx, p, project, id, f.handler.principal)
+		requireExactOperationHTTPContext(t, ctx)
+		return taskservice.TaskObservation{Task: startupClone(t, supplied.Task), Epoch: supplied.Epoch}, nil
+	}
+}
+func startupExpectCurrent(t *testing.T, f *sessionHTTPFixture, snapshot sp.Snapshot, report *sp.StartupReport, extended bool) {
+	t.Helper()
+	snapshot = startupClone(t, snapshot)
+	var supplied *sp.StartupReport
+	if report != nil {
+		v := startupClone(t, *report)
+		supplied = &v
+	}
+	called := startupOnce(t)
+	read := func(ctx context.Context, p model.Principal, project, id string) (map[string]any, error) {
+		called()
+		startupCheckCall(t, f, ctx, p, project, id, f.handler.principal)
+		out := map[string]any{"status": "registered", "session": startupClone(t, snapshot)}
+		if extended {
+			if supplied == nil {
+				out["startupReport"] = nil
+			} else {
+				out["startupReport"] = startupClone(t, *supplied)
+			}
+		}
+		return out, nil
+	}
+	if extended {
+		f.ops.CurrentWithStartup = read
+	} else {
+		f.ops.Current = read
+	}
 }
 
 func startupTaskDocument(t *testing.T, value model.Task) api.Task {
@@ -309,11 +266,49 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
 }
 
-type startupRevokedCredential struct{ httpAuthenticationDAO }
-
-func (d *startupRevokedCredential) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
-	if _, err := d.httpAuthenticationDAO.Authenticate(ctx, kind, hash, now); err != nil {
-		return model.Principal{}, err
-	}
-	return model.Principal{}, &model.Fault{Code: "unauthenticated", Message: "Credential has been revoked."}
+func (s *startupHTTPOperations) Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.Create")
+	panic("unreachable")
 }
+func (s *startupHTTPOperations) Update(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.Update")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error {
+	unexpectedHTTPCall(s.t, "startup Task.Delete")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.SetStatus")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) List(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+	unexpectedHTTPCall(s.t, "startup Task.List")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) Graph(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
+	unexpectedHTTPCall(s.t, "startup Task.Graph")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) Assignees(context.Context, model.Principal, string, taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+	unexpectedHTTPCall(s.t, "startup Task.Assignees")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) SetProperty(context.Context, model.Principal, string, string, string, string, int64) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.SetProperty")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) RemoveProperty(context.Context, model.Principal, string, string, string, int64) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.RemoveProperty")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) WithdrawWorker(context.Context, model.Principal, string, string, taskcore.WithdrawWorker) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.WithdrawWorker")
+	panic("unreachable")
+}
+func (s *startupHTTPOperations) ResumeWorker(context.Context, model.Principal, string, string, taskcore.ResumeWorker) (model.Task, error) {
+	unexpectedHTTPCall(s.t, "startup Task.ResumeWorker")
+	panic("unreachable")
+}
+
+var _ taskhttp.TaskService = (*startupHTTPOperations)(nil)

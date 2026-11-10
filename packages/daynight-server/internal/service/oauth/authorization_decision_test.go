@@ -126,6 +126,9 @@ func TestAuthorizationDecisionRejectsAdmissionBeforeScope(t *testing.T) {
 			f := newOAuthFixture(t, steps...)
 			s := f.service()
 			p := fixturePrincipal()
+			if mode == "expected user" {
+				p = model.Principal{Kind: model.SessionCredential, UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444"}
+			}
 			in := DecisionInput{RequestID: uuid.NewString(), Binding: "binding", ExpectedUserID: p.UserID, Principal: p, Decision: "approve"}
 			switch mode {
 			case "principal":
@@ -133,7 +136,7 @@ func TestAuthorizationDecisionRejectsAdmissionBeforeScope(t *testing.T) {
 			case "request ID":
 				in.RequestID = "bad"
 			case "expected user":
-				in.ExpectedUserID = uuid.NewString()
+				in.ExpectedUserID = "a1111111-1111-4111-8111-111111111111"
 			case "binding":
 				s.operations.validBinding = func(b string) bool { f.step("valid binding"); f.equal(b, in.Binding); return false }
 			case "decision":

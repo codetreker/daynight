@@ -45,7 +45,7 @@ type ReadOnlyRoutes struct {
 	once              sync.Once
 }
 
-func NewReadOnlyRoutes(broker *ro.Broker, auth *authhttp.Authentication, logger *slog.Logger) *ReadOnlyRoutes {
+func NewReadOnlyRoutes(broker readOnlyOperations, auth *authhttp.Authentication, logger *slog.Logger) *ReadOnlyRoutes {
 	return &ReadOnlyRoutes{broker: broker, auth: auth, logger: logger, connections: map[*websocket.Conn]context.CancelFunc{}, drained: make(chan struct{}), requestTargets: map[string]int{}, bodyTimeout: 5 * time.Second, operationTimeout: ro.OperationTimeout, heartbeatInterval: 5 * time.Second}
 }
 func (h *ReadOnlyRoutes) RegisterRoutes(mux *http.ServeMux) {

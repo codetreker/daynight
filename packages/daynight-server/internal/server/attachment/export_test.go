@@ -15,7 +15,9 @@ func RegisterRoutesWithBodyReadTimeout(mux *http.ServeMux, attachments *attachme
 	handler.registerRoutes(mux, auth.Require)
 }
 
-func DefaultBodyReadTimeout() time.Duration { return newAttachmentHandler(nil, nil).bodyReadTimeout }
+func DefaultBodyReadTimeout() time.Duration {
+	return newAttachmentHandler((*attachmentservice.Attachments)(nil), nil).bodyReadTimeout
+}
 
 type AttachmentOperationsForTest = attachmentOperations
 

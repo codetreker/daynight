@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -46,15 +45,12 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Request-ID", "project-test")
 		if actor != nil {
-			f.tx.WriteIdentityCall = newHTTPTestStoreForPrincipal(t, *actor).WriteIdentityCall
 			f.handler.principal = *actor
 			if actor.Kind == model.SessionCredential {
 				request.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(model.SessionCredential)})
 			} else {
 				request.Header.Set("Authorization", "Bearer "+httpTestToken(actor.Kind))
 			}
-		} else {
-			f.tx.WriteIdentityCall = nil
 		}
 		if origin != "" {
 			request.Header.Set("Origin", origin)
@@ -97,21 +93,14 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	origin = configuredTestConfig().PublicOrigin
 	snapshot := model.WorkerSnapshot{UserID: alice.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}}
 	f.handler.principal = alice
-	f.report(t, id, body, nil, nil, snapshot)
+	f.report(t, id, body, snapshot)
 	actor = &bob
 	origin = ""
 	f.handler.principal = bob
-	calls := 0
-	f.read(t, &workerHTTPReader{t: t, WorkerCall: func(_ context.Context, u, w string, now time.Time) (model.WorkerSnapshot, error) {
-		calls++
-		if u != bob.UserID || w != id || now != f.now {
-			workerHTTPFail(t, "incorrect foreign-owner detail query")
-		}
-		return model.WorkerSnapshot{}, model.ErrNotFound
-	}}, func() { assertProjectError(t, f.send(http.MethodGet, path, ""), http.StatusNotFound, "not_found") })
-	if calls != 1 {
-		t.Fatalf("foreign detail calls: %d", calls)
-	}
+	response := f.getResult(t, id, model.WorkerSnapshot{}, &model.Fault{Code: "not_found", Message: "Worker was not found."}, func() *httptest.ResponseRecorder {
+		return f.send(http.MethodGet, path, "")
+	})
+	assertProjectError(t, response, http.StatusNotFound, "not_found")
 	foreignPage := f.list(t, "/api/v1/me/workers", store.Page{Limit: 50}, nil)
 	if len(foreignPage.Items) != 0 {
 		t.Fatal("other account worker leaked")
@@ -123,7 +112,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	pat.CredentialID = uuid.NewString()
 	actor = &pat
 	f.handler.principal = pat
-	f.report(t, id, body, nil, nil, snapshot)
+	f.report(t, id, body, snapshot)
 	projectID, taskID, claimID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	claim := map[string]any{"claimId": claimID, "state": "active", "userId": alice.UserID, "workerId": id, "machine": map[string]any{"id": uuid.NewString(), "name": "Worker"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString(), "phase": "preparing", "herdr": nil, "nativeSessionId": nil, "claimedAt": f.now.Format(time.RFC3339Nano)}
 	task := model.Task{ID: taskID, ProjectID: projectID, Title: "Hidden after revoke", Status: model.TaskInProgress, Properties: model.TaskProperties{"worker": json.RawMessage(jsonBody(t, claim))}}
@@ -133,7 +122,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	actor = &alice
 	origin = configuredTestConfig().PublicOrigin
 	f.handler.principal = alice
-	f.report(t, id, body, []store.WorkerTaskSource{{Task: task, ProjectName: "Private project"}}, items, active)
+	f.report(t, id, body, active)
 	detail := f.detail(t, id, active)
 	if len(detail.Worker.Tasks) != 1 || detail.Worker.ActiveTaskCount == nil || *detail.Worker.ActiveTaskCount != 1 {
 		t.Fatal("current member task missing")

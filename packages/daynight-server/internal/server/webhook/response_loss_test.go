@@ -54,7 +54,7 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 				t.Fatal(err)
 			}
 			mux := http.NewServeMux()
-			httpwebhook.NewRoutes(&service.Service{DB: f.db, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
+			httpwebhook.NewRoutes(httpwebhook.Adapter{Service: &service.Service{DB: f.db, ConfigurationExpansionAvailable: true}}, authenticator, logger).RegisterRoutes(mux)
 			destination := "https://receiver.example/private-path?token=private-query"
 			fields := createFields(actor, "response-loss", destination)
 			body := encoded(t, fields)

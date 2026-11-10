@@ -1,23 +1,10 @@
 package server
 
 import (
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
-	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
-	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
-	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
-	oauthauthorization "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/authorization"
-	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
-	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
-	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
-	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
-	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
-	webhookhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
-	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -34,7 +21,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
 )
 
 type Handler interface {
@@ -60,55 +46,10 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		endpoint.BeginShutdown()
 		return nil, err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", endpoint)
-	profile := app.OAuthProfile
-	authorization := oauthauthorization.NewAuthorizationHTTP(profile.Authorizations, auth)
-	web := webhttp.New(app.Web)
-	authorization.SetStartErrorPage(web.BadRequestHandler(logger))
-	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants}
-	mux.Handle("/oauth/register", oauthhttp.Handler(profile.Clients))
-	mux.HandleFunc("/oauth/authorize", authorization.Start)
-	mux.HandleFunc("/oauth/token", tokens.Token)
-	mux.HandleFunc("/oauth/revoke", tokens.Revoke)
-	mux.HandleFunc("/api/v1/oauth/requests/{id}", authorization.Inspect)
-	mux.HandleFunc("/api/v1/oauth/requests/{id}/decision", authorization.Decide)
-	oauthhttp.RegisterMetadata(mux, config.PublicOrigin)
-	auth.RegisterRoutes(mux)
-	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
-	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
-	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
-	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
-	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
-	prompthttp.RegisterRoutes(mux, app.Prompts, auth, logger)
+	relay := sessionhttp.NewRoutes(app.Sessions, auth, logger, app.TaskHistory)
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
-	workerReadOnly.RegisterRoutes(mux)
-	taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, auth, logger)
-	sessionhttp.RegisterInspectionRoutes(mux, app.TaskInspection, auth, logger)
-	sessionhttp.RegisterHistoryRoutes(mux, app.TaskHistory, auth, logger)
-	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
-		return tasksearch.Search(ctx, app.TaskSearch, principal, projectID, input)
-	}, auth, logger)
-	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
-	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
-	taskhttp.TaskSyncRoutes(mux, app.TaskSync.Get, auth, logger, config.TaskSyncOverlap)
-	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
-	if app.Webhooks != nil {
-		webhookhttp.NewRoutes(app.Webhooks, auth, logger).RegisterRoutes(mux)
-	}
-	sessions := app.Sessions
-	deletions := app.BotDeletions
-	relay := sessionhttp.NewRoutes(sessions, auth, logger, app.TaskHistory)
-	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
-	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
-	relay.RegisterRoutes(mux)
-	healthRoutes(mux, app.Ready, logger)
-	web.RegisterRoutes(mux, logger)
-	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
-	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
+	deps := httpDependenciesFromApp(app, auth, endpoint, relay, workerReadOnly, logger)
+	return &sessionApplication{Handler: newHTTPHandler(deps, config, logger), relay: relay, service: app.Sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
 }
 
 type sessionApplication struct {

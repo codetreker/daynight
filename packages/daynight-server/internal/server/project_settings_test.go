@@ -13,8 +13,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
@@ -23,23 +23,27 @@ func settingsPath(projectID string) string {
 }
 
 func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
-	transactions := newHTTPTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, transactions, &logs)
+	transactions := newProjectAccessHTTPFixture(t, defaultHTTPPrincipal(), &logs)
+	handler := transactions.handler
 	initial := projectHTTPRecord("a0000000-0000-4000-8000-000000000001", "Settings", "https://example.com/settings.git", "00000000-0000-4000-8000-000000000101")
 	otherModel := projectHTTPRecord("a0000000-0000-4000-8000-000000000002", "Independent settings", "https://example.com/other.git", initial.Ownership.TeamID)
 	if strings.ToUpper(initial.ID) == initial.ID {
 		t.Fatal("settings alias fixture requires a distinct uppercase UUID")
 	}
-	projectHTTPGet(t, transactions, handler.principal, initial)
+	projectHTTPGet(t, transactions.projects, handler.principal, initial)
 	project := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+initial.ID, ""), http.StatusOK)
-	other := projecthttp.ProjectResponse(otherModel)
+	other := settingsHTTPExpectedProject(otherModel)
 	if project.Settings != (api.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) || other.Settings != project.Settings {
 		t.Fatalf("new project settings: %+v, %+v", project, other)
 	}
 	save := func(version int64, minutes int32, before model.Project, result *model.Project) api.Project {
 		t.Helper()
-		settingsHTTPWrite(t, transactions, handler.principal, before, minutes, result, model.ProjectAdmin, nil)
+		returned := before
+		if result != nil {
+			returned = *result
+		}
+		settingsHTTPWrite(t, transactions, handler.principal, before.ID, coreproject.UpdateProjectSettings{Version: version, ExecutionWarningMinutes: minutes}, returned, nil)
 		response := projectRequest(handler, http.MethodPatch, settingsPath(strings.ToUpper(initial.ID)), jsonBody(t, map[string]any{"version": version, "executionWarningMinutes": minutes}))
 		if response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatal("project settings mutation can be cached")
@@ -61,9 +65,9 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 	if unchanged := save(2, 90, firstSaved, nil); unchanged != updated {
 		t.Fatal("same-value settings save changed the version or update timestamp")
 	}
-	settingsHTTPWrite(t, transactions, handler.principal, firstSaved, 90, nil, model.ProjectAdmin, nil)
+	settingsHTTPWrite(t, transactions, handler.principal, firstSaved.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90}, model.Project{}, &model.Fault{Code: "version_conflict", Message: "Project settings version does not match."})
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, settingsPath(initial.ID), `{"version":1,"executionWarningMinutes":90}`), http.StatusConflict, "version_conflict")
-	projectHTTPGet(t, transactions, handler.principal, firstSaved)
+	projectHTTPGet(t, transactions.projects, handler.principal, firstSaved)
 	if read := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+initial.ID, ""), http.StatusOK); read != updated {
 		t.Fatal("project read changed the supplied settings after a stale save")
 	}
@@ -71,7 +75,7 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 	const exact int64 = 9_007_199_254_740_993
 	exactModel := firstSaved
 	exactModel.Settings.Version = exact
-	projectHTTPGet(t, transactions, handler.principal, exactModel)
+	projectHTTPGet(t, transactions.projects, handler.principal, exactModel)
 	exactRead := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+initial.ID, "")
 	if !strings.Contains(exactRead.Body.String(), `"version":9007199254740993`) {
 		t.Fatal("project response rounded its nested settings version")
@@ -86,7 +90,7 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 	if unchanged := save(exact+1, 2147483647, maximum, nil); unchanged != updated {
 		t.Fatal("exact-version no-op mutated the project")
 	}
-	settingsHTTPWrite(t, transactions, handler.principal, maximum, 2147483647, nil, model.ProjectAdmin, nil)
+	settingsHTTPWrite(t, transactions, handler.principal, maximum.ID, coreproject.UpdateProjectSettings{Version: exact, ExecutionWarningMinutes: 2147483647}, model.Project{}, &model.Fault{Code: "version_conflict", Message: "Project settings version does not match."})
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, settingsPath(initial.ID), `{"version":9007199254740993,"executionWarningMinutes":2147483647}`), http.StatusConflict, "version_conflict")
 	minimum := maximum
 	minimum.Settings = model.ProjectSettings{Version: exact + 2, ExecutionWarningMinutes: 1}
@@ -96,7 +100,7 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 		t.Fatalf("minimum supported warning threshold failed: %+v", updated.Settings)
 	}
 
-	projectHTTPGet(t, transactions, handler.principal, minimum)
+	projectHTTPGet(t, transactions.projects, handler.principal, minimum)
 	read := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+initial.ID, ""), http.StatusOK)
 	settingsHTTPProjectList(t, transactions, handler.principal, minimum, otherModel)
 	page := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
@@ -106,7 +110,7 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 	if read != updated || graph.Project != updated || len(page.Items) != 2 || page.Items[0] != updated || page.Items[1] != other {
 		t.Fatalf("settings differ across project/get/list/graph resources: project %+v, page %+v, graph %+v", read, page, graph.Project)
 	}
-	projectHTTPGet(t, transactions, handler.principal, otherModel)
+	projectHTTPGet(t, transactions.projects, handler.principal, otherModel)
 	if readOther := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+other.ID, ""), http.StatusOK); readOther != other {
 		t.Fatal("saving one project's settings changed another project")
 	}
@@ -118,11 +122,11 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 }
 
 func TestProjectSettingsHTTPStrictInputsAndMethods(t *testing.T) {
-	transactions := newHTTPTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, transactions, &logs)
+	transactions := newProjectAccessHTTPFixture(t, defaultHTTPPrincipal(), &logs)
+	handler := transactions.handler
 	modelProject := projectHTTPRecord("a0000000-0000-4000-8000-000000000001", "Settings", "https://example.com/settings.git", "00000000-0000-4000-8000-000000000101")
-	project := projecthttp.ProjectResponse(modelProject)
+	project := settingsHTTPExpectedProject(modelProject)
 	path := settingsPath(project.ID)
 	for _, body := range []string{
 		"", "null", "[]", `"value"`, `true`, `{`, `{"version":`, `{"version":1,}`, `{"version":1} {}`, `{}`,
@@ -182,9 +186,9 @@ func TestProjectSettingsHTTPStrictInputsAndMethods(t *testing.T) {
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, settingsPath("private-invalid-project-secret"), `{"version":1,"executionWarningMinutes":90}`), http.StatusBadRequest, "invalid_input")
 	missing := modelProject
 	missing.ID = "00000000-0000-4000-8000-000000000099"
-	settingsHTTPWrite(t, transactions, handler.principal, missing, 90, nil, model.ProjectAdmin, model.ErrNotFound)
+	settingsHTTPWrite(t, transactions, handler.principal, missing.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90}, model.Project{}, &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound})
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, settingsPath("00000000-0000-4000-8000-000000000099"), `{"version":1,"executionWarningMinutes":90}`), http.StatusNotFound, "not_found")
-	projectHTTPGet(t, transactions, handler.principal, modelProject)
+	projectHTTPGet(t, transactions.projects, handler.principal, modelProject)
 	if read := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID, ""), http.StatusOK); read != project {
 		t.Fatal("project read changed the supplied metadata after rejected input")
 	}
@@ -196,9 +200,9 @@ func TestProjectSettingsHTTPStrictInputsAndMethods(t *testing.T) {
 }
 
 func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
-	transactions := newHTTPTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, transactions, &logs)
+	transactions := newProjectAccessHTTPFixture(t, defaultHTTPPrincipal(), &logs)
+	handler := transactions.handler
 	type credential struct {
 		principal model.Principal
 		value     string
@@ -211,7 +215,7 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	anonymous := credential{}
 	origin := configuredTestConfig().PublicOrigin
 	initial := projectHTTPRecord("00000000-0000-4000-8000-000000000001", "Project settings authorization", "https://example.com/settings", "00000000-0000-4000-8000-000000000101")
-	project := projecthttp.ProjectResponse(initial)
+	project := settingsHTTPExpectedProject(initial)
 	call := func(c credential, method, path, body string, headers map[string]string, status int, code string) []byte {
 		t.Helper()
 		request := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -221,7 +225,7 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 			var failure error
 			principal := c.principal
 			if c.revoked {
-				failure = model.ErrNotFound
+				failure = model.Unauthenticated(model.ErrNotFound)
 				principal = model.Principal{}
 			}
 			settingsHTTPAuthenticate(t, transactions, c.principal.Kind, c.value, principal, failure)
@@ -250,35 +254,34 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	path, body := settingsPath(initial.ID), `{"version":1,"executionWarningMinutes":90}`
 	call(anonymous, http.MethodPatch, path, body, nil, http.StatusUnauthorized, "unauthenticated")
 	call(anonymous, http.MethodDelete, path, body, nil, http.StatusUnauthorized, "unauthenticated")
-	settingsHTTPWrite(t, transactions, outsider.principal, initial, 90, nil, model.ProjectMemberRole, model.ErrNotFound)
+	settingsHTTPWrite(t, transactions, outsider.principal, initial.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90}, model.Project{}, &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound})
 	call(outsider, http.MethodPatch, path, body, map[string]string{"Origin": origin}, http.StatusNotFound, "not_found")
-	settingsHTTPWrite(t, transactions, member.principal, initial, 90, nil, model.ProjectMemberRole, nil)
+	settingsHTTPWrite(t, transactions, member.principal, initial.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90}, model.Project{}, &model.Fault{Code: "forbidden", Message: "Project administrator access is required."})
 	call(member, http.MethodPatch, path, body, map[string]string{"Origin": origin}, http.StatusForbidden, "forbidden")
 	for _, invalidOrigin := range []string{"", "null", "https://foreign.example"} {
 		call(admin, http.MethodPatch, path, body, map[string]string{"Origin": invalidOrigin}, http.StatusForbidden, "forbidden")
 	}
-	projectHTTPGet(t, transactions, member.principal, initial)
+	projectHTTPGet(t, transactions.projects, member.principal, initial)
 	if read := identityDecode[api.Project](t, call(member, http.MethodGet, "/api/v1/projects/"+initial.ID, "", nil, http.StatusOK, "")); read != project {
 		t.Fatal("ordinary member read changed the supplied project settings")
 	}
 	access := projectHTTPCount(t, 1)
-	projectHTTPRead(t, transactions, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+	transactions.projects.GetWithAccessCall = func(ctx context.Context, p model.Principal, id string) (model.Project, model.ProjectAccess, error) {
 		access()
-		projectHTTPCheck(t, p, outsider.principal)
-		projectHTTPCheck(t, id, initial.ID)
-		return model.ProjectAccess{}, model.ErrNotFound
-	}})
+		transactions.require(ctx, p, outsider.principal, id, initial.ID)
+		return model.Project{}, model.ProjectAccess{}, &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound}
+	}
 	call(outsider, http.MethodGet, "/api/v1/projects/"+initial.ID, "", nil, http.StatusNotFound, "not_found")
 	firstSaved := initial
 	firstSaved.Settings = model.ProjectSettings{Version: 2, ExecutionWarningMinutes: 90}
 	firstSaved.UpdatedAt = initial.UpdatedAt.Add(time.Second)
-	settingsHTTPWrite(t, transactions, admin.principal, initial, 90, &firstSaved, model.ProjectAdmin, nil)
+	settingsHTTPWrite(t, transactions, admin.principal, initial.ID, coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90}, firstSaved, nil)
 	data := call(admin, http.MethodPatch, path, body, map[string]string{"Origin": origin, "X-Request-ID": "settings-admin-cookie"}, http.StatusOK, "")
 	updated := identityDecode[api.Project](t, data)
 	if updated.Settings.Version != 2 || updated.Settings.ExecutionWarningMinutes != 90 {
 		t.Fatalf("administrator settings write failed: %+v", updated)
 	}
-	projectHTTPGet(t, transactions, member.principal, firstSaved)
+	projectHTTPGet(t, transactions.projects, member.principal, firstSaved)
 	if read := identityDecode[api.Project](t, call(member, http.MethodGet, "/api/v1/projects/"+initial.ID, "", nil, http.StatusOK, "")); read != updated {
 		t.Fatal("saved settings did not reach another authorized client")
 	}
@@ -287,7 +290,7 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	secondSaved := firstSaved
 	secondSaved.Settings = model.ProjectSettings{Version: 3, ExecutionWarningMinutes: 95}
 	secondSaved.UpdatedAt = initial.UpdatedAt.Add(2 * time.Second)
-	settingsHTTPWrite(t, transactions, adminPAT.principal, firstSaved, 95, &secondSaved, model.ProjectAdmin, nil)
+	settingsHTTPWrite(t, transactions, adminPAT.principal, firstSaved.ID, coreproject.UpdateProjectSettings{Version: 2, ExecutionWarningMinutes: 95}, secondSaved, nil)
 	data = call(adminPAT, http.MethodPatch, path, `{"version":2,"executionWarningMinutes":95}`, map[string]string{"Origin": "https://foreign.example", "X-Request-ID": "settings-admin-pat"}, http.StatusOK, "")
 	updated = identityDecode[api.Project](t, data)
 	if updated.Settings.Version != 3 || updated.Settings.ExecutionWarningMinutes != 95 {
@@ -295,16 +298,16 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	}
 	memberPAT := credential{principal: member.principal, value: secret.Random("dnpat_")}
 	memberPAT.principal.Kind, memberPAT.principal.CredentialID = model.PATCredential, "b6666666-6666-4666-8666-666666666666"
-	settingsHTTPWrite(t, transactions, memberPAT.principal, secondSaved, 10, nil, model.ProjectMemberRole, nil)
+	settingsHTTPWrite(t, transactions, memberPAT.principal, secondSaved.ID, coreproject.UpdateProjectSettings{Version: 3, ExecutionWarningMinutes: 10}, model.Project{}, &model.Fault{Code: "forbidden", Message: "Project administrator access is required."})
 	call(memberPAT, http.MethodPatch, path, `{"version":3,"executionWarningMinutes":10}`, nil, http.StatusForbidden, "forbidden")
-	projectHTTPGet(t, transactions, memberPAT.principal, secondSaved)
+	projectHTTPGet(t, transactions.projects, memberPAT.principal, secondSaved)
 	if read := identityDecode[api.Project](t, call(memberPAT, http.MethodGet, "/api/v1/projects/"+initial.ID, "", nil, http.StatusOK, "")); read != updated {
 		t.Fatal("member PAT could not read authoritative settings or changed them")
 	}
 	revokedAdmin := adminPAT
 	revokedAdmin.revoked = true
 	call(revokedAdmin, http.MethodPatch, path, `{"version":3,"executionWarningMinutes":10}`, nil, http.StatusUnauthorized, "unauthenticated")
-	projectHTTPGet(t, transactions, member.principal, secondSaved)
+	projectHTTPGet(t, transactions.projects, member.principal, secondSaved)
 	if read := identityDecode[api.Project](t, call(member, http.MethodGet, "/api/v1/projects/"+initial.ID, "", nil, http.StatusOK, "")); !reflect.DeepEqual(read, updated) {
 		t.Fatal("member read changed the supplied settings after rejected writes")
 	}

@@ -12,7 +12,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -83,25 +84,31 @@ func TestTaskHTTPAssignmentStrictInputsAndNullableResources(t *testing.T) {
 	other, outsider := "c6666666-6666-4666-8666-666666666666", "c7777777-7777-4777-8777-777777777777"
 	declared := f.target
 	declared.Title, declared.AssignedTo = "Assignment default", nil
-	task, response := assignmentHTTPCreate(f, declared, `{"title":"Assignment default","status":"todo"}`, nil)
+	task, response := assignmentHTTPCreate(f, declared, `{"title":"Assignment default","status":"todo"}`, taskcore.CreateTask{Title: "Assignment default", Status: platformHTTPPointer(model.TaskTodo), DependsOn: []string{}, Properties: model.TaskProperties{}})
 	if task.AssignedTo != nil {
 		t.Fatalf("default assignment: %#v", task)
 	}
 	assertHTTPAssignmentResources(t, response.Body.Bytes(), "", map[string]*string{task.ID: nil})
-	f.store.ReadSnapshotCall, f.store.WriteProjectCall = nil, nil
+	clearMutationHTTPOperations(f)
 	for _, invalid := range []struct {
 		value     string
 		readsTask bool
-	}{{`""`, true}, {`"invalid"`, true}, {`" ` + f.principal.UserID + `"`, true}, {`true`, false}, {`0`, false}, {`[]`, false}, {`{}`, false}} {
+		assigned  string
+	}{{`""`, true, ""}, {`"invalid"`, true, "invalid"}, {`" ` + f.principal.UserID + `"`, true, " " + f.principal.UserID}, {`true`, false, ""}, {`0`, false, ""}, {`[]`, false, ""}, {`{}`, false, ""}} {
 		value := invalid.value
-		f.store.WriteProjectCall = nil
+		clearMutationHTTPOperations(f)
+		if invalid.readsTask {
+			assigned := invalid.assigned
+			expectMutationHTTPCreate(f, taskcore.CreateTask{Title: "Invalid assignment", AssignedTo: &assigned, DependsOn: []string{}, Properties: model.TaskProperties{}}, model.Task{}, mutationHTTPFault("invalid_input"))
+		}
 		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Invalid assignment","assignedTo":`+value+`}`), http.StatusBadRequest, "invalid_input")
 		if invalid.readsTask {
-			assignmentHTTPMutation(f, &task, nil, nil, nil, false, nil, nil)
+			assigned := invalid.assigned
+			expectMutationHTTPUpdate(f, task.ID, taskcore.UpdateTask{Version: 1, AssignedTo: platformHTTPPointer(&assigned)}, model.Task{}, mutationHTTPFault("invalid_input"))
 		}
 		assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(assignmentHTTPAPI(t, task)), `{"version":1,"assignedTo":`+value+`}`), http.StatusBadRequest, "invalid_input")
 	}
-	f.store.WriteProjectCall = nil
+	clearMutationHTTPOperations(f)
 	for _, body := range []string{`{"title":"Duplicate","assignedTo":null,"assignedTo":null}`, `{"title":"Wrong case","AssignedTo":null}`} {
 		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), body), http.StatusBadRequest, "invalid_input")
 	}
@@ -109,29 +116,23 @@ func TestTaskHTTPAssignmentStrictInputsAndNullableResources(t *testing.T) {
 		assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(assignmentHTTPAPI(t, task)), body), http.StatusBadRequest, "invalid_input")
 	}
 	for _, id := range []string{outsider, uuid.NewString()} {
-		invalid := declared
-		invalid.Title, invalid.AssignedTo = "Invalid target", &id
-		values := platformHTTPValues(invalid)
-		assignmentHTTPMutation(f, nil, &values, nil, nil, true, &id, model.ErrNotFound)
+		expectMutationHTTPCreate(f, taskcore.CreateTask{Title: "Invalid target", Status: platformHTTPPointer(model.TaskTodo), AssignedTo: &id, DependsOn: []string{}, Properties: model.TaskProperties{}}, model.Task{}, mutationHTTPFault("invalid_input"))
 		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"status": "todo", "title": "Invalid target", "assignedTo": id})), http.StatusBadRequest, "invalid_input")
-		invalid = task
-		invalid.AssignedTo, invalid.Title = &id, "Must not partly save"
-		values = platformHTTPValues(invalid)
-		assignmentHTTPMutation(f, &task, &values, nil, nil, true, &id, model.ErrNotFound)
+		expectMutationHTTPUpdate(f, task.ID, taskcore.UpdateTask{Version: task.Version, AssignedTo: platformHTTPPointer(&id), Title: platformHTTPPointer("Must not partly save")}, model.Task{}, mutationHTTPFault("invalid_input"))
 		assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(assignmentHTTPAPI(t, task)), jsonBody(t, map[string]any{"version": task.Version, "assignedTo": id, "title": "Must not partly save"})), http.StatusBadRequest, "invalid_input")
 	}
 	f.expectRead(task)
 	if !reflect.DeepEqual(readHTTPTask(t, f.handler, assignmentHTTPAPI(t, task)), assignmentHTTPAPI(t, task)) {
 		t.Fatal("invalid assignment changed declared Task")
 	}
-	assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": nil}, nil, false)
+	assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": nil}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer[*string](nil)})
 	for _, target := range []any{nil, strings.ToUpper(f.principal.UserID)} {
 		created := declared
 		created.Title = "Explicit assignment"
 		if target != nil {
 			created.AssignedTo = &f.principal.UserID
 		}
-		row, read := assignmentHTTPCreate(f, created, jsonBody(t, map[string]any{"status": "todo", "title": "Explicit assignment", "assignedTo": target}), nil)
+		row, read := assignmentHTTPCreate(f, created, jsonBody(t, map[string]any{"status": "todo", "title": "Explicit assignment", "assignedTo": target}), taskcore.CreateTask{Title: "Explicit assignment", Status: platformHTTPPointer(model.TaskTodo), AssignedTo: assignmentHTTPStringInput(target), DependsOn: []string{}, Properties: model.TaskProperties{}})
 		if !reflect.DeepEqual(row.AssignedTo, created.AssignedTo) || row.AllowAgents {
 			t.Fatalf("creation assignment: %#v", row)
 		}
@@ -140,36 +141,36 @@ func TestTaskHTTPAssignmentStrictInputsAndNullableResources(t *testing.T) {
 	after := platformHTTPResult(task, task)
 	after.AllowAgents, after.Description, after.RequiredPlatform = true, "Preserve materials", assignmentPlatformPointer(model.PlatformLinux)
 	after.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Evidence"}]`)}
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true, "description": "Preserve materials", "requiredPlatform": "linux", "properties": map[string]any{"pullRequests": []any{map[string]any{"url": "opaque\x00", "title": "Evidence"}}}}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true, "description": "Preserve materials", "requiredPlatform": "linux", "properties": map[string]any{"pullRequests": []any{map[string]any{"url": "opaque\x00", "title": "Evidence"}}}}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(true), Description: platformHTTPPointer("Preserve materials"), RequiredPlatform: platformHTTPPointer(assignmentPlatformPointer(model.PlatformLinux)), Properties: model.TaskPropertiesPatch{"pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Evidence"}]`)}})
 	before := task
 	after = platformHTTPResult(task, task)
 	after.AssignedTo, after.AllowAgents = &f.principal.UserID, false
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": strings.ToUpper(f.principal.UserID), "allowAgents": true}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": strings.ToUpper(f.principal.UserID), "allowAgents": true}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(platformHTTPPointer(strings.ToUpper(f.principal.UserID))), AllowAgents: platformHTTPPointer(true)})
 	assertHTTPAssignmentTransition(t, assignmentHTTPAPI(t, before), assignmentHTTPAPI(t, task), &f.principal.UserID)
 	after = platformHTTPResult(task, task)
 	after.Description = "Omitted assignment"
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"description": "Omitted assignment"}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"description": "Omitted assignment"}, taskcore.UpdateTask{Description: platformHTTPPointer("Omitted assignment")})
 	if task.AssignedTo == nil || *task.AssignedTo != f.principal.UserID {
 		t.Fatal("omitted assignment cleared target")
 	}
 	after = platformHTTPResult(task, task)
 	after.AllowAgents = true
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, nil, true)
-	assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": strings.ToUpper(f.principal.UserID)}, nil, false)
-	assignmentHTTPMutation(f, &task, nil, nil, nil, false, nil, nil)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(true)})
+	assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": strings.ToUpper(f.principal.UserID)}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(platformHTTPPointer(strings.ToUpper(f.principal.UserID)))})
+	expectMutationHTTPUpdate(f, task.ID, taskcore.UpdateTask{Version: task.Version - 1, AssignedTo: platformHTTPPointer(&f.principal.UserID)}, model.Task{}, mutationHTTPFault("version_conflict"))
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(assignmentHTTPAPI(t, task)), jsonBody(t, map[string]any{"version": task.Version - 1, "assignedTo": f.principal.UserID})), http.StatusConflict, "version_conflict")
 	before = task
 	after = platformHTTPResult(task, task)
 	after.AssignedTo, after.AllowAgents = &other, false
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": other, "allowAgents": true}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": other, "allowAgents": true}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(&other), AllowAgents: platformHTTPPointer(true)})
 	assertHTTPAssignmentTransition(t, assignmentHTTPAPI(t, before), assignmentHTTPAPI(t, task), &other)
 	after = platformHTTPResult(task, task)
 	after.AllowAgents = true
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(true)})
 	before = task
 	after = platformHTTPResult(task, task)
 	after.AssignedTo, after.AllowAgents = nil, false
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": nil}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": nil}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer[*string](nil)})
 	assertHTTPAssignmentTransition(t, assignmentHTTPAPI(t, before), assignmentHTTPAPI(t, task), nil)
 	f.expectRead(task)
 	read := projectRequest(f.handler, http.MethodGet, taskPath(assignmentHTTPAPI(t, task)), "")
@@ -184,10 +185,10 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			other := "c6666666-6666-4666-8666-666666666666"
 			declared := f.target
 			declared.Title = "Executing assignment"
-			task, _ := assignmentHTTPCreate(f, declared, jsonBody(t, map[string]any{"status": "todo", "title": declared.Title, "assignedTo": f.principal.UserID}), nil)
+			task, _ := assignmentHTTPCreate(f, declared, jsonBody(t, map[string]any{"status": "todo", "title": declared.Title, "assignedTo": f.principal.UserID}), taskcore.CreateTask{Title: declared.Title, Status: platformHTTPPointer(model.TaskTodo), AssignedTo: &f.principal.UserID, DependsOn: []string{}, Properties: model.TaskProperties{}})
 			after := platformHTTPResult(task, task)
 			after.AllowAgents = true
-			task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, nil, true)
+			task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(true)})
 			if workerExecution {
 				body := workerClaimBody(task.Version)
 				claimedAt := task.UpdatedAt.Add(time.Second)
@@ -197,8 +198,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				after.Status, after.Version, after.Ready = model.TaskInProgress, task.Version+1, false
 				after.StartedAt, after.UpdatedAt = copyTaskHTTPPointer(&claimedAt), claimedAt
 				after.Properties = workerHTTPProperties(t, task.Properties, &claim)
-				values := workerHTTPWriteValues(after)
-				plan := expectWorkerHTTPWrite(t, f.store, task, f.principal, model.ProjectAdmin, &values, after, &claimedAt)
+				plan := expectWorkerHTTPClaim(t, f.tasks, task, f.principal, workerHTTPClaimInput(body), after, nil)
 				got := claimHTTPWorker(t, f.handler, assignmentHTTPAPI(t, task), body)
 				plan.check()
 				platformHTTPCheck(t, got, assignmentHTTPAPI(t, after))
@@ -209,15 +209,12 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			if task.AssignedTo == nil || *task.AssignedTo != f.principal.UserID {
 				t.Fatal("start discarded assignment")
 			}
-			assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": f.principal.UserID}, nil, false)
-			assignmentHTTPMutation(f, &task, nil, nil, nil, false, nil, nil)
+			assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": f.principal.UserID}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(&f.principal.UserID)})
+			expectMutationHTTPStatus(f, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskInProgress}, task, nil)
 			same := setHTTPTask(t, f.handler, assignmentHTTPAPI(t, task), "in_progress")
 			platformHTTPCheck(t, same, assignmentHTTPAPI(t, task))
 			for _, target := range []*string{nil, &other} {
-				candidate := task
-				candidate.AssignedTo, candidate.Title = target, "Must not save"
-				values := platformHTTPValues(candidate)
-				assignmentHTTPMutation(f, &task, &values, nil, nil, true, nil, nil)
+				expectMutationHTTPUpdate(f, task.ID, taskcore.UpdateTask{Version: task.Version, AssignedTo: platformHTTPPointer(copyTaskHTTPPointer(target)), Title: platformHTTPPointer("Must not save")}, model.Task{}, mutationHTTPFault("invalid_transition"))
 				assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(assignmentHTTPAPI(t, task)), jsonBody(t, map[string]any{"version": task.Version, "assignedTo": target, "title": "Must not save"})), http.StatusConflict, "invalid_transition")
 				f.expectRead(task)
 				platformHTTPCheck(t, readHTTPTask(t, f.handler, assignmentHTTPAPI(t, task)), assignmentHTTPAPI(t, task))
@@ -234,10 +231,8 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 					t.Fatal(err)
 				}
 				after.Properties = model.TaskProperties{"worker": raw}
-				values := workerHTTPWriteValues(after)
-				plan := expectWorkerHTTPWrite(t, f.store, task, f.principal, model.ProjectAdmin, &values, after, nil)
+				expectMutationHTTPStatus(f, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &claim.ClaimID}, after, nil)
 				got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPut, taskPath(assignmentHTTPAPI(t, task))+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: "done", ClaimID: &claim.ClaimID})), http.StatusOK)
-				plan.check()
 				platformHTTPCheck(t, got, assignmentHTTPAPI(t, after))
 				task = after
 			} else {
@@ -246,7 +241,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			before := task
 			after = platformHTTPResult(task, task)
 			after.AssignedTo, after.AllowAgents = &other, false
-			task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": other}, nil, true)
+			task = assignmentHTTPUpdate(f, task, after, map[string]any{"assignedTo": other}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(&other)})
 			assertHTTPAssignmentTransition(t, assignmentHTTPAPI(t, before), assignmentHTTPAPI(t, task), &other)
 			if !reflect.DeepEqual(apiWorker(t, assignmentHTTPAPI(t, task).Properties), apiWorker(t, assignmentHTTPAPI(t, before).Properties)) {
 				t.Fatal("completed assignment changed claim history")
@@ -260,24 +255,21 @@ func TestTaskHTTPAssignmentRetainsFormerMember(t *testing.T) {
 	former := "c6666666-6666-4666-8666-666666666666"
 	task := f.target
 	task.Title, task.AssignedTo = "Retained responsibility", &former
-	task, _ = assignmentHTTPCreate(f, task, jsonBody(t, map[string]any{"status": "todo", "title": task.Title, "assignedTo": former}), nil)
+	task, _ = assignmentHTTPCreate(f, task, jsonBody(t, map[string]any{"status": "todo", "title": task.Title, "assignedTo": former}), taskcore.CreateTask{Title: task.Title, Status: platformHTTPPointer(model.TaskTodo), AssignedTo: &former, DependsOn: []string{}, Properties: model.TaskProperties{}})
 	after := platformHTTPResult(task, task)
 	after.AllowAgents = true
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, nil, true)
-	assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": strings.ToUpper(former)}, nil, false)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"allowAgents": true}, taskcore.UpdateTask{AllowAgents: platformHTTPPointer(true)})
+	assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": strings.ToUpper(former)}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(platformHTTPPointer(strings.ToUpper(former)))})
 	after = platformHTTPResult(task, task)
 	after.Description = "Former member retained"
-	task = assignmentHTTPUpdate(f, task, after, map[string]any{"description": "Former member retained"}, nil, true)
+	task = assignmentHTTPUpdate(f, task, after, map[string]any{"description": "Former member retained"}, taskcore.UpdateTask{Description: platformHTTPPointer("Former member retained")})
 	if task.AssignedTo == nil || *task.AssignedTo != former || !task.AllowAgents {
 		t.Fatal("metadata discarded former assignment")
 	}
 	unassigned := f.target
 	unassigned.Title, unassigned.AssignedTo = "Cannot select former member", nil
-	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), nil)
-	candidate := unassigned
-	candidate.AssignedTo = &former
-	values := platformHTTPValues(candidate)
-	assignmentHTTPMutation(f, &unassigned, &values, nil, nil, true, &former, model.ErrNotFound)
+	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), taskcore.CreateTask{Title: unassigned.Title, Status: platformHTTPPointer(model.TaskTodo), DependsOn: []string{}, Properties: model.TaskProperties{}})
+	expectMutationHTTPUpdate(f, unassigned.ID, taskcore.UpdateTask{Version: unassigned.Version, AssignedTo: platformHTTPPointer(&former)}, model.Task{}, mutationHTTPFault("invalid_input"))
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(assignmentHTTPAPI(t, unassigned)), jsonBody(t, map[string]any{"version": unassigned.Version, "assignedTo": former})), http.StatusBadRequest, "invalid_input")
 	f.expectRead(unassigned)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, assignmentHTTPAPI(t, unassigned)), assignmentHTTPAPI(t, unassigned))
@@ -287,20 +279,20 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 	f := newTaskHTTPFixture(t)
 	unassigned := f.target
 	unassigned.Title, unassigned.AssignedTo = "Unassigned prerequisite", nil
-	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), nil)
+	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), taskcore.CreateTask{Title: unassigned.Title, Status: platformHTTPPointer(model.TaskTodo), DependsOn: []string{}, Properties: model.TaskProperties{}})
 	assigned := f.target
 	assigned.Title = "Assigned successor"
 	assigned.DependsOn, assigned.BlockedBy = []string{unassigned.ID}, []string{unassigned.ID}
 	assigned.Ready = false
-	assigned, _ = assignmentHTTPCreate(f, assigned, jsonBody(t, map[string]any{"status": "todo", "title": assigned.Title, "assignedTo": f.principal.UserID, "dependsOn": []string{unassigned.ID}}), []model.Task{unassigned})
+	assigned, _ = assignmentHTTPCreate(f, assigned, jsonBody(t, map[string]any{"status": "todo", "title": assigned.Title, "assignedTo": f.principal.UserID, "dependsOn": []string{unassigned.ID}}), taskcore.CreateTask{Title: assigned.Title, Status: platformHTTPPointer(model.TaskTodo), AssignedTo: &f.principal.UserID, DependsOn: []string{unassigned.ID}, Properties: model.TaskProperties{}})
 	rows := []model.Task{unassigned, assigned}
-	facts := []model.TaskAssigneeFact{{UserID: f.principal.UserID, ProfileID: &f.principal.UserID, HasProjectAccess: true, Qualified: true}}
+	facts := []model.TaskAssigneeVersion{{UserID: f.principal.UserID, Version: taskHTTPAdminProfileVersion, HasProjectAccess: true}}
 	check := func(expected map[string]*string, delta string) {
-		f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: rows}})
+		f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}, taskservice.TaskPage{Items: rows}, nil)
 		response := projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), "")
 		decodeResponse[api.TaskPage](t, response, http.StatusOK)
 		assertHTTPAssignmentResources(t, response.Body.Bytes(), "items", expected)
-		f.expectGraph(unassigned.ID, []model.GraphTask{assignmentHTTPGraphRow(rows[0]), assignmentHTTPGraphRow(rows[1])})
+		f.expectGraph(unassigned.ID, []model.GraphTask{assignmentHTTPGraphRow(rows[0]), assignmentHTTPGraphRow(rows[1])}, model.TaskGraphSummary{Total: 2, Todo: 2, Ready: 1, Blocked: 1})
 		response = projectRequest(f.handler, http.MethodGet, graphPath(f.project.ID, unassigned.ID), "")
 		if response.Code != http.StatusOK {
 			t.Fatalf("Graph: %d %s", response.Code, response.Body)
@@ -332,11 +324,19 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 	baseline := decodeResponse[api.TaskSync](t, projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID), ""), http.StatusOK)
 	after := platformHTTPResult(unassigned, unassigned)
 	after.AssignedTo = &f.principal.UserID
-	unassigned = assignmentHTTPUpdate(f, unassigned, after, map[string]any{"assignedTo": f.principal.UserID}, nil, true)
+	unassigned = assignmentHTTPUpdate(f, unassigned, after, map[string]any{"assignedTo": f.principal.UserID}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer(&f.principal.UserID)})
 	after = platformHTTPResult(assigned, assigned)
 	after.AssignedTo = nil
-	assigned = assignmentHTTPUpdate(f, assigned, after, map[string]any{"assignedTo": nil}, []model.Task{unassigned}, true)
+	assigned = assignmentHTTPUpdate(f, assigned, after, map[string]any{"assignedTo": nil}, taskcore.UpdateTask{AssignedTo: platformHTTPPointer[*string](nil)})
 	rows = []model.Task{unassigned, assigned}
 	query := "?epoch=" + baseline.Epoch + "&since=" + url.QueryEscape(baseline.ObservedAt.Format(time.RFC3339Nano))
 	check(map[string]*string{unassigned.ID: &f.principal.UserID, assigned.ID: nil}, query)
+}
+
+func assignmentHTTPStringInput(value any) *string {
+	if value == nil {
+		return nil
+	}
+	text := value.(string)
+	return &text
 }

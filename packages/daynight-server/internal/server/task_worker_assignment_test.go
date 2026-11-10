@@ -20,7 +20,7 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 		body := workerClaimBody(current.Version)
 		var returned model.Task
 		if assigned == nil || *assigned != f.principal.UserID {
-			plan := expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, nil, model.Task{}, nil)
+			plan := expectWorkerHTTPClaim(t, f.tasks, current, f.principal, workerHTTPClaimInput(body), model.Task{}, &model.Fault{Code: "invalid_transition", Message: "Task must be assigned to the authenticated user for automatic execution."})
 			assertProjectError(t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim", jsonBody(t, body)), http.StatusConflict, "invalid_transition")
 			plan.check()
 			f.expectRead(current)
@@ -43,10 +43,10 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 		returned.Status, returned.Version, returned.Ready = model.TaskInProgress, current.Version+1, false
 		returned.StartedAt, returned.UpdatedAt = &claimedAt, claimedAt
 		returned.Properties = workerHTTPProperties(t, current.Properties, &worker)
-		values := workerHTTPWriteValues(returned)
-		plan := expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, returned, &claimedAt)
+		plan := expectWorkerHTTPClaim(t, f.tasks, current, f.principal, workerHTTPClaimInput(body), returned, nil)
 		claimed := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim", jsonBody(t, body)), http.StatusOK)
 		plan.check()
+		assertWorkerHTTPTask(t, claimed, returned)
 		if claimed.Status != "in_progress" || !reflect.DeepEqual(claimed.AssignedTo, assigned) || apiWorker(t, claimed.Properties).UserID != f.principal.UserID {
 			t.Fatalf("claim did not use authenticated assignee: %#v", claimed)
 		}

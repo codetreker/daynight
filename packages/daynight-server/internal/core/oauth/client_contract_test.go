@@ -84,7 +84,7 @@ func TestFreezeClientPreservesCompleteValidatedMetadata(t *testing.T) {
 				t.Fatalf("frozen client = %+v, %v; want %+v", got, err, want)
 			}
 			if tc.name == "dcr" {
-				got, err := FreezeClient(tc.id, tc.name, metadata, tc.deadline, "https://attacker.example/cb")
+				got, err := FreezeClient(tc.id, tc.name, metadata, tc.deadline, "https://evil.example/callback")
 				if !errors.Is(err, ErrInvalidClient) || !reflect.DeepEqual(got, ValidatedClient{}) {
 					t.Fatalf("attacker redirect = %+v, %v", got, err)
 				}

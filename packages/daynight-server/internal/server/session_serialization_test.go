@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
@@ -56,10 +57,25 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 		message["batchId"] = uuid.NewString()
 		message["sourceEpoch"] = epoch
 		message["events"] = []any{map[string]any{"sourceSeq": seq, "kind": "timeline_upsert", "payload": entry}}
+		ack := f.frame(snapshot, "events_ack")
+		ack["batchId"], ack["sourceEpoch"], ack["lastAckedSourceSeq"], ack["lastEventSeq"] = message["batchId"], epoch, seq, seq
+		expected := sp.ControllerMessage{ControllerFence: snapshot.ControllerFence, Type: "events", Protocol: sp.Protocol, BatchID: message["batchId"].(string), SourceEpoch: epoch, Events: []sp.SourceEvent{{SourceSeq: seq, Kind: "timeline_upsert", Payload: json.RawMessage(sessionNativeJSON(t, entry))}}}
+		var after func()
+		if seq == "1" {
+			public := f.frame(snapshot, "timeline_upsert")
+			delete(public, "type")
+			public["eventSeq"], public["historyEpoch"], public["kind"], public["payload"] = "1", snapshot.HistoryEpoch, "timeline_upsert", sessionHTTPCopy(entry)
+			after = func() {
+				f.mu.Lock()
+				f.browserFrames = append(f.browserFrames, []map[string]any{public})
+				f.mu.Unlock()
+			}
+		}
+		f.expectRawHandle(t, expected, sessionNativeJSON(t, message), ack, after)
 		sessionNativeWrite(t, controller, message)
-		ack := sessionWSKind(t, controller, "events_ack")
-		if string(ack["lastAckedSourceSeq"]) != "\""+seq+"\"" {
-			t.Fatalf("source did not advance: %s", ack["lastAckedSourceSeq"])
+		actualAck := sessionWSKind(t, controller, "events_ack")
+		if string(actualAck["lastAckedSourceSeq"]) != "\""+seq+"\"" {
+			t.Fatalf("source did not advance: %s", actualAck["lastAckedSourceSeq"])
 		}
 		parsed, _ := strconv.ParseInt(seq, 10, 64)
 		f.supplySource(parsed)
@@ -70,6 +86,28 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 		t.Fatalf("wire event expanded: %d", len(frame["event"]))
 	}
 	online := &resourceTestHandler{Handler: f.application, token: f.handler.token, principal: f.handler.principal}
+	contentID := uuid.NewString()
+	contentReceived := make(chan struct{})
+	expectedPage := map[string]any{"sessionId": snapshot.SessionID, "lastEventSeq": "1", "historyEpoch": snapshot.HistoryEpoch, "items": []any{sessionHTTPCopy(entry)}, "resources": []any{}, "beforeCursor": nil, "afterCursor": nil, "hasMoreBefore": false, "hasMoreAfter": false}
+	timelineCalled := sessionHTTPOnce(t)
+	f.ops.Timeline = func(ctx context.Context, principal model.Principal, project, task, id, direction, cursor string, limit int) (map[string]any, error) {
+		timelineCalled()
+		f.requireBrowser(ctx, principal, project, task, id)
+		if direction != "tail" || cursor != "" || limit != 10 {
+			unexpectedHTTPCall(t, "Timeline HTTP query")
+		}
+		request := f.frame(snapshot, "content_request")
+		request["requestId"], request["historyEpoch"], request["kind"], request["direction"], request["cursor"], request["limit"] = contentID, snapshot.HistoryEpoch, "timeline", "tail", nil, 10
+		f.mu.Lock()
+		f.pollFrames = append(f.pollFrames, []map[string]any{request})
+		f.mu.Unlock()
+		select {
+		case <-contentReceived:
+			return sessionHTTPCopy(expectedPage), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	done := make(chan *httptest.ResponseRecorder, 1)
 	requestContext, cancelRequest := context.WithCancel(t.Context())
 	finished := make(chan struct{})
@@ -100,6 +138,9 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 	response["sourceThrough"] = "1"
 	response["error"] = nil
 	response["result"] = map[string]any{"kind": "timeline", "historyEpoch": historyEpoch, "items": []any{entry}, "resources": []any{}, "beforeCursor": nil, "afterCursor": nil, "hasMoreBefore": false, "hasMoreAfter": false}
+	expectedResult := sp.ContentResult{Kind: "timeline", HistoryEpoch: historyEpoch, Items: []sp.TimelineEntry{sessionHTTPTimelineEntry(t, entry)}, Resources: []sp.Resource{}, BeforeCursor: nil, AfterCursor: nil, HasMoreBefore: false, HasMoreAfter: false}
+	expectedResponse := sp.ControllerMessage{ControllerFence: snapshot.ControllerFence, Type: "content_response", Protocol: sp.Protocol, RequestID: requestID, SourceThrough: "1", ContentResult: &expectedResult}
+	f.expectRawHandle(t, expectedResponse, sessionNativeJSON(t, response), nil, func() { close(contentReceived) })
 	sessionNativeWrite(t, controller, response)
 	page := await(t, done)
 	if page.Code != http.StatusOK || page.Body.Len() > 500000 || !bytes.Contains(page.Body.Bytes(), []byte(strings.Repeat("<", 100))) {
@@ -117,7 +158,9 @@ func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer
 	controller.SetReadLimit(sp.MaxFrameBytes)
 	native := "offer-session"
 	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
-	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
+	syncMessage := sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}
+	f.expectHandle(t, syncMessage, f.frame(snapshot, "sync_ack"))
+	sessionWSWrite(t, controller, syncMessage)
 	sessionWSKind(t, controller, "sync_ack")
 	f.supplyState(state)
 	path := f.base + "/" + snapshot.SessionID

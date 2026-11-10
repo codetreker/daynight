@@ -220,6 +220,111 @@ func TestHistoryProjectionSeparatesDisclosureFromSendEligibility(t *testing.T) {
 			}
 		})
 	}
+	t.Run("maintenance list", testMaintenanceHistoryProjection)
+}
+
+func testMaintenanceHistoryProjection(t *testing.T) {
+	for _, generation := range []int64{1, 2} {
+		t.Run(fmt.Sprint(generation), func(t *testing.T) {
+			f := newHistoryScenario(t)
+			ctx := t.Context()
+			now := retentionTestNow
+			f.principal = model.Principal{Kind: model.SessionCredential, UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222"}
+			f.owner = Owner{Kind: "personal", ID: f.principal.UserID}
+			const project = "c3333333-3333-4333-8333-333333333333"
+			const endpointID = "11111111-1111-4111-9111-111111111111"
+			const eventID = "73333333-3333-4333-8333-333333333333"
+			const taskID = "74444444-4444-4444-8444-444444444444"
+			const deliveryID = "75555555-5555-4555-8555-555555555555"
+			body, err := protocol.Render(eventID, protocol.Fact{Type: protocol.Created, ProjectID: project, TaskID: taskID, TaskVersion: 1, Status: "todo", OccurredAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(body)
+			match := store.WebhookCapturedMatch{SubscriptionID: "44444444-4444-4444-8444-444444444444", BindingID: "55555555-5555-4555-9555-555555555555", ProjectID: project, EventType: "task.created", AuthorizationEpoch: 1}
+			matchDigest, err := MatchDigest([]store.WebhookCapturedMatch{match})
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := wm.Endpoint{ID: endpointID, Owner: f.owner, Name: "receiver", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://receiver.example", DestinationConfiguration: []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}}`), ActiveKeyID: "22222222-2222-4222-a222-222222222222", CreatedAt: now, UpdatedAt: now}
+			delivery := store.WebhookDelivery{ID: deliveryID, EventID: eventID, EndpointID: endpointID, EventType: "task.created", ProjectID: project, Owner: f.owner, OccurredAt: now, OriginalMatchCount: 1, OriginalMatchSHA256: bytes.Clone(matchDigest), DestinationRevision: 1, DestinationKind: "http", DestinationOrigin: "https://receiver.example", AdapterVersion: 1, DestinationConfiguration: bytes.Clone(endpoint.DestinationConfiguration), Body: bytes.Clone(body), BodySHA256: bytes.Clone(digest[:]), OriginalBodyBytes: len(body), Generation: generation, State: "pending", ExpiresAt: now.Add(3 * 24 * time.Hour), AutomaticExpiresAt: now.Add(3 * 24 * time.Hour), PayloadExpiresAt: now.Add(7 * 24 * time.Hour)}
+			wantCalls := []string{"snapshot", "credential", "endpoint", "clock", "disclosure", "batch", "matches", "attempts", "policy"}
+			calls := 0
+			call := func(got context.Context, name string) {
+				t.Helper()
+				if got != ctx || calls >= len(wantCalls) || wantCalls[calls] != name {
+					t.Fatalf("history call %q at %d, context preserved=%v", name, calls, got == ctx)
+				}
+				calls++
+			}
+			f.reader = &historyReaderMock{t: t}
+			f.scope.reader, f.scope.eligibility = f.reader, nil
+			f.scope.credential = historyCredentialMock{t: t, read: func(got context.Context, principal model.Principal) (store.ThreadCredential, error) {
+				call(got, "credential")
+				mgmtWantEqual(t, principal, f.principal)
+				return store.ThreadCredential{}, nil
+			}}
+			f.scope.now = func(got context.Context) (time.Time, error) { call(got, "clock"); return now, nil }
+			f.reader.endpoint = func(got context.Context, owner Owner, id string) (wm.Endpoint, error) {
+				call(got, "endpoint")
+				mgmtWantEqual(t, owner, f.owner)
+				mgmtWantEqual(t, id, endpointID)
+				value := endpoint
+				value.DestinationConfiguration = bytes.Clone(endpoint.DestinationConfiguration)
+				return value, nil
+			}
+			f.reader.disclosure = func(got context.Context, owner Owner, id, actor string, at time.Time) (string, error) {
+				call(got, "disclosure")
+				mgmtWantEqual(t, owner, f.owner)
+				mgmtWantEqual(t, id, endpointID)
+				mgmtWantEqual(t, actor, f.principal.UserID)
+				mgmtWantEqual(t, at, now)
+				return "current", nil
+			}
+			f.reader.batch = func(got context.Context, owner Owner, id, actor string, at time.Time, position string, limit int) (store.WebhookHistoryBatch, error) {
+				call(got, "batch")
+				mgmtWantEqual(t, owner, f.owner)
+				mgmtWantEqual(t, id, endpointID)
+				mgmtWantEqual(t, actor, f.principal.UserID)
+				mgmtWantEqual(t, at, time.Time{})
+				mgmtWantEqual(t, position, "")
+				mgmtWantEqual(t, limit, 100)
+				row := delivery
+				row.OriginalMatchSHA256 = bytes.Clone(delivery.OriginalMatchSHA256)
+				row.DestinationConfiguration = bytes.Clone(delivery.DestinationConfiguration)
+				row.Body, row.BodySHA256 = bytes.Clone(delivery.Body), bytes.Clone(delivery.BodySHA256)
+				sources := store.WebhookHistorySources{Event: store.WebhookCapturedEvent{ID: eventID, ProjectID: project, TaskID: taskID, EventType: "task.created", OccurredAt: now, FactBytes: bytes.Clone(body), FactSHA256: bytes.Clone(digest[:]), TaskVersion: mgmtPtr(int64(1))}, OriginalFactBytes: len(body), TaskTitle: mgmtPtr("captured during maintenance"), ProjectReadable: true, TaskPresent: true, Matches: []store.WebhookAdmissionMatch{{WebhookCapturedMatch: match, Continuous: true}}}
+				return store.WebhookHistoryBatch{ObservedAt: now, Items: []store.WebhookHistoryItem{{Delivery: row, Sources: sources, EventPresent: true, Eligibility: wm.EligibilityFacts{ProjectLive: true, ProjectName: mgmtPtr("project"), TeamID: mgmtPtr(f.owner.ID), TeamPresent: true, OwnerAccess: true, ActorAccess: true}, EndpointPresent: true, EndpointRevision: mgmtPtr(int64(1))}}}, nil
+			}
+			f.reader.matches = func(got context.Context, ids []string) ([]store.WebhookHistoryMatch, error) {
+				call(got, "matches")
+				mgmtWantEqual(t, ids, []string{deliveryID})
+				return []store.WebhookHistoryMatch{{DeliveryID: deliveryID, WebhookAdmissionMatch: store.WebhookAdmissionMatch{WebhookCapturedMatch: match, Continuous: true}}}, nil
+			}
+			f.reader.batchAttempts = func(got context.Context, ids []string) ([]store.WebhookAttempt, error) {
+				call(got, "attempts")
+				mgmtWantEqual(t, ids, []string{deliveryID})
+				return []store.WebhookAttempt{}, nil
+			}
+			f.reader.policy = func(got context.Context, version int64) (wm.Policy, error) {
+				call(got, "policy")
+				mgmtWantEqual(t, version, int64(1))
+				return wm.Policy{PayloadRetentionSeconds: 604800, MetadataRetentionSeconds: 2592000}, nil
+			}
+			f.service.DB = historyTransactionsMock{t: t, read: func(got context.Context, cb func(store.WebhookReadScope) error) error {
+				call(got, "snapshot")
+				return cb(f.scope)
+			}}
+			value, err := f.service.ListDeliveries(ctx, f.principal, f.owner, endpointID, DeliveryQuery{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTitle := "captured during maintenance"
+			item := map[string]any{"id": deliveryID, "endpointId": endpointID, "eventId": eventID, "owner": map[string]any{"kind": "personal", "id": f.owner.ID}, "eventType": "task.created", "resource": map[string]any{"projectId": project, "taskId": taskID, "stepId": nil, "messageId": (*string)(nil), "displayName": &wantTitle}, "occurredAt": now, "resourceVersion": "1", "target": map[string]any{"destinationRevision": "1", "url": "https://receiver.example/hook", "displayUrl": "https://receiver.example/hook"}, "generation": fmt.Sprint(generation), "state": "pending", "attemptCount": int16(0), "automaticAttemptCount": int16(0), "manualOperationCount": int16(0), "nextAttemptAt": (*time.Time)(nil), "lastAttemptAt": (*time.Time)(nil), "expiresAt": now.Add(3 * 24 * time.Hour), "automaticExpiresAt": now.Add(3 * 24 * time.Hour), "payloadExpiresAt": now.Add(7 * 24 * time.Hour), "lastAcknowledgedAt": (*time.Time)(nil), "lastResult": nil, "payloadAvailable": true, "disclosure": "full"}
+			mgmtWantEqual(t, value, any(map[string]any{"items": []any{item}, "nextCursor": nil, "historyMayBeIncomplete": true, "retention": map[string]any{"payloadRetentionSeconds": int32(604800), "metadataRetentionSeconds": int32(2592000)}}))
+			mgmtWantEqual(t, calls, len(wantCalls))
+		})
+	}
 }
 
 func TestHistoryMissingEndpointRequiresRetainedDelivery(t *testing.T) {

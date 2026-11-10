@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -412,7 +413,7 @@ func (d *lifecyclePlanDAO) Refresh(ctx context.Context, hash []byte, lock bool) 
 	if lock != step.lock || !bytes.Equal(hash, secret.Hash(d.plan.token)) {
 		d.plan.t.Fatalf("refresh arguments: lock=%v hash=%x", lock, hash)
 	}
-	return step.refresh, nil
+	return cloneLifecycleRefresh(step.refresh), nil
 }
 
 func (d *lifecyclePlanDAO) InspectGrant(ctx context.Context, id string, lock bool) (store.OAuthGrant, error) {
@@ -420,7 +421,7 @@ func (d *lifecyclePlanDAO) InspectGrant(ctx context.Context, id string, lock boo
 	if lock != step.lock || id != d.plan.grant.ID {
 		d.plan.t.Fatalf("grant arguments: id=%s lock=%v", id, lock)
 	}
-	return step.grant, nil
+	return cloneLifecycleGrant(step.grant), nil
 }
 
 func (d *lifecyclePlanDAO) AccessGrant(ctx context.Context, hash []byte) (string, error) {
@@ -449,11 +450,33 @@ func (d *lifecyclePlanDAO) FreshTime(ctx context.Context, caller time.Time) (tim
 
 func (d *lifecyclePlanDAO) RotateRefresh(ctx context.Context, value store.OAuthRotation) error {
 	d.next(ctx, "rotate")
-	if value.Grant.ID != d.plan.grant.ID || !bytes.Equal(value.OldHash, secret.Hash(d.plan.token)) || value.AccessID == "" || value.AccessID == value.Grant.ID || !value.CreatedAt.Equal(d.plan.now) || !value.AccessExpiresAt.Equal(d.plan.now.Add(AccessLifetime)) {
+	if !reflect.DeepEqual(value.Grant, d.plan.grant) || !bytes.Equal(value.OldHash, secret.Hash(d.plan.token)) || value.AccessID == value.Grant.ID || !value.CreatedAt.Equal(d.plan.now) || !value.AccessExpiresAt.Equal(d.plan.now.Add(AccessLifetime)) {
 		d.plan.t.Fatalf("rotation input: %+v", value)
 	}
+	if _, err := uuid.Parse(value.AccessID); err != nil {
+		d.plan.t.Fatalf("rotation access identity: %q, %v", value.AccessID, err)
+	}
+	value.Grant = cloneLifecycleGrant(value.Grant)
+	value.OldHash, value.AccessHash, value.RefreshHash = bytes.Clone(value.OldHash), bytes.Clone(value.AccessHash), bytes.Clone(value.RefreshHash)
 	d.plan.rotation = &value
 	return nil
+}
+
+func cloneLifecycleGrant(g store.OAuthGrant) store.OAuthGrant {
+	g.ClientSnapshot = bytes.Clone(g.ClientSnapshot)
+	if g.RevokedAt != nil {
+		revoked := *g.RevokedAt
+		g.RevokedAt = &revoked
+	}
+	return g
+}
+
+func cloneLifecycleRefresh(r store.OAuthRefresh) store.OAuthRefresh {
+	if r.ConsumedAt != nil {
+		consumed := *r.ConsumedAt
+		r.ConsumedAt = &consumed
+	}
+	return r
 }
 
 func (d *lifecyclePlanDAO) RevokeFamily(ctx context.Context, id string, now time.Time) (bool, error) {
@@ -491,7 +514,7 @@ func (p *lifecyclePlan) WriteGrantLifecycle(ctx context.Context, fn func(store.G
 
 func (p *lifecyclePlan) admit(ctx context.Context, client string) error {
 	p.t.Helper()
-	if ctx != p.ctx || client != "client" || p.active || p.transactions != 1 || p.admissions != 0 {
+	if ctx != p.ctx || client != p.grant.ClientID || p.active || p.transactions != 1 || p.admissions != 0 {
 		p.t.Fatalf("admission did not follow completed observation: active=%v transactions=%d admissions=%d client=%s", p.active, p.transactions, p.admissions, client)
 	}
 	p.admissions++
@@ -501,8 +524,9 @@ func (p *lifecyclePlan) admit(ctx context.Context, client string) error {
 func lifecycleFixture(t *testing.T) (*lifecyclePlan, *GrantLifecycle) {
 	t.Helper()
 	now := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
-	grant := store.OAuthGrant{ID: uuid.NewString(), UserID: uuid.NewString(), ClientID: "client", Resource: "https://example.test/mcp", Scope: Scope, ExpiresAt: now.Add(GrantLifetime)}
-	refresh := store.OAuthRefresh{GrantID: grant.ID, ClientID: "client", ExpiresAt: grant.ExpiresAt}
+	authorization, _ := acceptanceAuthorization(now, "")
+	grant := store.OAuthGrant{ID: uuid.NewString(), UserID: "a1111111-1111-4111-8111-111111111111", ClientID: "acceptance-client", Resource: "http://127.0.0.1:8787/mcp", Scope: Scope, ClientSnapshot: bytes.Clone(authorization.Client), CreatedAt: now, ExpiresAt: now.Add(GrantLifetime)}
+	refresh := store.OAuthRefresh{GrantID: grant.ID, ClientID: grant.ClientID, ExpiresAt: grant.ExpiresAt}
 	p := &lifecyclePlan{t: t, ctx: t.Context(), token: secret.Random(RefreshPrefix), grant: grant, refresh: refresh, now: now}
 	t.Cleanup(func() {
 		if len(p.writes) != 0 {
@@ -567,7 +591,7 @@ func TestRotationRechecksLockedGrantBeforeMutation(t *testing.T) {
 			p.writes[1].steps = p.writes[1].steps[:4]
 			p.writes[1].callbackErr = ErrInvalidGrant
 			p.writes[1].outcome = store.TransactionNotCommitted
-			result, err := s.Rotate(p.ctx, p.token, "client", p.grant.Resource, p.admit)
+			result, err := s.Rotate(p.ctx, p.token, p.grant.ClientID, p.grant.Resource, p.admit)
 			if !errors.Is(err, ErrInvalidGrant) || result != (RotatedTokens{}) || p.rotation != nil || p.revocations != 0 {
 				t.Fatalf("stale grant mutated: result=%+v err=%v", result, err)
 			}
@@ -578,12 +602,13 @@ func TestRotationRechecksLockedGrantBeforeMutation(t *testing.T) {
 func TestRotationCommittedResultAndReplayRevocation(t *testing.T) {
 	t.Run("committed rotation", func(t *testing.T) {
 		p, s := rotationFixture(t)
-		result, err := s.Rotate(p.ctx, p.token, "client", p.grant.Resource, p.admit)
+		result, err := s.Rotate(p.ctx, p.token, p.grant.ClientID, p.grant.Resource, p.admit)
 		if err != nil || !secret.Valid(result.AccessToken, model.OAuthAccessPrefix) || !secret.Valid(result.RefreshToken, RefreshPrefix) || result.ExpiresIn != int64(AccessLifetime/time.Second) || p.rotation == nil {
 			t.Fatalf("committed result: %+v %v", result, err)
 		}
-		if !bytes.Equal(p.rotation.AccessHash, secret.Hash(result.AccessToken)) || !bytes.Equal(p.rotation.RefreshHash, secret.Hash(result.RefreshToken)) || p.revocations != 0 {
-			t.Fatalf("returned secrets differ from requested rotation: %+v", p.rotation)
+		want := store.OAuthRotation{Grant: cloneLifecycleGrant(p.grant), OldHash: secret.Hash(p.token), AccessID: p.rotation.AccessID, AccessHash: secret.Hash(result.AccessToken), RefreshHash: secret.Hash(result.RefreshToken), CreatedAt: p.now, AccessExpiresAt: p.now.Add(AccessLifetime)}
+		if !reflect.DeepEqual(*p.rotation, want) || p.revocations != 0 || p.transactions != 2 || p.admissions != 1 {
+			t.Fatalf("complete rotation = %+v, want %+v; transactions=%d admissions=%d revocations=%d", p.rotation, want, p.transactions, p.admissions, p.revocations)
 		}
 	})
 	t.Run("consumed refresh revokes family", func(t *testing.T) {
@@ -592,9 +617,9 @@ func TestRotationCommittedResultAndReplayRevocation(t *testing.T) {
 		consumed.ConsumedAt = &p.now
 		p.writes[1].steps[2].refresh = consumed
 		p.writes[1].steps[4] = lifecycleStep{method: "revoke", changed: true}
-		result, err := s.Rotate(p.ctx, p.token, "client", p.grant.Resource, p.admit)
-		if !errors.Is(err, ErrInvalidGrant) || result != (RotatedTokens{}) || p.rotation != nil || p.revocations != 1 {
-			t.Fatalf("replay result: %+v err=%v revocations=%d", result, err, p.revocations)
+		result, err := s.Rotate(p.ctx, p.token, p.grant.ClientID, p.grant.Resource, p.admit)
+		if !errors.Is(err, ErrInvalidGrant) || result != (RotatedTokens{}) || p.rotation != nil || p.revocations != 1 || p.transactions != 2 || p.admissions != 1 {
+			t.Fatalf("replay result: %+v err=%v revocations=%d transactions=%d admissions=%d", result, err, p.revocations, p.transactions, p.admissions)
 		}
 	})
 }
@@ -603,7 +628,7 @@ func TestGrantLifecycleUnknownDoesNotReturnSecrets(t *testing.T) {
 	p, s := rotationFixture(t)
 	p.writes[1].outcome = store.TransactionUnknown
 	p.writes[1].writeErr = errors.New("lost commit response")
-	result, err := s.Rotate(p.ctx, p.token, "client", p.grant.Resource, p.admit)
+	result, err := s.Rotate(p.ctx, p.token, p.grant.ClientID, p.grant.Resource, p.admit)
 	if !errors.Is(err, ErrAuthorizationUnknown) || result != (RotatedTokens{}) || p.rotation == nil || p.transactions != 2 {
 		t.Fatalf("unknown rotation exposed tokens: result=%+v err=%v transactions=%d", result, err, p.transactions)
 	}

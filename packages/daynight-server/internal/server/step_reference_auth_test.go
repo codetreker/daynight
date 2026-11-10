@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"io"
 	"net/http"
 	"reflect"
@@ -20,7 +21,7 @@ func TestStepsHTTPEditPreservesReferencedAttachment(t *testing.T) {
 	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
 	at := f.observed
 	original := model.TaskStep{ID: "abcdef01", Title: "Evidence", Description: "[Evidence](plans/evidence.bin)", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: original, Observed: at})
+	f.expectStepsWrite(stepHTTPWritePlan{Add: &taskservice.AddTaskStep{Version: 1, ID: "abcdef01", Title: "Evidence", Description: "[Evidence](plans/evidence.bin)"}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: 2}, ResultSteps: []model.TaskStep{original}})
 	added := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version, "id": "abcdef01", "title": "Evidence", "description": "[Evidence](plans/evidence.bin)"})), http.StatusCreated)
 	if len(added.Steps) != 1 {
 		t.Fatalf("initial Step: %+v", added)
@@ -31,7 +32,8 @@ func TestStepsHTTPEditPreservesReferencedAttachment(t *testing.T) {
 	candidate.Title = "Updated evidence"
 	candidate.Description = ""
 	candidate.UpdatedAt = at
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{original}, Operation: "change", Candidate: candidate, Observed: at})
+	title, description := "Updated evidence", ""
+	f.expectStepsWrite(stepHTTPWritePlan{ID: "abcdef01", Update: &taskservice.UpdateTaskStep{Version: 2, Title: &title, Description: &description}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: 3}, ResultSteps: []model.TaskStep{candidate}})
 	changed := decodeResponse[api.StepsResource](t, projectRequest(handler, http.MethodPatch, path+"/abcdef01", jsonBody(t, map[string]any{"version": added.Version, "title": "Updated evidence", "description": ""})), http.StatusOK)
 	if changed.Version != added.Version+1 || len(changed.Steps) != 1 || changed.Steps[0].ID != original.ID || changed.Steps[0].Title != "Updated evidence" || changed.Steps[0].Description != "" || changed.Steps[0].Status != original.Status || changed.Steps[0].CreatedAt != original.CreatedAt {
 		t.Fatalf("edited Step: %+v", changed)
@@ -59,12 +61,10 @@ func TestStepsHTTPRevokedMemberCannotRead(t *testing.T) {
 	at := f.observed
 	step := model.TaskStep{ID: "abcdef01", Title: "Secret Step", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
 	f.principal = admin
-	f.role = model.ProjectAdmin
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: step, Observed: at})
+	f.expectStepsWrite(stepHTTPWritePlan{Add: &taskservice.AddTaskStep{Version: 1, ID: "abcdef01", Title: "Secret Step"}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: 2}, ResultSteps: []model.TaskStep{step}})
 	created := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":1,"id":"abcdef01","title":"Secret Step"}`, configuredTestConfig().PublicOrigin, 201, ""), 201)
 	header.Version = 2
 	f.principal = member
-	f.role = model.ProjectMemberRole
 	f.expectStepsRead(header, []model.TaskStep{step})
 	before := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "GET", path, "", "", 200, ""), 200)
 	if !reflect.DeepEqual(before, created) {
@@ -75,7 +75,6 @@ func TestStepsHTTPRevokedMemberCannotRead(t *testing.T) {
 		f.authenticatedRequest(member, "GET", path+suffix, "", "", 404, "not_found")
 	}
 	f.principal = admin
-	f.role = model.ProjectAdmin
 	f.expectStepsRead(header, []model.TaskStep{step})
 	after := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "GET", path, "", "", 200, ""), 200)
 	if !reflect.DeepEqual(after, created) {

@@ -11,24 +11,24 @@ import (
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 )
 
-type archiveOperation interface {
+type ArchiveOperation interface {
 	io.Closer
 	PutArchive(context.Context, []byte) (sp.ArchiveStatus, error)
 	PutTerminalArchive(context.Context, []byte) (v2.Message, error)
 }
 
-type archiveContent struct {
+type ArchiveContent struct {
 	Data []byte
 	io.Closer
 }
 
-type serviceCalls struct {
+type Operations struct {
 	GetImageOccurrence             func(context.Context, model.Principal, string, string, string, string) (sp.ImageOccurrenceStatus, error)
 	RetryImageOccurrence           func(context.Context, model.Principal, string, string, string, string) (sp.ImageOccurrenceRetryReceipt, error)
-	BeginHistoryLedgerReserved     func(context.Context, string, string, string, sessioncore.ActiveHistoryWriter, io.Closer) (archiveOperation, error)
+	BeginHistoryLedgerReserved     func(context.Context, string, string, string, sessioncore.ActiveHistoryWriter, io.Closer) (ArchiveOperation, error)
 	ArchivePreparation             func(context.Context, model.Principal, string, string, string) (sp.ArchivePrepareReceipt, error)
 	ArchiveFileStatus              func(context.Context, model.Principal, string, string, string, string) (sp.ArchiveFileReceipt, error)
-	ArchiveTimelineContentReserved func(context.Context, model.Principal, string, string, string, string, io.Closer) (archiveContent, error)
+	ArchiveTimelineContentReserved func(context.Context, model.Principal, string, string, string, string, io.Closer) (ArchiveContent, error)
 	PrepareUpload                  func(context.Context, model.Principal, string, string, string, sp.ImageUploadSpec) (sp.ImageUploadReceipt, bool, error)
 	WriteUploadChunk               func(context.Context, model.Principal, string, string, string, string, sp.ImageChunkWrite) (sp.ImageUploadReceipt, error)
 	CompleteUpload                 func(context.Context, model.Principal, string, string, string, string, sp.ImageUploadComplete) (sp.ImageUploadReceipt, error)
@@ -38,10 +38,10 @@ type serviceCalls struct {
 	ImageCapabilities              func(context.Context, model.Principal, string, string, string) (map[string]any, error)
 
 	TaskOperation                  func(context.Context, model.Principal, string, string, string, string) (sessioncore.TaskOperationResult, error)
-	ArchiveContentReserved         func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error)
+	ArchiveContentReserved         func(context.Context, model.Principal, string, string, string, io.Closer) (ArchiveContent, error)
 	ArchiveStatus                  func(context.Context, model.Principal, string, string, string) (sp.ArchiveStatus, error)
 	AuthenticateController         func(context.Context, string) error
-	BeginArchiveReserved           func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (archiveOperation, error)
+	BeginArchiveReserved           func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (ArchiveOperation, error)
 	BindTerminalConnection         func(context.Context, model.Principal, string, string, string, v2.Envelope, string) error
 	BrowserPoll                    func(context.Context, model.Principal, string, string, string, string) (sp.Snapshot, []map[string]any, string, error)
 	Connect                        func(context.Context, string, sp.ControllerMessage, string, int) (sp.Snapshot, error)
@@ -67,7 +67,7 @@ type serviceCalls struct {
 	StopTest                       func(context.Context, model.Principal, string, sp.TestStop) (sp.Snapshot, error)
 	Submit                         func(context.Context, model.Principal, string, string, string, sp.Command) (sp.Operation, error)
 	SubmitTerminal                 func(context.Context, model.Principal, string, string, string, string, v2.Message) (v2.Message, error)
-	TerminalArchiveContentReserved func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error)
+	TerminalArchiveContentReserved func(context.Context, model.Principal, string, string, string, io.Closer) (ArchiveContent, error)
 	TerminalArchiveState           func(context.Context, model.Principal, string, string, string) (map[string]any, error)
 	TerminalArchiveStatus          func(context.Context, model.Principal, string, string, string) (v2.Message, error)
 	TerminalAutomationRecovery     func(context.Context, model.Principal, string, string, string, string) (v2.Message, error)
@@ -86,22 +86,22 @@ type serviceCalls struct {
 	UpdateTerminalRecovery         func(context.Context, model.Principal, string, string, string, string, v2.Message) (v2.Message, error)
 }
 
-func callsFromService(service *sessionservice.Service) serviceCalls {
+func callsFromService(service *sessionservice.Service) Operations {
 	if service == nil {
-		return serviceCalls{}
+		return Operations{}
 	}
-	return serviceCalls{
-		BeginHistoryLedgerReserved: func(ctx context.Context, project, task, id string, writer sessioncore.ActiveHistoryWriter, reservation io.Closer) (archiveOperation, error) {
+	return Operations{
+		BeginHistoryLedgerReserved: func(ctx context.Context, project, task, id string, writer sessioncore.ActiveHistoryWriter, reservation io.Closer) (ArchiveOperation, error) {
 			return service.BeginHistoryLedgerReserved(ctx, project, task, id, writer, reservation.(*sessioncore.ArchivePreflightReservation))
 		},
 		ArchivePreparation: service.ArchivePreparation,
 		ArchiveFileStatus:  service.ArchiveFileStatus,
-		ArchiveTimelineContentReserved: func(ctx context.Context, p model.Principal, project, task, id, fileID string, reservation io.Closer) (archiveContent, error) {
+		ArchiveTimelineContentReserved: func(ctx context.Context, p model.Principal, project, task, id, fileID string, reservation io.Closer) (ArchiveContent, error) {
 			content, err := service.ArchiveTimelineContentReserved(ctx, p, project, task, id, fileID, reservation.(*sessioncore.ArchivePreflightReservation))
 			if err != nil {
-				return archiveContent{}, err
+				return ArchiveContent{}, err
 			}
-			return archiveContent{Data: content.Data, Closer: content}, nil
+			return ArchiveContent{Data: content.Data, Closer: content}, nil
 		},
 		GetImageOccurrence: service.GetImageOccurrence, RetryImageOccurrence: service.RetryImageOccurrence, PrepareUpload: service.PrepareUpload, WriteUploadChunk: service.WriteUploadChunk, CompleteUpload: service.CompleteUpload, GetUpload: service.GetUpload, ReleaseUpload: service.ReleaseUpload, ReadResource: service.ReadResource, ImageCapabilities: service.ImageCapabilities,
 		TaskOperation:                  service.TaskOperation,
@@ -158,18 +158,18 @@ func archiveReservationCall(reserve func() (*sessioncore.ArchivePreflightReserva
 	return func() (io.Closer, error) { return reserve() }
 }
 
-func archiveOperationCall(begin func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, *sessioncore.ArchivePreflightReservation) (*sessioncore.ArchiveOperation, error)) func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (archiveOperation, error) {
-	return func(ctx context.Context, principal model.Principal, project, task, id string, mode sessioncore.ArchiveMode, reservation io.Closer) (archiveOperation, error) {
+func archiveOperationCall(begin func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, *sessioncore.ArchivePreflightReservation) (*sessioncore.ArchiveOperation, error)) func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (ArchiveOperation, error) {
+	return func(ctx context.Context, principal model.Principal, project, task, id string, mode sessioncore.ArchiveMode, reservation io.Closer) (ArchiveOperation, error) {
 		return begin(ctx, principal, project, task, id, mode, reservation.(*sessioncore.ArchivePreflightReservation))
 	}
 }
 
-func archiveContentCall(read func(context.Context, model.Principal, string, string, string, *sessioncore.ArchivePreflightReservation) (*sessioncore.RetainedArchive, error)) func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error) {
-	return func(ctx context.Context, principal model.Principal, project, task, id string, reservation io.Closer) (archiveContent, error) {
+func archiveContentCall(read func(context.Context, model.Principal, string, string, string, *sessioncore.ArchivePreflightReservation) (*sessioncore.RetainedArchive, error)) func(context.Context, model.Principal, string, string, string, io.Closer) (ArchiveContent, error) {
+	return func(ctx context.Context, principal model.Principal, project, task, id string, reservation io.Closer) (ArchiveContent, error) {
 		content, err := read(ctx, principal, project, task, id, reservation.(*sessioncore.ArchivePreflightReservation))
 		if err != nil {
-			return archiveContent{}, err
+			return ArchiveContent{}, err
 		}
-		return archiveContent{Data: content.Data, Closer: content}, nil
+		return ArchiveContent{Data: content.Data, Closer: content}, nil
 	}
 }

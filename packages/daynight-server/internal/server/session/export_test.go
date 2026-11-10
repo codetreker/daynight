@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-type ServiceCallsForTest = serviceCalls
-type ArchiveOperationForTest = archiveOperation
-type ArchiveContentForTest = archiveContent
+type ServiceCallsForTest = Operations
+type ArchiveOperationForTest = ArchiveOperation
+type ArchiveContentForTest = ArchiveContent
 
 func NewRoutesForTest(service ServiceCallsForTest, auth *authhttp.RequestAuthentication, logger *slog.Logger) *Routes {
 	return newRoutes(service, auth, logger)

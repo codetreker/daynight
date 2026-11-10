@@ -21,8 +21,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
-	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 )
+
+type attachmentService interface {
+	List(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
+	PutRetained(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
+	Delete(context.Context, model.Principal, string, string, string) error
+	Open(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
+}
 
 type attachmentHandler struct {
 	attachments     attachmentOperations
@@ -37,12 +43,12 @@ type attachmentOperations struct {
 	Open        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
-func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, attachments attachmentService, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := newAttachmentHandler(attachments, logger)
 	handler.registerRoutes(mux, auth.Require)
 }
 
-func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
+func newAttachmentHandler(attachments attachmentService, logger *slog.Logger) *attachmentHandler {
 	return &attachmentHandler{
 		attachments: attachmentOperations{
 			List: attachments.List, PutRetained: attachments.PutRetained,

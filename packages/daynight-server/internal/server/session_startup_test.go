@@ -15,10 +15,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/google/uuid"
 )
 
@@ -46,12 +44,12 @@ func startupRequest(f *sessionHTTPFixture, method, path, body string) *httptest.
 func TestStartupReportBeforeHelloNegotiatesCurrent(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	report := startupBody(f)
-	updated := sendStartup(t, f, report)
+	updated := sendStartup(t, f, report, true)
 	if updated.Properties["sessionStartup"] == nil {
 		t.Fatal("startup response omitted its report")
 	}
 	value := startupReportValue(t, report)
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(updated), &value), f.record)
+	startupExpectCurrent(t, f, f.snapshot, &value, true)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	var expected map[string]any
 	if err := json.Unmarshal([]byte(jsonBody(t, report)), &expected); err != nil {
@@ -60,7 +58,7 @@ func TestStartupReportBeforeHelloNegotiatesCurrent(t *testing.T) {
 	if !reflect.DeepEqual(current["startupReport"], expected) {
 		t.Fatalf("current lost startup evidence: %#v", current)
 	}
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(updated), &value), f.record)
+	startupExpectCurrent(t, f, f.snapshot, nil, false)
 	legacy := decodeResponse[map[string]any](t, projectRequest(f.handler, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if _, exists := legacy["startupReport"]; exists || len(legacy) != 2 {
 		t.Fatal("legacy current response changed shape")
@@ -83,7 +81,12 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 		worker.NativeSessionID = nil
 		worker.Herdr = nil
 	})
-	startupExpectWrite(t, f, currentTask, &value, true, &expectedTask, nil, f.handler.principal, nil)
+	phase := model.WorkerWaiting
+	var native *string
+	var herdr *model.WorkerHerdr
+	input := startupUpdateInput(f, &value)
+	input.Phase, input.NativeSessionID, input.Herdr = &phase, &native, &herdr
+	startupExpectUpdate(t, f, input, expectedTask, nil, f.handler.principal, nil)
 	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusOK)
 	if !reflect.DeepEqual(updated, startupTaskDocument(t, expectedTask)) {
 		t.Fatal("worker startup response changed unrelated Task fields")
@@ -100,7 +103,7 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 		t.Fatal("Task read response changed the supplied worker or startup report")
 	}
 
-	startupExpectCurrent(t, f, startupSessionTask(t, expectedTask, &value), f.record)
+	startupExpectCurrent(t, f, f.snapshot, &value, true)
 	response := startupRequest(f, http.MethodGet, f.base+"/current", "")
 	current := decodeResponse[struct {
 		Status        string          `json:"status"`
@@ -127,21 +130,15 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 	assertProjectError(t, unauthenticated, http.StatusUnauthorized, "unauthenticated")
 }
 
-func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any) api.Task {
+func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any, changed bool) api.Task {
 	t.Helper()
 	current := startupTaskModel(f.task)
 	value := startupReportValue(t, report)
-	previous, err := taskproperty.SessionStartup(current.Properties)
-	if err != nil {
-		t.Fatal(err)
-	}
 	expected := current
-	var returned *model.Task
-	if !reflect.DeepEqual(previous, &value) {
+	if changed {
 		expected = startupReportedTask(t, current, value)
-		returned = &expected
 	}
-	startupExpectWrite(t, f, current, &value, true, returned, nil, f.handler.principal, nil)
+	startupExpectUpdate(t, f, startupUpdateInput(f, &value), expected, nil, f.handler.principal, nil)
 	f.task = decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": current.Version, "claimId": f.snapshot.ClaimID, "startupReport": report})), http.StatusOK)
 	if !reflect.DeepEqual(f.task, startupTaskDocument(t, expected)) {
 		t.Fatal("startup response changed expected Task fields")
@@ -151,22 +148,22 @@ func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any) api
 
 func TestStartupReportOrderingIdentityAndMissingEvidence(t *testing.T) {
 	f := sessionHTTPSetup(t)
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), nil), f.record)
+	startupExpectCurrent(t, f, f.snapshot, nil, true)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if value, exists := current["startupReport"]; !exists || value != nil {
 		t.Fatal("missing evidence is not explicit null")
 	}
 	report := startupBody(f)
-	sendStartup(t, f, report)
+	sendStartup(t, f, report, true)
 	version := f.task.Version
-	sendStartup(t, f, report)
+	sendStartup(t, f, report, false)
 	if f.task.Version != version {
 		t.Fatal("identical report changed task version")
 	}
 	report["revision"] = "2"
 	report["startup"] = map[string]any{"state": "ready", "reasonCode": "ready"}
 	report["recovery"] = map[string]any{"state": "none", "reasonCode": nil}
-	sendStartup(t, f, report)
+	sendStartup(t, f, report, true)
 	for _, field := range []string{"revision", "claimId", "sessionId", "executionGeneration", "controllerInstanceId"} {
 		bad := startupBody(f)
 		if field == "revision" {
@@ -177,70 +174,44 @@ func TestStartupReportOrderingIdentityAndMissingEvidence(t *testing.T) {
 			bad[field] = uuid.NewString()
 		}
 		badValue := startupReportValue(t, bad)
-		var matchedReport *sp.StartupReport = &badValue
-		if field == "claimId" {
-			matchedReport = nil
-		}
-		startupExpectWrite(t, f, startupTaskModel(f.task), matchedReport, field == "revision", nil, nil, f.handler.principal, nil)
+		startupExpectUpdate(t, f, startupUpdateInput(f, &badValue), model.Task{}, startupConflict(), f.handler.principal, nil)
 		response := startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": bad}))
 		assertProjectError(t, response, http.StatusConflict, "claim_conflict")
 	}
 	bad := startupBody(f)
 	bad["revision"] = "2"
 	badValue := startupReportValue(t, bad)
-	startupExpectWrite(t, f, startupTaskModel(f.task), &badValue, true, nil, nil, f.handler.principal, nil)
+	startupExpectUpdate(t, f, startupUpdateInput(f, &badValue), model.Task{}, startupConflict(), f.handler.principal, nil)
 	assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": bad})), http.StatusConflict, "claim_conflict")
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(f.task), jsonBody(t, map[string]any{"version": f.task.Version, "properties": map[string]any{"sessionStartup": report}})), http.StatusBadRequest, "invalid_input")
-}
-
-// The startup HTTP fixture supplies an explicit no-owner recovery result. The
-// actual service still performs recovery before changing the generation fence.
-func startupExpectEmptyMediaRecovery(t *testing.T, f *sessionHTTPFixture) {
-	t.Helper()
-	f.mu.Lock()
-	before := f.calls["ListSessionMediaLeases"]
-	f.mediaRecoveryRead = func(context.Context) ([]store.SessionResourceLease, error) {
-		return []store.SessionResourceLease{}, nil
-	}
-	f.mu.Unlock()
-	t.Cleanup(func() {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if actual := f.calls["ListSessionMediaLeases"] - before; actual != 1 {
-			t.Errorf("generation grant recovery listings=%d, want 1", actual)
-		}
-	})
 }
 
 func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	report := startupBody(f)
-	sendStartup(t, f, report)
+	sendStartup(t, f, report, true)
 	previous := "1"
 	nextInstance := uuid.NewString()
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: nextInstance, ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
-	startupExpectEmptyMediaRecovery(t, f)
-	f.store.WriteSessionCall = f.store.run
 	f.mintGrant(t, grant)
 	nextRecord := f.record
 	nextRecord.Snapshot.ExecutionGeneration = "2"
 	nextRecord.Snapshot.Identity.ControllerInstanceID = nextInstance
-	old := startupReportValue(t, report)
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), &old), nextRecord)
+	startupExpectCurrent(t, f, nextRecord.Snapshot, nil, true)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("new generation displays previous startup evidence")
 	}
 	report["revision"] = "999"
-	old = startupReportValue(t, report)
-	startupExpectWrite(t, f, startupTaskModel(f.task), &old, false, nil, nil, f.handler.principal, nil)
+	old := startupReportValue(t, report)
+	startupExpectUpdate(t, f, startupUpdateInput(f, &old), model.Task{}, startupConflict(), f.handler.principal, nil)
 	assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report})), http.StatusConflict, "claim_conflict")
 	report["revision"] = "1"
 	report["executionGeneration"] = "2"
 	report["controllerInstanceId"] = nextInstance
-	sendStartup(t, f, report)
+	sendStartup(t, f, report, true)
 	currentReport := startupReportValue(t, report)
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), &currentReport), nextRecord)
+	startupExpectCurrent(t, f, nextRecord.Snapshot, &currentReport, true)
 	current = decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] == nil {
 		t.Fatal("current generation evidence not readable")
@@ -253,21 +224,13 @@ func TestStartupReportCannotWriteAfterCredentialRevocationOrCompletion(t *testin
 			f := sessionHTTPSetup(t)
 			report := startupBody(f)
 			if terminal {
-				current := startupTaskModel(f.task)
-				current.Status = model.TaskDone
-				current = startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "completed" })
-				startupExpectWrite(t, f, current, nil, false, nil, nil, f.handler.principal, nil)
+				startupExpectUpdate(t, f, startupUpdateInput(f, reportPointer(t, report)), model.Task{}, startupConflict(), f.handler.principal, nil)
 			} else {
-				f.store.WriteIdentityCall = func(ctx context.Context, work func(store.IdentityScope) error) (store.Completion, error) {
-					dao := &startupRevokedCredential{httpAuthenticationDAO: httpAuthenticationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: f.handler.principal, hash: secret.Hash(f.handler.token)}}
-					err := work(httpAuthenticationScope{t: t, dao: dao})
-					if dao.calls != 1 {
-						t.Errorf("revoked credential calls=%d, want1", dao.calls)
+				f.identity.AuthenticateFn = func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+					if ctx.Err() != nil || kind != model.PATCredential || token != f.handler.token {
+						unexpectedHTTPCall(t, "revoked startup authentication")
 					}
-					if err != nil {
-						return store.Completion{Outcome: store.TransactionNotCommitted}, err
-					}
-					return store.Completion{Outcome: store.TransactionCommitted}, nil
+					return model.Principal{}, &model.Fault{Code: "unauthenticated", Message: "Credential has been revoked."}
 				}
 			}
 			response := startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report}))
@@ -282,12 +245,12 @@ func TestStartupReportCannotWriteAfterCredentialRevocationOrCompletion(t *testin
 
 func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
 	f := sessionHTTPSetup(t)
-	sendStartup(t, f, startupBody(f))
+	sendStartup(t, f, startupBody(f), true)
 	current := startupTaskModel(f.task)
 	released := startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "released" })
 	released.Status, released.Version, released.UpdatedAt = model.TaskTodo, current.Version+1, current.UpdatedAt.Add(time.Second)
 	released.Ready = true
-	startupExpectWrite(t, f, current, nil, false, &released, nil, f.handler.principal, nil)
+	startupExpectRelease(t, f, taskcore.ReleaseWorker{Version: f.task.Version, ClaimID: f.snapshot.ClaimID, StoppedConfirmed: true}, released)
 	f.task = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskPath(f.task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
 	if !reflect.DeepEqual(f.task, startupTaskDocument(t, released)) {
 		t.Fatal("release changed unrelated Task state")
@@ -301,7 +264,7 @@ func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
 	claimed.Properties["worker"] = rawProperty(t, api.WorkerClaim{ClaimID: claimID, State: "active", UserID: f.handler.principal.UserID, WorkerID: workerID, Machine: api.WorkerMachine{ID: machineID, Name: "Startup worker"}, Platform: "linux", Agent: "codex", AgentControlMode: "web", WorktreeID: worktreeID, Phase: "preparing", ClaimedAt: now})
 	claimed.Status, claimed.Version, claimed.UpdatedAt = model.TaskInProgress, released.Version+1, now
 	claimed.Ready = false
-	startupExpectWrite(t, f, released, nil, false, &claimed, &now, f.handler.principal, nil)
+	startupExpectClaim(t, f, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: taskcore.WorkerDescriptor{ClaimID: claimID, WorkerID: workerID, Machine: model.WorkerMachine{ID: machineID, Name: "Startup worker"}, Platform: "linux", Agent: "codex", AgentControlMode: "web", WorktreeID: worktreeID}}, claimed)
 	next := claimHTTPWorker(t, f.handler, f.task, body)
 	if next.Properties["sessionStartup"] != nil || !reflect.DeepEqual(next, startupTaskDocument(t, claimed)) {
 		t.Fatal("new claim retains old startup evidence or changes unrelated Task fields")
@@ -310,22 +273,17 @@ func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
 
 func TestStartupReportRejectsAnotherMemberAndForeignWorkerBinding(t *testing.T) {
 	f := sessionHTTPSetup(t)
-	current := startupTaskModel(f.task)
 	other := f.handler.principal
 	other.UserID, other.CredentialID = uuid.NewString(), uuid.NewString()
-	otherStore := newHTTPTestStoreForPrincipal(t, other)
-	originalStore := f.store.httpTestStore
-	f.store.httpTestStore = otherStore
-	startupExpectWrite(t, f, current, nil, false, nil, nil, other, nil)
-	caller := resourceTestServerForPrincipal(t, f.store, attachmentTestFiles(t), io.Discard, other)
+	startupExpectUpdate(t, f, startupUpdateInput(f, reportPointer(t, startupBody(f))), model.Task{}, &model.Fault{Code: "forbidden", Message: "The Worker belongs to another member."}, other, nil)
+	caller := newOperationHTTPServerWithIdentity(t, newOperationHTTPIdentity(t, other), func(deps *httpDependencies) { deps.Tasks = f.taskOperations }, io.Discard, other)
 	extendedWorkerTestHandler(caller)
 	body := jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": startupBody(f)})
 	assertProjectError(t, projectRequest(caller, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusForbidden, "forbidden")
-	f.store.httpTestStore = originalStore
 	for _, field := range []string{"workerId", "worktreeId"} {
 		t.Run(field, func(t *testing.T) {
 			report := startupReportValue(t, startupBody(f))
-			startupExpectWrite(t, f, current, &report, false, nil, nil, f.handler.principal, nil)
+			startupExpectUpdate(t, f, startupUpdateInput(f, &report), model.Task{}, startupConflict(), f.handler.principal, nil)
 			assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusConflict, "claim_conflict")
 		})
 	}
@@ -335,7 +293,6 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	previous := "1"
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
-	grantBody := jsonBody(t, grant)
 	report := startupReportValue(t, startupBody(f))
 	reportBody := jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": startupBody(f)})
 	matched, grantFinished := make(chan struct{}), make(chan struct{})
@@ -350,7 +307,7 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 			t.Error("startup report request did not drain")
 		}
 	})
-	startupExpectWrite(t, f, startupTaskModel(f.task), &report, false, nil, nil, f.handler.principal, func() {
+	startupExpectUpdate(t, f, startupUpdateInput(f, &report), model.Task{}, startupConflict(), f.handler.principal, func() {
 		close(matched)
 		select {
 		case <-grantFinished:
@@ -369,9 +326,7 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("report did not reach its Session fence")
 	}
-	startupExpectEmptyMediaRecovery(t, f)
-	f.store.WriteSessionCall = f.store.run
-	decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", grantBody), http.StatusOK)
+	f.mintGrant(t, grant)
 	finishGrant()
 	var result *httptest.ResponseRecorder
 	select {
@@ -382,9 +337,15 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	assertProjectError(t, result, http.StatusConflict, "claim_conflict")
 	nextRecord := f.record
 	nextRecord.Snapshot.ExecutionGeneration, nextRecord.Snapshot.Identity.ControllerInstanceID = "2", grant.ControllerInstanceID
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), &report), nextRecord)
+	startupExpectCurrent(t, f, nextRecord.Snapshot, nil, true)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("racing old report crossed generation boundary")
 	}
+}
+
+func reportPointer(t *testing.T, body map[string]any) *sp.StartupReport {
+	t.Helper()
+	value := startupReportValue(t, body)
+	return &value
 }

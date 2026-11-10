@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -62,6 +63,38 @@ func TestBotCreationForwardsNormalizedRequestAndFrozenResult(t *testing.T) {
 			same(t, got, want)
 		})
 	}
+	t.Run("OAuth", func(t *testing.T) {
+		f := newBotFixture(t, "write", "create", "write_done")
+		f.p = model.Principal{Kind: model.OAuthCredential, UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "f6666666-6666-4666-8666-666666666666"}
+		input := func() botcore.CreateBot {
+			return botcore.CreateBot{ID: "a4444444-4444-4444-8444-444444444444", Name: "OAuth Bot", ResolvedConfiguration: model.BotConfiguration{WorkerID: "b5555555-5555-4555-8555-555555555555", Cwd: "/workspace", Provider: "codex", Args: []string{}}}
+		}
+		in := input()
+		_, fingerprint, err := botcore.NormalizeBotRequest(input())
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := func() model.Bot {
+			return model.Bot{ID: in.ID, OwnerUserID: f.p.UserID, WorkerID: in.ResolvedConfiguration.WorkerID, Name: in.Name, Version: 1, RequestFingerprint: fingerprint, ResolvedConfiguration: input().ResolvedConfiguration,
+				CreatedAt: time.Date(2026, 11, 11, 1, 0, 0, 123456000, time.UTC), UpdatedAt: time.Date(2026, 11, 11, 1, 0, 0, 123456000, time.UTC)}
+		}
+		want := result()
+		f.service.operations.create = func(ctx context.Context, d store.BotWriteDAO, p model.Principal, v botcore.CreateBot, fp string, resolved bool) (model.Bot, error) {
+			f.plan.call("create")
+			identical(t, ctx, f.ctx)
+			identical(t, d, f.write.dao)
+			same(t, p, f.p)
+			same(t, v, input())
+			same(t, fp, fingerprint)
+			same(t, resolved, false)
+			return result(), nil
+		}
+		got, err := f.service.Create(f.ctx, f.p, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		same(t, got, want)
+	})
 }
 func TestBotWriteCompletionControlsVisibleResults(t *testing.T) {
 	refusal := &model.Fault{Code: "forbidden", Message: "lower refusal"}

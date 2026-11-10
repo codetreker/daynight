@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,11 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -30,16 +27,12 @@ func terminalRequest(h http.Handler, method, path, body, protocol string) *httpt
 }
 
 type terminalHTTPFixture struct {
-	h        *resourceTestHandler
-	app      *sessionApplication
-	backend  *sessionHTTPFixture
-	record   map[string]any
-	inserted *store.TerminalRegistration
-	saved    []byte
-	plan     *httpCallPlan
-	server   *httptest.Server
-	base     string
-	message  v2.Message
+	h       *resourceTestHandler
+	app     *sessionApplication
+	backend *sessionHTTPFixture
+	server  *httptest.Server
+	base    string
+	message v2.Message
 }
 
 func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
@@ -83,214 +76,162 @@ func (f terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v
 
 func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testing.T) {
 	f := terminalHTTPSetup(t)
-	ctx := context.Background()
 	reg := f.message.Payload.(v2.Registration)
 	native := "original-native"
 	reg.Binding.NativeSessionID = &native
 	reg.Capabilities = v2.Capabilities{}
 	f.message.Payload = reg
-	f.expect(t, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1})
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
-	if f.inserted == nil || f.inserted.OwnerID != f.h.principal.UserID || f.inserted.SessionID != f.message.SessionID || !bytes.Equal(f.inserted.Registration, []byte(jsonBody(t, reg))) || f.inserted.ServerInstance == "" || f.inserted.LastSeen.IsZero() {
-		t.Fatal("terminal registration changed declared identity")
+	registration := terminalEnvelopeForTest(f.message, "registration_ack", v2.RegistrationAck{RegistrationID: reg.RegistrationID, ConnectionEpoch: "1"})
+	f.expectRegistration(t, f.message, registration)
+	if actual := terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol)); !reflect.DeepEqual(actual, registration) {
+		t.Fatal("terminal registration response changed declared identity")
 	}
-	f.record = map[string]any{"Envelope": f.message.Envelope, "Registration": reg, "RegistrationDigest": v2.HashBytes([]byte(jsonBody(t, f.message))), "RegistrationEpoch": "1", "Owner": reg.Owner, "Binding": reg.Binding, "Runs": []v2.Run{}, "ConnectionEpoch": "1", "ControlEpoch": "0", "LastLeaseSeq": "0", "ServerInstance": f.inserted.ServerInstance, "LastSeen": f.inserted.LastSeen, "Recording": map[string]any{}}
+
 	ledger := v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}}
-	f.expect(t, terminalRecoveryCalls("LockArchiveTask", map[string]int{"SaveTerminal": 1}))
-	f.messageRequest(t, "generation_ledger", ledger)
-	f.assertSaved(t, "Runs", ledger.Runs)
-	f.record["Runs"] = ledger.Runs
-	control := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
-	f.expect(t, terminalRecoveryCalls("LockTask", map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}))
-	f.messageRequest(t, "control_state", control)
-	f.assertSaved(t, "Control", control)
-	f.record["Control"] = control
-	f.record["ControlEpoch"] = "1"
-	f.expect(t, terminalRecoveryCalls("LockTask", map[string]int{"SaveTerminal": 1}))
-	if err := f.app.service.BindTerminalConnection(ctx, f.h.principal, reg.Owner.ProjectID, reg.Owner.TaskID, f.message.SessionID, f.message.Envelope, "1"); err != nil {
-		t.Fatal(err)
+	ledgerMessage := terminalEnvelopeForTest(f.message, "generation_ledger", ledger)
+	f.expectWorkerMessage(t, "ledger", ledgerMessage, ledgerMessage)
+	if actual := f.messageRequest(t, "generation_ledger", ledger); !reflect.DeepEqual(actual, ledgerMessage) {
+		t.Fatal("ledger response changed complete supplied runs")
 	}
-	f.assertSaved(t, "ChannelEpoch", "1")
-	f.record["ChannelEpoch"] = "1"
+	control := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
+	controlMessage := terminalEnvelopeForTest(f.message, "control_state", control)
+	f.expectWorkerMessage(t, "control", controlMessage, controlMessage)
+	if actual := f.messageRequest(t, "control_state", control); !reflect.DeepEqual(actual, controlMessage) {
+		t.Fatal("control response changed complete supplied state")
+	}
+
 	prepare := v2.AutomationRecoveryPrepare{RecoveryID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: uuid.NewString(), Binding: reg.Binding, InitialAssignment: "transport_completed"}
-	f.expect(t, terminalRecoveryCalls("LockArchiveTask", map[string]int{"TerminalAutomationAllowed": 1, "TerminalInputPending": 1, "SaveTerminal": 1}))
+	expectedState := v2.AutomationRecoveryState{RecoveryID: prepare.RecoveryID, PrepareDigest: strings.Repeat("a", 64), SourceGeneration: "1", SourceConnectionEpoch: "1", SourceControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: prepare.StopOperationID, NativeSessionID: native}
+	preparedMessage := terminalEnvelopeForTest(f.message, "automation_recovery_state", expectedState)
+	f.expectWorkerMessage(t, "recovery", terminalEnvelopeForTest(f.message, "automation_recovery_prepare", prepare), preparedMessage)
 	ack := f.messageRequest(t, "automation_recovery_prepare", prepare)
-	expectedState := v2.AutomationRecoveryState{RecoveryID: prepare.RecoveryID, PrepareDigest: ack.Payload.(v2.AutomationRecoveryState).PrepareDigest, SourceGeneration: "1", SourceConnectionEpoch: "1", SourceControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: prepare.StopOperationID, NativeSessionID: native}
-	if !reflect.DeepEqual(ack.Payload, expectedState) {
+	if !reflect.DeepEqual(ack, preparedMessage) {
 		t.Fatal("recovery receipt changed independently declared intent")
 	}
-	f.record["AutomationRecoveries"] = map[string]any{prepare.RecoveryID: map[string]any{"State": expectedState, "Invalidated": false}}
-	f.record["ControlEpoch"] = "2"
-	f.record["Control"] = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "closing", InitialAssignment: "transport_completed", AvailableActions: []string{}}
 	path := f.base + "/" + f.message.SessionID + "/automation-recovery/" + prepare.RecoveryID
-	f.expect(t, terminalRecoveryCalls("LockArchiveTask", nil))
+	f.expectRecoveryRead(t, prepare.RecoveryID, preparedMessage, nil)
 	read := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path, "", v2.Protocol))
 	if jsonBody(t, read) != jsonBody(t, ack) {
 		t.Fatal("readback changed original preparation")
 	}
+	unknown := uuid.NewString()
+	f.expectRecoveryRead(t, unknown, v2.Message{}, &model.Fault{Code: "not_found", Message: "The original automation recovery intent is not registered."})
 	for _, probe := range []struct {
 		method, path, protocol string
 		status                 int
-	}{{"GET", path + "?unexpected=1", v2.Protocol, 400}, {"HEAD", path, v2.Protocol, 405}, {"GET", f.base + "/" + f.message.SessionID + "/automation-recovery/" + uuid.NewString(), v2.Protocol, 404}} {
-		if probe.status == 404 {
-			f.expect(t, terminalRecoveryCalls("LockArchiveTask", nil))
-		}
+	}{{"GET", path + "?unexpected=1", v2.Protocol, 400}, {"HEAD", path, v2.Protocol, 405}, {"GET", f.base + "/" + f.message.SessionID + "/automation-recovery/" + unknown, v2.Protocol, 404}} {
 		w := terminalRequest(f.h, probe.method, probe.path, "", probe.protocol)
 		if w.Code != probe.status {
 			t.Fatal(probe, w.Code, w.Body.String())
 		}
 	}
-	f.expect(t, terminalRecoveryCalls("LockTask", map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1}))
+	closing := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "closing", InitialAssignment: "transport_completed", AvailableActions: []string{}}
+	stateResult := map[string]any{"status": "registered", "protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "sessionId": f.message.SessionID, "claimId": f.message.ClaimID, "executionGeneration": "1", "agentControlMode": "herdr", "contentKind": "terminal_recording", "owner": reg.Owner, "binding": reg.Binding, "connectionEpoch": "1", "connected": true, "capabilities": reg.Capabilities, "control": closing, "snapshot": nil, "ledger": ledger, "archive": v2.ArchiveStatus{State: "pending"}, "recording": []map[string]any{{"executionGeneration": "1", "responsibility": nil, "evidence": nil}}}
+	expectedDocument := startupClone(t, stateResult)
+	supplied := startupClone(t, stateResult)
+	called := startupOnce(t)
+	f.backend.ops.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
+		called()
+		f.check(t, ctx, p, project, task, id)
+		return startupClone(t, supplied), nil
+	}
 	state := terminalRequest(f.h, "GET", f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
-	if state.Code != 200 || strings.Contains(state.Body.String(), "prepareDigest") {
+	var document map[string]any
+	if err := json.Unmarshal(state.Body.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if state.Code != 200 || strings.Contains(state.Body.String(), "prepareDigest") || !reflect.DeepEqual(document, expectedDocument) {
 		t.Fatal("ordinary strict state shape changed", state.Code, state.Body.String())
 	}
 }
 
-func terminalRecoveryCalls(lock string, work map[string]int) map[string]int {
-	counts := map[string]int{lock: 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1}
-	for name, n := range work {
-		counts[name] = n
-	}
-	return counts
+func terminalEnvelopeForTest(in v2.Message, kind string, payload v2.Payload) v2.Message {
+	e := in.Envelope
+	e.Type = kind
+	return v2.Message{Envelope: e, Payload: payload}
 }
-func (f *terminalHTTPFixture) expect(t *testing.T, counts map[string]int) {
+func terminalCloneForTest(t *testing.T, in v2.Message) v2.Message {
 	t.Helper()
-	f.plan = newHTTPCallPlan(t, counts)
-	f.saved = nil
-	f.backend.store.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-		return f.run(ctx, fn)
+	out := in
+	switch payload := in.Payload.(type) {
+	case v2.Registration:
+		out.Payload = startupClone(t, payload)
+	case v2.RegistrationAck:
+		out.Payload = startupClone(t, payload)
+	case v2.GenerationLedger:
+		out.Payload = startupClone(t, payload)
+	case v2.ControlState:
+		out.Payload = startupClone(t, payload)
+	case v2.AutomationRecoveryPrepare:
+		out.Payload = startupClone(t, payload)
+	case v2.AutomationRecoveryState:
+		out.Payload = startupClone(t, payload)
+	default:
+		t.Fatalf("unconfigured terminal payload clone: %T", payload)
 	}
+	return out
 }
-func (f *terminalHTTPFixture) run(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-	d := &terminalRecoveryDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: f.backend.store.t}, f: f, t: f.backend.store.t}
-	err := fn(sessionHTTPScope{t: f.backend.store.t, dao: d})
-	f.plan.Verify()
-	if err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, err
-	}
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
-}
-func (f *terminalHTTPFixture) assertSaved(t *testing.T, key string, expected any) {
+func (f *terminalHTTPFixture) check(t *testing.T, ctx context.Context, p model.Principal, project, task, id string) {
 	t.Helper()
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(f.saved, &fields); err != nil {
-		t.Fatal("terminal write missing", err)
-	}
-	var actual, independent any
-	if err := json.Unmarshal(fields[key], &actual); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal([]byte(jsonBody(t, expected)), &independent); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(actual, independent) {
-		t.Fatalf("terminal saved %s=%#v, want %#v", key, actual, independent)
+	if ctx == nil || ctx.Err() != nil || p != f.h.principal || project != f.backend.task.ProjectID || task != f.backend.task.ID || id != f.message.SessionID {
+		unexpectedHTTPCall(t, "Terminal operation context, principal or full address")
 	}
 }
-
-type terminalRecoveryDAO struct {
-	sessionHTTPRejectedDAO
-	f *terminalHTTPFixture
-	t *testing.T
-}
-
-func (d *terminalRecoveryDAO) LockTask(ctx context.Context, project, id string) (store.SessionTask, error) {
-	d.f.plan.Called("LockTask")
-	return d.task(ctx, project, id)
-}
-func (d *terminalRecoveryDAO) LockArchiveTask(ctx context.Context, project, id string) (store.SessionTask, bool, error) {
-	d.f.plan.Called("LockArchiveTask")
-	v, err := d.task(ctx, project, id)
-	return v, false, err
-}
-func (d *terminalRecoveryDAO) task(ctx context.Context, project, id string) (store.SessionTask, error) {
-	if project != d.f.backend.task.ProjectID || id != d.f.backend.task.ID {
-		unexpectedHTTPCall(d.t, "Terminal Task address")
+func (f *terminalHTTPFixture) expectRegistration(t *testing.T, want, result v2.Message) {
+	t.Helper()
+	want = terminalCloneForTest(t, want)
+	result = terminalCloneForTest(t, result)
+	called := startupOnce(t)
+	f.backend.ops.RegisterTerminal = func(ctx context.Context, p model.Principal, project, task string, actual v2.Message) (v2.Message, error) {
+		called()
+		f.check(t, ctx, p, project, task, actual.SessionID)
+		if !reflect.DeepEqual(actual, want) {
+			t.Errorf("terminal registration=%#v, want %#v", actual, want)
+			panic("registration input changed")
+		}
+		return terminalCloneForTest(t, result), nil
 	}
-	return sessionHTTPCopy(d.f.backend.sessionTask), ctx.Err()
 }
-func (d *terminalRecoveryDAO) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
-	d.f.plan.Called("LockCredential")
-	if p != d.f.h.principal || now.IsZero() {
-		unexpectedHTTPCall(d.t, "Terminal principal")
+func (f *terminalHTTPFixture) expectWorkerMessage(t *testing.T, kind string, want, result v2.Message) {
+	t.Helper()
+	want = terminalCloneForTest(t, want)
+	result = terminalCloneForTest(t, result)
+	called := startupOnce(t)
+	operation := func(ctx context.Context, p model.Principal, project, task, id, epoch string, actual v2.Message) (v2.Message, error) {
+		called()
+		f.check(t, ctx, p, project, task, id)
+		if epoch != "1" || !reflect.DeepEqual(actual, want) {
+			t.Errorf("terminal %s message/epoch=%#v/%q, want %#v/1", kind, actual, epoch, want)
+			panic("terminal worker input changed")
+		}
+		return terminalCloneForTest(t, result), nil
 	}
-	return ctx.Err()
-}
-func (d *terminalRecoveryDAO) ProjectAccess(ctx context.Context, user, project string) (model.ProjectAccess, error) {
-	d.f.plan.Called("ProjectAccess")
-	if user != d.f.h.principal.UserID || project != d.f.backend.task.ProjectID {
-		unexpectedHTTPCall(d.t, "Terminal Project access")
+	switch kind {
+	case "ledger":
+		f.backend.ops.UpdateTerminalLedger = operation
+	case "control":
+		f.backend.ops.HandleTerminalControl = operation
+	case "recovery":
+		f.backend.ops.UpdateTerminalRecovery = operation
+	default:
+		t.Fatal("unknown terminal operation plan", kind)
 	}
-	return model.ProjectAccess{UserID: user, ProjectID: project, Role: model.ProjectAdmin}, ctx.Err()
 }
-func (d *terminalRecoveryDAO) LockTaskRegistration(ctx context.Context, project, id string) error {
-	d.f.plan.Called("LockTaskRegistration")
-	_, err := d.task(ctx, project, id)
-	return err
-}
-func (d *terminalRecoveryDAO) FindTerminalRegistration(ctx context.Context, id, project, registration, task, claim string) (string, error) {
-	d.f.plan.Called("FindTerminalRegistration")
-	in := d.f.message.Payload.(v2.Registration)
-	if id != d.f.message.SessionID || registration != in.RegistrationID || claim != d.f.message.ClaimID || project != in.Owner.ProjectID || task != in.Owner.TaskID {
-		unexpectedHTTPCall(d.t, "Terminal registration address")
+func (f *terminalHTTPFixture) expectRecoveryRead(t *testing.T, recovery string, result v2.Message, resultErr error) {
+	t.Helper()
+	if resultErr == nil {
+		result = terminalCloneForTest(t, result)
 	}
-	return "", model.ErrNotFound
-}
-func (d *terminalRecoveryDAO) InsertTerminal(ctx context.Context, in store.TerminalRegistration) error {
-	d.f.plan.Called("InsertTerminal")
-	d.f.inserted = new(sessionHTTPCopy(in))
-	return ctx.Err()
-}
-func (d *terminalRecoveryDAO) LockTerminal(ctx context.Context, id string) ([]byte, error) {
-	d.f.plan.Called("LockTerminal")
-	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal Session id")
+	called := startupOnce(t)
+	f.backend.ops.TerminalAutomationRecovery = func(ctx context.Context, p model.Principal, project, task, id, actualRecovery string) (v2.Message, error) {
+		called()
+		f.check(t, ctx, p, project, task, id)
+		if actualRecovery != recovery {
+			unexpectedHTTPCall(t, "terminal recovery identity")
+		}
+		if resultErr != nil {
+			return v2.Message{}, resultErr
+		}
+		return terminalCloneForTest(t, result), nil
 	}
-	return []byte(jsonBody(d.t, d.f.record)), ctx.Err()
-}
-func (d *terminalRecoveryDAO) SaveTerminal(ctx context.Context, id string, raw []byte, seen *time.Time, instance string) error {
-	d.f.plan.Called("SaveTerminal")
-	if id != d.f.message.SessionID || instance != d.f.inserted.ServerInstance || seen == nil {
-		unexpectedHTTPCall(d.t, "Terminal write identity")
-	}
-	d.f.saved = bytes.Clone(raw)
-	return ctx.Err()
-}
-func (d *terminalRecoveryDAO) ExpireTerminalOperations(ctx context.Context, id string, now time.Time) error {
-	d.f.plan.Called("ExpireTerminalOperations")
-	if id != d.f.message.SessionID || now.IsZero() {
-		unexpectedHTTPCall(d.t, "Terminal expiry arguments")
-	}
-	return ctx.Err()
-}
-func (d *terminalRecoveryDAO) TerminalAutomationAllowed(ctx context.Context, task string) (bool, error) {
-	d.f.plan.Called("TerminalAutomationAllowed")
-	if task != d.f.backend.task.ID {
-		unexpectedHTTPCall(d.t, "Terminal automation Task")
-	}
-	return true, ctx.Err()
-}
-func (d *terminalRecoveryDAO) TerminalInputPending(ctx context.Context, id string) (bool, error) {
-	d.f.plan.Called("TerminalInputPending")
-	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal pending Session")
-	}
-	return false, ctx.Err()
-}
-
-func (d *terminalRecoveryDAO) TerminalArchive(ctx context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
-	d.f.plan.Called("TerminalArchive")
-	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal archive Session")
-	}
-	return v2.ArchiveStatus{}, nil, "", model.ErrNotFound
-}
-
-func (d *terminalRecoveryDAO) InvalidateTerminalOperations(ctx context.Context, id string) error {
-	d.f.plan.Called("InvalidateTerminalOperations")
-	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal invalidate Session")
-	}
-	return ctx.Err()
 }

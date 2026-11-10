@@ -2,30 +2,31 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	transfercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
-	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
+	uploadservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
-	database := newHTTPTestStore(t)
 	files := attachmentTestFiles(t)
 	tokens := []string{defaultHTTPToken(), "dnpat_" + strings.Repeat("B", 42) + "A"}
 	principals := []model.Principal{defaultHTTPPrincipal(), {UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444", Kind: model.PATCredential}}
@@ -33,29 +34,23 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	browserPrincipal.Kind = model.SessionCredential
 	browserPrincipal.CredentialID = "e5555555-5555-4555-8555-555555555555"
 	browserToken := httpTestToken(model.SessionCredential)
-	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal})
-	production, _ := newMCPHTTPServer(t, database, files)
+	declared := map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal}
+	org := newMCPOrgFixture(t)
+	tasks := &mcpIsolationTasks{operationRejectedTasks: operationRejectedTasks{t: t}}
+	observations := &mcpIsolationObservations{operationRejectedTaskObservations: operationRejectedTaskObservations{t: t}}
+	uploads := &mcpUploadOperations{t: t}
+	downloads := &mcpIsolationDownloads{operationRejectedDownloads: operationRejectedDownloads{t: t}}
+	var identity *mcpOperationIdentity
+	production, _ := newMCPOperationServer(t, declared, files, func(app *service.App) {
+		org.configure(app)
+		app.Tasks, app.TaskObservations, app.Uploads, app.Downloads = tasks, observations, uploads, downloads
+		identity = app.Identity.(*mcpOperationIdentity)
+	})
 	origin := production.URL
 	config := configuredTestConfig()
 	config.PublicOrigin = origin
 	config.UniAuthCallbackURL = origin + "/api/v1/auth/callback"
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	newApp := func() *sessionApplication {
-		handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		app := handler.(*sessionApplication)
-		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := app.Shutdown(ctx); err != nil {
-				t.Errorf("shutdown: %v", err)
-			}
-		})
-		return app
-	}
 	if principals[0].UserID == principals[1].UserID || principals[0].CredentialID == principals[1].CredentialID {
 		t.Fatal("fixture PATs do not identify distinct accounts and credentials")
 	}
@@ -88,28 +83,16 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		return value
 	}
 	uploadMetadata := model.Attachment{ProjectID: project.ID, TaskID: created.ID, Path: "upload.txt", ContentType: "text/plain", SizeBytes: 5, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt}
-	mcpIsolationInline(t, database, principals[0], uploadMetadata, true)
+	uploadActor := transfercore.Actor{Principal: principals[0], AuthorityKind: "pat", AuthorityID: principals[0].CredentialID}
+	uploads.expect(uploadActor, project.ID, created.ID, uploadservice.UploadInput{Action: "inline", Path: "upload.txt", ContentType: "text/plain", ContentBase64: "aGVsbG8="}, map[string]any{"attachment": mcpIsolationAttachment(uploadMetadata), "created": true, "writeOutcome": "confirmed"}, nil, 1)
 	upload := call(productionClient, "task_attachment_put", map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "inline", "path": "upload.txt", "contentType": "text/plain", "contentBase64": "aGVsbG8="}, false)
 	data := upload["data"].(map[string]any)
 	if data["writeOutcome"] != "confirmed" || data["created"] != true {
 		t.Fatalf("upload receipt: %#v", upload)
 	}
-	address, err := attachmentcore.NewAddress(project.ID, created.ID, "upload.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	object, err := files.Open(t.Context(), attachmentcore.Bucket, address.StoragePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content, readErr := io.ReadAll(object.Body)
-	closeErr := object.Body.Close()
-	if readErr != nil || closeErr != nil || string(content) != "hello" || object.Info.Size != 5 {
-		t.Fatalf("uploaded content=%q info=%#v read=%v close=%v", content, object.Info, readErr, closeErr)
-	}
 	for _, name := range []string{"task_list", "task_ready"} {
 		for _, view := range []string{"summary", "full"} {
-			mcpIsolationTaskRead(t, database, principals[0], project, created, name, view)
+			mcpIsolationTaskRead(t, tasks, observations, principals[0], project, created, name, view)
 			value := call(productionClient, name, map[string]any{"projectId": project.ID, "view": view}, false)
 			data := value["data"].(map[string]any)
 			items := data["items"].([]any)
@@ -125,7 +108,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 	}
 	for _, view := range []string{"summary", "full"} {
-		mcpIsolationTaskRead(t, database, principals[0], project, created, "task_graph", view)
+		mcpIsolationTaskRead(t, tasks, observations, principals[0], project, created, "task_graph", view)
 		value := call(productionClient, "task_graph", map[string]any{"projectId": project.ID, "taskId": created.ID, "view": view}, false)
 		data := value["data"].(map[string]any)
 		if data["projection"] != view || len(data["tasks"].([]any)) != 1 {
@@ -134,79 +117,55 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		assertMCPUnstartedObservation(t, data["tasks"].([]any)[0].(map[string]any))
 	}
 	bobQueries := mcpPATClient(t, production.URL, tokens[1])
-	denyCounts := newHTTPCallPlan(t, map[string]int{"denied snapshot": 1, "denied credential": 1, "denied access": 1})
-	deniedSnapshot := newHTTPTestSnapshot(t)
-	deniedSnapshot.Credentials = &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "MCP denied observation credential"), CredentialFn: func(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
-		denyCounts.Called("denied credential")
+	deniedCall := projectHTTPCount(t, 1)
+	observations.list = func(ctx context.Context, p model.Principal, pid string, request taskcore.MCPListRequest) (taskservice.ObservedMCPPage, error) {
+		deniedCall()
 		mcpAttachmentCheck(t, p, principals[1])
-		return store.ThreadCredential{}, nil
-	}}
-	deniedSnapshot.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
-		denyCounts.Called("denied access")
-		mcpAttachmentCheck(t, p, principals[1])
-		mcpAttachmentCheck(t, id, project.ID)
-		return model.ProjectAccess{}, model.ErrNotFound
-	}}
-	database.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
-		denyCounts.Called("denied snapshot")
-		return fn(deniedSnapshot)
+		mcpAttachmentCheck(t, pid, project.ID)
+		mcpAttachmentCheck(t, request, taskcore.MCPListRequest{Limit: 50, View: "summary"})
+		return taskservice.ObservedMCPPage{}, &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound}
 	}
 	if value := call(bobQueries, "task_list", map[string]any{"projectId": project.ID}, true); value["error"] == nil {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
-	attachments := attachmentservice.NewAttachments(database, database, files)
 	sample := model.Attachment{ProjectID: project.ID, TaskID: created.ID, Path: "sample.txt", ContentType: "text/plain", SizeBytes: 13, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt}
-	put := func(content string) {
-		t.Helper()
-		item := sample
-		item.SizeBytes = int64(len(content))
-		isNew := content == "first content"
-		if !isNew {
-			item.UpdatedAt = item.UpdatedAt.Add(time.Second)
-		}
-		mcpIsolationInline(t, database, principals[0], item, isNew)
-		if _, _, err := attachments.Put(t.Context(), principals[0], project.ID, created.ID, "sample.txt", "text/plain", strings.NewReader(content)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	put("first content")
 	base := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt"}
-	mcpIsolationSource(t, database, principals[0], sample, 1)
-	mcpTransferPlan(t, database, mcpIsolationAuthorize(t, principals[0], project.ID, created.ID, 1), mcpIsolationAuthorize(t, principals[0], project.ID, created.ID, 1))
+	downloads.expect(uploadActor, mcpdownload.Input{ProjectID: project.ID, TaskID: created.ID, Path: "sample.txt"}, map[string]any{"attachment": mcpIsolationAttachment(sample), "sizeBytes": "13", "contentRef": map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt"}, "contentIncluded": false}, nil)
 	inspect := call(productionClient, "task_attachment_read", base, false)["data"].(map[string]any)
 	if inspect["contentIncluded"] != false || inspect["sizeBytes"] != "13" || inspect["contentRef"] == nil {
 		t.Fatalf("attachment inspect: %#v", inspect)
 	}
 	transferID := uuid.NewString()
 	open := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt", "action": "open", "transferId": transferID}
-	readable := mcpIsolationDownloadOpen(t, database, principals[0], sample, transferID, time.Now().UTC())
+	expires := time.Now().UTC().Add(time.Hour)
+	digest := sha256.Sum256([]byte("first content"))
+	downloads.expect(uploadActor, mcpdownload.Input{ProjectID: project.ID, TaskID: created.ID, Path: "sample.txt", Action: "open", TransferID: transferID}, map[string]any{"transferId": transferID, "direction": "download", "state": "readable", "maxChunkBytes": 524288, "expiresAt": expires, "contentRef": map[string]any{"projectId": project.ID, "taskId": created.ID, "transferId": transferID}, "attachment": mcpIsolationAttachment(sample), "totalBytes": "13", "sha256": hex.EncodeToString(digest[:]), "nextOffset": "0"}, nil)
 	opened := call(productionClient, "task_attachment_read", open, false)["data"].(map[string]any)
 	if opened["transferId"] != transferID || opened["state"] != "readable" || opened["totalBytes"] != "13" || opened["sha256"] == nil {
 		t.Fatalf("attachment open: %#v", opened)
 	}
-	put("replacement")
 	chunk := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "chunk", "transferId": transferID, "offset": "0", "format": "base64"}
-	touched := mcpIsolationDownloadChunk(t, database, principals[0], readable)
+	downloads.expect(uploadActor, mcpdownload.Input{ProjectID: project.ID, TaskID: created.ID, Action: "chunk", TransferID: transferID, Offset: "0", Format: "base64"}, map[string]any{"transferId": transferID, "state": "readable", "offset": "0", "totalBytes": "13", "expiresAt": expires, "encoding": "base64", "contentBase64": base64.StdEncoding.EncodeToString([]byte("first content")), "sha256": hex.EncodeToString(digest[:]), "readBytes": "13", "nextOffset": "13", "eof": true}, nil)
 	downloadData := call(productionClient, "task_attachment_read", chunk, false)["data"].(map[string]any)
 	if downloadData["contentBase64"] != base64.StdEncoding.EncodeToString([]byte("first content")) || downloadData["nextOffset"] != "13" || downloadData["eof"] != true {
 		t.Fatalf("attachment snapshot: %#v", downloadData)
 	}
-	mcpTransferPlan(t, database, mcpTransferRead(t, principals[1], 0, 0, mcpTransferRow(touched)))
+	downloads.expect(transfercore.Actor{Principal: principals[1], AuthorityKind: "pat", AuthorityID: principals[1].CredentialID}, mcpdownload.Input{ProjectID: project.ID, TaskID: created.ID, Action: "chunk", TransferID: transferID, Offset: "0", Format: "base64"}, nil, &model.Fault{Code: "transfer_conflict", Message: "Transfer binding does not match."})
 	if value := call(bobQueries, "task_attachment_read", chunk, true); value["error"] == nil {
 		t.Fatalf("unauthorized snapshot: %#v", value)
 	}
 	closeInput := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "close", "transferId": transferID}
-	mcpIsolationDownloadClose(t, database, principals[0], touched)
+	downloads.expect(uploadActor, mcpdownload.Input{ProjectID: project.ID, TaskID: created.ID, Action: "close", TransferID: transferID}, map[string]any{"transferId": transferID, "state": "cleanup_pending", "cleanupState": "pending"}, nil)
 	closed := call(productionClient, "task_attachment_read", closeInput, false)["data"].(map[string]any)
 	if closed["state"] != "cleanup_pending" || closed["cleanupState"] != "pending" {
 		t.Fatalf("attachment close: %#v", closed)
 	}
 
-	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
+	exerciseMCPTeams(t, org, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
-	instrumented := newApp()
+	server, instrumented := newMCPOperationServerWithConfig(t, declared, files, config, func(app *service.App) {})
 	entry := instrumented.mcp
 	input := map[string]any{"type": "object"}
 	output := map[string]any{"type": "object"}
@@ -216,8 +175,6 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpx.RequestLogging(logger, instrumented))
-	t.Cleanup(server.Close)
 	sessions := []*sdk.ClientSession{mcpPATClient(t, server.URL, tokens[0]), mcpPATClient(t, server.URL, tokens[1])}
 	var wg sync.WaitGroup
 	failures := make(chan error, 2)
@@ -272,9 +229,15 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 			t.Errorf("MCP status: got %d, want %d: %s", resp.StatusCode, expected, body)
 		}
 	}
+	identity.setCredential(model.PATCredential, "invalid", model.Principal{}, model.Unauthenticated(nil))
 	assertStatus("invalid", http.StatusUnauthorized)
-	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal})
-	mcpIsolationRevocation(t, database, browserPrincipal, principals[0].CredentialID)
+	revokeCall := projectHTTPCount(t, 1)
+	identity.RevokePATCall = func(ctx context.Context, p model.Principal, id string) error {
+		revokeCall()
+		mcpAttachmentCheck(t, p, browserPrincipal)
+		mcpAttachmentCheck(t, id, principals[0].CredentialID)
+		return nil
+	}
 	revoke, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, origin+"/api/v1/me/tokens/"+principals[0].CredentialID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +254,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke: HTTP %d", resp.StatusCode)
 	}
-	mcpIsolationRevokedAuthentication(t, database, tokens[0], tokens[1], principals[1])
+	identity.setCredential(model.PATCredential, tokens[0], model.Principal{}, model.Unauthenticated(model.ErrNotFound))
 	assertStatus(tokens[0], http.StatusUnauthorized)
 	bobProduction := mcpPATClient(t, production.URL, tokens[1])
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)

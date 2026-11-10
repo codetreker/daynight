@@ -17,6 +17,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
+func tokenTestAdmission(admission core.PublicAdmission) TokenAdmission {
+	return func(ctx context.Context, source string) (ClientPermit, bool, error) {
+		return admission.TakeToken(ctx, source)
+	}
+}
+
 type tokenRate struct {
 	store.IdentityDAO
 	counts map[string]int
@@ -54,7 +60,7 @@ func (*countedBody) Close() error               { return nil }
 
 func TestTokenCapacityRefusalDoesNotReadBody(t *testing.T) {
 	d := &tokenRate{counts: map[string]int{string(secret.Hash("oauth:token:global")): 1200}}
-	h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}}
+	h := PublicTokens{Admission: tokenTestAdmission(core.PublicAdmission{Writer: tokenWriter{d}})}
 	body := &countedBody{}
 	r := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
 	r.Body, r.ContentLength = body, 1<<20
@@ -99,7 +105,7 @@ func tokenRequest(h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 func TestTokenAdmissionAndDispatch(t *testing.T) {
 	d := &tokenRate{counts: map[string]int{}}
 	s := &tokenStub{}
-	h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+	h := PublicTokens{Admission: tokenTestAdmission(core.PublicAdmission{Writer: tokenWriter{d}}), Resource: "https://server.test/mcp", Codes: s, Grants: s}
 	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {"client"}, "resource": {"https://server.test/mcp"}, "code": {"code"}, "redirect_uri": {"https://client.test"}, "code_verifier": {"verifier"}}
 	w := tokenRequest(h.Token, form.Encode())
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"access_token":"access"`) || w.Header().Get("Cache-Control") != "no-store" {
@@ -160,7 +166,7 @@ func TestTokenAdmissionAndDispatch(t *testing.T) {
 func TestPublicMethodsAndMalformedRequests(t *testing.T) {
 	d := &tokenRate{counts: map[string]int{}}
 	s := &tokenStub{}
-	h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+	h := PublicTokens{Admission: tokenTestAdmission(core.PublicAdmission{Writer: tokenWriter{d}}), Resource: "https://server.test/mcp", Codes: s, Grants: s}
 	for _, handler := range []http.HandlerFunc{h.Token, h.Revoke} {
 		for _, tc := range []struct {
 			method string
@@ -223,7 +229,7 @@ func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &tokenRate{counts: map[string]int{string(secret.Hash(tc.key)): tc.count}}
 			s := &tokenStub{}
-			h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+			h := PublicTokens{Admission: tokenTestAdmission(core.PublicAdmission{Writer: tokenWriter{d}}), Resource: "https://server.test/mcp", Codes: s, Grants: s}
 			w := tokenRequest(h.Token, valid)
 			if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "60" || s.calls != tc.calls {
 				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), s.calls)
@@ -241,7 +247,7 @@ func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 	} {
 		d := &tokenRate{counts: map[string]int{}}
 		s := &tokenStub{fail: tc.err}
-		h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+		h := PublicTokens{Admission: tokenTestAdmission(core.PublicAdmission{Writer: tokenWriter{d}}), Resource: "https://server.test/mcp", Codes: s, Grants: s}
 		for _, handler := range []http.HandlerFunc{h.Token, h.Revoke} {
 			body := valid
 			if s.calls > 0 {
@@ -253,7 +259,7 @@ func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 			}
 		}
 	}
-	missingStore := PublicTokens{Resource: "https://server.test/mcp"}
+	missingStore := PublicTokens{Admission: tokenTestAdmission(core.PublicAdmission{}), Resource: "https://server.test/mcp"}
 	w := tokenRequest(missingStore.Token, valid)
 	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "server_error") {
 		t.Fatalf("admission store failure: %d %s", w.Code, w.Body.String())

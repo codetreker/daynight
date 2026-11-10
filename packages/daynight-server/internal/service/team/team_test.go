@@ -92,6 +92,17 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 			})
 		}
 	}
+	t.Run("OAuth private Team", func(t *testing.T) {
+		f := newTeamFixture(t, readPlan("get")...)
+		f.p = model.Principal{Kind: model.OAuthCredential, UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "f6666666-6666-4666-8666-666666666666"}
+		f.rawID, f.id = "c9999999-9999-4999-8999-999999999999", "c9999999-9999-4999-8999-999999999999"
+		refusal := fixtureFault("not_found")
+		f.bindGet(model.Team{}, refusal)
+		got, err := f.service.Get(f.ctx, f.p, f.rawID)
+		if err != refusal || !reflect.DeepEqual(got, model.Team{}) {
+			t.Fatalf("OAuth private Team=%#v %v", got, err)
+		}
+	})
 	t.Run("member read", func(t *testing.T) {
 		f := newTeamFixture(t, readPlan("get")...)
 		f.p.UserID = teamFixtureTarget

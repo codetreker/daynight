@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -81,6 +82,43 @@ func TestAddressAndConflictQuery(t *testing.T) {
 	want := store.AttachmentConflictQuery{Ancestors: []string{"文档", "文档/a%_"}, DescendantPrefix: "文档/a%_/file/"}
 	if !reflect.DeepEqual(probe.query, want) || probe.context != t.Context() || probe.project != address.ProjectID || probe.task != address.TaskID || probe.calls != 1 {
 		t.Fatalf("conflict delegation: query=%#v context=%v project=%q task=%q calls=%d; want query=%#v address=%#v", probe.query, probe.context, probe.project, probe.task, probe.calls, want, address)
+	}
+	segments := make([]string, 13)
+	for index := range segments {
+		segments[index] = strings.Repeat("中", 78)
+	}
+	segments[12] = strings.Repeat("中", 76)
+	boundaryPath := strings.Join(segments, "/")
+	if utf8.RuneCountInString(boundaryPath) != 1024 {
+		t.Fatal("incorrect transport path geometry")
+	}
+	ancestors := make([]string, 0, 12)
+	for end := 1; end < len(segments); end++ {
+		ancestors = append(ancestors, strings.Join(segments[:end], "/"))
+	}
+	for _, original := range []struct {
+		path      string
+		ancestors []string
+	}{
+		{path: boundaryPath, ancestors: ancestors},
+		{path: "😀", ancestors: []string{}},
+	} {
+		const projectID = "c3333333-3333-4333-8333-333333333333"
+		const taskID = "d4444444-4444-4444-8444-444444444444"
+		address, err := NewAddress(projectID, taskID, original.path)
+		expectedAddress := Address{ProjectID: projectID, TaskID: taskID, RelativePath: original.path, StoragePath: projectID + "/d4/" + taskID + "/" + original.path}
+		if err != nil || address != expectedAddress {
+			t.Fatalf("transport address: got=%#v want=%#v error=%v", address, expectedAddress, err)
+		}
+		if err := ValidateWritePath(address.RelativePath); err != nil {
+			t.Fatalf("transport write path: %v", err)
+		}
+		probe := &readerProbe{}
+		err = CheckPathConflict(t.Context(), probe, address)
+		expectedQuery := store.AttachmentConflictQuery{Ancestors: append([]string{}, original.ancestors...), DescendantPrefix: original.path + "/"}
+		if err != nil || probe.calls != 1 || probe.context != t.Context() || probe.project != projectID || probe.task != taskID || !reflect.DeepEqual(probe.query, expectedQuery) {
+			t.Fatalf("transport conflict query: got=%#v want=%#v calls=%d context=%v project=%s task=%s error=%v", probe.query, expectedQuery, probe.calls, probe.context, probe.project, probe.task, err)
+		}
 	}
 	if _, err := NewAddress(project, task, "../file"); err == nil {
 		t.Fatal("accepted invalid path")

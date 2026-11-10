@@ -24,8 +24,12 @@ retained production module assembly and existing lower business decisions while
 removing persistence setup and making transaction outcomes and runtime barriers
 explicit.
 
-Root composition and runtime fixtures that retain this boundary use those callbacks
-to assemble production modules, routes and authentication. Each test declares query inputs, returned
+The later [Root operation fixture decision](2026-11-11-root-server-operation-fixtures.md)
+supersedes this boundary for ordinary business-result fixtures. They now use
+controlled direct operations with the shared production HTTP router; full MCP
+and default assembly retain real construction. Runtime mechanism fixtures that
+still require the earlier DAO boundary use explicit callbacks to assemble
+production modules, routes and authentication. Each test declares query inputs, returned
 facts, proposed writes, expected calls and transaction completion. A subsequent response is independently supplied;
 capturing a proposed write does not make it persistent. The fixtures contain no
 mutable model database or simulated rollback. Unconfigured access fails, and
@@ -36,8 +40,9 @@ adapter. Tests of the UniAuth SDK and browser/result binding retain their real
 local gateway, proxy and socket-loss mechanism. Native resources remain real
 when they are the subject: HTTP/TCP, MCP SDK exchanges, WebSockets, Session
 Engine state, local file publication and runtime shutdown all execute their
-production paths. HTTP control and WebSocket traffic share one actual
-application and Engine. Large native content and exact supported capacity
+production paths. Dedicated runtime composition cases keep HTTP control and WebSocket traffic
+on one actual application and Engine; ordinary fixed-result protocol fixtures
+follow the replacement direct-operation boundary. Large native content and exact supported capacity
 boundaries remain unchanged.
 
 PostgreSQL tests own SQL, lock waits, database-clock expiry, transaction outcomes
@@ -107,8 +112,10 @@ upper-layer decisions without that second implementation.
 
 ## Consequences
 
-The DAO fixtures provide root protocol and lifecycle feedback without
-PostgreSQL. Physical proofs remain in tests that exercise the responsible
+The original DAO correction removed PostgreSQL preparation from root feedback.
+Ordinary business-result fixtures subsequently move to direct operations under
+the replacement decision; remaining DAO callbacks serve their actual assembly
+or resource mechanisms. Physical proofs remain in tests that exercise the responsible
 database, filesystem or process mechanism. Controlled authentication removes unrelated login setup
 without removing the SDK boundary from tests that actually observe it.
 

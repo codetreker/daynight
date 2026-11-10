@@ -14,7 +14,7 @@ import (
 )
 
 func TestSessionShutdownDisconnectsControllerBeforeStoppingEngine(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := sessionRuntimeHTTPSetup(t)
 	f.controller(t, uuid.NewString())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

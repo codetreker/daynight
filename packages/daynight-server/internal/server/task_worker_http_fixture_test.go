@@ -2,14 +2,15 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
-	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func workerHTTPTask(t *testing.T) model.Task {
@@ -36,150 +37,166 @@ func workerHTTPProperties(t *testing.T, before model.TaskProperties, worker *mod
 	return result
 }
 
-func workerHTTPWriteValues(task model.Task) store.TaskWrite {
-	return copyTaskHTTPWrite(store.TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status,
-		AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform, AllowAgents: task.AllowAgents,
-		Properties: task.Properties, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn})
+func workerHTTPClaimInput(body map[string]any) taskcore.ClaimWorker {
+	machine := body["machine"].(map[string]any)
+	return taskcore.ClaimWorker{Version: body["version"].(int64), WorkerDescriptor: taskcore.WorkerDescriptor{
+		ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string),
+		Machine:  model.WorkerMachine{ID: machine["id"].(string), Name: machine["name"].(string)},
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr,
+		WorktreeID: body["worktreeId"].(string),
+	}}
 }
 
-type workerHTTPWritePlan struct {
-	t                       *testing.T
-	TaskDAO                 *taskHTTPWriterMock
-	AccessCalls, TaskReads  int
-	AccessError             error
-	ObservedCalls           int
-	access, reads, observed int
-	writes, updates, drains int
-	receipts, captures      int
-	wantUpdate, wantCapture bool
-	active                  bool
-	ctx                     context.Context
+type workerHTTPContextKey struct{}
+
+type workerHTTPOperationPlan struct {
+	t                 *testing.T
+	calls             int
+	requestID         string
+	marker            any
+	actor             model.Principal
+	projectID, taskID string
 }
 
-func expectWorkerHTTPWrite(t *testing.T, database *httpTestStore, current model.Task, actor model.Principal, role model.ProjectRole, expected *store.TaskWrite, returned model.Task, observedAt *time.Time) *workerHTTPWritePlan {
+func newWorkerHTTPOperationPlan(t *testing.T, actor model.Principal, current model.Task) *workerHTTPOperationPlan {
 	t.Helper()
-	current, returned = copyTaskHTTPTask(current), copyTaskHTTPTask(returned)
-	if expected != nil {
-		values := copyTaskHTTPWrite(*expected)
-		expected = &values
+	return &workerHTTPOperationPlan{t: t, actor: actor, projectID: current.ProjectID, taskID: current.ID, requestID: "project-test"}
+}
+
+func (p *workerHTTPOperationPlan) require(ctx context.Context, actor model.Principal, projectID, taskID string) {
+	p.t.Helper()
+	requireOperationHTTPContext(p.t, ctx)
+	p.calls++
+	if (p.marker != nil && ctx.Value(workerHTTPContextKey{}) != p.marker) || p.calls != 1 || actor != p.actor || projectID != p.projectID || taskID != p.taskID || ctx.Err() != nil || httpx.RequestID(ctx) != p.requestID {
+		p.t.Fatalf("Worker operation changed request identity/context/address or count: actor=%#v project=%s task=%s calls=%d request=%q", actor, projectID, taskID, p.calls, httpx.RequestID(ctx))
 	}
-	observedAt = copyTaskHTTPPointer(observedAt)
-	plan := &workerHTTPWritePlan{t: t, AccessCalls: 1, TaskReads: 1, wantUpdate: expected != nil}
-	base := newTaskHTTPMockBase(t, "worker HTTP write")
-	project := &taskHTTPProjectWriterMock{taskHTTPMockBase: base.withLabel("project")}
-	tasks := &taskHTTPWriterMock{taskHTTPMockBase: base.withLabel("task")}
-	plan.TaskDAO = tasks
-	sessions := &taskHTTPProjectSessionMock{taskHTTPMockBase: base.withLabel("session")}
-	capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base.withLabel("capture")}
-	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base.withLabel("scope"),
-		ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return tasks },
-		SessionDAOFn: func() store.ProjectSessionDAO { return sessions }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
-	checkContext := func(ctx context.Context) {
-		if !plan.active || ctx != plan.ctx {
-			t.Fatal("Worker DAO escaped its request transaction")
-		}
+}
+
+func (p *workerHTTPOperationPlan) check() {
+	p.t.Helper()
+	if p.calls != 1 {
+		p.t.Fatalf("Worker business operation calls=%d, want 1", p.calls)
 	}
-	project.ProjectAccessFn = func(ctx context.Context, principal model.Principal) (model.ProjectAccess, error) {
-		checkContext(ctx)
-		plan.access++
-		if principal != actor || plan.access > plan.AccessCalls {
-			t.Fatalf("unexpected Worker authorization: %#v", principal)
+}
+
+func expectWorkerHTTPClaim(t *testing.T, tasks *taskHTTPOperations, current model.Task, actor model.Principal, expected taskcore.ClaimWorker, result model.Task, failure error) *workerHTTPOperationPlan {
+	p := newWorkerHTTPOperationPlan(t, actor, current)
+	result = copyTaskHTTPTask(result)
+	tasks.ClaimWorkerCall = func(ctx context.Context, principal model.Principal, projectID, taskID string, actual taskcore.ClaimWorker) (model.Task, error) {
+		p.require(ctx, principal, projectID, taskID)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("ClaimWorker input=%#v, want %#v", actual, expected)
 		}
-		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: actor.UserID, Role: role}, plan.AccessError
+		return copyTaskHTTPTask(result), failure
 	}
-	tasks.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
-		checkContext(ctx)
-		plan.reads++
-		if id != current.ID || plan.reads > plan.TaskReads {
-			t.Fatalf("unexpected Worker Task lookup: %s", id)
-		}
-		return copyTaskHTTPTask(current), nil
+	return p
+}
+
+func expectWorkerHTTPUpdate(t *testing.T, tasks *taskHTTPOperations, current model.Task, actor model.Principal, expected taskcore.UpdateWorker, result model.Task, failure error) *workerHTTPOperationPlan {
+	p := newWorkerHTTPOperationPlan(t, actor, current)
+	result = copyTaskHTTPTask(result)
+	expected.Phase = copyTaskHTTPPointer(expected.Phase)
+	if expected.Herdr != nil {
+		value := copyTaskHTTPPointer(*expected.Herdr)
+		expected.Herdr = &value
 	}
-	if observedAt != nil {
-		plan.ObservedCalls = 1
-		tasks.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-			checkContext(ctx)
-			plan.observed++
-			if plan.observed != 1 {
-				t.Fatal("Worker claim sampled the clock more than once")
-			}
-			return *observedAt, nil
-		}
+	if expected.NativeSessionID != nil {
+		value := copyTaskHTTPPointer(*expected.NativeSessionID)
+		expected.NativeSessionID = &value
 	}
-	if expected != nil {
-		tasks.UpdateTaskFn = func(ctx context.Context, id string, actual store.TaskWrite) (model.Task, error) {
-			checkContext(ctx)
-			plan.updates++
-			if id != current.ID || plan.updates != 1 || !reflect.DeepEqual(actual, *expected) {
-				t.Fatalf("Worker proposed write: got %#v, want %#v", actual, *expected)
-			}
-			return copyTaskHTTPTask(returned), nil
+	if expected.StartupReport != nil {
+		report := *expected.StartupReport
+		report.Recovery.ReasonCode = copyTaskHTTPPointer(report.Recovery.ReasonCode)
+		expected.StartupReport = &report
+	}
+	tasks.UpdateWorkerCall = func(ctx context.Context, principal model.Principal, projectID, taskID string, actual taskcore.UpdateWorker) (model.Task, error) {
+		p.require(ctx, principal, projectID, taskID)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("UpdateWorker input=%#v, want %#v", actual, expected)
 		}
-		wantDrain := store.TaskSessionDrain{SourceLifecycle: "active", GraceSeconds: 60, TimelineField: "lastTimelineSeq", LifecycleField: "lifecycle",
-			RemoveFields:   []string{"cleanupInteractionIds", "controls", "turnStartedAt", "currentTurnId"},
-			SnapshotValues: map[string]any{"lifecycle": "draining", "synchronized": false, "connectionState": "disconnected", "activity": "unknown"}}
-		worker, err := taskproperty.Worker(returned.Properties)
+		return copyTaskHTTPTask(result), failure
+	}
+	return p
+}
+
+func expectWorkerHTTPRelease(t *testing.T, tasks *taskHTTPOperations, current model.Task, actor model.Principal, expected taskcore.ReleaseWorker, result model.Task, failure error) *workerHTTPOperationPlan {
+	p := newWorkerHTTPOperationPlan(t, actor, current)
+	result = copyTaskHTTPTask(result)
+	tasks.ReleaseWorkerCall = func(ctx context.Context, principal model.Principal, projectID, taskID string, actual taskcore.ReleaseWorker) (model.Task, error) {
+		p.require(ctx, principal, projectID, taskID)
+		if actual != expected {
+			t.Fatalf("ReleaseWorker input=%#v, want %#v", actual, expected)
+		}
+		return copyTaskHTTPTask(result), failure
+	}
+	return p
+}
+
+func expectWorkerHTTPWithdraw(t *testing.T, tasks *taskHTTPOperations, current model.Task, actor model.Principal, expected taskcore.WithdrawWorker, result model.Task, failure error) *workerHTTPOperationPlan {
+	p := newWorkerHTTPOperationPlan(t, actor, current)
+	result = copyTaskHTTPTask(result)
+	tasks.WithdrawWorkerCall = func(ctx context.Context, principal model.Principal, projectID, taskID string, actual taskcore.WithdrawWorker) (model.Task, error) {
+		p.require(ctx, principal, projectID, taskID)
+		if actual != expected {
+			t.Fatalf("WithdrawWorker input=%#v, want %#v", actual, expected)
+		}
+		return copyTaskHTTPTask(result), failure
+	}
+	return p
+}
+
+func expectWorkerHTTPResume(t *testing.T, tasks *taskHTTPOperations, current model.Task, actor model.Principal, expected taskcore.ResumeWorker, result model.Task, failure error) *workerHTTPOperationPlan {
+	p := newWorkerHTTPOperationPlan(t, actor, current)
+	result = copyTaskHTTPTask(result)
+	tasks.ResumeWorkerCall = func(ctx context.Context, principal model.Principal, projectID, taskID string, actual taskcore.ResumeWorker) (model.Task, error) {
+		p.require(ctx, principal, projectID, taskID)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("ResumeWorker input=%#v, want %#v", actual, expected)
+		}
+		return copyTaskHTTPTask(result), failure
+	}
+	return p
+}
+
+func (f *taskHTTPFixture) expectTaskGet(result model.Task) {
+	f.t.Helper()
+	plan := newWorkerHTTPOperationPlan(f.t, f.principal, result)
+	f.t.Cleanup(plan.check)
+	result = copyTaskHTTPTask(result)
+	f.tasks.GetCall = func(ctx context.Context, principal model.Principal, projectID, taskID string) (model.Task, error) {
+		plan.require(ctx, principal, projectID, taskID)
+		return copyTaskHTTPTask(result), nil
+	}
+}
+
+func assertWorkerHTTPTask(t *testing.T, actual api.Task, expected model.Task) {
+	t.Helper()
+	expected = copyTaskHTTPTask(expected)
+	properties := copyTaskHTTPProperties(expected.Properties)
+	if raw, present := properties["worker"]; present {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		delete(fields, "agentControlMode")
+		value, err := json.Marshal(fields)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if returned.Status == model.TaskInProgress && worker != nil && worker.State == model.WorkerActive && worker.AgentControlMode == model.AgentControlModeWeb {
-			wantDrain.ActiveClaim = &worker.ClaimID
-		}
-		sessions.DrainTaskSessionsFn = func(ctx context.Context, id string, actual store.TaskSessionDrain) error {
-			checkContext(ctx)
-			plan.drains++
-			if id != current.ID || plan.drains != 1 || plan.updates != 1 || !reflect.DeepEqual(actual, wantDrain) {
-				t.Fatalf("Worker Session drain: %#v", actual)
-			}
-			return nil
-		}
-		wantReceipt := store.TaskSessionReceiptTransition{LifecycleField: "lifecycle", Lifecycle: "draining", StateField: "state", PreviousState: "accepted", NextState: "rejected", RemoveFields: []string{"error"}}
-		sessions.TransitionTaskSessionReceiptsFn = func(ctx context.Context, id string, actual store.TaskSessionReceiptTransition) error {
-			checkContext(ctx)
-			plan.receipts++
-			if id != current.ID || plan.receipts != 1 || plan.drains != 1 || !reflect.DeepEqual(actual, wantReceipt) {
-				t.Fatalf("Worker receipt transition: %#v", actual)
-			}
-			return nil
-		}
-		if current.Status != returned.Status {
-			plan.wantCapture = true
-			capture.FreezeAudienceFn = func(ctx context.Context, projectID string, types []string) ([]store.WebhookAudience, error) {
-				checkContext(ctx)
-				plan.captures++
-				if projectID != current.ProjectID || plan.captures != 1 || plan.receipts != 1 || !reflect.DeepEqual(types, []string{protocol.StatusChanged}) {
-					t.Fatalf("Worker status capture: %s %v", projectID, types)
-				}
-				return []store.WebhookAudience{}, nil
-			}
-		}
+		properties["worker"] = value
 	}
-	database.WriteProjectCall = func(ctx context.Context, projectID string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		plan.writes++
-		if projectID != current.ProjectID || work == nil || plan.writes != 1 || plan.active {
-			t.Fatal("Worker action did not use one independent Project transaction")
-		}
-		plan.ctx, plan.active = ctx, true
-		defer func() { plan.active = false }()
-		err := work(scope)
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	var platform *string
+	if expected.RequiredPlatform != nil {
+		value := string(*expected.RequiredPlatform)
+		platform = &value
 	}
-	return plan
-}
-
-func (plan *workerHTTPWritePlan) check() {
-	plan.t.Helper()
-	wantWrites, wantCapture := 0, 0
-	if plan.wantUpdate {
-		wantWrites = 1
-	}
-	if plan.wantCapture {
-		wantCapture = 1
-	}
-	if plan.writes != 1 || plan.access != plan.AccessCalls || plan.reads != plan.TaskReads || plan.observed != plan.ObservedCalls || plan.updates != wantWrites || plan.drains != wantWrites || plan.receipts != wantWrites || plan.captures != wantCapture {
-		plan.t.Fatalf("Worker calls: scope/access/read/clock/update/drain/receipt/capture=%d/%d/%d/%d/%d/%d/%d/%d; want 1/%d/%d/%d/%d/%d/%d/%d", plan.writes, plan.access, plan.reads, plan.observed, plan.updates, plan.drains, plan.receipts, plan.captures, plan.AccessCalls, plan.TaskReads, plan.ObservedCalls, wantWrites, wantWrites, wantWrites, wantCapture)
+	want := api.Task{ID: expected.ID, ProjectID: expected.ProjectID, Title: expected.Title, Description: expected.Description,
+		Properties: api.TaskProperties(properties), Status: string(expected.Status), Version: expected.Version,
+		CreatedAt: expected.CreatedAt, UpdatedAt: expected.UpdatedAt, StartedAt: expected.StartedAt,
+		CompletedAt: expected.CompletedAt, CancelledAt: expected.CancelledAt, DependsOn: expected.DependsOn,
+		ExternalDependsOn: expected.ExternalDependsOn, BlockedBy: expected.BlockedBy, RequiredPlatform: platform,
+		AssignedTo: expected.AssignedTo, AllowAgents: expected.AllowAgents, Ready: expected.Ready}
+	if !reflect.DeepEqual(actual, want) {
+		t.Fatalf("Worker full HTTP Task=%#v, want %#v", actual, want)
 	}
 }

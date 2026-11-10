@@ -1,13 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,8 +20,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
@@ -31,16 +37,21 @@ func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
 	if utf8.RuneCountInString(path) != attachmentcore.MaxPathCharacters {
 		t.Fatal("attachment path fixture has the wrong code-point length")
 	}
-	if err := attachmentcore.ValidateWritePath(path); err != nil {
+	cursorJSON, err := json.Marshal(struct {
+		Version   int    `json:"version"`
+		Kind      string `json:"kind"`
+		ProjectID string `json:"projectId"`
+		TaskID    string `json:"taskId"`
+		Path      string `json:"path"`
+	}{Version: 1, Kind: "attachments", ProjectID: project.ID, TaskID: task.ID, Path: path})
+	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := attachmentcore.MakePage(store.AttachmentPage{Items: []model.Attachment{{Path: path}}, HasMore: true}, project.ID, task.ID)
-	if err != nil || page.NextCursor == nil {
-		t.Fatalf("generate attachment cursor: %v", err)
-	}
-	database := newHTTPTestStore(t)
-	configureTransportAttachments(t, database, project.ID, task.ID, path)
-	handler := projectTestHandler(t, database, io.Discard)
+	cursor := base64.RawURLEncoding.EncodeToString(cursorJSON)
+	operations := configureTransportAttachments(t, project.ID, task.ID, path, cursor)
+	handler := newOperationHTTPServer(t, func(deps *httpDependencies) {
+		deps.Attachments = operations
+	}, io.Discard, defaultHTTPPrincipal())
 	addr := startBoundaryRuntime(t, handler)
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
@@ -82,7 +93,7 @@ func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
 	if err != nil || other.StatusCode != http.StatusCreated {
 		t.Fatalf("second put status=%d body=%s error=%v", other.StatusCode, otherBody, err)
 	}
-	list := do(http.MethodGet, taskPath(task)+"/attachments?limit=1&cursor="+url.QueryEscape(*page.NextCursor), "")
+	list := do(http.MethodGet, taskPath(task)+"/attachments?limit=1&cursor="+url.QueryEscape(cursor), "")
 	var result api.AttachmentPage
 	err = json.NewDecoder(list.Body).Decode(&result)
 	_ = list.Body.Close()
@@ -91,144 +102,143 @@ func TestRuntimeAttachmentPathAndCursorBoundary(t *testing.T) {
 	}
 }
 
-// Static DAO results keep the transport path and cursor test independent of
-// persistence; actual upload and download bytes still use the local storage.
-func configureTransportAttachments(t *testing.T, database *httpTestStore, projectID, taskID, path string) {
+// These operation results are independent metadata facts. Only the body and
+// local file lifetime remain real in this transport boundary test.
+func configureTransportAttachments(t *testing.T, projectID, taskID, path, cursor string) *transportAttachmentOperations {
 	t.Helper()
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	first := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: path, ContentType: "text/plain", SizeBytes: 16, CreatedAt: at, UpdatedAt: at}
 	second := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "😀", ContentType: "text/plain", SizeBytes: 4, CreatedAt: at, UpdatedAt: at}
-	var ancestors []string
-	segments := strings.Split(path, "/")
-	for end := 1; end < len(segments); end++ {
-		ancestors = append(ancestors, strings.Join(segments[:end], "/"))
-	}
-	conflicts := []store.AttachmentConflictQuery{{Ancestors: ancestors, DescendantPrefix: path + "/"}, {Ancestors: []string{}, DescendantPrefix: "😀/"}}
-	items := []model.Attachment{first, second}
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 4, "access": 4, "presence": 4, "mutation": 2, "lock": 2, "live": 2, "conflict": 2, "put": 2, "read": 1, "list": 1})
-	count := plan.Called
-	var conflictIndex, putIndex atomic.Int32
-	check := func(got, want any) {
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("transport attachment DAO arguments: got %#v, want %#v", got, want)
-			panic("transport attachment DAO arguments")
+	operations := &transportAttachmentOperations{t: t, files: attachmentTestFiles(t), projectID: projectID, taskID: taskID,
+		path: path, cursor: cursor, principal: defaultHTTPPrincipal(), items: [2]model.Attachment{first, second}}
+	t.Cleanup(func() {
+		operations.mu.Lock()
+		defer operations.mu.Unlock()
+		if operations.position != 4 {
+			t.Errorf("attachment transport operations=%d, want four", operations.position)
 		}
-	}
-	ids := func(project, task string) { check(project, projectID); check(task, taskID) }
-	access := transportAttachmentProjectReader{access: func(_ context.Context, principal model.Principal, project string) (model.ProjectAccess, error) {
-		count("access")
-		check(principal, defaultHTTPPrincipal())
-		check(project, projectID)
-		return model.ProjectAccess{ProjectID: projectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
-	}}
-	tasks := transportAttachmentTaskReader{presence: func(_ context.Context, project, task string) (store.TaskPresence, error) {
-		count("presence")
-		ids(project, task)
-		return store.TaskPresence{Found: true}, nil
-	}}
-	dao := transportAttachmentDAO{
-		read: func(_ context.Context, project, task, name string) (model.Attachment, error) {
-			count("read")
-			ids(project, task)
-			check(name, path)
-			return first, nil
-		},
-		list: func(_ context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
-			count("list")
-			ids(project, task)
-			check(query, store.AttachmentQuery{After: &path, Limit: 1})
-			return store.AttachmentPage{Items: []model.Attachment{second}}, nil
-		},
-		conflict: func(_ context.Context, project, task string, query store.AttachmentConflictQuery) (bool, error) {
-			count("conflict")
-			index := int(conflictIndex.Add(1)) - 1
-			ids(project, task)
-			check(query, conflicts[index])
-			return false, nil
-		},
-		put: func(_ context.Context, item model.Attachment) (model.Attachment, bool, error) {
-			count("put")
-			index := int(putIndex.Add(1)) - 1
-			result := items[index]
-			check(item, model.Attachment{ProjectID: projectID, TaskID: taskID, Path: result.Path, ContentType: result.ContentType, SizeBytes: result.SizeBytes})
-			return result, true, nil
-		},
-	}
-	database.ReadSnapshotCall = func(ctx context.Context, operation func(store.SnapshotScope) error) error {
-		count("snapshot")
-		snapshot := newHTTPTestSnapshot(t)
-		snapshot.Projects, snapshot.Tasks, snapshot.Attachments = access, tasks, dao
-		return operation(snapshot)
-	}
-	database.WriteAttachmentMutationCall = func(ctx context.Context, operation func(store.AttachmentMutationScope) error) (store.Completion, error) {
-		count("mutation")
-		err := operation(transportAttachmentMutation{
-			lock: func(_ context.Context, project, task string) (store.TaskPresence, error) {
-				count("lock")
-				ids(project, task)
-				return store.TaskPresence{Found: true}, nil
-			},
-			live:       func(_ context.Context, project string) error { count("live"); check(project, projectID); return nil },
-			attachment: dao,
-		})
-		if err != nil {
-			t.Errorf("transport attachment mutation callback: %v", err)
+		if operations.leaseCloses.Load() != 2 || operations.bodyCloses.Load() != 1 {
+			t.Errorf("attachment resource closes: leases=%d bodies=%d, want 2/1", operations.leaseCloses.Load(), operations.bodyCloses.Load())
 		}
-		return store.Completion{Outcome: store.TransactionCommitted}, err
+	})
+	return operations
+}
+
+type transportAttachmentOperations struct {
+	t                               *testing.T
+	files                           *local.Storage
+	projectID, taskID, path, cursor string
+	principal                       model.Principal
+	items                           [2]model.Attachment
+	mu                              sync.Mutex
+	position                        int
+	leaseCloses                     atomic.Int32
+	bodyCloses                      atomic.Int32
+}
+
+func (o *transportAttachmentOperations) enter(ctx context.Context, principal model.Principal, projectID, taskID, method string) (int, error) {
+	requireOperationHTTPContext(o.t, ctx)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	methods := [...]string{"put", "open", "put", "list"}
+	index := o.position
+	if index >= len(methods) || methods[index] != method || ctx.Err() != nil ||
+		principal != o.principal || projectID != o.projectID || taskID != o.taskID {
+		o.t.Errorf("unexpected attachment operation: method=%s position=%d principal=%+v project=%q task=%q context=%v", method, index, principal, projectID, taskID, ctx.Err())
+		return 0, errors.New("unexpected attachment transport operation")
 	}
-
+	o.position++
+	return index, nil
 }
 
-type transportAttachmentProjectReader struct {
-	store.ProjectReader
-	access func(context.Context, model.Principal, string) (model.ProjectAccess, error)
+func (o *transportAttachmentOperations) PutRetained(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, content io.Reader) (model.Attachment, bool, io.Closer, error) {
+	index, err := o.enter(ctx, principal, projectID, taskID, "put")
+	if err != nil {
+		return model.Attachment{}, false, nil, err
+	}
+	item := o.items[0]
+	expected := []byte("boundary-content")
+	if index == 2 {
+		item, expected = o.items[1], []byte("next")
+	}
+	if path != item.Path || contentType != item.ContentType {
+		o.t.Errorf("attachment upload arguments: path=%q contentType=%q, want %q/%q", path, contentType, item.Path, item.ContentType)
+		return model.Attachment{}, false, nil, errors.New("attachment upload arguments differ")
+	}
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return model.Attachment{}, false, nil, err
+	}
+	if !bytes.Equal(data, expected) {
+		o.t.Errorf("attachment upload bytes=%q, want %q", data, expected)
+		return model.Attachment{}, false, nil, errors.New("attachment upload bytes differ")
+	}
+	storagePath := projectID + "/" + taskID[:2] + "/" + taskID + "/" + path
+	lease, err := o.files.AcquireGate(ctx, filestorage.TargetGate, storagePath)
+	if err != nil {
+		return model.Attachment{}, false, nil, err
+	}
+	retained := &transportAttachmentCloser{Closer: lease, closes: &o.leaseCloses}
+	info, err := o.files.Put(ctx, attachmentcore.Bucket, storagePath, bytes.NewReader(data))
+	if err != nil {
+		return model.Attachment{}, false, retained, err
+	}
+	if info.Size != item.SizeBytes {
+		o.t.Errorf("attachment file size=%d, want %d", info.Size, item.SizeBytes)
+		return model.Attachment{}, false, retained, fmt.Errorf("attachment file size differs: %d", info.Size)
+	}
+	return item, true, retained, nil
 }
 
-func (d transportAttachmentProjectReader) ProjectAccess(ctx context.Context, principal model.Principal, id string) (model.ProjectAccess, error) {
-	return d.access(ctx, principal, id)
+func (o *transportAttachmentOperations) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {
+	if _, err := o.enter(ctx, principal, projectID, taskID, "open"); err != nil {
+		return model.Attachment{}, filestorage.Object{}, err
+	}
+	if path != o.path {
+		o.t.Errorf("attachment download path=%q, want %q", path, o.path)
+		return model.Attachment{}, filestorage.Object{}, errors.New("attachment download path differs")
+	}
+	object, err := o.files.Open(ctx, attachmentcore.Bucket, projectID+"/"+taskID[:2]+"/"+taskID+"/"+path)
+	if err != nil {
+		return model.Attachment{}, filestorage.Object{}, err
+	}
+	object.Body = &transportAttachmentBody{ReadCloser: object.Body, closes: &o.bodyCloses}
+	return o.items[0], object, nil
 }
 
-type transportAttachmentTaskReader struct {
-	store.TaskReader
-	presence func(context.Context, string, string) (store.TaskPresence, error)
+func (o *transportAttachmentOperations) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (attachmentcore.Page, error) {
+	if _, err := o.enter(ctx, principal, projectID, taskID, "list"); err != nil {
+		return attachmentcore.Page{}, err
+	}
+	cursor := o.cursor
+	if !reflect.DeepEqual(request, model.PageRequest{Limit: 1, Cursor: &cursor}) {
+		o.t.Errorf("attachment page request=%+v, want limit1 and original cursor", request)
+		return attachmentcore.Page{}, errors.New("attachment page request differs")
+	}
+	return attachmentcore.Page{Items: []model.Attachment{o.items[1]}}, nil
 }
 
-func (d transportAttachmentTaskReader) TaskPresence(ctx context.Context, project, task string) (store.TaskPresence, error) {
-	return d.presence(ctx, project, task)
+func (o *transportAttachmentOperations) Delete(context.Context, model.Principal, string, string, string) error {
+	o.t.Error("unexpected Attachments.Delete")
+	return errors.New("unexpected Attachments.Delete")
 }
 
-type transportAttachmentMutation struct {
-	store.AttachmentMutationScope
-	lock       func(context.Context, string, string) (store.TaskPresence, error)
-	live       func(context.Context, string) error
-	attachment store.AttachmentMutationDAO
+type transportAttachmentCloser struct {
+	io.Closer
+	closes *atomic.Int32
 }
 
-func (s transportAttachmentMutation) LockTaskPresence(ctx context.Context, project, task string) (store.TaskPresence, error) {
-	return s.lock(ctx, project, task)
-}
-func (s transportAttachmentMutation) ProjectLive(ctx context.Context, project string) error {
-	return s.live(ctx, project)
-}
-func (s transportAttachmentMutation) AttachmentDAO() store.AttachmentMutationDAO { return s.attachment }
-
-type transportAttachmentDAO struct {
-	store.AttachmentMutationDAO
-	read     func(context.Context, string, string, string) (model.Attachment, error)
-	list     func(context.Context, string, string, store.AttachmentQuery) (store.AttachmentPage, error)
-	conflict func(context.Context, string, string, store.AttachmentConflictQuery) (bool, error)
-	put      func(context.Context, model.Attachment) (model.Attachment, bool, error)
+func (c *transportAttachmentCloser) Close() error {
+	c.closes.Add(1)
+	return c.Closer.Close()
 }
 
-func (d transportAttachmentDAO) Attachment(ctx context.Context, project, task, path string) (model.Attachment, error) {
-	return d.read(ctx, project, task, path)
+type transportAttachmentBody struct {
+	io.ReadCloser
+	closes *atomic.Int32
 }
-func (d transportAttachmentDAO) Attachments(ctx context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
-	return d.list(ctx, project, task, query)
-}
-func (d transportAttachmentDAO) AttachmentPathConflict(ctx context.Context, project, task string, query store.AttachmentConflictQuery) (bool, error) {
-	return d.conflict(ctx, project, task, query)
-}
-func (d transportAttachmentDAO) PutAttachment(ctx context.Context, item model.Attachment) (model.Attachment, bool, error) {
-	return d.put(ctx, item)
+
+func (b *transportAttachmentBody) Close() error {
+	b.closes.Add(1)
+	return b.ReadCloser.Close()
 }

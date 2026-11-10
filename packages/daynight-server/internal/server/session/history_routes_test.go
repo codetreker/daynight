@@ -140,7 +140,7 @@ func TestHistoryDirectoryViewKeepsLegacyDefaultAndPaging(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls, legacy := 0, false
-			h := newRoutes(serviceCalls{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			h := newRoutes(Operations{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			h.history = historyRouteMock{
 				current: func(ctx context.Context, actual model.Principal, project, task string) (sp.TaskSessionCurrent, error) {
 					calls++

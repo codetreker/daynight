@@ -12,7 +12,7 @@ import (
 )
 
 type historyLedgerOperation interface {
-	archiveOperation
+	ArchiveOperation
 	PutHistoryLedger(context.Context, sessioncore.ActiveHistoryWriter, string, int64, int64, string, string, []byte) (sp.ArchiveFileReceipt, error)
 	HistoryLedgerStatus(context.Context, sessioncore.ActiveHistoryWriter, string) (sp.ArchiveFileReceipt, error)
 }

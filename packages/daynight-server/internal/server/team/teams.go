@@ -1,6 +1,7 @@
 package team
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,17 +12,32 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
+type teamOperations interface {
+	Create(context.Context, model.Principal, coreteam.CreateTeam) (model.Team, error)
+	Get(context.Context, model.Principal, string) (model.Team, error)
+	List(context.Context, model.Principal, model.PageRequest) (coreteam.TeamPage, error)
+	Rename(context.Context, model.Principal, string, coreteam.ChangeTeam) (model.Team, error)
+	Delete(context.Context, model.Principal, string, coreteam.ChangeTeam) error
+	Members(context.Context, model.Principal, string) ([]model.TeamMemberProfile, error)
+	SetMemberRole(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
+	RemoveMember(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
+	CreateInvitation(context.Context, model.Principal, string, string) (coreteam.MintedTeamInvitation, error)
+	ListInvitations(context.Context, model.Principal, string) ([]model.TeamInvitation, error)
+	RevokeInvitation(context.Context, model.Principal, string, string, string) (bool, error)
+	InspectInvitation(context.Context, model.Principal, string) (coreteam.TeamInvitationInspection, error)
+	AcceptInvitation(context.Context, model.Principal, string, string) (coreteam.TeamInvitationAcceptance, error)
+}
+
 type teamHandler struct {
-	teams  *teamservice.Teams
+	teams  teamOperations
 	logger *slog.Logger
 	origin string
 }
 
-func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, teams teamOperations, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &teamHandler{teams: teams, logger: logger, origin: auth.Origin()}
 	mux.HandleFunc("GET /api/v1/teams", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/teams", auth.Require(h.create))

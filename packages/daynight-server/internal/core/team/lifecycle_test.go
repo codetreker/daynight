@@ -796,8 +796,9 @@ func TestInvitationRules(t *testing.T) {
 		t.Fatal(list, err)
 	}
 	available := w.invitation
-	expired, consumed, revoked := available, available, available
+	expired, previouslyExpired, consumed, revoked := available, available, available, available
 	expired.ExpiresAt = now
+	previouslyExpired.ExpiresAt = now.Add(-time.Second)
 	prior := now.Add(-time.Minute)
 	consumer := principal()
 	consumed.ConsumedAt, consumed.ConsumedBy = &prior, &consumer.UserID
@@ -812,6 +813,7 @@ func TestInvitationRules(t *testing.T) {
 		{name: "missing", err: model.ErrNotFound, code: "invitation_unavailable", calls: []string{"read"}},
 		{name: "read failure", err: fail, calls: []string{"read"}},
 		{name: "expired", invitation: expired, code: "invitation_unavailable", calls: []string{"read", "clock"}},
+		{name: "expired one second earlier", invitation: previouslyExpired, code: "invitation_unavailable", calls: []string{"read", "clock"}},
 		{name: "consumed", invitation: consumed, code: "invitation_unavailable", calls: []string{"read", "clock"}},
 		{name: "revoked", invitation: revoked, code: "invitation_unavailable", calls: []string{"read", "clock"}},
 		{name: "available", invitation: available, calls: []string{"read", "clock"}},
@@ -1039,5 +1041,42 @@ func TestListInvalidTimestampAndDeleteReadFailure(t *testing.T) {
 	w := &writerFake{team: item, errs: map[string]error{"team": fail}}
 	if err := Delete(context.Background(), w, p, ChangeTeam{Name: "Acme", Version: 1, ExpectedUserID: p.UserID}); !errors.Is(err, fail) || w.deleted {
 		t.Fatalf("delete read failure: %v", err)
+	}
+}
+
+type creationContractDAO struct {
+	insert func(context.Context, string, string) (model.Team, error)
+}
+
+func (d creationContractDAO) InsertTeam(ctx context.Context, id, name string) (model.Team, error) {
+	return d.insert(ctx, id, name)
+}
+
+func TestTeamCreationPreservesExactNameAndReturnedTeam(t *testing.T) {
+	ctx := t.Context()
+	p := model.Principal{UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222", Kind: model.PATCredential}
+	raw := " \t研发😀\u2003 " + strings.Repeat("x", 180)
+	input := CreateTeam{Name: raw, ExpectedUserID: p.UserID}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	calls := 0
+	var id string
+	dao := creationContractDAO{insert: func(gotCtx context.Context, gotID, name string) (model.Team, error) {
+		calls++
+		parsed, err := uuid.Parse(gotID)
+		if gotCtx != ctx || calls != 1 || name != raw || err != nil || parsed.Version() != 4 || parsed.Variant() != uuid.RFC4122 || parsed.String() != gotID {
+			t.Fatalf("InsertTeam: ctx=%v id=%q name=%q calls=%d error=%v", gotCtx, gotID, name, calls, err)
+		}
+		id = gotID
+		returnedName := raw
+		return model.Team{TeamRef: model.TeamRef{ID: gotID, Kind: "ordinary", Name: &returnedName}, Version: 1, CreatedAt: at, UpdatedAt: at, Membership: model.TeamMember{TeamID: gotID, UserID: p.UserID, Role: model.ProjectAdmin, Version: 1, CreatedAt: at, UpdatedAt: at}}, nil
+	}}
+	if err := ValidateCreate(p, input); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Create(ctx, dao, input)
+	wantName := raw
+	want := model.Team{TeamRef: model.TeamRef{ID: id, Kind: "ordinary", Name: &wantName}, Version: 1, CreatedAt: at, UpdatedAt: at, Membership: model.TeamMember{TeamID: id, UserID: p.UserID, Role: model.ProjectAdmin, Version: 1, CreatedAt: at, UpdatedAt: at}}
+	if err != nil || !reflect.DeepEqual(got, want) || calls != 1 {
+		t.Fatalf("created=%#v error=%v calls=%d; want %#v", got, err, calls, want)
 	}
 }

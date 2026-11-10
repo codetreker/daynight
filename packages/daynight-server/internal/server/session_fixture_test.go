@@ -1,14 +1,13 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,36 +16,48 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	"github.com/google/uuid"
 )
 
 type sessionHTTPFixture struct {
-	store              *sessionHTTPStore
+	t                  *testing.T
 	mu                 sync.Mutex
 	record             store.SessionRecord
-	sessionTask        store.SessionTask
-	operations         []store.SessionOperation
-	intentIDs          []string
-	acceptedPlans      [][]string
-	queryRevision      int64
-	connectionCaptured chan struct{}
-	connectionCommit   chan struct{}
-	writes             sessionHTTPWrites
-	calls              map[string]int
 	credentialRevoked  bool
-	mediaRecoveryRead  func(context.Context) ([]store.SessionResourceLease, error)
+	sessionTask        store.SessionTask
 	handler            *resourceTestHandler
 	server             *httptest.Server
 	application        *sessionApplication
+	identity           *operationHTTPIdentity
+	taskOperations     taskhttp.TaskService
+	startup            *startupHTTPOperations
+	ops                *sessionhttp.Operations
 	task               api.Task
 	base               string
 	registration       sp.Registration
 	snapshot           sp.Snapshot
 	grant              sessioncore.GrantResult
+	connectedSnapshot  sp.Snapshot
+	connectionContext  context.Context
+	connections        map[sp.ControllerFence]context.Context
+	connectionCaptured chan struct{}
+	connectionCommit   chan struct{}
+	writes             sessionHTTPWrites
+	handles            []sessionHTTPHandle
+	pollFrames         [][]map[string]any
+	browserFrames      [][]map[string]any
+	browserSnapshot    sp.Snapshot
+	browserCursor      string
+	browserCalls       int
+	sourceSeq          int64
+	commands           map[string]*sessionHTTPCommand
+	offered            map[string]int
 }
 
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
@@ -56,9 +67,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 
 func sessionHTTPSetupMode(t *testing.T, mode model.WorkerAgentControlMode, prepare bool) *sessionHTTPFixture {
 	t.Helper()
-	f := &sessionHTTPFixture{calls: map[string]int{}}
-	f.store = &sessionHTTPStore{httpTestStore: newHTTPTestStore(t), fixture: f}
-	f.store.WriteSessionCall = f.store.run
+	f := &sessionHTTPFixture{t: t, commands: map[string]*sessionHTTPCommand{}, offered: map[string]int{}, connections: map[sp.ControllerFence]context.Context{}, browserCursor: "opaque-session-http-position"}
 	principal := defaultHTTPPrincipal()
 	now := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	worker := model.WorkerClaim{ClaimID: uuid.NewString(), State: model.WorkerActive, UserID: principal.UserID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Session test"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: mode, WorktreeID: uuid.NewString(), Phase: model.WorkerExecuting, ClaimedAt: now}
@@ -69,51 +78,79 @@ func sessionHTTPSetupMode(t *testing.T, mode model.WorkerAgentControlMode, prepa
 	f.registration = sp.Registration{Protocol: sp.Protocol, RegistrationID: uuid.NewString(), ClaimID: worker.ClaimID, WorkerID: worker.WorkerID, WorktreeID: worker.WorktreeID, Provider: "codex", ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString()}
 	f.snapshot = sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), ClaimID: worker.ClaimID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{ProjectID: f.task.ProjectID, TaskID: f.task.ID, WorkerID: worker.WorkerID, WorktreeID: worker.WorktreeID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, AgentControlMode: "web", Provider: "codex"}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_submitted", Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
 	f.record = store.SessionRecord{Snapshot: f.snapshot, Owner: principal.UserID, Registration: []byte(jsonBody(t, f.registration))}
-	application, err := newTestHandler(Dependencies{Store: f.store, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.application = application.(*sessionApplication)
-	f.handler = &resourceTestHandler{Handler: httpx.RequestLogging(testLogger(), application), token: defaultHTTPToken(), principal: principal}
+	f.identity = newOperationHTTPIdentity(t, principal)
+	f.taskOperations = startupTaskOperations(t, f)
+	operations := strictSessionHTTPOperations(t)
+	f.ops = &operations
+	f.configureOperations()
+	f.handler = newOperationHTTPServerWithIdentity(t, f.identity, func(deps *httpDependencies) {
+		deps.Tasks = f.taskOperations
+		deps.Relay = sessionhttp.NewRoutesWithOperations(forwardSessionHTTPOperations(f.ops), deps.Auth.RequestAuthentication, testLogger())
+		f.application = &sessionApplication{relay: deps.Relay}
+	}, io.Discard, principal)
+	f.application.Handler = f.handler.Handler
+	extendedWorkerTestHandler(f.handler)
+	f.server = httptest.NewServer(f.application)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := f.application.Shutdown(ctx); err != nil {
-			t.Error(err)
+		closeSessionHTTPServer(t, f.server, f.application)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.handles) != 0 || len(f.pollFrames) != 0 || len(f.browserFrames) != 0 {
+			t.Errorf("unconsumed Session operation plans: handles=%d polls=%d browser=%d", len(f.handles), len(f.pollFrames), len(f.browserFrames))
 		}
 	})
-	extendedWorkerTestHandler(f.handler)
-	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), f.application))
-	t.Cleanup(f.server.Close)
 	if prepare {
+		want := sessionHTTPCopy(f.snapshot)
+		called := sessionHTTPOnce(t)
+		f.ops.Register = func(ctx context.Context, p model.Principal, project, task string, input sp.Registration) (sp.Snapshot, error) {
+			called()
+			f.requireBrowser(ctx, p, project, task, want.SessionID)
+			if !reflect.DeepEqual(input, f.registration) {
+				unexpectedHTTPCall(t, "Session Register input")
+			}
+			return sessionHTTPCopy(want), nil
+		}
 		registered := decodeResponse[struct {
 			Session sp.Snapshot `json:"session"`
 		}](t, projectRequest(f.handler, http.MethodPost, f.base, jsonBody(t, f.registration)), http.StatusOK)
-		if registered.Session.SessionID != f.snapshot.SessionID || registered.Session.ClaimID != worker.ClaimID {
+		if !reflect.DeepEqual(registered.Session, want) {
 			t.Fatal("registered Session changed declared identity")
 		}
 		f.grant = f.mint(t, "bootstrap")
 	}
-
 	return f
 }
+
 func (f *sessionHTTPFixture) mint(t *testing.T, kind string) sessioncore.GrantResult {
 	t.Helper()
 	return f.mintGrant(t, sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, ExecutionGeneration: f.snapshot.ExecutionGeneration, Kind: kind})
 }
 func (f *sessionHTTPFixture) mintGrant(t *testing.T, g sp.Grant) sessioncore.GrantResult {
 	t.Helper()
-	out := decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, g)), http.StatusOK)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	h := sha256.Sum256([]byte(out.Token))
-	if f.writes.grant == nil || !bytes.Equal(f.writes.grant.Hash, h[:]) || f.writes.grant.Kind != g.Kind || out.SessionID != f.snapshot.SessionID || out.ExecutionGeneration != g.ExecutionGeneration {
-		t.Fatal("grant write changed declared intent")
+	expected := sessionHTTPCopy(g)
+	want := sessioncore.GrantResult{Token: "dncontroller_" + uuid.NewString(), ExpiresAt: time.Now().UTC().Add(time.Hour), SessionID: f.snapshot.SessionID, ClaimID: g.ClaimID, ExecutionGeneration: g.ExecutionGeneration, ControllerID: g.ControllerID, ControllerInstanceID: g.ControllerInstanceID}
+	called := sessionHTTPOnce(t)
+	f.ops.Grant = func(ctx context.Context, p model.Principal, project, task, id string, actual sp.Grant) (sessioncore.GrantResult, error) {
+		called()
+		f.requireBrowser(ctx, p, project, task, id)
+		if !reflect.DeepEqual(actual, expected) {
+			unexpectedHTTPCall(t, "Session Grant full input")
+		}
+		return want, nil
 	}
-	f.record.GrantHash = h[:]
-	f.record.GrantExpiry = &out.ExpiresAt
+	out := decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, g)), http.StatusOK)
+	if !reflect.DeepEqual(out, want) {
+		t.Fatal("controller grant response changed declared result")
+	}
+	f.mu.Lock()
+	hash := sha256.Sum256([]byte(want.Token))
+	f.record.GrantHash = append([]byte(nil), hash[:]...)
+	expiry := want.ExpiresAt
+	f.record.GrantExpiry = &expiry
 	f.record.GrantKind = g.Kind
 	f.record.Parent = f.handler.principal.CredentialID
+	f.record.Consumed = false
+	f.mu.Unlock()
 	return out
 }
 func sessionDial(t *testing.T, serverURL, path, token string, extra http.Header) *websocket.Conn {
@@ -180,48 +217,115 @@ func sessionWSKind(t *testing.T, conn *websocket.Conn, kind string) map[string]j
 }
 func (f *sessionHTTPFixture) controller(t *testing.T, epoch string) (*websocket.Conn, sp.Snapshot) {
 	t.Helper()
-	conn := sessionDial(t, f.server.URL, "/api/v1/controller-channel", f.grant.Token, nil)
 	f.mu.Lock()
-	expectedEpoch, _ := strconv.ParseInt(f.record.Snapshot.ConnectionEpoch, 10, 64)
+	prior, _ := strconv.ParseInt(f.record.Snapshot.ConnectionEpoch, 10, 64)
+	want := sessionHTTPCopy(f.record.Snapshot)
+	want.ConnectionEpoch = strconv.FormatInt(prior+1, 10)
+	want.ConnectionState = "synchronizing"
+	want.Synchronized = false
+	want.Activity = "initializing"
+	hello := sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: f.snapshot.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", SourceEpoch: epoch, LastAckedSourceSeq: "0"}
 	captured, commit := make(chan struct{}), make(chan struct{})
 	f.connectionCaptured, f.connectionCommit = captured, commit
 	f.mu.Unlock()
+	called := sessionHTTPOnce(t)
+	f.ops.Connect = func(ctx context.Context, token string, actual sp.ControllerMessage, instance string, version int) (sp.Snapshot, error) {
+		called()
+		raw := []byte(jsonBody(t, hello))
+		expected := sessionHTTPCopy(hello)
+		expected.Raw = append(json.RawMessage(nil), raw...)
+		if token != f.grant.Token || !reflect.DeepEqual(actual, expected) || instance == "" || version != 0 || ctx.Err() != nil {
+			unexpectedHTTPCall(t, "Session Connect full hello/identity/version")
+		}
+		f.mu.Lock()
+		f.connectionContext = ctx
+		f.connections[want.ControllerFence] = ctx
+		f.writes.instance = instance
+		expires := f.grant.ExpiresAt
+		f.writes.connectionExpiry = &expires
+		f.connectedSnapshot = sessionHTTPCopy(want)
+		f.browserSnapshot = sessionHTTPCopy(want)
+		f.mu.Unlock()
+		close(captured)
+		select {
+		case <-commit:
+			return sessionHTTPCopy(want), nil
+		case <-ctx.Done():
+			return sp.Snapshot{}, ctx.Err()
+		}
+	}
+	conn := sessionDial(t, f.server.URL, "/api/v1/controller-channel", f.grant.Token, nil)
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(commit) }) })
-	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: f.snapshot.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", SourceEpoch: epoch, LastAckedSourceSeq: "0"})
+	sessionWSWrite(t, conn, hello)
 	select {
 	case <-captured:
 	case <-time.After(5 * time.Second):
-		t.Fatal("controller did not reach connection DAO")
+		t.Fatal("controller did not reach connection operation")
 	}
 	f.mu.Lock()
-	if f.writes.instance == "" || f.writes.seen == nil {
+	if f.writes.instance == "" || f.writes.connectionExpiry == nil {
 		f.mu.Unlock()
-		t.Fatal("connection DAO did not capture relay identity")
+		t.Fatal("connection operation did not capture relay identity")
 	}
-	f.record.Snapshot.ConnectionEpoch = strconv.FormatInt(expectedEpoch+1, 10)
-	f.record.ServerInstance = new(f.writes.instance)
-	f.record.ConnectionExpiry = f.record.GrantExpiry
-	f.record.LastSeen = new(*f.writes.seen)
+	f.record.Snapshot = sessionHTTPCopy(want)
+	instance := f.writes.instance
+	f.record.ServerInstance = &instance
+	expiry := f.grant.ExpiresAt
+	f.record.ConnectionExpiry = &expiry
+	seen := time.Now().UTC()
+	f.record.LastSeen = &seen
 	f.record.ConnectionParent = f.handler.principal.CredentialID
 	f.record.Consumed = true
-	f.record.SourceEpoch = new(epoch)
+	f.record.SourceEpoch = &epoch
 	f.record.SourceEpochs = []string{epoch}
 	f.mu.Unlock()
 	release.Do(func() { close(commit) })
 	frame := sessionWSKind(t, conn, "welcome")
 	snapshot, err := sp.DecodeSnapshot(frame["session"])
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !reflect.DeepEqual(snapshot, want) {
+		t.Fatal("welcome changed complete declared connection snapshot", err)
 	}
-	if snapshot.ConnectionEpoch != strconv.FormatInt(expectedEpoch+1, 10) || snapshot.Identity.WorkerID != f.registration.WorkerID || snapshot.Identity.ControllerInstanceID != f.registration.ControllerInstanceID {
-		t.Fatal("welcome changed declared connection fence or owner")
-	}
-	f.mu.Lock()
-	f.record.Snapshot.HistoryEpoch = snapshot.HistoryEpoch
-	f.mu.Unlock()
 	state := sp.State{NativeSessionID: snapshot.Identity.NativeSessionID, InitialInputState: snapshot.InitialInputState, Synchronized: true, Activity: "initializing"}
-	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
+	message := sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}
+	f.expectHandle(t, message, f.frame(snapshot, "sync_ack"))
+	sessionWSWrite(t, conn, message)
 	sessionWSKind(t, conn, "sync_ack")
+	f.mu.Lock()
+	f.browserSnapshot = sessionHTTPCopy(want)
+	f.browserSnapshot.Synchronized = true
+	f.browserSnapshot.ConnectionState = "connected"
+	f.browserSnapshot.SessionRevision = "3"
+	f.browserSnapshot.LastEventSeq = "2"
+	f.mu.Unlock()
 	return conn, snapshot
+}
+
+func closeSessionHTTPServer(t *testing.T, server *httptest.Server, application Handler) bool {
+	t.Helper()
+	application.BeginShutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := application.Shutdown(ctx)
+	cancel()
+	drained := err == nil
+	if err != nil {
+		t.Error(err)
+		server.CloseClientConnections()
+		retry, retryCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = application.Shutdown(retry)
+		retryCancel()
+		drained = err == nil
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	closed := make(chan struct{})
+	go func() { server.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Error("Session HTTP server did not join")
+		return false
+	}
+	return drained
 }

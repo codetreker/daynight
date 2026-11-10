@@ -35,7 +35,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	var releaseOnce sync.Once
 	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseWork)
-	fixture := sessionHTTPSetup(t)
+	fixture := sessionRuntimeHTTPSetup(t)
 	controller, _ := fixture.controller(t, uuid.NewString())
 	routes := fixture.application.relay
 	engine := fixture.application.engine
@@ -222,7 +222,7 @@ func TestRequestDrainRejectsAdmissionAfterShutdown(t *testing.T) {
 }
 
 func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
-	fixture := sessionHTTPSetup(t)
+	fixture := sessionRuntimeHTTPSetup(t)
 	controller, _ := fixture.controller(t, uuid.NewString())
 	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once

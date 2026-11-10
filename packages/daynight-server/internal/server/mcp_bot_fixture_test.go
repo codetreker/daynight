@@ -5,359 +5,213 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 )
 
-type mcpBotExpectedCall struct {
-	name   string
-	args   []any
-	result []any
-	check  func([]any)
-}
-type mcpBotCallScript struct {
-	t     *testing.T
-	calls []mcpBotExpectedCall
-	next  int
+type mcpBotOperations struct {
+	t         *testing.T
+	principal model.Principal
+	mu        sync.Mutex
+	create    func(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error)
+	list      func(context.Context, model.Principal, model.PageRequest) (botcore.BotPage, error)
+	get       func(context.Context, model.Principal, string) (model.Bot, error)
+	delete    func(context.Context, model.Principal, string, store.DeleteBot) (model.Bot, error)
+	register  func(context.Context, model.Principal, string, string, sessioncore.BotRegistration) (sessioncore.BotRegistrationResult, error)
+	complete  func(context.Context, model.Principal, string, string, botservice.BotDeletionReceipt) (model.Bot, error)
+	snapshot  func(context.Context, model.Principal, string) (sp.Snapshot, error)
 }
 
-func mcpBotScript(t *testing.T, calls ...mcpBotExpectedCall) *mcpBotCallScript {
-	s := &mcpBotCallScript{t: t, calls: calls}
-	t.Cleanup(s.verify)
-	return s
+func (o *mcpBotOperations) unexpected(name string) error {
+	o.t.Errorf("unconfigured or extra Bot.%s call", name)
+	return errors.New("unconfigured Bot." + name)
 }
-func (s *mcpBotCallScript) call(name string, args ...any) []any {
-	if s.next >= len(s.calls) {
-		unexpectedHTTPCall(s.t, "MCP Bot "+name)
-	}
-	c := s.calls[s.next]
-	s.next++
-	if name != c.name || c.check == nil && !reflect.DeepEqual(args, c.args) {
-		s.t.Errorf("MCP Bot call %d got %s %#v, want %s %#v", s.next, name, args, c.name, c.args)
-		panic("MCP Bot DAO call mismatch")
-	}
-	if c.check != nil {
-		c.check(args)
-	}
-	return mcpCloneFixture(c.result)
-}
-func (s *mcpBotCallScript) verify() {
-	if s.next != len(s.calls) {
-		s.t.Errorf("MCP Bot calls=%d, want %d", s.next, len(s.calls))
-	}
-}
-func mcpBotCall(name string, args []any, result ...any) mcpBotExpectedCall {
-	return mcpBotExpectedCall{name: name, args: mcpCloneFixture(args), result: result}
-}
-func mcpBotErr(value any) error {
-	if value == nil {
-		return nil
-	}
-	return value.(error)
-}
-func mcpCloneFixture[T any](value T) T {
-	if any(value) == nil {
-		return value
-	}
-	errorType := reflect.TypeFor[error]()
-	var clone func(reflect.Value) reflect.Value
-	clone = func(in reflect.Value) reflect.Value {
-		if !in.IsValid() {
-			return in
+func (o *mcpBotOperations) once(name string) func() {
+	var mu sync.Mutex
+	count := 0
+	o.t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if count != 1 {
+			o.t.Errorf("Bot.%s calls=%d, want 1", name, count)
 		}
-		if in.Type().Implements(errorType) || in.Type() == reflect.TypeFor[time.Time]() {
-			return in
-		}
-		switch in.Kind() {
-		case reflect.Interface:
-			if in.IsNil() {
-				return reflect.Zero(in.Type())
-			}
-			out := reflect.New(in.Type()).Elem()
-			out.Set(clone(in.Elem()))
-			return out
-		case reflect.Pointer:
-			if in.IsNil() {
-				return reflect.Zero(in.Type())
-			}
-			out := reflect.New(in.Type().Elem())
-			out.Elem().Set(clone(in.Elem()))
-			return out
-		case reflect.Slice:
-			if in.IsNil() {
-				return reflect.Zero(in.Type())
-			}
-			out := reflect.MakeSlice(in.Type(), in.Len(), in.Len())
-			for i := 0; i < in.Len(); i++ {
-				out.Index(i).Set(clone(in.Index(i)))
-			}
-			return out
-		case reflect.Map:
-			if in.IsNil() {
-				return reflect.Zero(in.Type())
-			}
-			out := reflect.MakeMapWithSize(in.Type(), in.Len())
-			iter := in.MapRange()
-			for iter.Next() {
-				out.SetMapIndex(iter.Key(), clone(iter.Value()))
-			}
-			return out
-		case reflect.Struct:
-			out := reflect.New(in.Type()).Elem()
-			out.Set(in)
-			for i := 0; i < in.NumField(); i++ {
-				if out.Field(i).CanSet() && in.Field(i).CanInterface() {
-					out.Field(i).Set(clone(in.Field(i)))
-				}
-			}
-			return out
-		default:
-			return in
+	})
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		count++
+		if count != 1 {
+			o.t.Errorf("extra Bot.%s call", name)
 		}
 	}
-	return clone(reflect.ValueOf(value)).Interface().(T)
 }
-
-func mcpBotCredentialCall(p model.Principal) mcpBotExpectedCall {
-	return mcpBotCall("Credential", []any{p}, nil)
+func (o *mcpBotOperations) check(ctx context.Context, p model.Principal, name string) {
+	if ctx.Err() != nil || p != o.principal {
+		o.t.Errorf("Bot.%s context/principal changed", name)
+	}
 }
-func mcpBotLockCredentialCall(t *testing.T, p model.Principal) mcpBotExpectedCall {
-	earliest := time.Now()
-	return mcpBotExpectedCall{name: "LockCredential", result: []any{nil}, check: func(args []any) {
-		observed := time.Now()
-		if len(args) != 2 {
-			t.Errorf("MCP Bot credential arguments = %#v, want principal and query time", args)
-			panic("MCP Bot credential argument count")
+func (o *mcpBotOperations) expectCreate(input botcore.CreateBot, out model.Bot) {
+	expected := input
+	expected.Overrides = botExpiryCloneBot(model.Bot{RequestedOverrides: input.Overrides}).RequestedOverrides
+	result := botExpiryCloneBot(out)
+	called := o.once("CreateResolved")
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.create = func(ctx context.Context, p model.Principal, got botcore.CreateBot) (model.Bot, error) {
+		called()
+		mcpOperationContext(o.t, ctx, p)
+		o.check(ctx, p, "CreateResolved")
+		if !reflect.DeepEqual(got, expected) {
+			o.t.Errorf("Bot create=%#v, want %#v", got, expected)
 		}
-		now, ok := args[1].(time.Time)
-		if args[0] != p || !ok || now.IsZero() || now.Before(earliest) || now.After(observed) {
-			t.Errorf("MCP Bot credential actor=%#v want=%#v queryTime=%v (%T), allowed=[%v,%v]", args[0], p, args[1], args[1], earliest, observed)
-			panic("MCP Bot credential actor or query time mismatch")
+		return botExpiryCloneBot(result), nil
+	}
+}
+func (o *mcpBotOperations) expectGet(id string, out model.Bot) {
+	result := botExpiryCloneBot(out)
+	called := o.once("Get")
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.get = func(ctx context.Context, p model.Principal, got string) (model.Bot, error) {
+		called()
+		mcpOperationContext(o.t, ctx, p)
+		o.check(ctx, p, "Get")
+		if got != id {
+			o.t.Errorf("Bot ID=%s want %s", got, id)
 		}
-	}}
-}
-
-type mcpBotReader struct {
-	s *mcpBotCallScript
-}
-
-func (d *mcpBotReader) Bot(ctx context.Context, id string) (model.Bot, error) {
-	r := d.s.call("Bot", id)
-	return r[0].(model.Bot), mcpBotErr(r[1])
-}
-func (d *mcpBotReader) Bots(ctx context.Context, owner string, worker *string, page store.Page) (store.BotPage, error) {
-	r := d.s.call("Bots", owner, worker, page)
-	return r[0].(store.BotPage), mcpBotErr(r[1])
-}
-func (d *mcpBotReader) BotPreferredWorker(ctx context.Context, owner string) (*string, error) {
-	r := d.s.call("BotPreferredWorker", owner)
-	return r[0].(*string), mcpBotErr(r[1])
-}
-func (d *mcpBotReader) BotCreationCandidate(ctx context.Context, owner, id string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotCreationCandidate", owner, id)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotReader) BotCreationCandidates(ctx context.Context, owner string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotCreationCandidates", owner)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotReader) BotCreationWorker(ctx context.Context, owner, id string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotCreationWorker", owner, id)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotReader) BotWorker(ctx context.Context, owner, id string) error {
-	return mcpBotErr(d.s.call("BotWorker", owner, id)[0])
-}
-func (d *mcpBotReader) BotDefaults(ctx context.Context, owner string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotDefaults", owner)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-
-type mcpBotWriteDAO struct {
-	s *mcpBotCallScript
-}
-
-func (d *mcpBotWriteDAO) Credential(ctx context.Context, p model.Principal) error {
-	return mcpBotErr(d.s.call("Credential", p)[0])
-}
-func (d *mcpBotWriteDAO) Worker(ctx context.Context, owner, id string) error {
-	return mcpBotErr(d.s.call("Worker", owner, id)[0])
-}
-func (d *mcpBotWriteDAO) LockCreation(ctx context.Context, id string) error {
-	return mcpBotErr(d.s.call("LockCreation", id)[0])
-}
-func (d *mcpBotWriteDAO) Bot(ctx context.Context, id string) (model.Bot, error) {
-	r := d.s.call("Bot", id)
-	return r[0].(model.Bot), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) BotPreferredWorker(ctx context.Context, owner string) (*string, error) {
-	r := d.s.call("BotPreferredWorker", owner)
-	return r[0].(*string), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) BotCreationCandidate(ctx context.Context, owner, id string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotCreationCandidate", owner, id)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) BotCreationCandidates(ctx context.Context, owner string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotCreationCandidates", owner)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) BotCreationWorker(ctx context.Context, owner, id string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotCreationWorker", owner, id)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) BotDefaults(ctx context.Context, owner string) (model.BotDefaultsInput, error) {
-	r := d.s.call("BotDefaults", owner)
-	return r[0].(model.BotDefaultsInput), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) InsertBot(ctx context.Context, b model.Bot) error {
-	return mcpBotErr(d.s.call("InsertBot", b)[0])
-}
-func (d *mcpBotWriteDAO) SaveBotDeletion(ctx context.Context, id string, v *model.BotDeletion) (model.Bot, error) {
-	r := d.s.call("SaveBotDeletion", id, v)
-	return r[0].(model.Bot), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) BindBotSession(ctx context.Context, id string, version int64, session string, role model.BotRoleConfiguration) (model.Bot, error) {
-	r := d.s.call("BindBotSession", id, version, session, role)
-	return r[0].(model.Bot), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) SetBotStartup(ctx context.Context, id string, version int64, result model.BotStartupResult) (model.Bot, error) {
-	r := d.s.call("SetBotStartup", id, version, result)
-	return r[0].(model.Bot), mcpBotErr(r[1])
-}
-func (d *mcpBotWriteDAO) CommitBotPreferences(ctx context.Context, id string) error {
-	return mcpBotErr(d.s.call("CommitBotPreferences", id)[0])
-}
-
-type mcpBotCredentialReader struct{ s *mcpBotCallScript }
-
-func (d mcpBotCredentialReader) Credential(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
-	d.s.call("Credential", p)
-	return store.ThreadCredential{}, nil
-}
-
-type mcpBotScope struct{ dao store.BotWriteDAO }
-
-func (s mcpBotScope) BotDAO() store.BotWriteDAO { return s.dao }
-
-type mcpBotSessionScope struct {
-	session store.SessionDAO
-	bot     store.BotWriteDAO
-}
-
-func (s mcpBotSessionScope) SessionDAO() store.SessionDAO { return s.session }
-func (s mcpBotSessionScope) BotDAO() store.BotWriteDAO    { return s.bot }
-
-type mcpBotSessionDAO struct {
-	sessionHTTPRejectedDAO
-	s *mcpBotCallScript
-}
-
-func (d *mcpBotSessionDAO) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
-	return mcpBotErr(d.s.call("LockCredential", p, now)[0])
-}
-func (d *mcpBotSessionDAO) SessionLocation(ctx context.Context, id string) (store.SessionLocation, error) {
-	r := d.s.call("SessionLocation", id)
-	return r[0].(store.SessionLocation), mcpBotErr(r[1])
-}
-func (d *mcpBotSessionDAO) SessionBotID(ctx context.Context, id string) (*string, error) {
-	r := d.s.call("SessionBotID", id)
-	return r[0].(*string), mcpBotErr(r[1])
-}
-func (d *mcpBotSessionDAO) LockSession(ctx context.Context, id string) (store.SessionRecord, error) {
-	r := d.s.call("LockSession", id)
-	return r[0].(store.SessionRecord), mcpBotErr(r[1])
-}
-func (d *mcpBotSessionDAO) InsertBotSession(ctx context.Context, v store.SessionRegistration) (bool, error) {
-	r := d.s.call("InsertBotSession", v)
-	return r[0].(bool), mcpBotErr(r[1])
-}
-func (d *mcpBotSessionDAO) LockBotSessions(ctx context.Context, id string) ([]store.BotSession, error) {
-	r := d.s.call("LockBotSessions", id)
-	return r[0].([]store.BotSession), mcpBotErr(r[1])
-}
-func (d *mcpBotSessionDAO) RevokeBotSessions(ctx context.Context, id string) error {
-	return mcpBotErr(d.s.call("RevokeBotSessions", id)[0])
-}
-func (d *mcpBotSessionDAO) LockBotSessionStop(ctx context.Context, id, bot, owner string) (store.BotSessionStop, error) {
-	r := d.s.call("LockBotSessionStop", id, bot, owner)
-	return r[0].(store.BotSessionStop), mcpBotErr(r[1])
-}
-func (d *mcpBotSessionDAO) DeleteBotSession(ctx context.Context, id, bot string) error {
-	return mcpBotErr(d.s.call("DeleteBotSession", id, bot)[0])
-}
-func (d *mcpBotSessionDAO) RedactDeletedBot(ctx context.Context, id string) error {
-	return mcpBotErr(d.s.call("RedactDeletedBot", id)[0])
-}
-func mcpBotResult(err error) (store.Completion, error) {
-	if err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Cause: err, Outcome: store.TransactionNotCommitted}
-	}
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
-}
-func mcpBotSnapshot(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall) {
-	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("ReadSnapshot", nil)}, calls...)...)
-	tx.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
-		s.call("ReadSnapshot")
-		scope := newHTTPTestSnapshot(t)
-		scope.Credentials = mcpBotCredentialReader{s: s}
-		scope.Bots = &mcpBotReader{s: s}
-		err := fn(scope)
-		s.verify()
-		return err
+		return botExpiryCloneBot(result), nil
 	}
 }
-func mcpBotWrite(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall) {
-	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("WriteBot", nil)}, calls...)...)
-	tx.WriteBotCall = func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error) {
-		s.call("WriteBot")
-		err := fn(mcpBotScope{dao: &mcpBotWriteDAO{s: s}})
-		s.verify()
-		return mcpBotResult(err)
+func (o *mcpBotOperations) expectList(input model.PageRequest, out botcore.BotPage) {
+	expected := input
+	expected.Cursor = botExpiryClonePointer(input.Cursor)
+	result := botcore.BotPage{Items: make([]model.Bot, len(out.Items)), NextCursor: botExpiryClonePointer(out.NextCursor)}
+	for i := range out.Items {
+		result.Items[i] = botExpiryCloneBot(out.Items[i])
 	}
-}
-func mcpBotSession(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall) {
-	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("WriteSession", nil)}, calls...)...)
-	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-		s.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: s}, bot: &mcpBotWriteDAO{s: s}})
-		s.verify()
-		return mcpBotResult(err)
-	}
-}
-func mcpBotDefaults(owner, worker string, now time.Time) model.BotDefaultsInput {
-	modelName, reason := "gpt-5", "not_found"
-	host := &model.WorkerAssistantHost{
-		ProtocolVersion: 1, ObservedAt: now, DefaultCwd: "/workspace", DefaultProvider: model.AgentCopilot,
-		Providers: []model.WorkerAssistantProvider{
-			{Provider: model.AgentCodex, Available: true, Args: []string{}},
-			{Provider: model.AgentClaude, Available: false, Reason: &reason, Args: []string{}},
-			{Provider: model.AgentCopilot, Available: true, Model: &modelName, Args: []string{"--effort", "high"}},
-		},
-	}
-	return model.BotDefaultsInput{
-		ObservedAt:        now,
-		Workers:           []model.WorkerSnapshot{{UserID: owner, WorkerID: worker, CreatedAt: now.Add(-time.Minute), LastReportedAt: now, Telemetry: model.WorkerTelemetry{Platform: model.PlatformLinux, AssistantHost: host}}},
-		WorkerPreferences: map[string]model.BotWorkerPreference{},
-	}
-}
-func mcpBotCreation(t *testing.T, tx *httpTestStore, p model.Principal, defaults model.BotDefaultsInput, want model.Bot) {
-	selection := func() []mcpBotExpectedCall {
-		if want.RequestedOverrides.WorkerID != nil {
-			return []mcpBotExpectedCall{mcpBotCall("BotCreationWorker", []any{p.UserID, want.WorkerID}, defaults, nil)}
+	called := o.once("List")
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.list = func(ctx context.Context, p model.Principal, got model.PageRequest) (botcore.BotPage, error) {
+		called()
+		mcpOperationContext(o.t, ctx, p)
+		o.check(ctx, p, "List")
+		if !reflect.DeepEqual(got, expected) {
+			o.t.Errorf("Bot list=%#v want %#v", got, expected)
 		}
-		return []mcpBotExpectedCall{mcpBotCall("BotPreferredWorker", []any{p.UserID}, (*string)(nil), nil), mcpBotCall("BotCreationCandidates", []any{p.UserID}, defaults, nil), mcpBotCall("BotCreationWorker", []any{p.UserID, want.WorkerID}, defaults, nil)}
+		copy := botcore.BotPage{Items: make([]model.Bot, len(result.Items)), NextCursor: botExpiryClonePointer(result.NextCursor)}
+		for i := range result.Items {
+			copy.Items[i] = botExpiryCloneBot(result.Items[i])
+		}
+		return copy, nil
 	}
-	reads := append([]mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}, selection()...)
-	mcpBotSnapshot(t, tx, reads...)
-	insert := model.Bot{ID: want.ID, OwnerUserID: p.UserID, WorkerID: want.WorkerID, Name: want.Name, RequestFingerprint: want.RequestFingerprint, RequestedOverrides: want.RequestedOverrides, ResolvedConfiguration: want.ResolvedConfiguration}
-	writes := append([]mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("LockCreation", []any{want.ID}, nil), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}, selection()...)
-	writes = append(writes, mcpBotCall("Worker", []any{p.UserID, want.WorkerID}, nil), mcpBotCall("InsertBot", []any{insert}, nil), mcpBotCall("Bot", []any{want.ID}, want, nil), mcpBotCredentialCall(p))
-	mcpBotWrite(t, tx, writes...)
+}
+func (o *mcpBotOperations) expectDelete(id string, input store.DeleteBot, out model.Bot, err error) {
+	result := botExpiryCloneBot(out)
+	called := o.once("DeleteBot")
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.delete = func(ctx context.Context, p model.Principal, gotID string, got store.DeleteBot) (model.Bot, error) {
+		called()
+		mcpOperationContext(o.t, ctx, p)
+		o.check(ctx, p, "DeleteBot")
+		if gotID != id || got != input {
+			o.t.Errorf("Bot delete=%s/%#v want %s/%#v", gotID, got, id, input)
+		}
+		return botExpiryCloneBot(result), err
+	}
+}
+func (o *mcpBotOperations) CreateResolved(ctx context.Context, p model.Principal, in botcore.CreateBot) (model.Bot, error) {
+	o.mu.Lock()
+	fn := o.create
+	o.create = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return model.Bot{}, o.unexpected("CreateResolved")
+	}
+	return fn(ctx, p, in)
+}
+func (o *mcpBotOperations) Get(ctx context.Context, p model.Principal, id string) (model.Bot, error) {
+	o.mu.Lock()
+	fn := o.get
+	o.get = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return model.Bot{}, o.unexpected("Get")
+	}
+	return fn(ctx, p, id)
+}
+func (o *mcpBotOperations) List(ctx context.Context, p model.Principal, in model.PageRequest) (botcore.BotPage, error) {
+	o.mu.Lock()
+	fn := o.list
+	o.list = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return botcore.BotPage{}, o.unexpected("List")
+	}
+	return fn(ctx, p, in)
+}
+func (o *mcpBotOperations) DeleteBot(ctx context.Context, p model.Principal, id string, in store.DeleteBot) (model.Bot, error) {
+	o.mu.Lock()
+	fn := o.delete
+	o.delete = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return model.Bot{}, o.unexpected("DeleteBot")
+	}
+	return fn(ctx, p, id, in)
+}
+func (o *mcpBotOperations) Defaults(context.Context, model.Principal, *string) (botcore.BotDefaults, error) {
+	return botcore.BotDefaults{}, o.unexpected("Defaults")
+}
+func (o *mcpBotOperations) ListWorker(context.Context, model.Principal, string, model.PageRequest) (botcore.BotPage, error) {
+	return botcore.BotPage{}, o.unexpected("ListWorker")
+}
+func (o *mcpBotOperations) RegisterBot(ctx context.Context, p model.Principal, worker, id string, in sessioncore.BotRegistration) (sessioncore.BotRegistrationResult, error) {
+	o.mu.Lock()
+	fn := o.register
+	o.register = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return sessioncore.BotRegistrationResult{}, o.unexpected("RegisterBot")
+	}
+	return fn(ctx, p, worker, id, in)
+}
+func (o *mcpBotOperations) CompleteBotDeletion(ctx context.Context, p model.Principal, worker, id string, in botservice.BotDeletionReceipt) (model.Bot, error) {
+	o.mu.Lock()
+	fn := o.complete
+	o.complete = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return model.Bot{}, o.unexpected("CompleteBotDeletion")
+	}
+	return fn(ctx, p, worker, id, in)
+}
+func (o *mcpBotOperations) TestSnapshot(ctx context.Context, p model.Principal, id string) (sp.Snapshot, error) {
+	o.mu.Lock()
+	fn := o.snapshot
+	o.snapshot = nil
+	o.mu.Unlock()
+	if fn == nil {
+		return sp.Snapshot{}, o.unexpected("TestSnapshot")
+	}
+	return fn(ctx, p, id)
+}
+func (o *mcpBotOperations) GrantBot(context.Context, model.Principal, string, string, sessioncore.BotGrant) (sessioncore.GrantResult, error) {
+	return sessioncore.GrantResult{}, o.unexpected("GrantBot")
+}
+func (o *mcpBotOperations) ReportBot(context.Context, model.Principal, string, string, sessioncore.BotReport) (model.Bot, error) {
+	return model.Bot{}, o.unexpected("ReportBot")
 }
 func mcpBotModel(owner, worker, id, name string, overrides model.BotOverrides, configuration model.BotConfiguration, now time.Time) model.Bot {
 	raw, _ := json.Marshal(struct {
@@ -367,7 +221,3 @@ func mcpBotModel(owner, worker, id, name string, overrides model.BotOverrides, c
 	sum := sha256.Sum256(raw)
 	return model.Bot{ID: id, OwnerUserID: owner, WorkerID: worker, Name: name, Version: 1, CreationOrder: 1, RequestFingerprint: hex.EncodeToString(sum[:]), RequestedOverrides: overrides, ResolvedConfiguration: configuration, StartupResult: model.BotStartupResult{State: "pending"}, CreatedAt: now, UpdatedAt: now}
 }
-
-var _ store.BotReader = (*mcpBotReader)(nil)
-var _ store.BotWriteDAO = (*mcpBotWriteDAO)(nil)
-var _ store.SessionDAO = (*mcpBotSessionDAO)(nil)

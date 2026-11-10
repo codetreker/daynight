@@ -6,18 +6,19 @@ import (
 	"math"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-const transferTestUser = "00000000-0000-4000-8000-000000000001"
-const transferTestProject = "00000000-0000-4000-8000-000000000002"
-const transferTestSource = "00000000-0000-4000-8000-000000000003"
-const transferTestTarget = "00000000-0000-4000-8000-000000000004"
+const transferTestUser = contractActor
+const transferTestProject = "f0000000-0000-4000-8000-000000000000"
+const transferTestSource = "e5555555-5555-4555-8555-555555555555"
+const transferTestTarget = "a7777777-7777-4777-8777-777777777777"
 
 func transferTestPrincipal() model.Principal {
-	return model.Principal{UserID: transferTestUser, CredentialID: "00000000-0000-4000-8000-000000000005", Kind: model.SessionCredential}
+	return contractPrincipal()
 }
 
 func transferTestFault(t *testing.T, err error, code string) {
@@ -30,6 +31,9 @@ func transferTestFault(t *testing.T, err error, code string) {
 
 type transferTestDAO struct {
 	store.ProjectWriteDAO
+	t              *testing.T
+	ctx            context.Context
+	expectedTarget string
 	calls          []string
 	ownership      model.ProjectOwnership
 	source, target store.TransferTeam
@@ -48,7 +52,11 @@ func (d *transferTestDAO) call(name string) error {
 	}
 	return nil
 }
-func (d *transferTestDAO) ProjectAccess(context.Context, model.Principal) (model.ProjectAccess, error) {
+func (d *transferTestDAO) ProjectAccess(ctx context.Context, p model.Principal) (model.ProjectAccess, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
+	contractEqual(d.t, p, transferTestPrincipal())
 	if err := d.call("access"); err != nil {
 		return model.ProjectAccess{}, err
 	}
@@ -56,12 +64,18 @@ func (d *transferTestDAO) ProjectAccess(context.Context, model.Principal) (model
 	if d.accessCount > 1 && d.afterAccess != nil {
 		return model.ProjectAccess{}, d.afterAccess
 	}
-	return d.access, nil
+	return contractCloneAccess(d.access), nil
 }
-func (d *transferTestDAO) Project(context.Context) (model.Project, error) {
+func (d *transferTestDAO) Project(ctx context.Context) (model.Project, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
 	return d.project, d.call("project")
 }
-func (d *transferTestDAO) UpdateProjectSettings(_ context.Context, minutes int32) (model.Project, error) {
+func (d *transferTestDAO) UpdateProjectSettings(ctx context.Context, minutes int32) (model.Project, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
 	if err := d.call("settings"); err != nil {
 		return model.Project{}, err
 	}
@@ -69,29 +83,45 @@ func (d *transferTestDAO) UpdateProjectSettings(_ context.Context, minutes int32
 	d.project.Settings.Version++
 	return d.project, nil
 }
-func (d *transferTestDAO) LockTransferOwnership(context.Context) (model.ProjectOwnership, error) {
+func (d *transferTestDAO) LockTransferOwnership(ctx context.Context) (model.ProjectOwnership, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
 	return d.ownership, d.call("ownership")
 }
-func (d *transferTestDAO) LockTransferTeams(_ context.Context, source, target string) (store.TransferTeam, store.TransferTeam, error) {
-	if source != d.ownership.TeamID || target != d.target.Ref.ID && d.target.Ref.ID != "" {
-		panic("unexpected Team locks")
+func (d *transferTestDAO) LockTransferTeams(ctx context.Context, source, target string) (store.TransferTeam, store.TransferTeam, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
 	}
+	contractEqual(d.t, []string{source, target}, []string{d.ownership.TeamID, d.expectedTarget})
 	return d.source, d.target, d.call("teams")
 }
-func (d *transferTestDAO) MoveOwnership(_ context.Context, target string) (model.ProjectOwnership, error) {
+func (d *transferTestDAO) MoveOwnership(ctx context.Context, target string) (model.ProjectOwnership, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
+	contractEqual(d.t, target, d.expectedTarget)
 	if err := d.call("move"); err != nil {
 		return model.ProjectOwnership{}, err
 	}
 	d.ownership.TeamID = target
 	d.ownership.Version++
+	d.ownership.UpdatedAt = d.ownership.UpdatedAt.Add(time.Second)
 	return d.ownership, nil
 }
-func newTransferTestDAO() *transferTestDAO {
-	role := model.ProjectAdmin
-	return &transferTestDAO{ownership: model.ProjectOwnership{TeamID: transferTestSource, Version: 5}, source: store.TransferTeam{Ref: model.TeamRef{ID: transferTestSource}}, target: store.TransferTeam{Ref: model.TeamRef{ID: transferTestTarget}, Version: 7}, access: model.ProjectAccess{Role: model.ProjectAdmin, TeamRole: &role}, project: model.Project{Settings: model.ProjectSettings{Version: 3, ExecutionWarningMinutes: 60}}}
+func newTransferTestDAO(t *testing.T, ctx context.Context) *transferTestDAO {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	value := contractProject(transferTestProject, "Project", "https://github.com/acme/test.git", transferTestSource)
+	access := contractAccess(transferTestPrincipal(), value)
+	name := "Destination"
+	return &transferTestDAO{t: t, ctx: ctx, expectedTarget: transferTestTarget,
+		ownership: value.Ownership,
+		source:    store.TransferTeam{Ref: model.TeamRef{ID: transferTestSource, Kind: "personal"}, Version: 1},
+		target:    store.TransferTeam{Ref: model.TeamRef{ID: transferTestTarget, Kind: "ordinary", Name: &name}, Version: 1},
+		access:    access, project: model.Project{ID: value.ID, Name: value.Name, RepoURL: value.RepoURL, CreatedAt: at, UpdatedAt: at, Ownership: value.Ownership, Settings: model.ProjectSettings{Version: 3, ExecutionWarningMinutes: 60}}}
 }
 func transferTestInput() TransferInput {
-	return TransferInput{Ownership: model.ProjectOwnership{TeamID: transferTestSource, Version: 5}, TargetTeam: TeamVersion{ID: transferTestTarget, Version: 7}, ExpectedUserID: transferTestUser}
+	return TransferInput{Ownership: model.ProjectOwnership{TeamID: transferTestSource, Version: 1}, TargetTeam: TeamVersion{ID: transferTestTarget, Version: 1}, ExpectedUserID: transferTestUser}
 }
 
 func TestTransferSettingsValidation(t *testing.T) {
@@ -142,12 +172,18 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 	ctx := context.Background()
 	p := transferTestPrincipal()
 	input := transferTestInput()
-	d := newTransferTestDAO()
+	d := newTransferTestDAO(t, ctx)
 	d.afterAccess = model.ErrNotFound
 	receipt, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, input)
-	if err != nil || !receipt.Changed || receipt.ActorAccess != nil || receipt.Ownership.TeamID != transferTestTarget || receipt.Ownership.Version != 6 {
-		t.Fatalf("receipt %#v, %v", receipt, err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	targetName := "Destination"
+	wantReceipt := TransferReceipt{ProjectID: transferTestProject, Changed: true,
+		SourceTeam: model.TeamRef{ID: transferTestSource, Kind: "personal"},
+		OwnerTeam:  model.TeamRef{ID: transferTestTarget, Kind: "ordinary", Name: &targetName},
+		Ownership:  model.ProjectOwnership{TeamID: transferTestTarget, Version: 2, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)}, ActorAccess: nil}
+	contractEqual(t, receipt, wantReceipt)
 	if want := []string{"ownership", "teams", "access", "move", "access"}; !reflect.DeepEqual(d.calls, want) {
 		t.Fatalf("order %v, want %v", d.calls, want)
 	}
@@ -157,7 +193,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 		code   string
 	}{
 		{"not owner administrator", func(d *transferTestDAO, _ *TransferInput) { d.access.TeamRole = nil }, "forbidden"},
-		{"stale ownership", func(_ *transferTestDAO, i *TransferInput) { i.Ownership.Version-- }, "version_conflict"},
+		{"stale ownership", func(_ *transferTestDAO, i *TransferInput) { i.Ownership.Version = 999 }, "version_conflict"},
 		{"missing target", func(d *transferTestDAO, _ *TransferInput) { d.target.Ref.ID = "" }, "not_found"},
 		{"stale team", func(_ *transferTestDAO, i *TransferInput) { i.TargetTeam.Version-- }, "version_conflict"},
 		{"exhausted ownership", func(d *transferTestDAO, i *TransferInput) {
@@ -167,7 +203,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newTransferTestDAO()
+			d := newTransferTestDAO(t, ctx)
 			i := transferTestInput()
 			tc.modify(d, &i)
 			_, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, i)
@@ -179,22 +215,26 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 			}
 		})
 	}
-	d = newTransferTestDAO()
+	d = newTransferTestDAO(t, ctx)
 	d.target = d.source
-	d.target.Version = 7
+	d.target.Version = 1
+	d.expectedTarget = transferTestSource
 	i := transferTestInput()
 	i.TargetTeam.ID = transferTestSource
 	receipt, err = Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestSource, i)
-	if err != nil || receipt.Changed || receipt.ActorAccess == nil {
-		t.Fatalf("no-op receipt %#v, %v", receipt, err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	original := contractProject(transferTestProject, "Project", "https://github.com/acme/test.git", transferTestSource)
+	expectedAccess := contractAccess(p, original)
+	contractEqual(t, receipt, TransferReceipt{ProjectID: transferTestProject, Changed: false, SourceTeam: model.TeamRef{ID: transferTestSource, Kind: "personal"}, OwnerTeam: model.TeamRef{ID: transferTestSource, Kind: "personal"}, Ownership: original.Ownership, ActorAccess: &expectedAccess})
 	if !reflect.DeepEqual(d.calls, []string{"ownership", "teams", "access", "access"}) {
 		t.Fatal(d.calls)
 	}
 	cause := errors.New("store error")
 	for _, stage := range []string{"ownership", "teams", "access", "move"} {
 		t.Run(stage+" failure", func(t *testing.T) {
-			d := newTransferTestDAO()
+			d := newTransferTestDAO(t, ctx)
 			d.fail = stage
 			d.cause = cause
 			_, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, input)
@@ -203,7 +243,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 			}
 		})
 	}
-	d = newTransferTestDAO()
+	d = newTransferTestDAO(t, ctx)
 	d.afterAccess = cause
 	if _, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, input); !errors.Is(err, cause) {
 		t.Fatalf("lost post-transfer access failure %v", err)
@@ -214,26 +254,26 @@ func TestSettingsChecksAccessBeforeVersionAndWrites(t *testing.T) {
 	ctx := context.Background()
 	p := transferTestPrincipal()
 	input := UpdateProjectSettings{Version: 3, ExecutionWarningMinutes: 90}
-	d := newTransferTestDAO()
+	d := newTransferTestDAO(t, ctx)
 	got, err := UpdateSettings(ctx, d, p, input)
 	if err != nil || got.Settings.Version != 4 || got.Settings.ExecutionWarningMinutes != 90 || !reflect.DeepEqual(d.calls, []string{"access", "project", "settings"}) {
 		t.Fatalf("result %#v calls %v err %v", got, d.calls, err)
 	}
-	d = newTransferTestDAO()
+	d = newTransferTestDAO(t, ctx)
 	d.access.Role = model.ProjectMemberRole
 	_, err = UpdateSettings(ctx, d, p, input)
 	transferTestFault(t, err, "forbidden")
 	if !reflect.DeepEqual(d.calls, []string{"access"}) {
 		t.Fatal(d.calls)
 	}
-	d = newTransferTestDAO()
+	d = newTransferTestDAO(t, ctx)
 	input.Version = 2
 	_, err = UpdateSettings(ctx, d, p, input)
 	transferTestFault(t, err, "version_conflict")
 	if !reflect.DeepEqual(d.calls, []string{"access", "project"}) {
 		t.Fatal(d.calls)
 	}
-	d = newTransferTestDAO()
+	d = newTransferTestDAO(t, ctx)
 	input.Version = 3
 	input.ExecutionWarningMinutes = 60
 	got, err = UpdateSettings(ctx, d, p, input)
@@ -244,7 +284,7 @@ func TestSettingsChecksAccessBeforeVersionAndWrites(t *testing.T) {
 	input.ExecutionWarningMinutes = 90
 	for _, stage := range []string{"access", "project", "settings"} {
 		t.Run(stage+" failure", func(t *testing.T) {
-			d := newTransferTestDAO()
+			d := newTransferTestDAO(t, ctx)
 			d.fail = stage
 			d.cause = cause
 			_, err := UpdateSettings(ctx, d, p, input)
@@ -257,6 +297,9 @@ func TestSettingsChecksAccessBeforeVersionAndWrites(t *testing.T) {
 
 type transferPreviewTestDAO struct {
 	store.ProjectReader
+	t      *testing.T
+	ctx    context.Context
+	calls  []string
 	access model.ProjectAccess
 	target store.TransferTeam
 	role   *model.ProjectRole
@@ -264,19 +307,33 @@ type transferPreviewTestDAO struct {
 	cause  error
 }
 
-func (d *transferPreviewTestDAO) ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+func (d *transferPreviewTestDAO) ProjectAccess(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
+	contractEqual(d.t, p, transferTestPrincipal())
+	contractEqual(d.t, id, transferTestProject)
+	d.calls = append(d.calls, "access")
 	if d.fail == "access" {
 		return model.ProjectAccess{}, d.cause
 	}
-	return d.access, nil
+	return contractCloneAccess(d.access), nil
 }
-func (d *transferPreviewTestDAO) TransferTeam(context.Context, string) (store.TransferTeam, error) {
+func (d *transferPreviewTestDAO) TransferTeam(ctx context.Context, id string) (store.TransferTeam, error) {
+	if ctx != d.ctx {
+		d.t.Fatal("DAO changed context")
+	}
+	contractEqual(d.t, id, transferTestTarget)
+	d.calls = append(d.calls, "team")
 	if d.fail == "team" {
 		return store.TransferTeam{}, d.cause
 	}
 	return d.target, nil
 }
-func (d *transferPreviewTestDAO) TransferRole(context.Context, string, string, string) (*model.ProjectRole, error) {
+func (d *transferPreviewTestDAO) TransferRole(ctx context.Context, user, project, team string) (*model.ProjectRole, error) {
+	contractEqual(d.t, ctx, d.ctx)
+	contractEqual(d.t, []string{user, project, team}, []string{transferTestUser, transferTestProject, transferTestTarget})
+	d.calls = append(d.calls, "role")
 	if d.fail == "role" {
 		return nil, d.cause
 	}
@@ -286,14 +343,28 @@ func TestTransferPreviewAuthorizationAndErrors(t *testing.T) {
 	ctx := context.Background()
 	p := transferTestPrincipal()
 	role := model.ProjectAdmin
-	d := &transferPreviewTestDAO{access: model.ProjectAccess{TeamRole: &role, OwnerTeam: model.TeamRef{ID: transferTestSource}, Ownership: model.ProjectOwnership{TeamID: transferTestSource, Version: 5}}, target: store.TransferTeam{Ref: model.TeamRef{ID: transferTestTarget}, Version: 7}}
+	value := contractProject(transferTestProject, "Project", "https://github.com/acme/test.git", transferTestSource)
+	targetName := "Destination"
+	d := &transferPreviewTestDAO{t: t, ctx: ctx, access: contractAccess(p, value), target: store.TransferTeam{Ref: model.TeamRef{ID: transferTestTarget, Kind: "ordinary", Name: &targetName}, Version: 1}}
 	got, err := TransferPreviewFor(ctx, d, p, transferTestProject, transferTestTarget)
-	if err != nil || got.ActorRole != nil || got.TargetTeamVersion != 7 || got.Ownership.Version != 5 {
-		t.Fatalf("preview %#v %v", got, err)
+	wantName := "Destination"
+	want := TransferPreview{SourceTeam: model.TeamRef{ID: transferTestSource, Kind: "personal"}, TargetTeam: model.TeamRef{ID: transferTestTarget, Kind: "ordinary", Name: &wantName}, Ownership: value.Ownership, TargetTeamVersion: 1, ActorRole: nil}
+	if err != nil {
+		t.Fatal(err)
 	}
+	contractEqual(t, got, want)
+	contractEqual(t, d.calls, []string{"access", "team", "role"})
+	d.calls = nil
+	d.fail, d.cause = "access", model.ErrNotFound
+	_, err = TransferPreviewFor(ctx, d, p, transferTestProject, transferTestTarget)
+	transferTestFault(t, err, "not_found")
+	contractEqual(t, d.calls, []string{"access"})
+	d.fail = ""
+	d.calls = nil
 	d.access.TeamRole = nil
 	_, err = TransferPreviewFor(ctx, d, p, transferTestProject, transferTestTarget)
 	transferTestFault(t, err, "forbidden")
+	contractEqual(t, d.calls, []string{"access"})
 	d.access.TeamRole = &role
 	d.fail = "team"
 	d.cause = model.ErrNotFound

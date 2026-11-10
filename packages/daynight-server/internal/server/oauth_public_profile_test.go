@@ -8,9 +8,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,11 +26,10 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	config.PublicOrigin, config.AllowHTTPTestOrigin = h.Origin, true
 	config.UniAuthCallbackURL = h.Origin + "/api/v1/auth/callback"
 	config.OAuthClients = map[string][]byte{"known": []byte(`{"client_id":"known","client_name":"Known","redirect_uris":["https://client.example/callback"]}`)}
-	handler, err := newTestHandler(Dependencies{Store: h.Store, Files: attachmentTestFiles(t)}, config, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer handler.(Handler).Shutdown(context.Background())
+	server, application := newMCPOperationServerWithConfig(t, nil, attachmentTestFiles(t), config, func(app *service.App) {
+		app.Identity, app.OAuth = h.Identity, h.Ops
+	})
+	handler := markMCPOperationRequests(t, h.handler(func(d *httpDependencies) { d.MCP = application.mcp }))
 	send := func(method, path, body, contentType string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -57,21 +56,8 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 		t.Fatalf("metadata: %d %s", w.Code, w.Body.String())
 	}
 	const callback = "http://127.0.0.1:9012/callback"
-	var registered store.OAuthClient
-	registerPlan := newHTTPCallPlan(t, map[string]int{"transaction": 1, "client_insert": 1})
-	registerDAO := &oauthHTTPClientDAO{t: t, plan: registerPlan, insert: func(in store.OAuthClient, capacity int, now time.Time) (bool, error) {
-		var metadata map[string]any
-		if json.Unmarshal(in.Metadata, &metadata) != nil || in.ID == "" || metadata["client_id"] != in.ID || metadata["client_name"] != "Public client" || capacity != 10000 || !in.CreatedAt.Equal(now) || !in.LastUsedAt.Equal(now) || in.ExpiresAt.Sub(now) != 7*24*time.Hour {
-			t.Errorf("client registration arguments: %+v", in)
-		}
-		registered = oauthHTTPCloneClient(in)
-		return true, nil
-	}}
-	h.Store.WriteOAuthClientsCall = func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error) {
-		registerPlan.Called("transaction")
-		e := fn(oauthHTTPClientScope{clients: registerDAO})
-		return oauthHTTPCompletion(e), e
-	}
+	registeredID := secret.Random("dnoac_")
+	oauthHTTPExpectRegistration(t, h, `{"client_name":"Public client","redirect_uris":["http://127.0.0.1/callback"]}`, core.ClientMetadata{ClientID: registeredID, ClientName: "Public client", RedirectURIs: []string{"http://127.0.0.1/callback"}, TokenEndpointAuthMethod: "none"})
 	w = send("POST", "/oauth/register", `{"client_name":"Public client","redirect_uris":["http://127.0.0.1/callback"]}`, "application/json")
 	if w.Code != http.StatusCreated {
 		t.Fatalf("register: %d %s", w.Code, w.Body.String())
@@ -83,8 +69,9 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &registration); err != nil || registration.ClientID == "" || registration.Method != "none" {
 		t.Fatalf("registration: %#v %v", registration, err)
 	}
-	if registered.ID != registration.ClientID {
-		t.Fatal("registered response differs from candidate ID")
+	oauthHTTPAssertRegistration(t, w.Body.Bytes(), core.ClientMetadata{ClientID: registeredID, ClientName: "Public client", RedirectURIs: []string{"http://127.0.0.1/callback"}, TokenEndpointAuthMethod: "none"})
+	if registeredID != registration.ClientID {
+		t.Fatal("registered response differs from configured ID")
 	}
 	h.ClientBudgetID = registration.ClientID
 	verifier := strings.Repeat("v", 43)
@@ -100,24 +87,6 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	if got := send("GET", "/oauth/authorize?"+known.Encode(), "", ""); got.Code != http.StatusSeeOther {
 		t.Fatalf("preregistered client: %d", got.Code)
 	}
-	clientPlan := newHTTPCallPlan(t, map[string]int{"transaction": 1, "client_read": 1, "client_pin": 1})
-	clientRecord := store.OAuthClient{ID: registration.ClientID, Metadata: json.RawMessage(`{"client_id":"` + registration.ClientID + `","client_name":"Public client","redirect_uris":["http://127.0.0.1/callback"]}`), CreatedAt: h.Now, LastUsedAt: h.Now, ExpiresAt: h.Now.Add(7 * 24 * time.Hour)}
-	clientDAO := &oauthHTTPClientDAO{t: t, plan: clientPlan, read: func(id string, lock bool) (store.OAuthClient, error) {
-		if id != registration.ClientID || !lock {
-			unexpectedHTTPCall(t, "registered client lookup")
-		}
-		return clientRecord, nil
-	}, pin: func(id string, now time.Time) (store.OAuthClient, error) {
-		if id != registration.ClientID || now.IsZero() {
-			unexpectedHTTPCall(t, "registered client pin")
-		}
-		return clientRecord, nil
-	}}
-	h.Store.WriteOAuthClientsCall = func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error) {
-		clientPlan.Called("transaction")
-		e := fn(oauthHTTPClientScope{clients: clientDAO})
-		return oauthHTTPCompletion(e), e
-	}
 	startCapture := oauthHTTPExpectStart(t, h, registration.ClientID, callback, "state")
 	w = send("GET", "/oauth/authorize?"+q.Encode(), "", "")
 	if w.Code != http.StatusSeeOther || len(w.Result().Cookies()) != 1 {
@@ -129,26 +98,28 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	}
 	id, binding := location.Query().Get("request"), w.Result().Cookies()[0]
 	if captured := startCapture.Load(); captured == nil || captured.ID != id || !bytesEqualOAuthHash(binding.Value, captured.BindingHash) {
-		t.Fatal("production authorization response differs from inserted request/binding")
+		t.Fatal("production authorization response differs from configured request/binding")
 	}
 	pending := oauthHTTPPending(h, id, binding.Value, "state", registration.ClientID, callback, "dcr")
 	w = send("GET", location.String(), "", "", session, binding)
 	if w.Code != http.StatusOK || w.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatalf("consent: %d %s", w.Code, w.Body.String())
 	}
-	oauthHTTPRead(t, h, pending)
+	oauthHTTPRead(t, h, pending, binding.Value)
 	w = send("GET", "/api/v1/oauth/requests/"+id, "", "", session, binding)
+	oauthHTTPAssertView(t, h, w.Body.Bytes(), pending)
 	var view struct{ UserID, Status, ClientProvenance string }
 	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != 200 || view.UserID == "" || view.Status != "pending" || view.ClientProvenance != "dcr" {
 		t.Fatalf("inspect: %d %s %v", w.Code, w.Body.String(), err)
 	}
+	oauthHTTPExpectDecisionRefusal(t, h, pending, h.Principal, "00000000-0000-4000-8000-000000000001", "approve", binding.Value)
 	wrongAccount, _ := json.Marshal(map[string]string{"expectedUserId": "00000000-0000-4000-8000-000000000001", "decision": "approve"})
 	w = send("POST", "/api/v1/oauth/requests/"+id+"/decision", string(wrongAccount), "application/json", session, binding)
 	if w.Code == http.StatusOK {
 		t.Fatal("decision accepted a changed account")
 	}
 	body, _ := json.Marshal(map[string]string{"expectedUserId": view.UserID, "decision": "approve"})
-	decisionCapture := oauthHTTPDecision(t, h, pending, "approved")
+	decisionCapture := oauthHTTPDecision(t, h, pending, "approved", binding.Value, false)
 	w = send("POST", "/api/v1/oauth/requests/"+id+"/decision", string(body), "application/json", session, binding)
 	var decision struct {
 		RedirectURI string `json:"redirectUri"`
@@ -161,12 +132,12 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 		t.Fatalf("redirect: %s %v", decision.RedirectURI, err)
 	}
 	if captured := decisionCapture.Load(); captured == nil || !bytesEqualOAuthHash(redirect.Query().Get("code"), captured.CodeHash) {
-		t.Fatal("approval response code differs from candidate hash")
+		t.Fatal("approval response code differs from configured hash")
 	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {redirect.Query().Get("code")}, "client_id": {registration.ClientID}, "redirect_uri": {callback}, "resource": {h.Origin + "/mcp"}, "code_verifier": {verifier}}
 	approved := oauthHTTPApproved(h, pending, redirect.Query().Get("code"))
 	var issue store.OAuthFamilyIssue
-	oauthHTTPExpectRedeem(t, h, approved, true, false, false, &issue)
+	oauthHTTPExpectRedeem(t, h, approved, true, false, false, &issue, oauthservice.RedeemInput{Code: redirect.Query().Get("code"), ClientID: registration.ClientID, RedirectURI: callback, Resource: h.Origin + "/mcp", Verifier: verifier})
 	w = send("POST", "/oauth/token", form.Encode(), "application/x-www-form-urlencoded")
 	var token struct {
 		AccessToken  string `json:"access_token"`
@@ -175,22 +146,15 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &token); err != nil || w.Code != 200 || token.AccessToken == "" || token.RefreshToken == "" {
 		t.Fatalf("token: %d %v", w.Code, err)
 	}
+	oauthHTTPAssertTokens(t, w.Body.Bytes(), h.ExpectedTokens)
 	if !bytesEqualOAuthHash(token.AccessToken, issue.AccessHash) || !bytesEqualOAuthHash(token.RefreshToken, issue.RefreshHash) {
-		t.Fatal("issued token hashes differ from candidate")
+		t.Fatal("configured token hashes differ from candidate")
 	}
-	h.Store.WriteCredentialFamilyCall = func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
-		plan := newHTTPCallPlan(t, map[string]int{"authenticate": 1})
-		dao := &oauthHTTPFamilyDAO{t: t, plan: plan, authenticate: func(hash []byte, resource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
-			if !bytesEqualOAuthHash(token.AccessToken, hash) || resource != h.Origin+"/mcp" || scope != core.Scope || now.IsZero() {
-				unexpectedHTTPCall(t, "public profile access authentication")
-			}
-			return store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: h.Principal.UserID, CredentialID: issue.AccessID}, GrantID: issue.Grant.ID}, nil
-		}}
-		e := fn(oauthHTTPFamilyScope{families: dao})
-		return oauthHTTPCompletion(e), e
+	h.Ops.AuthenticateAccessFn = func(ctx context.Context, rawToken, resource string) (store.OAuthAccessIdentity, error) {
+		oauthHTTPContext(t, ctx)
+		oauthHTTPCheck(t, []string{rawToken, resource}, []string{token.AccessToken, h.Origin + "/mcp"})
+		return store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: h.Principal.UserID, CredentialID: issue.AccessID}, GrantID: issue.Grant.ID}, nil
 	}
-	server := httptest.NewServer(handler)
-	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client := mcpPATClient(t, server.URL, token.AccessToken)
@@ -208,8 +172,9 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &renewed); err != nil || w.Code != http.StatusOK || renewed.AccessToken == "" || renewed.RefreshToken == "" || renewed.RefreshToken == token.RefreshToken {
 		t.Fatalf("refresh: %d %v", w.Code, err)
 	}
+	oauthHTTPAssertTokens(t, w.Body.Bytes(), h.ExpectedTokens)
 	if !bytesEqualOAuthHash(renewed.AccessToken, rotation.AccessHash) || !bytesEqualOAuthHash(renewed.RefreshToken, rotation.RefreshHash) {
-		t.Fatal("renewed response differs from candidate token hashes")
+		t.Fatal("renewed response differs from configured token hashes")
 	}
 	revoke := url.Values{"token": {renewed.RefreshToken}, "client_id": {registration.ClientID}}
 	oauthHTTPExpectRevoke(t, h, renewed.RefreshToken, issue.Grant, false)
@@ -217,7 +182,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("revoke: %d", w.Code)
 	}
-	oauthHTTPExpectAccess(t, h, renewed.AccessToken, h.Origin+"/mcp", model.Principal{}, "", model.ErrNotFound)
+	oauthHTTPExpectAccess(t, h, renewed.AccessToken, h.Origin+"/mcp", model.Principal{}, "", model.Unauthenticated(model.ErrNotFound))
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+renewed.AccessToken)
 	w = httptest.NewRecorder()

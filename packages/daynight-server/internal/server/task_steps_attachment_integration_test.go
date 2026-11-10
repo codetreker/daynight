@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestStepsHTTPDeleteLifecycleReferencesAndIDReuse(t *testing.T) {
@@ -27,22 +28,18 @@ func TestStepsHTTPDeleteLifecycleReferencesAndIDReuse(t *testing.T) {
 	metadata := f.referencedAttachment("plan.md", "text/markdown", payload)
 	path := taskPath(task) + "/steps"
 	current := append([]model.TaskStep(nil), original...)
-	for index, id := range []string{"ABCDEF01", "fedcba98", "00000000", "12345678"} {
+	for _, id := range []string{"ABCDEF01", "fedcba98", "00000000", "12345678"} {
 		canonical := strings.ToLower(id)
-		from := 0
 		next := []model.TaskStep{}
-		for position, step := range current {
-			if step.ID == canonical {
-				from = position
-			} else {
+		for _, step := range current {
+			if step.ID != canonical {
 				next = append(next, step)
 			}
 		}
 		for position := range next {
 			next[position].Position = int64(position)
 		}
-		at := updated.Add(time.Duration(index+1) * time.Minute)
-		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "delete", ID: canonical, From: int64(from), To: int64(len(current) - from - 1), Observed: at})
+		f.expectStepsWrite(stepHTTPWritePlan{ID: canonical, Delete: &taskservice.DeleteTaskStep{Version: header.Version}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: header.Version + 1}, ResultSteps: next})
 		response := projectRequest(handler, "DELETE", path+"/"+id, jsonBody(t, map[string]any{"version": header.Version}))
 		resource := decodeResponse[api.StepsResource](t, response, 200)
 		header.Version++
@@ -61,9 +58,9 @@ func TestStepsHTTPDeleteLifecycleReferencesAndIDReuse(t *testing.T) {
 		}
 		f.expectMissingStep(header, canonical)
 		assertProjectError(t, projectRequest(handler, "GET", path+"/"+canonical, ""), 404, "not_found")
-		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: next, Refused: true})
+		f.expectStepsWrite(stepHTTPWritePlan{ID: canonical, Delete: &taskservice.DeleteTaskStep{Version: header.Version}, Refused: true})
 		assertProjectError(t, projectRequest(handler, "DELETE", path+"/"+canonical, jsonBody(t, map[string]any{"version": header.Version})), 404, "not_found")
-		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Stale: true})
+		f.expectStepsWrite(stepHTTPWritePlan{ID: canonical, Delete: &taskservice.DeleteTaskStep{Version: header.Version - 1}, Stale: true})
 		assertProjectError(t, projectRequest(handler, "DELETE", path+"/"+canonical, jsonBody(t, map[string]any{"version": header.Version - 1})), 409, "version_conflict")
 		current = next
 	}
@@ -95,7 +92,7 @@ func TestStepsHTTPDeleteLifecycleReferencesAndIDReuse(t *testing.T) {
 	}
 	at := updated.Add(5 * time.Minute)
 	candidate := model.TaskStep{ID: "abcdef01", Position: 0, Title: "new record", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "add", Candidate: candidate, Observed: at})
+	f.expectStepsWrite(stepHTTPWritePlan{Add: &taskservice.AddTaskStep{Version: header.Version, ID: "ABCDEF01", Title: "new record"}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: header.Version + 1}, ResultSteps: []model.TaskStep{candidate}})
 	recreated := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", path, jsonBody(t, map[string]any{"version": header.Version, "id": "ABCDEF01", "title": "new record"})), 201)
 	if len(recreated.Steps) != 1 || recreated.Version != header.Version+1 || recreated.Steps[0].ID != "abcdef01" || recreated.Steps[0].Title != "new record" || recreated.Steps[0].Description != "" || recreated.Steps[0].Status != "todo" || !recreated.Steps[0].CreatedAt.After(original[1].CreatedAt) || recreated.Steps[0].CreatedAt != recreated.Steps[0].UpdatedAt {
 		t.Fatal("ID reuse restored deleted data")

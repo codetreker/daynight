@@ -3,21 +3,19 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSession, principals []model.Principal) {
+func exerciseMCPTeams(t *testing.T, org *mcpOrgFixture, alice, bob *sdk.ClientSession, principals []model.Principal) {
 	t.Helper()
-	identity := tx.WriteIdentityCall
-	defer func() { tx.WriteIdentityCall = identity }()
 	personalID := "e1111111-1111-4111-8111-111111111111"
-	mcpOrgAuthenticate(t, tx, principals, []string{defaultHTTPToken(), "dnpat_" + strings.Repeat("B", 42) + "A"}, []string{personalID, "e2222222-2222-4222-8222-222222222222"}, 2)
+	org.bindIdentity(org.identity, principals, []string{personalID, "e2222222-2222-4222-8222-222222222222"}, 2)
 	call := func(client *sdk.ClientSession, name string, args map[string]any, code string) map[string]any {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -45,35 +43,18 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 		return envelope.Data
 	}
 	team := mcpOrgTeam(t, "e3333333-3333-4333-8333-333333333333", "MCP Team", principals[0].UserID)
-	mcpOrgCreateTeam(t, tx, principals[0], team)
+	mcpOrgCreateTeam(t, org, principals[0], team)
 	created := call(alice, "team_create", map[string]any{"name": "MCP Team", "confirm": true}, "")
 	projectHTTPCheck(t, created["id"], team.ID)
 	id := team.ID
-	prepareTeamRead := func(actor model.Principal, v model.Team) {
-		t.Helper()
-		read := projectHTTPCount(t, 1)
-		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
-			read()
-			projectHTTPCheck(t, []string{user, id}, []string{actor.UserID, v.ID})
-			return v, nil
-		}})
-	}
+	prepareTeamRead := func(actor model.Principal, v model.Team) { mcpOrgTeamRead(t, org, actor, v) }
 	prepareTeamRead(principals[0], team)
-	readTeam, rename := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 	renamed := team
 	newName := "Renamed"
 	renamed.Name = &newName
 	renamed.Version = 2
 	renamed.UpdatedAt = team.UpdatedAt.Add(time.Second)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
-		readTeam()
-		projectHTTPCheck(t, user, principals[0].UserID)
-		return team, nil
-	}, RenameCall: func(ctx context.Context, user, name string) (model.Team, error) {
-		rename()
-		projectHTTPCheck(t, []string{user, name}, []string{principals[0].UserID, "Renamed"})
-		return renamed, nil
-	}}, nil)
+	mcpOrgTeamRename(t, org, principals[0], id, teamcore.ChangeTeam{Name: "Renamed", Version: team.Version, ExpectedUserID: principals[0].UserID}, renamed, nil)
 	receipt := call(alice, "team_rename", map[string]any{"team": id, "name": "Renamed", "confirm": true}, "")
 	projectHTTPCheck(t, receipt["version"], "2")
 	personal := mcpOrgTeam(t, personalID, "", principals[0].UserID)
@@ -81,12 +62,12 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	personal.Name = nil
 	for _, operation := range []string{"team_rename", "team_delete"} {
 		prepareTeamRead(principals[0], personal)
-		read := projectHTTPCount(t, 1)
-		mcpOrgWriteTeam(t, tx, personal.ID, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
-			read()
-			projectHTTPCheck(t, user, principals[0].UserID)
-			return personal, nil
-		}}, nil)
+		immutable := &model.Fault{Code: "personal_team_immutable", Message: "Personal Teams cannot be changed."}
+		if operation == "team_rename" {
+			mcpOrgTeamRename(t, org, principals[0], personal.ID, teamcore.ChangeTeam{Name: "no", Version: personal.Version, ExpectedUserID: principals[0].UserID}, model.Team{}, immutable)
+		} else {
+			mcpOrgTeamDelete(t, org, principals[0], personal.ID, teamcore.ChangeTeam{Name: "personal", Version: personal.Version, ExpectedUserID: principals[0].UserID}, immutable)
+		}
 		args := map[string]any{"team": "personal", "confirm": true}
 		if operation == "team_rename" {
 			args["name"] = "no"
@@ -98,22 +79,18 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	var pages [2]map[string]any
 	var cursor any
 	for i := range 2 {
-		access, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-		want := store.Page{Limit: 1}
-		if i > 0 {
-			want.After = &store.Position{CreatedAt: members[i-1].Membership.CreatedAt, ID: members[i-1].Membership.UserID}
-		}
 		row := members[i]
-		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamAccessCall: func(ctx context.Context, user, id string) error {
-			access()
-			projectHTTPCheck(t, []string{user, id}, []string{principals[0].UserID, team.ID})
-			return nil
-		}, TeamMembersPageCall: func(ctx context.Context, id string, page store.Page) (store.TeamMemberPage, error) {
-			read()
-			projectHTTPCheck(t, id, team.ID)
-			projectHTTPCheck(t, page, want)
-			return store.TeamMemberPage{Items: []model.TeamMemberProfile{row}, HasMore: i == 0}, nil
-		}})
+		want := model.PageRequest{Limit: 1}
+		if i > 0 {
+			current := cursor.(string)
+			want.Cursor = &current
+		}
+		result := teamcore.MemberPage{Items: []model.TeamMemberProfile{row}}
+		if i == 0 {
+			next := "member-page-2"
+			result.NextCursor = &next
+		}
+		mcpOrgMemberPage(t, org, principals[0], id, want, result, nil)
 		args := map[string]any{"team": id, "limit": 1}
 		if cursor != nil {
 			args["cursor"] = cursor
@@ -125,7 +102,8 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 		t.Fatalf("member pages: %#v %#v", pages[0], pages[1])
 	}
 	next := pages[0]["nextCursor"].(string)
-	tx.ReadSnapshotCall = nil
+
+	mcpOrgMemberPage(t, org, principals[1], id, model.PageRequest{Limit: 50, Cursor: &next}, teamcore.MemberPage{}, &model.Fault{Code: "invalid_input", Message: "Invalid cursor."})
 	call(bob, "team_member_list", map[string]any{"team": id, "cursor": next}, "invalid_input")
 	bobVersion := ""
 	for _, page := range pages {
@@ -137,42 +115,24 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	if bobVersion != "1" {
 		t.Fatal("member missing from pages or version is incorrect")
 	}
-	prepareMember := func(actor model.Principal, v model.TeamMember) {
-		t.Helper()
-		access, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamAccessCall: func(ctx context.Context, user, teamID string) error {
-			access()
-			projectHTTPCheck(t, []string{user, teamID}, []string{actor.UserID, id})
-			return nil
-		}, InvitationTeamMemberCall: func(ctx context.Context, teamID, user string) (model.TeamMember, error) {
-			read()
-			projectHTTPCheck(t, []string{teamID, user}, []string{id, v.UserID})
-			return v, nil
-		}})
-	}
+	prepareMember := func(actor model.Principal, v model.TeamMember) { mcpOrgMember(t, org, actor, id, v) }
 	prepareMember(principals[0], bobMember)
-	readTeam, member, setRole := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 	promoted := bobMember
 	promoted.Role = model.ProjectAdmin
 	promoted.Version = 2
 	promoted.UpdatedAt = bobMember.UpdatedAt.Add(time.Second)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
-		readTeam()
-		projectHTTPCheck(t, user, principals[0].UserID)
-		return renamed, nil
-	}, MemberCall: func(ctx context.Context, user string) (model.TeamMember, error) {
-		member()
-		projectHTTPCheck(t, user, bobMember.UserID)
-		return bobMember, nil
-	}, SetMemberRoleCall: func(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
-		setRole()
-		projectHTTPCheck(t, user, bobMember.UserID)
-		projectHTTPCheck(t, role, model.ProjectAdmin)
-		return promoted, nil
-	}}, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{TeamID: id, UserID: bobMember.UserID}))
+	promotedActorRole := model.ProjectAdmin
+	roleChanged := org.expect("Teams.SetMemberRole")
+	org.teams.SetMemberRoleCall = func(ctx context.Context, p model.Principal, teamID, user string, input teamcore.ChangeTeamMember) (teamcore.TeamMemberResult, error) {
+		roleChanged()
+		org.check(ctx, p, principals[0], []string{teamID, user}, []string{id, principals[1].UserID})
+		projectHTTPCheck(t, input, teamcore.ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: principals[0].UserID})
+		role := promotedActorRole
+		return teamcore.TeamMemberResult{Membership: promoted, ActorRole: &role}, nil
+	}
 	call(alice, "team_member_set_role", map[string]any{"team": id, "userId": principals[1].UserID, "role": "admin", "ifVersion": bobVersion, "confirm": true}, "")
 	prepareMember(principals[0], promoted)
-	tx.WriteTeamCall = nil
+	org.teams.SetMemberRoleCall = nil
 	call(alice, "team_member_set_role", map[string]any{"team": id, "userId": principals[1].UserID, "role": "admin", "ifVersion": bobVersion, "confirm": true}, "version_conflict")
 	projects := []model.Project{projectHTTPRecord("e4444444-4444-4444-8444-444444444444", "MCP 0", "https://example.com/mcp-0", id), projectHTTPRecord("e5555555-5555-4555-8555-555555555555", "MCP 1", "https://example.com/mcp-1", id)}
 	projects[1].CreatedAt = projects[1].CreatedAt.Add(time.Second)
@@ -180,19 +140,18 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	var projectPages [2]map[string]any
 	cursor = nil
 	for i := range 2 {
-		read := projectHTTPCount(t, 1)
-		want := store.Page{Limit: 1}
-		if i > 0 {
-			want.After = &store.Position{CreatedAt: projects[i-1].CreatedAt, ID: projects[i-1].ID}
-		}
 		row := projects[i]
-		mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
-			read()
-			projectHTTPCheck(t, p, principals[0])
-			projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: id})
-			projectHTTPCheck(t, page, want)
-			return store.ProjectPage{Items: []model.Project{row}, HasMore: i == 0}, nil
-		}}, nil)
+		want := projectcore.ProjectListRequest{Page: model.PageRequest{Limit: 1}, TeamID: &id}
+		if i > 0 {
+			current := cursor.(string)
+			want.Page.Cursor = &current
+		}
+		result := projectcore.ProjectPage{Items: []model.Project{row}}
+		if i == 0 {
+			next := "project-page-2"
+			result.NextCursor = &next
+		}
+		mcpOrgProjectPage(t, org, principals[0], want, result)
 		args := map[string]any{"team": id, "limit": 1}
 		if cursor != nil {
 			args["cursor"] = cursor
@@ -204,48 +163,26 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 		t.Fatal("project pagination lost items")
 	}
 	prepareTeamRead(principals[0], renamed)
-	readTeam, hasProjects := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
-		readTeam()
-		projectHTTPCheck(t, user, principals[0].UserID)
-		return renamed, nil
-	}, HasProjectsCall: func(context.Context) (bool, error) { hasProjects(); return true, nil }}, nil)
+	mcpOrgTeamDelete(t, org, principals[0], id, teamcore.ChangeTeam{Name: *renamed.Name, Version: renamed.Version, ExpectedUserID: principals[0].UserID}, &model.Fault{Code: "team_not_empty", Message: "Team has Projects."})
 	call(alice, "team_delete", map[string]any{"team": id, "confirm": true}, "team_not_empty")
 	prepareMember(principals[1], promoted)
-	readTeam, member, count, remove := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	bobTeam := renamed
-	bobTeam.Membership = promoted
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
-		readTeam()
-		projectHTTPCheck(t, user, principals[1].UserID)
-		return bobTeam, nil
-	}, MemberCall: func(ctx context.Context, user string) (model.TeamMember, error) {
-		member()
-		projectHTTPCheck(t, user, principals[1].UserID)
-		return promoted, nil
-	}, AdminCountCall: func(context.Context) (int64, error) { count(); return 2, nil }, RemoveMemberCall: func(ctx context.Context, user string) error {
-		remove()
-		projectHTTPCheck(t, user, principals[1].UserID)
-		return nil
-	}}, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{TeamID: id, UserID: principals[1].UserID}))
+	removed := org.expect("Teams.RemoveMember")
+	org.teams.RemoveMemberCall = func(ctx context.Context, p model.Principal, teamID, user string, input teamcore.ChangeTeamMember) (teamcore.TeamMemberResult, error) {
+		removed()
+		org.check(ctx, p, principals[1], []string{teamID, user}, []string{id, principals[1].UserID})
+		projectHTTPCheck(t, input, teamcore.ChangeTeamMember{Version: promoted.Version, ExpectedUserID: principals[1].UserID})
+		return teamcore.TeamMemberResult{Membership: promoted, ActorRole: nil}, nil
+	}
 	call(bob, "team_leave", map[string]any{"team": id, "confirm": true}, "")
-	access := projectHTTPCount(t, 1)
-	mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamAccessCall: func(ctx context.Context, user, teamID string) error {
-		access()
-		projectHTTPCheck(t, []string{user, teamID}, []string{principals[1].UserID, id})
-		return model.ErrNotFound
-	}})
+	mcpOrgMemberPage(t, org, principals[1], id, model.PageRequest{Limit: 50}, teamcore.MemberPage{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: model.ErrNotFound})
 	call(bob, "team_member_list", map[string]any{"team": id}, "not_found")
 	prepareMember(principals[0], team.Membership)
-	readTeam, member, count = projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
-		readTeam()
-		projectHTTPCheck(t, user, principals[0].UserID)
-		return renamed, nil
-	}, MemberCall: func(ctx context.Context, user string) (model.TeamMember, error) {
-		member()
-		projectHTTPCheck(t, user, principals[0].UserID)
-		return team.Membership, nil
-	}, AdminCountCall: func(context.Context) (int64, error) { count(); return 1, nil }}, nil)
+	refused := org.expect("Teams.RemoveMember")
+	org.teams.RemoveMemberCall = func(ctx context.Context, p model.Principal, teamID, user string, input teamcore.ChangeTeamMember) (teamcore.TeamMemberResult, error) {
+		refused()
+		org.check(ctx, p, principals[0], []string{teamID, user}, []string{id, principals[0].UserID})
+		projectHTTPCheck(t, input, teamcore.ChangeTeamMember{Version: team.Membership.Version, ExpectedUserID: principals[0].UserID})
+		return teamcore.TeamMemberResult{}, &model.Fault{Code: "last_admin", Message: "The last administrator cannot leave."}
+	}
 	call(alice, "team_leave", map[string]any{"team": id, "confirm": true}, "last_admin")
 }

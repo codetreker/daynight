@@ -1,56 +1,12 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"log/slog"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-func newMCPHTTPServer(t *testing.T, tx store.Transactions, files filestorage.Storage, outputs ...io.Writer) (*httptest.Server, *sessionApplication) {
-	t.Helper()
-	server := httptest.NewUnstartedServer(nil)
-	origin := "http://" + server.Listener.Addr().String()
-	config := configuredTestConfig()
-	config.PublicOrigin = origin
-	config.UniAuthCallbackURL = origin + "/api/v1/auth/callback"
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	output := io.Discard
-	if len(outputs) > 1 {
-		t.Fatal("MCP fixture accepts at most one log writer")
-	}
-	if len(outputs) == 1 {
-		output = outputs[0]
-	}
-	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: tx, Files: files}, config, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app := handler.(*sessionApplication)
-	server.Config.Handler = httpx.RequestLogging(logger, app)
-	server.Start()
-	t.Cleanup(func() {
-		server.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.Shutdown(ctx); err != nil {
-			t.Errorf("MCP application shutdown: %v", err)
-		}
-	})
-	return server, app
-}
 
 type mcpPATTransport struct{ token string }
 
@@ -105,60 +61,4 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	for name := range want {
 		t.Errorf("missing production tool %s", name)
 	}
-}
-
-func configureMCPPrincipals(t *testing.T, tx *httpTestStore, supplied map[string]model.Principal) {
-	t.Helper()
-	type credential struct {
-		principal model.Principal
-		hash      []byte
-	}
-	credentials := make([]credential, 0, len(supplied))
-	for token, principal := range supplied {
-		if token == "" || principal.UserID == "" || principal.CredentialID == "" || (principal.Kind != model.PATCredential && principal.Kind != model.SessionCredential) {
-			t.Fatalf("invalid declared MCP authentication fixture: %+v", principal)
-		}
-		prefix := "dnpat_"
-		if principal.Kind == model.SessionCredential {
-			prefix = "dnst_"
-		}
-		if !secret.Valid(token, prefix) {
-			t.Fatalf("declared MCP authentication credential is not canonical: %s", principal.Kind)
-		}
-		credentials = append(credentials, credential{principal: principal, hash: secret.Hash(token)})
-	}
-	tx.WriteIdentityCall = func(ctx context.Context, callback func(store.IdentityScope) error) (store.Completion, error) {
-		dao := &mcpAuthenticationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}}
-		dao.authenticate = func(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
-			dao.calls++
-			if dao.calls != 1 || now.IsZero() || now.Location() != time.UTC {
-				unexpectedHTTPCall(t, "MCP authentication arguments/count")
-			}
-			for _, fixture := range credentials {
-				if kind == fixture.principal.Kind && bytes.Equal(hash, fixture.hash) {
-					return fixture.principal, nil
-				}
-			}
-			unexpectedHTTPCall(t, "MCP authentication undeclared credential")
-			panic("unreachable")
-		}
-		err := callback(httpAuthenticationScope{t: t, dao: dao})
-		if dao.calls != 1 {
-			t.Errorf("MCP authentication calls = %d, want 1", dao.calls)
-		}
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
-	}
-}
-
-type mcpAuthenticationDAO struct {
-	httpRejectedIdentityDAO
-	authenticate func(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error)
-	calls        int
-}
-
-func (d *mcpAuthenticationDAO) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
-	return d.authenticate(ctx, kind, hash, now)
 }

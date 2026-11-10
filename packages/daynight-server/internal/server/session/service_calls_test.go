@@ -125,7 +125,7 @@ func TestArchiveOperationCallPassesRequestAndReservation(t *testing.T) {
 				return scenario.result, scenario.err
 			})
 			result, err := begin(ctx, principal, "project", "task", "session", sessioncore.ArchiveV2Upload, reservation)
-			if calls != 1 || result != archiveOperation(scenario.result) || err != scenario.err {
+			if calls != 1 || result != ArchiveOperation(scenario.result) || err != scenario.err {
 				t.Fatal("archive operation result or error changed", calls, result, err)
 			}
 		})

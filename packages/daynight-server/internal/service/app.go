@@ -97,6 +97,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 			}
 		}
 	}
+	var downloads *mcpdownload.Service
 	private, ok := files.(filestorage.TransferStorage)
 	if ok {
 		budget, reserve := c.MCPTempBudgetBytes, c.MCPReservedFreeBytes
@@ -105,9 +106,12 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		}
 		app.PrivateContent, _ = mcptransfer.New(database, files, private, budget, reserve)
 		if app.PrivateContent != nil {
-			app.Downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
+			downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
 		}
 	}
+	// The concrete optional result retains the same value seen by adapters when
+	// private storage is unavailable and the complete MCP catalog is registered.
+	app.Downloads = downloads
 	// Unavailable test dependencies fail explicitly on upload calls. OpenApp
 	// refuses startup unless the complete private storage lifecycle is present.
 	app.Uploads = mcptransfer.NewUploads(app.PrivateContent, private, app.Attachments)

@@ -238,6 +238,11 @@ func TestReadScopeAndCompletionErrors(t *testing.T) {
 	if err != nil || result.NextCursor == nil {
 		t.Fatalf("cursor: %+v %v", result, err)
 	}
+	nextPage, err := ListPage(p, nil, model.PageRequest{Limit: 1, Cursor: result.NextCursor})
+	wantPage := store.Page{Limit: 1, After: &store.Position{CreatedAt: r.current.CreatedAt, ID: r.current.ID}}
+	if err != nil || nextPage.Limit != wantPage.Limit || nextPage.After == nil || nextPage.After.ID != wantPage.After.ID || !nextPage.After.CreatedAt.Equal(wantPage.After.CreatedAt) {
+		t.Fatalf("cursor position: got=%#v want=%#v error=%v", nextPage, wantPage, err)
+	}
 	r.fail["worker"] = model.ErrNotFound
 	_, err = List(ctx, s, p, ptr(workerID), page)
 	assertFault(t, err, "forbidden")

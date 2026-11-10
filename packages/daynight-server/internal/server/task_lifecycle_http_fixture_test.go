@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,28 +15,32 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
-	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 type stepHTTPFixture struct {
 	*taskHTTPFixture
-	files    *local.Storage
-	role     model.ProjectRole
-	server   *httptest.Server
-	wireMu   sync.Mutex
-	wireDone chan struct{}
+	files       *local.Storage
+	attachments *stepHTTPAttachments
+	server      *httptest.Server
+	wireMu      sync.Mutex
+	wireDone    chan struct{}
 }
 
 func stepsHTTPFixture(t *testing.T, logs io.Writer) (*stepHTTPFixture, *resourceTestHandler, api.Task) {
 	t.Helper()
 	project, target, principal := taskHTTPMockModels()
 	files := attachmentTestFiles(t)
-	f := &stepHTTPFixture{taskHTTPFixture: &taskHTTPFixture{t: t, store: newHTTPTestStore(t), project: project, target: target, principal: principal, observed: target.UpdatedAt.Add(time.Minute)}, files: files, role: model.ProjectAdmin}
-	f.handler = resourceTestServer(t, f.store, files, logs)
+	f := &stepHTTPFixture{taskHTTPFixture: &taskHTTPFixture{t: t, tasks: &taskHTTPOperations{t: t}, steps: &taskHTTPStepOperations{t: t}, project: project, target: target, principal: principal, observed: target.UpdatedAt.Add(time.Minute)}, files: files, attachments: &stepHTTPAttachments{t: t}}
+	f.handler = newOperationHTTPServer(t, func(deps *httpDependencies) {
+		deps.Tasks, deps.TaskSteps, deps.Attachments = f.tasks, f.steps, f.attachments
+	}, logs, principal)
 	f.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		f.wireMu.Lock()
 		done := f.wireDone
@@ -48,228 +53,172 @@ func stepsHTTPFixture(t *testing.T, logs io.Writer) (*stepHTTPFixture, *resource
 	}))
 	t.Cleanup(f.server.Close)
 	t.Cleanup(f.server.Client().CloseIdleConnections)
-	task, err := taskprotocol.RESTTask(target, false)
-	if err != nil {
-		t.Fatal(err)
+	var requiredPlatform *string
+	if target.RequiredPlatform != nil {
+		value := string(*target.RequiredPlatform)
+		requiredPlatform = &value
 	}
+	task := api.Task{ID: target.ID, ProjectID: target.ProjectID, Title: target.Title, Description: target.Description, Properties: api.TaskProperties(copyTaskHTTPProperties(target.Properties)), Status: string(target.Status), Version: target.Version, CreatedAt: target.CreatedAt, UpdatedAt: target.UpdatedAt, StartedAt: copyTaskHTTPPointer(target.StartedAt), CompletedAt: copyTaskHTTPPointer(target.CompletedAt), CancelledAt: copyTaskHTTPPointer(target.CancelledAt), DependsOn: copyTaskHTTPSlice(target.DependsOn), ExternalDependsOn: copyTaskHTTPSlice(target.ExternalDependsOn), BlockedBy: copyTaskHTTPSlice(target.BlockedBy), RequiredPlatform: requiredPlatform, AssignedTo: copyTaskHTTPPointer(target.AssignedTo), AllowAgents: target.AllowAgents, Ready: target.Ready}
 	return f, f.handler, task
 }
 
-func (f *stepHTTPFixture) expectStepsRead(header model.TaskHeader, steps []model.TaskStep) {
-	header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-	steps = copyTaskHTTPSlice(steps)
-	f.expectSnapshot(map[string]int{"header": 1, "steps": 1}, func(reader *taskHTTPReaderMock, projects *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		f.stepReadRole(projects, plan)
-		reader.TaskHeaderFn = func(ctx context.Context, project, task string) (model.TaskHeader, error) {
-			f.require(ctx, project)
-			plan.Called("header")
-			if task != header.ID {
-				unexpectedHTTPCall(f.t, "Step parent")
-			}
-			header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-			return header, nil
-		}
-		reader.TaskStepsFn = func(ctx context.Context, task string) ([]model.TaskStep, error) {
-			f.require(ctx, header.ProjectID)
-			plan.Called("steps")
-			if task != header.ID {
-				unexpectedHTTPCall(f.t, "Step collection parent")
-			}
-			return copyTaskHTTPSlice(steps), nil
-		}
-	})
+func stepHTTPDocument(t *testing.T, header model.TaskHeader, rows []model.TaskStep) taskservice.StepsDocument {
+	t.Helper()
+	resource := taskcodec.StepsResource{ProjectID: header.ProjectID, TaskID: header.ID, Version: header.Version, Steps: make([]taskcodec.Step, len(rows))}
+	for i, row := range rows {
+		resource.Steps[i] = taskcodec.Step{ID: row.ID, Title: row.Title, Description: row.Description, Status: row.Status, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	}
+	data, err := json.Marshal(resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return taskservice.StepsDocument{Resource: resource, JSON: append(data, '\n')}
+}
+
+func copyStepHTTPDocument(doc taskservice.StepsDocument) taskservice.StepsDocument {
+	doc.Resource.Steps = copyTaskHTTPSlice(doc.Resource.Steps)
+	doc.JSON = bytes.Clone(doc.JSON)
+	return doc
+}
+
+func (f *stepHTTPFixture) requireStepOperation(ctx context.Context, actor model.Principal, project, task string) {
+	f.t.Helper()
+	requireOperationHTTPContext(f.t, ctx)
+	if ctx.Err() != nil || actor != f.principal || project != f.project.ID || task != f.target.ID {
+		unexpectedHTTPCall(f.t, "Step operation context, actor or address")
+	}
+}
+
+func (f *stepHTTPFixture) clearSteps() { *f.steps = taskHTTPStepOperations{t: f.t} }
+
+func (f *stepHTTPFixture) expectStepsRead(header model.TaskHeader, rows []model.TaskStep) {
+	f.clearSteps()
+	document := stepHTTPDocument(f.t, header, copyTaskHTTPSlice(rows))
+	plan := newHTTPCallPlan(f.t, map[string]int{"list": 1})
+	f.steps.ListCall = func(ctx context.Context, actor model.Principal, project, task string) (taskservice.StepsDocument, error) {
+		f.requireStepOperation(ctx, actor, project, task)
+		plan.Called("list")
+		return copyStepHTTPDocument(document), nil
+	}
 }
 
 func (f *stepHTTPFixture) expectMissingStep(header model.TaskHeader, id string) {
-	header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-	f.expectSnapshot(map[string]int{"header": 1, "step": 1}, func(reader *taskHTTPReaderMock, projects *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		f.stepReadRole(projects, plan)
-		reader.TaskHeaderFn = func(ctx context.Context, project, task string) (model.TaskHeader, error) {
-			f.require(ctx, project)
-			plan.Called("header")
-			if task != header.ID {
-				unexpectedHTTPCall(f.t, "missing Step parent")
-			}
-			header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-			return header, nil
+	f.clearSteps()
+	plan := newHTTPCallPlan(f.t, map[string]int{"get": 1})
+	f.steps.GetCall = func(ctx context.Context, actor model.Principal, project, task, step string) (taskservice.StepDocument, error) {
+		f.requireStepOperation(ctx, actor, project, task)
+		plan.Called("get")
+		if step != id {
+			unexpectedHTTPCall(f.t, "missing Step identity")
 		}
-		reader.TaskStepFn = func(ctx context.Context, task, step string) (model.TaskStep, error) {
-			f.require(ctx, header.ProjectID)
-			plan.Called("step")
-			if task != header.ID || step != id {
-				unexpectedHTTPCall(f.t, "missing Step identity")
-			}
-			return model.TaskStep{}, model.ErrNotFound
-		}
-	})
+		return taskservice.StepDocument{}, &tasksteps.StepAbsence{Version: header.Version, Cause: &model.Fault{Code: "not_found", Message: "Step not found."}}
+	}
 }
 
 type stepHTTPWritePlan struct {
-	Header    model.TaskHeader
-	Steps     []model.TaskStep
-	Operation string
-	ID        string
-	From      int64
-	To        int64
-	Candidate model.TaskStep
-	Observed  time.Time
-	Refused   bool
-	Stale     bool
+	ID           string
+	Add          *taskservice.AddTaskStep
+	Update       *taskservice.UpdateTaskStep
+	Status       *taskservice.SetTaskStepStatus
+	Delete       *taskservice.DeleteTaskStep
+	Move         *taskservice.MoveTaskStep
+	ResultHeader model.TaskHeader
+	ResultSteps  []model.TaskStep
+	Refused      bool
+	Stale        bool
 }
 
 func (f *stepHTTPFixture) expectStepsWrite(expected stepHTTPWritePlan) {
-	expected.Steps = copyTaskHTTPSlice(expected.Steps)
-	expected.Header.DeletedAt = copyTaskHTTPPointer(expected.Header.DeletedAt)
 	f.t.Helper()
-	want := map[string]int{"write": 1, "access": 1, "header": 1}
-	if !expected.Stale {
-		want["steps"] = 1
-	}
-	if !expected.Refused && !expected.Stale {
-		want["header"], want["observed"], want["touch"], want["capture"] = 2, 1, 1, 1
-		want[expected.Operation] = 1
-	}
-	plan := newHTTPCallPlan(f.t, want)
-	base := newTaskHTTPMockBase(f.t, "Step HTTP write")
-	project := &taskHTTPProjectWriterMock{taskHTTPMockBase: base.withLabel("project")}
-	project.ProjectAccessFn = func(ctx context.Context, actor model.Principal) (model.ProjectAccess, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("access")
-		if actor != f.principal {
-			unexpectedHTTPCall(f.t, "Step actor")
-		}
-		access := taskHTTPMockAccess(f.project, actor)
-		access.Role = f.role
-		return access, nil
-	}
-	writer := &taskHTTPWriterMock{taskHTTPMockBase: base.withLabel("steps")}
-	headers := 0
-	writer.TaskHeaderFn = func(ctx context.Context, task string) (model.TaskHeader, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("header")
-		if task != expected.Header.ID {
-			unexpectedHTTPCall(f.t, "Step write parent")
-		}
-		headers++
-		header := expected.Header
-		if headers == 2 {
-			header.Version++
-		}
-		header.DeletedAt = copyTaskHTTPPointer(header.DeletedAt)
-		return header, nil
-	}
-	writer.TaskStepsFn = func(ctx context.Context, task string) ([]model.TaskStep, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("steps")
-		if task != expected.Header.ID {
-			unexpectedHTTPCall(f.t, "Step write collection")
-		}
-		return copyTaskHTTPSlice(expected.Steps), nil
-	}
-	writer.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("observed")
-		return expected.Observed, nil
-	}
-	writer.TouchTaskFn = func(ctx context.Context, task string, at time.Time) error {
-		f.require(ctx, expected.Header.ProjectID)
-		plan.Called("touch")
-		if task != expected.Header.ID || at != expected.Observed {
-			unexpectedHTTPCall(f.t, "Step touch")
-		}
-		return nil
-	}
-	if expected.Operation == "delete" {
-		writer.DeleteTaskStepFn = func(ctx context.Context, task, id string, from, remaining int64) error {
-			f.require(ctx, expected.Header.ProjectID)
-			plan.Called("delete")
-			if task != expected.Header.ID || id != expected.ID || from != expected.From || remaining != expected.To {
-				f.t.Errorf("Step deletion arguments: %s %s %d %d", task, id, from, remaining)
-				panic("Step deletion arguments changed")
-			}
-			return nil
-		}
-	}
-	if expected.Operation == "add" || expected.Operation == "change" {
-		write := func(ctx context.Context, task string, step model.TaskStep) error {
-			f.require(ctx, expected.Header.ProjectID)
-			plan.Called(expected.Operation)
-			if task != expected.Header.ID || step != expected.Candidate {
-				f.t.Errorf("Step candidate: %#v want %#v", step, expected.Candidate)
-				panic("Step candidate changed")
-			}
-			return nil
-		}
-		if expected.Operation == "add" {
-			writer.InsertTaskStepFn = write
-		} else {
-			writer.UpdateTaskStepFn = write
-		}
-	}
-	if expected.Operation == "move" {
-		writer.MoveTaskStepFn = func(ctx context.Context, task, id string, from, to int64) error {
-			f.require(ctx, expected.Header.ProjectID)
-			plan.Called("move")
-			if task != expected.Header.ID || id != expected.ID || from != expected.From || to != expected.To {
-				unexpectedHTTPCall(f.t, "Step move")
-			}
-			return nil
-		}
-	}
-	capture := &taskHTTPCaptureDAOMock{taskHTTPMockBase: base.withLabel("capture")}
-	capture.FreezeAudienceFn = func(ctx context.Context, project string, types []string) ([]store.WebhookAudience, error) {
-		f.require(ctx, project)
-		plan.Called("capture")
-		if !reflect.DeepEqual(types, []string{protocol.StepUpdated}) {
-			unexpectedHTTPCall(f.t, "Step capture event")
-		}
-		return []store.WebhookAudience{}, nil
-	}
-	scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return writer }, CaptureDAOFn: func() store.WebhookCaptureDAO { return capture }}
-	f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
+	f.clearSteps()
+	expected.ResultSteps = copyTaskHTTPSlice(expected.ResultSteps)
+	document := stepHTTPDocument(f.t, expected.ResultHeader, expected.ResultSteps)
+	plan := newHTTPCallPlan(f.t, map[string]int{"write": 1})
+	check := func(ctx context.Context, actor model.Principal, project, task, id string, input, want any) (taskservice.StepsWriteResult, error) {
+		f.requireStepOperation(ctx, actor, project, task)
 		plan.Called("write")
-		if project != expected.Header.ProjectID || f.active || run == nil {
-			unexpectedHTTPCall(f.t, "Step write callback")
+		if id != expected.ID || !reflect.DeepEqual(input, want) {
+			f.t.Errorf("Step direct arguments: id=%q input=%#v, want id=%q input=%#v", id, input, expected.ID, want)
+			panic("Step direct arguments changed")
 		}
-		f.ctx, f.active = ctx, true
-		defer func() { f.active = false }()
-		err := run(scope)
-		if err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		if expected.Stale {
+			return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, &model.Fault{Code: "version_conflict", Message: "Task version changed."}
 		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
+		if expected.Refused {
+			return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, &model.Fault{Code: "not_found", Message: "Step not found."}
+		}
+		return taskservice.StepsWriteResult{StepsDocument: copyStepHTTPDocument(document), Changed: true, Phase: "persist", TransactionOutcome: store.TransactionCommitted}, nil
+	}
+	switch {
+	case expected.Add != nil:
+		want := *expected.Add
+		want.Status = copyTaskHTTPPointer(want.Status)
+		want.Before = copyTaskHTTPPointer(want.Before)
+		want.After = copyTaskHTTPPointer(want.After)
+		f.steps.AddCall = func(ctx context.Context, actor model.Principal, project, task string, input taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+			return check(ctx, actor, project, task, "", input, want)
+		}
+	case expected.Update != nil:
+		want := *expected.Update
+		want.Title = copyTaskHTTPPointer(want.Title)
+		want.Description = copyTaskHTTPPointer(want.Description)
+		f.steps.UpdateCall = func(ctx context.Context, actor model.Principal, project, task, id string, input taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error) {
+			return check(ctx, actor, project, task, id, input, want)
+		}
+	case expected.Status != nil:
+		want := *expected.Status
+		f.steps.SetStatusCall = func(ctx context.Context, actor model.Principal, project, task, id string, input taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error) {
+			return check(ctx, actor, project, task, id, input, want)
+		}
+	case expected.Delete != nil:
+		want := *expected.Delete
+		f.steps.DeleteCall = func(ctx context.Context, actor model.Principal, project, task, id string, input taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error) {
+			return check(ctx, actor, project, task, id, input, want)
+		}
+	case expected.Move != nil:
+		want := *expected.Move
+		want.Before = copyTaskHTTPPointer(want.Before)
+		want.After = copyTaskHTTPPointer(want.After)
+		want.Position = copyTaskHTTPPointer(want.Position)
+		f.steps.MoveCall = func(ctx context.Context, actor model.Principal, project, task, id string, input taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+			return check(ctx, actor, project, task, id, input, want)
+		}
+	default:
+		f.t.Fatal("Step write requires one explicit direct input")
 	}
 }
 
 func (f *stepHTTPFixture) expectStepAccessError(write bool) {
-	base := newTaskHTTPMockBase(f.t, "Step denied access")
-	plan := newHTTPCallPlan(f.t, map[string]int{"scope": 1, "access": 1})
-	access := func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
-		plan.Called("access")
-		if actor != f.principal || project != f.project.ID || ctx.Err() != nil {
-			unexpectedHTTPCall(f.t, "denied Step authorization")
-		}
-		return model.ProjectAccess{}, model.ErrNotFound
+	f.clearSteps()
+	plan := newHTTPCallPlan(f.t, map[string]int{"operation": 1})
+	reject := func(ctx context.Context, actor model.Principal, project, task string) error {
+		f.requireStepOperation(ctx, actor, project, task)
+		plan.Called("operation")
+		return &model.Fault{Code: "not_found", Message: "Step not found."}
 	}
+	refusal := taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	if write {
-		dao := &taskHTTPProjectWriterMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, actor model.Principal) (model.ProjectAccess, error) {
-			return access(ctx, actor, f.project.ID)
-		}}
-		scope := &taskHTTPProjectScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return dao }}
-		f.store.WriteProjectCall = func(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
-			plan.Called("scope")
-			if project != f.project.ID {
-				unexpectedHTTPCall(f.t, "denied Project scope")
-			}
-			err := run(scope)
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		f.steps.AddCall = func(ctx context.Context, a model.Principal, p, t string, _ taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+			return refusal, reject(ctx, a, p, t)
+		}
+		f.steps.UpdateCall = func(ctx context.Context, a model.Principal, p, t, _ string, _ taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error) {
+			return refusal, reject(ctx, a, p, t)
+		}
+		f.steps.SetStatusCall = func(ctx context.Context, a model.Principal, p, t, _ string, _ taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error) {
+			return refusal, reject(ctx, a, p, t)
+		}
+		f.steps.DeleteCall = func(ctx context.Context, a model.Principal, p, t, _ string, _ taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error) {
+			return refusal, reject(ctx, a, p, t)
+		}
+		f.steps.MoveCall = func(ctx context.Context, a model.Principal, p, t, _ string, _ taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+			return refusal, reject(ctx, a, p, t)
 		}
 	} else {
-		dao := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: access}
-		scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return dao }}
-		f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
-			plan.Called("scope")
-			return run(scope)
+		f.steps.ListCall = func(ctx context.Context, a model.Principal, p, t string) (taskservice.StepsDocument, error) {
+			return taskservice.StepsDocument{}, reject(ctx, a, p, t)
+		}
+		f.steps.GetCall = func(ctx context.Context, a model.Principal, p, t, _ string) (taskservice.StepDocument, error) {
+			return taskservice.StepDocument{}, reject(ctx, a, p, t)
 		}
 	}
 }
@@ -277,6 +226,7 @@ func (f *stepHTTPFixture) expectStepAccessError(write bool) {
 func (f *stepHTTPFixture) authenticatedRequest(actor model.Principal, method, path, body, origin string, status int, code string) *httptest.ResponseRecorder {
 	f.t.Helper()
 	f.principal = actor
+	f.handler.principal = actor
 	ctx, cancel := context.WithTimeout(f.t.Context(), 5*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, f.server.URL+path, strings.NewReader(body))
@@ -286,7 +236,6 @@ func (f *stepHTTPFixture) authenticatedRequest(actor model.Principal, method, pa
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Request-ID", "project-test")
 	if actor.UserID != "" {
-		f.store.WriteIdentityCall = newHTTPTestStoreForPrincipal(f.t, actor).WriteIdentityCall
 		if actor.Kind == model.SessionCredential {
 			request.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(actor.Kind)})
 		} else {
@@ -330,28 +279,37 @@ func (f *stepHTTPFixture) authenticatedRequest(actor model.Principal, method, pa
 	return response
 }
 
-type stepHTTPAttachmentReader struct {
-	store.AttachmentReader
-	t    *testing.T
-	plan *httpCallPlan
-	item model.Attachment
+type stepHTTPAttachments struct {
+	t               *testing.T
+	ListCall        func(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
+	PutRetainedCall func(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
+	DeleteCall      func(context.Context, model.Principal, string, string, string) error
+	OpenCall        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
-func (d *stepHTTPAttachmentReader) Attachment(ctx context.Context, project, task, path string) (model.Attachment, error) {
-	d.plan.Called("metadata")
-	if project != d.item.ProjectID || task != d.item.TaskID || path != d.item.Path || ctx.Err() != nil {
-		unexpectedHTTPCall(d.t, "referenced attachment identity")
+func (s *stepHTTPAttachments) List(c context.Context, a model.Principal, p, t string, q model.PageRequest) (attachmentcore.Page, error) {
+	if s.ListCall == nil {
+		unexpectedHTTPCall(s.t, "Attachments.List")
 	}
-	return d.item, nil
+	return s.ListCall(c, a, p, t, q)
 }
-
-func (d *stepHTTPAttachmentReader) Attachments(ctx context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
-	d.plan.Called("metadata")
-	expected := store.AttachmentQuery{Limit: 50}
-	if project != d.item.ProjectID || task != d.item.TaskID || !reflect.DeepEqual(query, expected) || ctx.Err() != nil {
-		unexpectedHTTPCall(d.t, "referenced attachment page")
+func (s *stepHTTPAttachments) PutRetained(c context.Context, a model.Principal, p, t, path, mime string, r io.Reader) (model.Attachment, bool, io.Closer, error) {
+	if s.PutRetainedCall == nil {
+		unexpectedHTTPCall(s.t, "Attachments.PutRetained")
 	}
-	return store.AttachmentPage{Items: []model.Attachment{d.item}}, nil
+	return s.PutRetainedCall(c, a, p, t, path, mime, r)
+}
+func (s *stepHTTPAttachments) Delete(c context.Context, a model.Principal, p, t, path string) error {
+	if s.DeleteCall == nil {
+		unexpectedHTTPCall(s.t, "Attachments.Delete")
+	}
+	return s.DeleteCall(c, a, p, t, path)
+}
+func (s *stepHTTPAttachments) Open(c context.Context, a model.Principal, p, t, path string) (model.Attachment, filestorage.Object, error) {
+	if s.OpenCall == nil {
+		unexpectedHTTPCall(s.t, "Attachments.Open")
+	}
+	return s.OpenCall(c, a, p, t, path)
 }
 
 func (f *stepHTTPFixture) referencedAttachment(path, contentType string, content []byte) model.Attachment {
@@ -365,30 +323,29 @@ func (f *stepHTTPFixture) referencedAttachment(path, contentType string, content
 	}
 	return model.Attachment{ProjectID: f.project.ID, TaskID: f.target.ID, Path: path, ContentType: contentType, SizeBytes: int64(len(content)), CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.CreatedAt}
 }
-
 func (f *stepHTTPFixture) expectAttachmentRead(item model.Attachment) {
-	f.expectSnapshot(map[string]int{"presence": 1, "metadata": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		reader.TaskPresenceFn = func(ctx context.Context, project, task string) (store.TaskPresence, error) {
-			f.require(ctx, project)
-			plan.Called("presence")
-			if task != item.TaskID {
-				unexpectedHTTPCall(f.t, "attachment parent")
-			}
-			return store.TaskPresence{Found: true}, nil
+	plan := newHTTPCallPlan(f.t, map[string]int{"attachment": 1})
+	require := func(ctx context.Context, actor model.Principal, project, task string) {
+		f.requireStepOperation(ctx, actor, project, task)
+		plan.Called("attachment")
+	}
+	f.attachments.ListCall = func(ctx context.Context, actor model.Principal, project, task string, input model.PageRequest) (attachmentcore.Page, error) {
+		require(ctx, actor, project, task)
+		if !reflect.DeepEqual(input, model.PageRequest{Limit: 50}) {
+			unexpectedHTTPCall(f.t, "Attachment list input")
 		}
-		scope.AttachmentDAOFn = func() store.AttachmentReader { return &stepHTTPAttachmentReader{t: f.t, plan: plan, item: item} }
-	})
-}
-
-func (f *stepHTTPFixture) stepReadRole(projects *taskHTTPProjectReaderMock, plan *httpCallPlan) {
-	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
-		f.require(ctx, id)
-		plan.Called("access")
-		if actor != f.principal {
-			unexpectedHTTPCall(f.t, "Step read principal")
+		return attachmentcore.Page{Items: []model.Attachment{item}}, nil
+	}
+	f.attachments.OpenCall = func(ctx context.Context, actor model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
+		require(ctx, actor, project, task)
+		if path != item.Path {
+			unexpectedHTTPCall(f.t, "Attachment path")
 		}
-		access := taskHTTPMockAccess(f.project, actor)
-		access.Role = f.role
-		return access, nil
+		address, err := attachmentcore.NewAddress(project, task, path)
+		if err != nil {
+			return model.Attachment{}, filestorage.Object{}, err
+		}
+		object, err := f.files.Open(ctx, attachmentcore.Bucket, address.StoragePath)
+		return item, object, err
 	}
 }

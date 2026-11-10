@@ -10,14 +10,15 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	f := newTaskHTTPFixture(t)
 	row := f.target
 	row.AssignedTo, row.Title = nil, "Manual by default"
-	created := platformHTTPWrite(f, nil, platformHTTPValues(row), row, false)
+	created := expectMutationHTTPCreate(f, taskcore.CreateTask{Title: row.Title, Status: platformHTTPPointer(model.TaskTodo), DependsOn: []string{}, Properties: model.TaskProperties{}}, row, nil)
 	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Manual by default","status":"todo"}`)
 	task := decodeResponse[api.Task](t, response, http.StatusCreated)
 	platformHTTPCheck(t, task, platformHTTPAPI(*created))
@@ -25,7 +26,7 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	if task.AllowAgents || !strings.Contains(response.Body.String(), `"allowAgents":false`) {
 		t.Fatalf("missing required false permission: %s", response.Body)
 	}
-	f.store.WriteProjectCall = nil
+	clearMutationHTTPOperations(f)
 	for _, value := range []string{"true", "false", "null"} {
 		assertProjectError(t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Cannot opt in during creation","allowAgents":`+value+`}`), http.StatusBadRequest, "invalid_input")
 	}
@@ -35,14 +36,12 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), `{"version":1,"allowAgents":true,"allowAgents":false}`), http.StatusBadRequest, "invalid_input")
 	f.expectRead(row)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, task), task)
-	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, AllowAgents: platformHTTPPointer(false)}, row, nil)
 	platformHTTPCheck(t, updateHTTPTask(t, f.handler, task, map[string]any{"allowAgents": false}), task)
 	next := row
 	next.AllowAgents = true
 	next = platformHTTPResult(row, next)
-	values := platformHTTPValues(row)
-	values.AllowAgents = true
-	platformHTTPWrite(f, &row, values, next, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, AllowAgents: platformHTTPPointer(true)}, next, nil)
 	task = updateHTTPTask(t, f.handler, task, map[string]any{"allowAgents": true})
 	platformHTTPCheck(t, task, platformHTTPAPI(next))
 	row = next
@@ -51,7 +50,7 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	}
 	row = platformHTTPStatus(f, row, model.TaskInProgress)
 	task = platformHTTPAPI(row)
-	platformHTTPRefusal(f, row)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: task.Version, AllowAgents: platformHTTPPointer(false), Description: platformHTTPPointer("Must not save")}, model.Task{}, mutationHTTPFault("invalid_transition"))
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "allowAgents": false, "description": "Must not save"})), http.StatusConflict, "invalid_transition")
 	f.expectRead(row)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, task), task)
@@ -60,9 +59,7 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	next = row
 	next.AllowAgents = false
 	next = platformHTTPResult(row, next)
-	values = platformHTTPValues(row)
-	values.AllowAgents = false
-	platformHTTPWrite(f, &row, values, next, false)
+	expectMutationHTTPUpdate(f, row.ID, taskcore.UpdateTask{Version: row.Version, AllowAgents: platformHTTPPointer(false)}, next, nil)
 	task = updateHTTPTask(t, f.handler, task, map[string]any{"allowAgents": false})
 	platformHTTPCheck(t, task, platformHTTPAPI(next))
 	row = next
@@ -71,9 +68,9 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 		case taskPath(task):
 			f.expectRead(row)
 		case taskCollection(f.project.ID):
-			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{row}}})
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}, taskservice.TaskPage{Items: []model.Task{row}}, nil)
 		default:
-			f.expectGraph(row.ID, []model.GraphTask{platformHTTPProjection(row)})
+			f.expectGraph(row.ID, []model.GraphTask{platformHTTPProjection(row)}, model.TaskGraphSummary{Total: 1, Done: 1})
 		}
 		read := projectRequest(f.handler, http.MethodGet, path, "")
 		if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"allowAgents":false`) {
@@ -103,11 +100,12 @@ func TestTaskHTTPAgentPermissionFilteringAndCursorScopes(t *testing.T) {
 		query, cursor := fmt.Sprintf("?ready=true&allowAgents=%t&limit=1", allowed), ""
 		var ids []string
 		for index, row := range selected {
-			expected := store.TaskQuery{Page: store.Page{Limit: 1}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(allowed)}
-			if index > 0 {
-				expected.Page.After = &store.Position{CreatedAt: selected[index-1].CreatedAt, ID: selected[index-1].ID}
+			expected := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: mutationHTTPCursorInput(cursor)}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(allowed)}
+			var next *string
+			if index < len(selected)-1 {
+				next = platformHTTPPointer(mutationHTTPCursor(index + 1))
 			}
-			f.expectList([]store.TaskQuery{expected}, []store.TaskPage{{Items: []model.Task{row}, HasMore: index < len(selected)-1}})
+			f.expectListRequest(expected, taskservice.TaskPage{Items: []model.Task{row}, NextCursor: next}, nil)
 			suffix := query
 			if cursor != "" {
 				suffix += "&cursor=" + url.QueryEscape(cursor)
@@ -131,15 +129,17 @@ func TestTaskHTTPAgentPermissionFilteringAndCursorScopes(t *testing.T) {
 				t.Fatal("permission page lost cursor")
 			}
 			cursor = *page.NextCursor
-			f.store.ReadSnapshotCall = nil
+			clearMutationHTTPOperations(f)
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: mutationHTTPCursorInput(cursor)}, Ready: platformHTTPPointer(true)}, taskservice.TaskPage{}, mutationHTTPFault("invalid_input"))
 			assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?limit=1&ready=true&cursor="+url.QueryEscape(cursor), ""), http.StatusBadRequest, "invalid_input")
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: mutationHTTPCursorInput(cursor)}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(!allowed)}, taskservice.TaskPage{}, mutationHTTPFault("invalid_input"))
 			assertProjectError(t, projectRequest(f.handler, http.MethodGet, fmt.Sprintf("%s?limit=1&ready=true&allowAgents=%t&cursor=%s", collection, !allowed, url.QueryEscape(cursor)), ""), http.StatusBadRequest, "invalid_input")
 		}
 		if !slices.Equal(ids, want) {
 			t.Fatalf("permission response sequence: got %v want %v", ids, want)
 		}
 	}
-	f.store.ReadSnapshotCall = nil
+	clearMutationHTTPOperations(f)
 	for _, query := range []string{"allowAgents=", "allowAgents=True", "allowAgents=1", "allowAgents=null", "allowAgents=true&allowAgents=false", "AllowAgents=true"} {
 		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}

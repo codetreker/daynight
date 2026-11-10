@@ -11,7 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -41,20 +41,27 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 	var ids []string
 	for index, current := range wanted {
 		requestPath := collection + query
-		var after *store.Position
 		if cursor != nil {
 			requestPath += "&cursor=" + url.QueryEscape(*cursor)
-			previous := wanted[index-1]
-			after = &store.Position{CreatedAt: previous.CreatedAt, ID: previous.ID}
 		}
-		expected := store.TaskQuery{Page: store.Page{After: after, Limit: 1}, Worker: &store.WorkerQuery{UserID: f.principal.UserID, WorkerID: workerID}}
-		f.expectList([]store.TaskQuery{expected}, []store.TaskPage{{Items: []model.Task{current}, HasMore: index < len(wanted)-1}})
+		var next *string
+		if index < len(wanted)-1 {
+			value := fmt.Sprintf("worker-inventory-page-%d", index+1)
+			next = &value
+		}
+		rawWorkerID := workerID
+		if index == 0 {
+			rawWorkerID = strings.ToUpper(workerID)
+		}
+		expected := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: copyTaskHTTPPointer(cursor)}, WorkerID: &rawWorkerID}
+		f.expectListRequest(expected, taskservice.TaskPage{Items: []model.Task{copyTaskHTTPTask(current)}, NextCursor: next}, nil)
 		response := projectRequest(f.handler, http.MethodGet, requestPath, "")
 		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
 		if response.Header().Get("Cache-Control") != "no-store" || len(page.Items) != 1 || apiWorker(t, page.Items[0].Properties) == nil || apiWorker(t, page.Items[0].Properties).WorkerID != workerID || apiWorker(t, page.Items[0].Properties).State != "active" {
 			t.Fatalf("wrong inventory page: %s", response.Body)
 		}
 		item := page.Items[0]
+		assertWorkerHTTPTask(t, item, current)
 		value, exists := item.Properties["paused"]
 		wantValue, wantExists := paused[item.ID]
 		if exists != wantExists || string(value) != wantValue {
@@ -72,6 +79,12 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		}
 		cursor = page.NextCursor
 		for _, changed := range []string{"", "&workerId=" + uuid.NewString()} {
+			expected := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1, Cursor: copyTaskHTTPPointer(cursor)}}
+			if changed != "" {
+				value := strings.TrimPrefix(changed, "&workerId=")
+				expected.WorkerID = &value
+			}
+			f.expectListRequest(expected, taskservice.TaskPage{}, &model.Fault{Code: "invalid_input", Message: "Cursor does not match the query."})
 			assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?limit=1&cursor="+url.QueryEscape(*cursor)+changed, ""), http.StatusBadRequest, "invalid_input")
 		}
 		query = "?limit=1&workerId=" + workerID
@@ -84,6 +97,10 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		t.Fatalf("inventory filtering hid later tasks: got %v want %v", ids, wantedIDs)
 	}
 	for _, query := range []string{"workerId=", "workerId=invalid", "workerId=null", "workerId=true", "workerId=" + workerID + "&workerId=" + workerID, "WorkerId=" + workerID, "userId=" + f.principal.UserID} {
+		if query == "workerId=invalid" || query == "workerId=null" || query == "workerId=true" {
+			value := strings.TrimPrefix(query, "workerId=")
+			f.expectListRequest(taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}, WorkerID: &value}, taskservice.TaskPage{}, &model.Fault{Code: "invalid_input", Message: "Worker ID must be a UUID."})
+		}
 		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
 }

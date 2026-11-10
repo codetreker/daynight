@@ -16,6 +16,7 @@ import (
 
 type pageReader struct {
 	store.TeamReader
+	context                   context.Context
 	team                      model.Team
 	teamErr                   error
 	teams                     store.TeamPage
@@ -29,7 +30,8 @@ type pageReader struct {
 	page                      store.Page
 }
 
-func (r *pageReader) Team(_ context.Context, actor, id string) (model.Team, error) {
+func (r *pageReader) Team(ctx context.Context, actor, id string) (model.Team, error) {
+	r.context = ctx
 	r.calls = append(r.calls, "team")
 	r.actorID, r.teamID = actor, id
 	return r.team, r.teamErr
@@ -66,12 +68,22 @@ func TestGetPreservesActorAndReadErrors(t *testing.T) {
 	}{
 		{name: "found"},
 		{name: "not found", err: model.ErrNotFound, code: "not_found"},
+		{name: "OAuth private Team", err: model.ErrNotFound, code: "not_found"},
 		{name: "read failure", err: failure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &pageReader{team: team, teamErr: tc.err}
-			got, err := Get(t.Context(), r, p, team.ID)
-			if r.actorID != p.UserID || r.teamID != team.ID {
+			actor, id := p, team.ID
+			if tc.name == "OAuth private Team" {
+				actor = model.Principal{Kind: model.OAuthCredential, UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "f6666666-6666-4666-8666-666666666666"}
+				id = "c9999999-9999-4999-8999-999999999999"
+			}
+			actualTeam := team
+			name := *team.Name
+			actualTeam.Name = &name
+			r := &pageReader{team: actualTeam, teamErr: tc.err}
+			ctx := t.Context()
+			got, err := Get(ctx, r, actor, id)
+			if r.context != ctx || r.actorID != actor.UserID || r.teamID != id || !reflect.DeepEqual(r.calls, []string{"team"}) {
 				t.Fatalf("wrong bounded lookup: %#v", r)
 			}
 			if tc.code != "" {

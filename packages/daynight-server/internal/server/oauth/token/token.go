@@ -27,10 +27,16 @@ type GrantLifecycle interface {
 	RevokePublic(context.Context, string, string) error
 }
 
+type ClientPermit interface {
+	TakeClient(context.Context, string) (bool, error)
+}
+
+type TokenAdmission func(context.Context, string) (ClientPermit, bool, error)
+
 // PublicTokens exposes the complete public token and revocation adapters. The
 // owner mounts them only when the complete OAuth profile is available.
 type PublicTokens struct {
-	Admission core.PublicAdmission
+	Admission TokenAdmission
 	Resource  string
 	Codes     TokenCodes
 	Grants    GrantLifecycle
@@ -105,7 +111,7 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 	if host, _, err := net.SplitHostPort(source); err == nil {
 		source = host
 	}
-	permit, allowed, err := h.Admission.TakeToken(r.Context(), source)
+	permit, allowed, err := h.Admission(r.Context(), source)
 	if err != nil {
 		httpx.CloseUnreadBody(w, r)
 		publicError(w, err)

@@ -12,10 +12,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
-	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 )
 
 type Authenticator interface {
@@ -30,8 +28,8 @@ type Routes struct {
 
 // NewRoutes composes the management handlers without starting a runner or
 // installing them in the application's mux.
-func NewRoutes(service *webhookservice.Service, auth *authhttp.Authentication, logger *slog.Logger) *Routes {
-	return &Routes{service: Adapter{Service: service}, auth: auth, logger: logger}
+func NewRoutes(service Service, auth Authenticator, logger *slog.Logger) *Routes {
+	return &Routes{service: service, auth: auth, logger: logger}
 }
 
 // RegisterRoutes attaches the personal and team management resources to mux.
@@ -125,7 +123,7 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 		"invalid_input": 400, "invalid_cursor": 400, "invalid_operation_time": 400,
 		"unauthenticated": 401, "forbidden": 403, "permission_denied": 403, "not_found": 404,
 		"webhook_project_ineligible": 403,
-		"identity_mismatch": 409, "version_conflict": 409, "operation_conflict": 409,
+		"identity_mismatch":          409, "version_conflict": 409, "operation_conflict": 409,
 		"version_exhausted": 409, "destination_unsupported": 409,
 		"generation_conflict": 409, "delivery_busy": 409, "target_changed": 409, "delivery_stopped": 409,
 		"operation_expired": 410, "payload_expired": 410, "content_too_large": 413,

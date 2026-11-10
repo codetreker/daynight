@@ -2,9 +2,12 @@ package oauth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,15 +138,24 @@ func configureStart(f *oauthFixture, s *Authorizations, in StartInput, client co
 	return expected
 }
 func TestAuthorizationStartCoordinatesControlledResults(t *testing.T) {
-	for _, mode := range []string{"success", "capacity", "insert error", "writer error", "unknown", "not committed"} {
+	for _, mode := range []string{"success", "empty state", "capacity", "insert error", "writer error", "unknown", "not committed"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newOAuthFixture(t, "take", "valid start", "resolve", "callback URI", "new authorization", "writer authorization", "scope authorization", "insert authorization", "callback returned", "writer returned")
 			s := f.service()
 			s.now = func() time.Time { return f.now.In(time.FixedZone("offset", 9*3600)).Add(99 * time.Nanosecond) }
 			in := fixtureStart()
+			client := fixtureClient()
 			record := fixtureAuthorization(uuid.NewString(), f.now.Add(-time.Hour))
 			record.Status = "controlled state"
-			expectedStart := configureStart(f, s, in, fixtureClient(), record)
+			if mode == "empty state" {
+				digest := sha256.Sum256([]byte(strings.Repeat("v", 43)))
+				challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+				s.issuer, s.resource = "http://127.0.0.1:8787", "http://127.0.0.1:8787/mcp"
+				in = StartInput{Source: "fixture", ClientID: "acceptance-client", RedirectURI: "https://client.example/callback", ResponseType: "code", Scope: core.Scope, Resource: "http://127.0.0.1:8787/mcp", State: "", StatePresent: false, CodeChallenge: challenge, CodeChallengeMethod: "S256"}
+				client = core.ValidatedClient{ClientID: "acceptance-client", Provenance: "preregistered", ClientName: "Acceptance", MetadataDigest: "d7a34b959eeaa8cc6fec30336193084ae8ca65f7a0334f615a269da704688220", Redirects: []string{"https://client.example/callback"}, SelectedExactRedirect: "https://client.example/callback", MetadataDeadline: time.Time{}}
+				record = store.OAuthAuthorization{ID: uuid.NewString(), BindingHash: []byte("stored-binding-hash"), Client: []byte(`{"clientId":"acceptance-client","provenance":"preregistered","clientName":"Acceptance","metadataDigest":"d7a34b959eeaa8cc6fec30336193084ae8ca65f7a0334f615a269da704688220","redirects":["https://client.example/callback"],"selectedExactRedirect":"https://client.example/callback","metadataDeadline":"0001-01-01T00:00:00Z"}`), ClientID: "acceptance-client", RedirectURI: "https://client.example/callback", Resource: "http://127.0.0.1:8787/mcp", Scope: core.Scope, Challenge: challenge, State: "", StatePresent: false, Status: "pending", CreatedAt: f.now, ExpiresAt: f.now.Add(10 * time.Minute), RetainUntil: f.now.Add(10*time.Minute + 24*time.Hour)}
+			}
+			expectedStart := configureStart(f, s, in, client, record)
 			failure := errors.New("authorization write failed")
 			callbackErr, finalErr := error(nil), error(nil)
 			outcome := store.TransactionCommitted
@@ -174,7 +186,7 @@ func TestAuthorizationStartCoordinatesControlledResults(t *testing.T) {
 			}
 			f.plan("authorization", true, callbackErr, outcome, finalErr)
 			got, err := s.Start(f.ctx, in)
-			if mode == "success" {
+			if mode == "success" || mode == "empty state" {
 				if err != nil {
 					t.Fatal(got, err)
 				}

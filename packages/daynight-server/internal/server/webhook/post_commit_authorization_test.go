@@ -77,7 +77,7 @@ func TestHTTPCommittedWriteWhenResponseAuthorizationChanges(t *testing.T) {
 			}
 			gate := &postCommitGate{WebhookTransactions: f.db, completed: make(chan completedWrite, 1), resume: make(chan struct{})}
 			mux := http.NewServeMux()
-			httpwebhook.NewRoutes(&service.Service{DB: gate, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
+			httpwebhook.NewRoutes(httpwebhook.Adapter{Service: &service.Service{DB: gate, ConfigurationExpansionAvailable: true}}, authenticator, logger).RegisterRoutes(mux)
 			server := httptest.NewServer(mux)
 			defer server.Close()
 			defer func() {

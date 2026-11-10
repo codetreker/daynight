@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
 
@@ -52,7 +53,8 @@ func TestOAuthProfileComposition(t *testing.T) {
 
 func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
 	app := NewModules(config.Config{}, nil, nil, nil, nil)
-	if app.PrivateContent != nil || app.Uploads == nil {
+	downloads, bound := app.Downloads.(*mcpdownload.Service)
+	if app.PrivateContent != nil || app.Uploads == nil || !bound || downloads != nil {
 		t.Fatal("unexpected private content composition")
 	}
 	_, err := app.Uploads.Execute(context.Background(), transfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})

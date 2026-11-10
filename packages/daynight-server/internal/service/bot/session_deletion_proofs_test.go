@@ -2,7 +2,10 @@ package bot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -691,4 +694,165 @@ func TestSessionDeletionWriteErrorsRetainCauseAndDoNotPublishProposals(t *testin
 			}
 		})
 	}
+}
+
+func TestSessionDeletionReceiptAcceptsUnconsumedNeverStartedExecution(t *testing.T) {
+	ctx := context.WithValue(t.Context(), struct{}{}, "never-started receipt")
+	now := time.Date(2026, 11, 11, 1, 0, 0, 123456000, time.UTC)
+	p := model.Principal{Kind: model.PATCredential, UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222"}
+	const botID = "a4444444-4444-4444-8444-444444444444"
+	const workerID = "b5555555-5555-4555-8555-555555555555"
+	const deletionID = "c6666666-6666-4666-8666-666666666666"
+	const sessionID = "d7777777-7777-4777-8777-777777777777"
+	const controllerID = "e8888888-8888-4888-8888-888888888888"
+	const instanceID = "f9999999-9999-4999-8999-999999999999"
+	fence := sp.Fence{SessionID: sessionID, TestExecutionID: "a0000000-0000-4000-8000-000000000000", ExecutionGeneration: "1"}
+	receipt := func() BotDeletionReceipt {
+		return BotDeletionReceipt{DeletionID: deletionID, Result: model.BotCleanupResult{State: "completed"}, Stop: &sp.TestStop{
+			Protocol: sp.Protocol, Fence: fence, ControllerID: controllerID, ControllerInstanceID: instanceID,
+			StopProof: sp.StopProof{Kind: "never_started", RecordID: "b0000000-0000-4000-8000-000000000000", PreviousControllerInstanceID: instanceID, StoppedAt: now.Format(time.RFC3339Nano)},
+		}}
+	}
+	raw, err := json.Marshal(receipt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(raw))
+	bot := func(version int64, worker, server, hash string) model.Bot {
+		id := sessionID
+		execution := fence.TestExecutionID
+		return model.Bot{ID: botID, OwnerUserID: p.UserID, WorkerID: workerID, Name: "Assistant", Version: version, CreationOrder: 41,
+			ResolvedConfiguration: model.BotConfiguration{WorkerID: workerID, Cwd: "/workspace", Provider: "copilot", Model: pointer("gpt-5"), Args: []string{"--effort", "high"}},
+			SessionID:             &id, TestExecutionID: &execution, StartupResult: model.BotStartupResult{State: "pending"}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+			Deletion: &model.BotDeletion{DeletionID: deletionID, RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: worker}, ServerCleanup: model.BotCleanupResult{State: server}, ReceiptDigest: hash}}
+	}
+	before := func() model.Bot { return bot(3, "pending", "pending", "") }
+	workerComplete := func() model.Bot { return bot(4, "completed", "pending", digest) }
+	final := func() model.Bot { return bot(5, "completed", "completed", digest) }
+	plan := newPlan(t, "write", "credential", "bot", "owner", "worker", "stop", "save worker", "write_done",
+		"write", "credential", "bot", "owner", "server", "sessions", "files", "remove", "redact", "save server", "write_done")
+	calls := expectSessionDeletionProofCalls(t, map[string]int{"credential": 2, "bot": 2, "stop": 1, "sessions": 1, "remove": 1, "redact": 1})
+	dao := &sessionDeletionProofDAO{calls: calls,
+		credential: func(actual context.Context, actor model.Principal, at time.Time) error {
+			plan.call("credential")
+			identical(t, actual, ctx)
+			same(t, actor, p)
+			same(t, at, now)
+			return nil
+		},
+		stop: func(actual context.Context, session, id, owner string) (store.BotSessionStop, error) {
+			plan.call("stop")
+			identical(t, actual, ctx)
+			same(t, session, sessionID)
+			same(t, id, botID)
+			same(t, owner, p.UserID)
+			return store.BotSessionStop{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: fence, ConnectionEpoch: "0"},
+				Identity: sp.Identity{OwnerUserID: p.UserID, ControllerID: controllerID, ControllerInstanceID: instanceID}}, Consumed: false, SourceEpoch: nil}, nil
+		},
+		sessions: func(actual context.Context, id string) ([]store.BotSession, error) {
+			plan.call("sessions")
+			identical(t, actual, ctx)
+			same(t, id, botID)
+			return []store.BotSession{{ID: sessionID, Owner: p.UserID, Scope: "test", Backend: "web"}}, nil
+		},
+		remove: func(actual context.Context, session, id string) error {
+			plan.call("remove")
+			identical(t, actual, ctx)
+			same(t, session, sessionID)
+			same(t, id, botID)
+			return nil
+		},
+		redact: func(actual context.Context, id string) error {
+			plan.call("redact")
+			identical(t, actual, ctx)
+			same(t, id, botID)
+			return nil
+		},
+	}
+	reads := 0
+	bots := &sessionDeletionProofBots{calls: calls, read: func(actual context.Context, id string) (model.Bot, error) {
+		plan.call("bot")
+		identical(t, actual, ctx)
+		same(t, id, botID)
+		reads++
+		if reads == 1 {
+			return before(), nil
+		}
+		return workerComplete(), nil
+	}}
+	transactions := 0
+	writer := sessionDeletionProofWriter{write: func(actual context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+		plan.call("write")
+		identical(t, actual, ctx)
+		transactions++
+		callbackCause(nil).check(t, fn(sessionDeletionProofScope{dao: dao, bots: bots}))
+		plan.call("write_done")
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}}
+	files := sessionDeletionProofFiles{remove: func(actual context.Context, namespace sessionarchive.Namespace) error {
+		plan.call("files")
+		identical(t, actual, ctx)
+		want, e := sessionarchive.NewNamespace(sessionarchive.Users, p.UserID, sessionID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		same(t, namespace, want)
+		return nil
+	}}
+	live := &discardedSessions{}
+	svc := NewDeletions(writer, files, live)
+	svc.now = func() time.Time { return now }
+	saves := 0
+	svc.operations = deletionOperations{
+		owner: func(v model.Bot, actor model.Principal) error {
+			plan.call("owner")
+			same(t, actor, p)
+			if reads == 1 {
+				same(t, v, before())
+			} else {
+				same(t, v, workerComplete())
+			}
+			return nil
+		},
+		worker: func(v model.Bot, worker, id string, result model.BotCleanupResult, hash string) (bool, bool, error) {
+			plan.call("worker")
+			same(t, v, before())
+			same(t, worker, workerID)
+			same(t, id, deletionID)
+			same(t, result, receipt().Result)
+			same(t, hash, digest)
+			return true, true, nil
+		},
+		server: func(v model.Bot, id string) (bool, error) {
+			plan.call("server")
+			same(t, v, workerComplete())
+			same(t, id, deletionID)
+			return true, nil
+		},
+		save: func(actual context.Context, d store.BotWriteDAO, v model.Bot) (model.Bot, error) {
+			identical(t, actual, ctx)
+			identical(t, d, bots)
+			saves++
+			if saves == 1 {
+				plan.call("save worker")
+				want := before()
+				want.Deletion = workerComplete().Deletion
+				same(t, v, want)
+				return workerComplete(), nil
+			}
+			plan.call("save server")
+			want := workerComplete()
+			want.Deletion = final().Deletion
+			same(t, v, want)
+			return final(), nil
+		},
+	}
+	got, err := svc.CompleteBotDeletion(ctx, p, workerID, botID, receipt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	same(t, got, final())
+	same(t, transactions, 2)
+	same(t, saves, 2)
+	same(t, live.ids, []string{sessionID})
 }

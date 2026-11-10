@@ -36,11 +36,13 @@ lower orchestration, rule and physical mechanisms. The
 preserves the initial cursor, permission and ping corrections.
 
 Root composition and domain protocol cases remain separate when they observe
-different preparation, behavior or dependencies. Root tests retain relay
-shutdown before dependency release, independently bound terminal recovery,
-startup, native serialization and channel regressions. Their HTTP control and
-WebSocket traffic share one actual application and Engine; strict DAO plans
-supply persistence inputs and independent proposed-write/completion facts.
+different preparation, behavior or dependencies. Ordinary terminal recovery,
+startup, native serialization and channel regressions use direct operation
+inputs with the shared production HTTP router and actual Session Routes. Their
+HTTP and WebSocket traffic still exercises the same protocol adapter. Dedicated
+lifecycle cases retain the actual Application, Service and Engine relationship,
+including relay shutdown before dependency release; required DAO plans supply
+independent proposed-write and completion facts for those mechanisms.
 Actual SQL, lock waits, database-clock expiry and committed readback remain
 with Store tests; complete entry-point drain and restart persistence remain
 with process tests. UniAuth result/browser binding and SDK wire-loss tests keep
@@ -77,8 +79,11 @@ survive consolidation.
 The original consolidation reduced repeated fixture and scenario execution
 while preserving product behavior and the actual mechanisms being tested.
 Later Task and Session HTTP isolation move their collaborators to direct lower
-operations; root composition isolation supplies strict DAO facts while retaining
-actual modules and runtime mechanisms. Logical, protocol, physical storage and
+operations. The subsequent [Root operation fixtures](2026-11-11-root-server-operation-fixtures.md)
+use the shared production HTTP router with direct business outputs for ordinary
+protocol results, while complete MCP, default assembly and runtime mechanisms
+retain their real modules. The earlier root DAO correction remains the history
+of removing database setup from those upper tests. Logical, protocol, physical storage and
 normal full-application observations retain separate owners. A historical
 reduction of duplicate bodies does not require full-application preparation for
 every HTTP assertion.

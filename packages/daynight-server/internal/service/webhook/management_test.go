@@ -3,7 +3,10 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 )
 
@@ -56,6 +60,170 @@ func TestManagementCreatesCompleteEndpointAndReceipt(t *testing.T) {
 		t.Fatalf("view=%#v", view)
 	}
 	f.order("write.LockConfigurationSources", "write.LockCredential", "write.dao.PutEndpoint", "write.dao.PutOperation", "post.dao.Operation")
+	t.Run("maintenance subscription", testMaintenanceEndpointCreate)
+}
+
+func testMaintenanceEndpointCreate(t *testing.T) {
+	f := newMgmtFixture(t)
+	f.principal = model.Principal{Kind: model.SessionCredential, UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222"}
+	f.owner = wm.Owner{Kind: "personal", ID: f.principal.UserID}
+	const project = "c3333333-3333-4333-8333-333333333333"
+	const operationID = "62222222-2222-4222-8222-222222222222"
+	issuedAt := f.now.Format(time.RFC3339Nano)
+	body, err := json.Marshal(map[string]any{"operationId": operationID, "issuedAt": issuedAt, "expectedUserId": f.principal.UserID, "name": "receiver", "enabled": true, "destination": map[string]any{"kind": "http", "adapterVersion": "1", "configuration": map[string]any{"url": "https://receiver.example/hook"}}, "subscriptions": []any{map[string]any{"id": nil, "projectId": project, "eventTypes": []string{"task.created"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	m := Mutation{Kind: "endpoint.create", OperationID: operationID, IssuedAt: issuedAt, ExpectedUserID: f.principal.UserID, RequestSHA256: hex.EncodeToString(digest[:]), Name: mgmtPtr("receiver"), Enabled: mgmtPtr(true), Destination: &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true, Subscriptions: []core.SubscriptionInput{{ProjectID: project, EventTypes: []string{"task.created"}}}}
+	endpoint := wm.Endpoint{ID: "11111111-1111-4111-9111-111111111111", Owner: f.owner, Name: "receiver", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://receiver.example", DestinationConfiguration: []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}}`), ActiveKeyID: "22222222-2222-4222-a222-222222222222", CreatedAt: f.now, UpdatedAt: f.now}
+	key := wm.SigningKey{EndpointID: endpoint.ID, ID: endpoint.ActiveKeyID, Slot: "current", Secret: bytes.Repeat([]byte{0x33}, 32), CreatedAt: f.now}
+	subscription := wm.Subscription{ID: "44444444-4444-4444-8444-444444444444", EndpointID: endpoint.ID, ProjectID: project, Owner: f.owner, AuthorizationState: "active", AuthorizationEpoch: 1, CreatedAt: f.now, UpdatedAt: f.now}
+	binding := wm.Binding{ID: "55555555-5555-4555-9555-555555555555", SubscriptionID: subscription.ID, EventType: "task.created", CreatedAt: f.now}
+	name, enabled := "receiver", true
+	fp, err := core.Fingerprint(core.Intent{OperationID: operationID, ActorID: "a1111111-1111-4111-8111-111111111111", OwnerKind: "personal", OwnerID: "a1111111-1111-4111-8111-111111111111", Kind: "endpoint.create", IssuedAt: issuedAt, Name: &name, Enabled: &enabled, Destination: &core.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true, Subscriptions: []core.SubscriptionInput{{ProjectID: "c3333333-3333-4333-8333-333333333333", EventTypes: []string{"task.created"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := wm.Operation{Owner: f.owner, ID: operationID, ActorID: f.principal.UserID, Kind: "endpoint.create", TargetID: endpoint.ID, IssuedAt: issuedAt, RequestSHA256: hex.EncodeToString(digest[:]), Fingerprint: fp, Effect: "applied", ConfigVersion: 1, DestinationRevisionAfter: 1, RecordedAt: f.now, ExpiresAt: f.now.Add(30 * 24 * time.Hour)}
+	entropy := bytes.Repeat([]byte{0x11}, 16)
+	entropy = append(entropy, bytes.Repeat([]byte{0x22}, 16)...)
+	entropy = append(entropy, bytes.Repeat([]byte{0x33}, 32)...)
+	entropy = append(entropy, bytes.Repeat([]byte{0x44}, 16)...)
+	entropy = append(entropy, bytes.Repeat([]byte{0x55}, 16)...)
+	f.service.Random = bytes.NewReader(entropy)
+	checkContext := func(ctx context.Context) {
+		t.Helper()
+		if ctx != f.ctx {
+			t.Fatal("create context changed")
+		}
+	}
+	read := f.db.ReadFn
+	f.db.ReadFn = func(ctx context.Context, cb func(store.WebhookReadScope) error) error {
+		checkContext(ctx)
+		return read(ctx, cb)
+	}
+	write := f.db.WriteFn
+	f.db.WriteFn = func(ctx context.Context, owner wm.Owner, id string, cb func(store.WebhookWriteScope) error) (store.Completion, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, id, operationID)
+		return write(ctx, owner, id, cb)
+	}
+	for _, c := range []*mgmtCredentialDAO{f.preCredential, f.writeCredential, f.postCredential} {
+		c.CredentialFn = func(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
+			checkContext(ctx)
+			mgmtWantEqual(t, p, f.principal)
+			return store.ThreadCredential{}, nil
+		}
+	}
+	for _, scope := range []*mgmtScope{f.write, f.post} {
+		scope.ObservedAtFn = func(ctx context.Context) (time.Time, error) { checkContext(ctx); return f.now, nil }
+	}
+	f.writer.OperationFn = func(ctx context.Context, owner wm.Owner, id string) (wm.Operation, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, id, operationID)
+		return wm.Operation{}, model.ErrNotFound
+	}
+	f.writer.PolicyFn = func(ctx context.Context, version int64) (wm.Policy, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, version, int64(1))
+		return wm.Policy{Version: 1, MaxAutomaticAttempts: 10, AutomaticWindowSeconds: 259200, MaxManualOperations: 3, PayloadRetentionSeconds: 604800, MetadataRetentionSeconds: 2592000, OperationRetentionSeconds: 2592000, OperationMaxAgeSeconds: 300, OperationFutureSkewSeconds: 60}, nil
+	}
+	f.write.LockConfigurationSourcesFn = func(ctx context.Context, owner wm.Owner, actor string, projects []string) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, actor, f.principal.UserID)
+		mgmtWantEqual(t, projects, []string{project})
+		return nil
+	}
+	f.write.LockCredentialFn = func(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, p, f.principal)
+		return store.ThreadCredential{}, nil
+	}
+	f.eligibility.ReadEligibilityFn = func(ctx context.Context, owner wm.Owner, projectID, actor string) (store.WebhookEligibility, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, projectID, project)
+		mgmtWantEqual(t, actor, f.principal.UserID)
+		return store.WebhookEligibility{Status: "eligible", ProjectName: mgmtPtr("maintenance")}, nil
+	}
+	f.writer.PutEndpointFn = func(ctx context.Context, value wm.Endpoint) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, value, endpoint)
+		return nil
+	}
+	f.writer.PutSigningKeyFn = func(ctx context.Context, value wm.SigningKey) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, value, key)
+		return nil
+	}
+	f.writer.DeleteSigningKeysFn = func(ctx context.Context, id string) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, id, endpoint.ID)
+		return nil
+	}
+	f.writer.PutSubscriptionFn = func(ctx context.Context, value wm.Subscription) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, value, subscription)
+		return nil
+	}
+	f.writer.PutBindingFn = func(ctx context.Context, value wm.Binding) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, value, binding)
+		return nil
+	}
+	f.writer.PutOperationFn = func(ctx context.Context, value wm.Operation) error {
+		checkContext(ctx)
+		mgmtWantEqual(t, value, op)
+		return nil
+	}
+	f.postDAO.OperationFn = func(ctx context.Context, owner wm.Owner, id string) (wm.Operation, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, id, operationID)
+		return op, nil
+	}
+	f.postDAO.EndpointFn = func(ctx context.Context, owner wm.Owner, id string) (wm.Endpoint, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, id, endpoint.ID)
+		value := endpoint
+		value.DestinationConfiguration = bytes.Clone(endpoint.DestinationConfiguration)
+		return value, nil
+	}
+	f.postDAO.SigningKeysFn = func(ctx context.Context, id string) ([]wm.SigningKey, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, id, endpoint.ID)
+		value := key
+		value.Secret = bytes.Clone(key.Secret)
+		return []wm.SigningKey{value}, nil
+	}
+	f.postDAO.SubscriptionsFn = func(ctx context.Context, id string) ([]wm.Subscription, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, id, endpoint.ID)
+		return []wm.Subscription{subscription}, nil
+	}
+	f.postDAO.BindingsFn = func(ctx context.Context, id string) ([]wm.Binding, error) {
+		checkContext(ctx)
+		mgmtWantEqual(t, id, subscription.ID)
+		return []wm.Binding{binding}, nil
+	}
+	result, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
+	if err != nil || result.Replay {
+		t.Fatalf("maintenance create=%#v err=%v", result, err)
+	}
+	view := result.Body.(map[string]any)["endpoint"].(map[string]any)
+	mgmtWantEqual(t, view, map[string]any{"id": endpoint.ID, "owner": map[string]any{"kind": "personal", "id": f.owner.ID}, "lifecycle": "active", "name": "receiver", "enabled": true, "configVersion": "1", "destinationRevision": "1", "destination": map[string]any{"kind": "http", "adapterVersion": "1", "url": "https://receiver.example/hook", "displayUrl": "https://receiver.example/hook"}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": key.ID, "overlapUntil": nil}, "subscriptions": []any{map[string]any{"id": subscription.ID, "projectId": project, "projectName": mgmtPtr("maintenance"), "eventTypes": []string{"task.created"}, "eligibility": "eligible"}}, "capabilities": map[string]any{"manage": true, "readSecret": true, "redeliver": true}, "createdAt": f.now, "updatedAt": f.now, "deletedAt": nil})
+	var calls []string
+	for _, call := range f.trace.snapshot() {
+		if !strings.HasSuffix(call, "DAO") && !strings.HasSuffix(call, "Writer") {
+			calls = append(calls, call)
+		}
+	}
+	mgmtWantEqual(t, calls, []string{"tx.ReadWebhookSnapshot", "pre.credential.Credential", "tx.WriteWebhook", "write.dao.Operation", "write.credential.Credential", "write.dao.Policy", "write.ObservedAt", "write.LockConfigurationSources", "write.credential.Credential", "write.credential.Credential", "write.ObservedAt", "eligibility.ReadEligibility", "write.LockCredential", "write.ObservedAt", "write.dao.PutEndpoint", "write.dao.PutSubscription", "write.dao.PutBinding", "write.dao.DeleteSigningKeys", "write.dao.PutSigningKey", "write.dao.PutOperation", "tx.ReadWebhookSnapshot", "post.credential.Credential", "post.dao.Operation", "post.ObservedAt", "post.dao.Endpoint", "post.dao.SigningKeys", "post.ObservedAt", "post.dao.Subscriptions", "eligibility.ReadEligibility", "post.dao.Bindings"})
 }
 
 func TestManagementUpdatesOnlyChangedConfiguration(t *testing.T) {

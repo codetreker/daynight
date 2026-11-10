@@ -33,7 +33,7 @@ const relayMaxConnections = 1024
 
 type Routes struct {
 	history         HistoryReader
-	service         serviceCalls
+	service         Operations
 	auth            *authhttp.RequestAuthentication
 	logger          *slog.Logger
 	instance        string
@@ -56,14 +56,18 @@ func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger 
 	if auth != nil {
 		requestAuth = auth.RequestAuthentication
 	}
-	routes := newRoutes(callsFromService(s), requestAuth, logger)
+	return NewRoutesWithOperations(callsFromService(s), requestAuth, logger, history...)
+}
+
+func NewRoutesWithOperations(operations Operations, auth *authhttp.RequestAuthentication, logger *slog.Logger, history ...HistoryReader) *Routes {
+	routes := newRoutes(operations, auth, logger)
 	if len(history) > 0 {
 		routes.history = history[0]
 	}
 	return routes
 }
 
-func newRoutes(service serviceCalls, auth *authhttp.RequestAuthentication, logger *slog.Logger) *Routes {
+func newRoutes(service Operations, auth *authhttp.RequestAuthentication, logger *slog.Logger) *Routes {
 	return &Routes{service: service, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
 func (h *Routes) RegisterRoutes(mux *http.ServeMux) {

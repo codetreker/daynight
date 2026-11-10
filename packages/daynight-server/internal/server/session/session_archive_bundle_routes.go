@@ -17,7 +17,7 @@ import (
 )
 
 type unifiedArchiveOperation interface {
-	archiveOperation
+	ArchiveOperation
 	PrepareArchive(context.Context, sp.ArchivePrepareRequest) (sp.ArchivePrepareReceipt, error)
 	AppendArchiveSourceTail(context.Context, sp.ArchiveSourceTailRequest) (sp.ArchiveSourceTailReceipt, error)
 	PutArchiveFile(context.Context, string, string, int64, int64, string, string, []byte) (sp.ArchiveFileReceipt, error)

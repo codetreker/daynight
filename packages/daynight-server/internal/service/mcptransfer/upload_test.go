@@ -134,7 +134,7 @@ func TestUploadAdmissionSerializesTaskDeletion(t *testing.T) {
 }
 func TestUploadCompleteReceiptsAndRecovery(t *testing.T) {
 	h := newUploadHarness(t)
-	r := h.record("nested/upload.bin", 0)
+	r := h.record("binary/combined.bin", 0)
 	begin := UploadInput{Action: "begin", TransferID: r.ID, Path: r.Path, ContentType: r.ContentType}
 	for i := 0; i < 3; i++ {
 		h.begin(h.actor, r, i > 0)
@@ -149,7 +149,7 @@ func TestUploadCompleteReceiptsAndRecovery(t *testing.T) {
 	if _, err := h.execute(h.actor, conflict); err == nil {
 		t.Fatal("conflicting begin accepted")
 	}
-	parts := [][]byte{bytes.Repeat([]byte{0, 0x7f, 0xff, 0x41}, MaxChunkBytes/4), []byte("second chunk\x00\xff")}
+	parts := [][]byte{bytes.Repeat([]byte{0x00, 0xff, 0x7f, 0x41}, (512<<10)/4), bytes.Repeat([]byte{0x80, 0x00, 0xfe}, 171)}
 	all := bytes.Join(parts, nil)
 	chunks := make([]model.UploadChunk, 0, 2)
 	for _, part := range parts {

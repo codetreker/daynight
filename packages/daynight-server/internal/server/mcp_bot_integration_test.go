@@ -3,29 +3,40 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestMCPBotProductionLifecycle(t *testing.T) {
-	tx := newHTTPTestStore(t)
 	principal := defaultHTTPPrincipal()
 	worker := uuid.NewString()
 	now := time.Now().UTC()
-	defaults := mcpBotDefaults(principal.UserID, worker, now)
 	modelName := "gpt-5"
 	configuration := model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "copilot", Model: &modelName, Args: []string{"--effort", "high"}}
-	server, _ := newMCPHTTPServer(t, tx, attachmentTestFiles(t))
-	h := &resourceTestHandler{Handler: server.Config.Handler, token: defaultHTTPToken(), principal: principal}
+	ops := &mcpBotOperations{t: t, principal: principal}
+	server, _ := newMCPOperationServer(t, map[string]model.Principal{defaultHTTPToken(): principal}, attachmentTestFiles(t), func(app *service.App) { app.Bots, app.BotDeletions = ops, ops })
+	h := newOperationHTTPServer(t, func(deps *httpDependencies) {
+		deps.Bots, deps.BotDeletions, deps.BotRuntime = ops, ops, ops
+		deps.Relay = sessionhttp.NewRoutesWithOperations(sessionhttp.Operations{TestSnapshot: ops.TestSnapshot}, deps.Auth.RequestAuthentication, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	}, io.Discard, principal)
 	client := mcpPATClient(t, server.URL, h.token)
 	call := func(name string, args map[string]any) (map[string]any, bool) {
 		t.Helper()
@@ -55,7 +66,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	}
 	id := uuid.NewString()
 	expected := mcpBotModel(principal.UserID, worker, id, "Assistant", model.BotOverrides{}, configuration, now)
-	mcpBotCreation(t, tx, principal, defaults, expected)
+	ops.expectCreate(botcore.CreateBot{ID: id, Name: "Assistant", Overrides: model.BotOverrides{}}, expected)
 	created, failed := call("bot_create", map[string]any{"name": "Assistant", "requestId": id})
 	if failed {
 		t.Fatalf("create: %+v", created)
@@ -68,12 +79,26 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	secondID := uuid.NewString()
 	chosen, provider := "/chosen", "codex"
 	second := mcpBotModel(principal.UserID, worker, secondID, "Second", model.BotOverrides{WorkerID: &worker, Cwd: &chosen, Provider: &provider}, model.BotConfiguration{WorkerID: worker, Cwd: chosen, Provider: provider, Args: []string{}}, now.Add(time.Second))
-	mcpBotCreation(t, tx, principal, defaults, second)
+	ops.expectCreate(botcore.CreateBot{ID: secondID, Name: "Second", Overrides: model.BotOverrides{WorkerID: &worker, Cwd: &chosen, Provider: &provider}}, second)
 	override, failed := call("bot_create", map[string]any{"name": "Second", "workerId": worker, "cwd": "/chosen", "agent": "codex", "requestId": secondID})
 	if failed || obj(obj(override["data"])["resolvedConfiguration"])["cwd"] != "/chosen" || obj(obj(override["data"])["resolvedConfiguration"])["provider"] != "codex" {
 		t.Fatalf("overrides: %+v", override)
 	}
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bots", []any{principal.UserID, (*string)(nil), store.Page{Limit: 1}}, store.BotPage{Items: []model.Bot{expected}, HasMore: true}, nil))
+	cursorBytes, _ := json.Marshal(struct {
+		Version            int                 `json:"version"`
+		Kind               string              `json:"kind"`
+		ProjectID          string              `json:"projectId"`
+		Status             *string             `json:"status"`
+		Ready              *bool               `json:"ready"`
+		AllowAgents        *bool               `json:"allowAgents"`
+		CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
+		WorkerID           *string             `json:"workerId"`
+		WorkerUserID       *string             `json:"workerUserId"`
+		CreatedAt          time.Time           `json:"createdAt"`
+		ID                 string              `json:"id"`
+	}{Version: 1, Kind: "bots", WorkerUserID: &principal.UserID, CreatedAt: expected.CreatedAt, ID: expected.ID})
+	nextCursor := base64.RawURLEncoding.EncodeToString(cursorBytes)
+	ops.expectList(model.PageRequest{Limit: 1}, botcore.BotPage{Items: []model.Bot{expected}, NextCursor: &nextCursor})
 	page, failed := call("bot_list", map[string]any{"limit": 1})
 	if failed {
 		t.Fatalf("list: %+v", page)
@@ -84,12 +109,12 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	if len(items) != 1 || !ok {
 		t.Fatalf("first page: %+v", first)
 	}
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bots", []any{principal.UserID, (*string)(nil), store.Page{Limit: 1, After: &store.Position{CreatedAt: expected.CreatedAt, ID: expected.ID}}}, store.BotPage{Items: []model.Bot{second}}, nil))
+	ops.expectList(model.PageRequest{Limit: 1, Cursor: &nextCursor}, botcore.BotPage{Items: []model.Bot{second}})
 	next, failed := call("bot_list", map[string]any{"limit": 1, "cursor": cursor})
 	if failed || len(obj(next["data"])["items"].([]any)) != 1 || obj(obj(next["data"])["items"].([]any)[0])["id"] == obj(items[0])["id"] {
 		t.Fatalf("second page: %+v", next)
 	}
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bot", []any{id}, expected, nil))
+	ops.expectGet(id, expected)
 	read, failed := call("bot_show", map[string]any{"botId": id})
 	if failed || obj(read["data"])["id"] != id {
 		t.Fatalf("show: %+v", read)
@@ -98,47 +123,41 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	instructions := "Use Daynight CLI."
 	registration := map[string]any{"botVersion": "1", "registration": reg, "configuration": config, "roleConfiguration": map[string]any{"instructions": instructions, "revision": "v1", "digest": fmt.Sprintf("%x", sha256.Sum256([]byte(instructions)))}}
 	base := "/api/v1/me/workers/" + worker + "/bots/" + id
-	var inserted store.SessionRegistration
-	bindingResult := []any{model.Bot{}, nil}
-	bindCall := mcpBotExpectedCall{name: "BindBotSession", result: bindingResult, check: func(args []any) {
-		if len(args) != 4 || args[0] != id || args[1] != int64(1) || args[2] != inserted.Location.SessionID || args[3] != (model.BotRoleConfiguration{Instructions: instructions, Revision: "v1", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(instructions)))}) {
-			unexpectedHTTPCall(t, "Bot binding fields")
+	sessionID, historyEpoch := uuid.NewString(), uuid.NewString()
+	snapshot := sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: sessionID, TestExecutionID: reg.TestExecutionID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{OwnerUserID: principal.UserID, ControllerID: reg.ControllerID, ControllerInstanceID: reg.ControllerInstanceID, AgentControlMode: "web", Provider: "copilot"}, SessionRevision: "1", HistoryEpoch: historyEpoch, LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_required", Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
+	role := model.BotRoleConfiguration{Instructions: instructions, Revision: "v1", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(instructions)))}
+	boundModel := botExpiryCloneBot(expected)
+	boundModel.Version, boundModel.SessionID, boundModel.TestExecutionID, boundModel.RoleConfiguration, boundModel.UpdatedAt = 2, &sessionID, &reg.TestExecutionID, &role, now.Add(time.Second)
+	registrationInput := sessioncore.BotRegistration{BotVersion: 1, Registration: reg, Configuration: configuration, RoleConfiguration: role}
+	registrationInput.Configuration.Args = botExpiryCloneSlice(configuration.Args)
+	registerCall := ops.once("RegisterBot")
+	ops.register = func(ctx context.Context, p model.Principal, gotWorker, gotID string, in sessioncore.BotRegistration) (sessioncore.BotRegistrationResult, error) {
+		registerCall()
+		ops.check(ctx, p, "RegisterBot")
+		if gotWorker != worker || gotID != id || !reflect.DeepEqual(in, registrationInput) {
+			t.Errorf("Bot registration changed: %s/%s/%#v", gotWorker, gotID, in)
 		}
-		value := expected
-		value.Version = 2
-		value.SessionID = &inserted.Location.SessionID
-		value.TestExecutionID = &reg.TestExecutionID
-		value.RoleConfiguration = &model.BotRoleConfiguration{Instructions: instructions, Revision: "v1", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(instructions)))}
-		value.UpdatedAt = now.Add(time.Second)
-		bindingResult[0] = value
-	}}
-	insertCall := mcpBotExpectedCall{name: "InsertBotSession", result: []any{true, nil}, check: func(args []any) {
-		value := args[0].(store.SessionRegistration)
-		if value.OwnerID != principal.UserID || value.ParentCredentialID != principal.CredentialID || value.BotID == nil || *value.BotID != id || value.RegistrationID != reg.RegistrationID || value.TestExecutionID != reg.TestExecutionID || value.Location.SessionID == "" || value.Snapshot.TestExecutionID != reg.TestExecutionID || value.Snapshot.Identity.OwnerUserID != principal.UserID || value.Snapshot.Identity.Provider != "copilot" || value.Snapshot.ConnectionEpoch != "0" || value.Snapshot.ExecutionGeneration != "1" || value.Snapshot.InitialInputState != "not_required" {
-			unexpectedHTTPCall(t, "Bot Session registration fields")
-		}
-		var input map[string]any
-		if err := json.Unmarshal(value.Registration, &input); err != nil || input["botVersion"] != "1" {
-			unexpectedHTTPCall(t, "Bot Session frozen registration")
-		}
-		inserted = value
-	}}
-	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, expected, nil), insertCall, bindCall, mcpBotLockCredentialCall(t, principal))
+		return sessioncore.BotRegistrationResult{Bot: botExpiryCloneBot(boundModel), Session: botExpiryCloneSnapshot(snapshot)}, nil
+	}
 	bound := decodeResponse[struct {
 		Bot     api.Bot     `json:"bot"`
 		Session sp.Snapshot `json:"session"`
 	}](t, projectRequest(h, "POST", base+"/register", jsonBody(t, registration)), 200)
-	boundModel := expected
-	boundModel.Version = 2
-	boundModel.SessionID = &bound.Session.SessionID
-	boundModel.TestExecutionID = &reg.TestExecutionID
-	boundModel.RoleConfiguration = &model.BotRoleConfiguration{Instructions: instructions, Revision: "v1", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(instructions)))}
-	boundModel.UpdatedAt = now.Add(time.Second)
-	record := store.SessionRecord{BotID: &id, Snapshot: bound.Session, Owner: principal.UserID, Parent: principal.CredentialID, Registration: inserted.Registration}
-	mcpBotSession(t, tx, mcpBotCall("SessionBotID", []any{bound.Session.SessionID}, &id, nil), mcpBotCall("Bot", []any{id}, boundModel, nil), mcpBotCall("LockSession", []any{bound.Session.SessionID}, record, nil), mcpBotLockCredentialCall(t, principal), mcpBotLockCredentialCall(t, principal))
+	if !reflect.DeepEqual(bound.Session, snapshot) {
+		t.Fatalf("registration snapshot=%#v, want %#v", bound.Session, snapshot)
+	}
+	readCall := ops.once("TestSnapshot")
+	ops.snapshot = func(ctx context.Context, p model.Principal, got string) (sp.Snapshot, error) {
+		readCall()
+		ops.check(ctx, p, "TestSnapshot")
+		if got != sessionID {
+			t.Errorf("snapshot id=%s", got)
+		}
+		return botExpiryCloneSnapshot(snapshot), nil
+	}
 	decodeResponse[sp.Snapshot](t, projectRequest(h, "GET", "/api/v1/test-sessions/"+bound.Session.SessionID, ""), 200)
 	deletionID := uuid.NewString()
-	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, boundModel, nil))
+	ops.expectDelete(id, store.DeleteBot{Version: 1, DeletionID: deletionID}, model.Bot{}, &model.Fault{Code: "version_conflict", Message: "Bot version changed."})
 	stale, failed := call("bot_delete", map[string]any{"botId": id, "ifVersion": "1", "requestId": deletionID})
 	if !failed || obj(stale["error"])["code"] != "version_conflict" {
 		t.Fatalf("stale delete: %+v", stale)
@@ -147,8 +166,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	deletionModel.Version = 3
 	deletionModel.Deletion = &model.BotDeletion{DeletionID: deletionID, RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
 	deletionModel.UpdatedAt = now.Add(2 * time.Second)
-	botSessions := []store.BotSession{{ID: bound.Session.SessionID, Owner: principal.UserID, Scope: "test", Backend: "web"}}
-	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, boundModel, nil), mcpBotCall("LockBotSessions", []any{id}, botSessions, nil), mcpBotCall("RevokeBotSessions", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, deletionModel.Deletion}, deletionModel, nil), mcpBotLockCredentialCall(t, principal))
+	ops.expectDelete(id, store.DeleteBot{Version: 2, DeletionID: deletionID}, deletionModel, nil)
 	deleted, failed := call("bot_delete", map[string]any{"botId": id, "ifVersion": "2", "requestId": deletionID})
 	if failed {
 		t.Fatalf("delete: %+v", deleted)
@@ -158,9 +176,17 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	if _, exists := data["name"]; exists || deletion["deletionId"] != deletionID || obj(deletion["workerCleanup"])["state"] != "pending" || obj(deletion["serverCleanup"])["state"] != "pending" {
 		t.Fatalf("deletion responsibility: %+v", data)
 	}
-	mcpBotSession(t, tx, mcpBotCall("SessionBotID", []any{bound.Session.SessionID}, &id, nil), mcpBotCall("Bot", []any{id}, deletionModel, nil))
+	deletedRead := ops.once("TestSnapshot deleted")
+	ops.snapshot = func(ctx context.Context, p model.Principal, got string) (sp.Snapshot, error) {
+		deletedRead()
+		ops.check(ctx, p, "TestSnapshot")
+		if got != sessionID {
+			t.Errorf("deleted snapshot id=%s", got)
+		}
+		return sp.Snapshot{}, &model.Fault{Code: "resource_conflict", Message: "Bot was deleted."}
+	}
 	assertProjectError(t, projectRequest(h, "GET", "/api/v1/test-sessions/"+bound.Session.SessionID, ""), 409, "resource_conflict")
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bot", []any{id}, deletionModel, nil))
+	ops.expectGet(id, deletionModel)
 	shown, failed := call("bot_show", map[string]any{"botId": id})
 	if failed || obj(obj(shown["data"])["deletion"])["deletionId"] != deletionID {
 		t.Fatalf("show deletion: %+v", shown)
@@ -180,29 +206,21 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	final := workerComplete
 	final.Version = 5
 	final.Deletion = &model.BotDeletion{DeletionID: deletionID, RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "completed"}, ServerCleanup: model.BotCleanupResult{State: "completed"}, ReceiptDigest: workerComplete.Deletion.ReceiptDigest}
-	receiptScript := mcpBotScript(t,
-		mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, deletionModel, nil),
-		mcpBotCall("LockBotSessionStop", []any{bound.Session.SessionID, id, principal.UserID}, store.BotSessionStop{Snapshot: bound.Session}, nil),
-		mcpBotCall("SaveBotDeletion", []any{id, workerComplete.Deletion}, workerComplete, nil),
-		mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, workerComplete, nil),
-		mcpBotCall("LockBotSessions", []any{id}, botSessions, nil),
-		mcpBotCall("SessionResourceUsage", []any{bound.Session.SessionID}, store.SessionResourceUsage{}, nil),
-		mcpBotCall("BeginSessionResourceDeletion", []any{bound.Session.SessionID}, int64(1), nil),
-		mcpBotCall("WriteSession", nil), mcpBotCall("ListSessionResourceLeases", []any{bound.Session.SessionID}, []store.SessionResourceLease{}, nil),
-		mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, workerComplete, nil),
-		mcpBotCall("LockBotSessions", []any{id}, botSessions, nil), mcpBotCall("DeleteBotSession", []any{bound.Session.SessionID, id}, nil),
-		mcpBotCall("RedactDeletedBot", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, final.Deletion}, final, nil))
-	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-		receiptScript.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotResourceSessionDAO{mcpBotSessionDAO: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}}, bot: &mcpBotWriteDAO{s: receiptScript}})
-		return mcpBotResult(err)
+	completionCall := ops.once("CompleteBotDeletion")
+	expectedReceipt := botservice.BotDeletionReceipt{DeletionID: deletionID, Stop: botExpiryClonePointer(&stop), Result: model.BotCleanupResult{State: "completed"}}
+	ops.complete = func(ctx context.Context, p model.Principal, gotWorker, gotID string, in botservice.BotDeletionReceipt) (model.Bot, error) {
+		completionCall()
+		ops.check(ctx, p, "CompleteBotDeletion")
+		if gotWorker != worker || gotID != id || !reflect.DeepEqual(in, expectedReceipt) {
+			t.Errorf("deletion receipt changed: %s/%s/%#v", gotWorker, gotID, in)
+		}
+		return botExpiryCloneBot(final), nil
 	}
 	completed := decodeResponse[api.Bot](t, projectRequest(h, "POST", base+"/deletion-complete", jsonBody(t, receipt)), 200)
 	if completed.Deletion.WorkerCleanup.State != "completed" || completed.Deletion.ServerCleanup.State != "completed" {
 		t.Fatalf("cleanup: %+v", completed)
 	}
-	receiptScript.verify()
-	mcpBotSnapshot(t, tx, mcpBotCredentialCall(principal), mcpBotCall("Bot", []any{id}, final, nil))
+	ops.expectGet(id, final)
 	shown, failed = call("bot_show", map[string]any{"botId": id})
 	if failed || obj(obj(obj(shown["data"])["deletion"])["serverCleanup"])["state"] != "completed" {
 		t.Fatalf("completed show: %+v", shown)

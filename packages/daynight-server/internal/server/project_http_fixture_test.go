@@ -2,66 +2,22 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/google/uuid"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 )
-
-type projectHTTPReader struct {
-	store.ProjectReader
-	ProjectCall        func(context.Context, string) (model.Project, error)
-	ProjectAccessCall  func(context.Context, model.Principal, string) (model.ProjectAccess, error)
-	ScopedProjectsCall func(context.Context, model.Principal, store.ProjectScope, store.Page) (store.ProjectPage, error)
-}
-
-func (d projectHTTPReader) Project(ctx context.Context, id string) (model.Project, error) {
-	return d.ProjectCall(ctx, id)
-}
-func (d projectHTTPReader) ProjectAccess(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
-	return d.ProjectAccessCall(ctx, p, id)
-}
-func (d projectHTTPReader) ScopedProjects(ctx context.Context, p model.Principal, s store.ProjectScope, page store.Page) (store.ProjectPage, error) {
-	return d.ScopedProjectsCall(ctx, p, s, page)
-}
-
-type projectHTTPSnapshot struct {
-	store.SnapshotScope
-	ProjectReader store.ProjectReader
-}
-
-func (s projectHTTPSnapshot) ProjectDAO() store.ProjectReader { return s.ProjectReader }
-
-type projectHTTPCreateDAO struct {
-	store.ProjectCreationDAO
-	PersonalCall func(context.Context, bool) (store.PersonalTeamFacts, error)
-	TeamCall     func(context.Context, string) (store.ProjectCreationTeam, error)
-	MemberCall   func(context.Context, string) (bool, error)
-	InsertCall   func(context.Context, string, string, string, string) (model.Project, model.ProjectAccess, error)
-}
-
-func (d projectHTTPCreateDAO) CreationPersonalTeam(ctx context.Context, create bool) (store.PersonalTeamFacts, error) {
-	return d.PersonalCall(ctx, create)
-}
-func (d projectHTTPCreateDAO) LockCreationTeam(ctx context.Context, id string) (store.ProjectCreationTeam, error) {
-	return d.TeamCall(ctx, id)
-}
-func (d projectHTTPCreateDAO) CreationTeamMember(ctx context.Context, id string) (bool, error) {
-	return d.MemberCall(ctx, id)
-}
-func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, team string) (model.Project, model.ProjectAccess, error) {
-	return d.InsertCall(ctx, id, name, repo, team)
-}
 
 func projectHTTPCheck(t *testing.T, got, want any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("unexpected Project DAO argument/result: got %#v, want %#v", got, want)
-		panic("Project DAO contract violated")
+		t.Errorf("unexpected Project operation argument/result: got %#v, want %#v", got, want)
+		panic("Project operation contract violated")
 	}
 }
 func projectHTTPCount(t *testing.T, want int) func() {
@@ -69,23 +25,15 @@ func projectHTTPCount(t *testing.T, want int) func() {
 	calls := 0
 	t.Cleanup(func() {
 		if calls != want {
-			t.Errorf("Project DAO call count: got %d, want %d", calls, want)
+			t.Errorf("Project operation call count: got %d, want %d", calls, want)
 		}
 	})
 	return func() {
 		calls++
 		if calls > want {
-			t.Errorf("extra Project DAO call: %d > %d", calls, want)
-			panic("extra Project DAO call")
+			t.Errorf("extra Project operation call: %d > %d", calls, want)
+			panic("extra Project operation call")
 		}
-	}
-}
-func projectHTTPRead(t *testing.T, tx *httpTestStore, reader store.ProjectReader) {
-	t.Helper()
-	called := projectHTTPCount(t, 1)
-	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		called()
-		return op(projectHTTPSnapshot{ProjectReader: reader})
 	}
 }
 func projectHTTPRecord(id, name, repo, team string) model.Project {
@@ -97,86 +45,8 @@ func projectHTTPAccess(p model.Principal, v model.Project) model.ProjectAccess {
 	grant := model.ProjectGrant{ProjectID: v.ID, UserID: p.UserID, Role: role, Version: 1, CreatedAt: v.CreatedAt, UpdatedAt: v.CreatedAt}
 	return model.ProjectAccess{ProjectID: v.ID, UserID: p.UserID, Role: role, DirectGrant: &grant, OwnerTeam: model.TeamRef{ID: v.Ownership.TeamID, Kind: "personal"}, Ownership: v.Ownership, TeamRole: &role, CanTransfer: true}
 }
-func projectHTTPGet(t *testing.T, tx *httpTestStore, p model.Principal, v model.Project) {
-	t.Helper()
-	access, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	projectHTTPRead(t, tx, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
-		access()
-		projectHTTPCheck(t, actor, p)
-		projectHTTPCheck(t, id, v.ID)
-		return projectHTTPAccess(p, v), nil
-	}, ProjectCall: func(ctx context.Context, id string) (model.Project, error) {
-		read()
-		projectHTTPCheck(t, id, v.ID)
-		return v, nil
-	}})
-}
-func projectHTTPPage(t *testing.T, tx *httpTestStore, p model.Principal, scope store.ProjectScope, page store.Page, items []model.Project, more bool) {
-	t.Helper()
-	called := projectHTTPCount(t, 1)
-	projectHTTPRead(t, tx, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, actor model.Principal, gotScope store.ProjectScope, gotPage store.Page) (store.ProjectPage, error) {
-		called()
-		projectHTTPCheck(t, actor, p)
-		projectHTTPCheck(t, gotScope, scope)
-		projectHTTPCheck(t, gotPage, page)
-		return store.ProjectPage{Items: slices.Clone(items), HasMore: more}, nil
-	}})
-}
-func projectHTTPCreate(t *testing.T, tx *httpTestStore, p model.Principal, name, repo, team string, explicit bool) *model.Project {
-	t.Helper()
-	out := new(model.Project)
-	writer, first, insert := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	dao := projectHTTPCreateDAO{InsertCall: func(ctx context.Context, id, gotName, gotRepo, gotTeam string) (model.Project, model.ProjectAccess, error) {
-		insert()
-		parsed, err := uuid.Parse(id)
-		if err != nil || parsed.Version() != 4 {
-			t.Errorf("create did not allocate UUIDv4: %s %v", id, err)
-			panic("invalid created Project ID")
-		}
-		projectHTTPCheck(t, gotName, name)
-		projectHTTPCheck(t, gotRepo, repo)
-		projectHTTPCheck(t, gotTeam, team)
-		*out = projectHTTPRecord(id, name, repo, team)
-		access := projectHTTPAccess(p, *out)
-		if explicit {
-			name := "Team"
-			access.OwnerTeam = model.TeamRef{ID: team, Kind: "ordinary", Name: &name}
-		}
-		return *out, access, nil
-	}}
-	if explicit {
-		member := projectHTTPCount(t, 1)
-		dao.TeamCall = func(ctx context.Context, id string) (store.ProjectCreationTeam, error) {
-			first()
-			projectHTTPCheck(t, id, team)
-			return store.ProjectCreationTeam{ID: team}, nil
-		}
-		dao.MemberCall = func(ctx context.Context, id string) (bool, error) {
-			member()
-			projectHTTPCheck(t, id, team)
-			return true, nil
-		}
-	} else {
-		dao.PersonalCall = func(ctx context.Context, create bool) (store.PersonalTeamFacts, error) {
-			first()
-			projectHTTPCheck(t, create, true)
-			return store.PersonalTeamFacts{ID: team, MemberCount: 1, OwnerAdminCount: 1}, nil
-		}
-	}
-	tx.WriteProjectCreationCall = func(ctx context.Context, user string, op func(store.ProjectCreationDAO) error) (store.Completion, error) {
-		writer()
-		projectHTTPCheck(t, user, p.UserID)
-		err := op(dao)
-		return store.Completion{Outcome: store.TransactionCommitted}, err
-	}
-	return out
-}
 
 const projectHTTPPersonalTeam = "d0000000-0000-4000-8000-000000000050"
-
-func projectHTTPListScope(kind store.ProjectScopeKind, team string) store.ProjectScope {
-	return store.ProjectScope{Kind: kind, TeamID: team}
-}
 
 func projectHTTPCopyPointer[T any](value *T) *T {
 	if value == nil {
@@ -205,4 +75,92 @@ func projectHTTPCopyGraphTask(value model.GraphTask) model.GraphTask {
 	value.CompletedAt = projectHTTPCopyPointer(value.CompletedAt)
 	value.CancelledAt = projectHTTPCopyPointer(value.CancelledAt)
 	return value
+}
+
+func projectHTTPContext(t *testing.T, ctx context.Context, got, want model.Principal) {
+	t.Helper()
+	requireOperationHTTPContext(t, ctx)
+	projectHTTPCheck(t, got, want)
+}
+
+func projectHTTPGet(t *testing.T, operations *projectHTTPOperations, actor model.Principal, value model.Project) {
+	projectHTTPGetResult(t, operations, actor, value.ID, value, projectHTTPAccess(actor, value), nil)
+}
+func projectHTTPGetResult(t *testing.T, operations *projectHTTPOperations, actor model.Principal, id string, value model.Project, access model.ProjectAccess, failure error) {
+	t.Helper()
+	called := projectHTTPCount(t, 1)
+	access = projectHTTPCopyAccess(access)
+	operations.GetWithAccessCall = func(ctx context.Context, p model.Principal, got string) (model.Project, model.ProjectAccess, error) {
+		called()
+		projectHTTPContext(t, ctx, p, actor)
+		projectHTTPCheck(t, got, id)
+		return value, projectHTTPCopyAccess(access), failure
+	}
+}
+func projectHTTPPage(t *testing.T, operations *projectHTTPOperations, actor model.Principal, input coreproject.ProjectListRequest, items []model.Project, next *string) {
+	projectHTTPPageResult(t, operations, actor, input, items, next, nil)
+}
+func projectHTTPPageResult(t *testing.T, operations *projectHTTPOperations, actor model.Principal, input coreproject.ProjectListRequest, items []model.Project, next *string, failure error) {
+	t.Helper()
+	called := projectHTTPCount(t, 1)
+	input.TeamID = projectHTTPCopyPointer(input.TeamID)
+	input.Page.Cursor = projectHTTPCopyPointer(input.Page.Cursor)
+	items, next = slices.Clone(items), projectHTTPCopyPointer(next)
+	operations.ListScopedCall = func(ctx context.Context, p model.Principal, got coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+		called()
+		projectHTTPContext(t, ctx, p, actor)
+		projectHTTPCheck(t, got, input)
+		return coreproject.ProjectPage{Items: slices.Clone(items), NextCursor: projectHTTPCopyPointer(next)}, failure
+	}
+}
+func projectHTTPCreate(t *testing.T, operations *projectHTTPOperations, actor model.Principal, name, repo, team string, explicit bool) *model.Project {
+	t.Helper()
+	value := projectHTTPRecord("ab100000-0000-4000-8000-000000000001", name, repo, team)
+	access := projectHTTPAccess(actor, value)
+	var teamID *string
+	if explicit {
+		teamID = &team
+		teamName := "Team"
+		access.OwnerTeam = model.TeamRef{ID: team, Kind: "ordinary", Name: &teamName}
+	}
+	input := coreproject.CreateProject{Name: name, RepoURL: repo, TeamID: teamID, ExpectedUserID: actor.UserID}
+	projectHTTPCreateResult(t, operations, actor, input, value, access, nil)
+	return &value
+}
+func projectHTTPCreateResult(t *testing.T, operations *projectHTTPOperations, actor model.Principal, input coreproject.CreateProject, value model.Project, access model.ProjectAccess, failure error) {
+	t.Helper()
+	called := projectHTTPCount(t, 1)
+	input.TeamID = projectHTTPCopyPointer(input.TeamID)
+	access = projectHTTPCopyAccess(access)
+	operations.CreateWithAccessCall = func(ctx context.Context, p model.Principal, got coreproject.CreateProject) (model.Project, model.ProjectAccess, error) {
+		called()
+		projectHTTPContext(t, ctx, p, actor)
+		projectHTTPCheck(t, got, input)
+		return value, projectHTTPCopyAccess(access), failure
+	}
+}
+func projectHTTPListInput(limit int, cursor *string, team *string, shared bool) coreproject.ProjectListRequest {
+	return coreproject.ProjectListRequest{Page: model.PageRequest{Limit: limit, Cursor: projectHTTPCopyPointer(cursor)}, TeamID: projectHTTPCopyPointer(team), Shared: shared}
+}
+func projectHTTPTestCursor(t *testing.T, actor model.Principal, scope, team string, value model.Project) *string {
+	t.Helper()
+	raw, err := json.Marshal(struct {
+		Version   int       `json:"version"`
+		Kind      string    `json:"kind"`
+		UserID    string    `json:"userId"`
+		Scope     string    `json:"scope"`
+		TeamID    string    `json:"teamId"`
+		CreatedAt time.Time `json:"createdAt"`
+		ID        string    `json:"id"`
+	}{2, "scoped-projects", actor.UserID, scope, team, value.CreatedAt.UTC(), value.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := base64.RawURLEncoding.EncodeToString(raw)
+	return &cursor
+}
+
+func projectHTTPFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
+func projectHTTPListRefusal(t *testing.T, operations *projectHTTPOperations, actor model.Principal, input coreproject.ProjectListRequest) {
+	projectHTTPPageResult(t, operations, actor, input, nil, nil, projectHTTPFault("invalid_input", "Cursor is invalid for this list."))
 }

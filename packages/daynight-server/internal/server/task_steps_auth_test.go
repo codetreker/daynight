@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"io"
 	"net/http"
 	"testing"
@@ -20,9 +21,8 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	path := taskPath(task) + "/steps"
 	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
 	current := []model.TaskStep{}
-	for index, actor := range []model.Principal{admin, member} {
+	for _, actor := range []model.Principal{admin, member} {
 		f.principal = actor
-		f.role = []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole}[index]
 		f.expectStepsRead(header, current)
 		response := f.authenticatedRequest(actor, "GET", path, "", "", 200, "")
 		resource := decodeResponse[api.StepsResource](t, response, 200)
@@ -32,7 +32,7 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	}
 	for _, suffix := range []string{"", "/00000000"} {
 		for _, method := range []string{"GET", "HEAD", "POST"} {
-			f.store.ReadSnapshotCall, f.store.WriteProjectCall = nil, nil
+			f.clearSteps()
 			response := f.authenticatedRequest(anonymous, method, path+suffix, "", "", 401, "")
 			if method == "HEAD" && response.Body.Len() != 0 {
 				t.Fatal("anonymous HEAD returned body")
@@ -42,14 +42,13 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 		f.authenticatedRequest(outsider, "GET", path+suffix, "", origin, 404, "not_found")
 	}
 	f.principal = member
-	f.role = model.ProjectMemberRole
 	f.expectStepsRead(header, current)
 	response := f.authenticatedRequest(member, "HEAD", path, "", "", 200, "")
 	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Daynight-User-ID") != member.UserID {
 		t.Fatal("HEAD lost identity/type or returned body")
 	}
 	deny := func(method, suffix, body string, anonymousCheck bool) {
-		f.store.ReadSnapshotCall, f.store.WriteProjectCall = nil, nil
+		f.clearSteps()
 		if anonymousCheck {
 			f.authenticatedRequest(anonymous, method, path+suffix, body, "", 401, "unauthenticated")
 		}
@@ -63,8 +62,7 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	at := f.observed
 	candidate := model.TaskStep{ID: "00000000", Position: 0, Title: "Member add", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
 	f.principal = member
-	f.role = model.ProjectMemberRole
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "add", Candidate: candidate, Observed: at})
+	f.expectStepsWrite(stepHTTPWritePlan{Add: &taskservice.AddTaskStep{Version: header.Version, ID: candidate.ID, Title: candidate.Title}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: header.Version + 1}, ResultSteps: append(copyTaskHTTPSlice(current), candidate)})
 	response = f.authenticatedRequest(member, "POST", path, body, origin, 201, "")
 	added := decodeResponse[api.StepsResource](t, response, 201)
 	if added.Version != 2 || len(added.Steps) != 1 || response.Header().Get("Location") != path+"/00000000" {
@@ -75,8 +73,7 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	at = at.Add(time.Minute)
 	candidate = model.TaskStep{ID: "abcdef01", Position: 1, Title: "Admin add", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
 	f.principal = admin
-	f.role = model.ProjectAdmin
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "add", Candidate: candidate, Observed: at})
+	f.expectStepsWrite(stepHTTPWritePlan{Add: &taskservice.AddTaskStep{Version: header.Version, ID: candidate.ID, Title: candidate.Title}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: header.Version + 1}, ResultSteps: append(copyTaskHTTPSlice(current), candidate)})
 	if decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":2,"id":"abcdef01","title":"Admin add"}`, origin, 201, ""), 201).Version != 3 {
 		t.Fatal("admin could not add")
 	}
@@ -93,8 +90,16 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 			candidate.Status = model.TaskStepInProgress
 		}
 		f.principal = member
-		f.role = model.ProjectMemberRole
-		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "change", Candidate: candidate, Observed: at})
+		result := copyTaskHTTPSlice(current)
+		result[0] = candidate
+		expected := stepHTTPWritePlan{ID: "00000000", ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: header.Version + 1}, ResultSteps: result}
+		if change.method == "PATCH" {
+			description := "edited"
+			expected.Update = &taskservice.UpdateTaskStep{Version: header.Version, Description: &description}
+		} else {
+			expected.Status = &taskservice.SetTaskStepStatus{Version: header.Version, Status: model.TaskStepInProgress}
+		}
+		f.expectStepsWrite(expected)
 		changed := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, change.method, path+change.suffix, change.body, origin, 200, ""), 200)
 		if len(changed.Steps) != 2 {
 			t.Fatal("member change lost collection")
@@ -105,9 +110,11 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	moveBody := `{"version":5,"after":"ABCDEF01"}`
 	deny("PUT", "/00000000/position", moveBody, true)
 	f.principal = member
-	f.role = model.ProjectMemberRole
 	at = at.Add(time.Minute)
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "move", ID: "00000000", From: 0, To: 1, Observed: at})
+	afterID := "ABCDEF01"
+	movedRows := []model.TaskStep{current[1], current[0]}
+	movedRows[0].Position, movedRows[1].Position = 0, 1
+	f.expectStepsWrite(stepHTTPWritePlan{ID: "00000000", Move: &taskservice.MoveTaskStep{Version: 5, After: &afterID}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: 6}, ResultSteps: movedRows})
 	moved := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "PUT", path+"/00000000/position", moveBody, origin, 200, ""), 200)
 	if moved.Version != 6 || moved.Steps[1].ID != "00000000" {
 		t.Fatal("member could not move")
@@ -119,9 +126,10 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	deleteBody := `{"version":6}`
 	deny("DELETE", "/ABCDEF01", deleteBody, true)
 	f.principal = member
-	f.role = model.ProjectMemberRole
 	at = at.Add(time.Minute)
-	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "delete", ID: "abcdef01", From: 0, To: 1, Observed: at})
+	remaining := []model.TaskStep{current[1]}
+	remaining[0].Position = 0
+	f.expectStepsWrite(stepHTTPWritePlan{ID: "abcdef01", Delete: &taskservice.DeleteTaskStep{Version: 6}, ResultHeader: model.TaskHeader{ProjectID: header.ProjectID, ID: header.ID, Version: 7}, ResultSteps: remaining})
 	deleted := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "DELETE", path+"/ABCDEF01", deleteBody, origin, 200, ""), 200)
 	if deleted.Version != 7 || len(deleted.Steps) != 1 || deleted.Steps[0].ID != "00000000" {
 		t.Fatal("member could not delete")
