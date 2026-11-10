@@ -63,6 +63,9 @@ the original destination and signing secret.
 
 The [test-writing rules](../../../../docs/writing_tests.md) own dependency and
 integration restrictions. The
+[Root MCP Step decision](2026-11-10-root-mcp-step-operation-boundary.md)
+assigns that lifecycle matrix to direct Identity and Step operations after its
+lower receivers exist. The
 [Worker Report capacity decision](2026-11-09-worker-report-capacity-test-owners.md)
 partially supersedes the DAO mock boundary for that HTTP matrix, preserving its
 lower validation and projection proofs with Core. The

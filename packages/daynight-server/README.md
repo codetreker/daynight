@@ -1662,9 +1662,12 @@ records why database clocks and lock observations are required together.
 ### HTTP scenario ownership
 
 Root `internal/server` unit tests assemble actual modules, routes and HTTP
-authentication over strict DAO/scope callbacks. Fixed domain records, query
-results, proposed writes, call counts and transaction completion are explicit
-test inputs. Callback writes do not determine future reads or simulate committed
+authentication over controlled collaborators. The MCP Step lifecycle supplies
+direct Identity and Step operations after application assembly and before Server
+construction; its Service, Core, Capturer and Store receivers retain lower
+coordination, rules and persistence proofs. Other DAO/scope fixtures supply fixed
+domain records, query results, proposed writes, call counts and transaction
+completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
 state. The complete ordinary root selection executes with
 `DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
 SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
@@ -1749,8 +1752,10 @@ encoding. Principals and domain results are explicit facts; operations verify
 arguments, context, authority and calls. Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
 Task query registration accepts controlled list and graph observation operations;
-its Tasks dependency still serves ready and dependency reads. Root application
-fixture and business/DAO tests retain their existing responsibilities.
+its Tasks dependency still serves ready and dependency reads. The Root Step
+lifecycle executes real application and Server construction with controlled
+Identity and Step outputs, retaining both protocol versions and per-request
+operation checks. Its lower receivers retain business and DAO responsibilities.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
 `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
 
