@@ -51,7 +51,8 @@ func requireMissing(t *testing.T, err error) {
 func TestCredentialIssuanceExpiryAndOwnerBoundRevocation(t *testing.T) {
 	tx, sc := identityTransaction(t)
 	ctx, dao := t.Context(), sc.IdentityDAO()
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	var now time.Time
+	requireNoError(t, tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now))
 	name := "Original"
 	user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "provider-account", Name: &name}, now)
 	requireNoError(t, err)
