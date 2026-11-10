@@ -112,7 +112,7 @@ test("the ordinary Ubuntu producer alone supplies the runtime matrix package", (
 test("native stages retain phase-owned environment, acceptance and failure-probe artifacts without collisions", () => {
   const ordinaryUploads = uploadSteps(ordinary);
   const installedUploads = uploadSteps(installed);
-  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}", "daynight-cli-tests-termination-macos-15"]);
+  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}", "daynight-cli-tests-failures-${{ matrix.os }}", "daynight-cli-tests-termination-macos-15"]);
   assert.deepEqual(installedUploads.map(artifactName), ["daynight-cli-installed-${{ matrix.os }}", "daynight-cli-installed-probes-${{ matrix.os }}"]);
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
@@ -123,6 +123,12 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);
     assert.match(probe, /^          if-no-files-found: error$/m);
   }
+  const failures = ordinaryUploads[3]!;
+  assert.match(failures, /^        if: \$\{\{ always\(\) \}\}$/m);
+  assert.deepEqual(artifactPaths(failures), [".tmp/cli-test-failures/*.jsonl"]);
+  assert.match(failures, /^          include-hidden-files: true$/m);
+  assert.match(failures, /^          if-no-files-found: warn$/m);
+  assert.match(failures, /^          retention-days: 30$/m);
 });
 
 const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
@@ -201,10 +207,10 @@ test("matrix artifacts retain unique names across all three platforms", () => {
     if (name === "daynight-cli-tests-termination-macos-15") return [name];
     return nativePlatforms.map((platform) => name.replace("${{ matrix.os }}", platform));
   }));
-  assert.equal(names.length, 14);
+  assert.equal(names.length, 17);
   assert.equal(new Set(names).size, names.length);
   for (const platform of nativePlatforms) {
-    for (const prefix of ["daynight-cli-tests", "daynight-cli-tests-probes", "daynight-cli-installed", "daynight-cli-installed-probes"]) {
+    for (const prefix of ["daynight-cli-tests", "daynight-cli-tests-probes", "daynight-cli-tests-failures", "daynight-cli-installed", "daynight-cli-installed-probes"]) {
       assert.ok(names.includes(`${prefix}-${platform}`));
     }
   }
