@@ -3489,15 +3489,20 @@ describe("real Git resource isolation", () => {
     try {
       const binding = await git.prepareWorktree(other, owner, op);
       const admin = run(binding.worktreePath, ["rev-parse", "--absolute-git-dir"]);
+      const marker = await readFile(path.join(admin, "locked"), "utf8");
       const movedAdmin = path.join(f.project.localPath, ".git", "worktrees", path.basename(admin));
       const movedLeaf = path.join(f.project.localPath, ".worktrees", "daynight", owner.taskId);
       await mkdir(path.dirname(movedAdmin), { recursive: true }); await mkdir(path.dirname(movedLeaf), { recursive: true });
       await rename(admin, movedAdmin); await rename(binding.worktreePath, movedLeaf);
       await writeFile(path.join(movedAdmin, "gitdir"), `${movedLeaf}/.git\n`);
-      await writeFile(path.join(movedLeaf, ".git"), `gitdir: ${movedAdmin}\n`);
+      // Git creates hidden .git files on Windows; opening an existing one with
+      // 'w' fails. Recreate only this fixture pointer, preserving the leaf directory.
+      const movedPointer = path.join(movedLeaf, ".git");
+      await rm(movedPointer);
+      await writeFile(movedPointer, `gitdir: ${movedAdmin}\n`);
       // Keep the original marker: all four UUIDs match independent records, but
       // its historical root/common fingerprints identify the other repository.
-      const marker = await readFile(path.join(movedAdmin, "locked"), "utf8");
+      expect(await readFile(path.join(movedAdmin, "locked"), "utf8")).toBe(marker);
       f.store.registerProject(proof === "mapping" ? other : { ...other, localPath: f.project.localPath });
       f.store.registerPending({ ...owner, agent: "codex" });
       f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
