@@ -74,7 +74,7 @@ func TestProtocol2MaximumEscapedReceipt(t *testing.T) {
 	native := service.WorkerReportResult{ObservedAt: now, LastReportedAt: now, Configuration: &model.WorkerConfigurationReceipt{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: now, Value: config}, ObservationRevision: "0"}}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest("POST", "/", nil)
-	httpx.WriteJSON(recorder, request, slog.Default(), 200, syncReceipt(native, results))
+	httpx.WriteJSON(recorder, request, slog.Default(), 200, syncReceipt(native, results, false))
 	if recorder.Code != 200 || recorder.Body.Len() > 48<<20 {
 		t.Fatalf("status %d size %d", recorder.Code, recorder.Body.Len())
 	}

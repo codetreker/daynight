@@ -115,8 +115,21 @@ func configurationNative(raw json.RawMessage, overrides, admit bool) (model.Work
 	return value, normalized, nil
 }
 
+// ParseWorkerConfiguration normalizes current and legacy values. Negotiated HTTP
+// writes use ParseWorkerConfigurationProtocol to require the advertised fields.
 func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
 	return parseWorkerConfiguration(raw, true)
+}
+
+func configurationControlMode(raw json.RawMessage) (*model.WorkerAgentControlMode, error) {
+	if configurationNull(raw) {
+		return nil, nil
+	}
+	var mode model.WorkerAgentControlMode
+	if err := configurationDecode(raw, &mode); err != nil || (mode != model.AgentControlModeHerdr && mode != model.AgentControlModeWeb) {
+		return nil, invalidInput("Agent control mode must be herdr or web.")
+	}
+	return &mode, nil
 }
 
 // Stored values need structural normalization for semantic comparisons even
@@ -126,9 +139,20 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", false, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode")
 	if err != nil {
 		return value, err
+	}
+	for _, key := range []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects"} {
+		if _, ok := fields[key]; !ok {
+			return value, invalidInput("configuration." + key + " is required.")
+		}
+	}
+	if rawMode, ok := fields["agentControlMode"]; ok {
+		value.AgentControlMode, err = configurationControlMode(rawMode)
+		if err != nil {
+			return value, err
+		}
 	}
 	if err := configurationDecode(fields["preferPlatformSpecificTasks"], &value.PreferPlatformSpecificTasks); err != nil {
 		return value, err
@@ -220,11 +244,22 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	if !jsonunicode.Valid(raw) {
 		return nil, invalidInput("Worker configuration exchange must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration exchange", false, "bootstrap", "observation")
+	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "controlModeBootstrap")
 	if err != nil {
 		return nil, err
 	}
 	exchange := &model.WorkerConfigurationExchange{}
+	for _, key := range []string{"bootstrap", "observation"} {
+		if _, ok := fields[key]; !ok {
+			return nil, invalidInput("configuration exchange." + key + " is required.")
+		}
+	}
+	if candidate, exists := fields["controlModeBootstrap"]; exists {
+		exchange.ControlModeBootstrap, err = configurationControlMode(candidate)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if !configurationNull(fields["bootstrap"]) {
 		value, err := ParseWorkerConfiguration(fields["bootstrap"])
 		if err != nil {
@@ -277,7 +312,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "agentControlMode"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -304,6 +339,8 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
+			case "agentControlMode":
+				_, err = configurationControlMode(item.AppliedValue)
 			case "preferPlatformSpecificTasks":
 				var enabled bool
 				err = configurationDecode(item.AppliedValue, &enabled)

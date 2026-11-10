@@ -5,7 +5,7 @@ import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
-import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
+import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
 import { WORKER_USER, workerId } from './helpers/workers';
 
 const scopes: TaskCacheScope[] = [];
@@ -372,5 +372,35 @@ describe('Worker configuration editing lifetime', () => {
     act(() => scope.principalMismatch()); expect(result.current.resource).toBeNull(); expect(result.current.draft).toBeNull();
     put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }))); await act(async () => saving);
     expect(result.current.resource).toBeNull(); expect(result.current.draft).toBeNull(); await advance(); expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('control mode capability continuity', () => {
+  it('adopts a newly negotiated field without replacing an existing draft of other settings', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
+      .mockResolvedValueOnce(controlModeResponse(configurationResource('1', { ...configurationValue(), agentControlMode: null })))
+      .mockResolvedValueOnce(controlModeResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 7, agentControlMode: null })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7' })));
+    await advance(); expect(result.current.draft?.maxConcurrent).toBe('7'); expect(result.current.draft?.agentControlMode).toBeNull();
+    expect(result.current.dirty).toBe(true); expect(result.current.conflict).toBe(false);
+    await act(async () => result.current.save());
+    expect(result.current.notice).toBe('saved'); expect(result.current.dirty).toBe(false);
+    expect(JSON.parse(fetch.mock.calls[2]![1].body).value).toMatchObject({ maxConcurrent: 7, agentControlMode: null });
+  });
+  it('reconciles an unknown mode save with capability intact and preserves a later edit', async () => {
+    const initial = { ...configurationValue(), agentControlMode: 'herdr' as const }, read = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(controlModeResponse(configurationResource('1', initial))).mockRejectedValueOnce(new TypeError('connection lost')).mockImplementationOnce(() => read.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, agentControlMode: 'web' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush(); expect(result.current.uncertain).toBe(true);
+    act(() => result.current.setDraft(draft => ({ ...draft, agentControlMode: 'herdr' })));
+    read.resolve(controlModeResponse(configurationResource('2', { ...initial, agentControlMode: 'web' }))); await act(async () => saving);
+    expect(result.current.uncertain).toBe(false); expect(result.current.notice).toBe('reconciled'); expect(result.current.dirty).toBe(true);
+    expect(result.current.resource?.controlModeSupported).toBe(true); expect(result.current.draft?.agentControlMode).toBe('herdr');
+    expect(result.current.resource?.desired?.value.agentControlMode).toBe('web'); expect(fetch).toHaveBeenCalledTimes(3);
   });
 });

@@ -29,6 +29,20 @@ const response = (body: unknown, capability: string | null = "1", principal = us
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); vi.restoreAllMocks(); });
 
 describe("Worker cloud configuration protocol", () => {
+  it("requires the negotiated control mode field and validates its distinct observation value", () => {
+    expect(parseWorkerCloudValue({ ...value, agentControlMode: "web" }, true, true).agentControlMode).toBe("web");
+    expect(parseWorkerCloudValue({ ...value, agentControlMode: null }, true, true).agentControlMode).toBeNull();
+    for (const invalid of [value, { ...value, agentControlMode: false }, { ...value, agentControlMode: "other" }]) expect(() => parseWorkerCloudValue(invalid, true, true)).toThrow(ProtocolError);
+    expect(() => parseWorkerCloudValue({ ...value, agentControlMode: "web" })).toThrow(ProtocolError);
+    const applied = { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" };
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [applied] }, true, true).items).toEqual([applied]);
+    expect(() => parseWorkerCloudReport({ bootstrap: { ...value, agentControlMode: null }, observation: null, controlModeBootstrap: "web" }, true)).toThrow(ProtocolError);
+  });
+  it("reserves the extra observation slot for control mode so legacy projections fit", () => {
+    const items = Array.from({ length: 1026 }, (_, n) => ({ ...item, key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, appliedValue: null, state: "pending" }));
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items }, true, true)).toThrow(ProtocolError);
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" }] }, true, true).items).toHaveLength(1026);
+  });
   it("enforces byte, scalar, Project and observation limits before producing reports", () => {
     const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
     const projects = Array.from({ length: 129 }, (_, n) => ({ projectId: id(n), nativeOverrides: {} }));
@@ -123,6 +137,43 @@ describe("Worker cloud configuration protocol", () => {
 });
 
 describe("Worker cloud configuration client", () => {
+  it("retains authenticated fresh-Worker capability discovery across API clients", async () => {
+    const operation = createOperation(); operations.push(operation);
+    const capability = { supported: false }, sent: RequestInit[] = [];
+    const fetch = vi.fn(async (_url, init) => {
+      sent.push(init!);
+      const headers = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Control-Mode": "1" };
+      return sent.length === 1
+        ? new Response(JSON.stringify({ error: { code: "not_found", message: "not found", requestId: workerId } }), { status: 404, headers })
+        : new Response(JSON.stringify({ ...receipt, configuration: { desired: { ...desired, value: { ...value, agentControlMode: "web" } }, observationRevision: "0", observationAccepted: false } }), { headers });
+    }) as typeof globalThis.fetch;
+    const client = () => createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch, workerControlMode: capability });
+    await expect(client().getWorkerConfiguration(workerId)).rejects.toMatchObject({ status: 404 });
+    await client().reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, agentControlMode: "web" }, observation: null, controlModeBootstrap: "web" });
+    expect(new Headers(sent[1]!.headers).get("Daynight-Worker-Control-Mode")).toBe("1");
+    expect(JSON.parse(sent[1]!.body as string).configuration).toMatchObject({ bootstrap: { agentControlMode: "web" }, controlModeBootstrap: "web" });
+  });
+
+  it.each([{ supported: false, prompts: false }, { supported: true, prompts: false }, { supported: false, prompts: true }, { supported: true, prompts: true }])("negotiates control mode independently of configuration version ($supported, prompts=$prompts)", async ({ supported, prompts }) => {
+    const calls: RequestInit[] = [];
+    const modeDesired = { ...desired, value: { ...value, agentControlMode: "web" } };
+    const fetch = vi.fn(async (_url, init) => {
+      calls.push(init!);
+      const body = calls.length === 1 ? { ...resource, desired: supported ? modeDesired : desired } : { ...receipt, configuration: { ...receipt.configuration, desired: supported ? modeDesired : desired, ...(prompts ? { prompts: [] } : {}) } };
+      const result = response(body, calls.length === 1 || !prompts ? "1" : "2");
+      if (supported) result.headers.set("Daynight-Worker-Control-Mode", "1");
+      return result;
+    }) as typeof globalThis.fetch;
+    const client = api(fetch);
+    await client.getWorkerConfiguration(workerId);
+    const result = await client.reportWorkerConfiguration(workerId, report, { ...configuration, controlModeBootstrap: "web" }, prompts ? [] : undefined);
+    expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Control-Mode")).toBe("1");
+    const sent = JSON.parse(calls[1]!.body as string).configuration;
+    expect(Object.hasOwn(sent, "controlModeBootstrap")).toBe(supported);
+    expect(result.configuration.desired?.value.agentControlMode).toBe(supported ? "web" : undefined);
+    if (prompts) expect(result.prompts).toEqual({ ok: true, results: [] });
+  });
+
   it("rejects an oversized complete observation at the body envelope without dropping applied values", async () => {
     const native = { agent: "codex" as const, model: null, args: Array(128).fill("x".repeat(4096)) };
     const input: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [

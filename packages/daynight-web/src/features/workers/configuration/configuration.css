@@ -17,6 +17,7 @@
 .worker-configuration .field .configuration-toggle { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
 .worker-configuration .field .configuration-toggle input { width: 16px; height: 16px; margin: 2px 0 0; padding: 0; flex: none; accent-color: var(--indigo); }
 .configuration-toggle-detail { margin: 7px 0 0 26px; font-size: 11px; color: var(--muted); line-height: 1.8; }
+.configuration-field-detail { margin: 7px 0 0; font-size: 11px; color: var(--muted); line-height: 1.8; }
 .config-select { display: block; position: relative; min-width: 0; }
 .config-select::after { content: ""; position: absolute; right: 14px; top: calc(50% - 5px); width: 7px; height: 7px; border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor; transform: rotate(45deg); color: #435068; pointer-events: none; }
 .config-select:has(select:disabled)::after { color: #9299a9; }

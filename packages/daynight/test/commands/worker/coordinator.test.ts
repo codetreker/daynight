@@ -1048,6 +1048,25 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.store.getTask(old)?.sessionId).toBe(old.sessionId);
   });
 
+  it("recovers a frozen Herdr claim while the new Web project configuration is unavailable", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const old = f.store.listTasks()[0]!; f.resources.clear();
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: { ...configuration, agentControlMode: "web", model: "new-model", recoveryLimit: 5 } });
+    await restarted.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId, configuration: { ...configuration, agentControlMode: "herdr", recoveryLimit: 5 } });
+    expect(f.store.getTask(old)).toMatchObject({ claimId: old.claimId, sessionId: old.sessionId });
+  });
+
+  it("does not reinterpret an unfrozen historical Herdr claim with Web parameters", async () => {
+    const f = await fixture(); const candidate = f.candidates[0]!; f.candidates.splice(0);
+    const task = f.grant(candidate, { claimId: uuid(991), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(992) });
+    const active = f.store.activateTask(f.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: uuid(991), agent: "codex" }));
+    const current = { ...configuration, agentControlMode: "web" as const };
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current });
+    await expect(restarted.advanceRetry(active)).rejects.toThrow("Native configuration is unavailable");
+    expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("starts fresh after an interrupted NULL-session launch with frozen native settings=%s", async frozen => {
     const f = await fixture(); f.candidates.splice(0);
     const granted = f.grant(task(f.project.projectId, uuid(200)), { claimId: uuid(201), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(202) });
@@ -2638,6 +2657,61 @@ describe("cloud project removal", () => {
 });
 
 describe("Web acquisition configuration changes", () => {
+  it("does not reinterpret an unfrozen Web claim with current Herdr parameters", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const granted = f.grant(f.candidates[0]!, { claimId: uuid(991), worktreeId: uuid(992), workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    f.candidates.splice(0);
+    const row = f.store.activateTask(f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(991), agent: "codex", agentControlMode: "web" }));
+    const current: ExecutionConfiguration = { ...configuration, agentControlMode: "herdr", args: [] };
+    const advance = vi.fn(async (record: WebTask) => record);
+    const runner = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current, webStore,
+      verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: async record => ({ task: record, complete: true }) } });
+    try {
+      await runner.tick();
+      expect(f.store.getNativeConfiguration(row)).toBeNull(); expect(webStore.getTask(row)).toBeNull();
+      expect(f.store.getTask(row)).toEqual(row); expect(advance).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
+  it.each(["mode", "native", "project removed", "project unavailable"] as const)("preserves a granted Web claim's frozen settings after an in-flight %s change", async change => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(); f.candidates.splice(1);
+    const webStore = openWebExecutionStore(createMemoryDatabase());
+    const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: "claim-model", args: ["--effort", "low"], recoveryLimit: 2 };
+    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, preferPlatformSpecificTasks: false };
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await waiting; return f.grant(candidate, descriptor); });
+    const advance = vi.fn(async (record: WebTask) => record);
+    const runner = createWorkerCoordinator({ ...f.options, ...current, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+      webBackend: { advance, cleanup: async record => ({ task: record, complete: true }) } });
+    const ticking = runner.tick(); void ticking.catch(() => {});
+    try {
+      await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+      expect(f.store.listTasks()).toEqual([]); expect(webStore.listUnfinishedTasks()).toEqual([]);
+      const changed: ExecutionConfiguration = { ...native, agentControlMode: change === "mode" ? "herdr" : "web", model: "later-model", args: ["--effort", "high"], recoveryLimit: 7 };
+      const next = { ...current, repositories: [{ project: f.project, configuration: changed }], globalConfiguration: changed };
+      const gated = change === "project removed" || change === "project unavailable";
+      runner.updateConfiguration({ ...next, ...(change === "project removed" ? { repositories: [], targetProjectIds: [] } : change === "project unavailable" ? { repositories: [], readyProjectIds: [] } : {}) });
+      release(); await ticking;
+      const row = f.store.listTasks()[0]!;
+      expect(row).toMatchObject({ agent: "codex", agentControlMode: "web", sessionId: null, status: "pending" });
+      expect(webStore.getTask(row)).toBeNull();
+      expect(f.store.getNativeConfiguration(row)).toEqual({ agent: "codex", model: "claim-model", args: ["--effort", "low"] });
+      if (gated) {
+        expect(row.status).toBe("pending"); expect(webStore.getTask(row)).toBeNull(); expect(advance).not.toHaveBeenCalled();
+        await runner.tick();
+        expect(webStore.getTask(row)).toBeNull(); expect(advance).not.toHaveBeenCalled();
+        runner.updateConfiguration(next); await runner.tick();
+      } else await runner.tick();
+      await eventually(() => expect(advance).toHaveBeenCalledOnce());
+      expect(webStore.getTask(row)?.configuration).toEqual({ agent: "codex", agentControlMode: "web", model: "claim-model", args: ["--effort", "low"], recoveryLimit: 7 });
+      expect(f.store.getTask(row)).toMatchObject({ claimId: row.claimId, agentControlMode: "web", status: "active" });
+      expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.tasks.start).not.toHaveBeenCalled();
+    } finally { release(); await ticking; await runner.shutdown(); webStore.close(); }
+  });
+
   it.each(["equivalent", "changed", "changed and restored"] as const)("handles %s updates during capability validation", async mode => {
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
     const f = await fixture(); f.candidates.splice(1);
@@ -2672,7 +2746,7 @@ describe("Web acquisition configuration changes", () => {
 });
 
 describe("applied cloud runtime configuration", () => {
-  it("keeps an unavailable project tuple distinct from usable global defaults", async () => {
+  it("keeps a frozen claim available when the current project tuple is unavailable", async () => {
     const f = await fixture();
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     const observed = f.tasks.observe.mock.calls.length;
@@ -2682,7 +2756,8 @@ describe("applied cloud runtime configuration", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce();
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
-    await expect(f.coordinator.advanceRetry(f.store.listUnfinishedTasks()[0]!)).rejects.toThrow("Native configuration is unavailable");
+    await expect(f.coordinator.advanceRetry(f.store.listUnfinishedTasks()[0]!)).resolves.toBeUndefined();
+    expect(f.tasks.start.mock.calls[0]![2].configuration).toMatchObject(configuration);
     await f.coordinator.shutdown();
   });
 

@@ -56,6 +56,16 @@ func configurationHTTPModel(t *testing.T, value any) model.WorkerConfiguration {
 	return result
 }
 
+func configurationHTTPLegacyValue(t *testing.T, value model.WorkerConfiguration) map[string]any {
+	t.Helper()
+	var result map[string]any
+	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
+		t.Fatal(err)
+	}
+	delete(result, "agentControlMode")
+	return result
+}
+
 func configurationHTTPExchange(t *testing.T, value any) *model.WorkerConfigurationExchange {
 	t.Helper()
 	var result model.WorkerConfigurationExchange
@@ -174,7 +184,8 @@ func (f *configurationHTTPFixture) put(t *testing.T, current model.WorkerConfigu
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
-	response := f.request(http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": revision, "value": value}))
+	legacyValue := configurationHTTPLegacyValue(t, value)
+	response := f.request(http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": revision, "value": legacyValue}))
 	verify()
 	f.tx.WriteWorkerCall = nil
 	if status != http.StatusOK {

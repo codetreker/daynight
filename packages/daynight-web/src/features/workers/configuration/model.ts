@@ -9,14 +9,16 @@ export type ProjectNativeDraft = {
 };
 export type ConfigurationDraft = {
   readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly native: NativeDraft;
+  readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'];
   readonly projects: readonly { readonly projectId: string; readonly native: ProjectNativeDraft }[];
 };
-export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project';
+export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'controlMode';
 export type ParsedConfigurationDraft = { readonly value: WorkerConfigurationValue | null; readonly errors: Readonly<Record<string, DraftIssue>> };
 const agents: readonly string[] = ['codex', 'claude', 'copilot'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
 export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDraft => ({
   maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
+  ...(value.agentControlMode === undefined ? {} : { agentControlMode: value.agentControlMode }),
   native: { agent: value.native.agent, model: value.native.model === null ? '' : value.native.model, args: JSON.stringify(value.native.args) },
   projects: value.projects.map(project => ({ projectId: project.projectId, native: {
     agent: project.nativeOverrides.agent === undefined ? 'inherit' : project.nativeOverrides.agent,
@@ -26,7 +28,7 @@ export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDr
     args: JSON.stringify(project.nativeOverrides.args === undefined ? [] : project.nativeOverrides.args),
   } })),
 });
-export const parseConfigurationDraft = (draft: ConfigurationDraft): ParsedConfigurationDraft => {
+export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSupported = draft.agentControlMode !== undefined): ParsedConfigurationDraft => {
   const errors: Record<string, DraftIssue> = {};
   const number = (raw: string, key: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number => {
     const value = Number(raw);
@@ -47,6 +49,7 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft): ParsedConfig
   };
   const maxConcurrent = number(draft.maxConcurrent, 'maxConcurrent', 1), pollIntervalMs = number(draft.pollIntervalMs, 'pollIntervalMs', 1, 2_147_483_647), recoveryLimit = number(draft.recoveryLimit, 'recoveryLimit', 0);
   if (!agents.includes(draft.native.agent)) errors['native.agent'] = 'agent';
+  if (controlModeSupported && draft.agentControlMode !== null && draft.agentControlMode !== 'herdr' && draft.agentControlMode !== 'web') errors.agentControlMode = 'controlMode';
   const native: WorkerConfigurationNative = { agent: draft.native.agent, model: model(draft.native.model, 'native.model', true), args: args(draft.native.args, 'native.args') };
   const seen = new Set<string>();
   const projects = draft.projects.map(project => {
@@ -62,11 +65,17 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft): ParsedConfig
     };
     return { projectId: project.projectId, nativeOverrides };
   });
-  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks, native, projects }) : null, errors };
+  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks,
+    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), native, projects }) : null, errors };
 };
-export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue): boolean =>
-  JSON.stringify(parseWorkerConfigurationValue(left)) === JSON.stringify(parseWorkerConfigurationValue(right));
-export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft): boolean => JSON.stringify(left) === JSON.stringify(right);
+const withoutControlMode = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'] }>(source: T) => {
+  const { agentControlMode: _mode, ...rest } = source;
+  return rest;
+};
+export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true): boolean =>
+  JSON.stringify(parseWorkerConfigurationValue(includeControlMode ? left : withoutControlMode(left))) === JSON.stringify(parseWorkerConfigurationValue(includeControlMode ? right : withoutControlMode(right)));
+export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true): boolean =>
+  JSON.stringify(includeControlMode ? left : withoutControlMode(left)) === JSON.stringify(includeControlMode ? right : withoutControlMode(right));
 export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
   // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
   const baseline = { ...draftFromValue(desired), projects: [] };
@@ -77,6 +86,7 @@ export const configurationFieldChanges = (draft: ConfigurationDraft, desired: Wo
     pollIntervalMs: errors.pollIntervalMs !== undefined || Number(draft.pollIntervalMs) !== desired.pollIntervalMs,
     recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
     preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
+    agentControlMode: errors.agentControlMode !== undefined || draft.agentControlMode !== desired.agentControlMode,
     native: native === undefined || JSON.stringify(native) !== JSON.stringify(desired.native),
     projects: new Map(draft.projects.map(project => {
       const expected = projects.get(project.projectId);
@@ -96,5 +106,5 @@ export const mergeConfigurationResources = (current: WorkerConfigurationResource
   if (current === null) return incoming;
   const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision)) ? current.desired : incoming.desired;
   const observation = BigInt(current.observationRevision) > BigInt(incoming.observationRevision) ? current : incoming;
-  return { desired, observationRevision: observation.observationRevision, observation: observation.observation };
+  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}) };
 };

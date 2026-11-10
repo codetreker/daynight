@@ -188,8 +188,9 @@ describe("worker runtime monitoring isolation", () => {
     await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agent: matches ? "codex" : "copilot", repositories: [{ remote: remoteUrl, path: path.join(f.homeDirectory, "repo"), projectId: uuid(1) }], maxConcurrent: 9 } }));
     const unavailable = new ApiError({ operation: "project.resolve" }, "response", { status: 404, serverError: { code: "not_found", message: "Unavailable", requestId: uuid(2) }, cause: new Error("Unavailable") });
     let remoteDesired: WorkerCloudDesired | null = null, remoteRevision = 0n;
+    const readConfiguration = vi.fn(async () => ({ desired: remoteDesired, observationRevision: String(remoteRevision), observation: null }));
     const remote = mocks.remote(); mocks.remote.mockClear();
-    mocks.remote.mockReturnValue({ ...remote, configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: vi.fn(async (_worker: string, _report: WorkerReport, configuration: WorkerCloudReport) => {
+    mocks.remote.mockReturnValue({ ...remote, configuration: readConfiguration, resolveProject: vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: vi.fn(async (_worker: string, _report: WorkerReport, configuration: WorkerCloudReport) => {
       const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(remoteRevision);
       if (observationAccepted) remoteRevision++;
       return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: remoteDesired, observationRevision: String(remoteRevision), observationAccepted } };
@@ -207,6 +208,7 @@ describe("worker runtime monitoring isolation", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       if (matches) await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: failure.operationId, scope: { kind: "project", projectId: uuid(1) } }));
       else { await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("2").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }))); expect(monitor.capture("2").lastRecovery?.operationId).not.toBe(failure.operationId); }
+      expect(readConfiguration.mock.calls.length).toBeGreaterThan(1);
       expect(monitor.capture("2").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
     } finally { firstTick.resolve(); f.signal.abort(); await running; }
   });
@@ -406,8 +408,9 @@ describe("worker runtime monitoring isolation", () => {
     const unavailable = new ApiError({ operation: "project.resolve" }, "response", { status: 404, serverError: { code: "not_found", message: "Unavailable", requestId: uuid(2) }, cause: new Error("Unavailable") });
     const resolveProject = vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl }));
     let remoteDesired: WorkerCloudDesired | null = null, remoteRevision = 0n;
+    const readConfiguration = vi.fn(async () => ({ desired: remoteDesired, observationRevision: String(remoteRevision), observation: null }));
     const remote = mocks.remote(); mocks.remote.mockClear();
-    mocks.remote.mockReturnValue({ ...remote, configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject, reportConfiguration: vi.fn(async (_worker: string, _report: WorkerReport, configuration: WorkerCloudReport) => {
+    mocks.remote.mockReturnValue({ ...remote, configuration: readConfiguration, resolveProject, reportConfiguration: vi.fn(async (_worker: string, _report: WorkerReport, configuration: WorkerCloudReport) => {
       const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(remoteRevision);
       if (observationAccepted) remoteRevision++;
       return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: remoteDesired, observationRevision: String(remoteRevision), observationAccepted } };
@@ -422,6 +425,7 @@ describe("worker runtime monitoring isolation", () => {
       expect(failure).toMatchObject({ scope: { kind: "project", projectId: uuid(1) }, occurrencesInRun: 1 });
       remoteDesired = target;
       await vi.advanceTimersByTimeAsync(30_000); await cloudStarted.promise;
+      expect(readConfiguration.mock.calls.length).toBeGreaterThan(1);
       const pending = monitor.capture("2");
       expect(pending.currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running", occurrencesInRun: 1 }));
       expect(pending.admission.reasons).toContainEqual(expect.objectContaining({ code: "project-preparation-failed", scope: { kind: "project", projectId: uuid(1) } }));
