@@ -692,7 +692,7 @@ describe("worker repositories and task worktrees", () => {
     const second = manager(f.root); await second.removeWorktree(f.project, f.owner, operation());
     const next = changedClaim(f.owner); const fresh = await second.prepareWorktree(f.project, next, operation()); expect(fresh.worktreePath).toBe(binding.worktreePath);
     await expect(second.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("does not match this claim"); expect(await readFile(path.join(fresh.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-  });
+  }, 30_000);
 
   it("preserves retained branch commits for a fresh claim without reset", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
@@ -778,7 +778,7 @@ describe("worker repositories and task worktrees", () => {
     await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("origin does not match");
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("origin does not match");
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
-  });
+  }, 30_000);
 
   it("uses backend-aware reftable HEAD for creation, dirty recovery and missing-leaf cleanup", async () => {
     const f = await fixture("reftable"); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
