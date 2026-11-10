@@ -40,7 +40,7 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	values, err := httpx.QueryValues(request, "taskId")
+	values, err := httpx.QueryValues(request, "taskId", "include")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
@@ -48,6 +48,15 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 	taskID := values.Get("taskId")
 	if taskID == "" {
 		httpx.WriteError(w, request, logger, "task_graph", "get", httpx.InvalidInput("task graph requires taskId"))
+		return
+	}
+	included, err := sessionIncluded(request)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "task_graph", "get", err)
+		return
+	}
+	if included {
+		h.observedGraph(w, request, principal, projectID, taskID)
 		return
 	}
 	graph, err := h.tasks.Graph(request.Context(), principal, projectID, taskID)

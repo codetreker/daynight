@@ -448,7 +448,7 @@ func TestReleasedOriginalUnknownFinalCompletionRetainsQuotaAndExactGate(t *testi
 	d := &reclaimProposalDAO{imageRuleDAO: f.d, audit: audit}
 	lost := errors.New("final cleanup commit acknowledgement lost")
 	f.s.files = reclaimGateAuditStorage{Storage: f.files, audit: audit}
-	f.s.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, fn func(*Access) error) error {
+	f.s.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, _ BrowserPurpose, fn func(*Access) error) error {
 		err := fn(&Access{tx: &operationTx{dao: d}, record: f.r, write: true})
 		// Proposed DAO writes and transaction completion are independent. This
 		// scope deliberately supplies no durable outcome for the final proposal.

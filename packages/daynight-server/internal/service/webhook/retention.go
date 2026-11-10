@@ -20,6 +20,11 @@ type retentionStore interface {
 	store.WebhookConfigGC
 }
 
+type configCollector interface {
+	Reconcile(context.Context, store.WebhookConfigGC) error
+	Pass(context.Context, store.WebhookConfigGC, int) (int, error)
+}
+
 // Retention owns a separate history maintenance loop, independent of dispatch.
 // Construction does not start work; the owner must stop it before closing DB.
 type Retention struct {
@@ -36,7 +41,7 @@ type Retention struct {
 	done           chan struct{}
 	failures       chan error
 	pending        *retentionUnknown
-	config         core.ConfigCollector
+	config         configCollector
 	receipts       core.ReceiptCollector
 	phase          int
 	historyPhase   int
@@ -46,7 +51,7 @@ type Retention struct {
 type retentionUnknown struct{ kind, id string }
 
 func NewRetention(db retentionStore) *Retention {
-	return &Retention{DB: db, failures: make(chan error, 1), events: make(chan RetentionEvent, 128), wait: waitPoll}
+	return &Retention{DB: db, config: &core.ConfigCollector{}, failures: make(chan error, 1), events: make(chan RetentionEvent, 128), wait: waitPoll}
 }
 func (r *Retention) Failures() <-chan error { return r.failures }
 func (r *Retention) Start(parent context.Context) error {

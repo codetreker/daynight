@@ -125,11 +125,19 @@ ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
 and the total length.
 
-Attachment request-deadline tests control both the deadline timers and the
-`node:perf_hooks` monotonic clock. The blocked-sink fixture observes entry into
-its consumer before advancing to the deadline, then checks the timeout, sink
-abort and response cancellation. This keeps setup time from exercising an
-earlier timeout stage. The
+API deadline fixtures control both deadline timers and the `node:perf_hooks`
+monotonic clock when setup or pagination must complete before expiry. The
+continuous-cursor fixture advances time by 10 ms per response: three pages fit
+within its original 35 ms total limit, and the fourth response crosses that
+shared deadline. Exact cursor progression and a bounded response fixture expose
+incorrectly renewed budgets without relying on runner scheduling. The
+[API cursor deadline decision](../.agents/notes/implemented/testing/2026-11-10-api-cursor-deadline.md)
+records this pagination proof.
+
+The blocked-sink attachment fixture observes entry into its consumer before
+advancing to the request deadline, then checks the timeout, sink abort and
+response cancellation. This keeps setup time from exercising an earlier timeout
+stage. The
 [attachment deadline decision](../.agents/notes/implemented/testing/2026-11-07-attachment-sink-deadline.md)
 records the assertion and clock boundaries.
 
@@ -151,6 +159,12 @@ Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
 the [coordinator polling decision](../.agents/notes/archived/testing/2026-11-04-coordinator-test-polling.md) records the rationale for that test boundary.
+Worker reconciliation deadline fixtures observe the stalled GET before advancing
+the controlled timer and monotonic clock. Startup inventory publication can
+trigger reporting before the periodic interval, so elapsed time is measured
+from that request's observed start. The
+[reporter deadline decision](../.agents/notes/implemented/testing/2026-11-10-worker-reconciliation-deadline.md)
+records the trigger, single-flight and cancellation checks.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
@@ -355,8 +369,14 @@ suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
 subjects. Worker worktree cases separately copy file-owned starting repositories
-for the files and reftable backends. Direct mutation checks verify independent
-tracked bytes, refs and Git objects in each copy. The
+for the files and reftable backends. The concurrent fetched-commit case keeps
+both real preparations within its fetch barriers and uses a case-local 30-second
+watchdog for native Git execution. Its commit, shared-ref and private-ref cleanup
+assertions remain in that workflow; discovery-only cases retain their separate
+preparation hooks and default behavior budget. The
+[concurrent fetch budget decision](../.agents/notes/implemented/testing/2026-11-09-worker-concurrent-fetch-budget.md)
+records why that interleaving needs its own bound. Direct mutation checks verify
+independent tracked bytes, refs and Git objects in each copy. The
 [Worker seed decision](../.agents/notes/archived/testing/2026-11-04-worker-git-fixture-seeds.md) records the rationale for that fixture lifetime. Tests within a file stay sequential so environment
 changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)

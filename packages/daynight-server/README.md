@@ -36,8 +36,9 @@ through `List` or `ListWorker`. The DAO uses ordinary Go JSON decoding; fields,
 normalization and existing capacity checks belong to write ingress. Bot pages
 continue by item count without domain read-byte admission or candidate callbacks.
 Normal decoding and output errors propagate. Successful MCP reads have no
-output-schema or byte admission; input checks, deadlines and resource permits
-remain independent.
+shared output-schema or byte admission; input checks, deadlines and resource
+permits remain independent. Work overviews apply their own page budget before
+the shared encoder.
 
 A name-only create resolves a fresh compatible Worker report and freezes its
 configuration. Older Workers without `assistantHost` remain unsupported, even
@@ -197,6 +198,28 @@ pages with real ordinary-dependency context, and rejects continuation when the
 project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
 
+The [Task Session observation requirements](../../docs/spec/task-session-observation.md)
+and [design](../../docs/design/task-session-observation.md) define ephemeral
+Session summaries on Task list, show and graph reads negotiated with
+`include=session`. The summary separates activity, the existing Web indicator,
+freshness and ordinary-message eligibility; the persisted Session owner governs
+eligibility. Observation failures retain Task data and mark the result partial,
+while credential and Project access failures reject the entire read. Ready
+queries, mutation responses, dependency-only reads and Web task-sync retain
+their existing projections.
+
+`GET /api/v1/projects/{projectId}/task-work` groups ongoing work by ordinary
+dependency components. A matching in-progress child selects its component even
+when its roots are done. External dependencies do not expand groups or contribute
+to their summaries. Pages default to 20 groups (maximum 50), with five root
+previews and twenty target previews per group. Group `cursor` and
+`groupId` plus `targetsCursor` continuations are separate; Task graph changes
+return `reset_required`, while Session changes do not invalidate membership.
+Each page has a dedicated 256 KiB complete-response budget, including the HTTP
+newline or MCP JSON-RPC envelope. MCP batch admission is per result. Continuation
+uses the last returned group or target; a result that cannot fit refuses with
+`resource_limit_exceeded`.
+
 The [task-summary synchronization requirements](../../docs/spec/daynight-task-sync.md)
 and [architecture](../../docs/design/daynight-task-sync.md) define the implemented
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
@@ -276,6 +299,14 @@ the authenticated actor to match the persisted Session owner. Project and Team
 administrators receive the same read-only access as other non-owner members.
 Admission, dispatch, reconnection reconciliation and terminal lease/ACK checks
 apply this rule without changing the wire format or Controller ownership.
+
+`GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/inspection`
+reads an explicit Session's original identity, fence, `currentBinding`, readable
+source and observation. It performs no lifecycle writes and never substitutes
+the current Session for a historical one. Task observation permits effective
+PAT, OAuth and browser Session principals through a dedicated authorization
+purpose; it does not extend Controller, Test, Bot or command admission. OAuth
+tokens continue to enter through the MCP resource's audience and scope checks.
 
 Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
 Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
@@ -495,8 +526,13 @@ view to a snapshot fence; `list_changed` requires restarting traversal when
 project task versions change. Task list pages use item-count continuation, and
 Task graph summary and full views return the complete selected graph. They do
 not apply domain read-byte or graph-size admission. Successful MCP reads use
-ordinary encoding without output-schema or result-byte admission; input,
-concurrency and deadline rules remain.
+ordinary encoding without runtime output-schema validation or shared result-byte
+admission; advertised schemas are verified by protocol tests. Input, concurrency
+and deadline rules remain. `task_list`, `task_show` and normal `task_graph` reads
+include Session observations with `meta.observedAt`, `partial` and resource
+references. `task_work_list` calls the work-overview use case, including its
+dedicated response budget. Session module registration advertises only
+implemented capabilities.
 
 `task_ready` returns the first matching ready Tasks ordered by creation time and
 UUID. Its `limit` defaults to 5 and accepts 1 through 20; permission and platform
@@ -926,6 +962,152 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Webhook retention configuration tests
+
+Retention binds one stateful Core configuration collector through its private
+Reconcile/Pass contract. The selected service tests control those operations and
+verify context, Store identity, exact quota, result aggregation, observations,
+internal timeouts and single-flight drain. Native ReceiptCollector work and
+history scope callbacks remain real. Configuration unknown-state and lifecycle
+cases keep the default collector and its state across passes.
+
+Core uses its existing strict collection plan for the original eligibility rules,
+pending barrier and all 125 configuration candidates. Complete context, identity
+and order checks supplement the original affected-row observation. Run the
+selected owners without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestConfigCollector|TestRetention)' \
+  ./internal/core/webhook ./internal/service/webhook
+```
+
+The [configuration operation test decision](../../.agents/notes/implemented/testing/2026-11-09-retention-config-operation-test-owners.md)
+records this allocation and the retained native-state proofs. Store continues to
+own actual SQL, locks, barriers, completion and persisted readback; stress cases
+retain their separate tagged entry.
+
+### Worker admission tests
+
+The `internal/service/worker` admission subset controls directly invoked Core
+report operations, transaction scopes and DAO results. It executes real report
+orchestration and encoding, with exact argument/order checks, independent
+completion outcomes, cancellation and result suppression. Production
+constructors retain the real Core bindings. Run this subset without database or
+UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestWorkerAdmission' ./internal/service/worker
+```
+
+Core admission tests own 99/100/101 decisions and active-window boundaries.
+PostgreSQL Worker tests retain real owner locks, counts, clock samples and expiry;
+root Store tests retain `WriteWorker` completion, physical rollback, cancellation
+and persisted readback. Other Worker suites use the fixtures required by their
+own proof. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
+records these proof owners.
+
+### Worker capacity tests
+
+The root Report and Configuration capacity matrices register real Worker HTTP
+routes and credential middleware with direct Worker operation mocks. They check
+full arguments, exact calls, response content and private headers. Report
+byte-field overflows arrive at the operation and receive a supplied service
+refusal; Report collection overflow is rejected by the actual wire parser.
+Configuration PUT and observation overflow inputs are parsed before any business
+call. Observation success additionally returns configuration protocol version 1
+and its complete accepted receipt. Both assistant-host HTTP tests use the same
+strict operation fixture; their lower rules have separate receiving owners.
+
+`internal/core/worker` owns the original thirteen Report byte/count boundaries,
+normalization and full snapshot projection. Its Configuration capacity tests
+retain the eight input boundary pairs and actual Put/Exchange behavior, including
+exact next revision and full writes, unchanged 128-project configuration without
+reauthorization, and complete maximum observation arguments. Expected inputs,
+current facts and supplied results are independent. Run these selections without
+database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestWorker(Report|Configuration)Capacity|TestPutConfigurationCapacity|TestExchangeConfigurationCapacity)' \
+  ./internal/server ./internal/core/worker
+```
+
+The [Report capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-report-capacity-test-owners.md)
+and [Configuration capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-capacity-test-owners.md)
+record their protocol, rule and projection proof owners. Other root HTTP tests
+retain their own environment requirements.
+
+### Worker assistant-host HTTP tests
+
+The first assistant-host reporting test registers Worker routes, real credential
+middleware and request logging with strict direct Report/Get/List operations.
+It preserves complete host input/output, unavailable providers, absent-field
+omission, private headers and log redaction. Protocol 2 calls Report once with a
+supplied lower validation refusal. Get/List results are independent supplied
+facts, without report-driven storage state.
+
+Core tests retain actual validation and complete snapshot projection with fresh
+host values. Admission service fixtures use independently allocated input,
+normalized, proposed and stored hosts with distinguishable directories, so the
+existing full argument comparisons expose lost or bypassed normalization.
+The configuration-exchange compatibility test preserves its nine requests through
+Report/Get/Configuration callbacks. Bootstrap and future-refusal inputs remain
+complete; subsequent reads supply independent facts. Legacy responses retain
+exactly two timestamps and no configuration header. Core executes the exact
+bootstrap/future-observation decisions; service verifies success, refusal and
+legacy sequencing. Store separately verifies real commits and fresh snapshots.
+The shared capacity fixture contains only pure expectation helpers. Run the
+selected HTTP/Core/Service owners without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestWorkerAssistantHostHTTP|TestWorkerAssistantHostReportValidationAndSnapshot|TestExchangeConfigurationAssistantHostCompatibility|TestWorkerAdmission)' \
+  ./internal/server ./internal/core/worker ./internal/service/worker
+```
+
+The [assistant-host test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-http-test-owners.md)
+records the protocol, Core and service proof owners. The
+[configuration compatibility HTTP decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+records its separate wire and lower observations. Other Root and Worker
+selections keep their own infrastructure requirements.
+
+### Worker configuration service tests
+
+The selected `internal/service/worker` configuration tests execute revision
+parsing, normalization and service coordination with controlled snapshots,
+transaction completion and the directly invoked Core configuration operation.
+They preserve exact arguments, context and transaction-bound DAO identity,
+refusals, cancellation, error chains and result suppression. Run this subset
+without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
+  ./internal/service/worker
+```
+
+The PostgreSQL Worker contract suite retains actual configuration write/read
+independence after Task storage is removed. Historical configuration repair and
+revoked-Project policy execute in Core with controlled DAO facts; candidate
+admission and supplied read results execute in the service subset. The Store
+contract suite retains actual stored 65 values, grant revocation, JSONB args,
+committed repair and fresh readback. The [historical configuration decision](../../.agents/notes/implemented/testing/2026-11-09-worker-historical-configuration-test-owners.md)
+records these owners. Other bootstrap, CAS and report-budget cases keep their
+existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
+records these proof owners.
+
 ### Identity service tests
 
 `internal/service/identity` tests mock the directly invoked Core Identity and
@@ -955,6 +1137,31 @@ PostgreSQL receivers use the documented isolated database configuration and run
 with `go test ./internal/core/store/postgres/identity ./internal/core/store/postgres`.
 
 The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
+
+### Bot management service tests
+
+The `internal/service/bot` suite executes actual snapshot/write callbacks,
+normalization, native catalog transport, deletion stop-proof validation and
+Session/file cleanup. Private instance operations supply direct core creation,
+read and selection results and deletion decisions. Production constructors bind
+the real implementations and retain `time.Now`; strict unit expectations verify
+context, principal, identifiers, inputs, current-scope capabilities, call order,
+completion outcomes and error chains. Ordinary tests clear database and UniAuth
+fixture variables and do not simulate persisted state.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/bot
+```
+
+Core Bot tests own replay, configuration/default/native and deletion rules.
+PostgreSQL Bot/Session tests retain real locks, credential rechecks, preferences,
+rollback, cleanup visibility and precise persisted versions. Local archive tests
+retain actual orphan-file removal. The independent API integration suite owns representative normal flows
+through the assembled server.
+See the [Bot service test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-service-test-boundary.md).
 
 ### Bot runtime service tests
 
@@ -1067,9 +1274,13 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 A mock committed or unknown result describes the supplied service outcome;
 actual SQL, locks, snapshot consistency, commit acknowledgement and persistence
-belong to store tests with isolated PostgreSQL. The real 15-second Step socket
-read-timeout proof remains in the regular HTTP suite. Capacity workloads retain
-their full fixture only behind the separate `stress` build tag.
+belong to store tests with isolated PostgreSQL. The regular HTTP suite retains
+the real Step socket read-timeout proof. It checks the constructed 15-second
+production default, then selects 200 milliseconds for that handler instance
+through the same JSON decoder and body reader. The test verifies the timeout
+response, request ID, connection closure, handler completion, zero Step calls
+and `not_committed` log outcome. Capacity workloads retain their full fixture
+only behind the separate `stress` build tag.
 
 Project settings and encoded-budget validation, Attachment input validation and
 invalid login scopes use input-only fixtures. Existing fixture-based domain
@@ -1250,18 +1461,33 @@ records this correction of existing tests and their retained proof boundaries.
 
 ### Task service and store tests
 
-The complete `internal/service/task` suite uses synthetic domain inputs and
-strict mocks of the existing DAO, snapshot and transaction scopes. Unconfigured
-calls fail explicitly. Callback execution and proposed writes remain separate
-from `committed`, `not_committed` and `unknown` results; tests retain their
-permission, version, error-chain, cancellation and source-fact assertions.
+Task service tests use synthetic domain inputs and controlled DAO, snapshot and
+transaction boundaries. Unconfigured calls fail explicitly. Callback execution
+and proposed writes remain separate from `committed`, `not_committed` and
+`unknown` results; tests retain permission, version, error-chain, cancellation
+and source-fact assertions.
 
-Run this suite without a database from the module:
+The List coordination suite controls directly invoked project authorization and
+Task read operations. It checks the original context, principal, canonical IDs,
+snapshot-bound capability identity and call order. Domain faults are staged
+until snapshot completion, whose failures suppress partial pages and refusals.
+Pure `SelectList` planning and `ProjectList` encoding execute normally, including
+actual cursor encoding errors. Core owns the original three assignment functions,
+with all 360 combinations, complete returned Task data, pagination, Worker
+inventory, historical assignment and version-2 cursor scope. Shared platform and
+agent-permission service fixtures retain their DAO-based List scope.
+
+Run the service suite and receiving Core tests without database or UniAuth
+fixtures from the module:
 
 ```bash
 source scripts/env.sh
-env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m ./internal/service/task ./internal/core/task
 ```
+
+The [List test decision](../../.agents/notes/implemented/testing/2026-11-09-task-list-direct-operation-tests.md)
+records the direct-operation boundary and retained query/cursor proofs.
 
 PostgreSQL witnesses follow their implementation owners under
 `internal/core/store/postgres/`. Domain subpackages test direct DAO queries,

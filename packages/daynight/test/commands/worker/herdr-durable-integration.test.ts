@@ -58,7 +58,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
   const adapterSelectionVerifiers: (NativeSelectionVerifier | undefined)[] = [];
-  const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, observeFailure: undefined as Error | undefined, observeAfterInputFailure: undefined as Error | undefined, observeFailureAfterCount: 1, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   const shellSettings = { managed: false, captureFailure: false };
   let beforePromptGuard: (() => void) | undefined;
   let beforeFrame: ((index: number) => void | Promise<void>) | undefined;
@@ -195,7 +195,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
       tasks: {
         pendingStops: () => [], listResources: async () => driverResources && state.launched ? [{ owner: context, workspaceId: state.binding.workspaceId, panes: [{ ...observation(), kind: "codex" as const, cwd: context.cwd }] }] : [],
         prepareWorkspace: async (_context, _title, _operation, startup) => { expect(startup).toEqual(shellSettings.managed ? { shellNonce: uuid(900 + state.ordinal) } : undefined); events.push("workspace"); return state.binding; },
-        syncWorkspaceName: async () => {}, observe: async () => observation(),
+        syncWorkspaceName: async () => {}, observe: async () => { if (settings.observeFailure !== undefined) { const failure = settings.observeFailure; settings.observeFailure = undefined; throw failure; } if (inputs.length >= settings.observeFailureAfterCount && settings.observeAfterInputFailure !== undefined) { const failure = settings.observeAfterInputFailure; settings.observeAfterInputFailure = undefined; throw failure; } return observation(); },
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
         launch: async (_context, _binding, request, active) => {
           await request.beforeStart?.(active);
@@ -1171,6 +1171,106 @@ it("keeps frames fenced when an enrichment ACK races a newer local lifecycle ver
   await f.facade.tasks.observe(f.context, binding, operation());
   expect(f.ledgers).toHaveLength(count); expect(f.inputs).toHaveLength(1); expect(f.read().automationBlocked).toBe(true);
   await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([f.read().sessionId, { binding: { nativeSessionId: f.nativeId } }]));
+});
+
+it("reports post-launch attachment failure until actual reattachment is published", async () => {
+  const f = fixture(false, true); f.register();
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  const phases = vi.fn(), successes = vi.fn();
+  const ledger = f.api.ledger, state = f.api.state;
+  let unavailable = false, lost = 0;
+  f.api.ledger = async (...args) => { const result = await ledger(...args); if (f.read().runs.at(-1)?.phase === "active" && lost < 2) { lost++; unavailable = true; throw new Error("lost ledger response"); } return result; };
+  f.api.state = (...args) => unavailable ? Promise.reject(new Error("ledger readback unavailable")) : state(...args);
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
+  try {
+    await expect(driver.advance(input)).rejects.toThrow();
+    expect(successes).toHaveBeenCalledWith(f.context, { kind: "execution", phase: "agent-start" });
+    expect(phases).toHaveBeenLastCalledWith(f.context, { kind: "execution", phase: "preparing" }, false, undefined, "herdr-attachment");
+    expect(successes).not.toHaveBeenCalledWith(f.context, { kind: "execution", phase: "preparing" }, "herdr-attachment");
+    expect(f.inputs).toEqual([]); expect(f.launches).toHaveLength(1);
+    unavailable = false;
+    await expect(driver.advance(input)).rejects.toThrow("ledger readback unavailable");
+    expect(successes).not.toHaveBeenCalledWith(f.context, { kind: "execution", phase: "preparing" }, "herdr-attachment");
+    unavailable = false;
+    const observationFailure = new Error("attachment identity observation failed");
+    f.settings.observeFailure = observationFailure;
+    await expect(driver.advance(input)).rejects.toBe(observationFailure);
+    expect(successes).not.toHaveBeenCalledWith(f.context, { kind: "execution", phase: "preparing" }, "herdr-attachment");
+    await driver.advance(input);
+    expect(successes).toHaveBeenCalledWith(f.context, { kind: "execution", phase: "preparing" }, "herdr-attachment");
+    expect(f.launches).toHaveLength(1);
+  } finally { unavailable = false; f.api.ledger = ledger; f.api.state = state; store.close(); }
+});
+
+it("labels a durable input admission failure without changing the original error or replaying input", async () => {
+  const f = fixture(false, true); f.register();
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  const phases = vi.fn(), failure = new Error("input admission failed");
+  const start = f.facade.tasks.start.bind(f.facade.tasks);
+  vi.spyOn(f.facade.tasks, "start").mockImplementation((context, binding, input, active) => start(context, binding, { ...input, onPromptSubmitting: () => { input.onPromptSubmitting?.(); f.failTaskRead(failure); } }, active));
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
+  try {
+    await expect(driver.advance(input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(f.context, { kind: "execution", phase: "input-submission" }, false, undefined, "startup-input");
+    expect(f.inputs).toEqual([]); expect(f.launches).toHaveLength(1);
+    f.failTaskRead(); await driver.advance(input); await driver.advance(input);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.launches).toHaveLength(1);
+  } finally { f.failTaskRead(); store.close(); }
+});
+
+it("reports post-transport observation failure without inventing a receipt or replaying input", async () => {
+  const f = fixture(false, true); f.register();
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  const phases = vi.fn(), successes = vi.fn(), submitted = vi.fn(), failure = new Error("post-transport observation failed");
+  f.settings.observeAfterInputFailure = failure;
+  const start = f.facade.tasks.start.bind(f.facade.tasks);
+  vi.spyOn(f.facade.tasks, "start").mockImplementation((context, binding, input, active) => start(context, binding, { ...input, onPromptSubmitted: receipt => { submitted(receipt); input.onPromptSubmitted?.(receipt); } }, active));
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
+  try {
+    await expect(driver.advance(input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(f.context, { kind: "execution", phase: "agent-observation" }, false, undefined);
+    expect(successes).toHaveBeenCalledWith(f.context, { kind: "execution", phase: "input-submission" }, "startup-input");
+    expect(submitted).not.toHaveBeenCalled();
+    expect(f.read().initialAssignment).toBe("transport_completed");
+    await driver.advance(input); await driver.advance(input);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.launches).toHaveLength(1);
+  } finally { store.close(); }
+});
+
+it("recovers a continuation at confirmed transport even when the following observation fails", async () => {
+  const f = fixture(false, true); f.register();
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  const phases = vi.fn(), successes = vi.fn(), failure = new Error("continuation observation failed");
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
+  try {
+    await driver.advance(input);
+    f.settings.nativeStatus = "working"; await driver.advance(input);
+    f.settings.nativeStatus = "idle"; f.settings.observeFailureAfterCount = 2; f.settings.observeAfterInputFailure = failure;
+    successes.mockClear();
+    await expect(driver.advance(input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "execution", phase: "agent-observation" }, false, undefined);
+    expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "execution", phase: "input-submission" });
+    await driver.advance(input);
+    expect(f.inputs).toHaveLength(2); expect(f.inputs[1]!.initial).toBe(false); expect(f.launches).toHaveLength(1);
+  } finally { store.close(); }
 });
 
 it("does not replay the accepted assignment through the execution driver after enrichment response loss", async () => {

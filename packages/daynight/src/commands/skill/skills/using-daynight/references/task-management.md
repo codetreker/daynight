@@ -11,6 +11,7 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | --- | --- |
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
 | `task list` | Traverse all matching pages. Excludes `done` and `cancelled` by default; explicitly include terminal tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
+| `task list --status in_progress --group-by chain` | One page of ordinary chains and independent tasks containing the selected user's in-progress work; defaults to `me`. |
 | `task search <expression>` | Search Task IDs, full titles and Markdown descriptions in one project, including done and cancelled tasks. Traverses all pages in server relevance order; returns a compact match and chain context, not complete tasks. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
@@ -28,7 +29,9 @@ Its text and JSON omit assignee and update time; JSON entries contain only
 `search_changed`, leaves stdout empty; rerun the search after a change.
 
 Human-readable ordinary lists are summaries; their JSON entries omit only `description`.
-Ready results, task details, and write results that return tasks contain complete tasks.
+Ordinary list and show results include Session observations. Ready results and
+write results that return tasks retain their complete Task data without a live
+Session query.
 Dependency graphs provide compact relationship context without full descriptions, PR properties, or versions and cannot replace task details. `--depends-only --json` returns only `id`, the full `dependsOn` set, and its `externalDependsOn` subset.
 Graph nodes retain complete dependency references, which may point outside the graph; read the relevant tasks or their dependency graphs when those paths need assessment.
 Reaching the graph limit fails the command rather than returning a truncated graph.
@@ -36,6 +39,74 @@ A candidate page or a single task cannot replace complete relationship verificat
 
 Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, terminal tasks. Done and cancelled remain distinct results.
 These groups are not relevance rankings. See command help for filter syntax.
+
+### Session observations
+
+Ordinary `task list`, `task show` and `task graph` include a versioned `session`
+object. Use its platform `sessionId` with the owning Task and Project to identify
+the observed Session. `nativeSessionId` is a separate Provider identity and
+cannot replace it. Registration, execution generation, connection epoch, mode,
+activity, connection and lifecycle remain separate facts. Herdr observations
+describe terminal execution and do not promise Web message support. These
+queries neither read conversation history nor send input.
+
+Task status describes work progress. Session `indicator` describes activity:
+`working`, `notice` or `warning`, with a specific `reason`; unknown facts remain
+null or explicitly unavailable. An idle warning can allow its owner to start a
+turn, and a working Session can allow steering. Read `send.allowed`, `send.mode`
+and `send.reason` independently. An assignee is not necessarily the Session
+owner, and ordinary input cannot answer an approval request. The observation
+does not grant authorization or guarantee later sending eligibility; follow
+[authorization and scope](authorization.md).
+
+Inspect `observedAt`, `lastSeenAt` and `freshUntil` before relying on activity.
+An ordinary list retrieves all Task pages before output; each page has its own
+observation time and can be stale by then. Refresh with the same query.
+Unavailable observations preserve Task data and give a reason/error; partial
+results exit 3 with stdout still containing the result and stderr containing
+the diagnostic. Old services report `unsupported` with an upgrade instruction.
+Malformed responses, authorization and transport failures exit 1; invalid
+arguments exit 2. Do not treat unknown or stale activity as healthy.
+
+Graph nodes distinguish ordinary `member` tasks from `external` context.
+`sessionSummary` aggregates in-progress members only; unknown contributors set
+`complete=false` without erasing a known warning, notice or working indicator.
+Its observation time is independent of the graph snapshot time. Use
+`graph --depends-only` for dependency verification without Session observations.
+
+### Grouped work
+
+```bash
+daynight task list --status in_progress --group-by chain --assigned-to me --json --project <project-id>
+daynight task list --status in_progress --group-by chain --assigned-to me --cursor <nextCursor> --json --project <project-id>
+daynight task list --status in_progress --group-by chain --assigned-to me --group-id <groupId> --targets-cursor <contributorCursor> --json --project <project-id>
+daynight task graph <displayTaskId> --json --project <project-id>
+daynight task show <task-id> --json --project <project-id>
+```
+
+The grouped query includes a chain when any matching ordinary member is in
+progress, even if its root is done. It does not expand external prerequisites.
+Use a user UUID or `me`; `unassigned`, `--all`, readiness, permission and platform
+filters are unavailable in this mode. It requires explicit `--status in_progress`.
+
+JSON is `{groups,nextCursor,observedAt,partial}`. One invocation reads one page,
+with at most 20 groups by default and a `--limit` range of 1 through 50. Each
+group previews up to five roots and 20 in-progress targets. A target retains
+its Task/Session identity, assignee, `matchesAssignee`, indicator and independent
+send eligibility. Summaries cover all accessible in-progress ordinary members,
+including other assignees; counts and `aggregationScope` describe that scope.
+A group has no single Session ID or send permission.
+
+Continue group pages with `nextCursor`. Continue a group's targets with its
+`groupId` and `contributorCursor` together; this pair cannot combine with the
+group-page `--cursor`. Target pages remain capped at 20 regardless of `--limit`.
+The complete encoded response is bounded to 256 KiB and preserves continuation
+when more results remain. Use `task graph` for complete membership.
+
+Pass cursors unchanged. Task graph changes return `reset_required`; restart
+the grouped query. Session changes do not alter pagination membership, but
+each page observes activity separately and its summary may change. Do not
+interpret one page or its root/target previews as the complete work inventory.
 
 ## Task Steps
 

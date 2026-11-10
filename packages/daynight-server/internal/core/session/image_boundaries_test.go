@@ -98,7 +98,7 @@ func (d *imageBoundaryDAO) RemoveSessionResourceReference(ctx context.Context, r
 	return d.imageRuleDAO.RemoveSessionResourceReference(ctx, r)
 }
 func bindImageBoundary(f imageRuleFixture, d store.SessionDAO, write bool) {
-	f.s.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, fn func(*Access) error) error {
+	f.s.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, _ BrowserPurpose, fn func(*Access) error) error {
 		if e := ctx.Err(); e != nil {
 			return e
 		}
@@ -502,7 +502,7 @@ func TestImageCaptureCopyRejectsMissingAuthorizationAndChangedSourceChunks(t *te
 			case "missing validation":
 				c.Validated = nil
 			case "authorization":
-				f.s.browserRun = func(context.Context, model.Principal, string, string, string, func(*Access) error) error {
+				f.s.browserRun = func(context.Context, model.Principal, string, string, string, BrowserPurpose, func(*Access) error) error {
 					return denied()
 				}
 			default:

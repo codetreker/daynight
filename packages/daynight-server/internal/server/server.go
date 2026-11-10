@@ -83,7 +83,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	prompthttp.RegisterRoutes(mux, app.Prompts, auth, logger)
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
-	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)
+	taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, auth, logger)
+	sessionhttp.RegisterInspectionRoutes(mux, app.TaskInspection, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
 		return tasksearch.Search(ctx, app.TaskSearch, principal, projectID, input)
 	}, auth, logger)
@@ -189,8 +190,10 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		},
 		func() error { return mcphttp.RegisterBotTools(entry, app.Bots, app.BotDeletions) },
 		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
-		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks) },
-		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks) },
+		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks, app.TaskObservations) },
+		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks, app.TaskObservations) },
+		func() error { return mcphttp.RegisterTaskWorkTools(entry, app.TaskObservations) },
+		func() error { return mcphttp.RegisterSessionTools(entry, mcphttp.SessionSendModule(app.Sessions)) },
 		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterAttachmentTools(entry, app.Attachments) },

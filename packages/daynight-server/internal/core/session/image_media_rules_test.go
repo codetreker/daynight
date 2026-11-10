@@ -101,7 +101,7 @@ func TestImageMediaObservationReconcilesOriginalResultAcrossDisconnect(t *testin
 				}
 			}
 			f.d.media[row.RequestID] = row
-			f.s.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, fn func(*Access) error) error {
+			f.s.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, _ BrowserPurpose, fn func(*Access) error) error {
 				if e := ctx.Err(); e != nil {
 					return e
 				}

@@ -141,7 +141,7 @@ func active(t task, r *record) bool {
 	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == model.WorkerActive)
 }
 func (s *Execution) browser(ctx context.Context, p model.Principal, project, taskID, id string, fn func(*operationTx, *record, task, bool) error) error {
-	return s.browserRun(ctx, p, project, taskID, id, func(a *Access) error {
+	return s.browserRun(ctx, p, project, taskID, id, BrowserAccess, func(a *Access) error {
 		return fn(a.tx, a.record, a.task, a.write)
 	})
 }
@@ -192,11 +192,8 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 	if v.Lifecycle == "draining" {
 		return v
 	}
-	accepted := v.InitialInputState == "provider_accepted" || v.InitialInputState == "confirmed" || v.TestExecutionID != "" && v.InitialInputState == "not_required"
-	v.Operations.CanSend = v.Capabilities.Send && accepted && (v.Identity.NativeSessionID != nil || v.TestExecutionID != "" && v.InitialInputState == "not_required" && v.Activity == "idle") && (v.Activity == "idle" || v.Activity == "working" && v.Capabilities.Steer && v.CurrentTurnID != nil)
-	if v.TestExecutionID != "" && v.Identity.NativeSessionID == nil && r.FirstInputBlocked {
-		v.Operations.CanSend = false
-	}
+	_, sendReason := messageSendEligibility(v, r.FirstInputBlocked)
+	v.Operations.CanSend = sendReason == "allowed"
 	v.Operations.CanCancel = v.Capabilities.Cancel && v.CurrentTurnID != nil
 	v.Operations.CanRespond = v.Capabilities.Respond
 	return v

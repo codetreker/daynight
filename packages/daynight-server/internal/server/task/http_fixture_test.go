@@ -55,6 +55,7 @@ type resourceTestHandler struct {
 	token            string
 	principal        model.Principal
 	Tasks            *taskServiceMock
+	Observations     *observationServiceMock
 	Steps            *stepsServiceMock
 	Threads          *threadsServiceMock
 	Search           taskhttp.SearchOperation
@@ -66,9 +67,10 @@ func newHTTPFixture(t *testing.T, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	handler := &resourceTestHandler{
 		serviceCalls: newServiceCalls(t), token: "test-pat", principal: testPrincipal(),
-		Tasks:   newTaskServiceMock(t),
-		Steps:   newStepsServiceMock(t),
-		Threads: newThreadsServiceMock(t),
+		Tasks:        newTaskServiceMock(t),
+		Observations: newObservationServiceMock(t),
+		Steps:        newStepsServiceMock(t),
+		Threads:      newThreadsServiceMock(t),
 	}
 	handler.required = func() []string {
 		var methods []string
@@ -94,7 +96,7 @@ func newHTTPFixture(t *testing.T, output io.Writer) *resourceTestHandler {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	taskhttp.TaskRoutes(mux, handler.Tasks, auth, logger)
+	taskhttp.TaskRoutes(mux, handler.Tasks, handler.Observations, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, handler.Steps, auth, logger)
 	taskhttp.TaskThreadRoutes(mux, handler.Threads, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
@@ -18,8 +20,13 @@ type prompts interface {
 }
 
 type handler struct {
-	prompts prompts
-	logger  *slog.Logger
+	prompts         prompts
+	logger          *slog.Logger
+	bodyReadTimeout time.Duration
+}
+
+func newHandler(prompts prompts, logger *slog.Logger) *handler {
+	return &handler{prompts: prompts, logger: logger, bodyReadTimeout: transport.JSONBodyReadTimeout}
 }
 
 type authenticator interface {
@@ -28,7 +35,10 @@ type authenticator interface {
 
 // RegisterRoutes exposes the three account-owned prompt resources.
 func RegisterRoutes(mux *http.ServeMux, prompts prompts, auth authenticator, logger *slog.Logger) {
-	h := &handler{prompts: prompts, logger: logger}
+	newHandler(prompts, logger).registerRoutes(mux, auth)
+}
+
+func (h *handler) registerRoutes(mux *http.ServeMux, auth authenticator) {
 	for _, route := range []struct {
 		path  string
 		scope model.PromptScope
@@ -43,7 +53,7 @@ func RegisterRoutes(mux *http.ServeMux, prompts prompts, auth authenticator, log
 		}
 		mux.HandleFunc("GET "+route.path, auth.Require(resource))
 		mux.HandleFunc("PUT "+route.path, auth.Require(resource))
-		mux.HandleFunc(route.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
+		mux.HandleFunc(route.path, auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET, HEAD, PUT")))
 	}
 }
 
@@ -67,7 +77,7 @@ func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal mod
 	}
 	var result model.PromptResource
 	if r.Method == http.MethodPut {
-		fields, decodeErr := decodePut(w, r)
+		fields, decodeErr := decodePut(w, r, h.bodyReadTimeout)
 		if decodeErr != nil {
 			err = decodeErr
 		} else {
@@ -109,8 +119,8 @@ func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal mod
 	httpx.WriteJSON(w, r, logger, http.StatusOK, result)
 }
 
-func decodePut(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
-	fields, err := httpx.DecodeObject(w, r, "expectedUserId", "revision", "text")
+func decodePut(w http.ResponseWriter, r *http.Request, timeout time.Duration) (map[string]json.RawMessage, error) {
+	fields, err := httpx.DecodeObjectLimitWithTimeout(w, r, httpx.MaxJSONBody, timeout, "expectedUserId", "revision", "text")
 	if err != nil {
 		return nil, err
 	}

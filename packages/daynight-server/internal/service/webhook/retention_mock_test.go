@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 )
 
 var retentionTestNow = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -209,6 +210,86 @@ func retentionAssertCallOrder(t *testing.T, calls []string, want ...string) {
 	if fmt.Sprint(calls) != fmt.Sprint(want) {
 		t.Fatalf("DAO calls=%v want=%v", calls, want)
 	}
+}
+
+type retentionConfigCollectorMock struct {
+	t         *testing.T
+	mu        sync.Mutex
+	db        store.WebhookConfigGC
+	ctx       context.Context
+	want      []string
+	next      int
+	reconcile func(context.Context, store.WebhookConfigGC) error
+	pass      func(context.Context, store.WebhookConfigGC, int) (int, error)
+}
+
+func (m *retentionConfigCollectorMock) unexpected(method string) error {
+	m.t.Helper()
+	m.t.Errorf("unexpected config collector call: %s", method)
+	return fmt.Errorf("unexpected config collector call: %s", method)
+}
+
+func (m *retentionConfigCollectorMock) call(ctx context.Context, db store.WebhookConfigGC, method string) error {
+	m.t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.next >= len(m.want) || m.want[m.next] != method {
+		return m.unexpected(method)
+	}
+	if ctx == nil || db != m.db {
+		return m.unexpected(method + " context/store")
+	}
+	if method == "reconcile" {
+		m.ctx = ctx
+	} else if ctx != m.ctx {
+		return m.unexpected(method + " replaced context")
+	}
+	m.next++
+	return nil
+}
+
+func (m *retentionConfigCollectorMock) Reconcile(ctx context.Context, db store.WebhookConfigGC) error {
+	if err := m.call(ctx, db, "reconcile"); err != nil {
+		return err
+	}
+	if m.reconcile == nil {
+		return m.unexpected("unconfigured Reconcile")
+	}
+	return m.reconcile(ctx, db)
+}
+
+func (m *retentionConfigCollectorMock) Pass(ctx context.Context, db store.WebhookConfigGC, budget int) (int, error) {
+	if err := m.call(ctx, db, "pass"); err != nil {
+		return 0, err
+	}
+	if budget != 125 {
+		return 0, m.unexpected(fmt.Sprintf("Pass budget %d, want 125", budget))
+	}
+	if m.pass == nil {
+		return 0, m.unexpected("unconfigured Pass")
+	}
+	return m.pass(ctx, db, budget)
+}
+
+func retentionWithConfigCollector(t *testing.T, db *retentionStoreMock, calls []string, pass func(context.Context, store.WebhookConfigGC, int) (int, error)) *Retention {
+	t.Helper()
+	r := NewRetention(db)
+	if collector, ok := r.config.(*core.ConfigCollector); !ok || collector == nil {
+		t.Fatal("retention constructor did not bind its stateful config collector")
+	}
+	db.scanConfig, db.configBarrier, db.writeConfig, db.observeConfig = nil, nil, nil, nil
+	m := &retentionConfigCollectorMock{t: t, db: db, want: append([]string(nil), calls...), pass: pass,
+		reconcile: func(context.Context, store.WebhookConfigGC) error { return nil },
+	}
+	t.Cleanup(func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.next != len(m.want) {
+			t.Errorf("config collector consumed %d calls, want %v", m.next, m.want)
+		}
+	})
+	r.config = m
+	return r
 }
 
 var _ retentionStore = (*retentionStoreMock)(nil)

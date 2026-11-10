@@ -19,6 +19,10 @@ const context = () => ({
 const fixture = (projects: readonly Project[] = []) => {
   const unavailable = async (): Promise<never> => { throw new Error("Unexpected task API"); };
   const api = {
+    withExpectedUserId: () => { throw new Error("Unexpected actor binding"); },
+    readTaskSessionOperation: async () => { throw new Error("Unexpected operation read"); },
+    sendTaskSessionCommand: async () => { throw new Error("Unexpected Session send"); },
+    inspectTaskSession: unavailable, getObservedTask: unavailable, listObservedTasks: unavailable, getObservedTaskGraph: unavailable, listTaskWork: unavailable,
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: unavailable,
@@ -37,7 +41,7 @@ const fixture = (projects: readonly Project[] = []) => {
     listTeamInvitations: unavailable, createTeamInvitation: unavailable, revokeTeamInvitation: unavailable,
     listTeamMembers: unavailable, setTeamMemberRole: unavailable, removeTeamMember: unavailable,
     listBots: unavailable, getBot: unavailable, createBot: unavailable, deleteBot: unavailable, listWorkers: unavailable, getWorker: unavailable,
-    reportWorker: unavailable, getWorkerConfiguration: unavailable, reportWorkerConfiguration: unavailable,
+    reportWorker: unavailable, readWorkerMonitoring: unavailable, writeWorkerMonitoring: unavailable, getWorkerConfiguration: unavailable, reportWorkerConfiguration: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),

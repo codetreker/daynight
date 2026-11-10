@@ -10,6 +10,8 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import type { ProjectIdentity } from "./types.js";
+import type { MonitoringRead, MonitoringReceipt } from "../../api/worker-monitoring.js";
+import type { Observation } from "./monitoring/types.js";
 
 export type WorkerInventory = {
   readonly tasks: readonly Task[];
@@ -24,6 +26,8 @@ export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
+  readMonitoring(workerId: string, operation: Operation, requestId: string): Promise<MonitoringRead>;
+  writeMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, operation: Operation, requestId: string): Promise<MonitoringReceipt>;
   configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource>;
   reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
@@ -32,7 +36,7 @@ export type WorkerRemote = {
   resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
   project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
-  ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void): Promise<WorkerInventory>;
+  ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void, onFailure?: (projectId: string, error: unknown) => void): Promise<WorkerInventory>;
   candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean): AsyncGenerator<Task>;
   claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal): Promise<Task>;
   update(task: Task, input: Omit<UpdateWorkerClaimInput, "version" | "claimId">, signal: AbortSignal): Promise<Task>;
@@ -97,6 +101,14 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       operation.check();
       return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
+    readMonitoring: (workerId, operation, requestId) => {
+      operation.check();
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).readWorkerMonitoring(workerId, requestId);
+    },
+    writeMonitoring: (workerId, revision, observation, operation, requestId) => {
+      operation.check();
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, revision, observation, requestId);
+    },
     configuration: (workerId, signal, operation) => operation === undefined
       ? request(signal, api => api.getWorkerConfiguration(workerId))
       : createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
@@ -129,7 +141,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       signal.throwIfAborted();
       return project;
     },
-    ownInventory: async (projects, workerId, signal, onUnavailable) => {
+    ownInventory: async (projects, workerId, signal, onUnavailable, onFailure) => {
       const owner = verifiedUserId();
       const selected = new Map<string, ProjectIdentity>();
       for (const project of projects) {
@@ -146,7 +158,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
             projectTasks.push(task);
           }
         } catch (error) {
-          if (!isUnavailableProject(error)) throw error;
+          if (!isUnavailableProject(error)) { try { onFailure?.(projectId, error); } catch { /* Observation does not replace the original error. */ } throw error; }
           onUnavailable?.(projectId);
           unavailableProjectIds.push(projectId);
           continue;

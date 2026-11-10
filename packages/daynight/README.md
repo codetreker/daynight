@@ -199,6 +199,7 @@ daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--jso
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
+daynight task list --status in_progress --group-by chain [--assigned-to <uuid|me>] [--limit <1-50>] [--cursor <cursor> | --group-id <group-id> --targets-cursor <cursor>] [--json] [--project <project-id>]
 daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
@@ -228,7 +229,8 @@ Help, version, usage-manual output and completion generation do not resolve the
 user home, load review configuration, open SQLite or require review tools. `review add-repo` accepts one
 `--path <path>` before or after its remote; `--path=value` and `--` are invalid.
 Unknown commands and invalid arguments exit with status 2; operation failures
-exit with status 1 and retain their cause. The old `--daemon-review` and root
+exit with status 1 and retain their cause. Task reads with partial Session
+observations print the available result and exit with status 3. The old `--daemon-review` and root
 `add-repo` forms are invalid. The
 [client design](../../docs/design/daynight.md) owns command composition and lazy loading;
 the [composition decision](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)
@@ -859,6 +861,7 @@ daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
 daynight task list --status in_progress --json
+daynight task list --status in_progress --group-by chain --assigned-to me --json
 daynight task list --ready --assigned-to me --json
 daynight task list --assigned-to unassigned --json
 daynight task show <task-id> --json
@@ -894,7 +897,11 @@ Every returned task retains its full `dependsOn`, `externalDependsOn`, `blockedB
 and `ready`. An external context task can therefore reference an ID with no task
 row in this response. Those references remain available for dependency audits.
 The ordinary graph output includes the project, statistics for all returned
-nodes and the compact node facts. `--depends-only` uses the same tasks but prints
+nodes, compact node facts and each node's Session observation. `relation` marks
+ordinary members and external context; `sessionSummary` aggregates only
+in-progress ordinary members. Its observation time is independent of the graph
+snapshot's `observedAt`. `--depends-only` does not request Session observations;
+it uses the same tasks but prints
 only `ID`, `Depends on` and `External dependencies`, with full UUIDs and `none`
 for empty sets. With `--json`, this mode returns a bare array of objects containing
 only `id`, `dependsOn` and `externalDependsOn`.
@@ -1046,7 +1053,7 @@ pagination and binds them to the cursor. The service orders results by creation 
 ascending. A ready task is `todo` with all direct dependencies done or cancelled. This
 bounded selection supports choosing the next work without retrieving the whole
 project; `task graph <task-id>` provides the selected chain and one layer of
-external prerequisites. `task list`
+external prerequisites. Ordinary `task list`
 reads every matching page, including with `--ready`, and excludes done and cancelled by
 default. `--all` includes every status; `--status <status>` selects one status,
 including `done`. These two options conflict. `--ready` intersects the selected
@@ -1075,6 +1082,29 @@ request is issued. Non-me requests without a configured expectedUserId retain
 their existing optional-header behavior. Error responses retain the existing
 service-error and configured-principal admission behavior; me adds no new
 error-response header requirement.
+
+`task list --status in_progress --group-by chain` reads one work-overview page.
+It defaults to `--assigned-to me`; an explicit user UUID is supported, while
+`unassigned`, `--all`, readiness, permission and platform filters are rejected.
+Each ordinary dependency component appears once when it contains a matching
+in-progress task, including when its root is done. External prerequisites do
+not expand a group. Independent tasks are groups with `kind=task`.
+
+The default page has at most 20 groups; `--limit` accepts 1 through 50.
+`--cursor` continues groups. `--group-id` and `--targets-cursor` must be supplied
+together, without `--cursor`, to continue one group's in-progress targets.
+Each group previews at most five roots and 20 targets. Target pages remain
+limited to 20 regardless of `--limit`. Group summaries cover all accessible
+in-progress ordinary members, including other assignees; `matchesAssignee`,
+`matchedCount`, `memberCount`, `inProgressCount` and `aggregationScope` make that
+scope explicit. A group has no aggregate Session ID or send permission.
+
+Grouped JSON is `{groups,nextCursor,observedAt,partial}`. The complete response
+is bounded to 256 KiB and returns continuation cursors when more data remains.
+Task graph changes invalidate a cursor with `reset_required`; restart the
+group query. Session activity changes do not change pagination membership.
+Each page observes activity separately, so its counts and indicators may differ
+from an earlier page. Use `task graph <displayTaskId>` for complete membership.
 
 Updates preserve omitted fields; an empty description clears it. Repeated
 `--depends-on` and `--external-depends-on` declare the complete ordinary and
@@ -1141,9 +1171,9 @@ CLI options.
 
 Human task lists use labeled blocks containing ID, project, title, complete
 properties, status, readiness, automatic-execution permission, required platform,
-assignee, dependencies and blocking. Property rows are ordered by name and rendered as
+assignee, dependencies, blocking and Session observations. Property rows are ordered by name and rendered as
 terminal-safe JSON; missing keys are not replaced with default values.
-Description, version and timestamps
+Description, version and Task timestamps
 remain available in show, ready, create and update output. Graph nodes include
 state, permission, required platform, assignee, dependencies, blocking and
 title-preview truncation flags.
@@ -1169,6 +1199,92 @@ service; deadline behavior uses short test-only budgets and byte probes retain
 the full production limits. [PR #55](https://github.com/codetreker/daynight/pull/55)
 records the original integration and real-default-budget validation, with its
 historical source identity.
+
+### Task Session observations
+
+Ordinary `task list`, `task show` and `task graph` negotiate `include=session`
+and preserve their Task data. A versioned `session` object carries registration,
+platform and native Session identities, execution fence, mode, provider,
+activity, connection, lifecycle, current turn, indicator and caller-specific
+`send` eligibility. Generations and connection epochs are decimal strings;
+absent facts remain explicit nulls. The client does not derive activity from
+Task status, inspect Worker files, load message history or send input.
+
+The indicator and ordinary-message eligibility answer different questions.
+`warning` can mean an idle Session whose owner may start a turn; `working` can
+allow steering. `notice` may require an approval that an ordinary message
+cannot answer. Check `send.allowed`, `send.mode` and `send.reason` independently
+of color and Task status. An observation does not authorize a later write.
+Herdr observations describe terminal execution and do not imply Web message
+support.
+
+Use `observedAt`, `lastSeenAt` and `freshUntil` to assess freshness. Ordinary
+lists retrieve all Task pages before printing, so their observations need not
+describe one instant and may already be stale. Refresh with the same query.
+An unavailable observation retains the Task with an explicit reason/error and
+unknown send eligibility. Such partial results print to stdout, report a
+diagnostic on stderr and exit 3; malformed responses, authorization and
+transport failures exit 1. An old service yields `unsupported` and an upgrade
+instruction, with at most one plain Task traversal after an explicit
+negotiation refusal. `task ready`, `graph --depends-only`, write preflight and
+mutation receipts retain their original reads and output.
+
+### Task Session messages and recovery
+
+Send an authorized ordinary message to the selected Web Session, or query its
+original operation:
+
+```bash
+daynight task session send <task-id> <session-id> --project <project-id> --text 'Please inspect the failing test.' --json
+daynight task session send <task-id> <session-id> --project <project-id> --file ./message.txt --wait-seconds 0 --json
+daynight task session send <task-id> <session-id> --project <project-id> --stdin --json < ./message.txt
+daynight task session operation <task-id> <session-id> <operation-id> --project <project-id> --json
+daynight task session operation --operation-id <operation-id> --json
+```
+
+Choose exactly one of `--text`, `--file` and `--stdin`. Files must be regular
+files. Input preserves Unicode, BOM, LF/CRLF and trailing newlines. NUL,
+malformed Unicode, whitespace-only text, more than 1 MiB of UTF-8 text or more
+than 2 MiB of the complete command JSON fails before saving or submitting.
+Slash-prefixed text stays ordinary text. The command does not answer approvals,
+write Herdr terminal keys, cancel, queue, create or retarget a Session.
+
+The first send observes the explicit Session and freezes its execution fence and
+expectedTurnId. Idle uses null; working requires actual steer support and the
+same current turn. Session owner, credentials, connection and execution are
+checked again when accepting and dispatching. Inspection connectionEpoch remains
+a connection observation, not an additional command precondition.
+
+A private recovery record under
+`DN_CONFIG_DIR/session-operations/<originHash>/<actorId>/<operationId>.json`
+retains identity, intent hash and operation facts without the body or token.
+Real private permissions, a cross-process lock, file synchronization, atomic
+replacement and parent-directory synchronization precede POST. Any failure
+refuses before sending. The record is durably marked dispatch_unknown before
+the single POST; a crash before actual dispatch can therefore leave an operation
+unknown that was never sent. This conservative result does not permit replay.
+
+Every existing local record makes a repeated send verify the original target
+and body hash, then query only. It never refreshes current to reconstruct the
+turn. With no record, `--operation-id` is only for an explicitly chosen first
+submission: an existing receipt returns query guidance without accepting the new
+body. A prior unknown result or cross-machine recovery must use the explicit
+operation query. not_found does not prove unsent. The short operation form uses
+only the current actor and service's local record; another machine needs the
+original resource IDs. Historical receipts remain queryable under current
+permissions after a new claim, without restoring a queue.
+
+Wait defaults to 30 seconds, accepts 0–60, and polls only the original operation.
+accepted/offered/dispatching and unknown/not_found/wait expiry exit 3;
+provider_accepted/confirmed exit 0; rejected/failed/expired or
+protocol/authentication/output failures exit 1; invalid arguments exit 2; user
+interruption exits 130. Pending and interrupted operations retain their original
+identity in bounded output. Provider acceptance and confirmation do not mean the
+Agent completed the requested work. Local receipt-save or output failure does
+not undo service acceptance or authorize another POST.
+
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+describes authorized use, unknown recovery and the corresponding MCP tools.
 
 ## Task properties
 
@@ -1758,6 +1874,12 @@ polling, including idle periods, full capacity and long task operations. The
 service uses its last valid report time for the 120-second offline threshold and
 72-hour recent-worker window; observation does not release claims or change
 task status.
+
+Current execution monitoring is reported separately every 30 seconds. It shows
+observed scheduling, activities, capacity and bounded failure summaries; unknown
+or stale data does not mean the Worker is idle. Monitoring failures do not stop
+heartbeats or task execution. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
+defines its freshness, permissions and retention.
 
 Snapshots include actual OS, logical CPU count and utilization, memory usage,
 and available/total space for the filesystem containing the directory where

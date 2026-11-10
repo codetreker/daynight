@@ -3,6 +3,7 @@ package worker
 import (
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,114 @@ func TestWorkerReportValidationRejectsInvalidDomainValues(t *testing.T) {
 			if !errors.As(err, &fault) || fault.Code != "invalid_input" {
 				t.Fatalf("wrong validation error: %T", err)
 			}
+		})
+	}
+}
+
+func TestWorkerReportCapacityValidationAndSnapshot(t *testing.T) {
+	const userID = "11111111-1111-4111-8111-111111111111"
+	const workerID = "22222222-2222-4222-8222-222222222222"
+	newReport := func() model.WorkerReport {
+		report := validWorkerReportForValidation()
+		report.Telemetry.Machine = model.WorkerMachine{ID: "33333333-3333-4333-8333-333333333333", Name: "Private worker machine"}
+		report.Telemetry.WorkingDirectory = "/private/work"
+		return report
+	}
+	checkSnapshot := func(t *testing.T, input, expected model.WorkerReport) {
+		t.Helper()
+		normalized, err := ValidateReport(input)
+		if err != nil {
+			t.Fatalf("normal capacity rejected: %v", err)
+		}
+		if !reflect.DeepEqual(normalized, expected) {
+			t.Fatalf("normalized report differs: got %+v, want %+v", normalized, expected)
+		}
+		items, err := MatchTaskSnapshots(nil, *normalized.TaskInventory, userID, workerID)
+		if err != nil || items == nil || len(items) != 0 {
+			t.Fatalf("missing Task sources did not produce an explicit empty observation: %+v %v", items, err)
+		}
+		observedAt := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+		actual := SnapshotForReport(userID, workerID, normalized, observedAt, items)
+		expectedObservedAt := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+		expectedInventoryAt := expected.TaskInventory.ObservedAt
+		want := model.WorkerSnapshot{
+			UserID: userID, WorkerID: workerID, CreatedAt: expectedObservedAt, LastReportedAt: expectedObservedAt,
+			Telemetry: expected.Telemetry,
+			TaskSnapshot: model.WorkerTaskObservation{
+				State: model.WorkerTasksObserved, ObservedAt: &expectedObservedAt,
+				InventoryObservedAt: &expectedInventoryAt, Items: []model.WorkerObservedTask{},
+			},
+		}
+		if !reflect.DeepEqual(actual, want) {
+			t.Fatalf("capacity snapshot differs: got %+v, want %+v", actual, want)
+		}
+	}
+	cases := []struct {
+		name string
+		size int
+		set  func(*model.WorkerTelemetry, string)
+	}{
+		{"machine", 256, func(v *model.WorkerTelemetry, s string) { v.Machine.Name = s }},
+		{"cwd", 4096, func(v *model.WorkerTelemetry, s string) { v.WorkingDirectory = s }},
+		{"daynight", 256, func(v *model.WorkerTelemetry, s string) { v.Versions.Daynight = s }},
+		{"herdr", 256, func(v *model.WorkerTelemetry, s string) { v.Versions.Herdr.Value = workerValidationValue(s) }},
+		{"codex", 256, func(v *model.WorkerTelemetry, s string) {
+			v.Versions.Codex = model.WorkerProbe[string]{State: "ok", CheckedAt: v.SampledAt, Value: workerValidationValue(s)}
+		}},
+		{"copilot", 256, func(v *model.WorkerTelemetry, s string) {
+			v.Versions.Copilot = model.WorkerProbe[string]{State: "ok", CheckedAt: v.SampledAt, Value: workerValidationValue(s)}
+		}},
+		{"os.type", 64, func(v *model.WorkerTelemetry, s string) { v.OS.Value.Type = s }},
+		{"os.arch", 64, func(v *model.WorkerTelemetry, s string) { v.OS.Value.Arch = s }},
+		{"os.release", 256, func(v *model.WorkerTelemetry, s string) { v.OS.Value.Release = s }},
+		{"os.version", 1024, func(v *model.WorkerTelemetry, s string) { v.OS.Value.Version = s }},
+		{"cpu.model", 512, func(v *model.WorkerTelemetry, s string) { v.CPU.Value.Model = s }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input, expected := newReport(), newReport()
+			value := strings.Repeat("界", tc.size/3) + strings.Repeat("x", tc.size%3)
+			tc.set(&input.Telemetry, value)
+			tc.set(&expected.Telemetry, value)
+			checkSnapshot(t, input, expected)
+			tc.set(&input.Telemetry, value+"x")
+			_, err := ValidateReport(input)
+			requireFault(t, err, "invalid_input")
+		})
+	}
+	for _, kind := range []string{"claims", "projects"} {
+		t.Run(kind, func(t *testing.T) {
+			maximum := 256
+			var claims []model.WorkerTaskReference
+			var projects []model.WorkerRuntimeProject
+			if kind == "claims" {
+				claims = make([]model.WorkerTaskReference, maximum+1)
+				for i := range claims {
+					claims[i] = model.WorkerTaskReference{ProjectID: uuid.NewString(), TaskID: uuid.NewString(), ClaimID: uuid.NewString()}
+				}
+			} else {
+				maximum = 128
+				projects = make([]model.WorkerRuntimeProject, maximum+1)
+				for i := range projects {
+					projects[i] = model.WorkerRuntimeProject{ProjectID: uuid.NewString(), Native: nil}
+				}
+			}
+			set := func(report *model.WorkerReport, count int) {
+				if kind == "claims" {
+					report.TaskInventory.Claims = append([]model.WorkerTaskReference{}, claims[:count]...)
+				} else {
+					report.Telemetry.RuntimeConfiguration = &model.WorkerRuntimeConfiguration{
+						SchemaVersion: 1, Native: nil, Projects: append([]model.WorkerRuntimeProject{}, projects[:count]...),
+					}
+				}
+			}
+			input, expected := newReport(), newReport()
+			set(&input, maximum)
+			set(&expected, maximum)
+			checkSnapshot(t, input, expected)
+			set(&input, maximum+1)
+			_, err := ValidateReport(input)
+			requireFault(t, err, "invalid_input")
 		})
 	}
 }

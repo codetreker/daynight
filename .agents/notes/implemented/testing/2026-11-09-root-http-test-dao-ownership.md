@@ -18,10 +18,15 @@ not require a database when its persistence facts can be supplied explicitly.
 
 ## Decision
 
-Root unit tests assemble production modules, routes and authentication over
-strict callbacks on the existing `store.Transactions`, scope and DAO interfaces.
-Each test declares query inputs, returned facts, proposed writes, expected calls
-and transaction completion. A subsequent response is independently supplied;
+The original root-unit correction replaced database preparation with strict
+callbacks on the existing `store.Transactions`, scope and DAO interfaces. That
+retained production module assembly and existing lower business decisions while
+removing persistence setup and making transaction outcomes and runtime barriers
+explicit.
+
+Root composition and runtime fixtures use those callbacks to assemble production
+modules, routes and authentication. Each test declares query inputs, returned
+facts, proposed writes, expected calls and transaction completion. A subsequent response is independently supplied;
 capturing a proposed write does not make it persistent. The fixtures contain no
 mutable model database or simulated rollback. Unconfigured access fails, and
 concurrent work uses operation-specific observations and explicit barriers.
@@ -57,9 +62,21 @@ checks the actual leased-row update and immutable data; process restart checks
 the original destination and signing secret.
 
 The [test-writing rules](../../../../docs/writing_tests.md) own dependency and
-integration restrictions. Existing scenarios are corrected in place or
-consolidated with an existing mechanism owner; protocol matrices are not added
-to normal API integration or product E2E.
+integration restrictions. The
+[Worker Report capacity decision](2026-11-09-worker-report-capacity-test-owners.md)
+partially supersedes the DAO mock boundary for that HTTP matrix, preserving its
+lower validation and projection proofs with Core. The
+[Configuration capacity decision](2026-11-09-worker-configuration-capacity-test-owners.md)
+assigns its eight HTTP cases and receiving Core input/business proofs to the
+same direct operation boundary. The
+[assistant-host HTTP decision](2026-11-09-worker-assistant-host-http-test-owners.md)
+assigns the first reporting/detail/list case to controlled operations and retains
+its validation, complete snapshot and service-stage observations separately.
+The [configuration compatibility HTTP decision](2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+assigns the second assistant-host case to controlled operations after its lower
+receivers exist, removing its unconsumed shared DAO/application fixture. Existing
+scenarios are corrected in place or consolidated with an existing mechanism owner; protocol
+matrices are not added to normal API integration or product E2E.
 
 ## Alternatives
 
@@ -83,9 +100,9 @@ upper-layer decisions without that second implementation.
 
 ## Consequences
 
-Root protocol and lifecycle feedback executes without PostgreSQL. Physical
-proofs remain in tests that exercise the responsible database, filesystem or
-process mechanism. Controlled authentication removes unrelated login setup
+The DAO fixtures provide root protocol and lifecycle feedback without
+PostgreSQL. Physical proofs remain in tests that exercise the responsible
+database, filesystem or process mechanism. Controlled authentication removes unrelated login setup
 without removing the SDK boundary from tests that actually observe it.
 
 The receiving owners still incur real persistence cost. Source-bound evidence

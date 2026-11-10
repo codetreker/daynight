@@ -244,3 +244,10 @@ func TestTaskSyncReplacesWholeSessionCollectionWhenTaskDeltaIsEmpty(t *testing.T
 		t.Fatal("later read mutated previous response")
 	}
 }
+
+func (r syncSessionReader) TaskSessionSources(context.Context, string, []string) ([]store.TaskSessionSource, error) {
+	panic("unexpected task observation")
+}
+func (r syncSessionReader) TaskSessionInspectionSource(context.Context, string, string, string) (store.TaskSessionSource, error) {
+	panic("unexpected task inspection")
+}

@@ -3,6 +3,7 @@ package model
 import "time"
 
 type GraphTask struct {
+	Version           int64
 	ID                string
 	TitlePreview      string
 	TitleTruncated    bool

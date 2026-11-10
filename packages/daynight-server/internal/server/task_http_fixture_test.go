@@ -627,6 +627,7 @@ var _ store.CredentialReader = (*taskHTTPCredentialReaderMock)(nil)
 type taskHTTPSessionReaderMock struct {
 	taskHTTPMockBase
 	CurrentTaskSessionSourcesFn func(context.Context, string) ([]store.TaskSessionSource, error)
+	TaskSessionSourcesFn        func(context.Context, string, []string) ([]store.TaskSessionSource, error)
 }
 
 func (mock *taskHTTPSessionReaderMock) CurrentTaskSessionSources(p0 context.Context, p1 string) ([]store.TaskSessionSource, error) {
@@ -851,4 +852,21 @@ func taskHTTPMockAccess(project model.Project, principal model.Principal) model.
 func taskHTTPMockStep(id string, position int64) model.TaskStep {
 	observed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return model.TaskStep{ID: id, Position: position, Title: "Step", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}
+}
+
+func (mock *taskHTTPReaderMock) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	mock.need("TaskWorkGroups", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	mock.need("TaskWorkTargets", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPSessionReaderMock) TaskSessionSources(ctx context.Context, project string, ids []string) ([]store.TaskSessionSource, error) {
+	mock.need("TaskSessionSources", mock.TaskSessionSourcesFn != nil)
+	return mock.TaskSessionSourcesFn(ctx, project, ids)
+}
+func (mock *taskHTTPSessionReaderMock) TaskSessionInspectionSource(context.Context, string, string, string) (store.TaskSessionSource, error) {
+	mock.need("TaskSessionInspectionSource", false)
+	panic("unreachable")
 }

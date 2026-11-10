@@ -82,7 +82,7 @@ func TestProductionInputBodyBoundaries(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", entry)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	taskhttp.TaskRoutes(mux, operations, authentication, logger)
+	taskhttp.TaskRoutes(mux, operations, nil, authentication, logger)
 	completed := make(chan error, 1)
 	observed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mux.ServeHTTP(w, r)

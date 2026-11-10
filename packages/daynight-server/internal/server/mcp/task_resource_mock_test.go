@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -130,7 +131,7 @@ func newTaskResourceFixture(t *testing.T) *taskResourceFixture {
 		t.Fatal(err)
 	}
 	f.entry = entry
-	if err := RegisterTaskTools(entry, f.operations); err != nil {
+	if err := RegisterTaskTools(entry, f.operations, f.operations); err != nil {
 		t.Fatal(err)
 	}
 	f.server = httptest.NewServer(httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -179,4 +180,26 @@ func (m *taskResourceQueryMock) MCPList(ctx context.Context, principal model.Pri
 }
 func (m *taskResourceQueryMock) MCPReady(ctx context.Context, principal model.Principal, project string, input taskcore.MCPReadyRequest) ([]store.TaskPriorityItem, error) {
 	return nil, m.base.called("MCPReady", ctx, principal, project, false)
+}
+
+func (m *taskResourceMock) ObserveGet(ctx context.Context, p model.Principal, project, id string) (taskservice.ObservedTask, error) {
+	task, err := m.Get(ctx, p, project, id)
+	return taskservice.ObservedTask{Task: task, Session: observationFixture()}, err
+}
+func (m *taskResourceQueryMock) ObserveGraph(ctx context.Context, p model.Principal, project, id string) (taskservice.ObservedGraph, error) {
+	graph, err := m.Graph(ctx, p, project, id)
+	return observedGraphFixture(graph), err
+}
+func (m *taskResourceQueryMock) ObservedMCPList(ctx context.Context, p model.Principal, project string, input taskcore.MCPListRequest) (taskservice.ObservedMCPPage, error) {
+	page := taskservice.ObservedMCPPage{Items: []taskservice.ObservedMCPItem{}, ObservedAt: time.Now().UTC()}
+	err := m.MCPList(ctx, p, project, input, func(item store.TaskPriorityItem, cursor string, more bool) bool {
+		page.Items = append(page.Items, taskservice.ObservedMCPItem{Item: item, Session: observationFixture()})
+		if more {
+			page.NextCursor = &cursor
+		} else {
+			page.NextCursor = nil
+		}
+		return true
+	})
+	return page, err
 }

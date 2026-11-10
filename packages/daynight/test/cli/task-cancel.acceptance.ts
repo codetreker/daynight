@@ -8,6 +8,7 @@ import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Task, WorkerClaim } from "../../src/api/types.js";
 import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { withTaskObservation } from "../fixtures/task-observation.js";
 
 it("cancels through both installed native launchers and reconciles an unknown result without replay", async () => {
   const installed = await createAcceptanceCli();
@@ -49,6 +50,7 @@ it("cancels through both installed native launchers and reconciles an unknown re
       if (request.method === "GET" && request.url === `/api/v1/projects/${projectId}`) {
         response.end(stringifyApiJson({ id: projectId, name: "Native cancellation", repoUrl: "https://example.test/cancel.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: claimId, version: 1n }, createdAt: time, updatedAt: time }));
       } else if (request.method === "GET" && request.url === resourcePath) response.end(stringifyApiJson(current));
+      else if (request.method === "GET" && request.url === `${resourcePath}?include=session`) response.end(stringifyApiJson(withTaskObservation(current)));
       else if (request.method === "PUT" && request.url === `${resourcePath}/status`) {
         if (mode === "active") {
           response.writeHead(409);
@@ -134,8 +136,13 @@ it("cancels through both installed native launchers and reconciles an unknown re
     expect(unknown.code).toBe(1); expect(unknown.stdout).toBe(""); expect(unknown.stderr).toContain("outcome is unconfirmed");
     expect(requests.slice(beforeUnknown).filter(({ method }) => method === "PUT")).toHaveLength(1);
     const read = await invoke(receipt.launcherPath, ["show", taskId, "--json"]);
-    expect(read.code, read.stderr).toBe(0); expect(parseApiJson(read.stdout)).toEqual(current);
-    expect(requests.slice(beforeUnknown).map(({ method }) => method)).toEqual(["GET", "PUT", "GET", "GET"]);
+    expect(read.code, read.stderr).toBe(0); expect(parseApiJson(read.stdout)).toEqual(withTaskObservation(current));
+    expect(requests.slice(beforeUnknown).map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: `/api/v1/projects/${projectId}` },
+      { method: "PUT", path: `${resourcePath}/status` },
+      { method: "GET", path: `/api/v1/projects/${projectId}` },
+      { method: "GET", path: `${resourcePath}?include=session` },
+    ]);
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];
   for (const [child, closed] of children) { try { await terminateInstalledProcess(child, closed); } catch (cause) { cleanup.push(cause); } }

@@ -71,7 +71,7 @@ func (s *Workers) PutConfiguration(ctx context.Context, principal model.Principa
 	var result model.WorkerConfigurationResource
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
 		var err error
-		result, err = workercore.PutConfiguration(ctx, scope.WorkerDAO(), principal, workerID, expected, value)
+		result, err = s.putConfiguration(ctx, scope.WorkerDAO(), principal, workerID, expected, value)
 		return err
 	})
 	if err != nil {

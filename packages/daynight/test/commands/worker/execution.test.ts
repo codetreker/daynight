@@ -118,6 +118,127 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
 };
 
 describe("execution from current Herdr resources", () => {
+  it("reports native progress only when its observed state changes", async () => {
+    const f = await fixture("codex", staleId);
+    const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
+    f.agents.push(current);
+    const observe = vi.fn(), success = vi.fn();
+    f.dependencies.observePhase = observe; f.dependencies.observeSuccess = success;
+    await f.driver.advance(f.input);
+    expect(observe).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    observe.mockClear(); success.mockClear();
+    await f.driver.advance(f.input);
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" });
+    expect(observe).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+    expect(observe).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" }, true, undefined);
+    current.state_change_seq = 11;
+    await f.driver.advance(f.input);
+    expect(observe).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+  });
+
+  it("records successful start and input submission without allowing callback failure to change execution", async () => {
+    const f = await fixture("codex", null);
+    const phases: string[] = [];
+    f.dependencies.observeSuccess = (_identity, phase) => { phases.push(phase.phase); throw new Error("monitoring callback"); };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(phases).toEqual(expect.arrayContaining(["observation", "worktree-preparation", "agent-start", "input-submission"]));
+  });
+
+  it("labels an observation failure after confirmed input and recovers at the same operation", async () => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const observePhase = vi.fn(), observeSuccess = vi.fn();
+    f.dependencies.observePhase = observePhase; f.dependencies.observeSuccess = observeSuccess;
+    const originalObserve = f.manager.observe.bind(f.manager);
+    const failure = new Error("post-submission observation failed");
+    vi.spyOn(f.manager, "observe").mockImplementationOnce(originalObserve).mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(observeSuccess).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "input-submission" });
+    expect(observePhase).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "agent-observation" }, false, undefined);
+    observeSuccess.mockClear();
+    await f.driver.advance(f.input);
+    expect(observeSuccess).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it("labels a failed fallback observation after startup input waits and reconnects without restarting", async () => {
+    const f = await fixture("copilot", savedId);
+    f.blockOnLaunch();
+    const observePhase = vi.fn(), observeSuccess = vi.fn();
+    f.dependencies.observePhase = observePhase; f.dependencies.observeSuccess = observeSuccess;
+    const failure = new Error("fallback observation failed");
+    vi.spyOn(f.manager, "observe").mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(0);
+    expect(observePhase).toHaveBeenLastCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, false, undefined);
+    observeSuccess.mockClear();
+    const result = await f.driver.advance(f.input);
+    expect(result.observation?.status).toBe("blocked");
+    expect(observeSuccess).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(0);
+  });
+
+  it("tracks cold resource stop separately from the ordinary observation", async () => {
+    const f = await fixture("copilot", savedId);
+    const phases = vi.fn(), successes = vi.fn();
+    f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
+    const failure = new Error("original workspace stop failed");
+    vi.spyOn(f.manager, "stopAndClose").mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" });
+    expect(successes).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" }, "resource-stop");
+    expect(phases).toHaveBeenLastCalledWith(f.input.owner, { kind: "execution", phase: "observation" }, false, undefined, "resource-stop");
+    await f.driver.advance(f.input);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" }, "resource-stop");
+  });
+
+  it("labels an unconfirmed startup input without resending the assignment", async () => {
+    const f = await fixture("copilot", savedId);
+    const phases = vi.fn(); f.dependencies.observePhase = phases;
+    const original = f.rpc.request;
+    let rejectReceipt = true;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      const result = await original(method, params, operation);
+      if (method === "agent.prompt" && rejectReceipt) { rejectReceipt = false; throw new Error("receipt lost"); }
+      return result;
+    });
+    await expect(f.driver.advance(f.input)).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "unknown" });
+    expect(phases).toHaveBeenLastCalledWith(f.input.owner, { kind: "execution", phase: "input-submission" }, false, undefined, "startup-input");
+    const attempts = f.calls.filter(call => call.method === "agent.prompt").length;
+    f.agents[0]!.agent_status = "working";
+    await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(attempts);
+  });
+
+  it("separates prompt source failures from successful agent observations", async () => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const phases = vi.fn(), successes = vi.fn(); f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
+    const failure = new Error("prompt source unavailable");
+    f.dependencies.preparePromptSource = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "preparing" }, false, undefined, "prompt-source");
+    expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, "prompt-source");
+    await f.driver.advance(f.input);
+    expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "preparing" }, "prompt-source");
+  });
+
+  it("preserves the original execution failure when monitoring throws", async () => {
+    const f = await fixture("codex", null);
+    const failure = new Error("original worktree failure");
+    f.dependencies.observePhase = () => { throw new Error("monitoring failure"); };
+    f.dependencies.observeSuccess = () => { throw new Error("monitoring failure"); };
+    vi.mocked(f.dependencies.git.prepareWorktree).mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+  });
+
   it("waits for the initial tuple and captures the value received during workspace preparation", async () => {
     const f = await fixture("codex", null);
     const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });
@@ -621,6 +742,7 @@ describe("execution from current Herdr resources", () => {
 
   it("pings the idle agent that appeared before serialized startup without submitting an assignment", async () => {
     const f = await fixture("copilot", savedId);
+    const phases = vi.fn(), successes = vi.fn(); f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
     const start = f.manager.start;
     vi.spyOn(f.manager, "start").mockImplementationOnce(async (context, binding, input, operation) => {
       const pane = f.panes.find((candidate) => candidate.pane_id === binding.paneId)!;
@@ -629,6 +751,9 @@ describe("execution from current Herdr resources", () => {
     });
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => ["agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+    expect(successes).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-start" });
+    expect(phases).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-start" }, true, undefined);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
     await f.driver.advance(f.input);
     await f.driver.advance(f.input);
     const prompts = f.calls.filter((call) => call.method === "agent.prompt");
@@ -645,6 +770,7 @@ describe("execution from current Herdr resources", () => {
     } else if (inputKind === "ping") {
       f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     }
+    const phases = vi.fn(), successes = vi.fn(); f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
     const request = f.rpc.request;
     let failSnapshot = false;
     let firstPrompt = true;
@@ -659,7 +785,10 @@ describe("execution from current Herdr resources", () => {
       return result;
     });
     await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "agent-observation" }, false, undefined);
+    successes.mockClear();
     await f.driver.advance(f.input);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
     await f.driver.advance(f.input);
     const prompts = f.calls.filter((call) => call.method === "agent.prompt");
     expect(prompts).toHaveLength(2);

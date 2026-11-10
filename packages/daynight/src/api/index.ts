@@ -5,5 +5,8 @@ export { createOperation, DEFAULT_OPERATION_LIMITS, OperationError } from "./ope
 export type { Operation, OperationLimits } from "./operation.js";
 export { canonicalId, ProtocolError, validateAttachmentPath } from "./parse.js";
 export type * from "./types.js";
+export type * from "./task-observation.js";
+export type * from "./task-session.js";
+export type * from "./task-work.js";
 export { parseTaskProperties, parseTaskPropertyResource, parseTaskPropertySchema, readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "./task-properties.js";
 export { canonicalStepId } from "./task-steps.js";

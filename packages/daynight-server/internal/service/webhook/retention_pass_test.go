@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,80 +38,19 @@ func (m retentionReceiptScopeMock) DeleteReceipt(c context.Context, a store.Webh
 	return retentionRequire(m.t, "DeleteReceipt", m.remove, m.remove != nil)(c, a)
 }
 
-func TestRetentionPassKeepsReferencedConfigurationAndActiveKeys(t *testing.T) {
-	for _, kind := range []string{"referenced", "active", "not present", "overlap before expiry", "retired"} {
-		t.Run(kind, func(t *testing.T) {
+func TestRetentionPassPropagatesConfigurationResults(t *testing.T) {
+	for _, result := range []int{0, 1} {
+		t.Run(fmt.Sprint(result), func(t *testing.T) {
 			db := retentionEmptyStore(t)
-			id := store.WebhookConfigGCCandidate{ID: "key", Kind: "signing_key", EndpointID: "endpoint", Revision: 1}
-			facts := store.WebhookConfigGCFacts{Present: true, Retired: true, ObservedAt: retentionTestNow}
-			remove := kind == "retired"
-			switch kind {
-			case "referenced":
-				facts.Referenced = true
-			case "active":
-				facts.Retired = false
-			case "not present":
-				facts.Present = false
-			case "overlap before expiry":
-				facts.Expiry = retentionTestNow.Add(time.Second)
-			}
-			db.scanConfig = func(_ context.Context, a *store.WebhookConfigGCCandidate, n int) (store.WebhookConfigGCScan, error) {
-				if a != nil || n != 125 {
-					t.Fatalf("scan=%v budget=%d", a, n)
-				}
-				return store.WebhookConfigGCScan{Barrier: "17", Candidates: []store.WebhookConfigGCCandidate{id}}, nil
-			}
-			db.configBarrier = func(_ context.Context, b string) (bool, error) {
-				if b != "17" {
-					t.Fatal("snapshot barrier changed")
-				}
-				return true, nil
-			}
-			deleted := false
-			sc := retentionConfigScopeMock{t: t, lock: func(_ context.Context, c store.WebhookConfigGCCandidate) (store.WebhookConfigGCFacts, error) {
-				if c != id {
-					t.Fatal("candidate identity changed")
-				}
-				return facts, nil
-			}, remove: func(_ context.Context, c store.WebhookConfigGCCandidate) (bool, error) {
-				deleted = true
-				if c != id {
-					t.Fatal("wrong key deleted")
-				}
-				return true, nil
-			}}
-			db.writeConfig = func(c context.Context, a store.WebhookConfigGCCandidate, f func(store.WebhookConfigGCScope) error) (store.Completion, error) {
-				if a != id {
-					t.Fatal("transaction identity changed")
-				}
-				if err := f(sc); err != nil {
-					return store.Completion{Outcome: store.TransactionNotCommitted}, err
-				}
-				return store.Completion{Outcome: store.TransactionCommitted}, nil
-			}
-			r := NewRetention(db)
+			r := retentionWithConfigCollector(t, db, []string{"reconcile", "pass"}, func(context.Context, store.WebhookConfigGC, int) (int, error) {
+				return result, nil
+			})
 			n, more, err := r.Pass(t.Context())
-			if err != nil || more || deleted != remove || n != map[bool]int{true: 1, false: 0}[remove] || r.Observation().ConfigRows != n {
-				t.Fatalf("configuration n=%d deleted=%v more=%v obs=%+v err=%v", n, deleted, more, r.Observation(), err)
+			obs := r.Observation()
+			if err != nil || n != result || more || obs.ConfigRows != result || obs.ConfirmedRows != result || obs.ContinueSoon || obs.Failed {
+				t.Fatalf("configuration n=%d more=%v obs=%+v err=%v", n, more, obs, err)
 			}
 		})
-	}
-}
-
-func TestRetentionPassWaitsForConfigurationSnapshotBarrier(t *testing.T) {
-	db := retentionEmptyStore(t)
-	db.scanConfig = func(context.Context, *store.WebhookConfigGCCandidate, int) (store.WebhookConfigGCScan, error) {
-		return store.WebhookConfigGCScan{Barrier: "pending", Candidates: []store.WebhookConfigGCCandidate{{ID: "original"}}}, nil
-	}
-	db.configBarrier = func(context.Context, string) (bool, error) { return false, nil }
-	n, more, err := NewRetention(db).Pass(t.Context())
-	if err != nil || n != 0 || more {
-		t.Fatalf("unpassed barrier %d %v %v", n, more, err)
-	}
-	for _, call := range db.recorded() {
-		if call == "config.write" {
-			t.Fatal("write preceded configuration snapshot barrier")
-		}
 	}
 }
 
@@ -322,11 +262,10 @@ func TestRetentionKeepsUnreadableUnknownWithoutRepeatingWrite(t *testing.T) {
 
 func TestRetentionPassInternalBudgetDoesNotCancelItsParent(t *testing.T) {
 	db := retentionEmptyStore(t)
-	db.scanConfig = func(c context.Context, _ *store.WebhookConfigGCCandidate, _ int) (store.WebhookConfigGCScan, error) {
+	r := retentionWithConfigCollector(t, db, []string{"reconcile", "pass", "reconcile", "pass"}, func(c context.Context, _ store.WebhookConfigGC, _ int) (int, error) {
 		<-c.Done()
-		return store.WebhookConfigGCScan{}, c.Err()
-	}
-	r := NewRetention(db)
+		return 0, c.Err()
+	})
 	parent := context.Background()
 	n, more, err := r.pass(parent, 20*time.Millisecond)
 	if err != nil || n != 0 || !more || parent.Err() != nil || r.Observation().Failed {
@@ -342,17 +281,18 @@ func TestRetentionPassInternalBudgetDoesNotCancelItsParent(t *testing.T) {
 
 func TestRetentionContinuesOtherClassesAfterConfigTimeout(t *testing.T) {
 	db := retentionEmptyStore(t)
-	db.scanConfig = func(c context.Context, _ *store.WebhookConfigGCCandidate, _ int) (store.WebhookConfigGCScan, error) {
-		<-c.Done()
-		return store.WebhookConfigGCScan{}, c.Err()
-	}
-	r := NewRetention(db)
+	passes := 0
+	r := retentionWithConfigCollector(t, db, []string{"reconcile", "pass", "reconcile", "pass"}, func(c context.Context, _ store.WebhookConfigGC, _ int) (int, error) {
+		passes++
+		if passes == 1 {
+			<-c.Done()
+			return 0, c.Err()
+		}
+		return 0, nil
+	})
 	_, more, err := r.pass(context.Background(), 20*time.Millisecond)
 	if err != nil || !more {
 		t.Fatalf("config budget %v %v", more, err)
-	}
-	db.scanConfig = func(context.Context, *store.WebhookConfigGCCandidate, int) (store.WebhookConfigGCScan, error) {
-		return store.WebhookConfigGCScan{}, nil
 	}
 	d := retentionDeliveryFixture()
 	writes := 0
@@ -377,18 +317,31 @@ func TestRetentionPassIsSingleFlightAndUsesProductionBudget(t *testing.T) {
 	}
 	db := retentionEmptyStore(t)
 	entered, release := make(chan struct{}), make(chan struct{})
-	db.scanConfig = func(c context.Context, _ *store.WebhookConfigGCCandidate, _ int) (store.WebhookConfigGCScan, error) {
+	var once sync.Once
+	r := retentionWithConfigCollector(t, db, []string{"reconcile", "pass"}, func(c context.Context, _ store.WebhookConfigGC, _ int) (int, error) {
 		close(entered)
 		select {
 		case <-release:
-			return store.WebhookConfigGCScan{}, nil
+			return 0, nil
 		case <-c.Done():
-			return store.WebhookConfigGCScan{}, c.Err()
+			return 0, c.Err()
 		}
-	}
-	r := NewRetention(db)
+	})
+	parent, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { _, _, err := r.Pass(context.Background()); done <- err }()
+	drained := false
+	t.Cleanup(func() {
+		cancel()
+		once.Do(func() { close(release) })
+		if !drained {
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Error("retention pass did not drain")
+			}
+		}
+	})
+	go func() { _, _, err := r.Pass(parent); done <- err }()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -398,44 +351,32 @@ func TestRetentionPassIsSingleFlightAndUsesProductionBudget(t *testing.T) {
 	if err != nil || n != 0 || !more {
 		t.Fatalf("concurrent pass %d %v %v", n, more, err)
 	}
-	close(release)
-	retentionFail(t, <-done)
+	once.Do(func() { close(release) })
+	select {
+	case err := <-done:
+		drained = true
+		retentionFail(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("retention pass did not drain")
+	}
 	db = retentionEmptyStore(t)
 	started := time.Now()
-	db.scanConfig = func(c context.Context, _ *store.WebhookConfigGCCandidate, _ int) (store.WebhookConfigGCScan, error) {
+	r = retentionWithConfigCollector(t, db, []string{"reconcile", "pass"}, func(c context.Context, _ store.WebhookConfigGC, _ int) (int, error) {
 		deadline, ok := c.Deadline()
 		if !ok || deadline.Sub(started) < 1900*time.Millisecond || deadline.Sub(started) > 2100*time.Millisecond {
 			t.Errorf("production budget=%v present=%v", deadline.Sub(started), ok)
 		}
-		return store.WebhookConfigGCScan{}, nil
-	}
-	_, _, err = NewRetention(db).Pass(t.Context())
+		return 0, nil
+	})
+	_, _, err = r.Pass(t.Context())
 	retentionFail(t, err)
 }
 
 func TestRetentionSharedAffectedRowBudgetCountsEachClass(t *testing.T) {
 	db := retentionEmptyStore(t)
-	config := make([]store.WebhookConfigGCCandidate, 125)
 	receipts := make([]store.WebhookReceiptIdentity, 125)
-	for i := range config {
-		config[i] = store.WebhookConfigGCCandidate{ID: fmt.Sprint(i)}
+	for i := range receipts {
 		receipts[i] = store.WebhookReceiptIdentity{OperationID: fmt.Sprint(i)}
-	}
-	db.scanConfig = func(_ context.Context, _ *store.WebhookConfigGCCandidate, n int) (store.WebhookConfigGCScan, error) {
-		if n != 125 {
-			t.Fatalf("config budget%d", n)
-		}
-		return store.WebhookConfigGCScan{Barrier: "1", Candidates: config}, nil
-	}
-	db.configBarrier = func(context.Context, string) (bool, error) { return true, nil }
-	db.writeConfig = func(_ context.Context, _ store.WebhookConfigGCCandidate, f func(store.WebhookConfigGCScope) error) (store.Completion, error) {
-		s := retentionConfigScopeMock{t: t, lock: func(context.Context, store.WebhookConfigGCCandidate) (store.WebhookConfigGCFacts, error) {
-			return store.WebhookConfigGCFacts{Present: true, Retired: true}, nil
-		}, remove: func(context.Context, store.WebhookConfigGCCandidate) (bool, error) { return true, nil }}
-		if err := f(s); err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
 	db.expiredReceipts = func(_ context.Context, _ *store.WebhookReceiptIdentity, n int) ([]store.WebhookReceiptIdentity, error) {
 		if n != 125 {
@@ -464,7 +405,7 @@ func TestRetentionSharedAffectedRowBudgetCountsEachClass(t *testing.T) {
 		s.payload = func(context.Context, string, time.Time) (int, error) { return 1, nil }
 		return retentionCallback(f, s)
 	}
-	r := NewRetention(db)
+	r := retentionWithConfigCollector(t, db, []string{"reconcile", "pass"}, func(context.Context, store.WebhookConfigGC, int) (int, error) { return 125, nil })
 	n, more, err := r.Pass(t.Context())
 	obs := r.Observation()
 	if err != nil || n != 500 || !more || history != 250 || obs.ConfigRows != 125 || obs.ReceiptRows != 125 || obs.HistoryRows != 250 || obs.ConfirmedRows != 500 {

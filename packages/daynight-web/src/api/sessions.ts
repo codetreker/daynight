@@ -4,8 +4,8 @@ import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
 import { ApiError, assertResponsePrincipal, json, request, requestId, readAuthRequestGeneration } from './client';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
-import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTimelinePage, RELAY_LIMITS,
-  type BrowserMessage, type CurrentSessionResponse, type TimelinePage } from '../../../daynight/src/session/controller-protocol';
+import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTaskOperationResponse, parseTimelinePage, RELAY_LIMITS,
+  type BrowserMessage, type CurrentSessionResponse, type OperationResponse, type TimelinePage } from '../../../daynight/src/session/controller-protocol';
 import { assertSessionFence, parseSessionCommand, type SessionCommand, type SessionOperation, type SessionFence } from '../../../daynight/src/session/protocol';
 
 export type LoadedSessionArchive = SessionArchive | (SessionFence & Pick<SessionArchive, 'controllerId' | 'controllerInstanceId' | 'provider' | 'nativeSessionId' | 'entries'> & {
@@ -39,7 +39,7 @@ export type SessionApi = {
 };
 export function createSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   const root = `/api/v1/projects/${requestId(projectId)}/tasks/${requestId(taskId)}/sessions`;
-  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse, { [STARTUP_REPORT_HEADER]: '1' });
+  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse, parseTaskOperationResponse, { [STARTUP_REPORT_HEADER]: '1' });
 }
 export function createTestSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   return createIndependentSessionApi(sessionId, userId, onPrincipalMismatch);
@@ -58,7 +58,7 @@ function createIndependentSessionApi(sessionId: string, userId: string, onPrinci
     const { session } = parseRegistrationResponse(value);
     if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId || testExecutionId !== undefined && session.testExecutionId !== testExecutionId) throw new ApiError('protocol');
     return { status: 'registered', session };
-  });
+  }, parseOperationResponse);
   return { ...api, current: async signal => {
     try { return await api.current(signal); }
     catch (error) {
@@ -69,7 +69,7 @@ function createIndependentSessionApi(sessionId: string, userId: string, onPrinci
     }
   } };
 }
-function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
+function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, parseOperation: (value: unknown) => OperationResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expectedStatus = 200): Promise<T> {
     const response = await request(url, signal, { ...init, headers: { Accept: 'application/json', ...init.headers } });
     assertResponsePrincipal(response, userId, onPrincipalMismatch);
@@ -147,7 +147,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       return operation;
     },
     operation: async (id, operationId, signal) => {
-      const { operation } = await get(`${sessionRoot(id)}/operations/${requestId(operationId)}`, signal, parseOperationResponse);
+      const { operation } = await get(`${sessionRoot(id)}/operations/${requestId(operationId)}`, signal, parseOperation);
       if (operation.sessionId !== id || operation.operationId !== operationId) throw new ApiError('protocol');
       return operation;
     },

@@ -189,6 +189,15 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4)
 		},
+		TaskOperation: func(a0 context.Context, a1 model.Principal, a2, a3, a4, a5 string) (sessioncore.TaskOperationResult, error) {
+			b.mu.Lock()
+			fn := b.Funcs.TaskOperation
+			b.mu.Unlock()
+			if err := b.check("TaskOperation", fn != nil); err != nil {
+				return sessioncore.TaskOperationResult{}, err
+			}
+			return fn(a0, a1, a2, a3, a4, a5)
+		},
 		Operation: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string) (sp.Operation, error) {
 			b.mu.Lock()
 			fn := b.Funcs.Operation

@@ -34,6 +34,12 @@ export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
   preparePrompt?: (recovery: boolean) => string;
   preparePromptSource?: (operation: Operation) => Promise<void>;
   onPromptPrepared?: (prompt: string, recovery: boolean) => void;
+  onAgentStarted?: () => void;
+  onAgentInitializing?: () => void;
+  onAgentInitialized?: () => void;
+  onExistingAgentObserved?: () => void;
+  onPromptSubmitting?: () => void;
+  onPromptTransportCompleted?: () => void;
   // The receipt preserves the pre-input observation before session discovery
   // can observe a completed turn or fail after acknowledged submission.
   onPromptSubmitted?: (receipt: HerdrPromptReceipt) => void;
@@ -422,7 +428,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const after = await readNameOwnership(context, binding, operation, "unknown");
       if (workspace.label !== label || after.workspace.label !== label) throw new HerdrAgentActionError("The requested workspace name was not confirmed by the current snapshot.", "workspace.rename", "unknown");
     }),
-    observe: observation,
+    observe: (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, _onAttached?: () => void) => observation(context, binding, operation),
     /** Launches only; the caller must persist original process identity before submitting input. */
     launch: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentLaunchInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => (await launch(context, binding, input, operation)).observation),
     processInfo: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<{ shellPid: number; foregroundPids: number[] }> => {
@@ -435,14 +441,19 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       await readOwned(context, binding, operation);
       return { shellPid, foregroundPids };
     },
-    submitInitialPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => serialized(binding.workspaceId, operation, () => submit(context, binding, prompt, operation, true, beforeSubmit)),
+    submitInitialPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard, onTransportCompleted?: () => void): Promise<HerdrPromptResult> => serialized(binding.workspaceId, operation, async () => { const result = await submit(context, binding, prompt, operation, true, beforeSubmit); if (result.submission === "submitted") try { onTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ } return result; }),
     start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => {
       if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The startup prompt must be nonempty text.");
       const launched = await launch(context, binding, input, operation);
-      if (!launched.started) return launched.observation;
+      if (!launched.started) { try { input.onExistingAgentObserved?.(); } catch { /* Optional observation cannot alter launch. */ } return launched.observation; }
+      try { input.onAgentStarted?.(); } catch { /* Optional observation cannot alter launch. */ }
       if (launched.observation.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before its first input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+      try { input.onPromptSubmitting?.(); } catch { /* Optional observation cannot alter input. */ }
       const receipt = await submit(context, binding, input.prompt, operation, true);
-      if (receipt.submission === "submitted") input.onPromptSubmitted?.(receipt);
+      if (receipt.submission === "submitted") {
+        try { input.onPromptTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ }
+        input.onPromptSubmitted?.(receipt);
+      }
       // SessionStart may be emitted on the first input rather than process launch.
       // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
       while (true) {
@@ -455,7 +466,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         await wait(operation);
       }
     }),
-    submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard) => serialized(binding.workspaceId, operation, () => submit(context, binding, prompt, operation, false, beforeSubmit)),
+    submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard, onTransportCompleted?: () => void) => serialized(binding.workspaceId, operation, async () => { const result = await submit(context, binding, prompt, operation, false, beforeSubmit); if (result.submission === "submitted") try { onTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ } return result; }),
     stopAndClose: (context: HerdrExecutionOwner & { cwd: string }, binding: HerdrTaskBinding, operation: Operation): Promise<void> => serialized(binding.workspaceId, operation, async () => {
       if (binding.session !== session) throw new Error("The task binding belongs to another Herdr session.");
       const before = await snapshot(operation);

@@ -13,13 +13,20 @@ would lose meaningful defect detection.
 
 ## Decision
 
-Existing Task, Worker, Step, Thread, Graph and Sync tests are organized by the
-behavior they prove. Non-store tests construct valid domain inputs and control
-the existing `core/store` DAO and scope interfaces. Task service mocks configure
-individual query, write and scope callbacks, verify their arguments and results,
-and fail explicitly on unconfigured access. They do not interpret writes as
-persisted state or implement an in-memory database. Read and project-bound write
-interfaces retain their different signatures.
+The original Task, Worker, Step, Thread, Graph and Sync correction assigned tests
+by their observed behavior and removed database preparation from non-store
+suites. It retained existing lower business paths over controlled `core/store`
+DAO and scope interfaces, making storage facts and completion outcomes explicit
+without introducing a second persistence implementation.
+
+DAO-based Task fixtures configure individual query, write and scope callbacks,
+verify their arguments and results, and fail explicitly on unconfigured access.
+They do not interpret writes as persisted state. Read and project-bound write
+interfaces retain their different signatures. The
+[Task List direct-operation decision](2026-11-09-task-list-direct-operation-tests.md)
+partially supersedes that DAO boundary for List coordination and moves the three
+assignment selection functions to their Core owner. Shared platform and
+agent-permission List fixtures retain their current scope.
 
 Callback execution and transaction completion remain separate. Service tests
 control `committed`, `not_committed` and `unknown` outcomes and retain original

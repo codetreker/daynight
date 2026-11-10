@@ -216,9 +216,9 @@ func TestImageOccurrenceRetryCancellationRetainsAtomicOriginalOffer(t *testing.T
 	defer cancel()
 	originalBrowser := f.s.browserRun
 	calls := 0
-	f.s.browserRun = func(ctx context.Context, p model.Principal, project, task, id string, work func(*Access) error) error {
+	f.s.browserRun = func(ctx context.Context, p model.Principal, project, task, id string, purpose BrowserPurpose, work func(*Access) error) error {
 		calls++
-		e := originalBrowser(ctx, p, project, task, id, work)
+		e := originalBrowser(ctx, p, project, task, id, purpose, work)
 		if calls == 1 && e == nil {
 			current := f.d.captures[c.Request.CaptureID]
 			row, ok := f.d.media[mediaIdentity(current.Receipt.AttemptID, "retry_capture")]

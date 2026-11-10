@@ -39,7 +39,7 @@ func New(writer store.SessionWriter, files ...filestorage.Storage) *Execution {
 		}
 		return nil
 	}
-	execution := NewExecution(engine, c.browser, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
+	execution := NewExecution(engine, c.browserFor, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
 	execution.SetArchivePreflight(c.archivePreflight)
 	return execution
 }
@@ -96,6 +96,10 @@ func authorizeTest(ctx context.Context, op *Operation, scope store.SessionScope,
 // browser selects a Task or independent Test Session while retaining the
 // original database lock order and one transaction for admission and work.
 func (s *fixtureCoordinator) browser(ctx context.Context, principal model.Principal, project, taskID, id string, work func(*Access) error) error {
+	return s.browserFor(ctx, principal, project, taskID, id, BrowserAccess, work)
+}
+
+func (s *fixtureCoordinator) browserFor(ctx context.Context, principal model.Principal, project, taskID, id string, purpose BrowserPurpose, work func(*Access) error) error {
 	op, err := s.engine.BeginOperation()
 	if err != nil {
 		return err
@@ -122,17 +126,22 @@ func (s *fixtureCoordinator) browser(ctx context.Context, principal model.Princi
 		if err != nil {
 			return err
 		}
-		if err = op.LockCredential(ctx, scope, principal); err != nil {
+		if err = op.LockPurposeCredential(ctx, scope, principal, purpose); err != nil {
 			return err
 		}
 		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
-		access, err := loadSession(ctx, op, scope, id)
+		var access *Access
+		if purpose == TaskReceiptAccess {
+			access, err = op.LoadTaskReceipt(ctx, scope, project, taskID, id)
+		} else {
+			access, err = loadSession(ctx, op, scope, id)
+		}
 		if err != nil {
 			return err
 		}
-		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID); err != nil {
+		if err = op.BindTaskPurpose(ctx, access, task, principal, project, taskID, purpose); err != nil {
 			return err
 		}
 		return work(access)
@@ -489,7 +498,7 @@ func (s *fixtureCoordinator) registerTerminal(ctx context.Context, p model.Princ
 }
 
 func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope store.SessionScope, p model.Principal, authority Authority) error {
-	if err := op.LockCredential(ctx, scope, p); err != nil {
+	if err := op.LockPurposeCredential(ctx, scope, p, authority.Purpose); err != nil {
 		return err
 	}
 	if !authority.Test {

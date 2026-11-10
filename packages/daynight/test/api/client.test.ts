@@ -590,16 +590,22 @@ describe("operation-scoped API access", () => {
 
   it("exhausts one total deadline across continuously advancing cursors", async () => {
     let page = 0;
+    let elapsed = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     const cursors: (string | null)[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => {
       cursors.push(new URL(String(url)).searchParams.get("cursor"));
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      if (page === 4) throw new Error("Pagination continued beyond the shared deadline");
+      elapsed += 10;
       page++;
       const suffix = page.toString(16).padStart(12, "0");
       return jsonResponse({ items: [{ ...project, id: `11111111-1111-1111-1111-${suffix}` }], nextCursor: Buffer.from(`cursor-${page}`).toString("base64url") });
     });
     await expect(client(fetch, operation({ limits: { totalMs: 35, requestMs: 100 } })).listProjects()).rejects.toMatchObject({ cause: { kind: "deadline" } });
+    expect(page).toBe(4);
     expect(page).toBeGreaterThan(1);
+    expect(cursors).toEqual([null, ...[1, 2, 3].map((value) => Buffer.from(`cursor-${value}`).toString("base64url"))]);
     expect(new Set(cursors).size).toBe(cursors.length);
     expect(cursors.length - page).toBeLessThanOrEqual(1);
   });

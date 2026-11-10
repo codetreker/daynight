@@ -214,7 +214,7 @@ func (s *Execution) scheduleCapture(tx *operationTx, r *record, capture store.Se
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
 			worker := *s
-			worker.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, fn func(*Access) error) error {
+			worker.browserRun = func(ctx context.Context, _ model.Principal, _, _, _ string, _ BrowserPurpose, fn func(*Access) error) error {
 				return s.controllerRun(ctx, fence, func(a *Access) error { a.write = true; return fn(a) })
 			}
 			ioContext, finish, err := worker.beginImageIO(ctx, fence.SessionID, uuid.NewString())

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 type graphStub struct {
@@ -58,4 +59,9 @@ func TestGraphToolCompleteProjectionAndErrors(t *testing.T) {
 	if err != reader.err {
 		t.Fatalf("lost graph failure: %v", err)
 	}
+}
+
+func (s *graphStub) ObserveGraph(ctx context.Context, p model.Principal, project, id string) (taskservice.ObservedGraph, error) {
+	graph, err := s.Graph(ctx, p, project, id)
+	return observedGraphFixture(graph), err
 }

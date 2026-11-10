@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
@@ -21,12 +23,21 @@ import (
 )
 
 type taskStepsHandler struct {
-	steps  StepService
-	logger *slog.Logger
+	steps           StepService
+	logger          *slog.Logger
+	bodyReadTimeout time.Duration
+}
+
+func newTaskStepsHandler(steps StepService, logger *slog.Logger) *taskStepsHandler {
+	return &taskStepsHandler{steps: steps, logger: logger, bodyReadTimeout: transport.JSONBodyReadTimeout}
+}
+
+func (h *taskStepsHandler) decodeObject(w http.ResponseWriter, request *http.Request, allowed ...string) (map[string]json.RawMessage, error) {
+	return httpx.DecodeObjectLimitWithTimeout(w, request, httpx.MaxJSONBody, h.bodyReadTimeout, allowed...)
 }
 
 func TaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
-	handler := &taskStepsHandler{steps: steps, logger: logger}
+	handler := newTaskStepsHandler(steps, logger)
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/steps"
 	mux.HandleFunc("POST "+path, auth.Require(handler.add))
 	mux.HandleFunc("GET "+path, auth.Require(handler.get))
@@ -118,7 +129,7 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
+	fields, err := h.decodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
 	if err != nil {
 		refuse(err)
 		return

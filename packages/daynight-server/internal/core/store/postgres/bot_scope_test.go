@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBotDefinitionsHaveNoProjectDependency(t *testing.T) {
@@ -263,7 +265,7 @@ func TestBotClosedPoolDoesNotInvokeScope(t *testing.T) {
 	}
 }
 
-func TestBotCleanupReceiptCallbackRollback(t *testing.T) {
+func TestBotCleanupReceiptPersistsAcrossCommitAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	candidate, principal := storedBotCandidate(t, database)
@@ -317,4 +319,44 @@ func TestBotCleanupReceiptCallbackRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	completed := deletion
+	completed.WorkerCleanup = model.BotCleanupResult{State: "completed"}
+	completed.ServerCleanup = model.BotCleanupResult{State: "completed"}
+	receipt := []byte(fmt.Sprintf(`{"deletionId":%q,"stop":null,"result":{"state":"completed","code":null}}`, deletion.DeletionID))
+	completed.ReceiptDigest = fmt.Sprintf("%x", sha256.Sum256(receipt))
+	completion, err = database.WriteBot(ctx, func(scope BotScope) error {
+		dao := scope.BotDAO()
+		if _, err := dao.Bot(ctx, deleted.ID); err != nil {
+			return err
+		}
+		_, err := dao.SaveBotDeletion(ctx, deleted.ID, &completed)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("completed receipt commit: %+v %v", completion, err)
+	}
+	var version int64
+	var updatedAt time.Time
+	if err := database.Pool.QueryRow(ctx, `SELECT version,updated_at FROM bots WHERE id=$1`, deleted.ID).Scan(&version, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if version != deleted.Version+1 || !updatedAt.After(deleted.UpdatedAt) {
+		t.Fatalf("completed receipt version/time: %d %v", version, updatedAt)
+	}
+	want := deleted
+	want.Version = deleted.Version + 1
+	want.UpdatedAt = updatedAt.UTC()
+	want.Deletion = &completed
+	for range 2 {
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			actual, err := snapshot.BotDAO().Bot(ctx, deleted.ID)
+			if err == nil && !reflect.DeepEqual(actual, want) {
+				t.Fatalf("committed receipt readback: got %+v want %+v", actual, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 }

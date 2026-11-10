@@ -9,15 +9,21 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"time"
 )
 
 //go:embed task_tools.json
 var taskToolDefinitions []byte
+
+type taskObservationGetter interface {
+	ObserveGet(context.Context, model.Principal, string, string) (taskservice.ObservedTask, error)
+}
 
 type taskResourceOperations interface {
 	Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
@@ -53,7 +59,7 @@ type taskArguments struct {
 // RegisterTaskTools exposes complete Task operations through the shared service.
 // Operations that read or write Tasks reserve for their full materialization.
 // The static property schema uses the independent control budget.
-func RegisterTaskTools(e *Entry, tasks taskResourceOperations) error {
+func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
 	if e == nil || tasks == nil || tasks == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
@@ -86,7 +92,7 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations) error {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 			}
-			return handleTaskTool(ctx, actor, tasks, name, input, fields)
+			return handleTaskTool(ctx, actor, tasks, observations, name, input, fields)
 		}
 		register := e.registerTool
 		if name == "task_show" || name == "task_properties" {
@@ -158,7 +164,7 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOper
 	}
 	return task.Version, nil
 }
-func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceOperations, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceOperations, observations taskObservationGetter, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
 	if name != "task_show" && name != "task_properties" && name != "task_delete" {
 		if actor.rpcResponseID == nil {
 			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task response could not be bounded."}
@@ -191,11 +197,27 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		}
 		return taskResult(task, in.ReturnView, 0), nil
 	case "task_show":
-		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)
+		observed, err := observations.ObserveGet(ctx, actor.Principal, in.ProjectID, in.TaskID)
 		if err != nil {
 			return ToolResult{}, err
 		}
-		return ToolResult{Data: taskView(task, in.View)}, nil
+		var data any
+		if in.View == "full" {
+			data = struct {
+				TaskFull
+				Session sp.TaskSessionObservation `json:"session"`
+			}{MapTaskFull(observed.Task), observed.Session}
+		} else {
+			data = struct {
+				TaskSummary
+				Session sp.TaskSessionObservation `json:"session"`
+			}{MapTaskSummary(observed.Task), observed.Session}
+		}
+		stamp := time.Time{}
+		if observed.Session.ObservedAt != nil {
+			stamp = *observed.Session.ObservedAt
+		}
+		return ToolResult{Data: data, Observation: &ReadObservation{ObservedAt: stamp, Partial: observed.Session.Observation != "observed"}, Refs: map[string]any{"projectId": in.ProjectID, "taskId": in.TaskID}}, nil
 	case "task_properties":
 		if in.Mode == "schema" {
 			return ToolResult{Data: map[string]any{"properties": taskproperty.Definitions()}}, nil

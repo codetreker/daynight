@@ -2,15 +2,14 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	coreworker "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/google/uuid"
 )
 
@@ -42,22 +41,18 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
+			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			body := workerSnapshotReportBody()
 			value := boundedUTF8(tc.size)
 			tc.set(body, value)
-			stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-			plan := f.report(body, stored)
-			reportSnapshotHTTP(t, f.handler, f.worker, body)
-			plan.check()
-			f.rejectBeforeWrite()
+			f.success(body)
 			tc.set(body, value+"x")
-			assertProjectError(t, projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body)), 400, "invalid_input")
+			assertProjectError(t, f.request(body, 1, &model.Fault{Code: "invalid_input", Message: "Worker report exceeds its capacity."}), http.StatusBadRequest, "invalid_input")
 		})
 	}
 	for _, kind := range []string{"claims", "projects"} {
 		t.Run(kind, func(t *testing.T) {
-			f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
+			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			body := workerSnapshotReportBody()
 			set := func(n int) {
 				items := make([]any, n)
@@ -79,13 +74,9 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 				maximum = 128
 			}
 			set(maximum)
-			stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-			plan := f.report(body, stored)
-			reportSnapshotHTTP(t, f.handler, f.worker, body)
-			plan.check()
-			f.rejectBeforeWrite()
+			f.success(body)
 			set(maximum + 1)
-			assertProjectError(t, projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body)), 400, "invalid_input")
+			assertProjectError(t, f.request(body, 0, nil), http.StatusBadRequest, "invalid_input")
 		})
 	}
 }
@@ -94,13 +85,14 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	cases := []struct {
 		name           string
 		valid, invalid any
+		changed        bool
 		set            func(map[string]any, any)
 	}{
-		{"maxConcurrent", 64, 65, func(v map[string]any, x any) { v["maxConcurrent"] = x }},
-		{"pollIntervalMs", 60000, 60001, func(v map[string]any, x any) { v["pollIntervalMs"] = x }},
-		{"recoveryLimit", 10, 11, func(v map[string]any, x any) { v["recoveryLimit"] = x }},
-		{"native.model", boundedUTF8(256), boundedUTF8(256) + "x", func(v map[string]any, x any) { v["native"].(map[string]any)["model"] = x }},
-		{"native.arg", []any{boundedUTF8(4096)}, []any{boundedUTF8(4096) + "x"}, func(v map[string]any, x any) { v["native"].(map[string]any)["args"] = x }},
+		{"maxConcurrent", 64, 65, true, func(v map[string]any, x any) { v["maxConcurrent"] = x }},
+		{"pollIntervalMs", 60000, 60001, false, func(v map[string]any, x any) { v["pollIntervalMs"] = x }},
+		{"recoveryLimit", 10, 11, true, func(v map[string]any, x any) { v["recoveryLimit"] = x }},
+		{"native.model", boundedUTF8(256), boundedUTF8(256) + "x", true, func(v map[string]any, x any) { v["native"].(map[string]any)["model"] = x }},
+		{"native.arg", []any{boundedUTF8(4096)}, []any{boundedUTF8(4096) + "x"}, true, func(v map[string]any, x any) { v["native"].(map[string]any)["args"] = x }},
 	}
 	args := make([]any, 128)
 	for i := range args {
@@ -109,51 +101,29 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	cases = append(cases, struct {
 		name           string
 		valid, invalid any
+		changed        bool
 		set            func(map[string]any, any)
-	}{"native.args", args, append(append([]any{}, args...), "x"), func(v map[string]any, x any) { v["native"].(map[string]any)["args"] = x }})
+	}{"native.args", args, append(append([]any{}, args...), "x"), true, func(v map[string]any, x any) { v["native"].(map[string]any)["args"] = x }})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
-			path := "/api/v1/me/workers/" + f.worker + "/configuration"
-			current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
+			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			value := configurationHTTPValue()
 			tc.set(value, tc.valid)
-			want := capacityDecode[model.WorkerConfiguration](t, value)
-			changed := !reflect.DeepEqual(current.Desired.Value, want)
-			saved := current
-			if changed {
-				saved.Desired = &model.WorkerDesiredConfiguration{Revision: "2", Value: want, UpdatedAt: capacityObservedAt.Add(1)}
+			saved := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
+			if tc.changed {
+				saved.Desired.Revision = "2"
+				saved.Desired.UpdatedAt = capacityObservedAt.Add(1)
 			}
-			calls := []string{"dao", "configuration"}
-			if changed {
-				calls = append(calls, "set_configuration")
-			}
-			plan := f.write(calls, store.TransactionCommitted, func(d *capacityWorkerDAO) {
-				d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
-					f.workerAddress(user, worker)
-					return capacityDecode[model.WorkerConfigurationResource](t, current), nil
-				}
-				d.setConfiguration = func(user, worker string, revision int64, actual model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
-					f.workerAddress(user, worker)
-					if revision != 2 || !reflect.DeepEqual(actual, want) {
-						t.Fatal("configuration boundary write differs")
-					}
-					return capacityDecode[model.WorkerDesiredConfiguration](t, *saved.Desired), nil
-				}
-			})
-			got := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), http.StatusOK)
-			plan.check()
+			got := decodeResponse[model.WorkerConfigurationResource](t, f.putRequest(map[string]any{"revision": "1", "value": value}, 1, saved), http.StatusOK)
 			if !reflect.DeepEqual(got, saved) {
 				t.Fatalf("configuration boundary response differs: %+v", got)
 			}
-			f.rejectBeforeWrite()
 			tc.set(value, tc.invalid)
-			assertProjectError(t, projectRequest(f.handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": saved.Desired.Revision, "value": value})), 400, "invalid_input")
+			assertProjectError(t, f.putRequest(map[string]any{"revision": saved.Desired.Revision, "value": value}, 0, model.WorkerConfigurationResource{}), http.StatusBadRequest, "invalid_input")
 		})
 	}
 	t.Run("desired.projects", func(t *testing.T) {
-		f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
-		path := "/api/v1/me/workers/" + f.worker + "/configuration"
+		f := newCapacityReportOperationFixture(t, uuid.NewString())
 		value := configurationHTTPValue()
 		projects := make([]any, 129)
 		for i := range projects {
@@ -161,63 +131,35 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		}
 		value["projects"] = projects[:128]
 		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
-		plan := f.write([]string{"dao", "configuration"}, store.TransactionCommitted, func(d *capacityWorkerDAO) {
-			d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
-				f.workerAddress(user, worker)
-				return capacityDecode[model.WorkerConfigurationResource](t, current), nil
-			}
-		})
-		got := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), http.StatusOK)
-		plan.check()
+		got := decodeResponse[model.WorkerConfigurationResource](t, f.putRequest(map[string]any{"revision": "1", "value": value}, 1, current), http.StatusOK)
 		if !reflect.DeepEqual(got, current) {
-			t.Fatal("equal configuration changed revision or content")
+			t.Fatal("equal configuration response changed revision or content")
 		}
-		f.rejectBeforeWrite()
 		value["projects"] = projects
-		assertProjectError(t, projectRequest(f.handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), 400, "invalid_input")
+		assertProjectError(t, f.putRequest(map[string]any{"revision": "1", "value": value}, 0, model.WorkerConfigurationResource{}), http.StatusBadRequest, "invalid_input")
 	})
 	t.Run("observation.items", func(t *testing.T) {
-		f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
+		f := newCapacityReportOperationFixture(t, uuid.NewString())
 		items := make([]any, coreworker.MaxObservationItems+1)
 		for i := range items {
 			items[i] = map[string]any{"key": map[string]any{"kind": "projectPreparation", "projectId": uuid.NewString()}, "targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil}
 		}
 		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems]}
 		body := configurationHTTPReportBody(nil, obs)
-		stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
-		reported := model.WorkerConfigurationResource{Desired: current.Desired, ObservationRevision: "1", Observation: &model.WorkerConfigurationReportedObservation{ReportedAt: capacityObservedAt, WorkerConfigurationObservation: capacityDecode[model.WorkerConfigurationObservation](t, obs)}}
-		reads := 0
-		plan := f.write([]string{"dao", "admit", "upsert", "configuration", "set_observation", "configuration", "observed"}, store.TransactionCommitted, func(d *capacityWorkerDAO) {
-			f.reportDAO(d, body, stored)
-			d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
-				f.workerAddress(user, worker)
-				reads++
-				if reads == 1 {
-					return capacityDecode[model.WorkerConfigurationResource](t, current), nil
-				}
-				return capacityDecode[model.WorkerConfigurationResource](t, reported), nil
-			}
-			d.setObservation = func(user, worker string, revision int64, actual model.WorkerConfigurationObservation) error {
-				f.workerAddress(user, worker)
-				if revision != 1 || !reflect.DeepEqual(actual, reported.Observation.WorkerConfigurationObservation) {
-					t.Fatal("observation boundary differs")
-				}
-				return nil
-			}
-		})
-		response := configurationHTTPRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body), "1")
-		if response.Header().Get(workerConfigurationHeader) != "1" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != f.handler.principal.UserID {
-			t.Fatal("configuration report lacks its protocol or private response headers")
+		want := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: model.WorkerConfigurationReceipt{
+			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",
+		}}
+		result := workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: &want.Configuration}
+		response := f.reportRequest(body, 1, result, nil, "1")
+		if response.Header().Get(workerConfigurationHeader) != "1" {
+			t.Fatal("configuration report lacks its protocol header")
 		}
 		receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
-		plan.check()
-		if !receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, current.Desired) {
-			t.Fatal("maximum item observation receipt differs")
+		if !reflect.DeepEqual(receipt, want) {
+			t.Fatalf("maximum item observation receipt differs: %+v", receipt)
 		}
-		f.rejectBeforeWrite()
 		obs["baseRevision"] = "1"
 		obs["items"] = items
-		assertProjectError(t, configurationHTTPRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, configurationHTTPReportBody(nil, obs)), "1"), 400, "invalid_input")
+		assertProjectError(t, f.reportRequest(configurationHTTPReportBody(nil, obs), 0, workerservice.WorkerReportResult{}, nil, "1"), http.StatusBadRequest, "invalid_input")
 	})
 }

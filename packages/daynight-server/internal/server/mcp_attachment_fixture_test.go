@@ -496,3 +496,12 @@ func (d *mcpAttachmentTaskReader) TaskSyncTasks(p0 context.Context, p1 string, p
 	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncTasks")
 	panic("unreachable")
 }
+
+func (d *mcpAttachmentTaskReader) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkGroups")
+	panic("unreachable")
+}
+func (d *mcpAttachmentTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkTargets")
+	panic("unreachable")
+}

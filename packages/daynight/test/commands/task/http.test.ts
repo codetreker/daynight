@@ -9,6 +9,7 @@ import type { Task, TaskGraph, WorkerClaim } from "../../../src/api/index.js";
 import { runCli } from "../../../src/cli/application.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
+import { observedFixtureResponse, withTaskObservation, withGraphObservations } from "../../fixtures/task-observation.js";
 
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
@@ -22,7 +23,7 @@ const worker: WorkerClaim = { claimId, state: "active", userId: projectId, worke
 type Request = { readonly method: string; readonly path: string; readonly query: URLSearchParams; readonly body: string };
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
-const respond = (response: ServerResponse, value: unknown, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(stringifyApiJson(value)); };
+const respond = (response: ServerResponse, value: unknown, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(stringifyApiJson(status === 200 ? observedFixtureResponse(value, response.req.url!) : value)); };
 const fixture = async (handler: (request: Request, response: ServerResponse, raw: IncomingMessage) => void) => {
   const requests: Request[] = [];
   const server = createServer((request, response) => {
@@ -61,12 +62,12 @@ describe("task commands over HTTP", () => {
     const active = { ...task, status: "in_progress", ready: false, startedAt: time, allowAgents: true, assignedTo: accountId, properties: { worker: { ...worker, userId: accountId }, pullRequests: [] } } as const;
     const f = await fixture((_request, response) => respond(response, active));
     await f.run(["show", taskId, "--json"]);
-    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(active);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(active));
     await f.run(["update", taskId, "--assigned-to", accountId.toUpperCase(), "--if-version", String(active.version)]);
     expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: active.version, assignedTo: accountId });
     expect(f.context.stdout.mock.calls[1]![0]).toContain(`Assigned to: ${accountId}\n`);
     await f.run(["show", taskId, "--json"]);
-    expect(parseApiJson(f.context.stdout.mock.calls[2]![0])).toEqual(active);
+    expect(parseApiJson(f.context.stdout.mock.calls[2]![0])).toEqual(withTaskObservation(active));
     expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([
       `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
       `GET /api/v1/projects/${projectId}`, `PATCH /api/v1/projects/${projectId}/tasks/${taskId}`,
@@ -121,11 +122,11 @@ describe("task commands over HTTP", () => {
     expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([
       `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks`, `GET /api/v1/projects/${projectId}/tasks`,
     ]);
-    const filters = { assignedTo: selection === "me" ? "me" : selection === "unassigned" ? "unassigned" : otherId, status: "todo", ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100" };
+    const filters = { assignedTo: selection === "me" ? "me" : selection === "unassigned" ? "unassigned" : otherId, status: "todo", ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100", include: "session" };
     expect(f.requests.slice(1).map(({ query }) => Object.fromEntries(query))).toEqual([filters, { ...filters, cursor }]);
     const { description: _firstDescription, ...firstItem } = first;
     const { description: _secondDescription, ...secondItem } = second;
-    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual([firstItem, secondItem]);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual([firstItem, secondItem].map(withTaskObservation));
     expect(f.context.stdout).toHaveBeenCalledOnce(); expect(f.context.stderr).not.toHaveBeenCalled();
     expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
   });
@@ -134,7 +135,7 @@ describe("task commands over HTTP", () => {
     const f = await fixture((_request, response) => { response.setHeader("Daynight-User-ID", accountId); respond(response, { items: [], nextCursor: null }); });
     await f.run(["list", "--assigned-to", "me", "--status", "in_progress", "--json"]);
     expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([`GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks`]);
-    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ assignedTo: "me", status: "in_progress", limit: "100" });
+    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ assignedTo: "me", status: "in_progress", limit: "100", include: "session" });
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith("[]\n"); expect(f.context.stderr).not.toHaveBeenCalled();
   });
 
@@ -145,9 +146,9 @@ describe("task commands over HTTP", () => {
     const { description: _prerequisiteDescription, ...prerequisiteListItem } = prerequisite;
     const f = await fixture((request, response) => respond(response, request.path.endsWith(taskId) ? blocked : { items: [prerequisite, blocked], nextCursor: null }));
     await f.run(["show", taskId, "--json"]);
-    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(blocked);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(blocked));
     await f.run(["list", "--json"]);
-    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual([prerequisiteListItem, blockedListItem]);
+    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual([prerequisiteListItem, blockedListItem].map(withTaskObservation));
     expect(f.context.stderr).not.toHaveBeenCalled();
   });
   it.each([false, true].flatMap((removeDepends) => [undefined, "9223372036854775807"].map((version) => ({ removeDepends, version }))))("deletes once with exact version $version and removal consent $removeDepends", async ({ version, removeDepends }) => {
@@ -322,11 +323,11 @@ describe("task commands over HTTP", () => {
     await f.run(["list", "--status", "todo", "--ready", "--json"]);
     expect(f.context.stdout).toHaveBeenCalledOnce();
     const parsed = parseApiJson(f.context.stdout.mock.calls[0]![0]);
-    expect(parsed).toEqual([task, next].map(({ description: _description, ...item }) => item));
+    expect(parsed).toEqual([task, next].map(({ description: _description, ...item }) => withTaskObservation(item)));
     for (const index of [0, 1]) expect(parsed).not.toHaveProperty(`${index}.description`);
     expect(f.context.stdout.mock.calls[0]![0]).toMatch(/\n$/);
     const pages = f.requests.filter(({ path }) => path.endsWith("/tasks"));
-    expect(pages.map(({ query }) => Object.fromEntries(query))).toEqual([{ status: "todo", ready: "true", limit: "100" }, { status: "todo", ready: "true", limit: "100", cursor: "next page+/=?" }]);
+    expect(pages.map(({ query }) => Object.fromEntries(query))).toEqual([{ status: "todo", ready: "true", limit: "100", include: "session" }, { status: "todo", ready: "true", limit: "100", include: "session", cursor: "next page+/=?" }]);
   });
 
   it("does not publish a partial list when a later page fails", async () => {
@@ -383,7 +384,7 @@ describe("task commands over HTTP", () => {
     });
     await f.run(["graph", taskId, "--json"]);
     expect(f.context.stdout).toHaveBeenCalledOnce();
-    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(graph);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withGraphObservations(graph, taskId));
     f.context.stdout.mockClear(); failed = true;
     await expect(f.run(["graph", taskId])).rejects.toMatchObject({ code: "internal_error", requestId: "graph-read" });
     expect(f.context.stdout).not.toHaveBeenCalled();

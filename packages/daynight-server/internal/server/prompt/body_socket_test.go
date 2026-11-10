@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -34,7 +35,7 @@ func promptSocket(t *testing.T, address string) net.Conn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.SetDeadline(time.Now().Add(22 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
@@ -50,12 +51,22 @@ func awaitPrompt(t *testing.T, signal <-chan struct{}, timeout time.Duration) {
 	}
 }
 
-func promptSocketServer(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server, *fakePrompts) {
+func promptSocketServer(t *testing.T, wrap func(http.Handler) http.Handler, configure ...func(*handler)) (*httptest.Server, *fakePrompts) {
 	t.Helper()
 	service := &fakePrompts{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	RegisterRoutes(mux, service, fakeAuth{}, logger)
+	h := newHandler(service, logger)
+	if transport.JSONBodyReadTimeout != 15*time.Second {
+		t.Fatalf("production JSON body read timeout = %s", transport.JSONBodyReadTimeout)
+	}
+	if h.bodyReadTimeout != transport.JSONBodyReadTimeout {
+		t.Fatalf("constructed body read timeout = %s, want %s", h.bodyReadTimeout, transport.JSONBodyReadTimeout)
+	}
+	for _, apply := range configure {
+		apply(h)
+	}
+	h.registerRoutes(mux, fakeAuth{})
 	server := httptest.NewServer(httpx.RequestLogging(logger, wrap(mux)))
 	t.Cleanup(server.Close)
 	return server, service
@@ -69,7 +80,7 @@ func TestPromptBodySocketTimeout(t *testing.T) {
 			r.Body = &observedBody{ReadCloser: r.Body, started: started}
 			next.ServeHTTP(w, r)
 		})
-	})
+	}, func(h *handler) { h.bodyReadTimeout = 200 * time.Millisecond })
 	conn := promptSocket(t, server.Listener.Addr().String())
 	_, err := io.WriteString(conn, "PUT /api/v1/me/worker-prompt HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nX-Request-ID: prompt-socket\r\n\r\n{")
 	if err != nil {

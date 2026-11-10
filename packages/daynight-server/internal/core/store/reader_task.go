@@ -24,6 +24,7 @@ type TaskStepProjection struct {
 }
 
 type TaskReader interface {
+	TaskWorkReader
 	Task(context.Context, string, string) (model.Task, error)
 	Tasks(context.Context, string, TaskQuery) (TaskPage, error)
 	TaskListFence(context.Context, string) (TaskListFence, error)

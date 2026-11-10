@@ -365,7 +365,7 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 	historyID := uuid.NewString()
 	d.bundle = store.ArchiveBundle{SessionID: r.Snapshot.SessionID, Phase: "active", HistoryID: historyID, Ledger: encode(archiveLedger{HistoryID: historyID, HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: "0", Sealable: true})}
 	s := &Execution{Engine: engine}
-	s.browserRun = func(ctx context.Context, actor model.Principal, _, _, id string, fn func(*Access) error) error {
+	s.browserRun = func(ctx context.Context, actor model.Principal, _, _, id string, _ BrowserPurpose, fn func(*Access) error) error {
 		if e := ctx.Err(); e != nil {
 			return e
 		}
@@ -378,7 +378,7 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 		if finalize {
 			t.Fatal("resource reader requested owner finalization access")
 		}
-		return s.browserRun(ctx, actor, project, task, id, fn)
+		return s.browserRun(ctx, actor, project, task, id, BrowserAccess, fn)
 	}
 	engine.SetMediaLeaseCleanup(func(_ context.Context, id, lease string) error {
 		return d.ReleaseSessionResourceLease(context.Background(), id, lease)

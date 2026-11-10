@@ -2295,7 +2295,8 @@ records the division.
 ### Assistant browser validation
 
 The [Bot viewport suite](tests/navigation/bots-viewport.browser.ts),
-[persistent history suite](tests/navigation/bot-persistent-history.browser.ts) and
+[persistent history suite](tests/navigation/bot-persistent-history.browser.ts),
+[cache composition suite](tests/navigation/bot-cache-combination.browser.ts) and
 [assistant presentation suite](tests/navigation/assistant-modern.browser.ts) run
 the production application, Session host and timeline against controlled HTTP and
 Session API responses. Together they cover responsive navigation, assistant creation,
@@ -2311,6 +2312,14 @@ invalidation. Controlled detail/current/history barriers verify the same timelin
 and article DOM, reading anchors, and zero resource access during previews at
 1440px, 390px and 320px. Multi-tab idle checks detect LRU write feedback; cold
 access-loss checks keep the narrow-screen return path available.
+Cache composition checks join real pagination with Latest cancellation, history
+updates and identity replacement; visit seven targets under the independent
+pane and disk budgets; and hold native Web Locks across cross-tab revocation
+and queued reads or writes. The component suite separately checks every write
+entrance and original-operation recovery while the actual page awaits detail
+confirmation. The [composition decision](../../.agents/notes/implemented/testing/2026-11-10-bot-cache-composition.md)
+owns the proof boundaries and the choice to retain lower-level fault matrices
+with their existing owners.
 
 From the repository root, with the workspace dependencies installed:
 

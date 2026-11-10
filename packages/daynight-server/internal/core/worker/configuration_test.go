@@ -251,6 +251,75 @@ func TestPutConfigurationRejectsUnencodableStoredOverride(t *testing.T) {
 	}
 }
 
+func compatibilityConfiguration() model.WorkerConfiguration {
+	return model.WorkerConfiguration{
+		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
+		Projects: []model.WorkerProjectConfiguration{},
+	}
+}
+
+func TestExchangeConfigurationAssistantHostCompatibility(t *testing.T) {
+	at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	for _, bootstrap := range []bool{true, false} {
+		name := "future observation"
+		if bootstrap {
+			name = "bootstrap"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, principal := t.Context(), model.Principal{UserID: "compatibility-user"}
+			const workerID = "compatibility-worker"
+			current := model.WorkerConfigurationResource{ObservationRevision: "0"}
+			input := model.WorkerConfigurationExchange{}
+			if bootstrap {
+				value := compatibilityConfiguration()
+				input.Bootstrap = &value
+			} else {
+				current.Desired = &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()}
+				input.Observation = &model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "2", Items: []model.WorkerConfigurationItem{}}
+			}
+			var calls []string
+			d := &capacityConfigurationDAO{t: t}
+			d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+				calls = append(calls, "read")
+				if actual != ctx || user != principal.UserID || worker != workerID {
+					t.Errorf("configuration read arguments = %s/%s context=%v", user, worker, actual)
+				}
+				return current, nil
+			}
+			if bootstrap {
+				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+					calls = append(calls, "desired")
+					if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(value, compatibilityConfiguration()) {
+						t.Errorf("configuration write = %s/%s revision=%d value=%+v context=%v", user, worker, revision, value, actual)
+					}
+					return model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()}, nil
+				}
+			}
+			receipt, err := ExchangeConfiguration(ctx, d, principal, workerID, input)
+			wantCalls, wantWrites := []string{"read"}, 0
+			if bootstrap {
+				wantCalls, wantWrites = []string{"read", "desired"}, 1
+				want := &model.WorkerConfigurationReceipt{
+					Desired:             &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()},
+					ObservationRevision: "0", ObservationAccepted: false,
+				}
+				if err != nil || !reflect.DeepEqual(receipt, want) {
+					t.Fatalf("bootstrap receipt = %+v, want %+v: %v", receipt, want, err)
+				}
+			} else {
+				requireFault(t, err, "invalid_input")
+				if receipt != nil {
+					t.Fatalf("future observation returned a receipt: %+v", receipt)
+				}
+			}
+			if !reflect.DeepEqual(calls, wantCalls) || d.reads != 1 || d.desiredWrites != wantWrites || d.observationWrites != 0 {
+				t.Fatalf("configuration calls=%v reads=%d desired=%d observation=%d", calls, d.reads, d.desiredWrites, d.observationWrites)
+			}
+		})
+	}
+}
+
 func TestExchangeConfigurationBootstrapAndIndependentObservationCAS(t *testing.T) {
 	ctx, principal, value := context.Background(), model.Principal{UserID: "user"}, configurationFixture()
 	d := &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}
@@ -307,4 +376,251 @@ func TestExchangeConfigurationFailurePaths(t *testing.T) {
 	if _, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Observation: obs}); !errors.Is(err, sentinel) {
 		t.Fatal(err)
 	}
+}
+
+type capacityConfigurationDAO struct {
+	t                 *testing.T
+	read              func(context.Context, string, string) (model.WorkerConfigurationResource, error)
+	access            func(context.Context, string, string) error
+	desired           func(context.Context, string, string, int64, model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error)
+	observation       func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
+	reads             int
+	desiredWrites     int
+	observationWrites int
+}
+
+func (d *capacityConfigurationDAO) unexpected(method string) error {
+	d.t.Helper()
+	d.t.Errorf("unexpected configuration DAO call: %s", method)
+	return errors.New("unexpected configuration DAO call: " + method)
+}
+
+func (d *capacityConfigurationDAO) ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
+	return nil, d.unexpected("ReportTaskSnapshots")
+}
+func (d *capacityConfigurationDAO) UpsertWorker(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error) {
+	return model.WorkerSnapshot{}, d.unexpected("UpsertWorker")
+}
+func (d *capacityConfigurationDAO) WorkerConfiguration(ctx context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+	d.reads++
+	if d.read == nil {
+		return model.WorkerConfigurationResource{}, d.unexpected("WorkerConfiguration")
+	}
+	return d.read(ctx, user, worker)
+}
+func (d *capacityConfigurationDAO) ConfigurationProjectAccess(ctx context.Context, user, project string) error {
+	if d.access == nil {
+		return d.unexpected("ConfigurationProjectAccess")
+	}
+	return d.access(ctx, user, project)
+}
+func (d *capacityConfigurationDAO) SetWorkerConfiguration(ctx context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+	d.desiredWrites++
+	if d.desired == nil {
+		return model.WorkerDesiredConfiguration{}, d.unexpected("SetWorkerConfiguration")
+	}
+	return d.desired(ctx, user, worker, revision, value)
+}
+func (d *capacityConfigurationDAO) SetWorkerConfigurationObservation(ctx context.Context, user, worker string, revision int64, observation model.WorkerConfigurationObservation) error {
+	d.observationWrites++
+	if d.observation == nil {
+		return d.unexpected("SetWorkerConfigurationObservation")
+	}
+	return d.observation(ctx, user, worker, revision, observation)
+}
+
+func configurationCapacityResource() model.WorkerConfigurationResource {
+	return model.WorkerConfigurationResource{
+		Desired:             &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationCapacityValue(), UpdatedAt: time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)},
+		ObservationRevision: "0",
+	}
+}
+
+func TestPutConfigurationCapacityValues(t *testing.T) {
+	for _, tc := range configurationCapacityCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			principal := model.Principal{UserID: "capacity-user"}
+			const workerID = "capacity-worker"
+			input, expectedValue := configurationCapacityValue(), configurationCapacityValue()
+			tc.setValue(&input)
+			tc.setValue(&expectedValue)
+			current, expected := configurationCapacityResource(), configurationCapacityResource()
+			if tc.name == "desired.projects" {
+				tc.setValue(&current.Desired.Value)
+				tc.setValue(&expected.Desired.Value)
+			}
+			d := &capacityConfigurationDAO{t: t}
+			d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+				if actual != ctx || user != principal.UserID || worker != workerID || d.reads != 1 {
+					t.Errorf("configuration read arguments or count differ: %s %s reads=%d", user, worker, d.reads)
+				}
+				return current, nil
+			}
+			writes := 0
+			if tc.changed {
+				writes = 1
+				expected.Desired = &model.WorkerDesiredConfiguration{Revision: "2", Value: expectedValue, UpdatedAt: expected.Desired.UpdatedAt.Add(1)}
+				returnedValue := configurationCapacityValue()
+				tc.setValue(&returnedValue)
+				returned := model.WorkerDesiredConfiguration{Revision: "2", Value: returnedValue, UpdatedAt: time.Date(2026, 11, 8, 0, 0, 0, 1, time.UTC)}
+				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+					if actual != ctx || user != principal.UserID || worker != workerID || revision != 2 || !reflect.DeepEqual(value, expectedValue) || d.reads != 1 || d.desiredWrites != 1 {
+						t.Errorf("configuration write differs: revision=%d value=%+v reads=%d writes=%d", revision, value, d.reads, d.desiredWrites)
+					}
+					return returned, nil
+				}
+			}
+			got, err := PutConfiguration(ctx, d, principal, workerID, 1, input)
+			if err != nil || !reflect.DeepEqual(got, expected) || d.reads != 1 || d.desiredWrites != writes || d.observationWrites != 0 {
+				t.Fatalf("capacity configuration differs: got %+v, want %+v; reads=%d writes=%d observationWrites=%d: %v", got, expected, d.reads, d.desiredWrites, d.observationWrites, err)
+			}
+		})
+	}
+}
+
+func TestExchangeConfigurationCapacityObservation(t *testing.T) {
+	ctx := t.Context()
+	principal := model.Principal{UserID: "capacity-user"}
+	const workerID = "capacity-worker"
+	current, expected := configurationCapacityResource(), configurationCapacityResource()
+	input := configurationCapacityObservation(MaxObservationItems, "0")
+	expectedObservation := configurationCapacityObservation(MaxObservationItems, "0")
+	d := &capacityConfigurationDAO{t: t}
+	d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+		if actual != ctx || user != principal.UserID || worker != workerID || d.reads != 1 {
+			t.Errorf("observation read arguments or count differ: %s %s reads=%d", user, worker, d.reads)
+		}
+		return current, nil
+	}
+	d.observation = func(actual context.Context, user, worker string, revision int64, observation model.WorkerConfigurationObservation) error {
+		if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(observation, expectedObservation) || d.reads != 1 || d.observationWrites != 1 {
+			t.Errorf("observation write differs: revision=%d observation=%+v reads=%d writes=%d", revision, observation, d.reads, d.observationWrites)
+		}
+		return nil
+	}
+	got, err := ExchangeConfiguration(ctx, d, principal, workerID, model.WorkerConfigurationExchange{Observation: &input})
+	want := &model.WorkerConfigurationReceipt{Desired: expected.Desired, ObservationRevision: "1", ObservationAccepted: true}
+	if err != nil || !reflect.DeepEqual(got, want) || d.reads != 1 || d.desiredWrites != 0 || d.observationWrites != 1 {
+		t.Fatalf("capacity observation receipt differs: got %+v, want %+v; reads=%d writes=%d observationWrites=%d: %v", got, want, d.reads, d.desiredWrites, d.observationWrites, err)
+	}
+}
+
+const historicalUser = "eb000000-0000-4000-8000-000000000001"
+const historicalWorker = "eb000000-0000-4000-8000-000000000002"
+const historicalProject = "eb000000-0000-4000-8000-000000000003"
+
+func historicalConfiguration(max int64, withProject bool) model.WorkerConfiguration {
+	value := model.WorkerConfiguration{
+		MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
+		PreferPlatformSpecificTasks: false,
+		Native:                      model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+		Projects:                    []model.WorkerProjectConfiguration{},
+	}
+	if withProject {
+		value.Projects = []model.WorkerProjectConfiguration{{ProjectID: historicalProject, NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`["--foo","bar"]`)}}}
+	}
+	return value
+}
+
+func historicalConfigurationResource(revision string, max int64, withProject bool, at time.Time) model.WorkerConfigurationResource {
+	return model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: at, Value: historicalConfiguration(max, withProject)}, ObservationRevision: "0", Observation: nil}
+}
+
+func checkHistoricalConfigurationWrite(t *testing.T, current model.WorkerConfigurationResource, input, expectedValue model.WorkerConfiguration, expectedCurrent, expectedRevision int64, returned model.WorkerDesiredConfiguration, expected model.WorkerConfigurationResource) {
+	t.Helper()
+	ctx := t.Context()
+	principal := model.Principal{Kind: model.PATCredential, UserID: historicalUser, CredentialID: "eb000000-0000-4000-8000-000000000004"}
+	var calls []string
+	d := &capacityConfigurationDAO{t: t}
+	d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+		calls = append(calls, "read")
+		if actual != ctx || user != historicalUser || worker != historicalWorker || d.reads != 1 {
+			t.Error("historical read changed context, authority or count")
+		}
+		return current, nil
+	}
+	d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+		calls = append(calls, "desired")
+		if actual != ctx || user != historicalUser || worker != historicalWorker || revision != expectedRevision || !reflect.DeepEqual(value, expectedValue) || d.reads != 1 || d.desiredWrites != 1 {
+			t.Errorf("historical write differs: revision=%d value=%+v", revision, value)
+		}
+		return returned, nil
+	}
+	got, err := PutConfiguration(ctx, d, principal, historicalWorker, expectedCurrent, input)
+	if err != nil || !reflect.DeepEqual(got, expected) || !reflect.DeepEqual(calls, []string{"read", "desired"}) || d.reads != 1 || d.desiredWrites != 1 || d.observationWrites != 0 {
+		t.Fatalf("historical write: got=%+v want=%+v calls=%v reads=%d writes=%d observationWrites=%d err=%v", got, expected, calls, d.reads, d.desiredWrites, d.observationWrites, err)
+	}
+}
+
+func TestHistoricalConfigurationRepairRetainsRevokedProject(t *testing.T) {
+	t0 := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	t1, t2 := t0.Add(time.Second), t0.Add(2*time.Second)
+	t.Run("repair retained project", func(t *testing.T) {
+		checkHistoricalConfigurationWrite(t,
+			historicalConfigurationResource("1", 65, true, t0), historicalConfiguration(64, true), historicalConfiguration(64, true), 1, 2,
+			*historicalConfigurationResource("2", 64, true, t1).Desired, historicalConfigurationResource("2", 64, true, t1))
+	})
+	t.Run("reject changed overrides", func(t *testing.T) {
+		ctx := t.Context()
+		current := historicalConfigurationResource("2", 64, true, t1)
+		input := historicalConfiguration(64, true)
+		input.Projects[0].NativeOverrides["args"] = json.RawMessage(`["--changed"]`)
+		principal := model.Principal{Kind: model.PATCredential, UserID: historicalUser, CredentialID: "eb000000-0000-4000-8000-000000000004"}
+		d := &capacityConfigurationDAO{t: t}
+		var calls []string
+		accesses := 0
+		d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+			calls = append(calls, "read")
+			if actual != ctx || user != historicalUser || worker != historicalWorker || d.reads != 1 {
+				t.Error("historical read changed context, authority or count")
+			}
+			return current, nil
+		}
+		d.access = func(actual context.Context, user, project string) error {
+			calls = append(calls, "access")
+			accesses++
+			if actual != ctx || user != historicalUser || project != historicalProject || accesses != 1 {
+				t.Error("historical project recheck changed context, authority or count")
+			}
+			return model.ErrNotFound
+		}
+		got, err := PutConfiguration(ctx, d, principal, historicalWorker, 2, input)
+		requireFault(t, err, "not_found")
+		if !errors.Is(err, model.ErrNotFound) || !reflect.DeepEqual(got, model.WorkerConfigurationResource{}) || !reflect.DeepEqual(calls, []string{"read", "access"}) || d.reads != 1 || d.desiredWrites != 0 || d.observationWrites != 0 || accesses != 1 {
+			t.Fatalf("historical refusal: result=%+v calls=%v reads=%d writes=%d observations=%d accesses=%d err=%v", got, calls, d.reads, d.desiredWrites, d.observationWrites, accesses, err)
+		}
+	})
+	t.Run("remove revoked project", func(t *testing.T) {
+		checkHistoricalConfigurationWrite(t,
+			historicalConfigurationResource("2", 64, true, t1), historicalConfiguration(64, false), historicalConfiguration(64, false), 2, 3,
+			*historicalConfigurationResource("3", 64, false, t2).Desired, historicalConfigurationResource("3", 64, false, t2))
+	})
+}
+
+func TestValidConfigurationCanReplaceOverLimitStoredValue(t *testing.T) {
+	t0 := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	t1 := t0.Add(time.Second)
+	t.Run("replace stored value", func(t *testing.T) {
+		checkHistoricalConfigurationWrite(t,
+			historicalConfigurationResource("1", 65, false, t0), historicalConfiguration(2, false), historicalConfiguration(2, false), 1, 2,
+			*historicalConfigurationResource("2", 2, false, t1).Desired, historicalConfigurationResource("2", 2, false, t1))
+	})
+	t.Run("unchanged replacement is noop", func(t *testing.T) {
+		ctx := t.Context()
+		current, expected := historicalConfigurationResource("2", 2, false, t1), historicalConfigurationResource("2", 2, false, t1)
+		input := historicalConfiguration(2, false)
+		principal := model.Principal{Kind: model.PATCredential, UserID: historicalUser, CredentialID: "eb000000-0000-4000-8000-000000000004"}
+		d := &capacityConfigurationDAO{t: t}
+		d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+			if actual != ctx || user != historicalUser || worker != historicalWorker || d.reads != 1 {
+				t.Error("historical noop read changed context, authority or count")
+			}
+			return current, nil
+		}
+		got, err := PutConfiguration(ctx, d, principal, historicalWorker, 2, input)
+		if err != nil || !reflect.DeepEqual(got, expected) || d.reads != 1 || d.desiredWrites != 0 || d.observationWrites != 0 {
+			t.Fatalf("historical noop: got=%+v want=%+v reads=%d writes=%d observations=%d err=%v", got, expected, d.reads, d.desiredWrites, d.observationWrites, err)
+		}
+	})
 }

@@ -32,14 +32,15 @@ func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
 type liveSessions interface{ DiscardBotSession(string) }
 
 type Deletions struct {
-	writer store.SessionWriter
-	files  filestorage.Storage
-	live   liveSessions
-	now    func() time.Time
+	writer     store.SessionWriter
+	files      filestorage.Storage
+	live       liveSessions
+	operations deletionOperations
+	now        func() time.Time
 }
 
 func NewDeletions(writer store.SessionWriter, files filestorage.Storage, live liveSessions) *Deletions {
-	return &Deletions{writer: writer, files: files, live: live, now: time.Now}
+	return &Deletions{writer: writer, files: files, live: live, now: time.Now, operations: defaultDeletionOperations()}
 }
 
 func deletionFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
@@ -76,7 +77,7 @@ func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p mode
 	return nil
 }
 func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p model.Principal, id string) (model.Bot, error) {
-	return s.lockBotUsing(ctx, scope, p, id, botcore.RequireDeletionOwner)
+	return s.lockBotUsing(ctx, scope, p, id, s.operations.owner)
 }
 
 func (s *Deletions) lockBotUsing(ctx context.Context, scope store.SessionScope, p model.Principal, id string, requireOwner func(model.Bot, model.Principal) error) (model.Bot, error) {
@@ -108,7 +109,7 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err != nil {
 			return err
 		}
-		replay, err := botcore.DeletionRequest(bot, input)
+		replay, err := s.operations.request(bot, input)
 		if err != nil {
 			return err
 		}
@@ -124,7 +125,7 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 			return err
 		}
 		bot.Deletion = botcore.NewDeletion(input)
-		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, err = s.operations.save(ctx, scope.BotDAO(), bot)
 		if err != nil {
 			return err
 		}
@@ -170,7 +171,7 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 		if err != nil {
 			return err
 		}
-		change, needsStopProof, err := botcore.PrepareWorkerCleanup(bot, workerID, input.DeletionID, input.Result, digest)
+		change, needsStopProof, err := s.operations.worker(bot, workerID, input.DeletionID, input.Result, digest)
 		if err != nil {
 			return err
 		}
@@ -205,7 +206,7 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 			}
 		}
 		botcore.ApplyWorkerCleanup(&bot, input.Result, digest)
-		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, err = s.operations.save(ctx, scope.BotDAO(), bot)
 		return err
 	})
 	if err != nil {
@@ -242,7 +243,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 		if err != nil {
 			return err
 		}
-		change, err := botcore.PrepareServerCleanup(bot, deletionID)
+		change, err := s.operations.server(bot, deletionID)
 		if err != nil {
 			return err
 		}
@@ -281,7 +282,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 			return err
 		}
 		botcore.CompleteServerCleanup(&bot)
-		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, err = s.operations.save(ctx, scope.BotDAO(), bot)
 		return err
 	})
 	if completion.Outcome == store.TransactionCommitted {
@@ -304,7 +305,11 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 // The barrier and Worker receipt are durable. Record failure separately without
 // downgrading a successful retry or interpreting an uncertain transaction.
 func (s *Deletions) recordCleanupFailure(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
-	return s.recordCleanupFailureUsing(ctx, p, id, deletionID, resourceDeletionOperations)
+	return s.recordCleanupFailureUsing(ctx, p, id, deletionID, resourceCleanupOperations{
+		requireOwner: s.operations.owner,
+		fail:         s.operations.fail,
+		save:         s.operations.save,
+	})
 }
 
 func (s *Deletions) recordCleanupFailureUsing(ctx context.Context, p model.Principal, id, deletionID string, operations resourceCleanupOperations) (model.Bot, error) {

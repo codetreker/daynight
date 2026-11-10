@@ -38,7 +38,7 @@ func historicalMediaAccess(t *testing.T, f imageRuleFixture) (string, string, *i
 	}
 	current := &TaskAccess{task: task{Worker: &model.WorkerClaim{ClaimID: uuid.NewString(), AgentControlMode: model.AgentControlModeWeb}}}
 	calls := new(int)
-	f.s.browserRun = func(context.Context, model.Principal, string, string, string, func(*Access) error) error {
+	f.s.browserRun = func(context.Context, model.Principal, string, string, string, BrowserPurpose, func(*Access) error) error {
 		t.Fatal("historical read required current-claim browser admission")
 		return nil
 	}

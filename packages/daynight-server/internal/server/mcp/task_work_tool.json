@@ -1,0 +1,429 @@
+{
+  "name": "task_work_list",
+  "description": "Read ongoing work grouped by ordinary dependency components, defaulting to the current assignee. All accessible in-progress members contribute. Returns at most 20 groups by default (maximum 50), 5 root previews and 20 targets per group. Continue groups with cursor or targets with groupId and targetsCursor. Graph changes require restarting; Session changes preserve pagination. Each complete encoded result is limited to 256 KiB. Unknown observations remain visible and set partial. Status does not authorize intervention.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "assignedTo": {
+        "oneOf": [
+          {
+            "const": "me"
+          },
+          {
+            "type": "string",
+            "format": "uuid"
+          }
+        ]
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 20
+      },
+      "cursor": {
+        "type": "string"
+      },
+      "groupId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "targetsCursor": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "projectId"
+    ],
+    "additionalProperties": false,
+    "dependentRequired": {
+      "groupId": [
+        "targetsCursor"
+      ],
+      "targetsCursor": [
+        "groupId"
+      ]
+    },
+    "not": {
+      "required": [
+        "cursor",
+        "targetsCursor"
+      ]
+    }
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "data": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "groupId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "enum": [
+                    "chain",
+                    "task"
+                  ]
+                },
+                "displayTaskId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "titlePreview": {
+                  "type": "string"
+                },
+                "titleTruncated": {
+                  "type": "boolean"
+                },
+                "assignedTo": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "aggregationScope": {
+                  "const": "accessible_in_progress_members"
+                },
+                "memberCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "matchedCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "inProgressCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "rootCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "roots": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "taskId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "titlePreview": {
+                        "type": "string"
+                      },
+                      "titleTruncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "taskId",
+                      "titlePreview",
+                      "titleTruncated"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 5
+                },
+                "rootsTruncated": {
+                  "type": "boolean"
+                },
+                "summary": {
+                  "type": "object",
+                  "properties": {
+                    "indicator": {
+                      "enum": [
+                        "working",
+                        "notice",
+                        "warning",
+                        null
+                      ]
+                    },
+                    "workingCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "noticeCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "warningCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "unknownCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "complete": {
+                      "type": "boolean"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "indicator",
+                    "workingCount",
+                    "noticeCount",
+                    "warningCount",
+                    "unknownCount",
+                    "complete",
+                    "observedAt"
+                  ],
+                  "additionalProperties": false
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "taskId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "assignedTo": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "matchesAssignee": {
+                        "type": "boolean"
+                      },
+                      "sessionId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "indicator": {
+                        "enum": [
+                          "working",
+                          "notice",
+                          "warning",
+                          null
+                        ]
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "send": {
+                        "type": "object",
+                        "properties": {
+                          "allowed": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "mode": {
+                            "enum": [
+                              "start",
+                              "steer",
+                              null
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "allowed",
+                          "mode",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "taskId",
+                      "assignedTo",
+                      "matchesAssignee",
+                      "sessionId",
+                      "indicator",
+                      "reason",
+                      "send"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 20
+                },
+                "contributorCursor": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "observedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "groupId",
+                "kind",
+                "displayTaskId",
+                "titlePreview",
+                "titleTruncated",
+                "assignedTo",
+                "aggregationScope",
+                "memberCount",
+                "matchedCount",
+                "inProgressCount",
+                "rootCount",
+                "roots",
+                "rootsTruncated",
+                "summary",
+                "targets",
+                "contributorCursor",
+                "observedAt"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 50
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "partial": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "groups",
+          "nextCursor",
+          "observedAt",
+          "partial"
+        ],
+        "additionalProperties": false
+      },
+      "meta": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "refs": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "requestId",
+          "observedAt",
+          "partial",
+          "refs"
+        ],
+        "additionalProperties": false
+      },
+      "error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "writeOutcome": {
+            "enum": [
+              "confirmed",
+              "not_committed",
+              "unknown"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "requestId"
+        ]
+      }
+    },
+    "oneOf": [
+      {
+        "required": [
+          "data",
+          "meta"
+        ],
+        "not": {
+          "required": [
+            "error"
+          ]
+        }
+      },
+      {
+        "required": [
+          "error"
+        ],
+        "not": {
+          "required": [
+            "data"
+          ]
+        }
+      }
+    ],
+    "additionalProperties": false
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+  }
+}
