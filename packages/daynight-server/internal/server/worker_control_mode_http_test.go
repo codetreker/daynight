@@ -161,3 +161,28 @@ func TestWorkerControlModeHTTPReportContracts(t *testing.T) {
 		t.Fatalf("mode capability without configuration accepted: %s", response.Body)
 	}
 }
+
+func TestWorkerControlModeHTTPDoesNotInventAbsentReceipt(t *testing.T) {
+	for _, aware := range []bool{false, true} {
+		f := newCapacityReportOperationFixture(t, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+		calls := 0
+		f.operations.report = func(_ context.Context, _ model.Principal, _ string, input model.WorkerReport) (workerservice.WorkerReportResult, error) {
+			calls++
+			if input.Configuration == nil {
+				t.Fatal("configuration exchange was lost")
+			}
+			return workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt}, nil
+		}
+		body := configurationHTTPReportBody(nil, nil)
+		headers := http.Header{workerConfigurationHeader: {"1"}}
+		if aware {
+			headers.Set(controlModeHeader, "1")
+			body["configuration"].(map[string]any)["controlModeBootstrap"] = nil
+		}
+		response := controlModeRequest(t, f, http.MethodPost, "/report", jsonBody(t, body), headers)
+		fields := decodeResponse[map[string]json.RawMessage](t, response, http.StatusOK)
+		if calls != 1 || string(fields["configuration"]) != "null" || len(fields) != 3 || (response.Header().Get(controlModeHeader) == "1") != aware {
+			t.Fatalf("absent receipt projection: %s %v calls=%d", response.Body, response.Header(), calls)
+		}
+	}
+}
