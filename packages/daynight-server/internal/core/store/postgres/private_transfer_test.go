@@ -451,12 +451,19 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 	now := time.Now().UTC()
 	r := transferRecord(uuid.NewString(), now)
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var created bool
 		var e error
-		r, _, e = transfercore.Create(ctx, d, r)
+		r, created, e = d.Insert(ctx, r)
 		if e != nil {
 			return e
 		}
-		r, e = transfercore.Reserve(ctx, d, r.ID, 100, 100)
+		if !created {
+			return errors.New("transfer fixture already existed")
+		}
+		if e = d.LockLedger(ctx); e != nil {
+			return e
+		}
+		r, e = d.AddReservation(ctx, r.ID, 100)
 		return e
 	})
 	if err != nil {
@@ -466,7 +473,14 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		current, e := transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
+		current, e := d.Get(ctx, r.ID)
+		if e != nil {
+			return e
+		}
+		if e = d.LockLedger(ctx); e != nil {
+			return e
+		}
+		current, e = d.SubtractOutstanding(ctx, current.ID, 60)
 		if e != nil {
 			return e
 		}
@@ -493,7 +507,7 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		if total != 100 || reserved != 100 || current.OutstandingBytes != 100 || current.ReservedBytes != r.ReservedBytes || current.Version != r.Version || string(current.Data) != string(r.Data) {
 			t.Fatal("rollback lost unmaterialized reservation", total, current)
 		}
-		current, e = transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
+		current, e = d.SubtractOutstanding(ctx, current.ID, 60)
 		if e != nil {
 			return e
 		}
@@ -508,20 +522,10 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		t.Fatalf("materialization %+v", r)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 41, r.Version)
-		return e
-	})
-	if !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("overconsume %v", err)
-	}
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 40, r.Version-1)
-		return e
-	})
-	if !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("stale consumption %v", err)
-	}
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		current, e := d.Get(ctx, r.ID)
+		if e != nil {
+			return e
+		}
 		total, e := d.ReservedTotal(ctx)
 		if e != nil {
 			return e
@@ -533,7 +537,7 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		if total != 100 || outstanding != 40 {
 			t.Fatalf("ledger %d/%d", total, outstanding)
 		}
-		current, e := transfercore.ConsumeReservation(ctx, d, r.ID, 40, r.Version)
+		current, e = d.SubtractOutstanding(ctx, current.ID, 40)
 		if e != nil {
 			return e
 		}
@@ -657,32 +661,35 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 	}
 }
 
-func TestPrivateTransferReservationOverflow(t *testing.T) {
+func TestPrivateTransferReservationMaxInt64Accounting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
 	r := transferRecord(uuid.NewString(), time.Now().UTC())
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var created bool
 		var e error
-		r, _, e = transfercore.Create(ctx, d, r)
+		r, created, e = d.Insert(ctx, r)
 		if e != nil {
 			return e
 		}
-		r, e = transfercore.Reserve(ctx, d, r.ID, math.MaxInt64, math.MaxInt64)
+		if !created {
+			return errors.New("transfer fixture already existed")
+		}
+		if e = d.LockLedger(ctx); e != nil {
+			return e
+		}
+		r, e = d.AddReservation(ctx, r.ID, math.MaxInt64)
 		return e
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := transfercore.Reserve(ctx, d, r.ID, 1, math.MaxInt64)
-		return e
-	})
-	var f *model.Fault
-	if !errors.As(err, &f) || f.Code != "capacity_unavailable" {
-		t.Fatalf("overflow %v", err)
-	}
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		current, e := d.Get(ctx, r.ID)
+		if e != nil {
+			return e
+		}
 		total, e := d.ReservedTotal(ctx)
 		if e != nil {
 			return e
@@ -691,8 +698,8 @@ func TestPrivateTransferReservationOverflow(t *testing.T) {
 		if e != nil {
 			return e
 		}
-		if total != math.MaxInt64 || outstanding != total {
-			t.Fatalf("overflow mutated ledger %d %d", total, outstanding)
+		if total != math.MaxInt64 || outstanding != total || current.ReservedBytes != math.MaxInt64 || current.OutstandingBytes != math.MaxInt64 {
+			t.Fatalf("maximum reservation row=%d/%d ledger=%d/%d", current.ReservedBytes, current.OutstandingBytes, total, outstanding)
 		}
 		return nil
 	})

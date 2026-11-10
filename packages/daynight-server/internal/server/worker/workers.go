@@ -39,16 +39,16 @@ type configurationSyncReceipt struct {
 	ObservedAt     time.Time `json:"observedAt"`
 	LastReportedAt time.Time `json:"lastReportedAt"`
 	Configuration  struct {
-		*model.WorkerConfigurationReceipt
+		*WorkerConfigurationReceipt
 		Prompts []model.PromptResult `json:"prompts"`
 	} `json:"configuration"`
 }
 
-func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult) configurationSyncReceipt {
+func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult, controlMode bool) configurationSyncReceipt {
 	var result configurationSyncReceipt
 	result.ObservedAt = native.ObservedAt.UTC()
 	result.LastReportedAt = native.LastReportedAt.UTC()
-	result.Configuration.WorkerConfigurationReceipt = native.Configuration
+	result.Configuration.WorkerConfigurationReceipt = projectConfigurationReceipt(native.Configuration, controlMode)
 	result.Configuration.Prompts = prompts
 	return result
 }
@@ -103,6 +103,14 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	configurationAware := protocol != ""
+	controlMode, err := controlModeProtocol(request.Header)
+	if err == nil && controlMode && !configurationAware {
+		err = httpx.InvalidInput("Worker control mode requires the configuration protocol.")
+	}
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_report", "validate", err)
+		return
+	}
 	if configurationAware {
 		allowed = append(allowed, "configuration")
 	}
@@ -117,7 +125,7 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	if configurationAware {
-		input.Configuration, err = workercore.ParseWorkerConfigurationExchange(fields["configuration"])
+		input.Configuration, err = workercore.ParseWorkerConfigurationExchangeProtocol(fields["configuration"], controlMode)
 		if err != nil {
 			httpx.WriteError(w, request, logger, "worker_report", "validate", err)
 			return
@@ -141,18 +149,21 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	logger.InfoContext(request.Context(), "worker report saved", "type", "resource", "component", "worker_report", "phase", "persist", "request_id", httpx.RequestID(request.Context()))
+	if controlMode {
+		w.Header().Set(workerControlModeHeader, "1")
+	}
 	if protocol == "2" {
 		w.Header().Set(workerConfigurationHeader, "2")
-		httpx.WriteJSON(w, request, logger, http.StatusOK, syncReceipt(result, prompts))
+		httpx.WriteJSON(w, request, logger, http.StatusOK, syncReceipt(result, prompts, controlMode))
 		return
 	}
 	if configurationAware {
 		w.Header().Set(workerConfigurationHeader, "1")
 		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
-			ObservedAt     time.Time                         `json:"observedAt"`
-			LastReportedAt time.Time                         `json:"lastReportedAt"`
-			Configuration  *model.WorkerConfigurationReceipt `json:"configuration"`
-		}{result.ObservedAt.UTC(), result.LastReportedAt.UTC(), result.Configuration})
+			ObservedAt     time.Time                   `json:"observedAt"`
+			LastReportedAt time.Time                   `json:"lastReportedAt"`
+			Configuration  *WorkerConfigurationReceipt `json:"configuration"`
+		}{result.ObservedAt.UTC(), result.LastReportedAt.UTC(), projectConfigurationReceipt(result.Configuration, controlMode)})
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerReportResponse{ObservedAt: result.ObservedAt.UTC(), LastReportedAt: result.LastReportedAt.UTC()})

@@ -5,3 +5,9 @@ export const configurationValue = (): WorkerConfigurationValue => ({ maxConcurre
 export const configurationResource = (revision = '1', value = configurationValue()): WorkerConfigurationResource => ({ desired: { revision, updatedAt: WORKER_TIME, value }, observationRevision: '0', observation: null });
 export const configurationResponse = (value: unknown, status = 200, userId = WORKER_USER): Response => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId, 'Daynight-Worker-Configuration': '1' } });
 export const configurationError = (status: number, code: string): Response => configurationResponse({ error: { code, message: 'Configuration request failed.', requestId: 'configuration-request' } }, status);
+
+export const controlModeResponse = (value: unknown, status = 200, userId = WORKER_USER): Response => {
+  const response = configurationResponse(value, status, userId);
+  response.headers.set('Daynight-Worker-Control-Mode', '1');
+  return response;
+};

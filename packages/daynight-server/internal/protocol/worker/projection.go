@@ -102,9 +102,6 @@ func EncodeTelemetry(w io.Writer, value model.WorkerTelemetry, max int64) (int64
 func EncodeConfiguration(w io.Writer, value model.WorkerConfiguration, max int64) (int64, error) {
 	return measure.JSON(w, "worker.configuration", max, model.WorkerConfigurationWire(value), false)
 }
-func EncodeObservation(w io.Writer, value model.WorkerConfigurationReportedObservation, max int64) (int64, error) {
-	return measure.JSON(w, "worker.configuration.observation", max, model.WorkerConfigurationReportedObservationWire(value), false)
-}
 
 // Write admission counts collections before allocating their protocol projection.
 // Each collection must fit within the complete stored Worker item budget.

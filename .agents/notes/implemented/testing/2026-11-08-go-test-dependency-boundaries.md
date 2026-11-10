@@ -47,11 +47,12 @@ point.
 
 `RequestAuthentication` owns Bearer and session-cookie parsing, exact Origin
 checks, `AuthenticateRequest` and `Require`. It receives the credential
-operation. Complete `Authentication` combines that middleware with the concrete
-identity service for account, login, PAT and device routes, preserving full
+operation. Complete `Authentication` combines that middleware with the identity
+operations used by account, login, PAT and device routes, preserving full
 callback/configuration validation. The real middleware can therefore be tested
 without constructing unrelated account services or replacing `Require` with a
-principal-only wrapper.
+principal-only wrapper. The [Authentication consumer decision](2026-11-10-auth-identity-consumer.md)
+records the direct operation contract for the complete adapter.
 
 Core tests synthesize domain facts and control required DAO results while
 executing their business rules. Service tests supply explicit core-operation

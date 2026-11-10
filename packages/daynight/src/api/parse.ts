@@ -333,7 +333,7 @@ const graphTask = (value: unknown): GraphTask => {
 };
 const summary = (value: unknown): TaskGraphSummary => {
   const data = record(value);
-  return { total: count(data.total), todo: count(data.todo), inProgress: count(data.inProgress), done: count(data.done), cancelled: count(data.cancelled), ready: count(data.ready), blocked: count(data.blocked) };
+  return { total: count(data.total), proposed: count(data.proposed), todo: count(data.todo), inProgress: count(data.inProgress), done: count(data.done), cancelled: count(data.cancelled), ready: count(data.ready), blocked: count(data.blocked) };
 };
 
 const graphChainMembers = (byId: ReadonlyMap<string, GraphTask>, taskId: string): Set<string> => {
@@ -369,9 +369,10 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
     task.externalDependsOn.forEach((dependency) => selected.add(dependency));
   }
   if (selected.size !== byId.size || Array.from(selected).some((id) => !byId.has(id))) return malformed();
-  const expected = { total: parsed.tasks.length, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
+  const expected = { total: parsed.tasks.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
   for (const task of parsed.tasks) {
     switch (task.status) {
+      case "proposed": expected.proposed++; break;
       case "todo": expected.todo++; if (task.ready) expected.ready++; else expected.blocked++; break;
       case "in_progress": expected.inProgress++; break;
       case "done": expected.done++; break;

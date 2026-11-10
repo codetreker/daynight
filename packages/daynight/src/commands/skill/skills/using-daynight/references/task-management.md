@@ -37,7 +37,7 @@ Graph nodes retain complete dependency references, which may point outside the g
 Reaching the graph limit fails the command rather than returning a truncated graph.
 A candidate page or a single task cannot replace complete relationship verification.
 
-Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, terminal tasks. Done and cancelled remain distinct results.
+Lists group tasks into in-progress, ready todo, blocked todo, proposed, and, when explicitly included, terminal tasks. Done and cancelled remain distinct results.
 These groups are not relevance rankings. See command help for filter syntax.
 
 ### Session observations
@@ -237,8 +237,11 @@ Do not replace either failure with empty properties or silently drop a key.
 
 ## Status and timing
 
-New tasks are `todo`, have no approval status, and do not execute automatically.
-Use `task set-status` to set `todo`, `in_progress`, `done`, or `cancelled`.
+New tasks default to `proposed`, meaning an unconfirmed suggestion, and do not execute automatically.
+Creation accepts `--status proposed|todo`; use explicit `todo` for already-confirmed work, including internal multi-step tasks.
+Use `task set-status` to set `proposed`, `todo`, `in_progress`, `done`, or `cancelled`.
+Ordinary non-cancelled tasks may move directly between the first four states, subject to dependency and worker ownership rules. There is no mandatory proposed or todo stage.
+Proposed is unfinished, never ready, and cannot satisfy prerequisites or be claimed automatically, even with `allowAgents: true`.
 Done means successful delivery; cancelled means no further execution is required.
 Cancellation is irreversible and does not establish that requirements were delivered.
 Cancel only within an explicit authorization to cancel the selected task; missing
@@ -257,9 +260,9 @@ revoking dependency satisfaction; cancelled cannot return to another state.
 | Transition | Timing result |
 | --- | --- |
 | Enter `in_progress` | Start a new execution interval and clear the completion time. |
-| Return to `todo` | Clear the start and completion times. |
+| Return to `proposed` or `todo` | Clear the start and completion times. |
 | `in_progress` -> `done` | Preserve the nullable start time and record the completion time. |
-| `todo` -> `done` | Record only the completion time; elapsed time is unknown. |
+| `proposed` or `todo` -> `done` | Record only the completion time; elapsed time is unknown. |
 | Enter `cancelled` | Record cancelledAt and preserve the execution start/completion times. |
 
 An actual status change increments the version once; a same-status operation with the current version changes no fields.

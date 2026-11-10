@@ -1,6 +1,7 @@
 import { SessionStatus } from "../task-session-summary/SessionStatus";
 import { useTaskSessionSummary, useChainSessionSummary, useSessionChainVisibility } from "../task-session-summary/TaskSessionSummaryProvider";
 import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds, useTaskPaused } from "../task-pause/TaskPause";
+import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -77,7 +78,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenC
   const sessionIndicator = useChainSessionSummary(component.memberIds);
   const observeVisibility = useSessionChainVisibility(rootId, component.memberIds);
   const pausedTaskIds = usePausedTaskIds();
-  const pausedCount = [...component.memberIds].filter((id) => pausedTaskIds.has(id)).length;
+  const pausedCount = pausedSummaryTaskIds([...component.memberIds].map((id) => index.nodes.get(id)!), pausedTaskIds).size;
   const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {

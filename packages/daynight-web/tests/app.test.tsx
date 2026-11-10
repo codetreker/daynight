@@ -18,7 +18,7 @@ const projectPage = () => new Response(stringifyWireJson({ items: [{ ownership: 
 const taskGraph = (url: string) => taskSyncResponse({ observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '项目任务页面', repoUrl: 'https://github.com/example/repo',
     createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z' },
-  tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 },
+  tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 },
 }, { viewerId: TEST_VIEWER_ID, versionForTask: () => 1n, query: taskSyncQuery(new URL(url, location.origin)) });
 
 describe('application navigation', () => {

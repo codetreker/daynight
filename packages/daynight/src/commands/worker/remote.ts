@@ -47,11 +47,12 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
   const serverToken = options.serverToken === undefined ? undefined : validateServerToken(options.serverToken);
   if (serverToken !== undefined) validateTokenTransport(serverOrigin);
   let principal: string | null = null;
+  const workerControlMode = { supported: false };
 
   const query = async <T>(signal: AbortSignal, action: (api: ApiClient) => Promise<T>, expectedUserId?: string): Promise<T> => {
     const operation = createOperation({ signal });
     try {
-      return await action(createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
+      return await action(createApiClient({ workerControlMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
     } finally { operation.dispose(); }
   };
   const verifiedUserId = (): string => {
@@ -99,22 +100,22 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
     },
     report: (workerId, input, operation) => {
       operation.check();
-      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
+      return createApiClient({ workerControlMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
     readMonitoring: (workerId, operation, requestId) => {
       operation.check();
-      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).readWorkerMonitoring(workerId, requestId);
+      return createApiClient({ workerControlMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).readWorkerMonitoring(workerId, requestId);
     },
     writeMonitoring: (workerId, revision, observation, operation, requestId) => {
       operation.check();
-      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, revision, observation, requestId);
+      return createApiClient({ workerControlMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, revision, observation, requestId);
     },
     configuration: (workerId, signal, operation) => operation === undefined
       ? request(signal, api => api.getWorkerConfiguration(workerId))
-      : createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
+      : createApiClient({ workerControlMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
     reportConfiguration: (workerId, input, configuration, operation, selectors) => {
       operation.check();
-      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
+      return createApiClient({ workerControlMode, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {

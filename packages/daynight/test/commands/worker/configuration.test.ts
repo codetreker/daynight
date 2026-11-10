@@ -4,8 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationManagerOptions, WorkerConfigurationSnapshot } from "../../../src/commands/worker/configuration.js";
 import { parseWorkerCloudReport } from "../../../src/api/worker-configuration.js";
-import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudNative, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import { replaceFileAtomically } from "../../../src/platform/files.js";
+import { parseProviderArguments } from "../../../src/commands/controller/providers/projection.js";
+import { createOperation } from "../../../src/api/operation.js";
+import { syncWorkerConfigurationOnce } from "../../../src/commands/worker/reporter.js";
+import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
@@ -32,6 +36,19 @@ const fixture = async (overrides: Partial<WorkerConfigurationManagerOptions> = {
   };
   return { manager, directory, file, wait };
 };
+const failedModeSwitchCache = async () => {
+  const original = desired(), global = { ...original.value.native, args: ["--search"] }, previous = { ...global, model: "project-history" };
+  const initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "herdr", native: global, projects: [{ projectId, nativeOverrides: { model: previous.model } }] } };
+  const rejected: WorkerCloudDesired = { ...initial, revision: "2", value: { ...initial.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { model: "project-web-target", args: [] } }] } };
+  const validate = async (native: WorkerCloudNative, _signal: AbortSignal, mode: "herdr" | "web") => { if (mode === "web") parseProviderArguments(native.agent, native.args); };
+  const first = await fixture({ applyNative: validate });
+  await first.manager.configureProjectAdapters({ prepare: async () => {} });
+  await first.manager.receive(initial); await first.manager.settle();
+  await first.manager.receive(rejected); await first.manager.settle();
+  expect(first.manager.current().effective).toMatchObject({ agentControlMode: "herdr", projects: [{ ready: true, native: previous }] });
+  await first.manager.stop();
+  return { first, global, previous, rejected, validate };
+};
 afterEach(async () => {
   vi.useRealTimers();
   const failures: unknown[] = [], active = fixtures.splice(0);
@@ -43,6 +60,263 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("migrates schema 2 without treating historical native settings as current-process proof", async () => {
+    const original = desired("1", "original", false), first = await fixture();
+    await first.manager.receive(original); await first.manager.settle(); await first.manager.stop();
+    const cache = JSON.parse(await readFile(first.file, "utf8"));
+    cache.schemaVersion = 2; delete cache.nativeModes;
+    await writeFile(first.file, JSON.stringify(cache));
+    const checked: string[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, localControlMode: "web", signal: new AbortController().signal, applyNative: async (_native, _signal, mode) => { checked.push(mode); } });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    expect(reopened.current().effective.native).toBeNull();
+    expect(JSON.parse(await readFile(first.file, "utf8"))).toMatchObject({ schemaVersion: 3, desired: original, nativeModes: {}, observationRevision: cache.observationRevision });
+    await reopened.receive(original); await reopened.settle();
+    expect(checked).toEqual(["web"]);
+    expect(reopened.current().effective.agentControlMode).toBe("web");
+  });
+
+  it("does not publish either part of a mode change when its combined cache write fails", async () => {
+    const disk = new Error("mode commit failed"), initial = desired("1", "original", false);
+    const { manager, file } = await fixture({ persist: async (file, contents) => {
+      const cache = JSON.parse(contents);
+      if (cache.nativeModes["native:"] === "web") throw disk;
+      await replaceFileAtomically(file, contents, 0o600);
+    } });
+    await manager.receive({ ...initial, value: { ...initial.value, agentControlMode: "herdr" } }); await manager.settle();
+    const next = desired("2", "updated", false);
+    await manager.receive({ ...next, value: { ...next.value, agentControlMode: "web" } });
+    fixtures.at(-1)!.expectedStopError = disk;
+    await expect(manager.settle()).rejects.toBe(disk);
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "herdr", native: initial.value.native });
+    expect(JSON.parse(await readFile(file, "utf8")).nativeModes["native:"]).toBe("herdr");
+  });
+
+  it("ignores a late project validation from the previous mode", async () => {
+    const started = deferred(), release = deferred(), webStarted = deferred(), webRelease = deferred();
+    let oldCount = 0, webCount = 0;
+    const { manager } = await fixture({ applyNative: async (_native, _signal, mode) => {
+      if (mode === "herdr" && ++oldCount === 2) { started.resolve(); await release.promise; }
+      if (mode === "web" && ++webCount === 2) { webStarted.resolve(); await webRelease.promise; }
+    } });
+    const initial = desired(), next = desired("2");
+    await manager.receive({ ...initial, value: { ...initial.value, agentControlMode: "herdr" } });
+    await started.promise;
+    await manager.receive({ ...next, value: { ...next.value, agentControlMode: "web" } });
+    release.resolve(); await webStarted.promise;
+    try { expect(manager.current().effective.projects[0]?.native).toBeNull(); }
+    finally { webRelease.resolve(); }
+    await manager.settle();
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "web", projects: [{ native: initial.value.native }] });
+  });
+
+  it("revalidates a matching historical project tuple when returning to its former mode", async () => {
+    let web = 0, herdr = 0;
+    const { manager } = await fixture({ applyNative: async (_native, _signal, mode) => {
+      if (mode === "herdr") herdr++;
+      else if (++web === 2) throw new TypeError("project unavailable in web");
+    } });
+    for (const [revision, agentControlMode] of [["1", "herdr"], ["2", "web"], ["3", "herdr"]] as const) {
+      const current = desired(revision);
+      await manager.receive({ ...current, value: { ...current.value, agentControlMode } }); await manager.settle();
+    }
+    expect(herdr).toBe(4);
+    expect(manager.current().effective.projects[0]?.native).toEqual(desired().value.native);
+  });
+
+  it("publishes mode and global native together and revalidates projects for the new mode", async () => {
+    const projectGate = deferred(), projectStarted = deferred();
+    let webCalls = 0;
+    const { manager } = await fixture({ localControlMode: "herdr", applyNative: async (_native, _signal, mode) => {
+      if (mode === "web" && ++webCalls === 2) { projectStarted.resolve(); await projectGate.promise; }
+    } });
+    await manager.configureProjectAdapters({ prepare: async () => {} });
+    const initial = desired();
+    await manager.receive({ ...initial, value: { ...initial.value, agentControlMode: "herdr" } }); await manager.settle();
+    expect(manager.current().effective.projects[0]?.native).not.toBeNull();
+    const next = desired("2");
+    await manager.receive({ ...next, value: { ...next.value, agentControlMode: "web" } });
+    await projectStarted.promise;
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "web", native: initial.value.native, projects: [{ ready: true, native: null }] });
+    projectGate.resolve(); await manager.settle();
+    expect(manager.current().effective.projects[0]?.native).toEqual(initial.value.native);
+    expect(item(manager.current(), "agentControlMode")).toMatchObject({ appliedValue: "web", state: "applied" });
+  });
+
+  it("retains the old effective pair when the same native bytes fail in the new mode", async () => {
+    const attempts: string[] = [];
+    const { manager } = await fixture({ applyNative: async (_native, _signal, mode) => { attempts.push(mode); if (mode === "web") throw new TypeError("Herdr-only argument"); } });
+    const initial = desired("1", "original", false), next = desired("2", "original", false);
+    await manager.receive({ ...initial, value: { ...initial.value, agentControlMode: "herdr" } }); await manager.settle();
+    await manager.receive({ ...next, value: { ...next.value, agentControlMode: "web" } }); await manager.settle();
+    expect(attempts).toEqual(["herdr", "web"]);
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "herdr", native: initial.value.native });
+    expect(item(manager.current(), "agentControlMode")).toMatchObject({ state: "error", appliedValue: "herdr" });
+  });
+
+  it("revalidates project history after restarting with a failed mode switch", async () => {
+    const { first, global, previous, rejected, validate } = await failedModeSwitchCache();
+    const checked: { mode: string; native: WorkerCloudNative }[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal,
+      applyNative: async (native, signal, mode) => { checked.push({ mode, native }); await validate(native, signal, mode); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    expect(reopened.current().effective.projects).toEqual([]);
+    await reopened.configureProjectAdapters({ prepare: async () => {} });
+    await reopened.receive(rejected); await reopened.settle();
+    expect(reopened.current().effective).toMatchObject({ agentControlMode: "herdr", native: global, projects: [{ ready: true, native: previous }] });
+    expect(checked).toEqual([{ mode: "web", native: global }, { mode: "herdr", native: global }, { mode: "herdr", native: previous }]);
+    expect(item(reopened.current(), "agentControlMode")).toMatchObject({ state: "error", appliedValue: "herdr" });
+    expect(item(reopened.current(), "projectNative")?.state).not.toBe("applied");
+  });
+
+  it("revalidates legacy project history in the local mode after a failed adopted mode switch", async () => {
+    const original = desired(), global = { ...original.value.native, args: ["--search"] };
+    const initial = { ...original, value: { ...original.value, native: global } }, first = await fixture();
+    await first.manager.receive(initial); await first.manager.settle(); await first.manager.stop();
+    const legacy = JSON.parse(await readFile(first.file, "utf8"));
+    legacy.schemaVersion = 2; delete legacy.nativeModes;
+    await writeFile(first.file, JSON.stringify(legacy));
+    const checked: string[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, localControlMode: "herdr", signal: new AbortController().signal,
+      applyNative: async (native, _signal, mode) => { checked.push(mode); if (mode === "web") parseProviderArguments(native.agent, native.args); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive({ ...initial, revision: "2", value: { ...initial.value, agentControlMode: "web" } }); await reopened.settle();
+    expect(checked).toEqual(["web", "herdr", "herdr"]);
+    expect(reopened.current().effective).toMatchObject({ agentControlMode: "herdr", native: global, projects: [{ native: global }] });
+    expect(item(reopened.current(), "projectNative")?.state).toBe("error");
+  });
+
+  it.each([true, false])("requires current-process global proof before project history: usable=%s", async usable => {
+    const { first, global, previous, rejected, validate } = await failedModeSwitchCache();
+    const targetStarted = deferred(), targetRelease = deferred(), historyStarted = deferred(), historyRelease = deferred();
+    const checked: { mode: string; native: WorkerCloudNative }[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal,
+      applyNative: async (native, signal, mode) => {
+        checked.push({ mode, native });
+        if (mode === "web") { targetStarted.resolve(); await targetRelease.promise; await validate(native, signal, mode); }
+        else if (native.model === global.model) { historyStarted.resolve(); await historyRelease.promise; if (!usable) throw new Error("historical provider unavailable"); }
+      },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(rejected);
+    try {
+      await targetStarted.promise;
+      expect(reopened.current().effective).toMatchObject({ agentControlMode: null, native: null, projects: [{ native: null }] });
+      expect(checked).toEqual([{ mode: "web", native: global }]);
+      targetRelease.resolve(); await historyStarted.promise;
+      expect(reopened.current().effective).toMatchObject({ agentControlMode: null, native: null, projects: [{ native: null }] });
+      expect(checked).toEqual([{ mode: "web", native: global }, { mode: "herdr", native: global }]);
+    } finally { targetRelease.resolve(); historyRelease.resolve(); }
+    await reopened.settle();
+    expect(reopened.current().effective).toMatchObject({ agentControlMode: usable ? "herdr" : null, native: usable ? global : null, projects: [{ native: usable ? previous : null }] });
+    expect(checked).toHaveLength(usable ? 3 : 2);
+    expect(item(reopened.current(), "projectNative")?.state).toBe(usable ? "error" : "pending");
+  });
+
+  it.each(["absent", "different mode"])("does not authorize project history that is %s", async history => {
+    const original = desired(), global = { ...original.value.native, args: ["--search"] };
+    const first = await fixture({ applyNative: async (native, _signal, mode) => { if (mode === "herdr" && native.model === "project-history") throw new Error("project cannot adopt Herdr"); } });
+    if (history === "different mode") {
+      await first.manager.receive({ ...original, value: { ...original.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { model: "project-history" } }] } });
+      await first.manager.settle();
+    }
+    const initial: WorkerCloudDesired = { ...original, revision: "2", value: { ...original.value, agentControlMode: "herdr", native: global, projects: history === "absent" ? [] : [{ projectId, nativeOverrides: { model: "project-history" } }] } };
+    await first.manager.receive(initial); await first.manager.settle(); await first.manager.stop();
+    const checked: { mode: string; native: WorkerCloudNative }[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal,
+      applyNative: async (native, _signal, mode) => { checked.push({ mode, native }); if (mode === "web") parseProviderArguments(native.agent, native.args); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive({ ...initial, revision: "3", value: { ...initial.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { model: "project-web-target", args: [] } }] } });
+    await reopened.settle();
+    expect(checked).toEqual([{ mode: "web", native: global }, { mode: "herdr", native: global }]);
+    expect(reopened.current().effective).toMatchObject({ agentControlMode: "herdr", projects: [{ native: null }] });
+    expect(item(reopened.current(), "projectNative")?.state).toBe("pending");
+  });
+
+  it("backs off failed project history and retries without applying the blocked target", async () => {
+    const { first, previous, rejected, validate } = await failedModeSwitchCache();
+    let now = Date.parse("2026-11-10T00:00:00Z"), historyAttempts = 0;
+    const checked: { mode: string; native: WorkerCloudNative }[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, now: () => now,
+      applyNative: async (native, signal, mode) => {
+        checked.push({ mode, native }); await validate(native, signal, mode);
+        if (native.model === previous.model && ++historyAttempts === 1) throw new Error("historical project unavailable");
+      },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(rejected); await reopened.settle();
+    expect(reopened.current().effective.projects[0]?.native).toBeNull();
+    expect(item(reopened.current(), "projectNative")).toMatchObject({ state: "error", error: item(reopened.current(), "native")?.error, nextAttemptAt: "2026-11-10T00:00:05.000Z" });
+    await reopened.configureProjectAdapters({}); await reopened.settle();
+    expect(historyAttempts).toBe(1);
+    now += 5_000;
+    await reopened.configureProjectAdapters({}); await reopened.settle();
+    expect(historyAttempts).toBe(2);
+    expect(reopened.current().effective.projects[0]?.native).toEqual(previous);
+    expect(item(reopened.current(), "projectNative")).toMatchObject({ state: "error", nextAttemptAt: "2026-11-10T00:00:15.000Z" });
+    now += 10_000;
+    await reopened.configureProjectAdapters({}); await reopened.settle();
+    expect(historyAttempts).toBe(2);
+    expect(checked.every(entry => entry.native.model !== "project-web-target")).toBe(true);
+    const repaired = { ...rejected, revision: "3", value: { ...rejected.value, native: { ...rejected.value.native, args: [] } } };
+    await reopened.receive(repaired); await reopened.settle();
+    expect(checked.slice(-2)).toEqual([{ mode: "web", native: repaired.value.native }, { mode: "web", native: { ...previous, model: "project-web-target", args: [] } }]);
+    expect(reopened.current().effective).toMatchObject({ agentControlMode: "web", projects: [{ native: { model: "project-web-target", args: [] } }] });
+    expect(item(reopened.current(), "projectNative")?.state).toBe("applied");
+  });
+
+  it.each(["retry", "superseded", "cancelled"] as const)("does not publish late project history after %s", async transition => {
+    const { first, previous, rejected, validate } = await failedModeSwitchCache();
+    const historyStarted = deferred(), historyRelease = deferred(), webStarted = deferred(), webRelease = deferred(), cancellation = new AbortController();
+    let now = Date.parse("2026-11-10T00:00:00Z"), allowWeb = false;
+    const published: WorkerConfigurationSnapshot[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: cancellation.signal, now: () => now,
+      applyNative: async (native, signal, mode) => {
+        if (mode === "web" && !allowWeb) await validate(native, signal, mode);
+        if (mode === "herdr" && native.model === previous.model) { historyStarted.resolve(); await historyRelease.promise; }
+        if (mode === "web" && native.model === "project-web-target") { webStarted.resolve(); await webRelease.promise; }
+      },
+      onChange: snapshot => { published.push(snapshot); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(rejected);
+    try {
+      await historyStarted.promise;
+      if (transition === "cancelled") cancellation.abort(new Error("Worker stopped during project history validation."));
+      else {
+        allowWeb = true;
+        if (transition === "retry") { now = Date.parse(item(reopened.current(), "native")!.nextAttemptAt!); await reopened.configureProjectAdapters({}); }
+        else await reopened.receive({ ...rejected, revision: "3", value: { ...rejected.value, native: { ...rejected.value.native, args: [] } } });
+        await vi.waitFor(() => expect(reopened.current().effective.agentControlMode).toBe("web"));
+      }
+      historyRelease.resolve();
+      if (transition !== "cancelled") {
+        await webStarted.promise;
+        expect(reopened.current().effective.projects[0]?.native).toBeNull();
+      }
+    } finally { historyRelease.resolve(); webRelease.resolve(); }
+    await reopened.settle();
+    expect(published.every(snapshot => snapshot.effective.projects[0]?.native?.model !== previous.model)).toBe(true);
+    if (transition !== "cancelled") {
+      expect(reopened.current().effective).toMatchObject({ agentControlMode: "web", projects: [{ native: { model: "project-web-target", args: [] } }] });
+      expect(item(reopened.current(), "projectNative")?.state).toBe("applied");
+    }
+  });
+
+  it("uses the local mode for an unadopted target and sends its candidate despite existing desired", async () => {
+    const modes: string[] = [];
+    const { manager } = await fixture({ localControlMode: "web", applyNative: async (_native, _signal, mode) => { modes.push(mode); } });
+    const initial = desired("1", "original", false);
+    await manager.receive({ ...initial, value: { ...initial.value, agentControlMode: null } }); await manager.settle();
+    expect(manager.current().effective.agentControlMode).toBe("web");
+    expect(manager.report()).toMatchObject({ bootstrap: null, controlModeBootstrap: "web" });
+    expect(modes).toEqual(["web"]);
+    expect(item(manager.current(), "agentControlMode")).toMatchObject({ state: "pending", appliedValue: null });
+  });
+
   it("hot-applies platform preference in both directions and reports false as an applied value", async () => {
     const { manager } = await fixture();
     expect(manager.current().effective.preferPlatformSpecificTasks).toBeNull();
@@ -54,7 +328,7 @@ describe("Worker cloud configuration application", () => {
     await manager.settle();
     expect(manager.current().effective.preferPlatformSpecificTasks).toBe(false);
     expect(item(manager.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "applied", appliedValue: false, targetRevision: "2" });
-    expect(parseWorkerCloudReport(manager.report()).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
+    expect(parseWorkerCloudReport(manager.report(), true).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
   });
 
   it("atomically migrates a full schema-1 cache without discarding removal or failure ownership", async () => {
@@ -62,6 +336,7 @@ describe("Worker cloud configuration application", () => {
     await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
     const saved = JSON.parse(await readFile(first.file, "utf8"));
     saved.schemaVersion = 1;
+    delete saved.nativeModes;
     delete saved.desired.value.preferPlatformSpecificTasks;
     saved.items = saved.items.filter((entry: { value: WorkerCloudItem }) => entry.value.key.kind !== "preferPlatformSpecificTasks");
     const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
@@ -74,7 +349,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = JSON.parse(await readFile(first.file, "utf8"));
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
     expect(migrated.desired).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.observationRevision).toBe(saved.observationRevision);
@@ -83,7 +358,7 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.current().effective.preferPlatformSpecificTasks).toBeNull();
     await reopened.receive(target); await reopened.settle();
     expect(reopened.current().effective.preferPlatformSpecificTasks).toBe(false);
-    expect(parseWorkerCloudReport(reopened.report()).observation?.items).toHaveLength(1025);
+    expect(parseWorkerCloudReport(reopened.report(), true).observation?.items).toHaveLength(1025);
     expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "error", lastFailure: failure });
   });
 
@@ -442,6 +717,167 @@ describe("Worker cloud configuration application", () => {
     const completed = manager.report();
     await manager.acknowledge(completed, { desired: desired("2", "original", false), observationRevision: "2", observationAccepted: true });
     expect(manager.current().items.every(item => !("projectId" in item.key))).toBe(true);
+  });
+
+  it.each(["before acknowledgement", "in acknowledgement"])("revalidates reselected applied project history %s", async selection => {
+    const checked: { mode: string; native: WorkerCloudNative }[] = [], published: WorkerConfigurationSnapshot[] = [], reports: WorkerCloudReport[] = [];
+    const { manager } = await fixture({ applyNative: async (native, _signal, mode) => { checked.push({ mode, native }); }, onChange: snapshot => {
+      published.push(snapshot);
+      if (snapshot.desired?.revision === "3") reports.push(manager.report());
+    } });
+    await manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    const original = desired(), global = original.value.native, projectNative = { ...global, model: "project" };
+    const initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { model: projectNative.model } }] } };
+    const removed: WorkerCloudDesired = { ...initial, revision: "2", value: { ...initial.value, agentControlMode: "herdr", projects: [] } };
+    const reselected = { ...initial, revision: "3" };
+    await manager.receive(initial); await manager.settle();
+    await manager.receive(removed); await manager.settle();
+    expect(item(manager.current(), "projectRemoval")).toMatchObject({ state: "applied", targetRevision: "2" });
+    expect(item(manager.current(), "projectNative")).toMatchObject({ state: "applied", appliedValue: projectNative });
+    const report = manager.report();
+    let beforeAcknowledgement: WorkerConfigurationSnapshot | undefined;
+    if (selection === "before acknowledgement") {
+      await manager.receive(reselected); await manager.settle();
+      beforeAcknowledgement = manager.current();
+    }
+    await manager.acknowledge(report, { desired: reselected, observationRevision: "1", observationAccepted: true });
+    await manager.settle();
+    expect(reports[0]?.observation?.items.find(value => value.key.kind === "projectNative")).toMatchObject({ targetRevision: "3", state: "pending" });
+    expect(item(published.find(snapshot => snapshot.desired?.revision === "3")!, "projectNative")).toMatchObject({ state: "pending", appliedValue: projectNative });
+    expect(published.filter(snapshot => snapshot.desired?.revision === "3").every(snapshot => item(snapshot, "projectNative")?.state !== "applied" || snapshot.effective.projects[0]?.native !== null)).toBe(true);
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "web", projects: [{ ready: true, native: projectNative }] });
+    if (beforeAcknowledgement !== undefined) expect(beforeAcknowledgement.effective.projects).toEqual([{ projectId, ready: true, native: projectNative }]);
+    expect(item(manager.current(), "projectRemoval")).toBeUndefined();
+    expect(checked).toEqual([{ mode: "web", native: global }, { mode: "web", native: projectNative }, { mode: "herdr", native: global }, { mode: "web", native: global }, { mode: "web", native: projectNative }]);
+    await manager.receive({ ...reselected, revision: "4", value: { ...reselected.value, maxConcurrent: 8 } }); await manager.settle();
+    expect(manager.current().effective.projects[0]?.native).toEqual(projectNative);
+    expect(checked).toHaveLength(5);
+    await manager.receive({ ...removed, revision: "5" }); await manager.settle();
+    await manager.acknowledge(manager.report(), { desired: { ...reselected, revision: "6" }, observationRevision: "2", observationAccepted: true }); await manager.settle();
+    expect(manager.current().effective.projects[0]?.native).toEqual(projectNative);
+    expect(checked).toHaveLength(8);
+  });
+
+  it("reports a reselected project as pending before either native proof completes", async () => {
+    const globalStarted = deferred(), globalRelease = deferred(), projectStarted = deferred(), projectRelease = deferred();
+    let reselecting = false;
+    const { manager, file } = await fixture({ applyNative: async (native, _signal, mode) => {
+      if (!reselecting || mode !== "web") return;
+      if (native.model === "project") { projectStarted.resolve(); await projectRelease.promise; }
+      else { globalStarted.resolve(); await globalRelease.promise; }
+    } });
+    await manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    const original = desired(), initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { model: "project" } }] } };
+    await manager.receive(initial); await manager.settle();
+    await manager.receive({ ...initial, revision: "2", value: { ...initial.value, agentControlMode: "herdr", projects: [] } }); await manager.settle();
+    const reselected = { ...initial, revision: "3" }, operation = createOperation();
+    reselecting = true;
+    try {
+      await syncWorkerConfigurationOnce({ operation, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
+        prepare: async () => { await manager.receive(reselected); }, capture: () => manager.report(),
+        send: async (_report, captured) => {
+          expect(captured.observation?.items.find(value => value.key.kind === "projectNative")).toMatchObject({ targetRevision: "3", state: "pending" });
+          return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: reselected, observationRevision: "1", observationAccepted: true } };
+        }, accept: (sent, receipt) => manager.acknowledge(sent, receipt),
+      } });
+      await globalStarted.promise;
+      expect(manager.current().effective.projects[0]?.native).toBeNull();
+      globalRelease.resolve(); await projectStarted.promise;
+      expect(manager.current().effective).toMatchObject({ agentControlMode: "web", projects: [{ ready: true, native: null }] });
+      expect(manager.report().observation?.items.find(value => value.key.kind === "projectNative")?.state).toBe("applying");
+      expect(JSON.parse(await readFile(file, "utf8")).items.find((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "projectNative").value.state).toBe("applying");
+    } finally { globalRelease.resolve(); projectRelease.resolve(); operation.dispose(); }
+    await manager.settle();
+    expect(manager.current().effective.projects[0]?.native?.model).toBe("project");
+  });
+
+  it("revalidates cached applied native items when the first synchronization is an acknowledgement", async () => {
+    const first = await fixture(), original = desired(), initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "web" } };
+    await first.manager.receive(initial); await first.manager.settle(); await first.manager.stop();
+    const entered = deferred(), release = deferred(), published: WorkerConfigurationSnapshot[] = [];
+    let calls = 0;
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal,
+      applyNative: async () => { if (++calls === 1) { entered.resolve(); await release.promise; } }, onChange: snapshot => { published.push(snapshot); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    const operation = createOperation();
+    try {
+      await syncWorkerConfigurationOnce({ operation, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
+        capture: () => reopened.report(),
+        send: async (_report, captured) => {
+          expect(captured.observation).toBeNull();
+          return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: initial, observationRevision: "0", observationAccepted: false } };
+        }, accept: (sent, receipt) => reopened.acknowledge(sent, receipt),
+      } });
+      await entered.promise;
+      expect(item(published[0]!, "native")?.state).toBe("pending");
+      expect(item(published[0]!, "projectNative")?.state).toBe("pending");
+      expect(reopened.current().effective).toMatchObject({ native: null, projects: [{ native: null }] });
+    } finally { release.resolve(); operation.dispose(); }
+    await reopened.settle();
+    expect(reopened.current().effective).toMatchObject({ native: initial.value.native, projects: [{ native: initial.value.native }] });
+    expect(calls).toBe(2);
+  });
+
+  it.each(["herdr", "web"] as const)("reuses a still-proven applied project when reselected in %s", async agentControlMode => {
+    const applyNative = vi.fn(async () => {}), { manager } = await fixture({ applyNative });
+    await manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    const original = desired(), initial = { ...original, value: { ...original.value, agentControlMode } };
+    await manager.receive(initial); await manager.settle();
+    await manager.receive({ ...initial, revision: "2", value: { ...initial.value, projects: [] } }); await manager.settle();
+    await manager.acknowledge(manager.report(), { desired: { ...initial, revision: "3" }, observationRevision: "1", observationAccepted: true }); await manager.settle();
+    expect(manager.current().effective.projects).toEqual([{ projectId, ready: true, native: initial.value.native }]);
+    expect(applyNative).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves failure history and retry deadlines while revalidating a reselected project", async () => {
+    let failProject = true, projectCalls = 0, now = Date.parse("2026-11-10T00:00:00Z");
+    const published: WorkerConfigurationSnapshot[] = [];
+    const { manager } = await fixture({ now: () => now, onChange: snapshot => { published.push(snapshot); }, applyNative: async native => {
+      if (native.model === "project") { projectCalls++; if (failProject) throw new TypeError("project unavailable"); }
+    } });
+    await manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    const original = desired(), initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { model: "project" } }] } };
+    await manager.receive(initial); await manager.settle();
+    const originalFailure = item(manager.current(), "projectNative")!.lastFailure;
+    failProject = false;
+    await manager.receive({ ...initial, revision: "2" }); await manager.settle();
+    await manager.receive({ ...initial, revision: "3", value: { ...initial.value, agentControlMode: "herdr", projects: [] } }); await manager.settle();
+    const reselected = { ...initial, revision: "4" };
+    failProject = true;
+    await manager.receive(reselected); await manager.settle();
+    expect(item(published.find(snapshot => snapshot.desired?.revision === "4")!, "projectNative")).toMatchObject({ state: "pending", lastFailure: originalFailure });
+    expect(manager.current().effective.projects[0]?.native).toBeNull();
+    expect(item(manager.current(), "projectNative")).toMatchObject({ state: "error", nextAttemptAt: "2026-11-10T00:00:05.000Z" });
+    expect(projectCalls).toBe(4);
+    await manager.receive(reselected); await manager.settle();
+    expect(projectCalls).toBe(4);
+    now += 5_000; failProject = false;
+    await manager.receive(reselected); await manager.settle();
+    expect(projectCalls).toBe(5);
+    expect(item(manager.current(), "projectNative")).toMatchObject({ state: "applied", error: null, lastFailure: { code: "invalid_configuration" } });
+    expect(manager.current().effective.projects[0]?.native?.model).toBe("project");
+    await manager.acknowledge(manager.report(), { desired: reselected, observationRevision: "1", observationAccepted: true });
+    expect(item(manager.current(), "projectNative")?.lastFailure).toBeNull();
+  });
+
+  it("does not publish reselected project proof when its result cannot be persisted", async () => {
+    const disk = new Error("project proof commit failed"), published: WorkerConfigurationSnapshot[] = [];
+    const { manager } = await fixture({ onChange: snapshot => { published.push(snapshot); }, persist: async (file, contents) => {
+      const cache = JSON.parse(contents);
+      if (cache.desired?.revision === "3" && cache.items.some((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "projectNative" && entry.value.state === "applied")) throw disk;
+      await replaceFileAtomically(file, contents, 0o600);
+    } });
+    await manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    const original = desired(), initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "web" } };
+    await manager.receive(initial); await manager.settle();
+    await manager.receive({ ...initial, revision: "2", value: { ...initial.value, agentControlMode: "herdr", projects: [] } }); await manager.settle();
+    fixtures.find(entry => entry.manager === manager)!.expectedStopError = disk;
+    await manager.receive({ ...initial, revision: "3" });
+    await expect(manager.settle()).rejects.toBe(disk);
+    expect(published.filter(snapshot => snapshot.desired?.revision === "3").every(snapshot => snapshot.effective.projects[0]?.native === null && item(snapshot, "projectNative")?.state !== "applied")).toBe(true);
+    expect(manager.current().effective.projects[0]?.native).toBeNull();
+    expect(() => manager.report()).toThrow(disk);
   });
 
   it("rejects an unrelated accepted receipt without erasing unreported failure information", async () => {

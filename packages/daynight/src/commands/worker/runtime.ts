@@ -137,7 +137,7 @@ const effectiveExecutionConfiguration = (native: WorkerCloudNative, mode: AgentC
 });
 
 const nativeConfigurationApplication = (options: {
-  paths: WorkerPaths; homeDirectory: string; workingDirectory: string; mode: AgentControlMode;
+  paths: WorkerPaths; homeDirectory: string; workingDirectory: string;
   overrides: WorkerLocalNativeOverrides;
   signal: AbortSignal; emit: (event: WorkerEvent) => void;
 }) => {
@@ -153,8 +153,8 @@ const nativeConfigurationApplication = (options: {
   return {
     current: () => environment,
     prepareEnvironment: getEnvironment,
-    apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
-      normalizeWorkerNative(native, options.mode, options.overrides);
+    apply: async (native: WorkerCloudNative, signal: AbortSignal, mode: AgentControlMode): Promise<void> => {
+      normalizeWorkerNative(native, mode, options.overrides);
       const nativeEnvironment = await getEnvironment();
       const operation = createOperation({ signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
       try { await probeNativeAgentVersion({ agent: native.agent, environment: { ...process.env, ...nativeEnvironment.agentEnvironment }, cwd: options.workingDirectory }, operation); }
@@ -443,7 +443,7 @@ export const runWorker = async (options: {
       void job.finally(() => { if (bindingJobs.get(projectId)?.job === job) bindingJobs.delete(projectId); }).catch(() => undefined);
       return job;
     };
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, overrides: local, signal, emit });
+    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, overrides: local, signal, emit });
     let fallback: Awaited<ReturnType<typeof validateWorkerConfigurationSource>> | null = null;
     let fallbackRepositories: WorkerRepositoryAssignment[] = [];
     let fallbackTargets: string[] = [];
@@ -460,9 +460,9 @@ export const runWorker = async (options: {
       const repositories: WorkerRepositoryAssignment[] = [];
       for (const project of effective.projects) {
         const binding = prepared.get(project.projectId);
-        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, local.agentControlMode, effective.recoveryLimit, local) });
+        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, effective.agentControlMode!, effective.recoveryLimit, local) });
       }
-      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
     };
     const transitions = new Map<string, string>();
     const preparationFailures = new Map<string, { operationId: string; observedAt: string; revision: string; successRevision: string | null }>();
@@ -475,7 +475,7 @@ export const runWorker = async (options: {
     let configurationChanged = new AbortController();
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
-      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal,
+      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode,
       applyNative: nativeApplication.apply,
       onNativeApplication: event => {
         const projectId = event.key.kind === "projectNative" ? event.key.projectId : null;
@@ -638,8 +638,11 @@ export const runWorker = async (options: {
               const project = await resolveProject({ repoUrl: mapping.remote }, signal);
               const operation = createOperation({ signal });
               try {
-                const worktrees = await getGit().listWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
-                if (worktrees.some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+                const scan = await getGit().scanWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
+                if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Local repository resource coverage is incomplete.");
+                if ([...scan.validated, ...scan.quarantined].some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+                // Mapping admission proves the project/path association only. The
+                // coordinator independently proves quarantined owners before claiming.
               } finally { operation.dispose(); }
               await admitLocalBinding({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, signal);
             }
@@ -715,7 +718,7 @@ export const runWorker = async (options: {
                 nativeActivity = m.startActivity({ kind: "maintenance", phase: "configuration", scope: nativeScope });
               });
               try {
-                await nativeApplication.apply(nativeTarget, signal);
+                await nativeApplication.apply(nativeTarget, signal, local.agentControlMode);
                 const recovered = fallbackNativeFailures.get(projectId);
                 if (recovered !== undefined && !signal.aborted && manager.current().desired === null && isDeepStrictEqual(recovered.target, nativeTarget)) {
                   observeMonitoring(m => { m.recover(recovered.operationId); m.setNativeConfigurationReason(nativeScope, null); }); fallbackNativeFailures.delete(projectId);
@@ -823,7 +826,7 @@ export const runWorker = async (options: {
         native: fallback,
         projects: fallbackRepositories.map(repository => ({ projectId: repository.project.projectId, native: repository.configuration })),
       } : snapshot.effective;
-      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, local.agentControlMode, local, localFallback ? "local" : "cloud");
+      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, localFallback ? local.agentControlMode : snapshot.effective.agentControlMode ?? local.agentControlMode, local, localFallback ? "local" : "cloud");
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
     }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
@@ -837,14 +840,14 @@ export const runWorker = async (options: {
         },
         capture: () => {
           const captured = manager.report(manager.current().desired === null ? bootstrap : null);
-          try { parseWorkerCloudReport(captured); }
+          try { parseWorkerCloudReport(captured, true); }
           catch (error) { reconcileReport = true; throw error; }
           return captured;
         },
         send: async (report, captured, operation, selectors) => {
           try { return await remote.reportConfiguration(workerId, report, captured, operation, selectors); }
           catch (error) {
-            if (!(error instanceof ApiError) || error.outcomeUnconfirmed || error.phase === "prepare" && error.cause instanceof OperationError && error.cause.kind === "request_limit") reconcileReport = true;
+            if (!(error instanceof ApiError) || error.outcomeUnconfirmed || error.status === 400 && error.code === "invalid_input" || error.phase === "prepare" && error.cause instanceof OperationError && error.cause.kind === "request_limit") reconcileReport = true;
             if (error instanceof ApiError && error.status === 404 && error.code === "not_found" && manager.current().desired === null && captured.bootstrap !== null) {
               bootstrap = null;
               fallback ??= await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, operation.signal);
@@ -852,7 +855,12 @@ export const runWorker = async (options: {
             throw error;
           }
         },
-        accept: async (sent, receipt) => { await manager.acknowledge(sent, receipt); if (receipt.desired !== null) bootstrap = null; },
+        accept: async (sent, receipt) => {
+          await manager.acknowledge(sent, receipt);
+          if (receipt.desired !== null) bootstrap = null;
+          // Legacy receipts cannot advertise a later upgrade; refresh capability before the next report.
+          if (receipt.desired?.value.agentControlMode === undefined) reconcileReport = true;
+        },
       },
     });
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
@@ -1068,7 +1076,7 @@ export const runWorkerControl = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, mode: local.agentControlMode, overrides: local, signal, emit: diagnostics.emit });
+    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
     if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
@@ -1100,18 +1108,18 @@ export const runWorkerControl = async (options: {
         }
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, preferPlatformSpecificTasks: initial.preferPlatformSpecificTasks };
       } else {
-        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, applyNative: nativeApplication.apply });
+        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, applyNative: nativeApplication.apply });
         await configurationManager.receive(resource.desired, resource.observationRevision);
         await configurationManager.settle();
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
-        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local);
+        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local);
         const repositories = store.listProjects().flatMap(project => {
           const selected = effective.projects.find(value => value.projectId === project.projectId);
           const native = selected === undefined ? effective.native : selected.native;
-          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, local.agentControlMode, effective.recoveryLimit!, local) }];
+          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.agentControlMode!, effective.recoveryLimit!, local) }];
         });
-        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
       }
     }
     const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
@@ -1144,7 +1152,7 @@ export const runWorkerControl = async (options: {
                   resource = { desired: null, observationRevision: "0", observation: null };
                 }
               }
-              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, applyNative: nativeApplication.apply });
+              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, applyNative: nativeApplication.apply });
               await configurationManager.receive(resource.desired, resource.observationRevision);
               if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
             }

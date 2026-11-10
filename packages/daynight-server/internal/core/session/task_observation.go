@@ -142,7 +142,7 @@ func unavailableTaskObservation(now time.Time, reason string) sp.TaskSessionObse
 func (s *Engine) observeTaskSession(p model.Principal, source store.TaskSessionSource, live *taskSessionLiveState, now time.Time, allowHistorical bool) sp.TaskSessionObservation {
 	out := sp.TaskSessionObservation{SchemaVersion: 1, Observation: "observed", Registration: "not_applicable", Reason: "no_execution", ObservedAt: &now, FreshUntil: observationPointer(now.Add(HeartbeatTimeout)), Send: sp.TaskSessionSend{Allowed: observationPointer(false), Reason: "no_execution"}}
 	w, d := source.Worker, source.Session
-	if source.TaskStatus == model.TaskTodo {
+	if source.TaskStatus == model.TaskProposed || source.TaskStatus == model.TaskTodo {
 		out.Reason = "not_started"
 		out.Send.Reason = out.Reason
 	}

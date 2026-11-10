@@ -65,8 +65,8 @@ describe("task CLI protocol outcomes", () => {
     expect(f.fetch).toHaveBeenCalledTimes(2);
     expect(f.fetch.mock.calls[1]![1]!.body).toBe('{"version":9007199254740993,"status":"todo"}');
     f.context.stderr.mockClear(); f.fetch.mockClear();
-    expect(await f.run(["set-status", taskId, "proposed", "--project", projectId])).toBe(2);
-    expect(f.context.stderr.mock.calls[0]![0]).toContain('Unknown status "proposed"');
+    expect(await f.run(["set-status", taskId, "unknown", "--project", projectId])).toBe(2);
+    expect(f.context.stderr.mock.calls[0]![0]).toContain('Unknown status "unknown"');
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
   });
 

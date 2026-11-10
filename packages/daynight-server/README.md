@@ -962,8 +962,11 @@ physical work.
 The inner `internal/service/application` suite verifies the business-module
 construction shared by protocol adapters. It records Projects, Tasks and
 Attachments constructor arguments and returned module identities through the
-same production assembly body. The wrappers call real pure constructors; fixed
-business data does not require Project/Task/Attachment workflows or PostgreSQL.
+same production assembly body. Identity construction receives the original writer,
+client and callback, and its concrete result occupies the 18-method output used
+by Authentication and MCP. The wrappers call real pure constructors; fixed
+business data does not require Project/Task/Attachment or Identity workflows or
+PostgreSQL.
 Actual Session/Engine identity, origin propagation and operation/stop/close
 behavior remain real, with store and files borrowed from their external owners.
 
@@ -1510,6 +1513,12 @@ with all 360 combinations, complete returned Task data, pagination, Worker
 inventory, historical assignment and version-2 cursor scope. Shared platform and
 agent-permission service fixtures retain their DAO-based List scope.
 
+The Create, Update and SetStatus preparation-failure witnesses control project
+write authorization and the selected Task preparation operation inside the real
+write callback. They check input and scope capability identity, call order,
+error chains and completion facts. Core tests execute the preparation operations
+against controlled failing reads; neither fixture represents persistence.
+
 Run the service suite and receiving Core tests without database or UniAuth
 fixtures from the module:
 
@@ -1521,6 +1530,8 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 The [List test decision](../../.agents/notes/implemented/testing/2026-11-09-task-list-direct-operation-tests.md)
 records the direct-operation boundary and retained query/cursor proofs.
+The [write preparation test decision](../../.agents/notes/implemented/testing/2026-11-10-task-write-preparation-tests.md)
+records the selected failure witnesses and their Core recipients.
 
 PostgreSQL witnesses follow their implementation owners under
 `internal/core/store/postgres/`. Domain subpackages test direct DAO queries,
@@ -1689,11 +1700,14 @@ records the direct Session binding and retained proofs.
 
 ### MCP transfer service tests
 
-The complete `internal/service/mcptransfer` suite controls the existing private
-transfer DAO and transaction boundaries. Reads, proposed writes and completion
-outcomes are explicit, independently constructed facts; recorded writes do not
-supply later reads or simulate persistence. Unconfigured calls fail, and the
-test binary clears database and UniAuth test variables.
+The `internal/service/mcptransfer` suite controls private transfer DAO and
+transaction boundaries. `Lifecycle` also controls its direct Core `Create`
+operation, while Core tests own its active-slot matrix and duplicate behavior.
+Other direct Lifecycle operations still execute Core through DAO expectations.
+Reads, proposed writes, operation results and completion outcomes are explicit,
+independently constructed facts; recorded writes do not supply later reads or
+simulate persistence. Unconfigured calls fail, and the test binary clears
+database and UniAuth test variables.
 
 Uploads control the directly invoked attachment operation through an
 instance-owned private admission adapter. `NewUploads` still binds that adapter
@@ -1722,7 +1736,8 @@ writer is killed. This is a process-mechanism witness in the existing lifecycle
 job. Normal assembled API flows retain their separate integration entry.
 
 The [MCP transfer ownership decision](../../.agents/notes/implemented/testing/2026-11-09-mcptransfer-test-ownership.md)
-records the proof allocation. Measurements include receiving Store, core and
+and [Create boundary decision](../../.agents/notes/implemented/testing/2026-11-10-mcptransfer-create-test-boundary.md)
+record the proof allocation. Measurements include receiving Store, core and
 process work; supplied receipts and completion outcomes are not evidence of
 physical persistence.
 
@@ -1733,6 +1748,9 @@ while executing the actual Entry, HTTP transport, SDK, schemas and tool response
 encoding. Principals and domain results are explicit facts; operations verify
 arguments, context, authority and calls. Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
+Task query registration accepts controlled list and graph observation operations;
+its Tasks dependency still serves ready and dependency reads. Root application
+fixture and business/DAO tests retain their existing responsibilities.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
 `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
 
@@ -2463,11 +2481,11 @@ version/status input. Every project member can write tasks; administrator role
 additionally manages members, invitations and project settings. Status PUT and
 method-refusal handlers authenticate, require exact Cookie Origin and use no-store.
 
-Creation uses todo, version 1, nullable execution/cancellation timestamps, allowAgents=false
+Creation defaults to proposed and accepts an optional proposed/todo status, version 1, nullable execution/cancellation timestamps, allowAgents=false
 and unrestricted requiredPlatform=null unless explicitly supplied. Its
 assignedTo defaults to null; an explicitly supplied UUID must identify a current
 project member in the creation transaction.
-It rejects caller-supplied status, timing and permission; platform creation accepts
+It rejects other creation states and caller-supplied timing and permission; platform creation accepts
 null or windows/linux/macos. PATCH retains field presence separately from nullable value. Properties/PRs and both
 dependency collections have explicit empty defaults. Updates require a positive
 expected int64 version and at least one mutable field; omitted pointers preserve
@@ -2476,10 +2494,10 @@ requiredPlatform and assignedTo accept null to clear; other JSON null input is
 rejected.
 Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
-candidates require all predecessors done or cancelled; todo and cancelled may have unfinished predecessors.
+candidates require all predecessors done or cancelled; proposed, todo and cancelled may have unfinished predecessors.
 
 Ordinary tasks without active/released worker ownership retain the original
-transitions across todo/in_progress/done and may enter irreversible cancelled. The project write
+direct transitions across proposed/todo/in_progress/done without a mandatory stage and may enter irreversible cancelled. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
@@ -2494,9 +2512,9 @@ explicit owner/admin resume, with fresh claim and worktree IDs. The
 old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
-uses statement_timestamp() after the lock and clears the end; return to todo
+uses statement_timestamp() after the lock and clears the end; return to proposed or todo
 clears both. In-progress to done preserves its nullable start and records an end;
-todo to done records an end with null start. Cancellation records `cancelledAt`
+proposed/todo to done records an end with null start. Cancellation records `cancelledAt`
 and preserves both execution endpoints; done-to-cancelled does not erase its
 completion time. Metadata and same-state preserve time.
 No missing historical start is inferred. State, timing, version and update time
@@ -2505,7 +2523,7 @@ commit atomically. Details are owned by the [status architecture](../../docs/des
 Migration 014 converts historical proposed rows to todo, advancing only their
 version/update time and preserving every other field, including timing. It
 atomically changes the default, rows, CHECK and ledger; restart does not rerun it.
-Applied historical migrations are immutable. Runtime input and readers reject proposed.
+Applied historical migrations are immutable. A subsequent migration admits proposed again and sets it as the creation default, preserving all existing task rows, revisions, timestamps and materials.
 
 Migration 028_task_assignment.sql adds nullable assigned_to and a partial
 project/assignee/keyset index for undeleted tasks. All existing and soft-deleted
@@ -2573,8 +2591,8 @@ dependents are not added. Tasks outside the component that externally depend on
 a member are not selected. A standalone task forms its own component.
 
 The response remains `{project, summary, tasks, observedAt}`. Each selected task
-counts once; the summary requires total, todo, inProgress, done, cancelled, ready and blocked,
-including zero values. `total = todo + inProgress + done + cancelled` and
+counts once; the summary requires total, proposed, todo, inProgress, done, cancelled, ready and blocked,
+including zero values. `total = proposed + todo + inProgress + done + cancelled` and
 `todo = ready + blocked`. Only todo contributes to ready/blocked; readiness still
 uses every original direct prerequisite, including prerequisites outside this
 projection. Graph reads do not change stored status, revisions or timestamps.
@@ -2760,7 +2778,10 @@ raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage
 append/anchors/defaults, atomic content and four-state changes, dense moves,
 self/missing anchors, current-record deletion, ID reuse, no-op/exhaustion,
 concurrency, parent and Session preservation, rollback and completion facts, and
-safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
+safe response diagnostics. Step read service tests control Project authorization
+and snapshot completion independently while exercising the actual parent gate,
+DAO queries, paging and encoding; PostgreSQL tests own physical snapshot proof.
+The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
 `TestStepsHTTPDelete*`. Service Step cases run without a database:

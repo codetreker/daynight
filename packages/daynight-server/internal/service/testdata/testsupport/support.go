@@ -121,7 +121,8 @@ func TaskService(t *testing.T) (*taskservice.Tasks, *postgres.Store, model.Proje
 
 func CreateTask(t *testing.T, tasks *taskservice.Tasks, principal model.Principal, projectID, title string, dependencies ...string) model.Task {
 	t.Helper()
-	task, err := tasks.Create(context.Background(), principal, projectID, taskcore.CreateTask{Title: title, DependsOn: dependencies})
+	status := model.TaskTodo
+	task, err := tasks.Create(context.Background(), principal, projectID, taskcore.CreateTask{Title: title, DependsOn: dependencies, Status: &status})
 	if err != nil {
 		t.Fatal(err)
 	}

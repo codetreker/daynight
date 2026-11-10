@@ -26,6 +26,10 @@ export type WorkerConfigurationMessages = {
   readonly maxConcurrent: string;
   readonly pollIntervalMs: string;
   readonly recoveryLimit: string;
+  readonly agentControlMode: string;
+  readonly controlModeDetail: string;
+  readonly controlModeAwaitingAdoption: string;
+  readonly controlModeUnsupported: string;
   readonly preferPlatformSpecificTasks: string;
   readonly preferPlatformTasks: (values: { platform: string }) => string;
   readonly platformPreferenceDetail: string;
@@ -94,7 +98,7 @@ export type WorkerConfigurationMessages = {
   readonly localSettingsDetail: string;
   readonly localSettingsItems: readonly string[];
   readonly state: Readonly<Record<'pending' | 'applying' | 'applied' | 'error' | 'unsaved', string>>;
-  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
+  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
   readonly codes: Readonly<Record<'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'invalid_configuration' | 'io_error' | 'unavailable', string>>;
   readonly phases: Readonly<Record<'validate' | 'prepare' | 'apply' | 'stop' | 'persist', string>>;
 };

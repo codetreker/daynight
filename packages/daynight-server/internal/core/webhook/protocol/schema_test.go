@@ -30,6 +30,14 @@ func TestMachineSchema(t *testing.T) {
 	now := sampleTime()
 	one, two := int64(1), int64(2)
 	tests := []Fact{
+		func() Fact { f := fact(Created); f.Status = "proposed"; return f }(),
+		func() Fact { f := fact(StatusChanged); f.PreviousStatus = "proposed"; f.Status = "done"; return f }(),
+		func() Fact {
+			f := fact(StatusChanged)
+			f.PreviousStatus = "in_progress"
+			f.Status = "proposed"
+			return f
+		}(),
 		func() Fact { f := fact(Created); f.Status = "todo"; return f }(),
 		func() Fact { f := fact(StatusChanged); f.PreviousStatus = "todo"; f.Status = "done"; return f }(),
 		func() Fact { f := fact(Paused); f.Paused = true; return f }(),
@@ -93,6 +101,7 @@ func TestMachineSchema(t *testing.T) {
 	}
 	for _, invalid := range []string{
 		strings.Replace(string(statusBody), `"status":"done"`, `"status":"todo"`, 1),
+		strings.ReplaceAll(strings.Replace(string(statusBody), `"status":"done"`, `"status":"proposed"`, 1), `"previousStatus":"todo"`, `"previousStatus":"proposed"`),
 		strings.Replace(string(stepBody), `"status":"done"`, `"status":"todo"`, 1),
 		strings.Replace(string(stepBody), `["description","title"]`, `["title","description"]`, 1),
 	} {

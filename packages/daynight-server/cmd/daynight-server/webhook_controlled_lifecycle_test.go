@@ -265,7 +265,7 @@ func TestWebhookControlledProcessJointDrain(t *testing.T) {
 		}
 		return result
 	}
-	task := request("POST", "/api/v1/projects/"+project+"/tasks", map[string]any{"title": "joint drain", "assignedTo": user}, 201)
+	task := request("POST", "/api/v1/projects/"+project+"/tasks", map[string]any{"title": "joint drain", "assignedTo": user, "status": "todo"}, 201)
 	taskID := task["id"].(string)
 	taskPath := "/api/v1/projects/" + project + "/tasks/" + taskID
 	task = request("PATCH", taskPath, map[string]any{"version": task["version"], "allowAgents": true}, 200)

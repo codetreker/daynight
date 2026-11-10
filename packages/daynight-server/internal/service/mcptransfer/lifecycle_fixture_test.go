@@ -51,6 +51,15 @@ func newFixture(t *testing.T) lifecycleFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lifecycle.createRecord = func(ctx context.Context, capability store.PrivateTransferDAO, input model.PrivateTransfer) (model.PrivateTransfer, bool, error) {
+		d, ok := capability.(*transferDAO)
+		if !ok || d.writer != db || !d.active {
+			db.fail("Create did not receive the active transaction DAO")
+		}
+		v, err := d.call(ctx, "Create", "", input)
+		result := value[insertFact](v)
+		return cloneTransfer(result.record), result.created, err
+	}
 	f := lifecycleFixture{
 		t: t, db: db, files: files, lifecycle: lifecycle, actor: actor, root: root,
 		binding: transfer.Binding{
@@ -73,12 +82,25 @@ func newFixture(t *testing.T) lifecycleFixture {
 	return f
 }
 func (f lifecycleFixture) record() model.PrivateTransfer {
-	r, err := transfer.NewRecord(f.actor, f.binding, time.Now().UTC())
-	if err != nil {
-		f.t.Fatal(err)
+	f.t.Helper()
+	b := f.binding
+	params := b.Parameters
+	if len(params) == 0 {
+		params = json.RawMessage(`{}`)
 	}
-	r.Version = 1
-	return cloneTransfer(r)
+	now := time.Now().UTC()
+	state := "receiving"
+	if b.Direction == "download" {
+		state = "preparing"
+	}
+	return model.PrivateTransfer{
+		ID: b.ID, UserID: f.actor.Principal.UserID,
+		AuthorityKind: f.actor.AuthorityKind, AuthorityID: f.actor.AuthorityID,
+		Direction: b.Direction, ProjectID: b.ProjectID, TaskID: b.TaskID,
+		Path: b.Path, ContentType: b.ContentType, Binding: uploadJSON(f.t, params),
+		Data: json.RawMessage(`{}`), State: state, Version: 1,
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour), HardExpiresAt: now.Add(24 * time.Hour),
+	}
 }
 func (f lifecycleFixture) expect(steps ...daoStep) {
 	f.db.expect(store.Completion{Outcome: store.TransactionCommitted}, nil, steps...)
@@ -170,8 +192,12 @@ func (w *transferWriter) WritePrivateTransfer(ctx context.Context, fn func(store
 			transactionErr = fmt.Errorf("private transfer callback panicked: %v", value)
 		}
 	}()
-	d := &transferDAO{writer: w, ctx: ctx}
-	err := fn(d)
+	d := &transferDAO{writer: w, ctx: ctx, active: true}
+	var err error
+	func() {
+		defer func() { d.active = false }()
+		err = fn(d)
+	}()
 	if d.plan == nil {
 		w.fail("transaction made no configured DAO call")
 	}
@@ -186,12 +212,16 @@ func (w *transferWriter) WritePrivateTransfer(ctx context.Context, fn func(store
 
 type transferDAO struct {
 	ctx    context.Context
+	active bool
 	writer *transferWriter
 	plan   *transferPlan
 }
 
 func (d *transferDAO) call(ctx context.Context, name, key string, args ...any) (any, error) {
 	w := d.writer
+	if !d.active {
+		w.fail("DAO %s called outside transaction callback", name)
+	}
 	if ctx != d.ctx {
 		w.fail("DAO %s replaced transaction context", name)
 	}
@@ -334,7 +364,7 @@ func (d *transferDAO) Prune(ctx context.Context, now time.Time, limit int) (int6
 func openRecord(t *testing.T, f lifecycleFixture) model.PrivateTransfer {
 	t.Helper()
 	r := f.record()
-	f.expect(getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Insert", check: checkInitialRecord(t, r), result: insertFact{cloneTransfer(r), true}}, method("LockLedger", nil, nil), method("CountActive", 1, nil, r.UserID))
+	f.expect(getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Create", check: checkInitialRecord(t, r), result: insertFact{cloneTransfer(r), true}})
 	got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
 	if err != nil || !created || !reflect.DeepEqual(got, r) {
 		t.Fatalf("open: %+v created=%v error=%v", got, created, err)
@@ -344,6 +374,7 @@ func openRecord(t *testing.T, f lifecycleFixture) model.PrivateTransfer {
 
 func checkInitialRecord(t *testing.T, record model.PrivateTransfer) func([]any) {
 	record = cloneTransfer(record)
+	started := time.Now()
 	return func(args []any) {
 		t.Helper()
 		r := record
@@ -355,8 +386,8 @@ func checkInitialRecord(t *testing.T, record model.PrivateTransfer) func([]any) 
 		want.UpdatedAt = v.UpdatedAt
 		want.ExpiresAt = v.ExpiresAt
 		want.HardExpiresAt = v.HardExpiresAt
-		if !reflect.DeepEqual(v, want) || !v.UpdatedAt.Equal(v.CreatedAt) || v.CreatedAt.Before(time.Now().Add(-time.Second)) || v.CreatedAt.After(time.Now()) {
-			t.Errorf("insert input: %+v", v)
+		if !reflect.DeepEqual(v, want) || !v.UpdatedAt.Equal(v.CreatedAt) || v.CreatedAt.Before(started) || v.CreatedAt.After(time.Now()) {
+			t.Errorf("Create input: %+v", v)
 		}
 		if v.ExpiresAt.Sub(v.CreatedAt) != time.Hour || v.HardExpiresAt.Sub(v.CreatedAt) != 24*time.Hour {
 			t.Error("initial expiry bounds")

@@ -29,13 +29,17 @@ Returning to a restricted Team retains the immediate private-data absence checks
 the cached owner-role label does not prove that fresh endpoint detail has arrived.
 Tests acquire the actual restricted detail controls and immediately verify they
 are disabled. Clearing a retained list error has its own DOM readiness predicate.
-Team selection waits for the named option in the current selector. The malformed
-owner-list response cases use the shared Team-selection helper: it holds the
-initial endpoint detail response and releases it within async `act` before the
-first secret read. The heading identifies the endpoint; the settled response
-establishes completion of the effects that invalidate older secrets. Management
-and receipt-denial cases hold each response until the request is admitted, then
-release it within async `act` before checking private-data withdrawal, retained
+The personal-page mount holds its initial endpoint detail response until the
+request is observed, then releases it within async `act` before returning the
+fixture. Each read receives its own response clone, preserving StrictMode's
+request lifetimes. Empty personal lists and initial list failures retain their
+own readiness conditions. Team selection waits for the named option in the
+current selector; the shared Team-selection helper also holds and settles the
+initial detail response. The heading identifies the endpoint; the settled
+response establishes completion of the effects that invalidate older secrets
+before subsequent interactions. Management and receipt-denial cases hold each
+response until the request is admitted, then release it within async `act` before
+checking private-data withdrawal, retained
 drafts or the original operation result. Late-denial cases publish a newer Team
 membership through an async `act` directory refresh, or finish selecting another
 owner, before releasing the old response in a separate async `act`. The fixture
@@ -91,9 +95,10 @@ Preparation delays no longer determine whether tests inspect a missing write.
 The fixture catches rejected restrictive cleanup and omitted same-version private
 projection withdrawal while preserving real fingerprint validation. Controlled
 response release also keeps negative assertions tied to the response they reject.
-The malformed owner-list response cases reveal their initial secret only after
-endpoint initialization settles, so secret retention assertions exercise the
-error response rather than an initialization race.
+Personal-page tests and the malformed Team owner-list response cases reveal
+their initial secret only after endpoint initialization settles. Responsive
+layout, Back navigation and secret-retention assertions therefore exercise their
+intended transitions after a valid initial secret read.
 Authorization and receipt tests preserve their current-owner data, draft, secret,
 original-operation and no-replay assertions after the relevant response settles.
 The tests model frontend API behavior; they do not establish server transaction

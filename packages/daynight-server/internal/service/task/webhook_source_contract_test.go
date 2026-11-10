@@ -154,7 +154,7 @@ func (d *sourceTaskDAO) UpdateTask(_ context.Context, id string, values store.Ta
 
 func (d *sourceTaskDAO) CreateTask(_ context.Context, id string, values store.TaskWrite) (model.Task, error) {
 	d.t.Helper()
-	if !d.create || values.Title != "Source" || values.Status != model.TaskTodo || string(values.Properties["paused"]) != "true" {
+	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["paused"]) != "true" {
 		d.t.Fatalf("unexpected source creation: %#v", values)
 	}
 	d.writes = append(d.writes, values)
@@ -341,7 +341,7 @@ func TestTaskStatusSourcesUseAuthoritativeRows(t *testing.T) {
 }
 
 func TestTaskCreationCapturesCreatedPausedFactInSourceScope(t *testing.T) {
-	created := sourceTask(model.TaskTodo)
+	created := sourceTask(model.TaskProposed)
 	created.Version = 1
 	created.Properties = model.TaskProperties{"paused": []byte(`true`)}
 	db, record, ctx, calls := newSourceWrite(t, model.Task{}, created)
@@ -351,7 +351,7 @@ func TestTaskCreationCapturesCreatedPausedFactInSourceScope(t *testing.T) {
 		t.Fatalf("creation capture: %#v %v, %v", record.facts, err, *calls)
 	}
 	f := record.facts[0]
-	if f.Type != protocol.Created || f.TaskID != got.ID || f.ProjectID != got.ProjectID || f.TaskVersion != got.Version || f.Status != "todo" || !f.Paused || !f.OccurredAt.Equal(got.CreatedAt) {
+	if f.Type != protocol.Created || f.TaskID != got.ID || f.ProjectID != got.ProjectID || f.TaskVersion != got.Version || f.Status != "proposed" || !f.Paused || !f.OccurredAt.Equal(got.CreatedAt) {
 		t.Fatalf("created source: %#v", f)
 	}
 }

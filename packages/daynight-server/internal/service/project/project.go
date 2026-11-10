@@ -21,8 +21,9 @@ type database interface {
 	store.ProjectCreationWriter
 }
 type Projects struct {
-	store  database
-	engine *session.Engine
+	store          database
+	engine         *session.Engine
+	findRepository func(context.Context, store.ProjectReader, model.Principal, *core.RepositoryMatch) (model.Project, bool, error)
 }
 type Memberships struct {
 	store database
@@ -34,7 +35,7 @@ func NewProjects(db database, engines ...*session.Engine) *Projects {
 	if len(engines) > 0 {
 		engine = engines[0]
 	}
-	return &Projects{store: db, engine: engine}
+	return &Projects{store: db, engine: engine, findRepository: core.FindRepository}
 }
 func NewMemberships(db database) *Memberships { return &Memberships{store: db, now: time.Now} }
 func completed(c store.Completion, err error, refusal *model.Fault) error {

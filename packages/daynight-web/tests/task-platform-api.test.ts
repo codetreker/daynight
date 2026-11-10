@@ -13,7 +13,7 @@ const task = { assignedTo: null, id: taskId, projectId, title: 'Platform work', 
   version: 9007199254740993n, allowAgents: false, requiredPlatform: null, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graph = (requiredPlatform: unknown) => ({ observedAt: time,
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
-  summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
+  summary: { proposed: 0, total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
   tasks: [{ ...task, titlePreview: task.title, titleTruncated: false, requiredPlatform }],
 });
 const signal = () => new AbortController().signal;

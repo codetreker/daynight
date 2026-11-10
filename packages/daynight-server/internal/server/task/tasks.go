@@ -105,6 +105,10 @@ func TaskResource(request *http.Request, principal model.Principal, base *slog.L
 func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, error) {
 	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskWritableProperties{}}
 	var err error
+	input.Status, err = httpx.OptionalString(fields, "status")
+	if err != nil {
+		return api.CreateTaskRequest{}, err
+	}
 	input.Title, err = httpx.RequiredString(fields, "title")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
@@ -152,6 +156,14 @@ func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, 
 		input.AssignedTo = *assignedTo
 	}
 	return input, nil
+}
+
+func taskStatusValue(value *string) *model.TaskStatus {
+	if value == nil {
+		return nil
+	}
+	status := model.TaskStatus(*value)
+	return &status
 }
 
 func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, error) {
@@ -258,7 +270,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo")
+	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo", "status")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
@@ -269,7 +281,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	task, err := h.tasks.Create(request.Context(), principal, projectID, taskcore.CreateTask{
-		AssignedTo: input.AssignedTo, RequiredPlatform: platformValue(input.RequiredPlatform), Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
+		Status: taskStatusValue(input.Status), AssignedTo: input.AssignedTo, RequiredPlatform: platformValue(input.RequiredPlatform), Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
 	})
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "create", err)

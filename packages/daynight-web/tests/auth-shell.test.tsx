@@ -50,7 +50,7 @@ const isTaskSync = (url: string) => new URL(url, window.location.origin).pathnam
 const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, propertiesForTask: () => ({ pullRequests: [] }), viewerId: serverUserId, actorAccess: directAccessFixture(value.project.id, serverUserId, "admin") });
 const withDetailResources = (project: string, task: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>) => withTestDetailResources(project, task, fallback, {}, () => serverUserId);
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
-const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
+const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
@@ -542,7 +542,7 @@ describe("authenticated application shell", () => {
       if (url === "/api/v1/me") return ++meCalls === 1 ? Promise.resolve(json(user())) : new Promise<Response>((done) => { finishCheck = done; });
       if (isTaskSync(url)) {
         dispatchedGraphs.push({ cookie: cookieAccount, label: document.querySelector(".account-name")?.textContent ?? null });
-        return Promise.resolve(graphResponse({ observedAt: now, project: project(`${cookieAccount} 的项目`), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url));
+        return Promise.resolve(graphResponse({ observedAt: now, project: project(`${cookieAccount} 的项目`), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url));
       }
       if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
   if (url.endsWith("/members")) return Promise.resolve(json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant(cookieAccount === "Alice" ? userId : otherId)] }));
@@ -623,7 +623,7 @@ describe("authenticated application shell", () => {
       }
       if (url.endsWith('/members')) return Promise.resolve(json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant(serverUserId)] }));
       if (isTaskSync(url)) {
-        const response = graphResponse(serverUserId === userId ? aliceGraph : { ...aliceGraph, project: project('Bob 的项目'), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
+        const response = graphResponse(serverUserId === userId ? aliceGraph : { ...aliceGraph, project: project('Bob 的项目'), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
         if (serverUserId === otherId) {
           const readHeader = response.headers.get.bind(response.headers);
           vi.spyOn(response.headers, "get").mockImplementation((name) => {
@@ -1189,7 +1189,7 @@ describe("authenticated application shell", () => {
 
   it("shows the authoritative live access independently of the member roster", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    install((url) => isTaskSync(url) ? taskSyncResponse({ observedAt: now, project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, { viewerId: userId, versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, "member") }) : defaults(url));
+    install((url) => isTaskSync(url) ? taskSyncResponse({ observedAt: now, project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, { viewerId: userId, versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, "member") }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     expect(await screen.findByText("成员", { selector: ".badge" })).toBeInTheDocument();
@@ -1212,7 +1212,7 @@ describe("authenticated application shell", () => {
       status: started ? "in_progress" : "todo", version: started ? 8 : 7, dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now });
     const taskGraph = (): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "Lifecycle task", titleTruncated: false,
       status: started ? "in_progress" : "todo", dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now }],
-      summary: { total: 1, todo: started ? 0 : 1, inProgress: started ? 1 : 0, done: 0, cancelled: 0, ready: started ? 0 : 1, blocked: 0 } });
+      summary: { proposed: 0, total: 1, todo: started ? 0 : 1, inProgress: started ? 1 : 0, done: 0, cancelled: 0, ready: started ? 0 : 1, blocked: 0 } });
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
       if (url === `${taskUrl}/status`) return new Promise<Response>((done) => { finishStatus = done; });
       if (url === `${taskUrl}/attachments?limit=100`) return Promise.resolve(json({ items: [{ path: "docs/guide.md", contentType: "text/markdown", sizeBytes: 12, createdAt: now, updatedAt: now }], nextCursor: null }));

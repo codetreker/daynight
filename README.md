@@ -16,7 +16,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 ## What you can do
 
 - **Organize repository work.** Associate projects with Git repositories, create
-  Markdown tasks, link pull requests and track `todo`, `in_progress`, `done` and `cancelled`.
+  Markdown tasks, link pull requests and track `proposed`, `todo`, `in_progress`, `done` and `cancelled`.
 - **Understand what can start.** Model prerequisites, find ready and blocked
   tasks, and distinguish dependencies within a task chain from dependencies on
   other chains. Both kinds must be completed before dependent work starts.
@@ -215,9 +215,11 @@ saving; the command explicitly reports when the environment still needs attentio
 
 The first run imports local managed settings only when no cloud target exists.
 After enrollment the cloud configuration resource owns concurrency, Project
-selection, global and Project-level Agent/model/args, polling and recovery limits.
+selection, global and Project-level Agent/model/args, control mode, polling and recovery limits.
 Local setup and repository edits direct managed changes to cloud management;
-repository paths, credentials, Worker identity and agentControlMode remain local.
+repository paths, credentials and Worker identity remain local. Control mode is
+adopted once from the local setting, preserving existing `web` Workers; subsequent
+changes use the cloud target after capability negotiation.
 Startup checks the cloud before normal scheduling. Heartbeats receive targets
 and report actual application outcomes independently of task polling; settings
 apply separately, and failed items retain errors for the next accepted report.
@@ -235,11 +237,14 @@ that the supported Herdr installer preserves configuration semantics; unsafe
 layouts fail before installation. Setup remains read-only. Local setup checks do
 not qualify real native execution, provider login or task delivery.
 
-Set `worker.agentControlMode: web` in `~/.daynight/config.yml` to use Daynight's
+Select `web` under My Workers → Configuration → Control mode to use Daynight's
 Task Session page with Codex, Claude Code or Copilot. Web execution uses a private
 Controller and the Daynight relay, with no Herdr dependency. Each claim retains
 its original mode; a configuration change applies only to new claims. Herdr
-continues to own terminal sessions in the default mode.
+continues to own terminal sessions in the default mode. Before enrollment,
+`worker.agentControlMode` supplies the initial mode and defaults to `herdr`.
+Upgrade both the service and CLI to enable cloud mode application; older services
+retain local mode, and a saved target is not an application confirmation.
 
 Before enrollment, `repo add` lists accessible Projects for multiselection. Use
 `--project PROJECT_UUID` for an explicit noninteractive registration;

@@ -36,6 +36,7 @@ var (
 )
 
 type Lifecycle struct {
+	createRecord         func(context.Context, store.PrivateTransferDAO, model.PrivateTransfer) (model.PrivateTransfer, bool, error)
 	db                   store.PrivateTransferWriter
 	files                filestorage.Storage
 	private              filestorage.TransferStorage
@@ -58,7 +59,7 @@ func New(db store.PrivateTransferWriter, files filestorage.Storage, private file
 		return nil, errors.New("private transfer dependencies and capacity are required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Lifecycle{db: db, files: files, private: private, logger: slog.Default(), budget: budget, reservedFree: reservedFree, ioSlots: make(chan struct{}, 4), active: make(map[string]map[*Permit]struct{}), ctx: ctx, cancel: cancel}, nil
+	return &Lifecycle{createRecord: transfer.Create, db: db, files: files, private: private, logger: slog.Default(), budget: budget, reservedFree: reservedFree, ioSlots: make(chan struct{}, 4), active: make(map[string]map[*Permit]struct{}), ctx: ctx, cancel: cancel}, nil
 }
 
 // SetLogger configures diagnostics before the lifecycle is started or used.
@@ -129,7 +130,7 @@ func (s *Lifecycle) OpenRecord(ctx context.Context, a transfer.Actor, b transfer
 			return projectcore.LookupError(err)
 		}
 		var e error
-		result, created, e = transfer.Create(ctx, d, input)
+		result, created, e = s.createRecord(ctx, d, input)
 		if e != nil {
 			return e
 		}
