@@ -140,3 +140,104 @@ func TestAuthenticateAccessValidatesTokenAndResource(t *testing.T) {
 		t.Fatal("empty identity was accepted")
 	}
 }
+
+type unexpectedFamilyOperations struct {
+	store.CredentialFamilyDAO
+	t *testing.T
+}
+
+func (d unexpectedFamilyOperations) IssueFamily(context.Context, store.OAuthFamilyIssue) error {
+	d.t.Fatal("unexpected IssueFamily call")
+	return nil
+}
+
+func (d unexpectedFamilyOperations) RevokeFamily(context.Context, string, time.Time) (bool, error) {
+	d.t.Fatal("unexpected RevokeFamily call")
+	return false, nil
+}
+
+func (d unexpectedFamilyOperations) InspectGrant(context.Context, string, bool) (store.OAuthGrant, error) {
+	d.t.Fatal("unexpected InspectGrant call")
+	return store.OAuthGrant{}, nil
+}
+
+func (d unexpectedFamilyOperations) ActiveClientReferences(context.Context, string, time.Time) (bool, error) {
+	d.t.Fatal("unexpected ActiveClientReferences call")
+	return false, nil
+}
+
+type authenticationReader struct {
+	store.CredentialFamilyDAO
+	t           *testing.T
+	context     context.Context
+	hash        []byte
+	resource    string
+	scope       string
+	now         time.Time
+	identity    store.OAuthAccessIdentity
+	err         error
+	wantCalls   int
+	actualCalls int
+}
+
+func newAuthenticationReader(t *testing.T, wantCalls int) *authenticationReader {
+	t.Helper()
+	d := &authenticationReader{CredentialFamilyDAO: unexpectedFamilyOperations{t: t}, t: t, wantCalls: wantCalls}
+	t.Cleanup(func() {
+		if d.actualCalls != d.wantCalls {
+			t.Errorf("authentication DAO calls = %d, want %d", d.actualCalls, d.wantCalls)
+		}
+	})
+	return d
+}
+
+func (d *authenticationReader) AuthenticateAccess(ctx context.Context, hash []byte, resource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
+	d.t.Helper()
+	d.actualCalls++
+	if d.actualCalls > d.wantCalls {
+		d.t.Errorf("unexpected authentication DAO call %d", d.actualCalls)
+		return store.OAuthAccessIdentity{}, nil
+	}
+	if ctx != d.context || !bytes.Equal(hash, d.hash) || resource != d.resource || scope != d.scope || now != d.now {
+		d.t.Errorf("authentication DAO arguments: context=%v hash=%x resource=%q scope=%q now=%v; want context=%v hash=%x resource=%q scope=%q now=%v", ctx, hash, resource, scope, now, d.context, d.hash, d.resource, d.scope, d.now)
+	}
+	return d.identity, d.err
+}
+
+func TestAuthenticateAccessPreservesReaderInputsAndResults(t *testing.T) {
+	type contextKey struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "caller"))
+	defer cancel()
+	token := secret.Random(model.OAuthAccessPrefix)
+	const resource = "https://daynight.example/mcp"
+	now := time.Date(2026, 11, 6, 8, 1, 2, 123456789, time.FixedZone("test", 3600))
+	wantTime := time.Date(2026, 11, 6, 7, 1, 2, 123456000, time.UTC)
+	identity := store.OAuthAccessIdentity{GrantID: uuid.NewString(), Principal: model.Principal{Kind: model.OAuthCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}}
+	failure := errors.New("authentication storage failed")
+	for _, tc := range []struct {
+		name     string
+		identity store.OAuthAccessIdentity
+		err      error
+	}{
+		{name: "identity", identity: identity},
+		{name: "storage failure", err: failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dao := newAuthenticationReader(t, 1)
+			dao.context, dao.hash, dao.resource, dao.scope, dao.now = ctx, secret.Hash(token), resource, Scope, wantTime
+			dao.identity, dao.err = tc.identity, tc.err
+			got, err := AuthenticateAccess(ctx, dao, token, resource, now)
+			if got != tc.identity || err != tc.err {
+				t.Fatalf("authentication = (%+v, %v), want (%+v, %v)", got, err, tc.identity, tc.err)
+			}
+		})
+	}
+	t.Run("malformed token", func(t *testing.T) {
+		dao := newAuthenticationReader(t, 0)
+		got, err := AuthenticateAccess(ctx, dao, "not-an-access-token", resource, now)
+		var fault *model.Fault
+		if got != (store.OAuthAccessIdentity{}) || !errors.As(err, &fault) || fault.Code != "unauthenticated" {
+			t.Fatalf("malformed authentication = (%+v, %v), want zero identity and refusal", got, err)
+		}
+	})
+}
