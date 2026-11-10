@@ -1,4 +1,5 @@
 import { scanFromList } from "../../helpers/worker-git-scan.js";
+import { execFileSync } from "node:child_process";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
@@ -3364,4 +3365,154 @@ describe("worker monitoring of coordinator jobs", () => {
       expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: removal.operationId });
     } finally { releaseStop(); release(); await coordinator.shutdown(); }
   });
+});
+
+
+describe("real Git resource isolation", () => {
+  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected"])("admits only with independently bounded ownership: %s", async proof => {
+    const f = await fixture(["capacity-full", "stopped", "unselected"].includes(proof) ? 1 : 2);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
+    await mkdir(f.project.localPath);
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]);
+    run(["remote", "add", "origin", f.project.repoUrl]);
+    const owner = { projectId: f.project.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    for (const id of [owner.taskId, ...f.candidates.map(item => item.id)]) run(["branch", `daynight/${id}`]);
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "git-temp") });
+    const op = createOperation();
+    try {
+      const binding = await git.prepareWorktree(f.project, owner, op);
+      execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+      f.store.registerPending({ ...owner, agent: "codex" });
+      if (["current", "claim-unconfirmed", "conflict", "capacity-full"].includes(proof)) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      if (proof === "stopped" || proof === "unselected") {
+        f.store.completeTask(owner);
+        Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {} } });
+      }
+      if (proof === "claim-unconfirmed") vi.spyOn(f.remote, "claim").mockRejectedValue(new Error("Grant not confirmed"));
+      const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+      const coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor, ...(proof === "unselected" ? { readyProjectIds: [] } : {}) });
+      try {
+        await coordinator.tick();
+        if (proof === "current") {
+          expect(f.remote.claim).toHaveBeenCalledOnce();
+          expect(f.store.getTask(owner)?.status).toBe("pending");
+          await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+          expect(f.tasks.start.mock.calls[0]![0].taskId).not.toBe(owner.taskId);
+          expect(monitor.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "resources", scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId } })]));
+        } else if (proof === "claim-unconfirmed") {
+          expect(f.remote.claim).toHaveBeenCalledOnce();
+          expect(monitor.capture("1").admission.reasons).toEqual(expect.arrayContaining([
+            expect.objectContaining({ code: "retained-resource-conflict", scope: expect.objectContaining({ kind: "claim", claimId: owner.claimId }) }),
+            expect.objectContaining({ code: "claim-unconfirmed" }),
+          ]));
+        } else expect(f.remote.claim).not.toHaveBeenCalled();
+        if (["capacity-full", "stopped", "unselected"].includes(proof)) expect(monitor.capture("1").capacity).toMatchObject({ quality: "current", occupied: 1, available: 0 });
+        if (proof === "stopped" || proof === "unselected") {
+          expect(f.store.getTask(owner)?.status).toBe("done");
+          execFileSync("git", ["checkout", binding.branch], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+          await coordinator.tick();
+          expect(monitor.capture("2").capacity).toMatchObject({ occupied: 0 });
+          expect(monitor.capture("2").currentFailures.filter(failure => failure.component === "resources")).toEqual([]);
+        }
+      } finally { await coordinator.shutdown(); }
+    } finally { op.dispose(); await git.dispose(); }
+  }, 20000);
+
+  it("deduplicates durable owners, blocks a successor task, and retains failures until revalidation", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const { readFile } = await import("node:fs/promises");
+    const f = await fixture(2);
+    await mkdir(f.project.localPath);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]);
+    run(["remote", "add", "origin", f.project.repoUrl]);
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(901), worktreeId: uuid(902) };
+    run(["branch", `daynight/${owner.taskId}`]);
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "git-temp") });
+    const op = createOperation();
+    let monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+    let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
+    try {
+      const binding = await git.prepareWorktree(f.project, owner, op);
+      execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+      f.store.registerPending({ ...owner, agent: "codex" }); f.store.completeTask(owner);
+      // Independent, durable sources describe one reservation, even after stop.
+      f.store.saveCleanupSchedule(owner, { deadline: 100000, failures: 0, nextAttemptAt: 90000, stage: "worktree-removal", lastError: null });
+      Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {} } });
+      const webStore = openWebExecutionStore(createMemoryDatabase());
+      webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+      const options = { ...f.options, git, webStore, monitoring: monitor };
+      // Only the retained task is ready: a fresh claim must not bypass its slot.
+      f.candidates.splice(1);
+      try {
+        coordinator = createWorkerCoordinator(options);
+        await coordinator.tick();
+        expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+        expect(monitor.capture("1").capacity).toMatchObject({ quality: "current", occupied: 1, available: 1 });
+        expect(monitor.capture("1").admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "retained-resource-conflict", scope: expect.objectContaining({ kind: "claim", claimId: owner.claimId }) })]));
+        await coordinator.shutdown();
+        monitor = createMonitoringObserver({ runId: uuid(998), now: () => 1000 });
+        coordinator = createWorkerCoordinator({ ...options, monitoring: monitor });
+        await coordinator.tick();
+        expect(monitor.capture("2").capacity).toMatchObject({ quality: "current", occupied: 1 });
+        const admin = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: binding.worktreePath, encoding: "utf8", timeout: 10000 }).trim();
+        const marker = await readFile(path.join(admin, "locked"), "utf8");
+        await writeFile(path.join(admin, "locked"), "daynight-worker:{");
+        await coordinator.tick();
+        expect(monitor.capture("3").capacity?.quality).not.toBe("current");
+        expect(monitor.capture("3").currentFailures.some(failure => failure.scope.kind === "claim" && failure.scope.claimId === owner.claimId)).toBe(true);
+        expect(f.remote.claim).not.toHaveBeenCalled();
+        await writeFile(path.join(admin, "locked"), marker);
+        execFileSync("git", ["checkout", binding.branch], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+        await coordinator.tick();
+        expect(monitor.capture("4").currentFailures.filter(failure => failure.component === "resources")).toEqual([]);
+        expect(monitor.capture("4").capacity).toMatchObject({ quality: "current", occupied: 0 });
+      } finally { await coordinator?.shutdown(); webStore.close(); }
+    } finally { op.dispose(); await git.dispose(); }
+  }, 20000);
+
+
+  it.each(["mapping", "web-record"])("fences matching UUIDs whose %s points to another physical repository", async proof => {
+    const { readFile, rename } = await import("node:fs/promises");
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(2), other = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    const run = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10000, stdio: "pipe" }).trim();
+    for (const project of [f.project, other]) {
+      await mkdir(project.localPath); run(project.localPath, ["init", "--initial-branch=main"]);
+      run(project.localPath, ["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]);
+      run(project.localPath, ["remote", "add", "origin", project.repoUrl]);
+    }
+    const owner = { projectId: other.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    run(other.localPath, ["branch", `daynight/${owner.taskId}`]);
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "git-temp") }), op = createOperation();
+    const webStore = openWebExecutionStore(createMemoryDatabase());
+    try {
+      const binding = await git.prepareWorktree(other, owner, op);
+      const admin = run(binding.worktreePath, ["rev-parse", "--absolute-git-dir"]);
+      const movedAdmin = path.join(f.project.localPath, ".git", "worktrees", path.basename(admin));
+      const movedLeaf = path.join(f.project.localPath, ".worktrees", "daynight", owner.taskId);
+      await mkdir(path.dirname(movedAdmin), { recursive: true }); await mkdir(path.dirname(movedLeaf), { recursive: true });
+      await rename(admin, movedAdmin); await rename(binding.worktreePath, movedLeaf);
+      await writeFile(path.join(movedAdmin, "gitdir"), `${movedLeaf}/.git\n`);
+      await writeFile(path.join(movedLeaf, ".git"), `gitdir: ${movedAdmin}\n`);
+      // Keep the original marker: all four UUIDs match independent records, but
+      // its historical root/common fingerprints identify the other repository.
+      const marker = await readFile(path.join(movedAdmin, "locked"), "utf8");
+      f.store.registerProject(proof === "mapping" ? other : { ...other, localPath: f.project.localPath });
+      f.store.registerPending({ ...owner, agent: "codex" });
+      f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      if (proof === "web-record") webStore.register({ ...owner, project: other, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+      const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+      const coordinator = createWorkerCoordinator({ ...f.options, git, webStore, monitoring: monitor });
+      try {
+        expect((await git.scanWorktrees(f.project, op, false, true)).quarantined.map(item => item.owner)).toEqual([owner]);
+        await coordinator.tick();
+        expect(f.remote.claim).not.toHaveBeenCalled();
+        expect(f.tasks.start).not.toHaveBeenCalled();
+        expect(monitor.capture("1").capacity?.quality).not.toBe("current");
+        expect(await readFile(path.join(movedAdmin, "locked"), "utf8")).toBe(marker);
+      } finally { await coordinator.shutdown(); }
+    } finally { webStore.close(); op.dispose(); await git.dispose(); }
+  }, 20000);
+
 });

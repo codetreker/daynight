@@ -1,4 +1,6 @@
 import { scanFromList } from "../../helpers/worker-git-scan.js";
+import * as durableHerdr from "../../../src/commands/worker/herdr/durable.js";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +28,7 @@ vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoor
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
-vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
+vi.mock("../../../src/commands/worker/remote.js", async original => ({ ...await original<object>(), createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
   ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }),
@@ -893,4 +895,58 @@ it("attempts Task shutdown and releases stores and the lock when Bot shutdown fa
   expect(tasks.shutdown).toHaveBeenCalledOnce();
   expect(() => botOptions.store.list(botOptions.owner)).toThrow();
   expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+});
+
+
+describe("real runtime resource isolation", () => {
+  it.each(["known", "unproven", "foreign", "invalid"])("reconciles an unbound mapping and its damaged registration: %s", async scenario => {
+    const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
+    const { projectId: _projectId, ...legacy } = f.repository;
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [{ ...legacy, ...(scenario === "invalid" ? { projectId: "invalid" } : {}) }] } }));
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp") });
+    await mkdir(f.repository.path);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, stdio: "pipe", timeout: 10000 });
+    run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
+    const owner = { projectId: scenario === "foreign" ? uuid(9) : uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
+    run(["branch", `daynight/${owner.taskId}`]);
+    const op = createOperation();
+    try {
+      const binding = await git.prepareWorktree({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path }, owner, op);
+      execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, stdio: "pipe", timeout: 10000 });
+    } finally { op.dispose(); }
+    mocks.git.mockReturnValue(git);
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([uuid(1)], 2)));
+    const base = { projectId: uuid(1), id: uuid(30), title: "healthy", status: "todo", ready: true, allowAgents: true, requiredPlatform: null, assignedTo: uuid(6), version: 1n, properties: {}, dependsOn: [], externalDependsOn: [], blockedBy: [], createdAt: "2026-11-10T00:00:00Z", updatedAt: "2026-11-10T00:00:00Z" };
+    const current = { ...base, id: owner.taskId, status: "in_progress", ready: false, properties: { worker: { workerId, userId: uuid(6), claimId: owner.claimId, worktreeId: owner.worktreeId, machine: { id: uuid(7), name: "fixture" }, platform: "macos", agent: "codex", agentControlMode: "herdr", state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-10T00:00:00Z" } } };
+    remote.ownInventory = vi.fn(async () => ({ tasks: scenario === "known" ? [current] : [], coveredProjectIds: [uuid(1)], unavailableProjectIds: [] }));
+    remote.candidates = vi.fn(async function* () { yield base; });
+    remote.claim = vi.fn(async () => { cancellation.abort(); throw new Error("Grant deliberately unconfirmed"); });
+    const tasks = { pendingStops: () => [], listResources: async () => [] };
+    const native = { tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} };
+    mocks.herdr.mockReturnValue(native);
+    const durable = vi.spyOn(durableHerdr, "createDurableWorkerHerdr").mockReturnValue(native as unknown as ReturnType<typeof durableHerdr.createDurableWorkerHerdr>);
+    let configurationComplete = false, cycles = 0;
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+      const actual = createWorkerCoordinator({ ...options, hasHerdrJournal: false });
+      const tick = actual.tick;
+      actual.tick = async () => {
+        await tick(); cycles++;
+        configurationComplete = options.configurationComplete!();
+        if (configurationComplete && scenario !== "known") cancellation.abort();
+      };
+      return actual;
+    });
+    const { running } = start(f, { signal: cancellation.signal });
+    try {
+      if (scenario === "known") await vi.waitFor(() => expect(remote.claim).toHaveBeenCalledOnce(), { timeout: 6000 });
+      else if (scenario === "unproven") await vi.waitFor(() => expect(configurationComplete).toBe(true), { timeout: 6000 });
+      else await vi.waitFor(() => { expect(cycles).toBeGreaterThan(0); expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("Local resource mapping"))).toBe(true); }, { timeout: 6000 });
+      if (scenario !== "known") expect(remote.claim).not.toHaveBeenCalled();
+      if (scenario === "foreign" || scenario === "invalid") expect(configurationComplete).toBe(false);
+      expect(await readFile(path.join(f.repository.path, ".worktrees", "daynight", owner.taskId, ".git"), "utf8")).toContain("gitdir:");
+    } finally { cancellation.abort(); await running; durable.mockRestore(); await git.dispose(); }
+  }, 12000);
 });
