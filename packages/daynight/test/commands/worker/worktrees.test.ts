@@ -8,6 +8,7 @@ import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { runRepositoryGit } from "../../../src/repository/git.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
+import * as directoryIdentity from "../../../src/platform/directory-identity.js";
 import type { ResourceOwner, WorkerProject } from "../../../src/commands/worker/types.js";
 
 const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-git-tests");
@@ -257,6 +258,84 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   describe("partial resource scans", () => {
+    it("quarantines malformed identity bytes after registration ownership is proven", async () => {
+      const f = await fixture(), adapter = manager(f.root);
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const sidecar = path.join(administrativeDirectory(binding.worktreePath), "daynight-identity.json");
+      await writeFile(sidecar, "{", { mode: 0o600 });
+      const scan = await adapter.scanWorktrees(f.project, operation());
+      expect(scan.unknown).toEqual([]);
+      expect(scan.quarantined).toEqual([{ owner: f.owner, error: expect.any(Error) }]);
+      expect(await readFile(sidecar, "utf8")).toBe("{");
+    });
+
+    it.each(["duplicate", "duplicate-missing", "duplicate-final-symlink", "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
+      const f = await fixture(), adapter = manager(f.root);
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const markerPath = path.join(administrativeDirectory(binding.worktreePath), "locked"), marker = await readFile(markerPath);
+      git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
+      const manual = path.join(f.root, "manual");
+      git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
+      const admin = administrativeDirectory(manual), pointer = path.join(admin, "gitdir"), alias = path.join(f.root, "alias");
+      await symlink(kind === "unresolved" ? path.join(f.root, "missing") : f.root, alias, process.platform === "win32" ? "junction" : "dir");
+      const target = kind === "duplicate-final-symlink" ? path.join(manual, ".git")
+        : kind.startsWith("unrelated") ? path.join(alias, "manual", ".git") : path.join(alias, path.relative(f.root, binding.worktreePath), ".git");
+      if (kind === "duplicate-final-symlink") {
+        await rm(target);
+        await symlink(path.join(binding.worktreePath, ".git"), target, "file");
+      }
+      await writeFile(pointer, `${target}\n`);
+      if (kind === "duplicate-missing") await rm(binding.worktreePath, { recursive: true });
+      if (kind === "unrelated-missing") await rm(manual, { recursive: true });
+      const result = await adapter.scanWorktrees(f.project, operation());
+      if (kind.startsWith("unrelated")) {
+        expect(result.unknown).toEqual([]);
+        expect(result.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ code: "branch_mismatch" }) }]);
+        git(binding.worktreePath, ["checkout", binding.branch]);
+        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
+      } else {
+        expect(result.unknown.length).toBeGreaterThan(0);
+        expect(result.quarantined).toEqual([]);
+        await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
+        await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
+        await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
+      }
+      expect(await readFile(pointer, "utf8")).toBe(`${target}\n`);
+      expect(await readFile(markerPath)).toEqual(marker);
+      if (kind === "duplicate-final-symlink") expect((await lstat(target)).isSymbolicLink()).toBe(true);
+      if (kind !== "duplicate-missing") expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+      if (kind !== "unrelated-missing") expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
+    }, 20000);
+
+    it.each(["ERRNO_5", "EIO", "wrapped", "uncoded"])("keeps directory identity observation failure %s unknown", async kind => {
+      const f = await fixture(), adapter = manager(f.root);
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888" };
+      const sibling = await adapter.prepareWorktree(f.project, siblingOwner, operation());
+      const native = Object.assign(new Error("fgetattrlist failed (errno 5)."), { code: kind === "EIO" ? "EIO" : "ERRNO_5" });
+      let error = kind === "wrapped" ? new Error("Directory observation failed.", { cause: native }) : native;
+      if (kind === "uncoded") {
+        // Execute the native-response parser; only the query bytes are controlled.
+        try { directoryIdentity.readMacDirectoryIdentity(-1, () => Buffer.alloc(8)); }
+        catch (cause) { error = cause as Error; }
+        expect(error.message).toBe("Invalid directory attribute response length.");
+      }
+      const open = directoryIdentity.openDirectoryIdentity;
+      const fault = vi.spyOn(directoryIdentity, "openDirectoryIdentity").mockImplementation(async target => {
+        if (target === binding.worktreePath) throw error;
+        return open(target);
+      });
+      try {
+        const scan = await adapter.scanWorktrees(f.project, operation());
+        expect(scan.unknown).toEqual([{ error }]);
+        expect(scan.quarantined).toEqual([]);
+        expect(scan.validated).toEqual([{ owner: siblingOwner, binding: sibling }]);
+        await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow(error.message);
+        expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+      } finally { fault.mockRestore(); }
+      expect(await adapter.listWorktrees(f.project, operation())).toHaveLength(2);
+    }, 20000);
+
     it("quarantines a known registration without losing or invalidating its healthy sibling", async () => {
       const f = await fixture(), adapter = manager(f.root);
       const broken = await adapter.prepareWorktree(f.project, f.owner, operation());

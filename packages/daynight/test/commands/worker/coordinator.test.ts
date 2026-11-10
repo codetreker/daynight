@@ -10,7 +10,8 @@ import type { LocalTask as WebTask } from "../../../src/commands/worker/backends
 import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { access, mkdir, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import * as directoryIdentity from "../../../src/platform/directory-identity.js";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
@@ -3435,7 +3436,7 @@ describe("real Git resource isolation", () => {
     } finally { op.dispose(); await git.dispose(); }
   }, 20000);
 
-  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected"])("admits only with independently bounded ownership: %s", async proof => {
+  it.each(["current", "claim-unconfirmed", "missing-worktree-id", "conflict", "capacity-full", "stopped", "unselected", "manual-alias", "native-io", "native-io-wrapped", "native-io-parse"])("admits only with independently bounded ownership: %s", async proof => {
     const f = await fixture(["capacity-full", "stopped", "unselected"].includes(proof) ? 1 : 2);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
     await mkdir(f.project.localPath);
@@ -3447,9 +3448,27 @@ describe("real Git resource isolation", () => {
     const op = createOperation();
     try {
       const binding = await git.prepareWorktree(f.project, owner, op);
-      execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+      if (!proof.startsWith("native-io")) execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
+      if (proof === "manual-alias") {
+        const manual = path.join(f.root, "manual"), alias = path.join(f.root, "alias");
+        run(["worktree", "add", "--detach", manual, "HEAD"]);
+        const admin = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: manual, encoding: "utf8", timeout: 10000 }).trim();
+        await symlink(f.project.localPath, alias, process.platform === "win32" ? "junction" : "dir");
+        await writeFile(path.join(admin, "gitdir"), `${path.join(alias, ".worktrees", "daynight", owner.taskId, ".git")}\n`);
+      }
+      if (proof.startsWith("native-io")) {
+        const open = directoryIdentity.openDirectoryIdentity;
+        vi.spyOn(directoryIdentity, "openDirectoryIdentity").mockImplementation(async target => {
+          if (target === binding.worktreePath) {
+            if (proof === "native-io-parse") directoryIdentity.readMacDirectoryIdentity(-1, () => Buffer.alloc(8));
+            const error = Object.assign(new Error("fgetattrlist failed (errno 5)."), { code: "ERRNO_5" });
+            throw proof === "native-io-wrapped" ? new Error("Directory observation failed.", { cause: error }) : error;
+          }
+          return open(target);
+        });
+      }
       f.store.registerPending({ ...owner, agent: "codex" });
-      if (["current", "claim-unconfirmed", "conflict", "capacity-full"].includes(proof)) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      if (["current", "claim-unconfirmed", "conflict", "capacity-full", "manual-alias"].includes(proof) || proof.startsWith("native-io")) f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: proof === "conflict" ? uuid(903) : owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
       if (proof === "stopped" || proof === "unselected") {
         f.store.completeTask(owner);
         Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {} } });
@@ -3472,6 +3491,12 @@ describe("real Git resource isolation", () => {
             expect.objectContaining({ code: "claim-unconfirmed" }),
           ]));
         } else expect(f.remote.claim).not.toHaveBeenCalled();
+        if (proof === "manual-alias" || proof.startsWith("native-io")) {
+          expect(f.tasks.start).not.toHaveBeenCalled();
+          expect(f.store.getTask(owner)?.status).toBe("pending");
+          expect(monitor.capture("1").capacity?.quality).not.toBe("current");
+          await access(binding.worktreePath);
+        }
         if (["capacity-full", "stopped", "unselected"].includes(proof)) expect(monitor.capture("1").capacity).toMatchObject({ quality: "current", occupied: 1, available: 0 });
         if (proof === "stopped" || proof === "unselected") {
           expect(f.store.getTask(owner)?.status).toBe("done");
