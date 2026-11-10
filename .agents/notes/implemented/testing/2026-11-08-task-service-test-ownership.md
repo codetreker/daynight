@@ -31,7 +31,10 @@ agent-permission List fixtures retain their current scope. The
 also replaces the DAO boundary for selected preparation-failure witnesses.
 The [Step read coordination decision](2026-11-10-step-read-coordination-tests.md)
 likewise isolates the Project read operation while retaining the Step service's
-own snapshot, parent gate, DAO calls and encoding.
+own snapshot, parent gate, DAO calls and encoding. The [Step content write
+decision](2026-11-10-step-content-write-coordination-tests.md) isolates Project
+write authorization and Add/Change admission while retaining the service's locked
+parent gate, DAO coordination, encoding and completion handling.
 
 Callback execution and transaction completion remain separate. Service tests
 control `committed`, `not_committed` and `unknown` outcomes and retain original
