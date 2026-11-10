@@ -1,3 +1,7 @@
+import { useRef, type ReactNode } from 'react';
+import { sessionImageBytes } from './helpers/sessionImages';
+import { SessionImageStore } from '../src/features/task-agent-session/images/image-store';
+import { SessionImageScope } from '../src/features/task-agent-session/images/SessionImageScope';
 import { readFileSync } from 'node:fs';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
@@ -62,14 +66,19 @@ it('unmounts expanded hidden output and restores it from existing data on demand
 });
 
 it('retains verified mixed message resources without loading hidden tool resources', async () => {
-  const descriptor = { name: 'asset.png', status: 'available' as const, mediaType: 'image/png', byteLength: '4', sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', error: null };
+  const bytes = sessionImageBytes('png'), sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const descriptor = { revision: '1', width: 3, height: 2, frameCount: 1, name: 'asset.png', status: 'available' as const, mediaType: 'image/png', byteLength: String(bytes.length), sha256, error: null };
   const state = { ...emptySessionState(), entries: [message('1'), tool('2'), tool('3', 'update_plan')], resources: new Map([
     ['image', { ...descriptor, resourceId: 'image' }], ['file', { ...descriptor, resourceId: 'file', mediaType: 'text/plain' }], ['tool-image', { ...descriptor, resourceId: 'tool-image' }],
   ]) };
-  const load = vi.fn(async (_id: string, _signal: AbortSignal) => new Response('test').blob());
+  const load = vi.fn(async (_id: string, _signal: AbortSignal) => new Response(bytes, { headers: { 'Content-Type': 'image/png' } }).blob());
+  // The decoder is controlled here; production browser tests own pixel validation.
+  vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 3, height: 2, close: vi.fn() })));
+  const store = new SessionImageStore(), scope = store.createScope({ identity: { serverOrigin: 'https://daynight.test', actorUserId: 'reader', authorizationGeneration: '1', owner: { kind: 'record', namespace: 'display-test', recordId: 'record', revision: '1' } }, canRead: () => true, canDownload: () => true, read: load });
+  function Owner({ children }: { readonly children: ReactNode }) { const root = useRef<HTMLElement>(null); return <section ref={root}><SessionImageScope scope={scope} active rootRef={root}>{children}</SessionImageScope></section>; }
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:verified');
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-  const view = render(<SessionTimeline state={state} {...props} displayMode="conversation" onLoadResource={load} />);
+  const view = render(<Owner><SessionTimeline state={state} {...props} displayMode="conversation" onLoadResource={load} /></Owner>);
   const image = await screen.findByRole('img', { name: 'Message image' });
   expect(image).toHaveAttribute('src', 'blob:verified');
   expect(screen.getByRole('button', { name: 'Download: Message file' })).toBeVisible();
@@ -78,9 +87,10 @@ it('retains verified mixed message resources without loading hidden tool resourc
   details.open = true; fireEvent(details, new Event('toggle'));
   await screen.findByRole('img', { name: 'Tool image' });
   expect(load.mock.calls.map(call => call[0])).toEqual(['image', 'tool-image']);
-  view.rerender(<SessionTimeline state={state} {...props} displayMode="standard" onLoadResource={load} />);
+  view.rerender(<Owner><SessionTimeline state={state} {...props} displayMode="standard" onLoadResource={load} /></Owner>);
   expect(screen.getByRole('img', { name: 'Message image' })).toBe(image);
   expect(load).toHaveBeenCalledTimes(2);
+  view.unmount(); await store.close();
 });
 
 it('keeps loading and errors visible when Conversation filters every entry', async () => {

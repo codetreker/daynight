@@ -51,8 +51,8 @@ it.each(['task', 'test', 'assistant'] as const)('keeps one functional set of sha
   const input = await screen.findByRole('textbox', { name: 'Message' });
   await waitFor(() => expect(input).toBeEnabled());
   fireEvent.change(input, { target: { value: 'Retained header draft' } });
-  const header = view.container.querySelector('header')!, timeline = view.container.querySelector('.session-timeline');
-  expect(view.container.querySelectorAll('header')).toHaveLength(1);
+  const header = view.container.querySelector<HTMLElement>('.session-header')!, timeline = view.container.querySelector('.session-timeline');
+  expect(view.container.querySelectorAll('.session-header')).toHaveLength(1);
   expect(header).toHaveClass('session-header');
   expect(header.classList.contains('session-header-default')).toBe(consumer !== 'assistant');
   expect(within(header).getAllByText('Codex')).toHaveLength(1);
@@ -132,7 +132,7 @@ it.each(['Escape', 'Tab'])('closes More actions on %s without replacing the Sess
   expect(trigger).toHaveFocus();
   expect(input.closest('.task-agent-session')).toHaveClass('session-fullscreen');
   expect(screen.getByRole('textbox', { name: 'Message' })).toBe(input);
-  expect(view.container.querySelectorAll('header')).toHaveLength(1);
+  expect(view.container.querySelectorAll('.session-header')).toHaveLength(1);
   expect(outerEscape).not.toHaveBeenCalled();
   expect(f.session.api.command).not.toHaveBeenCalled();
   expect(f.session.api.current).toHaveBeenCalledOnce();
@@ -140,7 +140,7 @@ it.each(['Escape', 'Tab'])('closes More actions on %s without replacing the Sess
 
 it('shows safe target controls before a Session snapshot and clears Session content on invalidation', async () => {
   const f = fixture(), view = render(f.element());
-  expect(view.container.querySelectorAll('header')).toHaveLength(1);
+  expect(view.container.querySelectorAll('.session-header')).toHaveLength(1);
   expect(screen.getByRole('heading', { name: f.target.name })).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
   expect(screen.queryByText('Connected')).toBeNull();
@@ -155,6 +155,6 @@ it('shows safe target controls before a Session snapshot and clears Session cont
   expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
   expect(screen.queryByText('Connected')).toBeNull();
-  expect(view.container.querySelectorAll('header')).toHaveLength(1);
+  expect(view.container.querySelectorAll('.session-header')).toHaveLength(1);
   expect(f.session.api.command).not.toHaveBeenCalled();
 });
