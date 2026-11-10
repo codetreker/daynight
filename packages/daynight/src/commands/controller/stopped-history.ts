@@ -1,3 +1,4 @@
+import { ArchiveRepairRequiredError, archiveRepairCode } from "./archive-error.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
@@ -45,7 +46,8 @@ export const replayStoppedControllerHistory = async (options: {
         const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS ack,CAST(source_floor AS TEXT) AS floor,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { through: string; ack: string; floor: string; projection_gap: string | null; archive_incomplete: number };
         if (originalThrough !== undefined && source.through !== originalThrough) throw new Error("The stopped source cutoff changed during replay.");
         originalThrough = source.through;
-        if (source.archive_incomplete || source.projection_gap !== null && source.projection_gap !== "Recovered pending timeline requires full relay resynchronization.") throw new Error("Stopped history has an unresolved projection gap.");
+        const repairCode = archiveRepairCode(source);
+        if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
         if (BigInt(source.floor) > BigInt(source.ack)) throw new Error("Stopped source floor has no complete unacknowledged event tail.");
         if (source.ack === source.through) return null;
         const existing = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(stateKey) as { value: string } | undefined;
