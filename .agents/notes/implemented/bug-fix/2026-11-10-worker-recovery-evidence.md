@@ -28,10 +28,15 @@ Complete discovery can retain a locally attributable invalid resource as a
 quarantined claim, with capacity and same-task fencing intact. Partial enumeration,
 unknown ownership or conflicting identities still prevent new acquisition.
 Registration uniqueness compares physical targets, including manual registrations
-and aliases. Forward, reverse and common-directory pointers retain their original
-filesystem traversal before canonical comparison; lexical normalization cannot
-prove where a symlink followed by a parent component leads. Parent traversal
-through missing components remains unknown. Only explicitly classified validation failures from observed metadata
+and aliases. Forward, reverse and common-directory pointers require
+platform-specific traversal proof before canonical comparison. POSIX passes the
+original path to the filesystem without lexical normalization. On Windows, Node
+normalizes paths before opening them, so each directory cursor removed by a `..`
+component must first be observed with `lstat` as an existing ordinary directory.
+A junction, symlink, missing component, non-directory or I/O failure leaves
+coverage unknown. Ordinary relative paths remain admissible when those checks
+succeed; passing the raw string alone cannot preserve Windows traversal semantics.
+Parent traversal through missing components remains unknown. Only explicitly classified validation failures from observed metadata
 can become quarantine candidates; filesystem reads, native queries, response
 parsing and otherwise unclassified failures retain unknown coverage. Mapping
 admission does not grant resource ownership. Strict readers used by cleanup
