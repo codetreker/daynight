@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -228,5 +229,69 @@ func TestConfigCollectorDecisionReceivers(t *testing.T) {
 				t.Fatalf("skip busy %s removed=%d err=%v", lockKind, n, err)
 			}
 		})
+	}
+}
+
+func TestConfigCollectorKeepsReferencedConfigurationAndActiveKeys(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name    string
+		facts   store.WebhookConfigGCFacts
+		removed int
+	}{
+		{name: "referenced", facts: store.WebhookConfigGCFacts{Present: true, Retired: true, Referenced: true, ObservedAt: now}},
+		{name: "active", facts: store.WebhookConfigGCFacts{Present: true, ObservedAt: now}},
+		{name: "not present", facts: store.WebhookConfigGCFacts{Retired: true, ObservedAt: now}},
+		{name: "overlap before expiry", facts: store.WebhookConfigGCFacts{Present: true, Retired: true, Expiry: now.Add(time.Second), ObservedAt: now}},
+		{name: "retired", facts: store.WebhookConfigGCFacts{Present: true, Retired: true, ObservedAt: now}, removed: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := store.WebhookConfigGCCandidate{ID: "key", Kind: "signing_key", EndpointID: "endpoint", Revision: 1}
+			calls := []configGCCall{
+				{method: "scan", limit: 125, scan: store.WebhookConfigGCScan{Barrier: "17", Candidates: []store.WebhookConfigGCCandidate{candidate}}},
+				{method: "barrier", barrier: "17", result: true},
+				{method: "write", candidate: candidate, callback: true, completion: store.Completion{Outcome: store.TransactionCommitted}},
+				{method: "lock", candidate: candidate, facts: tt.facts},
+			}
+			if tt.removed == 1 {
+				calls = append(calls, configGCCall{method: "delete", candidate: candidate, result: true})
+			}
+			s := newConfigGCPlan(t, calls...)
+			n, err := (&ConfigCollector{}).Pass(s.ctx, s, 125)
+			if err != nil || n != tt.removed {
+				t.Fatalf("configuration removed=%d, want %d; err=%v", n, tt.removed, err)
+			}
+		})
+	}
+}
+
+func TestConfigCollectorWaitsForConfigurationSnapshotBarrier(t *testing.T) {
+	candidate := store.WebhookConfigGCCandidate{ID: "original"}
+	s := newConfigGCPlan(t,
+		configGCCall{method: "scan", limit: 125, scan: store.WebhookConfigGCScan{Barrier: "pending", Candidates: []store.WebhookConfigGCCandidate{candidate}}},
+		configGCCall{method: "barrier", barrier: "pending", result: false},
+	)
+	n, err := (&ConfigCollector{}).Pass(s.ctx, s, 125)
+	if err != nil || n != 0 {
+		t.Fatalf("unpassed barrier removed=%d err=%v", n, err)
+	}
+}
+
+func TestConfigCollectorCountsConfigurationRows(t *testing.T) {
+	candidates := make([]store.WebhookConfigGCCandidate, 125)
+	for i := range candidates {
+		candidates[i] = store.WebhookConfigGCCandidate{ID: fmt.Sprint(i)}
+	}
+	calls := []configGCCall{
+		{method: "scan", limit: 125, scan: store.WebhookConfigGCScan{Barrier: "1", Candidates: candidates}},
+		{method: "barrier", barrier: "1", result: true},
+	}
+	for _, candidate := range candidates {
+		calls = append(calls, configGCCommittedCalls(candidate, store.WebhookConfigGCFacts{Present: true, Retired: true})...)
+	}
+	s := newConfigGCPlan(t, calls...)
+	n, err := (&ConfigCollector{}).Pass(s.ctx, s, 125)
+	if err != nil || n != 125 {
+		t.Fatalf("configuration removed=%d, want 125; err=%v", n, err)
 	}
 }
