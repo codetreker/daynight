@@ -98,6 +98,16 @@ change, and on every main push. It prepares the locked toolchain and browser,
 checks the framework, runs harness tests and calls `pnpm e2e:test`. The final
 `checks` gate requires a selected product E2E job to succeed.
 
+The hosted Ubuntu image supplies Chromium's runtime shared libraries. CI runs
+`playwright install chromium` from this package's locked dependency within a
+four-minute step, using the checkout-local browser directory. It does not run
+an APT transaction for Playwright's additional fonts on every job. Playwright's
+default host dependency checks remain enabled, and the complete journey must
+launch that locked browser successfully. Download failures and missing runtime
+libraries still fail validation. The
+[browser installation decision](../../.agents/notes/implemented/testing/2026-11-10-product-e2e-browser-installation.md)
+records the dependency assumption and its limits.
+
 CI writes the exact run pointer and preparation phase through
 `DAYNIGHT_E2E_RUN_POINTER`. Every step has a deadline: the declared maxima total
 38 minutes inside a 40-minute job, including a 15-minute journey, a 3-minute
