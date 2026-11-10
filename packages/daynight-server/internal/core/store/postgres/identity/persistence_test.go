@@ -265,7 +265,8 @@ func TestDeviceOwnershipPollingAndPruning(t *testing.T) {
 func TestCredentialCleanupRetainsActiveAndPermanentTokens(t *testing.T) {
 	tx, sc := identityTransaction(t)
 	ctx, dao := t.Context(), sc.IdentityDAO()
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	var now time.Time
+	requireNoError(t, tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now))
 	user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "cleanup-owner"}, now)
 	requireNoError(t, err)
 	expired := now
