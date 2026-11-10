@@ -386,7 +386,7 @@ describe("Team workspace navigation", () => {
       return undefined;
     });
     render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }));
-    const membersLink = screen.getByRole("link", { name: "Team members" });
+    const membersLink = screen.getByRole("link", { name: "Members & invitations" });
     const settingsLink = screen.getByRole("link", { name: "Team settings" });
     const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
     const name = within(dialog).getByLabelText("Team name") as HTMLTextAreaElement;
@@ -396,7 +396,7 @@ describe("Team workspace navigation", () => {
     expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
     await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
     await waitForState(() => expect(teamReads).toBe(4));
-    expect(screen.getByRole("link", { name: "Team members" })).toBe(membersLink);
+    expect(screen.getByRole("link", { name: "Members & invitations" })).toBe(membersLink);
     expect(screen.getByRole("link", { name: "Team settings" })).toBe(settingsLink);
     expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog); expect(dialog).toBeVisible();
     expect(document.activeElement).toBe(name); expect(name.selectionStart).toBe(2); expect(name.selectionEnd).toBe(5);
@@ -406,7 +406,7 @@ describe("Team workspace navigation", () => {
     await act(async () => reread.resolve(json(team(a, "  Alpha  "))));
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
-    expect(screen.getByRole("link", { name: "Team members" })).toBe(membersLink);
+    expect(screen.getByRole("link", { name: "Members & invitations" })).toBe(membersLink);
     expect(screen.getByRole("link", { name: "Team settings" })).toBe(settingsLink);
     expect(document.activeElement).toBe(name); expect(name).toHaveValue("Unsaved draft");
   });
@@ -931,7 +931,7 @@ describe("Team selection at cold workspace entries", () => {
     window.history.replaceState(null, "", path); localStorage.setItem(savedKey, a);
     const fetcher = install(resourceFallback); render(<AuthenticatedApp />);
     await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
-    expect(screen.getByRole("link", { name: "Team members" })).toHaveAttribute("href", `/teams/${a}/members`);
+    expect(screen.queryByRole("link", { name: "Team members" })).toBeNull();
     expect(screen.getByRole("link", { name: "Team settings" })).toHaveAttribute("href", `/teams/${a}/settings`);
     expect(window.location.pathname).toBe(path);
     expect(localStorage.getItem(savedKey)).toBe(a);
@@ -945,7 +945,7 @@ describe("Team selection at cold workspace entries", () => {
     render(<AuthenticatedApp />);
     await waitForState(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
     expect(selector()).toHaveAttribute("aria-label", "Switch Team: Loading Teams");
-    for (const name of ["My projects", "Team members", "Team settings"]) {
+    for (const name of ["My projects", "Team settings"]) {
       const link = screen.getByRole("link", { name });
       expect(link).toHaveAttribute("aria-disabled", "true"); expect(link).not.toHaveAttribute("href");
       fireEvent.click(link); expect(window.location.pathname).toBe(path);
@@ -984,11 +984,13 @@ describe("Team selection at cold workspace entries", () => {
     });
     render(<AuthenticatedApp />);
     await waitFor(() => expect(selector()).toHaveAttribute("aria-label", teamId === personal ? "Switch Team: Personal" : "Switch Team:   Alpha  "));
-    await screen.findByRole("heading", { name: "Team members" });
+    await screen.findByRole("heading", { name: "Team settings" });
     if (teamId === personal) {
       expect(screen.queryByRole("link", { name: "Team members" })).toBeNull();
       expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
-    } else expect(screen.getByRole("link", { name: "Team members" })).toHaveAttribute("href", path);
+    } else expect(screen.getByRole("link", { name: "Team settings" })).toHaveAttribute("href", `/teams/${teamId}/settings`);
+    expect(screen.getByRole("link", { name: "Members & invitations" })).toHaveAttribute("href", path);
+    expect(screen.getByRole("link", { name: "Members & invitations" })).toHaveAttribute("aria-current", "page");
     expect(window.location.pathname).toBe(path); expect(localStorage.getItem(savedKey)).toBe(teamId);
   });
 });

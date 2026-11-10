@@ -118,6 +118,8 @@
 .panel-heading:last-child { border-bottom: 0; }
 .panel-body { padding: 23px; }
 .team-settings-details { margin: 0; }
+.team-settings-context { color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-settings-nav .button { min-height: 38px; }
 .team-settings-details > div + div { margin-top: 20px; }
 .team-settings-details dt { font-size: 12px; font-weight: 600; color: #4c5870; margin-bottom: 8px; }
 .team-settings-details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }

@@ -30,8 +30,9 @@ projects, member and invitation management, CLI device authorization, and person
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
 shows the public introduction, `/setup` selects the zero-API guide, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
-the project index; `/teams/{teamId}/settings` opens Team settings. Business APIs require a browser session or PAT; project
-resources also require current membership, while Worker resources belong to the
+the project index. Team settings share one page shell: `/teams/{teamId}/settings`
+opens General, and `/teams/{teamId}/members` opens Members & invitations. Business
+APIs require a browser session or PAT; project resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
 and keyboard behavior remain unchanged.
@@ -282,10 +283,11 @@ verified missing Team clears that choice and restores Personal. Background
 checks retain the confirmed Team and all loaded selector pages until a complete
 refreshed prefix is available; actual changes and recoverable errors remain
 visible. Explicit refresh still reads the directory. When the confirmed selection
-is Personal, Team members and settings entries are omitted from the sidebar in
-all layouts; ordinary Teams retain links to their own member and settings pages
-regardless of their names. Direct Personal member and settings URLs remain
-available under their existing access rules. The
+is Personal, the Team settings entry is omitted from the sidebar in all layouts.
+Ordinary Teams have one Team settings link that opens General and stays selected
+in both settings sections, regardless of the Team name. Ordinary members retain
+this entry to read the roster and leave their Team. Direct Personal settings and
+member URLs remain available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
 [browser Team preference decision](../../.agents/notes/archived/feature/2026-11-04-browser-team-preference.md) records the rationale for storage, identity and recovery behavior. Shared projects stay outside the
@@ -393,12 +395,33 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
-Team settings display the selectable Team ID with an adjacent copy button for every
-viewer. Clipboard success and failure are reported locally; failure leaves the ID
-selectable and retryable. Pending copies are guarded and results are discarded when
-the Team or identity context changes. Team settings, members and invitations retain loaded content, the invitation area, drafts and open
-confirmations throughout ordinary identity checks and same-account background reads, without loading rows or disabling local editing. Initial reads and actual errors retain their own feedback. Writes require fresh Team, membership and invitation admission;
-explicit reconciliation retains the original operation result and never replays a write or infers its success from a read.
+Team settings share a heading, the current Team name, and horizontal General and
+Members & invitations links. Native links preserve direct access, reload and browser
+history; the navigation wraps on narrow screens. General displays the saved name
+with its rename action, the selectable Team ID with an adjacent copy button for every
+viewer, and a separate deletion panel at the bottom. Members & invitations contains
+the roster and its existing role, removal and self-departure actions, followed by
+admin-only invitation management. The
+[settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
+records the grouping and lifetime choices.
+
+Clipboard success and failure are reported locally; failure leaves the ID selectable
+and retryable. Pending copies are guarded and results are discarded when
+the Team or identity context changes. A stable Team-bound owner mounts each section
+on first visit and retains visited sections while either is current. Section changes
+suspend hidden content without losing drafts, confirmations, pending or unknown
+writes, or one-time invitation links. Off-route owners remain only as required by
+protected operations and receipts; inactive completion cannot focus hidden content.
+Leaving or deleting a Team returns to Personal only when the live browser location
+still shows either settings section for that Team, preserving unrelated destinations
+and later Team choices.
+
+Team settings and invitations retain loaded content, the invitation area, drafts
+and open confirmations throughout ordinary identity checks and same-account
+background reads, without loading rows or disabling local editing. Initial reads
+and actual errors retain their own feedback. Writes require fresh Team, membership
+and invitation admission; explicit reconciliation retains the original operation
+result and never replays a write or infers its success from a read.
 A changed selected member role or version invalidates its confirmation. Project
 settings, membership and transfer results retain their original scope and wait for
 admission before publication. Current access is rechecked where required; a
