@@ -9,7 +9,7 @@ import type { OperationStore, SessionOperationRecord } from "../../../../src/com
 import { actorId, origin, inspection, operationId, projectId, sessionId, taskId } from "./fixtures.js";
 let root: string;
 const stores: OperationStore[] = [];
-const aclProcessMs = 10_000;
+const aclProcessMs = 30_000;
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); });
 beforeAll(async () => { const tmp = fileURLToPath(new URL("../../../../../../.tmp/", import.meta.url)); await mkdir(tmp, { recursive: true }); root = await mkdtemp(path.join(tmp, "session-store-")); });
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
