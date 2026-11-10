@@ -327,7 +327,7 @@ test("product E2E budgets every step and reserves cleanup time within the job", 
 test("product E2E runs its own harness and builds the complete journey every time", () => {
   const steps = stepsOf(productE2E);
   const install = steps.find((step) => step.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"))!;
-  const browser = steps.find((step) => step.includes("run: pnpm --filter @codetreker/daynight-e2e exec playwright install --with-deps chromium"))!;
+  const browser = steps.find((step) => step.includes("name: Install the locked product E2E Chromium browser"))!;
   const types = steps.find((step) => step.includes("run: pnpm --filter @codetreker/daynight-e2e typecheck"))!;
   const harness = steps.find((step) => step.includes("run: pnpm e2e:test:harness"))!;
   const journey = steps.find((step) => step.includes("id: product-e2e"))!;
@@ -335,6 +335,8 @@ test("product E2E runs its own harness and builds the complete journey every tim
     assert.ok(step);
     assert.doesNotMatch(step, /if:|continue-on-error|--grep|--shard|--update-snapshots|passWithNoTests/);
   }
+  assert.match(browser, /^        run: pnpm --filter @codetreker\/daynight-e2e exec playwright install chromium$/m);
+  assert.doesNotMatch(productE2E, /--with-deps|\binstall-deps\b/);
   assert.match(journey, /^        timeout-minutes: 15$/m);
   assert.match(journey, /^        run: pnpm e2e:test$/m);
   assert.ok(steps.indexOf(install) < steps.indexOf(browser));
