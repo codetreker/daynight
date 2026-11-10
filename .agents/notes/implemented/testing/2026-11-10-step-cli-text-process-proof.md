@@ -4,9 +4,10 @@ Status: implemented
 
 ## Problem
 
-The optional server-side Step text test exercises the real CLI process as well as
-server admission and persistence. The CLI's argument, configuration, transport,
-output and exit behavior needs an independently runnable owner in the CLI module.
+The former optional server-side Step text test exercised the real CLI process as
+well as server admission and persistence. The CLI's argument, configuration,
+transport, output and exit behavior needs an independently runnable owner in the
+CLI module.
 The largest description can exceed operating-system argument size limits before
 Node starts, preventing the same process proof on all supported platforms.
 
@@ -21,7 +22,9 @@ not implement server admission or persistence. Process trees, listener and files
 are owned and cleaned up by the test.
 
 The [Step limits decision](2026-11-10-step-limits-test-ownership.md) assigns
-business admission and encoding to Core. Installed launcher tests separately
+business admission and encoding to Core. The [layered deletion
+decision](2026-11-10-step-cli-test-layered-removal.md) records the remaining
+protocol, coordination and storage owners. Installed launcher tests separately
 exercise representative native arguments and packaging.
 
 ## Alternatives
