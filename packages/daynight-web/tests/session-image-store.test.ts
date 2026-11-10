@@ -182,6 +182,154 @@ describe('shared Session image originals', () => {
 });
 
 describe('image admission and lifetime budgets', () => {
+  async function filledBackground(count = 14) {
+    const value = await sample(), images = store(), read = vi.fn((_id: string, _signal: AbortSignal) => Promise.resolve(value.blob));
+    const scope = images.createScope({ identity, read, canRead: () => true, canDownload: () => true });
+    const asset = (n: number) => scope.asset({ ...value.descriptor, resourceId: `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`, width: 3, height: 2 })!;
+    const background = await Promise.all(Array.from({ length: count }, (_, n) => asset(n + 10).acquire(signal())));
+    return { value, images, read, scope, asset, background };
+  }
+
+  it.each([['preview', 'download'], ['download', 'preview']] as const)('returns the %s slot when a shared original retains only its %s lease', async (first, remaining) => {
+    const { images, read, asset, background } = await filledBackground();
+    const original = asset(100), firstLease = await original.acquire(signal(), first), retained = await original.acquire(signal(), remaining);
+    firstLease.release();
+    const next = asset(101).acquire(signal(), first); void next.catch(() => {});
+    expect(read).toHaveBeenCalledTimes(16);
+    const admitted = await next;
+    expect(retained.valid && admitted.valid && background.every(lease => lease.valid)).toBe(true);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 0 });
+  });
+
+  it.each([['preview', 'download'], ['download', 'preview']] as const)('keeps a shared %s original charged while the remaining %s slot is occupied', async (first, remaining) => {
+    const { images, read, asset, background } = await filledBackground();
+    const original = asset(100), firstLease = await original.acquire(signal(), first), retained = await original.acquire(signal(), remaining);
+    const blocker = await asset(101).acquire(signal(), remaining);
+    const next = asset(102).acquire(signal(), first); void next.catch(() => {});
+    firstLease.release();
+    expect(read).toHaveBeenCalledTimes(16);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 1 });
+    expect(retained.valid && blocker.valid && background.every(lease => lease.valid)).toBe(true);
+    blocker.release();
+    expect(read).toHaveBeenCalledTimes(17);
+    expect((await next).valid && retained.valid).toBe(true);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 0 });
+  });
+
+  it('uses available background capacity when a shared original cannot move into the occupied download slot', async () => {
+    const { images, read, asset, background } = await filledBackground(13);
+    const original = asset(100), preview = await original.acquire(signal(), 'preview'), download = await original.acquire(signal(), 'download');
+    const otherDownload = await asset(101).acquire(signal(), 'download');
+    preview.release();
+    const next = asset(102).acquire(signal(), 'preview'); void next.catch(() => {});
+    expect(read).toHaveBeenCalledTimes(16);
+    expect((await next).valid && download.valid && otherDownload.valid && background.every(lease => lease.valid)).toBe(true);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 0 });
+  });
+
+  it('coordinates two shared originals whose remaining foreground operations exchange slots', async () => {
+    const { images, read, asset } = await filledBackground();
+    const a = asset(100), b = asset(101);
+    const aPreview = await a.acquire(signal(), 'preview'), bDownload = await b.acquire(signal(), 'download');
+    const aDownload = await a.acquire(signal(), 'download'), bPreview = await b.acquire(signal(), 'preview');
+    aPreview.release(); bDownload.release();
+    const next = asset(102).acquire(signal(), 'download'); void next.catch(() => {});
+    expect(aDownload.valid && bPreview.valid).toBe(true);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 1 });
+    aDownload.release();
+    expect(read).toHaveBeenCalledTimes(17);
+    expect((await next).valid && bPreview.valid).toBe(true);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 0 });
+  });
+
+  it.each([['preview', 'download'], ['download', 'preview']] as const)('restores a queued %s original after its shared %s waiter is cancelled', async (first, cancelled) => {
+    const { images, read, asset } = await filledBackground();
+    const firstBlocker = await asset(100).acquire(signal(), first), otherBlocker = await asset(101).acquire(signal(), cancelled);
+    const original = asset(102), cancellation = new AbortController();
+    const pending = original.acquire(signal(), first); void pending.catch(() => {});
+    const rejected = expect(original.acquire(cancellation.signal, cancelled)).rejects.toMatchObject({ name: 'AbortError' });
+    cancellation.abort(); await rejected;
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 1 });
+    firstBlocker.release();
+    expect(read).toHaveBeenCalledTimes(17);
+    expect((await pending).valid && otherBlocker.valid).toBe(true);
+    expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 0 });
+  });
+
+  it('moves an active read to available background capacity when its only foreground waiter is cancelled', async () => {
+    const { value, images, read, scope, asset } = await filledBackground(13), waiting = deferred<Blob>();
+    const original = asset(100), cancellation = new AbortController();
+    read.mockImplementation((id: string, _signal: AbortSignal) => id === original.resource!.resourceId ? waiting.promise : Promise.resolve(value.blob));
+    const rejected = expect(original.acquire(cancellation.signal, 'preview')).rejects.toMatchObject({ name: 'AbortError' });
+    const pending = original.acquire(signal()); void pending.catch(() => {});
+    try {
+      cancellation.abort(); await rejected;
+      const next = asset(101).acquire(signal(), 'preview'); void next.catch(() => {});
+      expect(read).toHaveBeenCalledTimes(15);
+      expect((await next).valid).toBe(true);
+      expect(images.usage()).toMatchObject({ bytes: 1520, items: 15, queued: 0 });
+      expect(read.mock.calls[13]![1].aborted).toBe(false);
+      waiting.resolve(value.blob);
+      expect((await pending).valid).toBe(true);
+      expect(images.usage()).toMatchObject({ bytes: 1425, items: 15, queued: 0 });
+    } finally { waiting.resolve(value.blob); await scope.invalidate(); await rejected; }
+  });
+
+  it.each([['preview', 'download'], ['download', 'preview']] as const)('returns a cancelled %s waiter slot but charges the remaining %s read until it actually stops', async (first, remaining) => {
+    const { value, images, read, scope, asset } = await filledBackground(), waiting = deferred<Blob>();
+    const original = asset(100), firstRequest = new AbortController(), retainedRequest = new AbortController();
+    read.mockImplementation((id: string, _signal: AbortSignal) => id === original.resource!.resourceId ? waiting.promise : Promise.resolve(value.blob));
+    const firstPending = original.acquire(firstRequest.signal, first), retainedPending = original.acquire(retainedRequest.signal, remaining);
+    const firstRejected = expect(firstPending).rejects.toMatchObject({ name: 'AbortError' });
+    const retainedRejected = expect(retainedPending).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      firstRequest.abort(); await firstRejected;
+      const next = asset(101).acquire(signal(), first); void next.catch(() => {});
+      expect(read).toHaveBeenCalledTimes(16);
+      expect((await next).valid).toBe(true);
+      expect(images.usage()).toMatchObject({ bytes: 1615, items: 16, queued: 0 });
+      retainedRequest.abort(); await retainedRejected;
+      expect(read.mock.calls[14]![1].aborted).toBe(true);
+      const afterCancellation = asset(102).acquire(signal(), remaining); void afterCancellation.catch(() => {});
+      expect(read).toHaveBeenCalledTimes(16);
+      expect(images.usage()).toMatchObject({ bytes: 1615, items: 16, queued: 1 });
+      waiting.resolve(value.blob);
+      expect((await afterCancellation).valid).toBe(true);
+      expect(read).toHaveBeenCalledTimes(17);
+      expect(images.usage()).toMatchObject({ bytes: 1520, items: 16, queued: 0 });
+    } finally {
+      retainedRequest.abort(); waiting.resolve(value.blob); await scope.invalidate();
+      await Promise.all([firstRejected, retainedRejected]);
+    }
+  });
+
+  it.each([
+    { remaining: 'download', background: 14, bytes: 1520, items: 16 },
+    { remaining: 'background', background: 13, bytes: 1425, items: 15 },
+  ] as const)('changes the original reservation to $remaining while a cancelled decoder keeps both byte budgets charged', async ({ remaining, background, bytes, items }) => {
+    const { images, read, scope, asset } = await filledBackground(background);
+    const bitmap = deferred<{ width: number; height: number; close(): void }>(), close = vi.fn();
+    vi.stubGlobal('createImageBitmap', vi.fn(() => bitmap.promise));
+    const original = asset(100), preview = await original.acquire(signal(), 'preview'), retained = await original.acquire(signal(), remaining);
+    const decoding = preview.decode(signal()), rejected = expect(decoding).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      preview.release();
+      const next = asset(101).acquire(signal(), 'preview'); void next.catch(() => {});
+      expect(read).toHaveBeenCalledTimes(items);
+      expect((await next).valid && retained.valid).toBe(true);
+      expect(images.usage()).toMatchObject({ bytes, items, decoded: { bytes: 24, running: 1 } });
+      retained.release();
+      const afterCancellation = asset(102).acquire(signal(), remaining); void afterCancellation.catch(() => {});
+      expect(images.usage()).toMatchObject({ bytes, items, queued: 1, decoded: { bytes: 24, running: 1 } });
+      bitmap.resolve({ width: 3, height: 2, close }); await rejected;
+      expect((await afterCancellation).valid).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+      expect(images.usage()).toMatchObject({ bytes, items, queued: 0, decoded: { bytes: 0, running: 0 } });
+    } finally {
+      bitmap.resolve({ width: 3, height: 2, close }); await scope.invalidate(); await rejected;
+    }
+  });
+
   it('reserves an independent preview and download while a background original is still reading', async () => {
     const value = await sample(), images = store(), waiting = deferred<Blob>();
     const read = vi.fn((_id: string, _signal: AbortSignal) => waiting.promise);

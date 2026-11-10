@@ -1,8 +1,12 @@
 import { act, screen, waitFor } from '@testing-library/react';
 import { createHash } from 'node:crypto';
+import { useRef, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ImagePart, ImageUnavailablePart, MarkdownImageMetadata } from '../../daynight/src/session/image-values';
 import { SessionMarkdown } from '../src/features/task-agent-session/SessionMarkdown';
+import { SessionImageFrame } from '../src/features/task-agent-session/images/SessionImageFrame';
+import { SessionImageScope } from '../src/features/task-agent-session/images/SessionImageScope';
+import type { ImageAssetAdapter, ImageScope, VerifiedImageLease } from '../src/features/task-agent-session/images/image-types';
 import { ChatMarkdown } from '../src/ui/ChatMarkdown';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
@@ -16,6 +20,40 @@ function metadata(text: string, spans: readonly [number, number][], overrides: P
 const draw = vi.fn((part: ImagePart | ImageUnavailablePart, mode: string) => mode === 'actions'
   ? <button data-image-actions={part.imageId}>Preview {part.label}</button>
   : <span data-image-visual={part.imageId}>{part.label}{mode === 'standalone' ? <button>Preview {part.label}</button> : null}</span>);
+
+function holdDigests() {
+  const pending: (() => void)[] = [];
+  vi.spyOn(crypto.subtle, 'digest').mockImplementation((_algorithm, data) => new Promise(resolve => {
+    const bytes = Buffer.from(data as ArrayBuffer);
+    pending.push(() => { const result = createHash('sha256').update(bytes).digest(); resolve(result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength)); });
+  }));
+  return pending;
+}
+
+// The real frame owns acquisition and release here; only adapter byte/decode
+// outcomes are controlled so a Markdown remount exposes its lifetime cost.
+function frameFixture() {
+  const releases: ReturnType<typeof vi.fn>[] = [], decodedReleases: ReturnType<typeof vi.fn>[] = [];
+  const scope: ImageScope = {
+    identity: { serverOrigin: window.location.origin, actorUserId: 'owner', authorizationGeneration: '1', owner: { kind: 'record', recordId: id(50), namespace: 'test', revision: '1' } },
+    key: 'record', valid: true, canRead: () => true, canDownload: () => true, asset: () => asset,
+    retainResources() {}, invalidate: async () => {}, subscribeInvalidation: () => () => {},
+  };
+  const acquire = vi.fn(async (): Promise<VerifiedImageLease> => {
+    const release = vi.fn(), decodedRelease = vi.fn(); releases.push(release); decodedReleases.push(decodedRelease);
+    return { blob: new Blob(['controlled original']), mediaType: 'image/png', byteLength: 19, sha256: '0'.repeat(64), storedSize: { width: 3, height: 2 }, valid: true,
+      subscribeInvalidation: () => () => {}, release,
+      decode: async () => ({ url: 'blob:controlled-image', width: 3, height: 2, valid: true, subscribeInvalidation: () => () => {}, release: decodedRelease }),
+    };
+  });
+  const asset: ImageAssetAdapter = { scope, key: 'image', resource: null, canRead: scope.canRead, canDownload: scope.canDownload, subscribeInvalidation: scope.subscribeInvalidation, acquire };
+  const renderImage = vi.fn((part: ImagePart | ImageUnavailablePart, presentation: 'standalone' | 'linked' | 'actions') => <SessionImageFrame asset={asset} label={part.label} active presentation={presentation} />);
+  return { scope, acquire, releases, decodedReleases, renderImage };
+}
+function ImageSurface({ scope, children }: { readonly scope: ImageScope; readonly children: ReactNode }) {
+  const root = useRef<HTMLElement>(null);
+  return <section ref={root}><SessionImageScope scope={scope} active rootRef={root}><div className="session-timeline">{children}</div></SessionImageScope></section>;
+}
 
 // The callback stands in for the shared frame: this suite owns admission to that
 // frame and DOM placement, while the frame/store suites own byte reads and leases.
@@ -129,6 +167,113 @@ describe('Session Markdown image bindings', () => {
     view.rerender(<SessionMarkdown text={text} metadata={structuredClone(value)} renderImage={draw} />);
     expect(screen.getByText('Image 1')).toBe(frame);
     expect(hash).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['standalone', 'linked'] as const)('keeps the %s frame, focus and leases while trailing text is verified', async mode => {
+    const source = '![a](image:a)', text = mode === 'linked' ? `[${source}](https://example.com/page)` : source;
+    const start = text.indexOf(source), value = metadata(text, [[start, start + source.length]]), f = frameFixture();
+    const surface = (body: string, data: MarkdownImageMetadata) => <ImageSurface scope={f.scope}><SessionMarkdown text={body} metadata={data} renderImage={f.renderImage} /></ImageSurface>;
+    const view = render(surface(text, value));
+    const frame = await screen.findByRole('img', { name: 'Image 1' }), trigger = screen.getByRole('button', { name: 'View image: Image 1' });
+    trigger.focus();
+    const pending = holdDigests(), next = `${text} trailing text`;
+    view.rerender(surface(next, { ...value, revision: '2', textSha256: digest(next) }));
+    expect(screen.queryByRole('img', { name: 'Image 1' })).toBe(frame);
+    expect(screen.getByRole('button', { name: 'View image: Image 1' })).toBe(trigger);
+    expect(trigger).toHaveFocus(); expect(f.acquire).toHaveBeenCalledOnce();
+    expect(f.releases[0]).not.toHaveBeenCalled(); expect(f.decodedReleases[0]).not.toHaveBeenCalled();
+    await act(async () => pending[0]!());
+    expect(screen.getByRole('img', { name: 'Image 1' })).toBe(frame); expect(trigger).toHaveFocus();
+    expect(screen.getByText(/trailing text/)).toBeVisible(); expect(f.acquire).toHaveBeenCalledOnce();
+    expect(f.releases[0]).not.toHaveBeenCalled(); expect(f.decodedReleases[0]).not.toHaveBeenCalled();
+    view.unmount(); expect(f.releases[0]).toHaveBeenCalledOnce(); expect(f.decodedReleases[0]).toHaveBeenCalledOnce();
+  });
+
+  it.each(['appended', 'replacement'] as const)('does not admit an unverified %s binding while preserving the previous presentation', async mode => {
+    const text = '![a](image:a)', value = metadata(text, [[0, text.length]]), renderImage = vi.fn(draw);
+    const view = render(<SessionMarkdown text={text} metadata={value} renderImage={renderImage} />);
+    const frame = await screen.findByText('Image 1');
+    const pending = holdDigests(), next = mode === 'appended' ? `${text} ![b](image:b)` : text;
+    const revised = mode === 'appended' ? metadata(next, [[0, text.length], [text.length + 1, next.length]], { revision: '2' })
+      : metadata(next, [[0, text.length]], { revision: '2', bindings: [{ start: 0, end: text.length, imageId: id(2), part: image(2) }] });
+    renderImage.mockClear();
+    view.rerender(<SessionMarkdown text={next} metadata={revised} renderImage={renderImage} />);
+    expect(screen.queryByText('Image 1')).toBe(frame); expect(screen.queryByText('Image 2')).toBeNull();
+    expect(renderImage.mock.calls.every(([part]) => part.imageId === id(1))).toBe(true);
+    await act(async () => pending[0]!());
+    expect(screen.getByText('Image 2')).toBeVisible();
+    if (mode === 'appended') expect(screen.getByText('Image 1')).toBe(frame);
+    else expect(screen.queryByText('Image 1')).toBeNull();
+  });
+
+  it('discards the previous presentation after a bad digest and ignores superseded verification', async () => {
+    const text = '![a](image:a)', value = metadata(text, [[0, text.length]]), onInvalidBindings = vi.fn();
+    const view = render(<SessionMarkdown text={text} metadata={value} renderImage={draw} onInvalidBindings={onInvalidBindings} />);
+    const frame = await screen.findByText('Image 1'), pending = holdDigests();
+    const next = `${text} first`, latest = `${text} latest`;
+    view.rerender(<SessionMarkdown text={next} metadata={{ ...value, revision: '2', textSha256: digest(next) }} renderImage={draw} onInvalidBindings={onInvalidBindings} />);
+    view.rerender(<SessionMarkdown text={latest} metadata={{ ...value, revision: '3', textSha256: '0'.repeat(64) }} renderImage={draw} onInvalidBindings={onInvalidBindings} />);
+    await act(async () => pending[0]!());
+    expect(screen.getByText('Image 1')).toBe(frame); expect(screen.queryByText(/first/)).toBeNull();
+    await act(async () => pending[1]!());
+    expect(onInvalidBindings).toHaveBeenCalledOnce(); expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText(/latest/)).toBeVisible();
+    view.rerender(<SessionMarkdown text={latest} metadata={{ ...value, revision: '4', textSha256: digest(latest) }} renderImage={draw} />);
+    expect(screen.queryByRole('button')).toBeNull();
+    await act(async () => pending[2]!());
+    expect(screen.getByRole('button', { name: 'Preview Image 1' })).toBeVisible();
+  });
+
+  it.each(['different part', 'missing metadata', 'invalid metadata', 'incomplete', 'truncated', 'cached'] as const)('does not preserve an admitted image across %s', async mode => {
+    const text = '![a](image:a)', value = metadata(text, [[0, text.length]]), renderImage = vi.fn(draw);
+    const view = render(<SessionMarkdown text={text} metadata={value} renderImage={renderImage} />);
+    await screen.findByRole('button', { name: 'Preview Image 1' });
+    const pending = holdDigests(), next = `${text} next`;
+    const changed = mode === 'missing metadata' ? undefined : { ...value, revision: '2', textSha256: digest(next),
+      ...(mode === 'different part' ? { partId: id(99) } : {}), ...(mode === 'invalid metadata' ? { partId: 'invalid' } : {}),
+      ...(mode === 'incomplete' ? { complete: false, bindings: [] } : {}), ...(mode === 'truncated' ? { truncated: true } : {}) };
+    renderImage.mockClear();
+    view.rerender(<SessionMarkdown text={next} {...(changed ? { metadata: changed } : {})} renderImage={renderImage} resourceAccess={mode === 'cached' ? 'none' : 'live'} />);
+    expect(screen.queryByRole('button')).toBeNull(); expect(renderImage).not.toHaveBeenCalled();
+    view.rerender(<SessionMarkdown text={next} metadata={{ ...value, revision: '3', textSha256: digest(next) }} renderImage={renderImage} />);
+    expect(screen.queryByRole('button')).toBeNull(); expect(renderImage).not.toHaveBeenCalled();
+    await act(async () => { for (const resolve of pending) resolve(); });
+    expect(screen.getByRole('button', { name: 'Preview Image 1' })).toBeVisible();
+  });
+
+  it('never applies an old presentation or late digest across owner changes, including returning to the first owner', async () => {
+    const text = '![a](image:a)', value = metadata(text, [[0, text.length]]), first = frameFixture(), second = frameFixture();
+    const surface = (f: ReturnType<typeof frameFixture>) => <ImageSurface scope={f.scope}><SessionMarkdown text={text} metadata={value} renderImage={f.renderImage} /></ImageSurface>;
+    const view = render(surface(first)); await screen.findByRole('img');
+    const pending = holdDigests(); first.renderImage.mockClear();
+    view.rerender(surface(second));
+    expect(screen.queryByRole('img')).toBeNull(); expect(second.renderImage).not.toHaveBeenCalled(); expect(second.acquire).not.toHaveBeenCalled();
+    view.rerender(surface(first));
+    expect(screen.queryByRole('img')).toBeNull(); expect(first.renderImage).not.toHaveBeenCalled(); expect(first.acquire).toHaveBeenCalledOnce();
+    await act(async () => pending[0]!());
+    expect(screen.queryByRole('img')).toBeNull(); expect(second.acquire).not.toHaveBeenCalled();
+    await act(async () => pending[1]!());
+    await screen.findByRole('img'); expect(first.acquire).toHaveBeenCalledTimes(2);
+  });
+
+  it('updates retained images with their verified body without admitting pending additions', async () => {
+    const text = 'Revised text', old = image(1), added = image(2);
+    const retained = { imageId: old.imageId, start: 0, end: 4, part: old, sourceRevision: '1', sourceTextSha256: digest('old'), linkHref: null };
+    const value = metadata(text, [], { revision: '2', retainedImages: [retained] });
+    const view = render(<SessionMarkdown text={text} metadata={value} renderImage={draw} />);
+    const details = view.container.querySelector('details')!;
+    act(() => { details.open = true; details.dispatchEvent(new Event('toggle')); });
+    const trigger = await screen.findByRole('button', { name: 'Preview Image 1' }); trigger.focus();
+    const pending = holdDigests(), next = `${text} appended`;
+    const revised = { ...value, revision: '3', textSha256: digest(next), retainedImages: [retained, { ...retained, imageId: added.imageId, part: added, sourceRevision: '2' }] };
+    view.rerender(<SessionMarkdown text={next} metadata={revised} renderImage={draw} />);
+    expect(screen.queryByRole('button', { name: 'Preview Image 1' })).toBe(trigger); expect(trigger).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'Preview Image 2' })).toBeNull();
+    await act(async () => pending[0]!());
+    expect(screen.getByRole('button', { name: 'Preview Image 1' })).toBe(trigger); expect(trigger).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Preview Image 2' })).toBeVisible(); expect(screen.getByText(next)).toBeVisible();
+    view.rerender(<SessionMarkdown text={next} metadata={revised} renderImage={draw} resourceAccess="none" />);
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
   it('shows retained images under their original metadata and never renders duplicate identities', async () => {

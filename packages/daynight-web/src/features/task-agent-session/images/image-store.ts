@@ -116,7 +116,7 @@ export class SessionImageStore {
     }
     if (entry.expiry) { clearTimeout(entry.expiry); entry.expiry = null; }
     entry.touched = Date.now();
-    if (entry.blob) return Promise.resolve(this.lease(entry, priority, signal));
+    if (entry.blob) { const lease = this.lease(entry, priority, signal); this.pump(); return Promise.resolve(lease); }
     if (priority !== 'background' && !entry.admitted) entry.priority = priority;
     if (priority === 'background' && !entry.admitted && [...this.entries.values()].filter(item => !item.admitted && item.priority === 'background').length > 32) { this.entries.delete(asset.key); return Promise.reject(new ImageFailure('cache_busy', 'Image loading is busy. Try opening the image.')); }
     const owned = entry, combined = AbortSignal.any([signal, asset.scope.lifetime.signal, asset.lifetime.signal, entry.controller.signal]);
@@ -124,7 +124,7 @@ export class SessionImageStore {
       const waiter: Waiter = { priority, signal: combined, resolve, reject, finish: () => {
         combined.removeEventListener('abort', aborted); owned.waiters.delete(waiter);
       } };
-      const aborted = () => { waiter.finish(); reject(combined.reason); this.unused(owned); };
+      const aborted = () => { waiter.finish(); reject(combined.reason); this.unused(owned); this.pump(); };
       combined.addEventListener('abort', aborted, { once: true }); owned.waiters.add(waiter);
       this.pump();
     });
@@ -141,13 +141,42 @@ export class SessionImageStore {
     const foreground = others.filter(item => item.priority !== 'background');
     return foreground.length < 2 && sum(foreground) + bytes <= 40 * MIB && !foreground.some(item => item.priority === priority);
   }
+  private priorities(entry: Entry): Set<ImageReadPriority> {
+    return new Set([...entry.waiters].filter(waiter => !waiter.signal.aborted).map(waiter => waiter.priority).concat([...entry.leases].filter(record => record.lease.valid).map(record => record.priority)));
+  }
+  private reconcileReservations() {
+    const admitted = this.admitted();
+    for (const entry of admitted) {
+      if (entry.priority === 'background') continue;
+      const priorities = this.priorities(entry);
+      if (priorities.has(entry.priority)) continue;
+      const remaining = [...priorities].find(priority => priority !== 'background') ?? (priorities.has('background') ? 'background' : null);
+      if (!remaining) continue;
+      if (this.fits(entry, entry.bytes, remaining)) { entry.priority = remaining; continue; }
+      if (remaining === 'background') continue;
+      const occupant = admitted.find(other => other !== entry && other.priority === remaining);
+      if (occupant && this.priorities(occupant).has(entry.priority)) {
+        // Swapping reservations preserves both byte totals while each original
+        // retains a slot required by one of its remaining consumers.
+        occupant.priority = entry.priority; entry.priority = remaining;
+      } else if (this.fits(entry, entry.bytes, 'background')) entry.priority = 'background';
+      // An occupied destination keeps the old reservation until capacity changes.
+      // Readers and decoders remain charged even after cancellation.
+    }
+  }
   private pump() {
+    this.reconcileReservations();
+    for (const entry of this.entries.values()) {
+      if (entry.admitted) continue;
+      const priorities = this.priorities(entry);
+      if (!priorities.has(entry.priority)) entry.priority = [...priorities].find(priority => priority !== 'background') ?? 'background';
+    }
     for (const entry of [...this.entries.values()].filter(item => !item.admitted).sort((a, b) => Number(a.priority === 'background') - Number(b.priority === 'background'))) {
       if (!entry.waiters.size) { this.remove(entry); continue; }
       const reservation = Number(entry.asset.resource.byteLength) * 2;
       if (!this.fits(entry, reservation)) {
         for (const old of this.admitted().filter(item => !item.waiters.size && !item.leases.size && !item.reading && !item.decodeJobs.size).sort((a, b) => a.touched - b.touched)) {
-          this.remove(old); if (this.fits(entry, reservation)) break;
+          this.remove(old); this.reconcileReservations(); if (this.fits(entry, reservation)) break;
         }
       }
       if (!this.fits(entry, reservation)) continue;

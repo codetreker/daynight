@@ -46,6 +46,13 @@ Animation requires complete frame decoding. A static-only fallback cannot accept
 unknown or multiple frames. Cancellation revokes publication immediately but
 returns capacity only after the actual reader or decoder has stopped.
 
+Original reservations follow their remaining preview and download consumers.
+Sharing a Blob does not let a finished operation retain the other operation's
+capacity. Verified Markdown presentations are bound to their scope and part
+identity. A pending body digest keeps that presentation intact until the next
+version is admitted, preserving existing image frames without authorizing new
+bindings.
+
 ## Alternatives
 
 **Keep attachments in memory or encode them in sessionStorage.** Reloads and
@@ -68,6 +75,11 @@ scope leases preserve stable rendering and centralize cleanup.
 **Portal one preview to document.body.** Existing fullscreen inert regions and
 Task focus boundaries can exclude it. Root-local dialog hosting preserves those
 boundaries; higher dialogs require a synchronous suspension bridge.
+
+**Clear image renderers during every body verification.** This makes admission
+simple but destroys already verified frames, focus and decoded leases during
+ordinary text updates. Keeping the last verified presentation within the same
+identity preserves those resources while new bindings remain untrusted.
 
 **Persist all viewed images or add cross-device drafts.** Both expand private
 retention, synchronization and cleanup responsibility. Durable originals remain

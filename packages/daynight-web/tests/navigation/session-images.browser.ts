@@ -3,6 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { openSessionImages } from '../helpers/sessionImageBrowser';
 
+declare global {
+  interface Window {
+    sessionImageDigestGate: { hold(text: string): void; release(): void; state(): { started: number; finished: number } };
+  }
+}
+
 for (const entry of ['task', 'test', 'task-dialog'] as const) test(`${entry} uses the shared native image dialog without changing its outer surface`, async ({ page }, info) => {
   const fixture = await openSessionImages(page, { entry });
   const formats = entry === 'task' ? ['png', 'jpeg', 'gif', 'webp', 'avif'] : ['png'];
@@ -65,6 +71,67 @@ test('linked Markdown retains its link while image actions fit a 390px page', as
   expect(await dialog.evaluate(node => { const r = node.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })).toBe(true);
   await page.screenshot({ path: info.outputPath('linked-image-390.png') }); await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
   expect(fixture.observations.writes).toEqual([]); expect(fixture.observations.pageErrors).toEqual([]);
+});
+
+test('Markdown revisions retain verified image DOM and focus while new bindings await their digest', async ({ page }, info) => {
+  await page.addInitScript(() => {
+    const digest = crypto.subtle.digest.bind(crypto.subtle), waiting: (() => void)[] = [];
+    let target: string | null = null, blocked = false, started = 0, finished = 0;
+    window.sessionImageDigestGate = {
+      hold(text) { target = text; blocked = true; started = 0; finished = 0; },
+      release() { blocked = false; waiting.splice(0).forEach(resolve => resolve()); },
+      state: () => ({ started, finished }),
+    };
+    crypto.subtle.digest = async (algorithm, bytes) => {
+      if (new TextDecoder().decode(bytes) !== target) return digest(algorithm, bytes);
+      started++;
+      if (blocked) await new Promise<void>(resolve => waiting.push(resolve));
+      const result = await digest(algorithm, bytes); finished++; return result;
+    };
+  });
+  const fixture = await openSessionImages(page), originalEntry = fixture.entries.at(-1)!;
+  if (originalEntry.kind !== 'assistant_message') throw new Error('The fixture must end with the linked Markdown message.');
+  const original = originalEntry.content.find(part => part.type === 'markdown');
+  if (!original?.bindings) throw new Error('The fixture must supply verified Markdown bindings.');
+  const row = page.locator(`[data-entry-key="${originalEntry.entryId}"]`), link = row.locator('a[href="https://example.com/report"]');
+  const trigger = row.getByRole('button', { name: 'View image: Linked image', exact: true });
+  await link.scrollIntoViewIfNeeded(); await expect(link.locator('img')).toHaveJSProperty('naturalWidth', 3); await trigger.focus();
+  const image = await link.locator('img').elementHandle(), button = await trigger.elementHandle();
+  const resourceId = fixture.resources[0]!.resourceId, reads = () => fixture.observations.resources.filter(id => id === resourceId).length, initialReads = reads();
+  expect(initialReads).toBe(1);
+  const trailing = `${original.text}\n\nAppended after the verified image.`, token = '![Additional image](file:///controlled/additional.jpg)';
+  const extended = `${trailing}\n\n${token}`, imageId = '00000088-1111-4111-8111-000000000650';
+  const revisions = [
+    { ...original, revision: '2', text: trailing, textSha256: createHash('sha256').update(trailing).digest('hex') },
+    { ...original, revision: '3', text: extended, textSha256: createHash('sha256').update(extended).digest('hex'), bindings: [...original.bindings, { start: extended.indexOf(token), end: extended.indexOf(token) + token.length, imageId, part: { type: 'image' as const, imageId, resourceId: fixture.resources[1]!.resourceId, label: 'Additional image' } }] },
+  ];
+  const observations: { phase: string; image: boolean; button: boolean; focus: boolean; originalReads: number; digest: { started: number; finished: number } }[] = [];
+  const verifyRetained = async (phase: string) => {
+    const identity = await row.evaluate((node, previous) => ({
+      image: node.querySelector('a[href="https://example.com/report"] img') === previous.image,
+      button: node.querySelector('button[aria-label="View image: Linked image"]') === previous.button,
+      focus: document.activeElement === previous.button,
+    }), { image, button });
+    expect(identity).toEqual({ image: true, button: true, focus: true }); expect(reads()).toBe(initialReads);
+    observations.push({ phase, ...identity, originalReads: reads(), digest: await page.evaluate(() => window.sessionImageDigestGate.state()) });
+  };
+  try {
+    for (const updated of revisions) {
+      await page.evaluate(text => window.sessionImageDigestGate.hold(text), updated.text);
+      fixture.publishEntry({ ...originalEntry, revision: updated.revision, content: [updated] });
+      await expect.poll(() => page.evaluate(() => window.sessionImageDigestGate.state().started)).toBeGreaterThan(0);
+      expect(await page.evaluate(() => window.sessionImageDigestGate.state().finished)).toBe(0);
+      await verifyRetained(`revision-${updated.revision}-pending`);
+      await expect(row.getByRole('button', { name: 'View image: Additional image', exact: true })).toHaveCount(0);
+      await page.evaluate(() => window.sessionImageDigestGate.release());
+      await expect.poll(() => page.evaluate(() => window.sessionImageDigestGate.state().finished)).toBeGreaterThan(0);
+      await expect(row).toContainText('Appended after the verified image.');
+      if (updated.revision === '3') await expect(row.getByRole('button', { name: 'View image: Additional image', exact: true }).locator('img')).toHaveJSProperty('naturalWidth', 3);
+      await verifyRetained(`revision-${updated.revision}-verified`);
+    }
+    expect(fixture.observations.writes).toEqual([]); expect(fixture.observations.pageErrors).toEqual([]);
+    await info.attach('markdown-revision-stability', { body: JSON.stringify({ boundary: 'Production App and Session timeline events; only target Markdown digest completion is held, with actual native SHA-256 and real Chrome image decoding.', observations }), contentType: 'application/json' });
+  } finally { await page.evaluate(() => window.sessionImageDigestGate.release()); }
 });
 
 test('large originals preserve the media anchor and scroll inside a narrow stage', async ({ page }, info) => {

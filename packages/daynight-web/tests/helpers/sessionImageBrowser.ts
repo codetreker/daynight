@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Page, type WebSocketRoute } from '@playwright/test';
 import type { SessionResource, TimelineEntry } from '../../src/api/types';
-import type { SessionSnapshot } from '../../../daynight/src/session/protocol';
+import { sessionFence, type SessionSnapshot } from '../../../daynight/src/session/protocol';
 import { detailFixture, graphFixture } from './taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from './taskSync';
 import type { TaskSessionSnapshot } from './session';
@@ -47,9 +47,22 @@ export async function openSessionImages(page: Page, { entry = 'task', ...options
   const worker = { claimId: source.claimId, state: 'active', userId: TEST_VIEWER_ID, workerId: source.identity.workerId, machine: { id: source.identity.controllerId, name: 'Image fixture' }, platform: 'macos', agent: source.identity.provider, agentControlMode: 'web', worktreeId: source.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'image-browser-native', claimedAt: time };
   const detail = detailFixture(projectId, taskId, { title: 'Session image acceptance', status: 'in_progress', ready: false, properties: { worker } }), graph = graphFixture([detail]);
   const observations = { currentReads: 0, timelineReads: 0, beforeReads: 0, resources: [] as string[], writes: [] as string[], pageErrors: [] as string[] };
+  const channels = new Set<WebSocketRoute>();
+  let eventSeq = 0n;
+  const currentSnapshot = () => ({ ...snapshot, lastEventSeq: String(eventSeq) });
+  const publishEntry = (updated: TimelineEntry) => {
+    const index = entries.findIndex(item => item.entryId === updated.entryId);
+    if (index < 0 || channels.size === 0) throw new Error('An existing entry and active channel are required.');
+    entries[index] = updated; eventSeq++;
+    const event = { protocol: snapshot.protocol, ...sessionFence(snapshot), connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq: String(eventSeq), kind: 'timeline_upsert', payload: updated };
+    for (const socket of channels) socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'event', cursor: `image-event-${eventSeq}`, event }));
+  };
   page.on('pageerror', error => observations.pageErrors.push(error.message));
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
-  await page.routeWebSocket('**/channel*', socket => socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })));
+  await page.routeWebSocket('**/channel*', socket => {
+    channels.add(socket); socket.onClose(() => { channels.delete(socket); });
+    socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot: currentSnapshot(), cursor: `image-event-${eventSeq}` }));
+  });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) observations.writes.push(`${request.method()} ${path}`);
@@ -62,12 +75,12 @@ export async function openSessionImages(page: Page, { entry = 'task', ...options
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
     if (path === taskRoot) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${taskRoot}/sessions`) return send({ items: [], nextCursor: null });
-    if (path === (taskEntry ? `${taskRoot}/sessions/current` : root)) { observations.currentReads++; return send(taskEntry ? { status: 'registered', session: snapshot } : { session: snapshot }); }
+    if (path === (taskEntry ? `${taskRoot}/sessions/current` : root)) { observations.currentReads++; return send(taskEntry ? { status: 'registered', session: currentSnapshot() } : { session: currentSnapshot() }); }
     if (path === `${root}/timeline`) {
       const before = options.prepend && url.searchParams.get('direction') === 'before';
       if (before) { observations.beforeReads++; await beforeReleased; } else observations.timelineReads++;
       const items = before ? older : !options.prepend && observations.timelineReads > 1 ? entries.map((item, index) => index === entries.length - 1 && item.kind === 'assistant_message' ? { ...item, revision: String(observations.timelineReads), content: [...item.content, { type: 'text', text: `History refresh ${observations.timelineReads}` }] } : item) : entries;
-      return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items, resources, beforeCursor: options.prepend && !before ? 'before-21' : null, afterCursor: null, hasMoreBefore: !!options.prepend && !before, hasMoreAfter: false, lastEventSeq: '0' });
+      return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items, resources, beforeCursor: options.prepend && !before ? 'before-21' : null, afterCursor: null, hasMoreBefore: !!options.prepend && !before, hasMoreAfter: false, lastEventSeq: String(eventSeq) });
     }
     const resourceId = path.startsWith(`${root}/resources/`) && path.endsWith('/content') ? path.split('/').at(-2) : null;
     if (resourceId && bodies.has(resourceId)) {
@@ -88,5 +101,5 @@ export async function openSessionImages(page: Page, { entry = 'task', ...options
     await page.getByRole('menuitemradio', { name: 'Standard', exact: true }).click(); await page.keyboard.press('Escape');
   }
   await expect(page.locator('.session-entry')).toHaveCount(entries.length);
-  return { snapshot, root, taskRoot, resources, bodies, entries, older, observations, releaseBefore };
+  return { snapshot, root, taskRoot, resources, bodies, entries, older, observations, releaseBefore, publishEntry };
 }
