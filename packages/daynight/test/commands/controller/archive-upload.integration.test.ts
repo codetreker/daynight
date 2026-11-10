@@ -37,17 +37,17 @@ test.each(["archive_incomplete", "projection_gap"] as const)("rejects %s before 
   expect(await readFile(entryFile, "utf8")).toBe("unreadable pending content");
 });
 
-test("probes a stopped source without mutating its journal or pending inventory", async () => {
+test.each(["archive_incomplete", "projection_gap"] as const)("probes a stopped source without mutating its journal or pending inventory: %s", async code => {
   const f = await fixture(), db = new Database(f.journalPath);
-  db.exec("UPDATE execution SET archive_incomplete=1,projection_gap=NULL"); db.close();
+  db.prepare("UPDATE execution SET archive_incomplete=?,projection_gap=?").run(code === "archive_incomplete" ? 1 : 0, code === "projection_gap" ? "Native history was lost." : null); db.close();
   const before = await readFile(f.journalPath);
-  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "blocked", code: "archive_incomplete" });
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "blocked", code });
   expect(await readFile(f.journalPath)).toEqual(before);
   await expect(archives.probeStoppedControllerArchive({ ...f, ticket: { ...f.ticket, executionGeneration: "2" } })).rejects.toThrow("original stopped");
   const reason = new Error("probe cancelled");
   await expect(archives.probeStoppedControllerArchive({ ...f, signal: AbortSignal.abort(reason) })).rejects.toBe(reason);
   const edit = new Database(f.journalPath); edit.exec("UPDATE execution SET archive_incomplete=0,projection_gap='Recovered pending timeline requires full relay resynchronization.'"); edit.close();
-  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "attempt" });
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "complete" });
 });
 
 test.each(["current", "legacy", "mismatch"] as const)("a repair probe admits only original receipt reconciliation: %s", async variant => {

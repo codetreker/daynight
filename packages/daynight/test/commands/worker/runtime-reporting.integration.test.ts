@@ -760,3 +760,60 @@ it("retains backfill blocker and probe deadline across runtime restart without c
   expect(readState()).toBeNull();
   expect(mocks.archive).toHaveBeenCalledTimes(2);
 });
+
+
+it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
+  (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
+))("updates backfill scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
+  const f = await fixture();
+  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  const startTime = now;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const identity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", executionId: uuid(11), executionGeneration: "1", launchId: uuid(11) };
+  await mkdir(path.dirname(f.paths.databaseFile), { recursive: true });
+  const db = openWorkerStore(f.paths.databaseFile);
+  try { db.saveArchiveBackfillSchedule(identity, { archiveRepairCode: code, nextAttemptAt: now }); } finally { db.close(); }
+  mocks.completed.mockReturnValue([{ ...identity, webExecution: { ...identity, sessionId: uuid(11), launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ ...identity, sessionId: uuid(11) });
+  mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
+    if (outcome === "unconfirmed") throw new Error("metadata unavailable");
+    if (outcome === "blocked") return { kind: "blocked", code };
+    return { kind: outcome === "receipt" ? "attempt" : "complete" };
+  });
+  let store!: WorkerCoordinatorOptions["store"];
+  const attempts: number[] = [];
+  const admissions: ReturnType<typeof store.getArchiveBackfillSchedule>[] = [];
+  mocks.archive.mockImplementation(async () => {
+    attempts.push(now - startTime); admissions.push(store.getArchiveBackfillSchedule(identity));
+    if (outcome === "regressed") {
+      const { ArchiveRepairRequiredError } = await import("../../../src/commands/controller/archive-error.js");
+      throw new ArchiveRepairRequiredError(code);
+    }
+    if (attempts.length < 3) throw new Error("Session archive request failed (503).");
+    return { state: "ready" };
+  });
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    store = options.store;
+    if (outcome === "clear-failed") vi.spyOn(store, "deleteArchiveBackfillSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
+    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, updateConfiguration: update, shutdown };
+  });
+  await start(f);
+  const read = openWorkerStore(f.paths.databaseFile);
+  try {
+    expect(read.listCleanupSchedules()).toEqual([]);
+    if (outcome === "complete") {
+      expect(attempts).toEqual([0, 60_000, 120_000]);
+      expect(admissions).toEqual([null, null, null]);
+      expect(read.getArchiveBackfillSchedule(identity)).toBeNull();
+      expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1);
+      expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry").every(([event]) => !event.message.includes("requires repair"))).toBe(true);
+    } else {
+      expect(read.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, nextAttemptAt: startTime + 900_000 });
+      expect(attempts).toEqual(outcome === "receipt" || outcome === "regressed" ? [0] : []);
+      expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+      expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
+    }
+  } finally { read.close(); }
+});
