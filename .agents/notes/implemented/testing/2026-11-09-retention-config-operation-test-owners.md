@@ -34,8 +34,11 @@ Selected service tests supply independent zero, one and 125-row operation result
 through strict Reconcile and Pass callbacks. They check the same derived context,
 actual Store identity, exact quota and call sequence; unconfigured or extra calls
 fail independently, and cleanup verifies complete consumption. Configuration DAO
-callbacks remain unconfigured in these tests. The original 125 receipts and 250
-history callbacks still execute their own production mechanisms.
+callbacks remain unconfigured in these tests. The original correction retained
+125 native receipt operations and 250 history callbacks; the later
+[collector ownership decision](2026-11-10-retention-collector-operation-test-owners.md)
+receives Receipt rules and replaces the service receipt work with controlled
+operations while retaining real history callbacks.
 
 Internal-budget expiry, later history progress, single-flight admission and
 production deadline checks block the controlled operation while retaining real
@@ -43,12 +46,12 @@ passMu, cancellation, observation and drain. The blocked pass has bounded cleanu
 on every test exit. Constructor checks verify the native collector binding before
 selecting the controlled operation.
 
-Configuration unknown-outcome helpers and their lifecycle consumers retain native
-construction and actual state across passes. They still require the original
-identity readback before new work and reject losing that state through collector
-reconstruction. Receipt collection, history scopes, locked clock sampling,
-transaction completion, Start/Stop and other lifecycle proofs retain their
-existing owners; this decision isolates the selected configuration operations.
+The initial correction retained native configuration unknown helpers and their
+lifecycle consumers because receiving state bridges were outside its selected
+scope. The later [collector ownership decision](2026-11-10-retention-collector-operation-test-owners.md)
+separates those operations after receiving the actual Core state transitions.
+History scopes, locked clock sampling, transaction completion and real Start/Stop
+synchronization remain with their mechanism owners.
 
 ## Alternatives
 
@@ -60,10 +63,11 @@ service only needs an affected-row result.
 cached barriers and uncertain identities. Successful method calls would no
 longer establish readback before later maintenance writes.
 
-**Replace the unknown and lifecycle cases with fixed results too.** Those cases
-observe retained native state and background-resource lifetime. Expanding their
-isolation would require separate receiving proofs beyond the selected rule and
-budget correction.
+**Replace the unknown and lifecycle cases with fixed results too.** At the time
+of this correction, those cases observed retained native state and background
+resource lifetime. Isolation required receiving state proofs beyond the selected
+rule and budget correction; the later collector decision provides those bridges
+and finite operation plans.
 
 ## Consequences
 
@@ -75,4 +79,6 @@ coordination. Supplied completion remains distinct from SQL persistence.
 Comparisons include receiving Core cases and both complete owning packages.
 Moving 125 candidate operations does not establish a stable runtime or hosted CI
 improvement. Matched faults distinguish preserved count/rule detection from newly
-precise call constraints and retain the original native unknown-state witnesses.
+precise call constraints. The later collector decision receives the original
+native unknown-state witnesses in Core while keeping service synchronization
+and operation ordering explicit.
