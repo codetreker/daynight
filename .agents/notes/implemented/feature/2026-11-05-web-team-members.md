@@ -11,15 +11,18 @@ explicit outcomes and current versions.
 
 ## Decision
 
-The Team members page reads the scoped directory and its real membership
-versions. Administrators can confirm role changes and removals, while members
-can confirm their own departure. Personal membership is fixed, and the last
+The Members & invitations section of Team settings reads the scoped directory
+and its real membership versions. The
+[settings sections decision](2026-11-10-team-settings-sections.md) owns its
+placement, shared navigation and retained section lifetime. Administrators can
+confirm role changes and removals, while members can confirm their own departure. Personal membership is fixed, and the last
 visible administrator is disabled; the server remains authoritative for
 concurrent changes. Confirmed receipts produce a success notice independently
-of subsequent refresh, update actor context, and navigate a departing actor to
-Personal. The operation remains bound to its identity and Team across navigation;
-a late receipt does not override a newer route or Team selection. Departure
-fallback discards only the departed Team's pending selection and writes Personal
+of subsequent refresh and update actor context. A departure navigates to
+Personal when the live browser location still shows either settings section of
+the departed Team. The operation remains bound to its identity and Team across
+navigation; a late receipt does not override an unrelated route or newer Team
+selection. Departure fallback discards only the departed Team's pending selection and writes Personal
 only when the stored choice still names that Team. The existing save retry retains
 this condition after a storage read or write failure, so a subsequent choice is
 preserved. Unknown writes stay unknown and offer a read without replay. The
@@ -46,7 +49,7 @@ Members can review nullable profiles and manage relationships within the Team's
 actual scope. Independent Project grants survive these operations. The
 [invitation management decision](2026-11-05-web-scoped-invitations.md) adds
 scoped invitations without treating Project access as Team membership. Global
-user discovery remains outside this page.
+user discovery remains outside this section.
 
 The next default workspace restores a newer saved Team, and a missing preference
 remains missing. This protection compares the current stored value on each

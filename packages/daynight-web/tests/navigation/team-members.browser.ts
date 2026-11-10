@@ -91,7 +91,56 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
   });
   return state;
 };
-const start = async (page: Page) => { await page.goto(`/teams/${teamId}/members`); await expect(page.getByRole('heading', { name: 'Team members' })).toBeVisible(); await expect(page.getByLabel('Team role: Bob')).toBeVisible(); };
+const start = async (page: Page) => { await page.goto(`/teams/${teamId}/members`); await expect(page.getByRole('heading', { name: 'Team settings' })).toBeVisible(); await expect(page.getByLabel('Team role: Bob')).toBeVisible(); };
+
+test('shares settings navigation and preserves the General editor through browser history', async ({ page }) => {
+  await install(page); await start(page);
+  const settings = page.locator('.sidebar nav').getByRole('link', { name: 'Team settings', exact: true });
+  await expect(settings).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team members', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Members & invitations', exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.getByRole('link', { name: 'General', exact: true }).click();
+  await expect(page).toHaveURL(`/teams/${teamId}/settings`);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit Team name' });
+  await editor.getByLabel('Team name', { exact: true }).fill('Retained draft');
+  const node = await editor.elementHandle();
+  await page.goBack();
+  await expect(page).toHaveURL(`/teams/${teamId}/members`);
+  await expect(page.getByLabel('Team role: Bob')).toBeVisible();
+  await expect(editor).toBeHidden();
+  await page.goForward();
+  await expect(editor).toBeVisible();
+  await expect(editor.getByLabel('Team name', { exact: true })).toHaveValue('Retained draft');
+  expect(await editor.evaluate((current, original) => current === original, node)).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  await page.getByRole('link', { name: 'Members & invitations', exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole('link', { name: 'Members & invitations', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page).toHaveTitle('Team settings · Daynight');
+  await settings.click();
+  await expect(page.getByRole('link', { name: 'General', exact: true })).toHaveAttribute('aria-current', 'page');
+});
+
+test('keeps both settings sections readable in both languages and narrow widths', async ({ page }) => {
+  await install(page); await start(page);
+  for (const width of [320, 390, 768, 1360]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const locale of ['en', 'zh-CN']) {
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      const generalLabel = locale === 'en' ? 'General' : '基本信息';
+      const membersLabel = locale === 'en' ? 'Members & invitations' : '成员与邀请';
+      for (const label of [generalLabel, membersLabel]) {
+        await page.getByRole('link', { name: label, exact: true }).click();
+        await expect(page.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
+        await expect(page.getByRole('heading', { name: locale === 'en' ? 'Team settings' : 'Team 设置', exact: true })).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      }
+    }
+  }
+});
+
 const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
 const traverse = (page: Page, path: string) => page.evaluate((url) => { history.pushState({}, '', url); dispatchEvent(new PopStateEvent('popstate')); }, path);
 const foreground = async (page: Page, api: State) => {

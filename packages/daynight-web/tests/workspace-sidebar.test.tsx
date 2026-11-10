@@ -24,7 +24,7 @@ const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId={selectedTeamId} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamSettingsActive={routeKey === "/members" || routeKey === "/settings"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId={selectedTeamId} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -89,10 +89,10 @@ describe("workspace sidebar", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("provides a native Team members link and marks the active page", () => {
-    render(<Harness collapsed routeKey="/members" selectedTeamId="00000000-0000-4000-8000-000000000702" />);
-    const link = screen.getByRole("link", { name: "Team members" });
-    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000702/members");
+  it.each(["/members", "/settings"])("provides one native Team settings link for %s", (routeKey) => {
+    render(<Harness collapsed routeKey={routeKey} selectedTeamId="00000000-0000-4000-8000-000000000702" />);
+    const link = screen.getByRole("link", { name: "Team settings" });
+    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000702/settings");
     expect(link).toHaveAttribute("aria-current", "page");
   });
 

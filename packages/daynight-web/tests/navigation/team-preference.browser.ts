@@ -381,11 +381,11 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, t
         await page.locator(`.team-selector a[href="/teams/${alpha}"]`).click();
         await expect(heading(page, name)).toBeVisible();
         await open();
-        await expect(nav.getByRole('link', { name: members, exact: true })).toHaveAttribute('href', `/teams/${alpha}/members`);
+        await expect(nav.getByRole('link', { name: members, exact: true })).toHaveCount(0);
         await expect(nav.getByRole('link', { name: settings, exact: true })).toHaveAttribute('href', `/teams/${alpha}/settings`);
         if (!narrow) {
           await page.getByRole('button', { name: collapse, exact: true }).click();
-          await expect(nav.getByRole('link', { name: members, exact: true })).toBeVisible();
+          await expect(nav.getByRole('link', { name: members, exact: true })).toHaveCount(0);
           await expect(nav.getByRole('link', { name: settings, exact: true })).toBeVisible();
           await page.getByRole('button', { name: expand, exact: true }).click();
         }
@@ -478,7 +478,7 @@ for (const path of [`/projects/${project}`, `/projects/${project}/members`, `/pr
     await expect(page.locator('.team-selector .team-switch')).toContainText('Alpha');
     await page.reload();
     await expect(page.locator('.team-selector .team-switch')).toContainText('Alpha');
-    await expect(page.locator('.sidebar a').filter({ hasText: 'Team members' })).toHaveAttribute('href', `/teams/${alpha}/members`);
+    await expect(page.locator('.sidebar a').filter({ hasText: 'Team members' })).toHaveCount(0);
     await expect(page.locator('.sidebar a').filter({ hasText: 'Team settings' })).toHaveAttribute('href', `/teams/${alpha}/settings`);
     expect(new URL(page.url()).pathname).toBe(path);
     expect(await selected(page, alice)).toBe(alpha);
@@ -500,7 +500,7 @@ for (const suffix of ['members', 'settings']) {
     await page.goto(`/teams/${personalA}/${suffix}`);
     await expect(page.locator('.team-selector .team-switch')).toContainText('Personal');
     await expect(page.locator('.sidebar nav a[aria-label="Team members"], .sidebar nav a[aria-label="Team settings"]')).toHaveCount(0);
-    await expect(heading(page, suffix === 'members' ? 'Team members' : 'Team settings')).toBeVisible();
+    await expect(heading(page, 'Team settings')).toBeVisible();
     expect(new URL(page.url()).pathname).toBe(`/teams/${personalA}/${suffix}`);
   });
 }
@@ -517,20 +517,18 @@ test('sidebar restoration leaves shared content available during slow and failed
     await expect(page.locator('.team-selector .team-switch')).toContainText('Loading Teams');
     await expect.poll(() => api.projectQueries.some((query) => query.includes('shared=true'))).toBe(true);
     await expect(page.locator(`a[href="/teams/${personalA}/members"]`)).toHaveCount(0);
-    for (const name of ['Team members', 'Team settings']) {
-      const link = page.locator('.sidebar nav').getByRole('link', { name, exact: true });
-      await expect(link).toHaveAttribute('aria-disabled', 'true');
-      await expect(link).not.toHaveAttribute('href', /./);
-    }
+    const settings = page.locator('.sidebar nav').getByRole('link', { name: 'Team settings', exact: true });
+    await expect(settings).toHaveAttribute('aria-disabled', 'true');
+    await expect(settings).not.toHaveAttribute('href', /./);
     api.detail = '500'; gate.resolve(); api.holdDetail = null;
     const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry', exact: true }) });
     await expect(alert).toBeVisible();
     expect(await selected(page, alice)).toBe(alpha);
-    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team members', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team settings', exact: true })).toHaveAttribute('aria-disabled', 'true');
     await expect(heading(page, 'Projects shared with me')).toBeVisible();
     api.detail = 'ok'; await alert.getByRole('button', { name: 'Retry', exact: true }).click();
     await expect(page.locator('.team-selector .team-switch')).toContainText('Alpha');
-    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team members', exact: true })).toHaveAttribute('href', `/teams/${alpha}/members`);
+    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team members', exact: true })).toHaveCount(0);
     await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team settings', exact: true })).toHaveAttribute('href', `/teams/${alpha}/settings`);
     expect(new URL(page.url()).pathname).toBe('/shared-projects');
   } finally { gate.resolve(); }
@@ -563,7 +561,7 @@ test.describe('Chinese narrow sidebar', () => {
     await control.click();
     await page.getByRole('button', { name: '展开侧栏' }).click();
     await expect(page.locator('.team-selector .team-switch')).toContainText('Alpha');
-    await expect(page.locator(`.sidebar a[href="/teams/${alpha}/members"]`)).toBeVisible();
+    await expect(page.locator(`.sidebar a[href="/teams/${alpha}/members"]`)).toHaveCount(0);
     await expect(page.locator(`.sidebar a[href="/teams/${alpha}/settings"]`)).toBeVisible();
     expect(new URL(page.url()).pathname).toBe(`/projects/${project}`);
   });
