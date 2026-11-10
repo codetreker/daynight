@@ -30,8 +30,13 @@ Team is current. Inactive sections are hidden and inert, with their dialogs
 suspended. Section navigation preserves drafts, confirmations, pending or unknown
 writes and one-time links. Retained state does not establish permission: new
 writes wait for current Team, membership and invitation admission. Leaving Team
-settings retains the owners required by protected operations or receipts; identity
-invalidation still disposes of the old scope. Background checks follow the
+settings retains the owners required by protected operations, unresolved invitation
+revocation IDs or receipts. A revocation ID with an unknown outcome keeps its
+anti-replay protection independently of the latest operation's notice: reading
+current invitations or succeeding on another invitation cannot release that
+protection. It prevents another revoke for that ID while other currently admitted
+operations remain available. Identity invalidation still disposes of the old
+scope. Background checks follow the
 [stable Team management decision](../bug-fix/2026-11-05-stable-team-management-checks.md).
 
 A confirmed leave or delete updates directories and safely clears the affected

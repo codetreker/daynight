@@ -155,6 +155,51 @@ describe("Team settings workspace", () => {
     await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`));
   });
 
+  it("retains each unknown invitation revoke after another succeeds and the workspace is revisited", async () => {
+    window.history.replaceState(null, "", members);
+    const unknownId = "00000000-0000-4000-8000-000000000005", otherInvitationId = "00000000-0000-4000-8000-000000000006";
+    const invitation = (id: string) => ({ id, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null });
+    let invitations = [invitation(unknownId), invitation(otherInvitationId)];
+    const fetcher = install((url, init) => {
+      if (url === `/api/v1/teams/${teamId}/invitations`) return json({ items: invitations });
+      if (url === `/api/v1/teams/${teamId}/invitations/${unknownId}` && init?.method === "DELETE") return Promise.reject(new TypeError("Connection lost"));
+      if (url === `/api/v1/teams/${teamId}/invitations/${otherInvitationId}` && init?.method === "DELETE") {
+        invitations = invitations.filter(item => item.id !== otherInvitationId);
+        return json({ teamId, invitationId: otherInvitationId, changed: true });
+      }
+      return undefined;
+    });
+    render(<AuthenticatedApp />);
+    const unknownRevoke = await screen.findByRole("button", { name: `Revoke invitation ${unknownId}` });
+    await waitFor(() => expect(unknownRevoke).toBeEnabled());
+    const memberList = document.querySelector(".team-members-list");
+    fireEvent.click(unknownRevoke);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke invitation" }));
+    const unknownDialog = screen.getByRole("dialog");
+    expect(await within(unknownDialog).findByRole("alert")).toHaveTextContent("not confirmed");
+    fireEvent.click(within(unknownDialog).getByRole("button", { name: "Read current invitations" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(unknownRevoke).toBeDisabled();
+    const otherRevoke = screen.getByRole("button", { name: `Revoke invitation ${otherInvitationId}` });
+    await waitFor(() => expect(otherRevoke).toBeEnabled());
+    fireEvent.click(otherRevoke);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke invitation" }));
+    await screen.findByText("Invitation revoked.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Invite member" })).toBeEnabled());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    go("/shared-projects"); await screen.findByRole("heading", { name: "Projects shared with me" });
+    expect(unknownRevoke).not.toBeVisible();
+    go(members);
+    const revisited = await screen.findByRole("button", { name: `Revoke invitation ${unknownId}` });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Invite member" })).toBeEnabled());
+    expect(revisited).toBeDisabled();
+    expect(document.querySelector(".team-members-list")).toBe(memberList);
+    fireEvent.click(revisited);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/${unknownId}`) && init?.method === "DELETE")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/${otherInvitationId}`) && init?.method === "DELETE")).toHaveLength(1);
+  });
+
   it("retains an invitation's one-time link across both settings sections", async () => {
     window.history.replaceState(null, "", members);
     const invitationId = "00000000-0000-4000-8000-000000000005";

@@ -27,14 +27,16 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   const permissionRef = useRef(false); permissionRef.current = permissionReady && !admissionBlocked;
   const [action, setAction] = useState<Action | null>(null), [observed, setObserved] = useState(false);
   const [issue, setIssue] = useState<unknown>(null), [receipt, setReceipt] = useState<'revoked' | 'already' | null>(null);
-  const uncertain = useRef(new Set<string>()), read = useRef<AbortController | null>(null);
+  // Metadata reads cannot settle dispatched revokes; their IDs retain the owner for this identity scope.
+  const [uncertain, setUncertain] = useState<ReadonlySet<string>>(() => new Set());
+  const read = useRef<AbortController | null>(null);
   const permissionNotified = useRef(false);
   const op = useOperation(admission), operation = useRef(op); operation.current = op;
   const permission = useRef(onPermissionChange); permission.current = onPermissionChange;
   const guard = useRef(onGuardChange); guard.current = onGuardChange;
   const unknown = op.result?.kind === 'unknown';
   const memberWithoutManagement = actorRole === 'member';
-  useEffect(() => { guard.current(op.pending || unknown || issue !== null || action?.kind === 'secret', op.pending || unknown && !memberWithoutManagement); }, [op.pending, unknown, issue, action?.kind, memberWithoutManagement]);
+  useEffect(() => { guard.current(op.pending || unknown || issue !== null || uncertain.size > 0 || action?.kind === 'secret', op.pending || unknown && !memberWithoutManagement); }, [op.pending, unknown, issue, uncertain.size, action?.kind, memberWithoutManagement]);
   useEffect(() => {
     if (memberWithoutManagement) { loaded.current = false; fresh.current = false; setItems(null); if (unknown) setAction(null); }
   }, [unknown, memberWithoutManagement]);
@@ -78,7 +80,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   };
   const submit = () => {
     if (!action || action.kind === 'secret' || !active || !editable || authRequestsPaused() || !permissionReady || !fresh.current || loading || reconciling || op.pending || unknown || error !== null) return;
-    if (action.kind === 'revoke' && uncertain.current.has(action.invitation.id)) return;
+    if (action.kind === 'revoke' && uncertain.has(action.invitation.id)) return;
     guard.current(true, true);
     const rejected = (failure: unknown) => { if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404)) permission.current(); };
     if (action.kind === 'create') void op.run((signal, dispatched) => createTeamInvitation(teamId, admission.userId, signal, onIdentityMismatch, dispatched), (created) => {
@@ -89,7 +91,10 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
       setAction(null); setReceipt(result.changed ? 'revoked' : 'already'); setIssue(null); setObserved(false); if (active) void load();
     }, rejected);
   };
-  useEffect(() => { if (unknown && action?.kind === 'revoke') uncertain.current.add(action.invitation.id); }, [unknown, action]);
+  useEffect(() => {
+    if (!unknown || action?.kind !== 'revoke') return;
+    setUncertain(previous => previous.has(action.invitation.id) ? previous : new Set([...previous, action.invitation.id]));
+  }, [unknown, action]);
   const isVisible = canRead;
   const currentIssue = unknown ? op.result?.error : issue;
   return <>
@@ -100,7 +105,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
       {error !== null && (error instanceof ApiError && error.kind === 'server' && (error.status === 403 || error.status === 404) ? <div className="notice error" role="alert"><p>{zh ? '无法读取此 Team 的邀请，请检查权限后重试。' : 'Unable to read invitations for this Team. Check your permissions and retry.'}</p>{error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{error.requestId}</code></p>}<button className="button" type="button" onClick={() => { permissionNotified.current = false; void load(); }}>{common.retry}</button></div> : <ManagementError error={error} retry={() => { permissionNotified.current = false; void load(); }} />)}
       {currentIssue !== null && currentIssue !== undefined && <div className="notice warning" role="alert"><p>{observed && !unknown ? m.invitationObserved : m.invitationUnknown}</p>{currentIssue instanceof ApiError && currentIssue.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{currentIssue.requestId}</code></p>}{unknown && <button className="button" type="button" disabled={loading || reconciling || op.pending} onClick={check}>{m.readCurrentInvitations}</button>}</div>}
       {receipt && <div className="notice" role="status">{receipt === 'revoked' ? zh ? '邀请已撤销。' : 'Invitation revoked.' : zh ? '邀请已经撤销。' : 'Invitation was already revoked.'}</div>}
-      <InvitationList invitations={items} disabled={!editable || loading || reconciling || op.pending || unknown || error !== null} canRevoke={(invitation) => !uncertain.current.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} action={<button className="button primary" type="button" disabled={!editable || loading || reconciling || op.pending || unknown || error !== null} onClick={() => open({ kind: 'create' })}>{m.invite}</button>} />
+      <InvitationList invitations={items} disabled={!editable || loading || reconciling || op.pending || unknown || error !== null} canRevoke={(invitation) => !uncertain.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} action={<button className="button primary" type="button" disabled={!editable || loading || reconciling || op.pending || unknown || error !== null} onClick={() => open({ kind: 'create' })}>{m.invite}</button>} />
     </>}
     {action?.kind === 'secret' && <SecretDialog kind="invitation" secret={action.secret} suspended={!active} onClose={() => setAction(null)} />}
     {action !== null && action.kind !== 'secret' && <ManagementDialog title={action.kind === 'create' ? zh ? '创建 Team 邀请链接' : 'Create Team invitation' : m.revokeTitle} busy={op.pending} suspended={!isVisible} onClose={() => setAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => setAction(null)}>{common.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading || reconciling} onClick={check}>{m.readCurrentInvitations}</button> : <button className={`button ${action.kind === 'create' ? 'primary' : 'danger'}`} type="button" disabled={!editable || loading || reconciling || op.pending || error !== null} onClick={submit}>{op.pending ? common.submitPending : action.kind === 'create' ? m.createInvite : m.revokeConfirm}</button>}</>}>
