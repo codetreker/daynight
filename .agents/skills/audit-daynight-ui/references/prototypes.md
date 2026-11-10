@@ -65,9 +65,10 @@ try {
 
 The checker visits every option of every inspection control and clicks a bounded
 number of visible, enabled actions inside the product area in each resulting
-state. It reports horizontal overflow that no scroll container clips, visible
-focusable elements that Tab never reaches, storage access, page errors and
-dialogs. `ok: true` means only that these checks passed; it does not judge the
+state. It reports elements, or text painted past their boxes, that extend
+horizontally beyond the product area without a clipping or scrolling container.
+It also reports visible focusable elements that Tab never reaches, storage access
+during any visited state or action, page errors and dialogs. `ok: true` means only that these checks passed; it does not judge the
 design. Pass other selectors when a prototype uses a different structure.
 
 When an attachment preview embeds the prototype in a sandboxed iframe, confirm

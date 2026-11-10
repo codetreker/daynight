@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import vm from "node:vm";
 import { checkPrototype, storageProbeScript } from "./check-prototype.mjs";
 
 // The fake page answers the in-page probe by operation, so these tests cover the orchestration;
 // the probe itself runs in a real browser when the reference's example is followed.
-function fakePage({ controls = [], actions = 0, overflow = () => [], tabbable = { keys: [], total: 0 }, focusOrder = [], storage = [], click, selectOption } = {}) {
+function fakePage({ controls = [], actions = 0, overflow = () => [], tabbable = { keys: [], total: 0 }, focusOrder = [], storage = [], click, selectOption, reload } = {}) {
   const listeners = new Map();
   let focusIndex = 0;
   const page = {
@@ -23,14 +24,14 @@ function fakePage({ controls = [], actions = 0, overflow = () => [], tabbable = 
         case "overflow": return overflow(page.calls.filter(([name]) => name === "selectOption").length);
         case "tabbable": return tabbable;
         case "focused": return focusOrder[focusIndex++ % Math.max(focusOrder.length, 1)] ?? null;
-        case "storage": return storage;
+        case "storage": return typeof storage === "function" ? storage() : storage;
         default: throw new Error(`unexpected ${input.op}`);
       }
     },
     selectOption: async (selector, value) => { page.calls.push(["selectOption", selector, value]); await selectOption?.(selector, value); },
     click: async (selector, options) => { page.calls.push(["click", selector, options.timeout]); await click?.(page, selector); },
     waitForTimeout: async () => {},
-    reload: async () => { page.calls.push(["reload"]); },
+    reload: async () => { page.calls.push(["reload"]); reload?.(); },
     keyboard: { press: async (key) => { page.calls.push(["press", key]); } },
   };
   return page;
@@ -112,4 +113,69 @@ test("the storage probe records each persistent storage access", () => {
   vm.runInContext("indexedDB; caches", sandbox);
   vm.runInContext("const d = new Document(); d.cookie = 'a=1'; d.cookie", sandbox);
   assert.deepEqual([...vm.runInContext("__prototypeStorageAccess", sandbox)], ["localStorage", "sessionStorage", "indexedDB", "caches", "cookie", "cookie"]);
+});
+
+test("keeps storage accesses recorded before the keyboard reload resets the page log", async () => {
+  let log = [];
+  const page = fakePage({ actions: 1, storage: () => log, click: async () => { log.push("localStorage"); }, reload: () => { log = []; } });
+  const result = await checkPrototype(page);
+  assert.deepEqual(result.storage, ["localStorage"]);
+  assert.equal(result.ok, false);
+});
+
+// Real-DOM checks need Playwright and a matching browser. The repository installs Playwright for
+// packages/daynight-web; DN_PLAYWRIGHT_MODULE can name another installed playwright or
+// @playwright/test entry. Without either, the tests are skipped and say so.
+async function loadPlaywright() {
+  const candidates = [process.env.DN_PLAYWRIGHT_MODULE, "@playwright/test"].filter(Boolean);
+  const require = createRequire(new URL("../../../../packages/daynight-web/package.json", import.meta.url));
+  for (const candidate of candidates) {
+    try { return await import(require.resolve(candidate)); } catch {}
+  }
+  return null;
+}
+
+async function withPrototype(t, html, run) {
+  const playwright = await loadPlaywright();
+  if (!playwright) { t.skip("Playwright is not installed; run pnpm install or set DN_PLAYWRIGHT_MODULE"); return; }
+  const chromium = playwright.chromium ?? playwright.default?.chromium;
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const context = await browser.newContext({ viewport: { width: 800, height: 600 } });
+  await context.addInitScript({ content: storageProbeScript });
+  await context.route("https://prototype.test/", (route) => route.fulfill({ contentType: "text/html", body: html }));
+  const page = await context.newPage();
+  await page.goto("https://prototype.test/");
+  await run(page);
+}
+
+const shell = (body) => `<!doctype html><style>#device{width:200px} .nowrap{white-space:nowrap}</style><div id="device">${body}</div>`;
+
+test("reports unwrapped text painted past the product area in a real DOM", async (t) => {
+  await withPrototype(t, shell(`<div class="nowrap">${"长标题 long title ".repeat(30)}</div>`), async (page) => {
+    const result = await checkPrototype(page, { settleMs: 0 });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.overflow, [{ state: "initial", elements: ["div:0.nowrap"] }]);
+  });
+});
+
+test("accepts the same text when it wraps, is clipped by itself or scrolls in a container", async (t) => {
+  const long = "长标题 long title ".repeat(30);
+  const body = `<div>${long}</div><div class="nowrap" style="overflow:hidden;text-overflow:ellipsis">${long}</div><div style="overflow-x:auto"><div class="nowrap">${long}</div></div>`;
+  await withPrototype(t, shell(body), async (page) => {
+    const result = await checkPrototype(page, { settleMs: 0 });
+    assert.deepEqual(result.overflow, []);
+    assert.equal(result.ok, true);
+  });
+});
+
+test("reports storage written by an action even though the keyboard reload resets the page", async (t) => {
+  const body = `<button type="button" onclick="try { localStorage.setItem('draft', 'example'); } catch {}">保存草稿</button>`;
+  await withPrototype(t, shell(body), async (page) => {
+    const result = await checkPrototype(page, { settleMs: 0 });
+    assert.equal(result.actionsClicked, 1);
+    assert.deepEqual(result.storage, ["localStorage"]);
+    assert.deepEqual(await page.evaluate(() => globalThis.__prototypeStorageAccess ?? []), []);
+    assert.equal(result.ok, false);
+  });
 });

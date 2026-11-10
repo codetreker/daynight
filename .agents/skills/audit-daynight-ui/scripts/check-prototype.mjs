@@ -1,6 +1,6 @@
 // Exercises one self-contained prototype in a caller-owned Playwright page: every option of every
 // inspection control, visible enabled actions inside the product area, keyboard reachability,
-// unclipped horizontal overflow and access to persistent browser storage. It does not launch a
+// unclipped horizontal overflow of elements or their text, and access to persistent browser storage. It does not launch a
 // browser, open files or write anything; the caller owns the context, navigation and cleanup.
 
 // Install with `context.addInitScript({ content: storageProbeScript })` before opening the
@@ -63,16 +63,27 @@ function pageProbe(input) {
       return Array.from(area.querySelectorAll(input.actions)).filter((element) => visible(element) && !hiddenByDetails(element) && !element.closest("[inert]")).length;
     case "overflow": {
       const box = area.getBoundingClientRect();
+      const clips = (node) => ["auto", "scroll", "hidden", "clip"].includes(getComputedStyle(node).overflowX);
       const clipped = (element) => {
         for (let node = element.parentElement; node && node !== area; node = node.parentElement) {
-          if (["auto", "scroll", "hidden", "clip"].includes(getComputedStyle(node).overflowX)) return true;
+          if (clips(node)) return true;
         }
         return false;
       };
+      const beyond = (rect) => rect.width > 0 && (rect.right > box.right + 1 || rect.left < box.left - 1);
+      // An element's border box does not contain text painted past it, such as unwrapped text in
+      // a narrow block. Measuring the element's own text nodes finds that overflow without also
+      // reporting every ancestor whose scroll extent grows with it.
+      const ownTextBeyond = (element) => !clips(element) && Array.from(element.childNodes).some((node) => {
+        if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim()) return false;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return beyond(range.getBoundingClientRect());
+      });
       return Array.from(area.querySelectorAll("*")).filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0 && getComputedStyle(element).position !== "fixed"
-          && (rect.right > box.right + 1 || rect.left < box.left - 1) && !clipped(element);
+          && (beyond(rect) || ownTextBeyond(element)) && !clipped(element);
       }).slice(0, 10).map((element) => `${key(element)}${element.className && typeof element.className === "string" ? `.${element.className.trim().split(/\s+/).join(".")}` : ""}`);
     }
     case "tabbable": {
@@ -107,6 +118,12 @@ export async function checkPrototype(page, options = {}) {
     const controls = await probe({ op: "controls" });
     check(Array.isArray(controls), `The product area ${settings.area} was not found.`);
     const overflow = [];
+    // The access log lives in the page, so navigation or reload discards it. Collect it after each
+    // state and before the keyboard reload instead of reading it only at the end.
+    const storage = [];
+    const collectStorage = async () => {
+      for (const name of await probe({ op: "storage" })) if (!storage.includes(name)) storage.push(name);
+    };
     let states = 0, actionsClicked = 0, actionFailures = 0;
     const exerciseState = async (label) => {
       states++;
@@ -121,6 +138,7 @@ export async function checkPrototype(page, options = {}) {
         } catch { actionFailures++; }
         await page.waitForTimeout(settings.settleMs);
       }
+      await collectStorage();
     };
     if (controls.length === 0) await exerciseState("initial");
     for (const control of controls) {
@@ -132,6 +150,7 @@ export async function checkPrototype(page, options = {}) {
     }
 
     // Keyboard reachability is checked from the initial state the prototype restores on reload.
+    await collectStorage();
     await page.reload();
     await page.waitForTimeout(settings.settleMs);
     const { keys: tabbable, total } = await probe({ op: "tabbable" });
@@ -142,7 +161,7 @@ export async function checkPrototype(page, options = {}) {
       if (focused) reached.add(focused);
     }
     const missing = tabbable.filter((item) => !reached.has(item));
-    const storage = await probe({ op: "storage" });
+    await collectStorage();
     return {
       ok: errors.length === 0 && storage.length === 0 && overflow.length === 0 && missing.length === 0,
       controls: controls.map((control) => ({ label: control.label, values: control.values.length })),
