@@ -22,14 +22,21 @@ assembly body. Private construction bindings cover the three collaborators in
 the original shared dependency proof: Projects, Tasks and Attachments. Default
 bindings invoke their production constructors; small closures adapt private or
 variadic constructor parameters to the borrowed capabilities at this boundary.
-Other pure constructors remain real.
+Identity also has a private constructor binding with the exact production signature,
+directly bound to `identity.New`. Other pure constructors remain real.
 
 Recording construction wrappers observe the supplied store, files, Engine and
 Capturer and return the real objects built by the child constructors. Tests
 verify argument identity, call counts and returned module identity without
 invoking lower business operations. The public constructor still has actual
 Session/Engine identity, origin propagation and operation/stop/close assertions.
-Store and files remain borrowed from their external owners.
+The Identity constructor receives the same writer, client and callback and its
+concrete result occupies the exported `IdentityOperations` output. This 18-method
+output satisfies the [Authentication consumer](2026-11-10-auth-identity-consumer.md)
+and the [MCP Personal Team resolver](2026-11-09-mcp-use-case-test-ownership.md)
+structurally, allowing controlled output after real assembly. The production test
+checks the concrete Identity and callback; it does not prove Identity business
+behavior. Store and files remain borrowed from their external owners.
 
 The existing normal API attachment flow retains Project and Task creation,
 complete attachment-byte readback and the final same-Project identity read.
@@ -54,9 +61,10 @@ Application test to representation owned by other services. Constructor argument
 observation uses the dependency capabilities that assembly actually supplies.
 
 **Add a factory registry for every Application field.** The original dependency
-proof concerns three constructors; extending every future module through a
-registry would introduce maintenance unrelated to that proof. Pure construction
-needs no substitute when it does not run business operations.
+proof concerned three constructors. Identity now has a specific output and
+construction proof as well; extending every future module through a registry
+would introduce maintenance unrelated to those proofs. Pure construction needs
+no substitute when it does not run business operations.
 
 **Remove the normal chain without preserving wiring.** A remaining Engine test
 would say nothing about the supplied Project/Task/Attachment dependencies.
