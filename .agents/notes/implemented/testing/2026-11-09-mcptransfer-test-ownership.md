@@ -18,13 +18,19 @@ unreceipted object.
 
 ## Decision
 
-The complete `internal/service/mcptransfer` suite uses strict expectations on the
-existing private-transfer DAO and transaction contracts. Expected query results,
-proposed writes and completion outcomes are configured independently. Expected
+The `internal/service/mcptransfer` suite uses strict expectations on the
+private-transfer DAO and transaction contracts for operations still using those
+boundaries. Expected query results, proposed writes and completion outcomes are
+configured independently. Expected
 record data is copied independently of the operation's mutable input; captured
 writes never produce later reads or implement an evolving database. Unexpected
 or missing calls fail, and transaction callback execution remains distinct from
 `committed`, `not_committed` and `unknown` completion.
+
+The [Create operation decision](2026-11-10-mcptransfer-create-test-boundary.md)
+assigns the directly invoked `Create` operation and active-slot matrix to Core,
+while Service controls the operation result. Other direct Lifecycle operations
+remain outside that isolation.
 
 Uploads control the directly invoked attachment operation. The private
 `Uploads.admitTransfer` adapter is instance-owned and returns the narrow
