@@ -164,6 +164,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); commandHighlightSource.current = 'keyboard'; commandAnchor.current = null; commandPointer.current = null; }, [text, catalogSignature, showCommands, controlView, active]);
   const controlsAllowed = actionAdmitted && canInteract && !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
   const dismissControls = useCallback(() => { setControlView(null); dismissCommands(true); }, []);
+  useLayoutEffect(() => { if (suppressKeyboardHint) dismissControls(); }, [suppressKeyboardHint, dismissControls]);
   const closeControls = useCallback(() => { dismissControls(); inputRef.current?.focus({ preventScroll: true }); }, [dismissControls]);
   useLayoutEffect(() => {
     const previous = previousMenu.current;

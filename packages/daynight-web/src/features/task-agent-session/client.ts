@@ -1,9 +1,10 @@
 import { OperationRequestError } from './operation-error';
 import { sameStartupReport, type SessionStartupReport } from '../../../../daynight/src/session/startup';
 import { liveHistoryAllowed } from './presentation';
-import type { SessionArchiveStatus } from '../../../../daynight/src/session/archive';
+import { sessionArchiveReferences, type SessionArchiveStatus } from '../../../../daynight/src/session/archive';
 import type { SessionResourceClient } from '../../../../daynight/src/session/resource-client';
-import { ApiError, isAbortError } from '../../api/client';
+import { ApiError, isAbortError, readAuthRequestGeneration } from '../../api/client';
+import { pageImageStore, type ImageScope } from './images/image-store';
 import { IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel, type LoadedSessionArchive } from '../../api/sessions';
 import { clearSessionDisplayPreference } from './useSessionDisplayPreference';
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
@@ -78,6 +79,11 @@ export class TaskSessionClient {
   private view: SessionViewState = { actionAdmitted: true, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyLoaded: false, historySettled: false, historyCoverage: null, historyRevision: 0, connectionGeneration: 0 };
   private archive: LoadedSessionArchive | null = null;
   private media: { readonly key: string; readonly client: SessionResourceClient } | null = null;
+  private images: {
+    readonly key: string; readonly scope: ImageScope;
+    readonly references: Map<string, { readonly entry: SessionState['entries'][number]; readonly resources: ReadonlySet<string> }>;
+    entries: SessionState['entries'] | null; coverage: SessionHistoryCoverage | null;
+  } | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
   private invalidated = false;
@@ -118,6 +124,43 @@ export class TaskSessionClient {
   private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
   constructor(private readonly options: Options) { this.view = { ...this.view, actionAdmitted: options.initialActionAdmitted ?? true }; }
   snapshot = (): SessionViewState => this.view;
+  /** One authenticated resource scope follows this retained client, independent of presentation. */
+  imageScope = (): ImageScope | null => {
+    const snapshot = this.view.state.snapshot;
+    if (!snapshot || this.lifetime.signal.aborted || this.view.status === 'unavailable') return null;
+    const generation = readAuthRequestGeneration();
+    const key = JSON.stringify([sessionFenceKey(snapshot), snapshot.identity.nativeSessionId, generation]);
+    if (this.images?.key !== key) {
+      void this.images?.scope.invalidate();
+      const current = () => generation === readAuthRequestGeneration() && this.live() && this.sameSession(snapshot) && this.view.state.snapshot?.identity.nativeSessionId === snapshot.identity.nativeSessionId;
+      this.images = { key, references: new Map(), entries: null, coverage: null, scope: pageImageStore.createScope({
+        identity: { serverOrigin: window.location.origin, actorUserId: this.options.userId, authorizationGeneration: String(generation + 1), owner: { kind: 'session', fence: sessionFence(snapshot), nativeSessionId: snapshot.identity.nativeSessionId } },
+        canRead: current, canDownload: current, read: this.resource,
+      }) };
+    }
+    this.reconcileImageReferences();
+    return this.images.scope;
+  };
+  private reconcileImageReferences(): void {
+    const images = this.images, { state, historyCoverage: coverage, historySettled } = this.view;
+    if (!images || !historySettled || images.entries === state.entries && images.coverage === coverage) return;
+    images.entries = state.entries; images.coverage = coverage;
+    const present = new Set(state.entries.map(entry => entry.entryId));
+    for (const entry of state.entries) {
+      if (images.references.get(entry.entryId)?.entry === entry) continue;
+      images.references.set(entry.entryId, { entry, resources: sessionArchiveReferences([entry], false).resources });
+    }
+    // A replacement tail proves only its covered interval; older or later
+    // retained rows can still own an open preview until their history is known.
+    if (coverage) for (const [id, known] of images.references) {
+      const seq = BigInt(known.entry.entrySeq);
+      const covered = seq <= BigInt(coverage.throughEntrySeq) && (coverage.completeBefore || coverage.firstEntrySeq !== null && seq >= BigInt(coverage.firstEntrySeq));
+      if (!present.has(id) && covered) images.references.delete(id);
+    }
+    const retained = new Set<string>();
+    for (const known of images.references.values()) for (const resourceId of known.resources) retained.add(resourceId);
+    images.scope.retainResources(retained);
+  }
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   setActionAdmission = (admitted: boolean): void => {
     if (this.view.actionAdmitted !== admitted) this.publish({ actionAdmitted: admitted });
@@ -220,6 +263,9 @@ export class TaskSessionClient {
   private publish(change: Partial<SessionViewState>, errorOwner: 'current' | 'other' = 'other') {
     if (this.lifetime.signal.aborted) return;
     const previous = this.view.state.snapshot, next = change.state?.snapshot;
+    if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.identity.nativeSessionId !== next.identity.nativeSessionId)) {
+      void this.images?.scope.invalidate(); this.images = null;
+    }
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.historyEpoch !== next.historyEpoch)) {
       this.cancelOlder(); this.cancelHydration(); this.before = null; this.beforeCursors.clear();
       change = { ...change, historyLoaded: change.historyLoaded ?? false, historyCoverage: change.historyCoverage ?? null, loadingOlder: false, historyError: null };
@@ -254,6 +300,7 @@ export class TaskSessionClient {
     this.view = { ...this.view, ...change };
     if (this.view.connected && (this.currentReadFailure || !this.view.state.snapshot || !this.historyAllowed(this.view.state.snapshot) || BigInt(this.view.state.lastEventSeq) < BigInt(this.replayThrough))) this.view = { ...this.view, connected: false };
     this.view = { ...this.view, connectionGeneration: this.connectionGeneration, historySettled: this.view.historyLoaded && !this.hydrating && !this.replaceHistory && !this.view.state.recoveryRequired && this.view.state.snapshot !== null, historyReady: this.hydrated && !this.hydrating && this.view.connected && this.view.status === 'ready' && !this.view.state.recoveryRequired && this.view.state.snapshot !== null && this.historyAllowed(this.view.state.snapshot) };
+    this.reconcileImageReferences();
     const snapshot = this.view.state.snapshot;
     if (snapshot) this.bindDraft(snapshot);
     const draft = this.view.draft, operation = draft.submission && this.view.state.operations.get(draft.submission.operationId);
@@ -815,7 +862,7 @@ export class TaskSessionClient {
     } finally { this.publish({ checking: new Set([...this.view.checking].filter((value) => value !== id)) }); }
   };
   private reconcile() { for (const operation of this.view.state.operations.values()) if (uncertain(operation)) void this.checkOperation(operation.operationId).catch(() => {}); }
-  resource = async (id: string, signal: AbortSignal): Promise<Blob> => {
+  resource = async (id: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob> => {
     const s = this.view.state.snapshot;
     if (!this.live() || !s || this.view.state.resources.get(id)?.status !== 'available') throw new Error('Resource unavailable.');
     const combinedSignal = AbortSignal.any([signal, this.lifetime.signal]);
@@ -826,19 +873,20 @@ export class TaskSessionClient {
       if (this.view.archiveState !== 'ready' || !archived || archived.data === null) throw new Error('Resource unavailable.');
       const bytes = Uint8Array.from(atob(archived.data), character => character.charCodeAt(0));
       combinedSignal.throwIfAborted();
+      onProgress?.();
       return new Blob([bytes], { type: archived.resource.mediaType ?? 'application/octet-stream' });
     }
     const load = async (): Promise<Blob> => {
-      if (s.lifecycle === 'active' && !Object.hasOwn(descriptor, 'revision')) return this.options.api.resource(s.sessionId, id, combinedSignal);
+      if (s.lifecycle === 'active' && !Object.hasOwn(descriptor, 'revision')) return this.options.api.resource(s.sessionId, id, combinedSignal, onProgress);
       const key = sessionFenceKey(s);
       if (this.media?.key !== key) {
         void this.media?.client.close();
         this.media = { key, client: this.options.api.resources(sessionFence(s), () => this.owned() && this.sameSession(s)) };
       }
-      return new Blob([await this.media.client.readResource(descriptor, combinedSignal)], { type: descriptor.mediaType ?? 'application/octet-stream' });
+      return new Blob([await this.media.client.readResource(descriptor, combinedSignal, onProgress)], { type: descriptor.mediaType ?? 'application/octet-stream' });
     };
     const blob = await load().catch((error: unknown) => {
-      if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
+      if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) this.invalidate(error);
       throw error;
     });
     if (!(this.paused() ? await this.admit(combinedSignal) : this.admitted()) || combinedSignal.aborted || !this.sameSession(s)) throw new Error('The active session changed.');
@@ -878,5 +926,5 @@ export class TaskSessionClient {
     this.close();
     this.options.onInvalidate?.();
   };
-  close = (): void => { void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
+  close = (): void => { void this.images?.scope.invalidate(); this.images = null; void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
 }

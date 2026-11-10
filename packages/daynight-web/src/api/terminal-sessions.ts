@@ -2,8 +2,10 @@ import { decodeSessionV2Archive } from '../../../daynight/src/session/v2/archive
 import { assertTerminalBinding, parseSessionV2Message, parseSessionV2Owner, parseTerminalBinding } from '../../../daynight/src/session/v2/protocol';
 import { SESSION_V2_PROTOCOL, SESSION_PROTOCOL_HEADER, SESSION_V2_LIMITS, bool, byteLength, choice, decodeStrictSessionJson, exact, hash, hashSessionBytes, list, literal, nullable, seq, text, unique, uuid } from '../../../daynight/src/session/v2/values';
 import type { SessionV2Archive, SessionV2Envelope, SessionV2Message, SessionV2Owner, SessionV2Payloads, TerminalBinding } from '../../../daynight/src/session/v2/types';
-import { parseSessionArchive, parseSessionArchiveStatus, verifySessionArchiveResources, type SessionArchive, type SessionArchiveStatus } from '../../../daynight/src/session/archive';
+import type { SessionArchiveStatus } from '../../../daynight/src/session/archive';
+import { assertSessionFence } from '../../../daynight/src/session/protocol';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { createSessionApi, type LoadedSessionArchive, type SessionApi } from './sessions';
 
 export type SessionHistoryItem = {
   sessionId: string; claimId: string; executionGeneration: string; agentControlMode: 'web' | 'herdr'; contentKind: 'native_timeline' | 'terminal_recording'; createdAt: string; endedAt: string | null;
@@ -26,7 +28,8 @@ export type TerminalSessionApi = {
   state(sessionId: string, signal: AbortSignal): Promise<TerminalSessionState>;
   history(cursor: string | null, signal: AbortSignal): Promise<{ items: SessionHistoryItem[]; nextCursor: string | null }>;
   archive(item: SessionRecordingReference, signal: AbortSignal): Promise<TerminalArchive>;
-  nativeArchive(item: SessionRecordingReference, signal: AbortSignal): Promise<{ status: SessionArchiveStatus; archive: SessionArchive | null }>;
+  nativeArchive(item: SessionRecordingReference, signal: AbortSignal): Promise<{ status: SessionArchiveStatus; archive: LoadedSessionArchive | null }>;
+  resources: SessionApi['resources'];
   command(sessionId: string, browserClientId: string, message: TerminalCommand, signal: AbortSignal): Promise<TerminalResult>;
   operation(sessionId: string, operationId: string, signal: AbortSignal): Promise<TerminalResult>;
   channel(sessionId: string, browserClientId: string, onState: (state: TerminalSessionState) => void, onClose: (error?: unknown) => void): { close(): void };
@@ -79,6 +82,7 @@ async function boundedBytes(response: Response, signal: AbortSignal, max: number
 }
 export function createTerminalSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void, serverOrigin = window.location.origin): TerminalSessionApi {
   const root = `/api/v1/projects/${requestId(projectId)}/tasks/${requestId(taskId)}/sessions`, path = (id: string) => `${root}/${requestId(id)}`;
+  const native = createSessionApi(projectId, taskId, userId, onPrincipalMismatch);
   const parseState = (v: unknown) => parseTerminalSessionState(v, projectId, taskId, serverOrigin);
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expected = 200, v2 = true): Promise<T> {
     const response = await request(url, signal, { ...init, headers: { Accept: 'application/json', ...(v2 ? { [SESSION_PROTOCOL_HEADER]: SESSION_V2_PROTOCOL } : {}), ...init.headers } });
@@ -87,6 +91,7 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
   }
   const result = (v: unknown, id: string, operationId: string) => { const r = parseSessionV2Message(v); if (r.type !== 'operation_result' || r.sessionId !== id || r.payload.operationId !== operationId) return invalid(); return r; };
   return {
+    resources: native.resources,
     current: signal => get(`${root}/current`, signal, v => {
       if (v && typeof v === 'object' && 'status' in v && v.status === 'registered') return parseState(v);
       if (v && typeof v === 'object' && 'status' in v && v.status === 'not_registered') { const o = exact(v, ['status', 'protocol', 'claimId', 'agentControlMode']); return { status: literal(o.status, 'not_registered'), protocol: literal(o.protocol, SESSION_V2_PROTOCOL), claimId: uuid(o.claimId), agentControlMode: literal(o.agentControlMode, 'herdr') }; }
@@ -111,14 +116,13 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
     },
     nativeArchive: async (item, signal) => {
       if (item.agentControlMode !== 'web') invalid();
-      const status = await get(`${path(item.sessionId)}/archive`, signal, v => parseSessionArchiveStatus(exact(v, ['archive']).archive), {}, 200, false);
-      if (item.archive?.state === 'ready' && (status.state !== 'ready' || status.sha256 !== item.archive.sha256 || status.byteLength !== item.archive.byteLength)) invalid();
+      const status = await native.archive(item.sessionId, signal);
+      if (item.archive?.state === 'ready' && (status.state !== 'ready' || status.sha256 !== item.archive.sha256 || status.byteLength !== item.archive.byteLength || item.archive.completeness !== null && status.completeness !== item.archive.completeness)) invalid();
       if (status.state !== 'ready') return { status, archive: null };
-      // v1 wraps RawMessage through JSON encoding. Its server verifies original bytes;
-      // reserializing the envelope cannot reproduce the uploaded byte hash.
-      const archive = await get(`${path(item.sessionId)}/archive/content`, signal, v => parseSessionArchive(exact(v, ['archive']).archive), {}, 200, false);
-      if (archive.sessionId !== item.sessionId || archive.claimId !== item.claimId || archive.executionGeneration !== item.executionGeneration) invalid();
-      await verifySessionArchiveResources(archive); signal.throwIfAborted(); return { status, archive };
+      const archive = await native.archiveContent(item.sessionId, signal, status);
+      assertSessionFence(archive, item);
+      if ((status.schemaVersion ?? 1) !== archive.schemaVersion || archive.schemaVersion === 3 && status.completeness !== archive.completeness) invalid();
+      signal.throwIfAborted(); return { status, archive };
     },
     command: async (id, browser, message, signal) => {
       parseSessionV2Message(message); if (message.sessionId !== id) invalid();

@@ -4,193 +4,203 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	"github.com/google/uuid"
 )
 
 func TestProjectDeletionHTTP(t *testing.T) {
-	h := membershipTestHarness(t)
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
-	ctx := context.Background()
-	base := "/api/v1/projects/" + h.project.ID
-	exec := func(sql string, args ...any) {
-		t.Helper()
-		if _, err := h.Database.Pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatal(err)
+	for _, tc := range []struct {
+		name, method, suffix, body, code string
+		status                           int
+	}{
+		{"unauthenticated get", "GET", "", "", "unauthenticated", 401},
+		{"unauthenticated preview", "GET", "/deletion-preview", "", "unauthenticated", 401},
+		{"outsider get", "GET", "", "", "not_found", 404},
+		{"outsider preview", "GET", "/deletion-preview", "", "not_found", 404},
+		{"member preview", "GET", "/deletion-preview", "", "forbidden", 403},
+		{"member delete", "DELETE", "", "", "forbidden", 403},
+		{"active claims", "DELETE", "", "", "active_worker_claims", 409},
+		{"deleted get", "GET", "", "", "not_found", 404},
+		{"deleted preview", "GET", "/deletion-preview", "", "not_found", 404},
+		{"deleted delete", "DELETE", "", "", "not_found", 404},
+		{"delete query", "DELETE", "?version=1", "", "invalid_input", 400},
+		{"delete body", "DELETE", "", "{}", "invalid_input", 400},
+		{"preview limit", "GET", "/deletion-preview?limit=0", "", "invalid_input", 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHTTPHarness(t)
+			fault := &model.Fault{Code: tc.code, Message: "request refused"}
+			h.Projects.GetWithAccessFunc = func(_ context.Context, _ model.Principal, id string) (model.Project, model.ProjectAccess, error) {
+				if id != h.Project.ID {
+					t.Fatal(id)
+				}
+				return model.Project{}, model.ProjectAccess{}, fault
+			}
+			h.Projects.DeletionPreviewFunc = func(_ context.Context, _ model.Principal, id string, page model.PageRequest) (projectservice.DeletionPreview, error) {
+				if id != h.Project.ID || page.Limit != 50 {
+					t.Fatalf("preview id=%s page=%+v", id, page)
+				}
+				return projectservice.DeletionPreview{}, fault
+			}
+			h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+				if id != h.Project.ID {
+					t.Fatal(id)
+				}
+				return projectservice.DeletionReceipt{}, fault
+			}
+			var cookies = []*http.Cookie{h.Cookie}
+			if tc.status == 401 {
+				cookies = []*http.Cookie{nil}
+			}
+			response := h.call(tc.method, "/api/v1/projects/"+h.Project.ID+tc.suffix, tc.body, cookies...)
+			assertProjectError(t, response, tc.status, tc.code)
+			calls := map[string]int{}
+			if tc.status != 400 && tc.status != 401 {
+				operation := "Delete"
+				if tc.method == "GET" {
+					operation = "GetWithAccess"
+					if strings.HasPrefix(tc.suffix, "/deletion-preview") {
+						operation = "DeletionPreview"
+					}
+				}
+				calls[operation] = 1
+			}
+			h.assertCalls(calls)
+		})
+	}
+	t.Run("confirmed receipt", func(t *testing.T) {
+		h := newHTTPHarness(t)
+		h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+			if id != h.Project.ID {
+				t.Fatal(id)
+			}
+			return projectservice.DeletionReceipt{ProjectID: id, Deleted: true}, nil
 		}
-	}
-	exec(`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, h.project.ID, h.memberID)
-	task, previous := uuid.NewString(), uuid.NewString()
-	exec(`INSERT INTO tasks(id,project_id,title,status,version) VALUES($1,$3,'running','in_progress',7),($2,$3,'done','done',4)`, task, previous, h.project.ID)
-	exec(`INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, h.project.ID, task, previous)
-	exec(`INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'kept.txt','text/plain',5)`, h.project.ID, task)
-	exec(`INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'abcd1234',0,'kept','details','done',now(),now())`, task)
-	exec(`INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,body) VALUES($1,now(),$2,false,'history')`, task, h.adminID)
-	claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: h.adminID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "fixture"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(), Phase: model.WorkerExecuting, State: model.WorkerActive, ClaimedAt: time.Now().UTC()}
-	raw, err := taskproperty.EncodeWorker(&claim)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2),($1,'paused','true')`, task, string(raw))
-	exec(`INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now(),'{}','{}')`, h.adminID, claim.WorkerID)
-	for _, path := range []string{base, base + "/deletion-preview"} {
-		assertProjectError(t, h.call("GET", path, "", nil), 401, "unauthenticated")
-		assertProjectError(t, h.call("GET", path, "", h.outsider), 404, "not_found")
-	}
-	assertProjectError(t, h.call("GET", base+"/deletion-preview", "", h.member), 403, "forbidden")
-	assertProjectError(t, h.call("DELETE", base, "", h.member), 403, "forbidden")
-	previewResponse := h.call("GET", base+"/deletion-preview", "", h.admin)
-	preview := decodeResponse[api.ProjectDeletionPreview](t, previewResponse, 200)
-	if preview.Project.ID != h.project.ID || preview.Project.OwnerTeam.ID != h.project.Ownership.TeamID || preview.Summary.TaskCount != 2 || preview.Summary.UnfinishedTaskCount != 1 || preview.Summary.AttachmentCount != 1 || len(preview.ActiveClaims) != 1 || preview.ActiveClaims[0].TaskID != task || !preview.ActiveClaims[0].Worker.Paused || preview.ActiveClaims[0].Worker.Connectivity != "online" || preview.NextCursor != nil {
-		t.Fatalf("preview: %s", previewResponse.Body)
-	}
-	if previewResponse.Header().Get("Cache-Control") != "no-store" || previewResponse.Header().Get("Daynight-User-ID") != h.adminID {
-		t.Fatal(previewResponse.Header())
-	}
-	assertProjectError(t, h.call("DELETE", base, "", h.admin), 409, "active_worker_claims")
-	assertProjectError(t, h.call("DELETE", base+"?version=1", "", h.admin), 400, "invalid_input")
-	assertProjectError(t, h.call("DELETE", base, `{}`, h.admin), 400, "invalid_input")
-	assertProjectError(t, h.call("GET", base+"/deletion-preview?limit=0", "", h.admin), 400, "invalid_input")
-	claim.State = model.WorkerReleased
-	raw, err = taskproperty.EncodeWorker(&claim)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec(`UPDATE task_properties SET value=$2 WHERE task_id=$1 AND name='worker'`, task, string(raw))
-	preserved := func() string {
-		t.Helper()
-		var result string
-		err := h.Database.Pool.QueryRow(ctx, `SELECT jsonb_build_object(
-        'tasks',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM tasks t WHERE project_id=$1),
-        'dependencies',(SELECT jsonb_agg(to_jsonb(d) ORDER BY task_id,depends_on_task_id) FROM task_dependencies d WHERE project_id=$1),
-        'attachments',(SELECT jsonb_agg(to_jsonb(a) ORDER BY task_id,path) FROM task_attachments a WHERE project_id=$1),
-        'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.task_id,p.name) FROM task_properties p JOIN tasks t ON t.id=p.task_id WHERE t.project_id=$1),
-        'steps',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.task_id,s.id) FROM task_steps s JOIN tasks t ON t.id=s.task_id WHERE t.project_id=$1),
-        'thread',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.task_id,m.message_id) FROM task_thread_messages m JOIN tasks t ON t.id=m.task_id WHERE t.project_id=$1))::text`, h.project.ID).Scan(&result)
-		if err != nil {
-			t.Fatal(err)
+		response := h.call("DELETE", "/api/v1/projects/"+h.Project.ID, "")
+		receipt := decodeResponse[api.ProjectDeletionReceipt](t, response, 200)
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 2 || receipt.ProjectID != h.Project.ID || !receipt.Deleted {
+			t.Fatalf("receipt=%s err=%v", response.Body, err)
 		}
-		return result
+		if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != h.Principal.UserID {
+			t.Fatal(response.Header())
+		}
+		if strings.Contains(h.Logs.String(), "Shared project") || strings.Contains(h.Logs.String(), "example.com/shared") {
+			t.Fatalf("private text in logs: %s", &h.Logs)
+		}
+		h.assertCalls(map[string]int{"Delete": 1})
+	})
+}
+
+func deletionPreviewFixture(h *httpHarness) projectservice.DeletionPreview {
+	return projectservice.DeletionPreview{ObservedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Project: h.Project, OwnerTeam: model.TeamRef{ID: h.Project.Ownership.TeamID, Name: func() *string { s := "Owner"; return &s }()}, Summary: store.ProjectDeletionSummary{TaskCount: 2, UnfinishedTaskCount: 1, AttachmentCount: 1}, ActiveClaims: []projectservice.DeletionClaim{}}
+}
+
+func TestProjectDeletionHTTPPreviewProjection(t *testing.T) {
+	h := newHTTPHarness(t)
+	input := deletionPreviewFixture(h)
+	input.ActiveClaims = []projectservice.DeletionClaim{{TaskID: "00000000-0000-4000-8000-000000000001", Title: "private running task", MachineName: "fixture", Platform: "linux", Phase: model.WorkerExecuting, Paused: true, Connectivity: "online"}}
+	h.Projects.DeletionPreviewFunc = func(_ context.Context, _ model.Principal, id string, page model.PageRequest) (projectservice.DeletionPreview, error) {
+		if id != h.Project.ID || page.Limit != 50 || page.Cursor != nil {
+			t.Fatalf("id=%s page=%+v", id, page)
+		}
+		return input, nil
 	}
-	before := preserved()
-	response := h.call("DELETE", base, "", h.admin)
-	receipt := decodeResponse[api.ProjectDeletionReceipt](t, response, 200)
-	var fields map[string]json.RawMessage
-	if err = json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 2 || receipt.ProjectID != h.project.ID || !receipt.Deleted {
-		t.Fatalf("receipt: %s %v", response.Body, err)
+	response := h.call("GET", "/api/v1/projects/"+h.Project.ID+"/deletion-preview", "")
+	result := decodeResponse[api.ProjectDeletionPreview](t, response, 200)
+	if !result.ObservedAt.Equal(input.ObservedAt) || result.Project.ID != h.Project.ID || result.Project.Name != h.Project.Name || result.Project.RepoURL != h.Project.RepoURL || result.Project.OwnerTeam.ID != input.OwnerTeam.ID || result.Project.OwnerTeam.Name == nil || *result.Project.OwnerTeam.Name != *input.OwnerTeam.Name || result.NextCursor != nil || len(result.ActiveClaims) != 1 {
+		t.Fatalf("preview=%s", response.Body)
 	}
-	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != h.adminID {
-		t.Fatal(response.Header())
+	claim := result.ActiveClaims[0]
+	if claim.TaskID != input.ActiveClaims[0].TaskID || claim.Title != "private running task" || claim.Worker.MachineName != "fixture" || claim.Worker.Platform != "linux" || claim.Worker.Phase != "executing" || !claim.Worker.Paused || claim.Worker.Connectivity != "online" {
+		t.Fatalf("claim=%+v", claim)
 	}
-	if after := preserved(); after != before {
-		t.Fatalf("data changed after deletion:\nbefore=%s\nafter=%s", before, after)
+	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != h.Principal.UserID || strings.Contains(h.Logs.String(), "private running task") || strings.Contains(h.Logs.String(), h.Project.RepoURL) {
+		t.Fatalf("headers=%v logs=%s", response.Header(), &h.Logs)
 	}
-	for _, path := range []string{base, base + "/deletion-preview"} {
-		assertProjectError(t, h.call("GET", path, "", h.admin), 404, "not_found")
-	}
-	assertProjectError(t, h.call("DELETE", base, "", h.admin), 404, "not_found")
-	if strings.Contains(h.Logs.String(), "running") || strings.Contains(h.Logs.String(), "example.com/shared") {
-		t.Fatalf("private text in diagnostics: %s", fmt.Sprint(&h.Logs))
-	}
+	h.assertCalls(map[string]int{"DeletionPreview": 1})
 }
 
 func TestProjectDeletionHTTPClaimPagesAndPhases(t *testing.T) {
-	h := membershipTestHarness(t)
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
-	ctx := context.Background()
-	base := "/api/v1/projects/" + h.project.ID
-	claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: h.adminID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "offline"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(), State: model.WorkerActive, ClaimedAt: time.Now().UTC()}
-	if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now()-interval '10 minutes',now()-interval '10 minutes','{}','{}')`, h.adminID, claim.WorkerID); err != nil {
-		t.Fatal(err)
-	}
-	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000004"}
+	h := newHTTPHarness(t)
 	phases := []model.WorkerPhase{model.WorkerPreparing, model.WorkerExecuting, model.WorkerPaused, model.WorkerWaiting}
-	for i, id := range ids {
-		claim.Phase = phases[i]
-		raw, err := taskproperty.EncodeWorker(&claim)
-		if err != nil {
-			t.Fatal(err)
+	index := 0
+	h.Projects.DeletionPreviewFunc = func(_ context.Context, _ model.Principal, id string, page model.PageRequest) (projectservice.DeletionPreview, error) {
+		if id != h.Project.ID || page.Limit != 1 {
+			t.Fatalf("id=%s page=%+v", id, page)
 		}
-		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title,deleted_at) VALUES($1,$2,'blocker',CASE WHEN $3 THEN now() END)`, id, h.project.ID, i == 3); err != nil {
-			t.Fatal(err)
+		wantCursor := ""
+		if index > 0 {
+			wantCursor = fmt.Sprintf("cursor-%d", index)
 		}
-		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw)); err != nil {
-			t.Fatal(err)
+		if (page.Cursor == nil && wantCursor != "") || (page.Cursor != nil && *page.Cursor != wantCursor) {
+			t.Fatalf("cursor=%v want=%q", page.Cursor, wantCursor)
 		}
+		out := deletionPreviewFixture(h)
+		out.ActiveClaims = []projectservice.DeletionClaim{{TaskID: fmt.Sprintf("00000000-0000-4000-8000-%012d", index+1), Title: strings.Repeat("<", 256), MachineName: "offline", Platform: "linux", Phase: phases[index], Paused: index == 2, Connectivity: "offline"}}
+		if index < len(phases)-1 {
+			cursor := fmt.Sprintf("cursor-%d", index+1)
+			out.NextCursor = &cursor
+		}
+		return out, nil
 	}
-	path := base + "/deletion-preview?limit=1"
-	for i, id := range ids {
-		response := h.call("GET", path, "", h.admin)
+	path := "/api/v1/projects/" + h.Project.ID + "/deletion-preview?limit=1"
+	for i, phase := range phases {
+		index = i
+		response := h.call("GET", path, "")
 		page := decodeResponse[api.ProjectDeletionPreview](t, response, 200)
-		if len(page.ActiveClaims) != 1 || page.ActiveClaims[0].TaskID != id || page.ActiveClaims[0].Worker.Phase != string(phases[i]) || page.ActiveClaims[0].Worker.Connectivity != "offline" || (page.NextCursor != nil) != (i < len(ids)-1) {
-			t.Fatalf("page %d: %s", i, response.Body)
-		}
-		assertProjectError(t, h.call("DELETE", base, "", h.admin), 409, "active_worker_claims")
-		if _, err := h.Database.Pool.Exec(ctx, `DELETE FROM task_properties WHERE task_id=$1 AND name='worker'`, id); err != nil {
-			t.Fatal(err)
+		want := fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
+		if len(page.ActiveClaims) != 1 || page.ActiveClaims[0].TaskID != want || page.ActiveClaims[0].Worker.Phase != string(phase) || page.ActiveClaims[0].Worker.Connectivity != "offline" || page.ActiveClaims[0].Title != strings.Repeat("<", 256) || page.ActiveClaims[0].Worker.Paused != (i == 2) || (page.NextCursor != nil) != (i < len(phases)-1) {
+			t.Fatalf("page=%s", response.Body)
 		}
 		if page.NextCursor != nil {
-			path = base + "/deletion-preview?limit=1&cursor=" + *page.NextCursor
+			path = "/api/v1/projects/" + h.Project.ID + "/deletion-preview?limit=1&cursor=" + *page.NextCursor
 		}
 	}
-	receipt := decodeResponse[api.ProjectDeletionReceipt](t, h.call("DELETE", base, "", h.admin), 200)
-	if receipt.ProjectID != h.project.ID || !receipt.Deleted {
-		t.Fatalf("receipt: %+v", receipt)
-	}
+	h.assertCalls(map[string]int{"DeletionPreview": 4})
 }
 
 func TestProjectDeletionHTTPPreviewPageCount(t *testing.T) {
-	h := membershipTestHarness(t)
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
-	ctx := context.Background()
-	base := "/api/v1/projects/" + h.project.ID
-	claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: h.adminID, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "fixture"}, Platform: model.TaskPlatform("linux"), Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(), State: model.WorkerActive, Phase: model.WorkerWaiting, ClaimedAt: time.Now().UTC()}
-	raw, err := taskproperty.EncodeWorker(&claim)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
-	for _, id := range ids {
-		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,$3)`, id, h.project.ID, strings.Repeat("<", 256)); err != nil {
-			t.Fatal(err)
+	h := newHTTPHarness(t)
+	first := projectservice.DeletionClaim{TaskID: "00000000-0000-4000-8000-000000000001", Title: strings.Repeat("<", 256), MachineName: "fixture", Platform: "linux", Phase: model.WorkerWaiting, Connectivity: "unknown"}
+	second := first
+	second.TaskID = "00000000-0000-4000-8000-000000000002"
+	cursor := "next-page"
+	h.Projects.DeletionPreviewFunc = func(_ context.Context, _ model.Principal, id string, page model.PageRequest) (projectservice.DeletionPreview, error) {
+		if id != h.Project.ID {
+			t.Fatal(id)
 		}
-		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw)); err != nil {
-			t.Fatal(err)
+		out := deletionPreviewFixture(h)
+		switch {
+		case page.Limit == 100 && page.Cursor == nil:
+			out.ActiveClaims = []projectservice.DeletionClaim{first, second}
+		case page.Limit == 1 && page.Cursor == nil:
+			out.ActiveClaims = []projectservice.DeletionClaim{first}
+			out.NextCursor = &cursor
+		case page.Limit == 1 && page.Cursor != nil && *page.Cursor == cursor:
+			out.ActiveClaims = []projectservice.DeletionClaim{second}
+		default:
+			t.Fatalf("unexpected page %+v", page)
 		}
+		return out, nil
 	}
-	complete := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", base+"/deletion-preview?limit=100", "", h.admin), 200)
-	if len(complete.ActiveClaims) != 2 || complete.ActiveClaims[0].TaskID != ids[0] || complete.ActiveClaims[1].TaskID != ids[1] || complete.NextCursor != nil {
-		t.Fatalf("complete page: %+v", complete)
+	base := "/api/v1/projects/" + h.Project.ID + "/deletion-preview"
+	full := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", base+"?limit=100", ""), 200)
+	page := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", base+"?limit=1", ""), 200)
+	next := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", base+"?limit=1&cursor="+*page.NextCursor, ""), 200)
+	if len(full.ActiveClaims) != 2 || full.NextCursor != nil || len(page.ActiveClaims) != 1 || len(next.ActiveClaims) != 1 || next.NextCursor != nil || !reflect.DeepEqual(full.ActiveClaims, append(page.ActiveClaims, next.ActiveClaims...)) {
+		t.Fatalf("full=%+v page=%+v next=%+v", full, page, next)
 	}
-	path := base + "/deletion-preview?limit=1"
-	first := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", path, "", h.admin), 200)
-	if len(first.ActiveClaims) != 1 || first.ActiveClaims[0].TaskID != ids[0] || first.NextCursor == nil {
-		t.Fatalf("first page: %+v", first)
+	if full.Project.ID != h.Project.ID || full.Project.OwnerTeam.ID != h.Project.Ownership.TeamID || full.Summary.TaskCount != 2 || full.Summary.UnfinishedTaskCount != 1 || full.Summary.AttachmentCount != 1 {
+		t.Fatalf("preview %+v", full)
 	}
-	next := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", path+"&cursor="+*first.NextCursor, "", h.admin), 200)
-	if len(next.ActiveClaims) != 1 || next.ActiveClaims[0].TaskID != ids[1] || next.NextCursor != nil {
-		t.Fatalf("continuation: %+v", next)
-	}
+	h.assertCalls(map[string]int{"DeletionPreview": 3})
 }

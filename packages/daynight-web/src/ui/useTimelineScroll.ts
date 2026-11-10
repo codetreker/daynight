@@ -11,6 +11,7 @@ type ReadingAnchor = {
   readonly key: string;
   readonly top: number;
   readonly text?: ReadingTextAnchor;
+  readonly media?: { readonly key: string; readonly normalizedY: number; readonly top: number };
   readonly previousKey?: string;
   readonly nextKey?: string;
 };
@@ -31,6 +32,7 @@ export type TimelineRestoreStatus = 'idle' | 'restored' | 'pending' | 'rejected'
 function copyAnchor(saved: ReadingAnchor): ReadingAnchor {
   return { key: saved.key, top: saved.top,
     ...(saved.text ? { text: { offset: saved.text.offset, quote: saved.text.quote, top: saved.text.top } } : {}),
+    ...(saved.media ? { media: { ...saved.media } } : {}),
     ...(saved.previousKey === undefined ? {} : { previousKey: saved.previousKey }),
     ...(saved.nextKey === undefined ? {} : { nextKey: saved.nextKey }),
   };
@@ -59,14 +61,20 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
     const bounds = box.getBoundingClientRect();
     const first = Array.from(box.querySelectorAll<HTMLElement>('[data-entry-key]')).find(entry => entry.getBoundingClientRect().bottom > bounds.top);
     if (first) {
-      const text = captureReadingText(first, bounds);
+      const mediaNode = Array.from(first.querySelectorAll<HTMLElement>('[data-media-key]')).find(node => {
+        const rect = node.getBoundingClientRect();
+        return rect.height > 0 && rect.top <= bounds.top && rect.bottom > bounds.top;
+      });
+      const rect = mediaNode?.getBoundingClientRect();
+      const media = mediaNode && rect ? { key: mediaNode.dataset.mediaKey!, normalizedY: (bounds.top - rect.top) / rect.height, top: 0 } : undefined;
+      const text = media ? undefined : captureReadingText(first, bounds);
       intent.current?.(false, first.dataset.entryKey!);
-      anchor.current = { key: first.dataset.entryKey!, top: first.getBoundingClientRect().top - bounds.top, ...(text ? { text } : {}), ...(display ? { order: display.originalKeys } : {}) };
+      anchor.current = { key: first.dataset.entryKey!, top: first.getBoundingClientRect().top - bounds.top, ...(media ? { media } : {}), ...(text ? { text } : {}), ...(display ? { order: display.originalKeys } : {}) };
     }
   };
   const update = () => {
     const box = viewport.current;
-    if (!box || !active || box.clientHeight === 0) return;
+    if (!box || !active || box.clientHeight === 0 || box.dataset.imagePreviewLocked === 'true') return;
     const pending = pendingBookmark.current;
     if (pending) {
       let saved = pending.anchor;
@@ -104,13 +112,16 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
       }
       const entry = Array.from(box.querySelectorAll<HTMLElement>('[data-entry-key]')).find(entry => entry.dataset.entryKey === saved.key);
       if (entry) {
+        const mediaNode = saved.media && Array.from(entry.querySelectorAll<HTMLElement>('[data-media-key]')).find(node => node.dataset.mediaKey === saved.media!.key);
+        const mediaBounds = mediaNode && mediaNode.getBoundingClientRect();
+        const mediaTop = mediaBounds && mediaBounds.height > 0 ? mediaBounds.top + mediaBounds.height * saved.media!.normalizedY : undefined;
         const textTop = saved.text && readingTextTop(entry, saved.text);
-        recapture = textTop === undefined;
+        recapture = textTop === undefined && mediaTop === undefined;
         const entryBounds = entry.getBoundingClientRect();
         // Cold remounts collapse details. Without a usable text position, an
         // old offset inside text or an image may hide the entire shorter row.
         const rowTop = pending && textTop === undefined && saved.top <= -entryBounds.height ? 0 : saved.top;
-        const adjustment = (textTop ?? entryBounds.top) - box.getBoundingClientRect().top - (textTop !== undefined ? saved.text!.top : rowTop);
+        const adjustment = (mediaTop ?? textTop ?? entryBounds.top) - box.getBoundingClientRect().top - (mediaTop !== undefined ? saved.media!.top : textTop !== undefined ? saved.text!.top : rowTop);
         if (Math.abs(adjustment) > 1) box.scrollTop += adjustment;
       }
     }
@@ -136,6 +147,7 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
     const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(notify);
     resize?.observe(box); resize?.observe(body);
     const observer = new MutationObserver(notify); observer.observe(body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['open', 'hidden'] });
+    observer.observe(box, { attributes: true, attributeFilter: ['data-image-preview-locked'] });
     window.addEventListener('resize', notify);
     return () => { resize?.disconnect(); observer.disconnect(); window.removeEventListener('resize', notify); };
   }, []);
@@ -182,7 +194,7 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
     return restoreStatus.current as 'pending' | 'restored';
   };
   const onScroll = () => {
-    const box = viewport.current; if (!box || !active || box.clientHeight === 0 || pendingBookmark.current) return false;
+    const box = viewport.current; if (!box || !active || box.clientHeight === 0 || pendingBookmark.current || box.dataset.imagePreviewLocked === 'true') return false;
     if (expectedTop.current !== null && Math.abs(box.scrollTop - expectedTop.current) < 1) return false;
     if (!following.current && display?.visibleKeys.length !== 0 && box.scrollTop > lastTop.current && box.scrollHeight - box.clientHeight - box.scrollTop < 2) following.current = true;
     expectedTop.current = null; lastTop.current = box.scrollTop;

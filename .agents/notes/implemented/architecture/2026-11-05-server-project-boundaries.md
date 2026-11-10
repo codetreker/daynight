@@ -15,8 +15,13 @@ refusals.
 `core/project` owns Project validation, authorization, ownership and membership
 rules. `service/project` selects creation, existing Project write and snapshot
 scopes and handles completion; `server/project` owns HTTP adaptation and reusable
-Project projections. Existing Task writes use the same Project write scope and
-its transaction-bound Project, Task and Session capabilities.
+Project projections. The HTTP adapters declare their consumed Project and
+Membership operations and request-authentication capabilities; the production
+services satisfy those interfaces without an additional forwarding layer. The
+[HTTP operation tests](../testing/2026-11-10-project-http-operation-tests.md) keep
+protocol evidence separate from business rules and storage witnesses. Existing
+Task writes use the same Project write scope and its transaction-bound Project,
+Task and Session capabilities.
 
 Creation locks the user and Team before atomically inserting the Project,
 ownership and creator's admin grant. Existing writes lock the Project before the

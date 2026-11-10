@@ -14,9 +14,11 @@ consistently across live and recorded Sessions.
 
 The repository publishes the adopted
 [browser image design](../../../../docs/design/session-image-browser.md).
-This note records a delivered design decision; the image runtime and its
-acceptance remain unimplemented. IndexedDB owns immutable original Blobs,
-content revisions, references and frozen operation intent. Short transactions
+The original decision established the browser design before its runtime existed.
+Shared saved-image display and preview now use the existing Session clients and
+archive reader. Persistent image drafts and native input remain separate delivery
+work. Their adopted design assigns immutable original Blobs, content revisions,
+references and frozen operation intent to IndexedDB. Short transactions
 with CAS protect concurrent tabs. Web Locks coordinate network mutations, while
 a durable single transition grants dispatch ownership. Unknown results retain
 the original operation and block another send.
@@ -33,7 +35,23 @@ Pane lifetime retains its existing cache ownership; the
 [Bot cache decision](../../archived/architecture/2026-11-04-bot-session-cache.md)
 records that choice. The image design adds persistent Blob ownership outside that
 cache; evicting a pane does not authorize deleting a draft. It does not change
-current text behavior or claim that image support has shipped.
+current text behavior or enable image input.
+
+Saved-image scopes bind origin, actor, authorization generation and the actual
+Session fence/native identity or record namespace/revision. Cache previews retain
+only descriptors and explicitly deny resource reads and downloads. Complete byte,
+digest and container checks precede publication; local decoding has its own
+failure state so unsupported browsers can still download verified originals.
+Animation requires complete frame decoding. A static-only fallback cannot accept
+unknown or multiple frames. Cancellation revokes publication immediately but
+returns capacity only after the actual reader or decoder has stopped.
+
+Original reservations follow their remaining preview and download consumers.
+Sharing a Blob does not let a finished operation retain the other operation's
+capacity. Verified Markdown presentations are bound to their scope and part
+identity. A pending body digest keeps that presentation intact until the next
+version is admitted, preserving existing image frames without authorizing new
+bindings.
 
 ## Alternatives
 
@@ -57,6 +75,11 @@ scope leases preserve stable rendering and centralize cleanup.
 **Portal one preview to document.body.** Existing fullscreen inert regions and
 Task focus boundaries can exclude it. Root-local dialog hosting preserves those
 boundaries; higher dialogs require a synchronous suspension bridge.
+
+**Clear image renderers during every body verification.** This makes admission
+simple but destroys already verified frames, focus and decoded leases during
+ordinary text updates. Keeping the last verified presentation within the same
+identity preserves those resources while new bindings remain untrusted.
 
 **Persist all viewed images or add cross-device drafts.** Both expand private
 retention, synchronization and cleanup responsibility. Durable originals remain
