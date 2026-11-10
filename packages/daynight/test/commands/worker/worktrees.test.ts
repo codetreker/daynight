@@ -299,7 +299,13 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const raw = `${start}${path.sep}..${path.sep}${f.owner.taskId}${path.sep}.git`;
       const absoluteRaw = kind === "relative" ? `${admin}${path.sep}${raw}` : raw;
       if (kind === "missing-parent") await expect(realpath(absoluteRaw)).rejects.toMatchObject({ code: "ENOENT" });
-      else {
+      else if (process.platform === "win32") {
+        // Win32 collapses the junction/.. before opening the target. Neither
+        // that missing lexical target nor the junction proves safe ownership.
+        expect(path.resolve(absoluteRaw)).toBe(path.join(f.root, f.owner.taskId, ".git"));
+        await expect(realpath(absoluteRaw)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(realpath(path.resolve(absoluteRaw))).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
         expect(await realpath(absoluteRaw)).toBe(await realpath(path.join(binding.worktreePath, ".git")));
         expect(path.resolve(admin, raw)).not.toBe(await realpath(absoluteRaw));
       }
@@ -330,13 +336,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const raw = `${alias}/../${suffix}`;
       const expected = kind === "common" ? path.join(f.repository, ".git") : kind === "forward" ? path.join(binding.worktreePath, ".git") : admin;
       expect(path.resolve(raw)).toBe(path.resolve(expected));
-      expect(await realpath(raw)).not.toBe(await realpath(expected));
+      if (process.platform === "win32") expect(await realpath(raw)).toBe(await realpath(expected));
+      else expect(await realpath(raw)).not.toBe(await realpath(expected));
       const metadata = kind === "common" ? path.join(admin, "commondir") : kind === "forward" ? path.join(admin, "gitdir") : path.join(binding.worktreePath, ".git");
       const contents = `${kind === "reverse" ? "gitdir: " : ""}${raw}\n`;
       if (kind === "reverse") await rm(metadata);
       await writeFile(metadata, contents);
-      // The raw traversal reaches another real Git repository; the lexical
-      // spelling still claims the original repository and registration.
+      // POSIX traverses the alias into the foreign repository. Win32 collapses
+      // it into the original path; neither interpretation proves a safe pointer.
       const scan = await adapter.scanWorktrees(f.project, operation());
       expect(scan.unknown.length).toBeGreaterThan(0);
       expect(scan.quarantined).toEqual([]);
@@ -352,11 +359,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
       const admin = administrativeDirectory(binding.worktreePath);
-      await writeFile(path.join(admin, "gitdir"), `${path.relative(admin, path.join(binding.worktreePath, ".git"))}\n`);
-      await writeFile(path.join(admin, "commondir"), `${path.relative(admin, path.join(f.repository, ".git"))}\n`);
+      // Git's registration reader strips a literal '/.git', including on Windows.
+      const relative = (base: string, target: string) => path.relative(base, target).split(path.sep).join("/");
+      await writeFile(path.join(admin, "gitdir"), `${relative(admin, path.join(binding.worktreePath, ".git"))}\n`);
+      await writeFile(path.join(admin, "commondir"), `${relative(admin, path.join(f.repository, ".git"))}\n`);
       const pointer = path.join(binding.worktreePath, ".git");
       await rm(pointer);
-      await writeFile(pointer, `gitdir: ${path.relative(binding.worktreePath, admin)}\n`);
+      await writeFile(pointer, `gitdir: ${relative(binding.worktreePath, admin)}\n`);
+      expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
       if (state === "missing-leaf") await rm(binding.worktreePath, { recursive: true });
       expect(await adapter.scanWorktrees(f.project, operation())).toEqual({ enumerationComplete: true, validated: [{ owner: f.owner, binding }], quarantined: [], unknown: [] });
       if (state === "present") await expect(adapter.verifyWorktree(f.project, f.owner, operation())).resolves.toEqual(binding);
