@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { createOperation } from "../../../src/api/operation.js";
@@ -29,7 +30,7 @@ const fixture = () => {
   const project = { projectId: uuid(3), repoUrl: "https://example.test/org/repo.git", localPath: path.join(root, "repo") }; mkdirSync(project.localPath); store.registerProject(project);
   const tasks = new Map<string, Task>(), events: WorkerEvent[] = [];
   const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => userId), readTask: vi.fn(async (_project: string, id: string) => tasks.get(id)!), ownInventory: vi.fn(async () => ({ tasks: [] as Task[], coveredProjectIds: [project.projectId], unavailableProjectIds: [] })), candidates: vi.fn(async function* () {}), claim: vi.fn() } as unknown as WorkerRemote;
-  const git = { listWorktrees: vi.fn(async () => []), findWorktree: vi.fn(async () => null), prepareWorktree: vi.fn(async () => { throw new Error("Preparation failed before creating resources."); }), removeWorktree: vi.fn(), removeEmptyReservation: vi.fn() } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), findWorktree: vi.fn(async () => null), prepareWorktree: vi.fn(async () => { throw new Error("Preparation failed before creating resources."); }), removeWorktree: vi.fn(), removeEmptyReservation: vi.fn() } as unknown as WorkerGitManager;
   const open = () => createDurableWorkerHerdr({ paths, homeDirectory: root, serverOrigin: origin, serverToken: "fixture", workerId, readTask: (...args) => remote.readTask(...args), currentUserId: (...args) => remote.currentUserId(...args), createAdapter: () => ({}) as WorkerHerdrAdapter });
   let herdr = open(); cleanups.push(() => herdr.lifecycle!.close());
   const configuration = { agent: "codex" as const, agentControlMode: "herdr" as const, args: [], model: null, recoveryLimit: 0 };
