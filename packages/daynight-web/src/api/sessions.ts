@@ -27,14 +27,14 @@ export type BotSessionBinding = {
 };
 export type SessionApi = {
   archive(sessionId: string, signal: AbortSignal): Promise<SessionArchiveStatus>;
-  archiveContent(sessionId: string, signal: AbortSignal): Promise<LoadedSessionArchive>;
+  archiveContent(sessionId: string, signal: AbortSignal, expectedStatus?: SessionArchiveStatus): Promise<LoadedSessionArchive>;
   resources(fence: SessionFence, isCurrent: () => boolean): SessionResourceClient;
   current(signal: AbortSignal): Promise<CurrentSessionResponse>;
   timeline(sessionId: string, direction: 'tail' | 'before' | 'after', cursor: string | null, signal: AbortSignal): Promise<TimelinePage>;
   command(sessionId: string, command: SessionCommand, signal: AbortSignal): Promise<SessionOperation>;
   operation(sessionId: string, operationId: string, signal: AbortSignal): Promise<SessionOperation>;
   channel(sessionId: string, after: string | null, onMessage: (message: BrowserMessage) => void, onClose: (error?: unknown) => void): SessionChannel;
-  resource(sessionId: string, resourceId: string, signal: AbortSignal): Promise<Blob>;
+  resource(sessionId: string, resourceId: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob>;
   resourceUrl(sessionId: string, resourceId: string): string;
 };
 export function createSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
@@ -93,7 +93,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
   return {
     resources,
     archive: (id, signal) => get(`${sessionRoot(id)}/archive`, signal, (value) => parseSessionArchiveStatus(archiveEnvelope(value))),
-    archiveContent: async (id, signal) => {
+    archiveContent: async (id, signal, expectedStatus) => {
       const generation = readAuthRequestGeneration();
       const assertCurrent = () => {
         signal.throwIfAborted();
@@ -113,7 +113,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       assertCurrent();
       if (archive.schemaVersion === 3) {
         if (archive.recordId !== id) throw new ApiError('protocol');
-        const status = await get(`${sessionRoot(id)}/archive`, signal, value => parseSessionArchiveStatus(archiveEnvelope(value)));
+        const status = expectedStatus ?? await get(`${sessionRoot(id)}/archive`, signal, value => parseSessionArchiveStatus(archiveEnvelope(value)));
         const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', rawBytes)), b => b.toString(16).padStart(2, '0')).join('');
         assertCurrent();
         if (rawBytes.byteLength > SESSION_ARCHIVE_MANIFEST_MAX_BYTES || status.state !== 'ready' || status.schemaVersion !== 3 || status.completeness !== archive.completeness || status.byteLength !== String(rawBytes.byteLength) || status.sha256 !== digest) throw new ApiError('protocol');
@@ -127,6 +127,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
         assertCurrent();
         return { schemaVersion: 3, ...archive.fence, controllerId: archive.controllerId, controllerInstanceId: archive.controllerInstanceId, provider: archive.provider, nativeSessionId: archive.nativeSessionId, entries: timeline.entries, resources: archive.resources, completeness: archive.completeness };
       }
+      if (expectedStatus && (expectedStatus.state !== 'ready' || (expectedStatus.schemaVersion ?? 1) !== archive.schemaVersion)) throw new ApiError('protocol');
       await verifySessionArchiveResources(archive);
       assertCurrent();
       return archive;
@@ -151,14 +152,14 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       if (operation.sessionId !== id || operation.operationId !== operationId) throw new ApiError('protocol');
       return operation;
     },
-    resource: async (id, resourceId, signal) => {
+    resource: async (id, resourceId, signal, onProgress) => {
       const response = await request(`${sessionRoot(id)}/resources/${requestId(resourceId)}/content`, signal);
       assertResponsePrincipal(response, userId, onPrincipalMismatch);
       if (!response.ok) return json(response, signal, () => { throw new ApiError('protocol', response.status); });
       if (response.status !== 200 || !response.body) throw new ApiError('protocol', response.status);
       const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
       try {
-        while (true) { const result = await reader.read(); signal.throwIfAborted(); if (result.done) break; size += result.value.byteLength; if (size > RELAY_LIMITS.maxResourceBytes) throw new ApiError('protocol'); chunks.push(new Uint8Array(result.value)); }
+        while (true) { const result = await reader.read(); signal.throwIfAborted(); if (result.done) break; size += result.value.byteLength; if (size > RELAY_LIMITS.maxResourceBytes) throw new ApiError('protocol'); chunks.push(new Uint8Array(result.value)); if (result.value.byteLength > 0) onProgress?.(); }
         return new Blob(chunks, { type: response.headers.get('Content-Type') ?? 'application/octet-stream' });
       } finally { await reader.cancel(); reader.releaseLock(); }
     },

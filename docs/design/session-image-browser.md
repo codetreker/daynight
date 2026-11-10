@@ -1,6 +1,6 @@
 # Session 图片浏览器交互设计
 
-本文定义浏览器图片交互及其接入要求。统一资源客户端和 schema3 归档读取已经接入现有 Session 消费者；图片 renderer、预览及持久草稿仍由各自消费者交付，不表示产品已经开放原生图片输入。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
+本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示和页内预览已经接入现有 Session 消费者。持久草稿、上传及原生图片输入仍由输入链交付；下文对应章节保留其采用的设计，不表示这些输入能力已经开放。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
 
 [公共协议与存储设计](session-image-contracts.md)唯一拥有 wire DTO、严格解析、能力、身份、错误及容量合同；本文只定义浏览器内部状态和预览接口，并消费该合同。[来源采集设计](session-image-sources.md)拥有 AST 与来源 IO，[归档设计](session-image-archives.md)拥有记录 reader。本文不扩展 Herdr、Thread、通用文件、富文本、跨设备草稿、图片编辑或轮播。采用原 textarea 与有序附件区，所有入口沿现有 Session resolver。
 
@@ -167,9 +167,9 @@ Enter/Shift+Enter及平台快捷键沿主线，IME期间不提交；纯图点击
 
 `SessionImageScope` 在每个 live Session 或只读 record 展示 owner 上建立一次，包含当前身份/授权适配器、资源索引、共享读取 store 和预览控制器。身份不随 React render、连接 epoch、权限无变化复核或全屏切换重新创建。账户、真实 owner 或表示改变属于新的 scope；旧 scope 立即失去准入。
 
-- `SessionImageStore` 拥有分块读取、完整验证、请求合并、Blob lease、取消、错误和内存预算。它不决定来源采集，不自行创建 Session client。
+- `SessionImageStore` 消费现有 Session client 或固定记录 reader，拥有完整验证、请求合并、Blob lease、取消、错误和内存预算。分块读取和块校验属于统一资源 reader；真实响应体进度刷新无进展时限。它不决定来源采集，不自行创建 Session client。
 - `SessionImageFrame` 拥有缩略展示、尺寸框、解码状态、可访问错误及动作；输入是稳定出现和 store 状态，不是 URL/path。用户、Agent、工具、Markdown 与 retainedImages 复用它。
-- `ImagePreviewHost` 与 `useImagePreview` 定义本专题公共 UI API，负责一个展示 owner 的页内预览、缩放、焦点、滚动和下载，草稿模块通过相同 host 预览草稿。
+- `ImagePreviewHost`、`ImagePreviewController` 与 `useSessionImageScope` 定义本专题公共 UI API，负责一个展示 owner 的页内预览、缩放、焦点、滚动和下载；草稿消费者通过同一 asset/lease 合同接入。
 - `SessionMarkdown` 连接 Markdown 来源采集的正文映射与 SessionImageFrame；`ChatMarkdown` 只接收已验证的纯渲染回调，不获取权限、解析 Controller 路径或发网络请求。
 - live/record/draft adapter 各自提供可读原件与撤销信号。record 不依赖在线 Controller，draft 不伪造服务资源。
 
@@ -177,15 +177,15 @@ Enter/Shift+Enter及平台快捷键沿主线，IME期间不提交；纯图点击
 
 ## 公共预览接口（仅浏览器内部）
 
-以下是本文拥有的 TypeScript 接口设计，不是 JSON、服务 DTO 或已经存在的代码。`ScopeHandle` 与 `AssetHandle` 是由适配器创建的进程内不透明句柄，调用方不能通过字符串、URL 或 SHA 构造授权。
+浏览器接口由 `features/task-agent-session/images/image-types.ts` 与 `image-preview.ts` 实现，不属于 JSON 或服务 DTO。以下列出消费者需要的核心成员；`ImageScope` 与 `ImageAssetAdapter` 由当前 owner 的适配器创建，调用方不能通过字符串、URL 或 SHA 构造授权。
 
 ```ts
 type PreviewCloseReason =
   | 'user' | 'owner_inactive' | 'identity_changed' | 'access_revoked'
   | 'asset_removed' | 'host_disposed';
 type PreviewRequest = {
-  scope: ScopeHandle;
-  asset: AssetHandle;
+  scope: ImageScope;
+  asset: ImageAssetAdapter;
   label: string;
   trigger: HTMLElement | null;
   fallbackFocus: () => HTMLElement | null;
@@ -200,15 +200,24 @@ type VerifiedImageLease = {
   readonly byteLength: number;
   readonly sha256: string;
   readonly storedSize: { width: number; height: number } | null;
+  readonly valid: boolean;
+  decode(signal: AbortSignal, priority?: ImageReadPriority): Promise<DecodedImageLease>;
+  subscribeInvalidation(listener: () => void): () => void;
   release(): void;
 };
 type ImageAssetAdapter = {
-  acquire(signal: AbortSignal): Promise<VerifiedImageLease>;
+  readonly scope: ImageScope;
+  readonly key: string;
+  acquire(signal: AbortSignal, priority?: ImageReadPriority): Promise<VerifiedImageLease>;
   subscribeInvalidation(listener: () => void): () => void;
   canRead(): boolean;
   canDownload(): boolean;
 };
 ```
+
+`ImageReadPriority` 区分 `background`、`preview` 与 `download`。live scope 从真实 Session fence/native 身份与账户构建；record scope 使用实际记录命名空间、记录 ID 与所选归档摘要。固定记录的状态与内容使用同一份已核对的状态验证，不能以第二次状态读取替换所选表示。认证复核期间 `readAdmitted=false` 阻止新读和下载，已经显示的同身份内容保持；权威撤权通过 scope 失效同步撤下表示并等待读取、解码实际结束。
+
+格式验证先核对完整长度、摘要与 PNG/JPEG/GIF/WebP/AVIF 容器，再发布原件 lease。解码单独报告本地失败并保留仍获授权的原件下载。支持 `ImageDecoder` 的浏览器遍历所有帧；仅在容器已证明静态单帧时才使用 `createImageBitmap` 后备路径。多帧或帧数未知且缺少完整解码能力时明确显示本地解码失败，不把第一帧成功当成完整验证。
 
 `open` 同步建立模态并立即显示图片框/加载状态；读取可异步完成。相同 scope+asset 的重复 open 只聚焦现有预览，不重置缩放、读取或创建第二个模态。不同图片替换当前内容，释放旧预览 lease，初始回到 fit；旧读取即使晚到也不能替换新图。每个 host 同时只有一张图；跨图片轮播不是本期要求，调用方保留原有多图顺序。
 
@@ -251,7 +260,7 @@ saved reader 由真实 Session/record resolver 得到 base，使用公共协议�
 
 下载保留最多一个前景原件lease/专用URL，最长60秒；后续下载按用户点击顺序排队，最多2项、等待最多65秒，超限/到时返回本地可理解的“下载繁忙，请重试”，不发请求、不报资源不可用。等待项不持bytes，只持句柄与取消信号，撤权/owner失活即取消；没有第三份下载原件挤占预览槽。预览不排在下载之后，每次新open取代尚未完成的旧open。后台队列最多32项，超出只保留idle框，等进入可视区或用户操作再准入；无自动来源重试。新前景操作可取消尚未完成的后台读取，取消确认并释放其缓冲后才能复用计费。每次读请求有15秒无进展和60秒总时限，到时取消并给显式读取失败；用户可重试同原件。由此即使后台可见卡片或下载占满其额度，一张合法10 MiB图仍有独立预览预留，不会永久queued。缓存压力改变页面表示，不删除历史资源。
 
-解码需单独准入：单图按 Controller 媒体存储最大 33554432 画布像素估算 128 MiB RGBA，页面同时在用图像画布估算预算 256 MiB、最多两个完整原件解码任务。并不声称这个估算是浏览器/GPU 的实际硬内存上限；动画和实现差异必须测量。超出准入的卡片保持尺寸框与可聚焦“查看图片”，用户打开可优先释放离屏解码表示后查看，不报服务资源失效，不改变 10 MiB 接受上限。大量小图可依其实际画布并行显示，但解码任务仍最多两个；大图完成任务后保持的画布也计入预算。隐藏/离屏 frame 可释放 img 的解码表示，外层框和 imageId 保留，之后优先复用 Blob而不是重复网络。可视中已展示图片不能因普通流式更新被逐出。若可视图耗尽预算，预览暂时挂起非当前图的解码展示并保留占位；关闭后恢复其原 Blob。浏览器不支持安全解码或内存不足是显式本地失败，不更改服务 descriptor。
+解码需单独准入：单图按 Controller 媒体存储最大 33554432 画布像素估算 128 MiB RGBA，页面同时在用图像画布估算预算 256 MiB、最多两个完整原件解码任务。 已保存 descriptor 缺少尺寸时，完整容器校验提取 PNG/JPEG/GIF/WebP/AVIF 的画布尺寸作为 legacy 准入估算；无法证明尺寸时保留最大估算。解码在途仍占估算额度，完成后按实际定向画布面积收缩保留额度，实际面积超出已准入估算则拒绝发布。并不声称这个估算是浏览器/GPU 的实际硬内存上限；动画和实现差异必须测量。超出准入的卡片保持尺寸框与可聚焦“查看图片”，用户打开可优先释放离屏解码表示后查看，不报服务资源失效，不改变 10 MiB 接受上限。大量小图可依其实际画布并行显示，但解码任务仍最多两个；大图完成任务后保持的画布也计入预算。隐藏/离屏 frame 可释放 img 的解码表示，外层框和 imageId 保留，之后优先复用 Blob而不是重复网络。可视中已展示图片不能因普通流式更新被逐出。若可视图耗尽预算，预览暂时挂起非当前图的解码展示并保留占位；关闭后恢复其原 Blob。浏览器不支持安全解码或内存不足是显式本地失败，不更改服务 descriptor。
 
 这里淘汰的是可重新读取的页面缓存，不释放消息、unknown operation 或归档引用，也不减少服务 1 GiB/1000 资源计费。8 张/20 MiB 仅限制输入消息，不能截断 Agent/工具/Markdown 图片输出。原件保持 PNG/JPEG/GIF/WebP/AVIF，输入三格式不缩减展示；禁止 SVG、HTML 或未知内容执行。
 
@@ -273,7 +282,7 @@ Controller 媒体存储尺寸是未应用 EXIF orientation 的存储画布，动
 
 ## Markdown 映射与链接图片
 
-采用 Markdown 来源采集的完整正文 AST+bindings；不拆正文成散片段、不用正则替换。先验证 partId/revision/textSha256、UTF-16 半开区间和 imageId 唯一归属，再给真实 image/imageReference HAST 节点注入稳定展示。chatBreaks、表格和脚注前缀保留；图片绑定基于原始正文，不因软换行插件改位置。无真实节点、旧 revision/hash 或绑定越界时保留可读正文、阻止对应图读取并重取条目，不能 fallback 到原 src/srcset。未声明格式的工具 raw 文本不走解析；reasoning 只有公共协议纳入独立位置后采用同规则。
+采用 Markdown 来源采集的完整正文 AST+bindings；不拆正文成散片段、不用正则替换。先验证 partId/revision/textSha256、UTF-16 半开区间和 imageId 唯一归属，再给真实 image/imageReference HAST 节点注入稳定展示。chatBreaks、表格和脚注前缀保留；图片绑定基于原始正文，不因软换行插件改位置。无真实节点、旧 revision/hash 或绑定越界时保留可读正文、阻止对应图读取并重取条目，不能 fallback 到原 src/srcset。 自动重取按同 owner 和 entry revision 去重，最多一次；身份复核或 current 准入暂停时保留待处理项，恢复后只重读权威条目或所选归档。同 available ID 元数据冲突使用同一恢复通道，普通网络、完整性或本地解码错误不自动循环读取。重取后仍不合格则保留显式失败与手动刷新入口。未声明格式的工具 raw 文本不走解析；reasoning 只有公共协议纳入独立位置后采用同规则。
 
 `ChatMarkdown` 新增可选受控节点 renderer，只接收经验证的节点 key/内容；缺省仍显示不可用。Session 层负责创建 callback及scope，其他 ChatMarkdown 消费者（例如 Thread）缺省不获得图片访问权。原始 HTML img、code、普通路径零图片读取。
 

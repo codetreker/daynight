@@ -30,6 +30,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import { logout, me } from "../api/auth";
 import type { AuthProvider, CurrentUser, ProjectRole } from "../api/auth-types";
 import { ApiError, invalidateAuthRequests, isAbortError, pauseAuthRequests, subscribeUnauthorized } from "../api/client";
+import { suspendSessionImagePreviews } from '../features/task-agent-session/images/image-preview';
 import type { Project } from "../api/types";
 import { AccountPage } from "../features/management/AccountPage";
 import { ProjectSettingsPanel } from "../features/management/ProjectSettingsPanel";
@@ -246,8 +247,9 @@ const RevalidationOverlay = ({ failed, onRetry }: { readonly failed: boolean; re
   const dialog = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
     const opener = document.activeElement;
+    const resumeImages = suspendSessionImagePreviews();
     dialog.current!.showModal();
-    return () => queueMicrotask(() => { if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); });
+    return () => queueMicrotask(() => { if (opener instanceof HTMLElement && opener.isConnected && !opener.closest('dialog:not([open])')) opener.focus(); resumeImages(); });
   }, []);
   return <dialog ref={dialog} className="auth-revalidation-overlay" aria-label={m.revalidationLabel} onCancel={(event) => event.preventDefault()} onKeyDown={(event) => event.stopPropagation()}>
     {failed ? <div role="alert"><h1>{m.revalidationError}</h1><p>{m.revalidationRetained}</p><button className="button primary" type="button" onClick={onRetry}>{m.revalidationRetry}</button></div> : <div role="status"><span className="spinner" aria-hidden="true" /><p>{m.revalidationLoading}</p></div>}

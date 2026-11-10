@@ -13,54 +13,59 @@ const restore = (style: CSSStyleDeclaration, saved: SavedStyle) => {
   for (const { property, value, priority } of saved.values) style.setProperty(property, value, priority);
 };
 
+/** Shared imperative ownership lets a native modal yield before another modal takes focus. */
+export const acquireBodyScrollLock = (freezePosition = false): (() => void) => {
+  const body = document.body;
+  const root = document.documentElement;
+  let lock = locks.get(body);
+  if (lock === undefined) {
+    lock = { count: 0, overflow: save(body.style, ['overflow', 'overflow-x', 'overflow-y']) };
+    locks.set(body, lock);
+    body.style.overflow = 'hidden';
+  }
+  lock.count += 1;
+  if (freezePosition) {
+    if (!lock.frozen) {
+      lock.frozen = {
+        count: 0, x: window.scrollX, y: window.scrollY,
+        body: save(body.style, ['position', 'top', 'left', 'right', 'bottom', 'width', 'box-sizing']),
+        root: save(root.style, ['overflow', 'overflow-x', 'overflow-y', 'overscroll-behavior', 'overscroll-behavior-x', 'overscroll-behavior-y']),
+      };
+      // Overflow alone does not anchor the page while a software keyboard pans
+      // the visible viewport. Position ownership is independent of modal locks.
+      body.style.setProperty('position', 'fixed');
+      body.style.top = `${-lock.frozen.y}px`;
+      body.style.left = `${-lock.frozen.x}px`;
+      body.style.right = 'auto';
+      body.style.bottom = 'auto';
+      body.style.width = '100%';
+      body.style.boxSizing = 'border-box';
+      root.style.overflow = 'hidden';
+      root.style.overscrollBehavior = 'none';
+    }
+    lock.frozen.count += 1;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const frozen = freezePosition ? lock.frozen : undefined;
+    if (frozen && --frozen.count === 0) {
+      restore(body.style, frozen.body);
+      restore(root.style, frozen.root);
+      delete lock.frozen;
+    }
+    lock.count -= 1;
+    if (lock.count === 0) {
+      restore(body.style, lock.overflow);
+      locks.delete(body);
+    }
+    // Restore after overflow and positioning so the original document extent
+    // is available, even when the last fullscreen and modal owner are the same.
+    if (frozen?.count === 0) window.scrollTo({ left: frozen.x, top: frozen.y, behavior: 'instant' });
+  };
+};
+
 export const useBodyScrollLock = (active: boolean, freezePosition = false) => {
-  useLayoutEffect(() => {
-    if (!active) return;
-    const body = document.body;
-    const root = document.documentElement;
-    let lock = locks.get(body);
-    if (lock === undefined) {
-      lock = { count: 0, overflow: save(body.style, ['overflow', 'overflow-x', 'overflow-y']) };
-      locks.set(body, lock);
-      body.style.overflow = 'hidden';
-    }
-    lock.count += 1;
-    if (freezePosition) {
-      if (!lock.frozen) {
-        lock.frozen = {
-          count: 0, x: window.scrollX, y: window.scrollY,
-          body: save(body.style, ['position', 'top', 'left', 'right', 'bottom', 'width', 'box-sizing']),
-          root: save(root.style, ['overflow', 'overflow-x', 'overflow-y', 'overscroll-behavior', 'overscroll-behavior-x', 'overscroll-behavior-y']),
-        };
-        // Overflow alone does not anchor the page while a software keyboard pans
-        // the visible viewport. Position ownership is independent of modal locks.
-        body.style.setProperty('position', 'fixed');
-        body.style.top = `${-lock.frozen.y}px`;
-        body.style.left = `${-lock.frozen.x}px`;
-        body.style.right = 'auto';
-        body.style.bottom = 'auto';
-        body.style.width = '100%';
-        body.style.boxSizing = 'border-box';
-        root.style.overflow = 'hidden';
-        root.style.overscrollBehavior = 'none';
-      }
-      lock.frozen.count += 1;
-    }
-    return () => {
-      const frozen = freezePosition ? lock.frozen : undefined;
-      if (frozen && --frozen.count === 0) {
-        restore(body.style, frozen.body);
-        restore(root.style, frozen.root);
-        delete lock.frozen;
-      }
-      lock.count -= 1;
-      if (lock.count === 0) {
-        restore(body.style, lock.overflow);
-        locks.delete(body);
-      }
-      // Restore after overflow and positioning so the original document extent
-      // is available, even when the last fullscreen and modal owner are the same.
-      if (frozen?.count === 0) window.scrollTo({ left: frozen.x, top: frozen.y, behavior: 'instant' });
-    };
-  }, [active, freezePosition]);
+  useLayoutEffect(() => active ? acquireBodyScrollLock(freezePosition) : undefined, [active, freezePosition]);
 };

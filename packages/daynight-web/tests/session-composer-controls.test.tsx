@@ -18,6 +18,22 @@ const snapshot = (): SessionSnapshot => ({ ...JSON.parse(readFileSync('../daynig
 const state = () => hydrateSession(emptySessionState(), snapshot(), []);
 const base = () => ({ state: state(), connected: true, onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), onUpdateSetting: vi.fn(async () => {}), onRefreshControls: vi.fn(async () => {}) });
 
+it('dismisses command discovery without stealing focus when an image preview takes over', () => {
+  const props = base();
+  const content = (suppressed: boolean) => <><button>Image preview</button><SessionComposer {...props} suppressKeyboardHint={suppressed} /></>;
+  const view = render(content(false));
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '/review' } });
+  expect(screen.getByRole('listbox')).toBeInTheDocument();
+  const preview = screen.getByRole('button', { name: 'Image preview' });
+  preview.focus();
+  view.rerender(content(true));
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(preview).toHaveFocus();
+  view.rerender(content(false));
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(screen.getByRole('textbox')).toHaveValue('/review');
+});
+
 describe('compact assistant settings', () => {
   it.each([
     ['Model', 'Model', '{Enter}'],
