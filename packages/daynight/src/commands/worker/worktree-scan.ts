@@ -1,5 +1,5 @@
 import path from "node:path";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { WorktreeValidationError } from "./worktree-errors.js";
@@ -24,13 +24,17 @@ const prefix = "daynight-worker:";
 const physicalPointer = async (target: string): Promise<string> => {
   const parent = await resolvePhysicalDirectory(path.dirname(target));
   const resolved = path.join(parent.ancestorPath, ...parent.missingComponents, path.basename(target));
+  let entry;
   try {
-    const entry = await lstat(resolved);
-    if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("A Git registration target must be an ordinary file.");
+    entry = await lstat(resolved);
   } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return resolved;
+    throw error;
   }
-  return resolved;
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) throw new Error("A Git registration target must be an ordinary file with one link.");
+  // Existing targets can have case aliases even when their parent is canonical.
+  // Multiple hard links cannot establish a unique target by path spelling.
+  return realpath(resolved);
 };
 
 // Keep entry failures until their target is known; unrelated target validation
