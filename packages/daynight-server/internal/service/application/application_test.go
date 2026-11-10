@@ -4,19 +4,91 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
+
+type strictIdentity struct {
+	t *testing.T
+}
+
+var _ IdentityOperations = (*strictIdentity)(nil)
+
+func (m *strictIdentity) unexpected(name string) error {
+	m.t.Helper()
+	m.t.Errorf("unexpected identity operation %s", name)
+	return errors.New("unexpected identity operation: " + name)
+}
+
+func (m *strictIdentity) CallbackURL() string {
+	m.unexpected("CallbackURL")
+	return ""
+}
+func (m *strictIdentity) Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error) {
+	return model.Principal{}, m.unexpected("Authenticate")
+}
+func (m *strictIdentity) ValidateLogin(string, string) error { return m.unexpected("ValidateLogin") }
+func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
+	return identitycore.LoginStart{}, m.unexpected("StartLogin")
+}
+func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error) {
+	return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+}
+func (m *strictIdentity) User(context.Context, model.Principal) (model.User, error) {
+	return model.User{}, m.unexpected("User")
+}
+func (m *strictIdentity) Logout(context.Context, model.Principal) error {
+	return m.unexpected("Logout")
+}
+func (m *strictIdentity) CreatePAT(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error) {
+	return identitycore.MintedPAT{}, m.unexpected("CreatePAT")
+}
+func (m *strictIdentity) ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
+	return nil, m.unexpected("ListPATs")
+}
+func (m *strictIdentity) RevokePAT(context.Context, model.Principal, string) error {
+	return m.unexpected("RevokePAT")
+}
+func (m *strictIdentity) UpdatePATExpiry(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error) {
+	return model.PersonalAccessToken{}, m.unexpected("UpdatePATExpiry")
+}
+func (m *strictIdentity) Providers(context.Context) ([]string, error) {
+	return nil, m.unexpected("Providers")
+}
+func (m *strictIdentity) StartDevice(context.Context, string, string) (identitycore.DeviceStart, error) {
+	return identitycore.DeviceStart{}, m.unexpected("StartDevice")
+}
+func (m *strictIdentity) InspectDevice(context.Context, model.Principal, string) (identitycore.DeviceInspection, error) {
+	return identitycore.DeviceInspection{}, m.unexpected("InspectDevice")
+}
+func (m *strictIdentity) DecideDevice(context.Context, model.Principal, string, string, string) error {
+	return m.unexpected("DecideDevice")
+}
+func (m *strictIdentity) RedeemDevice(context.Context, string, string, string, string) (identitycore.MintedPAT, error) {
+	return identitycore.MintedPAT{}, m.unexpected("RedeemDevice")
+}
+func (m *strictIdentity) LogoutDevice(context.Context, model.Principal) error {
+	return m.unexpected("LogoutDevice")
+}
+
+func (m *strictIdentity) PersonalTeamID(context.Context, model.Principal) (string, error) {
+	return "", m.unexpected("PersonalTeamID")
+}
 
 var errAssemblyResourceCall = errors.New("unexpected assembly resource call")
 
@@ -140,17 +212,34 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 	t.Run("production constructors", func(t *testing.T) {
 		database, files := borrowedDependencies(t)
 		app := New(database, files, nil, "https://daynight.test/callback", time.Second)
+		actual, ok := app.Identity.(*identity.Identity)
+		if !ok || actual == nil || actual.CallbackURL() != "https://daynight.test/callback" {
+			t.Fatalf("production Identity = %#v", app.Identity)
+		}
 		verifySharedEngine(t, app)
 	})
 	t.Run("constructor dependencies", func(t *testing.T) {
 		database, files := borrowedDependencies(t)
+		client, err := uniauth.New(uniauth.Config{BaseURL: "https://uniauth.example.com", AppID: "test", AppSecret: "secret"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const callbackURL = "https://daynight.test/callback"
+		marker := identity.New(database, client, callbackURL)
 		capturer := &assemblyCapturer{t: t}
 		var projects *project.Projects
 		var tasks *task.Tasks
 		var attachments *attachment.Attachments
 		var projectEngine *sessioncore.Engine
-		projectCalls, taskCalls, attachmentCalls := 0, 0, 0
-		app := assemble(database, files, nil, "https://daynight.test/callback", time.Second, constructors{
+		projectCalls, taskCalls, attachmentCalls, identityCalls := 0, 0, 0, 0
+		app := assemble(database, files, client, callbackURL, time.Second, constructors{
+			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string) *identity.Identity {
+				identityCalls++
+				if writer != database || actualClient != client || actualCallback != callbackURL {
+					t.Error("Identity received another writer, client or callback")
+				}
+				return marker
+			},
 			projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
 				projectCalls++
 				if actual != database {
@@ -177,12 +266,13 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				return attachments
 			},
 		}, capturer)
-		if projectCalls != 1 || taskCalls != 1 || attachmentCalls != 1 {
-			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d Attachments=%d", projectCalls, taskCalls, attachmentCalls)
+		if projectCalls != 1 || taskCalls != 1 || attachmentCalls != 1 || identityCalls != 1 {
+			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d Attachments=%d Identity=%d", projectCalls, taskCalls, attachmentCalls, identityCalls)
 		}
-		if app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
+		if app.Identity != marker || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
 			t.Fatal("application replaced a constructor result or shared dependency")
 		}
 		verifySharedEngine(t, app)
+		app.Identity = &strictIdentity{t: t}
 	})
 }

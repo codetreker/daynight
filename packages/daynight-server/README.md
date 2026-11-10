@@ -962,8 +962,11 @@ physical work.
 The inner `internal/service/application` suite verifies the business-module
 construction shared by protocol adapters. It records Projects, Tasks and
 Attachments constructor arguments and returned module identities through the
-same production assembly body. The wrappers call real pure constructors; fixed
-business data does not require Project/Task/Attachment workflows or PostgreSQL.
+same production assembly body. Identity construction receives the original writer,
+client and callback, and its concrete result occupies the 18-method output used
+by Authentication and MCP. The wrappers call real pure constructors; fixed
+business data does not require Project/Task/Attachment or Identity workflows or
+PostgreSQL.
 Actual Session/Engine identity, origin propagation and operation/stop/close
 behavior remain real, with store and files borrowed from their external owners.
 

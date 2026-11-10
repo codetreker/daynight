@@ -2,9 +2,13 @@
 package application
 
 import (
+	"context"
+	"net/url"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -25,10 +29,32 @@ import (
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
+// IdentityOperations is the identity output consumed by protocol adapters.
+type IdentityOperations interface {
+	CallbackURL() string
+	ValidateLogin(string, string) error
+	StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error)
+	CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+	Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error)
+	User(context.Context, model.Principal) (model.User, error)
+	Logout(context.Context, model.Principal) error
+	CreatePAT(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
+	ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	RevokePAT(context.Context, model.Principal, string) error
+	UpdatePATExpiry(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
+	Providers(context.Context) ([]string, error)
+	StartDevice(context.Context, string, string) (identitycore.DeviceStart, error)
+	InspectDevice(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
+	DecideDevice(context.Context, model.Principal, string, string, string) error
+	RedeemDevice(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
+	LogoutDevice(context.Context, model.Principal) error
+	PersonalTeamID(context.Context, model.Principal) (string, error)
+}
+
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
-	Identity         *identity.Identity
+	Identity         IdentityOperations
 	OAuth            *oauth.Authenticator
 	OAuthGrants      *oauthcore.GrantLifecycle
 	Memberships      *project.Memberships
@@ -56,6 +82,7 @@ type Application struct {
 }
 
 type constructors struct {
+	identity    func(store.IdentityWriter, *uniauth.Client, string) *identity.Identity
 	projects    func(store.Transactions, *sessioncore.Engine) *project.Projects
 	tasks       func(store.Transactions, task.Capturer) *task.Tasks
 	attachments func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
@@ -63,6 +90,7 @@ type constructors struct {
 
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, capture ...task.Capturer) *Application {
 	return assemble(database, files, client, callbackURL, overlap, constructors{
+		identity: identity.New,
 		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.Projects {
 			return project.NewProjects(database, engine)
 		},
@@ -83,7 +111,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 	sessions := session.New(database, engine)
 	inspection := session.NewInspection(database, engine)
 	return &Application{
-		Identity:         identity.New(database, client, callbackURL),
+		Identity:         construct.identity(database, client, callbackURL),
 		OAuth:            oauth.NewAuthenticator(database),
 		OAuthGrants:      oauthcore.NewGrantLifecycle(database),
 		Memberships:      project.NewMemberships(database),
