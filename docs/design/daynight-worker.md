@@ -65,7 +65,7 @@ macOS Herdr 将本地原运行停止证明和封段作为执行槽释放目标�
 
 ### 本地配置与首次候选
 
-本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort 与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影完整首次候选。独立模式候选读取本机有效 agentControlMode，目标已存在但未采纳模式时仍可上报；只有服务回显模式能力才交换扩展字段，无回显继续本机模式。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
+本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影完整首次候选。独立模式候选读取本机有效 agentControlMode，目标已存在但未采纳模式时仍可上报；只有服务回显模式能力才交换扩展字段，无回显继续本机模式。toolPaths 仅完成本地解析，不进入现有云端候选或运行配置消费。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
@@ -90,6 +90,26 @@ Worker SQLite `claim_native_configurations` 以 project/task/claim 关联不可�
 本地新字段使新执行携带 `validateNativeSelection`，随 claim 配置和 Web launch ticket 冻结。Web 首次启动使用 Provider 原生目录校验；Herdr 在实际 task cwd 运行无业务输入探测。Codex 探测与实际 Herdr 启动共用规范化后的真实 cwd 和启动配置层，包括临时项目信任覆盖；它读取 app-server 配置与完整目录；配置未指定模型时，按原生目录的默认标记与顺序解析有效默认值，启动模型参数仍保持省略。能力验证包含隐藏模型，UI 选择器仍按 hidden 过滤。Claude 不持久保存探测 Session，Copilot SessionFs 读穿原生文件而全部写入仅在内存。Copilot 未解析默认模型而缺少 modelId、Codex OSS/local-provider 无法等效取得能力时明确失败，不猜测模型。恢复原 Session 不重新注入选择。
 
 Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力；新探测前、Herdr 资源释放前与 Worker 退出时等待清理。单个 Herdr adapter 仅等待共享清理，不关闭其它执行的探测准入。探测清理与已归属业务进程停止独立尝试并汇总错误；探测失败或等待不能阻止调用原进程停止。原停止证据可保存，探测清理未确认时仍禁止封段和资源释放。清理成功不证明业务 Agent 未启动，持久化 Herdr 原有启动与停止证明仍独立成立。
+
+### 本地工具路径选择
+
+`platform/tool-path-choice.ts` 拥有 `Tool`、`ToolContext`、`ToolPathChoice`、完整 `ToolPaths` 和纯字符串校验。`parseLocalToolPaths` 将 YAML 省略/null 投影为 auto，并拒绝三工具之外的键；`validateToolPath` 按本机 path API 检查绝对路径、合法 Unicode、控制字符和 4096 UTF-8 字节上限，返回未经修改的输入。Windows 额外要求盘符或完整 UNC share，避免 `\tools\codex.exe` 这类路径隐式依赖当前盘符。
+
+`commands/worker/config.ts` 与 `configuration-source.ts` 共用这个解析器，两种本地配置结果都包含三项 choice；缺文件的默认读取仍不创建配置文件。语法检查不读取程序文件、不启动子进程，也不把路径规范化成另一入口，保留符号链接和词法路径供工具解析器核验。`parseWorkerCloudBootstrap` 继续只投影现有云端字段，不向未协商的协议注入 toolPaths；本地 choice 没有云端“未采纳”状态。
+
+`platform/tool-executables.ts` 提供 `resolveToolLaunch({tool,context,choice,environment,cwd,workerNode?}, operation)`、`verifyToolLaunch(launch, operation)`、`toolCommand(launch, args)` 与 `probeResourceKey(launch, {cwd,environment})`。平台模块不依赖 Worker 调度或 Provider。捕获环境负责 Windows PATH/PATHEXT 大小写归一化；自动搜索按捕获 cwd 解释相对 PATH 项，发布的入口始终为绝对路径。自动 Codex 与 Herdr 使用 PATH，Copilot 的 Web 上下文使用随包 native，Herdr 上下文使用 PATH；显式选择不回退其它安装。
+
+入口适配器支持 native、Node 入口及完整登记的 npm Node shim 模板。Node 入口使用 `workerNode`（缺省 `process.execPath`）的 realpath；shim 静态校验所有分支和参数后解包，不运行 shell 文本。官方 Copilot 根据入口所属 manifest 定位同一安装的 native；官方 Codex 保留 loader，并登记选中的平台 native 和 manifests。Codex loader 通过完整内容摘要识别，登记范围为 0.142.5、0.145.0、0.156.1 的发行字节；未知 loader、额外 shim 命令或 flags 返回 `unsupported_launcher`，调用者可指定受支持 Node 入口或最终 native。该静态识别不证明版本输出或协议兼容。
+
+官方 Codex 的命令固定为 Worker Node 加 `["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`，loader 内容保持原发行字节。`NODE_PATH` 和保留符号链接的 Node 模式可以改变 loader 实际选中的平台包，因此这三个参数把运行时查找约束到静态解析采用的 canonical 文件语义。普通 Node 脚本仍使用 Node 加 canonical script，不附加这些 Codex 专用参数。静态 helper 沿实际 loader 目录的祖先 node_modules 顺序查找，并从 canonical manifest 所在目录构造 native 路径；任何属于另一安装的候选均明确拒绝，不能跳过它改用另一份程序。
+
+`ResolvedToolLaunch` 保存词法入口、canonical 入口、最终工具程序、可选解释器、结构化 `command`、`ToolArtifact[]` 和 `selectionKey`。artifact 记录角色、词法 path、realPath、size 与 SHA-256。哈希通过文件句柄流式读取，核对读取前后 stat、当前 path 的 stat 与 realpath；解析期间变化不能产生有效 launch。`verifyToolLaunch` 重新检查已冻结映射和内容，并从原冻结 entry 再次静态解析 launcher，比对命令及所选 artifacts；它不读取新配置或搜索 PATH。这样即使原 vendor binary 没变，后来安装的高优先级平台包改变了 loader 选择，旧 launch 也会被拒绝。`toolCommand` 仅拼接已有 prefixArgs 与调用方 argv；消费者仍须在启动前核验。
+
+摘要使用最多 128 项的进程内缓存，按 canonical path 与 dev/ino/mode/size/mtimeNs/ctimeNs 完整签名匹配。命中仍打开文件、确认 regular file 并核对句柄、路径 stat 和 realpath；解析所读前缀或完整内容也须与摘要一致。缓存只在稳定性检查通过后更新，不跨进程保存；它减少重复读取大型解释器和 native 文件，不替代映射核验。
+
+`selectionKey` 保留词法 artifact 路径和命令身份，能发现符号链接入口改指；source、目标 revision 和检查时刻不属于身份。独立 `probeResourceKey` 去掉词法别名，并排除已经完成选择的 PATH/PATHEXT，保留 canonical 命令、artifact 内容、cwd 和其它 native 环境，以便同一真实程序的自动与显式别名共享探测清理责任。键本身不实现锁、缓存或进程回收，后续消费者必须承担这些生命周期责任。`ToolSelectionError` 给出 tool/context/stage/code，固定错误消息不包含完整 argv、环境或原始工具输出。
+
+当前 Worker 调度、Task/Bot 冻结记录、Herdr 实例和探测入口尚未消费该选择。因此配置解析只证明本地目标合法，不生成工具版本或应用成功事实；运行接线和云端协商必须分别建立真实消费及兼容保证。选择解析与运行调度的分离理由见[工具路径决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-tool-path-resolution.md)。
 
 ### 云端接收与本机提交
 
@@ -403,6 +423,8 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 ```
 
 ## 验证边界
+
+本地工具路径测试执行真实 YAML 解析与两个配置入口，验证三项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。现有云端 bootstrap 的输出检查保证本地字段不会突破严格协议。
 
 配置验证使用受控时间、延后 I/O 与真实缓存读写，覆盖 cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、mode/native 成组提交与项目同模式重验、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
 

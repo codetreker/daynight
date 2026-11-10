@@ -2160,6 +2160,58 @@ not require parsing stale managed YAML values. `model: null` clears the model;
 omitted Project override fields preserve inheritance, while `args: []` clears
 arguments explicitly.
 
+`worker.toolPaths` accepts local selections for `codex`, `copilot` and `herdr`.
+The parser returns a complete choice for all three tools; an omitted mapping,
+omitted tool or per-tool `null` selects automatic discovery. An empty or
+whitespace-only string is invalid. The mapping itself must be an object and
+rejects other tool names. For example:
+
+```yaml
+worker:
+  toolPaths:
+    codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
+    copilot: null
+    herdr: /opt/homebrew/bin/herdr
+```
+
+These choices are currently parsed locally. Worker Task/Bot launches, existing
+probes and cloud configuration do not consume them yet; saving this mapping does
+not establish that a tool path is applied. Explicit paths must be absolute on
+the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
+characters. Windows paths need a drive or complete UNC share. Values retain all
+spaces and punctuation: the parser does not trim, normalize, expand `~` or
+environment variables, split arguments, or access the filesystem. Provide one
+complete file path; native arguments remain in their existing configuration.
+The shared resolver owns existence, executable format and interpreter checks.
+
+For resolver callers, automatic Codex and Herdr selection searches the captured
+Worker PATH. Automatic Copilot selects the bundled native runtime in Web context
+and the captured PATH in Herdr context; explicit choices select only that entry's
+installation. Supported Node entries use the frozen Worker Node executable, so
+an nvm CLI path does not select the Node beside it. Standard npm Node shims are
+validated as complete known templates and unpacked without executing shell code.
+Official Copilot entries resolve the native package within that installation.
+Official Codex entries retain their loader and record its selected native; the
+registered loader bytes cover releases 0.142.5, 0.145.0 and 0.156.1. Unknown loader
+or shim formats fail with `unsupported_launcher`; a supported Node entry or
+native executable can be selected directly.
+
+Official Codex launches use the frozen Worker Node with
+`["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`.
+The loader bytes remain unchanged. These Node options prevent `NODE_PATH` and
+symlink-preserving module resolution from changing which native package the
+loader selects. Ordinary Node scripts retain Node plus their canonical script
+path. Static package lookup follows the actual loader directory's ancestor
+`node_modules` directories and builds the native path from the canonical package
+manifest location; a candidate from another installation is rejected. Before
+launch, verification repeats this static selection from the frozen entry as well
+as checking recorded files, so installing a higher-priority package invalidates
+the selection even when the previous vendor binary remains unchanged.
+
+Resolution starts no process and does not validate the tool's version or protocol. The
+[Worker design](../../docs/design/daynight-worker.md#本地工具路径选择) describes
+the launch identity and verification responsibilities.
+
 The initial candidate resolves each repository remote and optional projectId to
 an existing service Project, preserving native override intent. Use projectId
 when remote discovery is ambiguous. A local binding requires a valid path when
@@ -2168,7 +2220,7 @@ resetting files or branches. A Project without a prepared binding stays pending.
 Credentials belong in native authentication configuration, outside repository
 URLs and argument lists.
 
-Entry paths are absolute or relative to the configuration directory, never the
+Repository entry paths are absolute or relative to the configuration directory, never the
 launch directory. They do not expand tilde or accept Windows drive-relative
 paths. Duplicate repositories/Projects and overlapping repository/state paths
 are errors. maxConcurrent is positive, recoveryLimit is nonnegative, and

@@ -46,9 +46,10 @@ const launcher = (kind: "native" | "shebang") => {
   };
 };
 const ownerSource = readFileSync(new URL("../../../src/commands/worker/codex-probe-owner.ts", import.meta.url), "utf8")
-  .split("\n").filter(line => !line.startsWith("import ")).join("\n").replaceAll("export ", "");
+  .split("\n").filter(line => !line.startsWith("import ") && !line.startsWith("export { ")).join("\n").replaceAll("export ", "");
 const windows = vm.runInNewContext(`${stripTypeScriptTypes(ownerSource)}\n({ createCodexProbeOwner, captureCodexProbeEnvironment });`, {
   process: { platform: "win32" }, hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup,
+  captureCodexProbeEnvironment: (environment: NodeJS.ProcessEnv) => captureCodexProbeEnvironment(environment, "win32"),
 }) as { createCodexProbeOwner: typeof createCodexProbeOwner; captureCodexProbeEnvironment: typeof captureCodexProbeEnvironment };
 
 const scenarios = [
