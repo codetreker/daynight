@@ -4,8 +4,13 @@ import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const usage = "Usage: node validate-ui-finding.mjs <package/finding.json>\nValidates local files and prints their byte counts and SHA256 hashes. Does not publish or approve a finding.";
+const usage = "Usage: node validate-finding.mjs [--forbid <text>]... <package/finding.json>\nValidates local files and prints their byte counts and SHA256 hashes. Each --forbid value fails validation when it occurs, case-insensitively, in a text file; binary files are listed as unscanned. Does not publish or approve a finding.";
 const fields = new Set(["format", "title", "description", "prototype", "evidence", "supportingFiles"]);
+// The UI-only format predates topic skills and keeps its mandatory prototype.
+const formats = new Map([
+  ["daynight-finding-v1", { prototypeRequired: false }],
+  ["daynight-ui-finding-v1", { prototypeRequired: true }],
+]);
 
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -37,9 +42,17 @@ function parseJson(bytes, label) {
   catch { throw new Error(`Invalid JSON in ${label}`); }
 }
 
+// Text is valid UTF-8 without NUL bytes; screenshots, PDFs and other binary files
+// cannot be scanned for private strings and need visual review instead.
+function decodeText(bytes) {
+  if (bytes.includes(0)) return undefined;
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return undefined; }
+}
+
 // Package descriptions use inline links or single-line reference definitions.
 // This is deliberately not a general Markdown renderer.
-function localLinks(markdown) {
+export function descriptionLinks(markdown) {
   let fence;
   const prose = markdown.split("\n").map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
@@ -120,7 +133,8 @@ function localLinks(markdown) {
   });
 }
 
-export async function validateUiFinding(manifestPath) {
+export async function validateFinding(manifestPath, { forbid = [] } = {}) {
+  check(Array.isArray(forbid) && forbid.every((value) => typeof value === "string" && value.trim().length > 0), "Each forbidden value must be a nonempty string.");
   const absolute = path.resolve(manifestPath);
   const root = path.dirname(absolute);
   const rootStat = await lstat(root);
@@ -129,15 +143,17 @@ export async function validateUiFinding(manifestPath) {
   const raw = await regularFile(root, manifestName);
   const manifest = parseJson(raw, manifestName);
   check(manifest !== null && typeof manifest === "object" && !Array.isArray(manifest), "finding.json must describe one package.");
-  check(manifest.format === "daynight-ui-finding-v1", "Unsupported finding format.");
+  const format = formats.get(manifest.format);
+  check(format, "Unsupported finding format.");
   for (const field of Object.keys(manifest)) check(fields.has(field), `Unknown finding field: ${field}`);
   check(typeof manifest.title === "string" && manifest.title.trim().length > 0 && !/[\r\n]/.test(manifest.title), "title must be one nonempty line.");
-  for (const field of ["description", "prototype"]) check(typeof manifest[field] === "string" && manifest[field].length > 0, `${field} is required.`);
+  check(typeof manifest.description === "string" && manifest.description.length > 0, "description is required.");
+  if (format.prototypeRequired || manifest.prototype !== undefined) check(typeof manifest.prototype === "string" && manifest.prototype.length > 0, "prototype is required.");
   check(Array.isArray(manifest.evidence) && manifest.evidence.length > 0, "evidence must list at least one file.");
   check(manifest.supportingFiles === undefined || Array.isArray(manifest.supportingFiles), "supportingFiles must be a file list.");
 
   const contents = new Map([[manifestName, raw]]);
-  const requested = [manifest.description, manifest.prototype, ...manifest.evidence, ...(manifest.supportingFiles ?? [])];
+  const requested = [manifest.description, ...(manifest.prototype === undefined ? [] : [manifest.prototype]), ...manifest.evidence, ...(manifest.supportingFiles ?? [])];
   for (const relative of requested) {
     relativeFile(relative);
     check(!contents.has(relative), `Duplicate package file: ${relative}`);
@@ -160,29 +176,62 @@ export async function validateUiFinding(manifestPath) {
     if (!contents.has(artifact)) contents.set(artifact, await regularFile(root, artifact));
   }
 
-  for (const link of localLinks(contents.get(manifest.description).toString("utf8"))) {
+  for (const link of descriptionLinks(contents.get(manifest.description).toString("utf8"))) {
     // The file supplies an inline task description; its links use the task attachment root.
     check(contents.has(link), `Description attachment link is not in the file inventory: ${link}`);
   }
+
+  let privacyScan = null;
+  if (forbid.length > 0) {
+    const needles = forbid.map((value) => value.toLowerCase());
+    const matches = [], unscanned = [];
+    for (const [relative, bytes] of contents) {
+      const text = decodeText(bytes);
+      if (text === undefined) { unscanned.push(relative); continue; }
+      const haystack = text.toLowerCase();
+      needles.forEach((needle, index) => { if (haystack.includes(needle)) matches.push(`${relative}: ${forbid[index]}`); });
+    }
+    check(matches.length === 0, `Forbidden text found:\n${matches.sort().join("\n")}`);
+    privacyScan = { values: forbid.length, unscanned: unscanned.sort((a, b) => a.localeCompare(b, "en")) };
+  }
+
   return {
     valid: true,
+    format: manifest.format,
     title: manifest.title,
     directory: root,
-    limits: "Checks package structure and current bytes only; does not judge issue independence, reproduction, privacy, prototype behavior, or permission to publish.",
+    privacyScan,
+    limits: "Checks package structure, current bytes and supplied forbidden strings in text files only; does not judge issue independence, reproduction, images, prototype behavior, or permission to publish.",
     files: [...contents.entries()].sort(([a], [b]) => a.localeCompare(b, "en")).map(([relative, bytes]) => ({
       path: relative, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
     })),
   };
 }
 
+export function parseArguments(args) {
+  if (args.length === 1 && args[0] === "--help") return { help: true };
+  const forbid = [];
+  let manifest;
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index];
+    if (value === "--forbid") {
+      const next = args[++index];
+      check(next !== undefined && next.trim().length > 0, "--forbid needs a nonempty value.");
+      forbid.push(next);
+    } else {
+      check(!value.startsWith("-") && manifest === undefined, usage);
+      manifest = value;
+    }
+  }
+  check(manifest !== undefined, usage);
+  return { manifest, forbid };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const args = process.argv.slice(2);
-    if (args.length === 1 && args[0] === "--help") console.log(usage);
-    else {
-      check(args.length === 1 && !args[0].startsWith("-"), usage);
-      console.log(JSON.stringify(await validateUiFinding(args[0]), null, 2));
-    }
+    const options = parseArguments(process.argv.slice(2));
+    if (options.help) console.log(usage);
+    else console.log(JSON.stringify(await validateFinding(options.manifest, { forbid: options.forbid }), null, 2));
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

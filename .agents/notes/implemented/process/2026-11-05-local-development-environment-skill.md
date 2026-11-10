@@ -20,8 +20,10 @@ or bundled tasks whose user impact and acceptance conditions are unclear.
 ## Decision
 
 The repository owns the [prepare-daynight-local skill](../../../skills/prepare-daynight-local/SKILL.md)
-and its environment, local test, website and experience-audit references.
-It records resource identity before mutation, binds artifacts
+and its environment, local test and website references. This decision first
+placed the experience audit in the same skill; the investigation skills described
+in [Local Investigation Skill Family](2026-11-06-local-investigation-skill-family.md)
+now own it. The environment skill records resource identity before mutation, binds artifacts
 to a selected source revision, and distinguishes preparation, installation,
 process cutover and Agent command verification. It uses
 the existing native/Compose deployment and development installer rather than a
@@ -78,8 +80,10 @@ claim, execution and native session. A new Controller generation is distinguishe
 from a new execution, and recovery does not replay confirmed bootstrap input or
 retry a failed native turn automatically.
 
-The UI audit starts from a user's intended result and selects representative
-data and states for that path. Product principles, WCAG criteria and usability
+The UI audit, now the investigation family's
+[audit-daynight-ui](../../../skills/audit-daynight-ui/SKILL.md) topic skill,
+starts from a user's intended result and selects representative data and states
+for that path. Product principles, WCAG criteria and usability
 heuristics guide exploration; observed impact determines whether a candidate
 becomes an improvement. It checks responsive geometry and actual interaction,
 including failures that cause no horizontal overflow. It also records ruled-out
@@ -94,11 +98,13 @@ Prototypes and complete review inputs are task attachments and are read back
 before handoff. Local UI fixtures remain separate from production delivery tasks.
 
 Two small local helpers support the fragile parts of this workflow. Evidence
-capture checks the explicit loopback origin and semantic readiness, then compares
-selected state and geometry before and after capture. It labels inconsistent or
-failed attempts and never silently changes screenshot capture into print output.
-The finding-package validator checks one package's declared files, supported
-attachment links and current byte hashes. Description links resolve from the
+capture, which stays in the environment skill, checks the explicit loopback origin
+and semantic readiness, then compares selected state and geometry before and after
+capture. It labels inconsistent or failed attempts and never silently changes
+screenshot capture into print output. The finding-package validator, now part of
+[discover-daynight-improvements](../../../skills/discover-daynight-improvements/SKILL.md),
+checks one package's declared files, supported attachment links and current byte
+hashes. Description links resolve from the
 task attachment root, independently of the local Markdown source location, and
 URL decoding preserves the Web consumer's segment boundaries. It does not judge
 issue independence, prototype behavior or publication permission. Production mutations remain in
