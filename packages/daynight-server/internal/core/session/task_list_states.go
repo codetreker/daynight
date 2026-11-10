@@ -10,13 +10,14 @@ import (
 )
 
 type taskSessionLiveState struct {
-	Fence           sp.ControllerFence
-	ConnectionState string
-	Synchronized    bool
-	SourceSynced    bool
-	Activity        string
-	Capabilities    sp.Capabilities
-	CurrentTurnID   *string
+	ContentReadVersion int
+	Fence              sp.ControllerFence
+	ConnectionState    string
+	Synchronized       bool
+	SourceSynced       bool
+	Activity           string
+	Capabilities       sp.Capabilities
+	CurrentTurnID      *string
 }
 
 func (s *Engine) TaskListSessionStates(ctx context.Context, sources []store.TaskSessionSource) (map[string]model.SessionListState, error) {
@@ -84,7 +85,7 @@ func (s *Engine) readTaskSessionLiveStates(ctx context.Context, op *Operation, s
 		cell.mu.Lock()
 		var state *taskSessionLiveState
 		if value := cell.value; value != nil {
-			state = &taskSessionLiveState{Fence: value.Snapshot.ControllerFence, ConnectionState: value.Snapshot.ConnectionState, Synchronized: value.Snapshot.Synchronized, SourceSynced: value.Synced, Activity: value.Snapshot.Activity, Capabilities: value.Snapshot.Capabilities, CurrentTurnID: copyObservationPointer(value.Snapshot.CurrentTurnID)}
+			state = &taskSessionLiveState{Fence: value.Snapshot.ControllerFence, ConnectionState: value.Snapshot.ConnectionState, Synchronized: value.Snapshot.Synchronized, SourceSynced: value.Synced, ContentReadVersion: value.ContentReadVersion, Activity: value.Snapshot.Activity, Capabilities: value.Snapshot.Capabilities, CurrentTurnID: copyObservationPointer(value.Snapshot.CurrentTurnID)}
 		}
 		cell.mu.Unlock()
 		if err := taskSessionReadAdmission(ctx, op); err != nil {

@@ -3,6 +3,7 @@ import type { PendingContent } from "./pending-content.js";
 import { createHash } from "node:crypto";
 import { parseSessionResource, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
 import type { TimelinePage } from "../../session/controller-protocol.js";
+import { createInspectionContent, type LocalInspectionQuery, type LocalEntryQuery } from "./inspection-content.js";
 
 export type LocalTimelineQuery = { historyEpoch: string; direction: "tail" | "before" | "after"; cursor: string | null; limit: number };
 const sequence = (value: string): bigint => {
@@ -13,6 +14,7 @@ const sequence = (value: string): bigint => {
 type ContentTransactions = { read: <T>(action: () => T) => T; write: <T>(action: () => T) => T };
 
 export const createLocalSessionContent = (store: PendingContent, sessionId: string, transactions: ContentTransactions) => {
+  const inspection = createInspectionContent(store, sessionId);
   const resourcesFor = (items: readonly TimelineEntry[]): SessionResource[] => {
     const ids = new Set<string>();
     for (const item of items) {
@@ -89,6 +91,8 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
     },
   };
   return {
+    readInspection: (query: LocalInspectionQuery) => transactions.read(() => inspection.readInspection(query)),
+    readEntryChunk: (query: LocalEntryQuery) => transactions.read(() => inspection.readEntryChunk(query)),
     readTimeline: (query: LocalTimelineQuery) => transactions.read(() => content.readTimeline(query)),
     pendingInteractions: () => transactions.read(() => content.pendingInteractions()),
     saveResource: (resource: SessionResource, bytes?: Uint8Array): void => transactions.write(() => content.saveResource(resource, bytes)),

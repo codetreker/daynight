@@ -42,6 +42,7 @@ type Application struct {
 	Tasks            *task.Tasks
 	TaskObservations *task.Observations
 	TaskInspection   *session.Inspection
+	TaskHistory      *session.History
 	TaskSearch       store.TaskSearchReader
 	TaskSteps        *task.TaskSteps
 	TaskThreads      *task.TaskThreads
@@ -79,6 +80,8 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 	}
 	engine := sessioncore.NewEngine(files)
 	workerReadOnly := worker.NewReadOnly(database)
+	sessions := session.New(database, engine)
+	inspection := session.NewInspection(database, engine)
 	return &Application{
 		Identity:         identity.New(database, client, callbackURL),
 		OAuth:            oauth.NewAuthenticator(database),
@@ -93,13 +96,14 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		BotDeletions:     bot.NewDeletions(database, files, engine),
 		Tasks:            construct.tasks(database, capturer),
 		TaskObservations: task.NewObservations(database, engine),
-		TaskInspection:   session.NewInspection(database, engine),
+		TaskInspection:   inspection,
+		TaskHistory:      session.NewHistory(inspection, sessions),
 		TaskSearch:       database,
 		TaskSteps:        task.NewTaskSteps(database, capturer),
 		TaskThreads:      task.NewTaskThreads(database, capturer),
 		TaskSync:         task.NewTaskSync(database, engine, overlap),
 		Attachments:      construct.attachments(database, database, files),
 		Engine:           engine,
-		Sessions:         session.New(database, engine),
+		Sessions:         sessions,
 	}
 }

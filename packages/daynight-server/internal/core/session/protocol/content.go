@@ -23,9 +23,22 @@ type ContentResult struct {
 	Offset        string          `json:"offset,omitempty"`
 	Data          string          `json:"data,omitempty"`
 	EOF           bool            `json:"eof,omitempty"`
+	MessageItems  []MessageItem   `json:"-"`
+	EntryID       string          `json:"entryId,omitempty"`
+	Revision      string          `json:"revision,omitempty"`
+	SHA256        string          `json:"sha256,omitempty"`
+	ByteLength    string          `json:"byteLength,omitempty"`
+	Fragment      string          `json:"fragment,omitempty"`
+	NextCursor    *string         `json:"nextCursor,omitempty"`
 }
 
 func (v ContentResult) MarshalJSON() ([]byte, error) {
+	if v.Kind == "inspect_page" {
+		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.MessageItems, "beforeCursor": v.BeforeCursor, "hasMoreBefore": v.HasMoreBefore})
+	}
+	if v.Kind == "entry_chunk" {
+		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "entryId": v.EntryID, "revision": v.Revision, "sha256": v.SHA256, "byteLength": v.ByteLength, "offset": v.Offset, "fragment": v.Fragment, "nextCursor": v.NextCursor, "eof": v.EOF})
+	}
 	if v.Kind == "timeline" {
 		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.Items, "resources": v.Resources, "beforeCursor": v.BeforeCursor, "afterCursor": v.AfterCursor, "hasMoreBefore": v.HasMoreBefore, "hasMoreAfter": v.HasMoreAfter})
 	}
@@ -40,6 +53,12 @@ func contentResult(data json.RawMessage) bool {
 	}
 	if json.Unmarshal(data, &k) != nil {
 		return false
+	}
+	if k.Kind == "inspect_page" {
+		return len(data) <= MaxHistoryResponseBytes && validateObject(data, schema{"kind": enum("inspect_page"), "historyEpoch": identifier, "items": many(inspectionItem, 0, 200, "entryId"), "beforeCursor": optional(relayString(MaxHistoryCursorBytes)), "hasMoreBefore": boolean})
+	}
+	if k.Kind == "entry_chunk" {
+		return len(data) <= MaxHistoryResponseBytes && validateObject(data, schema{"kind": enum("entry_chunk"), "historyEpoch": identifier, "entryId": identifier, "revision": sequence, "sha256": pattern(`^[a-f0-9]{64}$`), "byteLength": sequence, "offset": zeroSequence, "fragment": func(v json.RawMessage) bool { return stringValue(v, true, MaxEntryChunkBytes) }, "nextCursor": optional(relayString(MaxHistoryCursorBytes)), "eof": boolean})
 	}
 	if k.Kind == "timeline" {
 		return validateObject(data, schema{"kind": enum("timeline"), "historyEpoch": identifier, "items": many(func(v json.RawMessage) bool { _, err := DecodeTimeline(v); return err == nil }, 0, 200, "entryId"), "resources": many(func(v json.RawMessage) bool { _, err := DecodeResource(v); return err == nil }, 0, 1000, "resourceId"), "beforeCursor": optional(relayString(512)), "afterCursor": optional(relayString(512)), "hasMoreBefore": boolean, "hasMoreAfter": boolean})
@@ -79,6 +98,28 @@ func DecodeContentResult(data []byte) (ContentResult, error) {
 			}
 			previous = n
 			out.Items = append(out.Items, entry)
+		}
+	}
+	if out.Kind == "entry_chunk" {
+		size, _ := strconv.ParseInt(out.ByteLength, 10, 64)
+		offset, _ := strconv.ParseInt(out.Offset, 10, 64)
+		if offset > size || int64(len(out.Fragment)) > size-offset || out.EOF != (int64(len(out.Fragment)) == size-offset) || out.EOF != (out.NextCursor == nil) || !out.EOF && len(out.Fragment) == 0 {
+			return ContentResult{}, errInvalid
+		}
+	}
+	if out.Kind == "inspect_page" {
+		var raw struct {
+			Items []MessageItem `json:"items"`
+		}
+		_ = json.Unmarshal(data, &raw)
+		out.MessageItems = raw.Items
+		var previous int64
+		for _, item := range out.MessageItems {
+			n, _ := strconv.ParseInt(item.EntrySeq, 10, 64)
+			if n <= previous {
+				return ContentResult{}, errInvalid
+			}
+			previous = n
 		}
 	}
 	return out, nil

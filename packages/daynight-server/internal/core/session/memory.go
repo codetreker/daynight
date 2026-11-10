@@ -22,6 +22,7 @@ type timelineVersion struct {
 	Hash     [32]byte
 }
 type liveSession struct {
+	ContentReadVersion  int
 	LastSeen            *time.Time
 	Snapshot            sp.Snapshot
 	Events              []json.RawMessage

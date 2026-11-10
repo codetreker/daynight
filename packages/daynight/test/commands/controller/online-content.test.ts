@@ -11,7 +11,7 @@ import type { ControllerLaunchTicket } from '../../../src/commands/controller/la
 import { RELAY_LIMITS, parseControllerMessage } from '../../../src/session/controller-protocol.js';
 import snapshotFixture from '../../session/fixtures/snapshot.json' with { type: 'json' };
 
-it('hydrates over real WebSockets after offline compaction and fences a page before newer events', async () => {
+it.each(['timeline', 'inspect_page'] as const)('hydrates over real WebSockets after offline compaction and fences a %s page before newer events', async kind => {
   const base = path.resolve(import.meta.dirname, '../../../../../.tmp/controller-tests');
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, 'online-'));
@@ -42,7 +42,8 @@ it('hydrates over real WebSockets after offline compaction and fences a page bef
     const received: ReturnType<typeof parseControllerMessage>[] = [];
     const connection = once(server, 'connection');
     relay = createControllerRelay(ticket, journal, { onConnection() {}, onCommand: async () => { throw new Error('Unexpected native input'); }, onError: error => errors.push(error) });
-    const [socket] = await connection;
+    const [socket, request] = await connection;
+    expect(request.headers['x-daynight-content-read-version']).toBe('1');
     socket.on('message', (raw: Buffer) => {
       const m = parseControllerMessage(JSON.parse(raw.toString())); received.push(m);
       if (m.type === 'hello') {
@@ -62,20 +63,26 @@ it('hydrates over real WebSockets after offline compaction and fences a page bef
     await vi.waitFor(() => expect(relay!.connected()).toBe(true));
     // Capture the page synchronously in readTimeline, then append another native
     // event. The transport must send that event only after the page response.
-    const originalRead = journal.readTimeline;
     const lateId = randomUUID();
-    journal.readTimeline = query => {
-      const page = originalRead(query);
-      queueMicrotask(() => journal.projectTimeline({ entryId: lateId, revision: '1', kind: 'reasoning', text: 'After page snapshot' }));
-      return page;
-    };
-    socket.send(JSON.stringify({ ...fence, type: 'content_request', requestId: randomUUID(), kind: 'timeline', historyEpoch, direction: 'tail', cursor: null, limit: 100 }));
+    const appendAfterRead = () => queueMicrotask(() => journal.projectTimeline({ entryId: lateId, revision: '1', kind: 'reasoning', text: 'After page snapshot' }));
+    if (kind === 'timeline') {
+      const originalRead = journal.readTimeline;
+      journal.readTimeline = query => { const page = originalRead(query); appendAfterRead(); return page; };
+    } else {
+      const originalRead = journal.readInspection;
+      journal.readInspection = query => { const page = originalRead(query); appendAfterRead(); return page; };
+    }
+    socket.send(JSON.stringify({ ...fence, type: 'content_request', requestId: randomUUID(), kind, historyEpoch, ...(kind === 'timeline' ? { direction: 'tail' } : { responseOverhead: 4096 }), cursor: null, limit: 100 }));
     await vi.waitFor(() => expect(received.some(m => m.type === 'content_response')).toBe(true));
     const responseIndex = received.findIndex(m => m.type === 'content_response');
     const response = received[responseIndex]!;
-    expect(response.type === 'content_response' && response.result?.kind === 'timeline' && response.result.items.length).toBe(10);
+    expect(response.type === 'content_response' && response.result?.kind === kind && response.result.items.length).toBe(10);
     await vi.waitFor(() => expect(received.slice(responseIndex + 1).some(m => m.type === 'events' && m.events.some(e => e.kind === 'timeline_upsert' && e.payload.entryId === lateId))).toBe(true));
     expect(errors).toEqual([]);
+    const reconnect = once(server, 'connection', { signal: AbortSignal.timeout(3000) });
+    socket.close();
+    const [, reconnectedRequest] = await reconnect;
+    expect(reconnectedRequest.headers['x-daynight-content-read-version']).toBe('1');
   } finally {
     relay?.close(); journal.close();
     for (const client of server.clients) client.terminate();

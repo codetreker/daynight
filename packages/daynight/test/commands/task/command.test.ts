@@ -30,6 +30,10 @@ const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
     inspectTaskSession: vi.fn<ApiClient["inspectTaskSession"]>(), listTaskWork: vi.fn<ApiClient["listTaskWork"]>(),
+    currentTaskSession: vi.fn<ApiClient["currentTaskSession"]>(async () => { throw new Error("Unexpected Session read."); }),
+    listTaskSessions: vi.fn<ApiClient["listTaskSessions"]>(async () => { throw new Error("Unexpected Session read."); }),
+    readTaskSession: vi.fn<ApiClient["readTaskSession"]>(async () => { throw new Error("Unexpected Session read."); }),
+    readTaskSessionEntry: vi.fn<ApiClient["readTaskSessionEntry"]>(async () => { throw new Error("Unexpected Session read."); }),
     getObservedTask: vi.fn<ApiClient["getObservedTask"]>().mockResolvedValue(observe(task)),
     listObservedTasks: vi.fn<ApiClient["listObservedTasks"]>().mockResolvedValue({ items: [observe(task)], partial: false, unsupported: false }),
     getObservedTaskGraph: vi.fn<ApiClient["getObservedTaskGraph"]>().mockResolvedValue(observeGraph(graph)),

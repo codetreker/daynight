@@ -41,6 +41,9 @@ type BotRunner func(context.Context, model.Principal, string, string, func(model
 type Execution struct {
 	*Engine
 	browserRun              BrowserRunner
+	taskContentReadRun      BrowserRunner
+	taskReadRun             TaskRunner
+	taskArchiveReadRun      ArchiveRunner
 	controllerRun           ControllerRunner
 	archiveRun              ArchiveRunner
 	archivePreflightRun     ArchivePreflightRunner

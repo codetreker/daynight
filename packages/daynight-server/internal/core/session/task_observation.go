@@ -88,6 +88,9 @@ func (s *Engine) InspectTaskSession(ctx context.Context, p model.Principal, sour
 		kind = "live"
 	}
 	out := sp.TaskSessionInspection{SchemaVersion: 1, ProjectID: source.ProjectID, TaskID: source.TaskID, SessionID: source.Session.SessionID, CurrentBinding: current, Fence: source.Session.Fence, Source: kind, Session: observation}
+	if kind == "live" && state != nil {
+		out.ContentReadVersion = state.ContentReadVersion
+	}
 	if err := taskSessionReadAdmission(ctx, op); err != nil {
 		return sp.TaskSessionInspection{}, err
 	}

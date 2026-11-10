@@ -29,7 +29,7 @@ type serviceCalls struct {
 	BeginArchiveReserved           func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, io.Closer) (archiveOperation, error)
 	BindTerminalConnection         func(context.Context, model.Principal, string, string, string, v2.Envelope, string) error
 	BrowserPoll                    func(context.Context, model.Principal, string, string, string, string) (sp.Snapshot, []map[string]any, string, error)
-	Connect                        func(context.Context, string, sp.ControllerMessage, string) (sp.Snapshot, error)
+	Connect                        func(context.Context, string, sp.ControllerMessage, string, int) (sp.Snapshot, error)
 	Current                        func(context.Context, model.Principal, string, string) (map[string]any, error)
 	CurrentTerminal                func(context.Context, model.Principal, string, string) (map[string]any, error)
 	CurrentWithStartup             func(context.Context, model.Principal, string, string) (map[string]any, error)
@@ -82,7 +82,7 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		BeginArchiveReserved:           archiveOperationCall(service.BeginArchiveReserved),
 		BindTerminalConnection:         service.BindTerminalConnection,
 		BrowserPoll:                    service.BrowserPoll,
-		Connect:                        service.Connect,
+		Connect:                        service.ConnectWithContentRead,
 		Current:                        service.Current,
 		CurrentTerminal:                service.CurrentTerminal,
 		CurrentWithStartup:             service.CurrentWithStartup,

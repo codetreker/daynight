@@ -676,7 +676,7 @@ export const createApiClient = (options: {
   };
 
   return {
-    ...createTaskSessionClient((input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse }, [200])),
+    ...createTaskSessionClient((input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }) }, [200])),
     webhookRequest: async <T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T> => {
       const user = resourceId(input.userId);
       if (user !== input.userId || !/^\/(?:webhook-event-types|me\/webhooks|teams\/[0-9a-f-]{36}\/webhooks)(?:[/?]|$)/.test(input.path)) throw new Error("Invalid webhook request scope.");

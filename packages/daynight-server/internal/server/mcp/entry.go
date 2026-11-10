@@ -258,6 +258,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	}
 	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()
+	historyRead := false
 	if r.Method == http.MethodPost {
 		// Input reservations are independent of tool budgets: a tool may need a
 		// control slot while the SDK and its handlers still retain this body.
@@ -275,11 +276,24 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 			httpx.WriteBodyError(w, r, e.logger, "mcp", "read", err)
 			return
 		}
+		historyRead, err = sessionReadAdmission(body, s.actor.RequestID, r.Header.Get("MCP-Name"))
+		if err != nil {
+			httpx.WriteError(w, r, e.logger, "mcp", "session_read_admission", err)
+			return
+		}
 		body, s.actor.rpcResponseID, s.batchKey, s.batchIDs = prepareRPCIDs(body)
 		s.actor.rpcBatch = s.batchKey != ""
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	} else {
 		httpx.CloseUnreadBody(w, r)
+	}
+	if historyRead {
+		bounded := &sessionReadResponseWriter{ResponseWriter: w}
+		e.http.ServeHTTP(&safeSDKWriter{ResponseWriter: bounded}, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
+		if err := bounded.finish(r); err != nil {
+			httpx.LogFailure(e.logger, r.Context(), "mcp", "session_read_delivery", err)
+		}
+		return
 	}
 	e.http.ServeHTTP(&safeSDKWriter{ResponseWriter: w}, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
 }

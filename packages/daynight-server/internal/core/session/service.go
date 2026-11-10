@@ -301,6 +301,13 @@ func (s *Execution) AuthenticateController(ctx context.Context, token string) er
 	return s.grantRun(ctx, hash[:], func(*Access) error { return nil })
 }
 func (s *Execution) Connect(ctx context.Context, token string, h sp.ControllerMessage, instance string) (sp.Snapshot, error) {
+	return s.ConnectWithContentRead(ctx, token, h, instance, 0)
+}
+
+func (s *Execution) ConnectWithContentRead(ctx context.Context, token string, h sp.ControllerMessage, instance string, contentReadVersion int) (sp.Snapshot, error) {
+	if contentReadVersion != 0 && contentReadVersion != 1 {
+		return sp.Snapshot{}, fault("unsupported_protocol", "Unsupported content read version.")
+	}
 	var out sp.Snapshot
 	hash := sha256.Sum256([]byte(token))
 	err := s.grantRun(ctx, hash[:], func(access *Access) error {
@@ -335,6 +342,7 @@ func (s *Execution) Connect(ctx context.Context, token string, h sp.ControllerMe
 		if err := createLive(tx, r); err != nil {
 			return err
 		}
+		r.Live.ContentReadVersion = contentReadVersion
 		if err := tx.dao.ConnectSession(ctx, id, s.instance, now, r.GrantExpiry); err != nil {
 			return err
 		}

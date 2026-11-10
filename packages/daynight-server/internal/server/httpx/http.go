@@ -243,10 +243,16 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusRequestEntityTooLarge
 		case "capability_error", "cleanup_unknown", "io_error", "offline", "controller_offline", "relay_instance_unavailable":
 			status = http.StatusServiceUnavailable
-		case "unsupported":
+		case "unsupported", "upgrade_required":
 			status = http.StatusNotImplemented
 		case "busy":
 			status = http.StatusTooManyRequests
+		case "history_unavailable":
+			status = http.StatusServiceUnavailable
+		case "unsupported_mode":
+			status = http.StatusBadRequest
+		case "content_changed", "history_pending", "execution_changed":
+			status = http.StatusConflict
 		case "content_unavailable":
 			status = http.StatusBadGateway
 		case "resource_busy":

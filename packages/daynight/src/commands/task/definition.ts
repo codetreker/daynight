@@ -1,9 +1,10 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
 import { taskStatuses } from "../../task/status.js";
 import type { TaskSessionCommandModule } from "./session/registry.js";
+import { taskSessionReadModule } from "./session/read-definition.js";
 
 // Session modules register metadata here and load their handlers only on dispatch.
-export const taskSessionModules: readonly TaskSessionCommandModule[] = [];
+export const taskSessionModules: readonly TaskSessionCommandModule[] = [taskSessionReadModule];
 const sessionDefinitions = taskSessionModules.flatMap(module => module.definitions);
 export const taskSessionDefinitions: readonly CommandDefinition[] = sessionDefinitions.length === 0 ? [] : [{
   name: "session", description: "Inspect and interact with a specific Task Session", commands: sessionDefinitions,
