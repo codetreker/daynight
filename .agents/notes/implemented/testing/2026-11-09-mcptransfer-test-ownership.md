@@ -31,6 +31,9 @@ The [Create operation decision](2026-11-10-mcptransfer-create-test-boundary.md)
 assigns the directly invoked `Create` operation and active-slot matrix to Core,
 while Service controls the operation result. Other direct Lifecycle operations
 remain outside that isolation.
+The [reservation test decision](2026-11-10-private-transfer-reservation-test-ownership.md)
+separates Core reservation rules from the real PostgreSQL receipt and accounting
+proofs; it does not change the Service operation boundary.
 
 Uploads control the directly invoked attachment operation. The private
 `Uploads.admitTransfer` adapter is instance-owned and returns the narrow
