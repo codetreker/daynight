@@ -109,6 +109,8 @@ Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力
 
 `selectionKey` 保留词法 artifact 路径和命令身份，能发现符号链接入口改指；source、目标 revision 和检查时刻不属于身份。独立 `probeResourceKey` 去掉词法别名，并排除已经完成选择的 PATH/PATHEXT，保留 canonical 命令、artifact 内容、cwd 和其它 native 环境，以便同一真实程序的自动与显式别名共享探测清理责任。键本身不实现锁、缓存或进程回收，后续消费者必须承担这些生命周期责任。`ToolSelectionError` 给出 tool/context/stage/code，固定错误消息不包含完整 argv、环境或原始工具输出。
 
+资源键在 Windows 归一化检索键后排除 PATH/PATHEXT；POSIX 保持环境名大小写语义，普通 native 变量 `Path` 不能被当作 `PATH` 排除。
+
 当前 Worker 调度、Task/Bot 冻结记录、Herdr 实例和探测入口尚未消费该选择。因此配置解析只证明本地目标合法，不生成工具版本或应用成功事实；运行接线和云端协商必须分别建立真实消费及兼容保证。选择解析与运行调度的分离理由见[工具路径决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-tool-path-resolution.md)。
 
 ### 云端接收与本机提交

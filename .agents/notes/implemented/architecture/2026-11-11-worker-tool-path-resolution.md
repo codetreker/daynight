@@ -60,6 +60,8 @@ artifact paths so changed symlink mappings remain detectable. A separate
 retaining canonical content, cwd and other native environment isolation. Two
 aliases for the same program can therefore share a future probe cleanup owner
 without losing their distinct entry-verification obligations.
+Windows search keys are normalized before exclusion. POSIX environment names
+remain case-sensitive, so a native variable such as `Path` still isolates probes.
 
 A bounded process-local digest cache avoids repeatedly streaming large Node and
 native executables. Its 128 entries require the same canonical path and complete

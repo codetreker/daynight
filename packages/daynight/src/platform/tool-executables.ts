@@ -203,6 +203,7 @@ export const probeResourceKey = (launch: ResolvedToolLaunch, scope: { cwd: strin
   return hash({ tool: launch.tool, command: launch.command, artifacts, cwd: scope.cwd,
     // PATH selects an entry only at resolution. Reintroducing it here would let
     // auto and an absolute alias evade the same unresolved cleanup owner.
-    environment: Object.fromEntries(Object.keys(environment).filter(key => key.toUpperCase() !== "PATH" && key.toUpperCase() !== "PATHEXT").sort().map(key => [key, environment[key]])),
+    // Capture already normalizes Windows search keys; POSIX names stay case-sensitive.
+    environment: Object.fromEntries(Object.keys(environment).filter(key => key !== "PATH" && key !== "PATHEXT").sort().map(key => [key, environment[key]])),
   });
 };

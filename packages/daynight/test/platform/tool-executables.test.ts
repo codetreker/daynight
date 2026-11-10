@@ -97,6 +97,9 @@ describe("resolved tool commands", () => {
     expect(probeResourceKey(a, scope)).toBe(probeResourceKey(automatic, scope));
     expect(probeResourceKey(a, scope)).not.toBe(probeResourceKey(a, { ...scope, cwd: path.join(root, "other") }));
     expect(probeResourceKey(a, scope)).not.toBe(probeResourceKey(a, { ...scope, environment: { HOME: "other" } }));
+    if (process.platform !== "win32") {
+      expect(probeResourceKey(a, { ...scope, environment: { Path: "A" } })).not.toBe(probeResourceKey(a, { ...scope, environment: { Path: "B" } }));
+    }
     await rm(left); await symlink(other, left, "file");
     await expect(verifyToolLaunch(a, operation())).rejects.toMatchObject({ code: "tool_identity_changed" });
     await verifyToolLaunch(b, operation());
