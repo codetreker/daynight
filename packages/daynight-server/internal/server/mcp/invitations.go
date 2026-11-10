@@ -10,7 +10,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -27,7 +26,7 @@ type invitationProjects interface {
 	AcceptInvitation(context.Context, model.Principal, string, string) (projectcore.InvitationAcceptance, error)
 }
 type invitationAdapter struct {
-	identity *identity.Identity
+	identity personalTeamResolver
 	teams    invitationTeams
 	projects invitationProjects
 	origin   string
@@ -139,7 +138,7 @@ type invitationPage struct {
 }
 
 // RegisterInvitationTools registers only complete invitation adapters.
-func RegisterInvitationTools(e *Entry, identity *identity.Identity, teams invitationTeams, projects invitationProjects, origin string) error {
+func RegisterInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects invitationProjects, origin string) error {
 	if identity == nil || teams == nil || projects == nil {
 		return errors.New("invitation services are required")
 	}
