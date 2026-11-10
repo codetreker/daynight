@@ -176,7 +176,10 @@ escalation; only complete teardown restores mocks and environment variables.
 Failed startup records the controlled child's logs, journal and parent/child
 ticket paths while retaining original errors and unknown process ownership. The
 [Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
-owns this isolation and budget rationale. Windows process-proof acquisition
+owns this isolation and budget rationale. A post-stop directory-removal failure
+also records the original Controller's `exit`/`close`, retained identity and Job
+observations. Its bounded Windows `EBUSY` probe records removal after child close
+without suppressing the original error. Windows process-proof acquisition
 uses the existing Koffi dependency to query birth, parent identity and the full
 command line through one retained process handle. It retains the proof's field
 shape and birth precision, and hashes full Unicode text without PowerShell

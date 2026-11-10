@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -30,6 +30,17 @@ import { inspectControllerJob } from "../../../src/commands/controller/windows-j
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
+
+const spawnedControllers = vi.hoisted(() => new Map<string, (child: ChildProcess) => void>());
+vi.mock("node:child_process", async original => {
+  const actual = await original<typeof import("node:child_process")>();
+  return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => {
+    const child = actual.spawn(...args);
+    const entry = args[1]?.[0];
+    if (typeof entry === "string") spawnedControllers.get(entry)?.(child);
+    return child;
+  } };
+});
 
 // The subprocess uses the production Controller, native adapter, journal, IPC and
 // relay. Only the Codex executable and the remote service are controlled fixtures.
@@ -128,6 +139,15 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
   const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
+  const controllers: { child: ChildProcess; exited: boolean; closed: boolean; close: Promise<void> }[] = [];
+  const controllerEntry = path.join(packageDirectory, "dist", "main.js");
+  spawnedControllers.set(controllerEntry, child => {
+    let resolveClose!: () => void;
+    const observed = { child, exited: false, closed: false, close: new Promise<void>(resolve => { resolveClose = resolve; }) };
+    controllers.push(observed);
+    child.once("exit", () => { observed.exited = true; });
+    child.once("close", () => { observed.closed = true; resolveClose(); });
+  });
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
   const nativeFixture = path.join(home, "codex-native.mjs");
@@ -242,6 +262,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   failureDiagnostics.push(collectEvidence);
   cleanups.push(async () => {
     let stopped = true;
+    let stoppedProcesses: { controller: ProcessProof; native: ProcessProof[] } | null = null;
     try {
       const record = current(), execution = record.intent === null ? null : executions.get(record);
       if (execution !== null && execution.launchSubmission !== "not-submitted") {
@@ -270,6 +291,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
           catch { await stopControllerProcesses(proof, native, Date.now() + 10_000); }
           stopped = await confirmControllerProcessesStopped(proof, native);
           expect(stopped).toBe(true);
+          stoppedProcesses = { controller: proof, native };
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
       }
       const recordNow = current();
@@ -287,15 +309,38 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
       if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
       executions.close(); store.close();
+      spawnedControllers.delete(controllerEntry);
       if (stopped) {
         if (socketDirectory !== null) await rm(socketDirectory, { recursive: true, force: true });
-        await rm(home, { recursive: true, force: true });
+        const observations = () => controllers.map(({ child, exited, closed }) => ({ pid: child.pid, exited, closed, exitCode: child.exitCode, signalCode: child.signalCode }));
+        const beforeRemoval = observations();
+        try { await rm(home, { recursive: true, force: true }); }
+        catch (error) {
+          const afterRemoval = observations();
+          const identities = stoppedProcesses === null ? null : await Promise.all([stoppedProcesses.controller, ...stoppedProcesses.native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
+          const jobMembers = stoppedProcesses?.controller.jobObjectName === undefined ? null : await inspectControllerJob(stoppedProcesses.controller.jobObjectName).catch(() => "unconfirmed");
+          console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "fixture-directory-removal-failed", home, cwd, stopped, beforeRemoval, afterRemoval, identities, jobMembers }));
+          diagnostic("remove-fixture-directory", 0, error);
+          if (process.platform === "win32" && error instanceof Error && "code" in error && error.code === "EBUSY" && controllers.length > 0) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const started = Date.now();
+            try {
+              await Promise.race([Promise.all(controllers.map(controller => controller.close)), new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error("Original fixture Controller close was not observed within five seconds.")), 5000);
+              })]);
+              await rm(home, { recursive: true, force: true });
+              console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "fixture-directory-removal-after-close", elapsedMs: Date.now() - started, removed: true, controllers: observations() }));
+            } catch (probeError) { diagnostic("remove-fixture-directory-after-close", Date.now() - started, probeError); }
+            finally { if (timer !== undefined) clearTimeout(timer); }
+          }
+          throw error;
+        }
       }
     }
   });
   const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
-  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, spawnedPids: () => controllers.map(({ child }) => child.pid), frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -326,6 +371,7 @@ test.each([false, true])("launches one real Controller with no user turn after u
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);
   const first = await f.process.observe(f.current(), signal);
   expect(first.controllerProcess?.pid).toBe((await f.launches())[0]?.pid);
+  expect(f.spawnedPids()).toEqual([first.controllerProcess?.pid]);
   const browser = new WebSocket(f.owner.serverOrigin.replace(/^http/, "ws") + "/browser-fixture"); await once(browser, "open");
   const closed = once(browser, "close"); browser.close(); await closed;
   expect(f.browserConnections()).toBe(1);

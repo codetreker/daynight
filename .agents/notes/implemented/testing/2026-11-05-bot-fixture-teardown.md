@@ -47,6 +47,15 @@ and parent/child ticket paths are diagnosed. Log reads are bounded and marked
 when truncated. Startup and cleanup failures remain failures; unknown process
 ownership retains the fixture's evidence instead of authorizing deletion.
 
+Directory-removal failures additionally record the original Controller's native
+`exit` and `close` observations, retained process identities and Windows Job
+membership after the stop gate. A fixture-local observer forwards the actual
+spawn unchanged and matches its PID to the durable Controller proof. On Windows
+`EBUSY`, a bounded diagnostic waits for that original child's `close` and tries
+removal once more, recording the result while preserving the original failure.
+An observed process exit or a successful second removal does not identify the
+original filesystem lock holder or establish a production process defect.
+
 The isolation regression uses a 100-millisecond fallback deadline only while
 registering this hook, whose explicit budget remains 180 seconds. This is the
 file's first runtime configuration override, so Vitest snapshots the inherited
