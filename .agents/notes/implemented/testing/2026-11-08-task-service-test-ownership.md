@@ -29,6 +29,9 @@ assignment selection functions to their Core owner. Shared platform and
 agent-permission List fixtures retain their current scope. The
 [Task write preparation decision](2026-11-10-task-write-preparation-tests.md)
 also replaces the DAO boundary for selected preparation-failure witnesses.
+The [Step read coordination decision](2026-11-10-step-read-coordination-tests.md)
+likewise isolates the Project read operation while retaining the Step service's
+own snapshot, parent gate, DAO calls and encoding.
 
 Callback execution and transaction completion remain separate. Service tests
 control `committed`, `not_committed` and `unknown` outcomes and retain original

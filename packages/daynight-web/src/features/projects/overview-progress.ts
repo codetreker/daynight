@@ -39,11 +39,13 @@ export const overviewProgress = (index: GraphIndex, chainIds: readonly string[],
   });
   let done = 0;
   let cancelled = 0;
+  let proposed = 0;
   let inProgress = false;
   const recentStandaloneIds = standaloneIds.filter((id) => {
     const task = index.nodes.get(id)!;
     if (!isTerminalStatus(task.status)) {
       if (task.status === "in_progress") inProgress = true;
+      else if (task.status === "proposed") proposed++;
       return true;
     }
     const endedAt = taskEndedAt(task);
@@ -55,6 +57,6 @@ export const overviewProgress = (index: GraphIndex, chainIds: readonly string[],
     return true;
   });
   const total = recentStandaloneIds.length;
-  const status = taskProgressStatus(done, cancelled, total, inProgress);
+  const status = taskProgressStatus(done, cancelled, total, inProgress, proposed);
   return { chains, standalone: total === 0 ? null : count(done, cancelled, total, status), recentStandaloneIds, nextUpdateAt };
 };

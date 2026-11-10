@@ -129,6 +129,7 @@ export type InspectionMessages = {
     readonly cancel: string;
     readonly closeConfirmation: string;
     readonly unchanged: string;
+    readonly resetProposedTiming: string;
     readonly resetTiming: string;
     readonly startTiming: string;
     readonly finishTiming: string;

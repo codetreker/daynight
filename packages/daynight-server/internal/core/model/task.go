@@ -5,6 +5,7 @@ import "time"
 type TaskStatus string
 
 const (
+	TaskProposed   TaskStatus = "proposed"
 	TaskTodo       TaskStatus = "todo"
 	TaskInProgress TaskStatus = "in_progress"
 	TaskDone       TaskStatus = "done"
@@ -12,7 +13,7 @@ const (
 )
 
 func (status TaskStatus) Valid() bool {
-	return status == TaskTodo || status == TaskInProgress || status.IsTerminal()
+	return status == TaskProposed || status == TaskTodo || status == TaskInProgress || status.IsTerminal()
 }
 
 func (status TaskStatus) IsTerminal() bool { return status == TaskDone || status == TaskCancelled }

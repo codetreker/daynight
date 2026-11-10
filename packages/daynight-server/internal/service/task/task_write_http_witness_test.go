@@ -127,7 +127,8 @@ func (f *writeWitness) prepare(method string, ctx context.Context, dao store.Tas
 func (f *writeWitness) invoke() (model.Task, error) {
 	switch f.method {
 	case "create":
-		return f.service.Create(f.ctx, f.principal, f.project.ID, taskcore.CreateTask{Title: "Unwritten task"})
+		status := model.TaskTodo
+		return f.service.Create(f.ctx, f.principal, f.project.ID, taskcore.CreateTask{Title: "Unwritten task", Status: &status})
 	case "update":
 		title := "Unwritten update"
 		return f.service.Update(f.ctx, f.principal, f.project.ID, f.target.ID, taskcore.UpdateTask{Version: 1, Title: &title})

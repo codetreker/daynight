@@ -57,7 +57,7 @@ describe("API bearer authentication", () => {
       received.push({ method: request.method, url: request.url, authorization: request.headers.authorization, contentType: request.headers["content-type"] });
       const path = new URL(request.url!, "http://127.0.0.1");
       if (request.method === "POST" && path.pathname === "/api/v1/projects") { response.setHeader("Daynight-User-ID", projectId); json(response, creationReceipt(project, projectId), 201); }
-      else if (request.method === "POST") json(response, task, 201);
+      else if (request.method === "POST") json(response, { ...task, status: "proposed", ready: false }, 201);
       else if (request.method === "PATCH") json(response, task);
       else if (path.searchParams.has("cursor")) json(response, { items: [{ ...project, id: otherProjectId }], nextCursor: null });
       else json(response, { items: [project], nextCursor: "opaque cursor+/=?" });

@@ -27,7 +27,7 @@ const graph: TaskGraph = {
   tasks: [task('Goal', 'done'), task('Working', 'in_progress', ['Goal', 'External'], ['External']),
     task('Waiting', 'in_progress', ['Goal']), task('Idle', 'in_progress', ['Goal']), task('Initializing', 'in_progress', ['Goal']),
     task('Unknown', 'in_progress', ['Goal']), task('Completed', 'done', ['Goal']), task('External', 'done')],
-  summary: { total: 8, todo: 0, inProgress: 5, done: 3, cancelled: 0, ready: 0, blocked: 0 },
+  summary: { proposed: 0, total: 8, todo: 0, inProgress: 5, done: 3, cancelled: 0, ready: 0, blocked: 0 },
 };
 const index = buildGraphIndex(graph);
 const noop = () => {};

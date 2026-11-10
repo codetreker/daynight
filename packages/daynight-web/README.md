@@ -1425,13 +1425,13 @@ unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done an
 cancelled prerequisites are satisfied. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
-ordinary-component member exactly once, with `in_progress` first, then `todo`,
+ordinary-component member exactly once, with `in_progress` first, then `todo`, then `proposed`,
 then terminal outcomes. Terminal children use exact completedAt for done or
 cancelledAt for cancelled in descending order, with unknown times last. Equal
 terminal times and unknown-time ties retain snapshot order, as do children in
 other status groups. Fresh snapshots recalculate this order. Top-level Goal
 ordering remains independent. Other starting tasks in a merge are included,
-while external prerequisite context is excluded. The list retains all four
+while external prerequisite context is excluded. The list retains all five
 statuses; filters determine whole-chain visibility and never remove children.
 Child rows show their own status, applicable ready/blocked markers and known
 execution duration after the title, and open the shared task dialog. Cancelled
@@ -1464,18 +1464,18 @@ The [task view decision](../../.agents/notes/archived/feature/2026-10-22-project
 and [chain status decision](../../.agents/notes/archived/bug-fix/2026-10-22-task-chain-status.md)
 record their current rules and original rationale.
 
-The runtime accepts todo, in_progress, done and cancelled. The graph summary
-has seven counts: total, todo, inProgress, done, cancelled, ready and blocked.
-They satisfy `total = todo + inProgress + done + cancelled` and
-`todo = ready + blocked`. Creation uses todo. All-done Goals have the done
+The runtime accepts proposed, todo, in_progress, done and cancelled. The graph summary
+has eight counts: total, proposed, todo, inProgress, done, cancelled, ready and blocked.
+They satisfy `total = proposed + todo + inProgress + done + cancelled` and
+`todo = ready + blocked`. Creation defaults to proposed and accepts explicit todo for confirmed work. Proposed is unfinished, never ready and does not satisfy dependencies. All-proposed Goals aggregate as proposed; unstarted proposed/todo mixtures aggregate as todo. All-done Goals have the done
 aggregate outcome, all-cancelled Goals have cancelled, and mixed terminal Goals
-have the UI-only ended outcome. Ended is not a fifth TaskStatus. Progress counts
+have the UI-only ended outcome. Ended is not a TaskStatus. Progress counts
 done + cancelled while preserving each result count. External context does not
 affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
 copy icon immediately to its right. The ID and its copy control belong to Overview.
-The four-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
+The five-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on every content tab, marks the current
@@ -1995,7 +1995,7 @@ state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
 
 `TaskDetailSurface` shares the full content and existing actions between dialog
-and page: description, status, relationships, PRs, metadata, three-state setting,
+and page: description, status, relationships, PRs, metadata, five-state setting,
 automatic-execution permission, execution platform, assignee and attachment management.
 `TaskDetailDialog` retains the modal portal, inertness, scroll lock, focus loop
 and focus restoration. `TaskDetailPage` provides an ordinary full-page container,

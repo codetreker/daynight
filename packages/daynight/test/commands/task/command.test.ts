@@ -19,7 +19,7 @@ const currentUser = { id: accountId, email: null, emailVerified: null, name: nul
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
 const observe = (task: Task) => ({ ...task, session });
 const observeGraph = (value: TaskGraph): ObservedTaskGraph => ({ ...value, tasks: value.tasks.map(task => ({ ...task, session, relation: "member" })), sessionSummary: { indicator: null, workingCount: 0, noticeCount: 0, warningCount: 0, unknownCount: 0, complete: true, observedAt: time }, partial: false });
@@ -129,13 +129,13 @@ describe("task parameter boundaries", () => {
     ["create", "--title", "Title", "--external-depends-on", dependencyId, "--external-depends-on", dependencyId.toUpperCase()],
     ["update", taskId, "--depends-on", dependencyId, "--external-depends-on", dependencyId.toUpperCase()],
     ["update", taskId, "--external-depends-on", dependencyId, "--clear-dependencies"],
-    ["list", "--status", "blocked"], ["list", "--status", "proposed"], ["set-status", taskId, "proposed"], ["set-status", taskId], ["set-status", "invalid", "todo"],
+    ["list", "--status", "blocked"], ["list", "--status", "unknown"], ["set-status", taskId, "unknown"], ["set-status", taskId], ["set-status", "invalid", "todo"],
     ...["todo", "in_progress"].map((status) => ["set-status", taskId, status, "--claim-id", claimId]),
     ...["", "invalid", ` ${claimId}`, claimId.replaceAll("-", "")].map((value) => ["set-status", taskId, "done", `--claim-id=${value}`]),
     ["set-status", taskId, "done", "--claim-id"],
     ["set-status", taskId, "done", "--claim-id", claimId, `--claim-id=${claimId}`],
     ["show", taskId, "--claim-id", claimId], ["update", taskId, "--claim-id", claimId],
-    ...["0", "1.5", "9223372036854775808"].map((version) => ["set-status", taskId, "todo", "--if-version", version]), ["update", taskId, "--status", "proposed"], ["list", "--project", "invalid"], ["show", "invalid"], ["show", taskId, "--project", "invalid"],
+    ...["0", "1.5", "9223372036854775808"].map((version) => ["set-status", taskId, "todo", "--if-version", version]), ["update", taskId, "--status", "unknown"], ["list", "--project", "invalid"], ["show", "invalid"], ["show", taskId, "--project", "invalid"],
     ["delete"], ["delete", "invalid"], ["delete", taskId, "--json"],
     ["delete", taskId, "--remove-depends=true"], ["delete", taskId, "--remove-depends=false"],
     ["delete", taskId, "--remove-depends", "true"], ["delete", taskId, "--remove-depends", "--remove-depends"],
@@ -234,7 +234,7 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
-  it.each(["todo", "in_progress", "done", "cancelled"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {
+  it.each(["proposed", "todo", "in_progress", "done", "cancelled"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {
     const f = fixture();
     const result = { ...task, status, ready: status === "todo", cancelledAt: status === "cancelled" ? time : null, description: "Full status result", version: task.version + 1n };
     f.api.setTaskStatus.mockResolvedValue(result);
@@ -247,7 +247,7 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task status set.\n${renderTask(result)}`);
   });
 
-  it.each(["todo", "in_progress", "done", "cancelled"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
+  it.each(["proposed", "todo", "in_progress", "done", "cancelled"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
     const f = fixture();
     const failure = new Error("Version conflict");
     f.api.setTaskStatus.mockRejectedValue(failure);
@@ -426,6 +426,12 @@ describe("task request contracts", () => {
     expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "\ufeff", assignedTo: accountId });
   });
 
+  it.each(["proposed", "todo"] as const)("forwards explicit initial status %s without changing assignment defaults", async (status) => {
+    const f = fixture();
+    await runTaskCommand(["create", "--title", "Confirmed scope", "--status", status, "--project", projectId], f.context, f.dependencies);
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Confirmed scope", assignedTo: accountId, status });
+  });
+
   it("normalizes mixed dependency declarations while preserving empty descriptions", async () => {
     const f = fixture();
     await runTaskCommand(["create", "--title=-Title=original", "--description=", "--depends-on", otherDependencyId.toUpperCase(), "--external-depends-on", dependencyId, "--project", projectId], f.context, f.dependencies);
@@ -555,7 +561,7 @@ describe("task output contracts", () => {
     const f = fixture();
     await runTaskCommand(["graph", taskId, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
-    for (const field of [`Project: ${projectId}`, "Name: Project", `Repository: ${project.repoUrl}`, "Summary:", "Total: 1", "Todo: 1", "In progress: 0", "Done: 0", "Ready: 1", "Blocked: 0", `ID: ${taskId}`, "Title preview: Task title", "Title truncated: true", "Depends on: none", "External dependencies (0): none", "Blocked by: none"]) expect(output).toContain(field);
+    for (const field of [`Project: ${projectId}`, "Name: Project", `Repository: ${project.repoUrl}`, "Summary:", "Total: 1", "Proposed: 0", "Todo: 1", "In progress: 0", "Done: 0", "Ready: 1", "Blocked: 0", `ID: ${taskId}`, "Title preview: Task title", "Title truncated: true", "Depends on: none", "External dependencies (0): none", "Blocked by: none"]) expect(output).toContain(field);
     expect(f.api.getObservedTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
   });
 

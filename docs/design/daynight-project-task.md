@@ -519,16 +519,16 @@ Operation/API/身份内 GET 一次完整集合，只报告当前版本与目标 
 同一选择结果，因此分页边界不会改变组间优先顺序。此机制复用既有 API 筛选和分页，
 不增加服务排序或多状态查询契约。
 
-API响应与命令choices接受todo、in_progress、done、cancelled；取消不可恢复，拒绝旧状态。
+API响应与命令choices接受proposed、todo、in_progress、done、cancelled；取消不可恢复。创建默认proposed，可显式选择proposed或todo；普通set-status不增加阶段顺序。
 graph 参数先验证目标 UUID，缺失或非法值在配置、Git 和网络 I/O 前失败。
 `ApiClient.getTaskGraph(projectId, taskId)` 将规范化 ID 作为 taskId query 提交，解码器同时
 核对请求 project 和目标任务。返回集合必须恰好是目标所在普通依赖无向分量，加上该分量
 成员直接声明的 external 前置；链成员的前置必须完整存在，只有补充的外部上下文节点可以
 引用未返回的前置。解码器仍拒绝重复 ID、错误外部子集、错误 summary、已返回节点之间的环
 及与已知前置状态不符的阻塞字段，不通过补造状态处理缺少上下文任务行的情形。
-graph summary返回total、todo、inProgress、done、cancelled、ready、blocked，统计所有返回节点；
+graph summary返回total、proposed、todo、inProgress、done、cancelled、ready、blocked，统计所有返回节点；
 图文本不显示旧统计。
-列表默认保留未完成任务，按in_progress、ready todo、其他todo、done/cancelled终态稳定分组。
+列表默认保留未完成任务，按in_progress、ready todo、其他todo、proposed、done/cancelled终态稳定分组。
 元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；可选 --remove-depends 决定是否明确发送 removeDepends=true，未提供时不解除引用。成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
 
 平台 DTO 要求 requiredPlatform 字段存在且为null/windows/linux/macos，不在读取器补默认。

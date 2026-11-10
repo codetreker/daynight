@@ -16,6 +16,7 @@ import (
 )
 
 type CreateTask struct {
+	Status            *model.TaskStatus
 	AssignedTo        *string
 	RequiredPlatform  *model.TaskPlatform
 	ExternalDependsOn []string
@@ -92,6 +93,13 @@ func canonicalAssignedTo(value *string) (*string, error) {
 }
 
 func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
+	status := model.TaskProposed
+	if input.Status != nil {
+		status = *input.Status
+		if status != model.TaskProposed && status != model.TaskTodo {
+			return store.TaskWrite{}, invalidInput("New task status must be proposed or todo.")
+		}
+	}
 	if err := AdmitDependencies(input.DependsOn); err != nil {
 		return store.TaskWrite{}, PropertyInputError(err)
 	}
@@ -103,7 +111,7 @@ func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
 	if err != nil {
 		return store.TaskWrite{}, err
 	}
-	values := store.TaskWrite{AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: model.TaskTodo, Properties: props}
+	values := store.TaskWrite{AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
 	values.DependsOn, err = canonicalDependencies(input.DependsOn, id)
 	if err != nil {
 		return store.TaskWrite{}, err

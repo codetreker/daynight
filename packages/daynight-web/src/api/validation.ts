@@ -74,7 +74,7 @@ export const executionPlatform = (value: unknown): ExecutionPlatform => {
 export const requiredPlatform = (value: unknown): ExecutionPlatform | null => value === null ? null : executionPlatform(value);
 
 export const status = (value: unknown): TaskStatus => {
-  if (value !== "todo" && value !== "in_progress" && value !== "done" && value !== "cancelled") return malformed();
+  if (value !== "proposed" && value !== "todo" && value !== "in_progress" && value !== "done" && value !== "cancelled") return malformed();
   return value;
 };
 

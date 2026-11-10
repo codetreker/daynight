@@ -42,7 +42,7 @@ describe('paused task discovery', () => {
   it('derives only true pause flags without changing status statistics or graph node shape', () => {
     const value = snapshot();
     expect(value.pausedTaskIds).toEqual(new Set([id(1), id(2), id(3)]));
-    expect(value.graph.summary).toEqual({ total: 5, todo: 3, inProgress: 1, done: 1, cancelled: 0, ready: 3, blocked: 0 });
+    expect(value.graph.summary).toEqual({ proposed: 0, total: 5, todo: 3, inProgress: 1, done: 1, cancelled: 0, ready: 3, blocked: 0 });
     expect(value.graph.tasks[0]).not.toHaveProperty('properties');
     expect(value.index.nodes.get(id(1))).not.toHaveProperty('paused');
     expect(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))).pausedTaskIds.size).toBe(0);
@@ -108,7 +108,7 @@ describe('paused task discovery', () => {
     expect(graph.querySelectorAll('.task-node .task-paused-badge')).toHaveLength(1);
   });
 
-  it('updates project and chain counts on status-only completion and reopening', async () => {
+  it.each(['proposed', 'todo'] as const)('updates project and chain counts on status-only completion and reopening to %s', async (reopenedStatus) => {
     installGraphMeasurements();
     const tasks = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { status: 'in_progress', dependsOn: [id(1)], properties: { paused: true } })];
     const view = renderWithLocale(workspace(snapshot(tasks), 'chains', id(1)), { locale: 'en', taskCache: true });
@@ -118,11 +118,11 @@ describe('paused task discovery', () => {
     view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)), 'chains', id(1)));
     expect(counts()).toEqual([]);
     expect(view.container.querySelectorAll('.task-node-paused')).toHaveLength(2);
-    view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: 'todo' } : task)), 'chains', id(1)));
+    view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: reopenedStatus } : task)), 'chains', id(1)));
     expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
   });
 
-  it('updates the overview entry when status alone completes and reopens its target', () => {
+  it.each(['proposed', 'todo'] as const)('updates the overview entry when status alone completes and reopens its target to %s', (reopenedStatus) => {
     const tasks = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { status: 'in_progress', dependsOn: [id(1)], properties: { paused: true } })];
     const onOpenTask = vi.fn();
     const overview = (items: TaskSummary[]) => {
@@ -134,7 +134,7 @@ describe('paused task discovery', () => {
     expect(screen.getByRole('button', { name: 'Open paused task: Task 2' })).toHaveTextContent('1 paused');
     view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)));
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
-    view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: 'todo' } : task)));
+    view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: reopenedStatus } : task)));
     const entry = screen.getByRole('button', { name: 'Open paused task: Task 2' });
     fireEvent.click(entry);
     expect(onOpenTask).toHaveBeenCalledWith(id(2), entry);
@@ -156,12 +156,12 @@ describe('paused task discovery', () => {
     expect(within(root).getByText('1 paused')).toBeVisible();
   });
 
-  it('opens a specific paused task from the complete overview count without altering the six status cards', () => {
+  it('opens a specific paused task from the complete overview count without altering the seven status cards', () => {
     const value = snapshot();
     const onOpenTask = vi.fn();
     renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
       pagination={{ page: 1, pageCount: 2, total: 2, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en' });
-    expect(document.querySelectorAll('.stats .stat')).toHaveLength(6);
+    expect(document.querySelectorAll('.stats .stat')).toHaveLength(7);
     const open = screen.getByRole('button', { name: 'Open paused task: Task 2' });
     expect(open).toHaveTextContent('2 paused');
     fireEvent.click(open);

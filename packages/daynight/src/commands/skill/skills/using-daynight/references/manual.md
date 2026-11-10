@@ -119,6 +119,7 @@ server history and files. Review the complete preview and follow
 
 ```bash
 daynight task create --title "Improve installation" --description "Document prerequisites and verify setup."
+daynight task create --title "Implement confirmed work" --status todo
 daynight task list --all --json
 daynight task list --status in_progress --json
 daynight task list --ready --assigned-to me --json
@@ -127,15 +128,19 @@ daynight task ready --limit 20 --json
 daynight task show <task-id> --json
 ```
 
-New tasks start in `todo`, assigned to the signed-in account unless
+New tasks default to `proposed`, an unconfirmed suggestion. Creation accepts only
+`--status proposed|todo`; use `todo` for already-confirmed work, including internal
+multi-step tasks. Tasks are assigned to the signed-in account unless
 `--assigned-to <user-uuid>` selects another person, with automatic execution disabled. `task list` excludes
 `done` and `cancelled` by default; `--all` and `--status` are mutually exclusive. List reads all
 matching pages; JSON omits descriptions, so read `show --json` for a complete
 task and its version. Creation returns text and does not accept `--json`.
 
 `ready` reads one page, defaulting to 10 tasks; `--limit` accepts 1 through 100.
-A task is ready when it is todo and every prerequisite is done or cancelled. Both list and
-ready support `--allow-agents true|false` and
+A task is ready when it is todo and every prerequisite is done or cancelled.
+Proposed tasks are unfinished, never ready and cannot be automatically claimed
+or resumed from a released execution, even with `allowAgents: true`; they do not
+satisfy prerequisites. Both list and ready support `--allow-agents true|false` and
 `--compatible-platform windows|linux|macos`; filters combine with AND before
 pagination. Platform filtering includes unrestricted tasks and exact matches.
 List also accepts `--ready` and `--assigned-to <user-uuid|me|unassigned>`.
@@ -175,7 +180,7 @@ Graph nodes retain complete dependency references, which may point outside the g
 Reaching the graph limit fails the command rather than returning a truncated graph.
 A candidate page or a single task cannot replace complete relationship verification.
 
-Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, terminal tasks. Done and cancelled remain distinct results.
+Lists group tasks into in-progress, ready todo, blocked todo, proposed, and, when explicitly included, terminal tasks. Done and cancelled remain distinct results.
 These groups are not relevance rankings. See command help for filter syntax.
 
 ## State and Dependencies
@@ -209,12 +214,14 @@ permission alone is not sufficient. Existing claim and manual-resume authority
 remain separate.
 
 Actual assignment, permission and platform changes are locked while in progress.
-These settings do not change status; `set-status` accepts `todo`, `in_progress`, `done`
-or `cancelled`. Task and graph JSON always retain `assignedTo` as a UUID or null;
+These settings do not change status; `set-status` accepts `proposed`, `todo`,
+`in_progress`, `done` or `cancelled`. Task and graph JSON always retain `assignedTo` as a UUID or null;
 text output shows `Assigned to: USER_UUID` or `Assigned to: unassigned`.
 
-New tasks are `todo`, have no approval status, and do not execute automatically.
-Use `task set-status` to set `todo`, `in_progress`, `done`, or `cancelled`.
+New tasks default to `proposed` and do not execute automatically. Ordinary
+non-cancelled tasks may move directly between `proposed`, `todo`, `in_progress`
+and `done`, subject to dependency and worker ownership rules; no proposed or
+todo stage is mandatory.
 Done means successful delivery; cancelled means no further execution is required.
 Cancellation is irreversible and does not establish that requirements were delivered.
 Cancel only within an explicit authorization to cancel the selected task; missing
@@ -233,9 +240,9 @@ revoking dependency satisfaction; cancelled cannot return to another state.
 | Transition | Timing result |
 | --- | --- |
 | Enter `in_progress` | Start a new execution interval and clear the completion time. |
-| Return to `todo` | Clear the start and completion times. |
+| Return to `proposed` or `todo` | Clear the start and completion times. |
 | `in_progress` -> `done` | Preserve the nullable start time and record the completion time. |
-| `todo` -> `done` | Record only the completion time; elapsed time is unknown. |
+| `proposed` or `todo` -> `done` | Record only the completion time; elapsed time is unknown. |
 | Enter `cancelled` | Record cancelledAt and preserve the execution start/completion times. |
 
 An actual status change increments the version once; a same-status operation with the current version changes no fields.
@@ -243,7 +250,7 @@ Metadata updates and same-status operations preserve timing.
 Ordinary status changes have no process ownership, release, withdrawal, stop, or lease semantics.
 An active worker claim must first be released or otherwise removed through an
 authorized management operation before cancellation. Released history may be
-retained on a cancelled task, but cannot authorize resume or withdrawal to todo.
+retained on a cancelled task, but cannot authorize resume or withdrawal to proposed or todo.
 
 Cancellation preserves task records, properties, Steps, Thread, execution history,
 and attachment bytes. All materials remain readable under current access checks;

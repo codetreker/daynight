@@ -138,6 +138,7 @@
 .task-platform-feedback:empty { display: none; }
 .task-platform-error { color: #a05252; }
 
+.task-detail-status-proposed { background: #edf6f6; color: #43757e; }
 .task-detail-status-todo { background: #edf0f4; color: #667387; }
 .task-detail-status-in_progress { background: #edf2ff; color: #4e74bd; }
 .task-detail-status-done { background: #eaf5ef; color: #438365; }
@@ -173,6 +174,7 @@
 .task-detail-dot-done { background: #5d9b7e; }
 .task-detail-dot-cancelled { background: #705c80; }
 .task-detail-dot-in_progress { background: #6b8bcb; }
+.task-detail-dot-proposed { background: #43757e; }
 .task-detail-dot-todo { background: #97a2b2; }
 .task-detail-metadata { font-size: 10px; line-height: 1.8; color: #737d8e; }
 .task-detail-metadata > div { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; }

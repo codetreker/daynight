@@ -12,7 +12,7 @@ export const workspace: WorkspaceMessages = {
     subtitle: "从项目出发，查看任务进度与执行依赖。", refresh: "刷新", retry: "重试", loading: "正在加载项目", loadingDetail: "正在读取工作空间中的项目。", loadingFailed: "项目加载失败", networkError: "无法连接服务，请检查本地服务后重试。", readError: "暂时无法读取项目，请重试。", empty: "还没有项目", emptyDetail: "通过 API 创建项目后，点击刷新即可在这里查看。", list: "项目列表", createdOn: ({ date }) => `创建于 ${date}`, viewTasks: "查看任务", moreFailed: "更多项目加载失败，已加载的项目仍可查看。", loadingMore: "正在加载更多…", retryMore: "重试加载更多", loadMore: "加载更多", allLoaded: "已加载全部项目",
   },
   project: {
-    statusFilter: "状态", allStatuses: "全部状态", statusOptions: { todo: "待办", in_progress: "进行中", done: "已完成", cancelled: "已取消" },
+    statusFilter: "状态", allStatuses: "全部状态", statusOptions: { proposed: "待确认", todo: "待办", in_progress: "进行中", done: "已完成", cancelled: "已取消" },
     back: "← 项目", lastRefreshed: ({ time }) => `最近成功刷新 ${time}`, refreshing: "正在刷新…", loading: "正在加载任务图", loadingDetail: "正在读取项目任务和依赖关系。", notFound: "项目不存在", incomplete: "任务图数据不完整", loadingFailed: "项目加载失败", networkError: "无法连接服务，请检查本地服务后重试。", protocolError: "任务图数据不完整或不一致，请重试。", notFoundDetail: "这个项目不存在，请返回项目列表。", readError: "暂时无法读取任务图，请重试。",
     refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", dismissNotice: "关闭提示", statistics: "项目任务统计", totalTasks: "任务总数", uniqueTasks: "按任务 ID 去重", completion: ({ percent }) => `完成比例 ${number(percent)}%`, endedBreakdown: ({ done, cancelled, percent }) => `${number(done)} 完成 · ${number(cancelled)} 取消 · ${number(percent)}% 已结束`, waiting: "等待开始", advancing: "正在推进", ready: "可开始", blocked: "被阻塞", todoSubset: "待处理的子集", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
   },

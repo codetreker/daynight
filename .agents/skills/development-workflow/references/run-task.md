@@ -7,7 +7,7 @@ Apply [authorization and scope](authorization.md) first, read the complete task 
 
 | Observed status | Behavior |
 | --- | --- |
-| todo | Once ready and authorized for execution, use `task set-status` with the exact observed version to enter `in_progress`; confirm success before starting. |
+| proposed or todo | Once all direct prerequisites are done or cancelled, inputs are sufficient and execution is authorized, use `task set-status` with the exact observed version to enter `in_progress` directly; confirm success before starting. Proposed does not need an intermediate todo transition. |
 | in_progress | Reconcile existing work and session context, coordinate and resume through established repository mechanisms, and do not treat status as an execution lock. |
 | done | Report that it is already complete; consider reopening only when the explicit request includes it. |
 | cancelled | Report the cancelled terminal result and return; do not reopen, resume or substitute a completion claim. |
@@ -22,5 +22,5 @@ Once all completion conditions are met, reread the in-progress task, set it to d
 Handle all changes and uncertain responses under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes); ordinary completion does not include a worker claim.
 
 When merging, human confirmation, authorization, or acceptance is still missing, keep the task in progress and preserve the waiting context.
-Tasks not yet started remain todo.
+Tasks not yet started retain their current proposed or todo status.
 Return when complete or when external intervention is needed, without selecting a successor; follow the [Goal protocol](goal.md) for discussion-stage transitions explicitly directed by the user.

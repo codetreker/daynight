@@ -51,8 +51,9 @@ func taskError(t *testing.T, client *sdk.ClientSession, name string, args map[st
 func taskResourceFault(code string) error {
 	return &model.Fault{Code: code, Message: "Task operation refused."}
 }
-func taskResourceString(value string) *string    { return &value }
-func taskResourceList(value ...string) *[]string { return &value }
+func taskResourceStatus(value model.TaskStatus) *model.TaskStatus { return &value }
+func taskResourceString(value string) *string                     { return &value }
+func taskResourceList(value ...string) *[]string                  { return &value }
 
 func expectTaskGet(t *testing.T, f *taskResourceFixture, result model.Task, err error) {
 	t.Helper()
@@ -92,6 +93,47 @@ func expectTaskStatus(t *testing.T, f *taskResourceFixture, input taskcore.SetTa
 			t.Error("SetStatus changed the Task ID, version, status or claim")
 		}
 		return result, err
+	}
+}
+
+func TestMCPTaskCreationStatusAndProposedStatusWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status *model.TaskStatus
+	}{
+		{name: "omitted"},
+		{name: "proposed", status: taskResourceStatus(model.TaskProposed)},
+		{name: "todo", status: taskResourceStatus(model.TaskTodo)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTaskResourceFixture(t)
+			current := taskFixtureTask()
+			current.Status, current.Ready = model.TaskProposed, false
+			if tc.status != nil {
+				current.Status = *tc.status
+				current.Ready = *tc.status == model.TaskTodo
+			}
+			expectTaskCreate(t, f, taskcore.CreateTask{Title: current.Title, AssignedTo: &f.principal.UserID, Status: tc.status}, current, nil)
+			args := map[string]any{"projectId": f.project, "title": current.Title, "returnView": "full"}
+			if tc.status != nil {
+				args["status"] = *tc.status
+			}
+			created := taskData(t, f.client, "task_create", args)
+			if created["status"] != string(current.Status) || created["ready"] != current.Ready {
+				t.Fatalf("creation status projection: %#v", created)
+			}
+		})
+	}
+	f := newTaskResourceFixture(t)
+	for _, status := range []any{nil, "", "in_progress", "done", "cancelled", "unknown", 1} {
+		taskError(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": "Invalid", "status": status}, "invalid_input")
+	}
+	current := taskFixtureTask()
+	current.Status, current.Ready, current.Version = model.TaskProposed, false, 2
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 1, Status: model.TaskProposed}, current, nil)
+	changed := taskData(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "proposed", "ifVersion": "1", "returnView": "full"})
+	if changed["status"] != "proposed" || changed["version"] != "2" {
+		t.Fatalf("proposed status projection: %#v", changed)
 	}
 }
 

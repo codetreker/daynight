@@ -70,7 +70,9 @@ sequence to each task separately:
    proof by itself. Keep the create payload available until reconciliation is
    complete.
 2. Create the task in the verified production project with automatic execution
-   disabled. Preserve the returned ID immediately and read the full task back.
+   disabled. For a confirmed finding authorized for automatic handoff, pass
+   `--status todo`; registration-only requests retain the selected status,
+   `proposed` by default. Preserve the returned ID immediately and read the full task back.
    Initial inline content must identify the problem and scope without references
    to attachments that are not yet present. The final description with local
    images removed and local links reduced to their labels meets this requirement.

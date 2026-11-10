@@ -12,7 +12,9 @@ import (
 	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
+	taskwork "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -51,6 +53,28 @@ type IdentityOperations interface {
 	PersonalTeamID(context.Context, model.Principal) (string, error)
 }
 
+// TaskObservationOperations is the observation output consumed by protocol adapters.
+type TaskObservationOperations interface {
+	ObserveGet(context.Context, model.Principal, string, string) (task.ObservedTask, error)
+	ObserveList(context.Context, model.Principal, string, task.TaskListRequest) (task.ObservedTaskPage, error)
+	ObserveGraph(context.Context, model.Principal, string, string) (task.ObservedGraph, error)
+	ObservedMCPList(context.Context, model.Principal, string, taskcore.MCPListRequest) (task.ObservedMCPPage, error)
+	WorkList(context.Context, model.Principal, string, taskcore.WorkRequest) (taskwork.Page, error)
+}
+
+// TaskStepsOperations is the task step output consumed by protocol adapters.
+type TaskStepsOperations interface {
+	ListPage(context.Context, model.Principal, string, string, int64, int, *int64, bool) (task.StepsPage, error)
+	GetSummary(context.Context, model.Principal, string, string, string) (task.StepSummary, error)
+	List(context.Context, model.Principal, string, string) (task.StepsDocument, error)
+	Get(context.Context, model.Principal, string, string, string) (task.StepDocument, error)
+	Add(context.Context, model.Principal, string, string, task.AddTaskStep) (task.StepsWriteResult, error)
+	Update(context.Context, model.Principal, string, string, string, task.UpdateTaskStep) (task.StepsWriteResult, error)
+	SetStatus(context.Context, model.Principal, string, string, string, task.SetTaskStepStatus) (task.StepsWriteResult, error)
+	Move(context.Context, model.Principal, string, string, string, task.MoveTaskStep) (task.StepsWriteResult, error)
+	Delete(context.Context, model.Principal, string, string, string, task.DeleteTaskStep) (task.StepsWriteResult, error)
+}
+
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
@@ -66,11 +90,11 @@ type Application struct {
 	Bots             *bot.Bots
 	BotDeletions     *bot.Deletions
 	Tasks            *task.Tasks
-	TaskObservations *task.Observations
+	TaskObservations TaskObservationOperations
 	TaskInspection   *session.Inspection
 	TaskHistory      *session.History
 	TaskSearch       store.TaskSearchReader
-	TaskSteps        *task.TaskSteps
+	TaskSteps        TaskStepsOperations
 	TaskThreads      *task.TaskThreads
 	TaskSync         *task.TaskSync
 	Attachments      *attachment.Attachments
@@ -82,21 +106,25 @@ type Application struct {
 }
 
 type constructors struct {
-	identity    func(store.IdentityWriter, *uniauth.Client, string) *identity.Identity
-	projects    func(store.Transactions, *sessioncore.Engine) *project.Projects
-	tasks       func(store.Transactions, task.Capturer) *task.Tasks
-	attachments func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
+	identity         func(store.IdentityWriter, *uniauth.Client, string) *identity.Identity
+	taskObservations func(store.SnapshotReader, task.SessionObserver) *task.Observations
+	projects         func(store.Transactions, *sessioncore.Engine) *project.Projects
+	tasks            func(store.Transactions, task.Capturer) *task.Tasks
+	taskSteps        func(task.StepsStore, ...task.Capturer) *task.TaskSteps
+	attachments      func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
 }
 
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, capture ...task.Capturer) *Application {
 	return assemble(database, files, client, callbackURL, overlap, constructors{
-		identity: identity.New,
+		identity:         identity.New,
+		taskObservations: task.NewObservations,
 		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.Projects {
 			return project.NewProjects(database, engine)
 		},
 		tasks: func(database store.Transactions, capturer task.Capturer) *task.Tasks {
 			return task.NewTasks(database, capturer)
 		},
+		taskSteps:   task.NewTaskSteps,
 		attachments: attachment.NewAttachments,
 	}, capture...)
 }
@@ -123,11 +151,11 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:     bot.NewDeletions(database, files, engine),
 		Tasks:            construct.tasks(database, capturer),
-		TaskObservations: task.NewObservations(database, engine),
+		TaskObservations: construct.taskObservations(database, engine),
 		TaskInspection:   inspection,
 		TaskHistory:      session.NewHistory(inspection, sessions),
 		TaskSearch:       database,
-		TaskSteps:        task.NewTaskSteps(database, capturer),
+		TaskSteps:        construct.taskSteps(database, capturer),
 		TaskThreads:      task.NewTaskThreads(database, capturer),
 		TaskSync:         task.NewTaskSync(database, engine, overlap),
 		Attachments:      construct.attachments(database, database, files),

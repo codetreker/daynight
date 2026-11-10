@@ -22,7 +22,7 @@ func jsonBody(t *testing.T, input any) string { return testsupport.JSONBody(t, i
 func createHTTPTask(t *testing.T, handler http.Handler, projectID, title string, dependencies ...string) api.Task {
 	t.Helper()
 	return decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(projectID), jsonBody(t, map[string]any{
-		"title": title, "description": "initial description", "dependsOn": append([]string{}, dependencies...),
+		"title": title, "description": "initial description", "status": "todo", "dependsOn": append([]string{}, dependencies...),
 	})), http.StatusCreated)
 }
 

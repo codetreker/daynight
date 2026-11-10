@@ -23,7 +23,7 @@ func (s *graphStub) Graph(_ context.Context, p model.Principal, _, _ string) (mo
 }
 
 func TestGraphToolCompleteProjectionAndErrors(t *testing.T) {
-	reader := &graphStub{graph: model.TaskGraph{Tasks: []model.GraphTask{{ID: "task", TitlePreview: "title", TitleTruncated: true, DependsOn: []string{"dependency"}}}}}
+	reader := &graphStub{graph: model.TaskGraph{Summary: model.TaskGraphSummary{Total: 1, Proposed: 1}, Tasks: []model.GraphTask{{Status: model.TaskProposed, ID: "task", TitlePreview: "title", TitleTruncated: true, DependsOn: []string{"dependency"}}}}}
 	actor := RequestActor{Principal: model.Principal{UserID: "caller"}, RequestID: "request"}
 	result, err := graphTool(context.Background(), actor, graphInput{DependsOnly: true}, reader)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestGraphToolCompleteProjectionAndErrors(t *testing.T) {
 	}
 	graph := result.Data.(graphData)
 	node := graph.Tasks[0].(dependencyNode)
-	if graph.Projection != "summary" || node.ID != "task" || len(node.DependsOn) != 1 || reader.actor.UserID != "caller" {
+	if graph.Summary.Proposed != 1 || graph.Summary.Total != 1 || graph.Projection != "summary" || node.ID != "task" || len(node.DependsOn) != 1 || reader.actor.UserID != "caller" {
 		t.Fatalf("result: %#v", graph)
 	}
 	for i := 1; i < 70; i++ {

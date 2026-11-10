@@ -30,6 +30,7 @@ Tasks with permission already true may be selected at any time; review them read
 
 | State | Action |
 | --- | --- |
+| proposed | Report that it is not an automatic-execution candidate. Complete authorized content review, but keep status and permission unchanged; changing it to todo requires an explicit caller decision. Enabling permission alone would not make it executable. |
 | todo, permission false, content and responsibility review passed | Enable permission using the exact version on which the final review decision was based, then reconcile. Real dependency blockers may remain. |
 | todo, permission false, either review failed or unconfirmed | Keep assignment and permission unchanged and report specific gaps. |
 | todo, permission true | Review read-only; do not rewrite the same value as a review marker. Report assignment mismatches or unconfirmed responsibility without claiming a passing handoff. |

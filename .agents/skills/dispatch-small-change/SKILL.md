@@ -93,16 +93,22 @@ confirmation between those operations.
 
 Register or update within the confirmed scope using the creation workflow and
 [write safety](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
-New tasks begin with automatic execution disabled. Set and verify the platform
-during preparation; changing an existing task must respect its state and scope.
-Read back the complete task and genuinely required resources before handoff.
+Create a new task for a confirmed internal change with `task create --status todo`
+so it can enter the existing handoff workflow. Registration-only requests retain
+the selected creation status, proposed by default; discussion-only scope does not
+authorize delivery registration or handoff. New tasks begin with automatic
+execution disabled. Set and verify the platform during preparation; changing an
+existing task must respect its state and scope. Read back the complete task and
+genuinely required resources before handoff.
 
 Apply the [handoff workflow](../development-workflow/references/handoff.md)
 to that task ID. Its content and independently authenticated responsibility
 checks, state restrictions, exact-version write and final reconciliation govern
 enablement. Preserve assignment, status, dependencies and Worker history; report
-gaps through that workflow rather than bypassing them. A completed or already
-active task follows its existing state-specific handling.
+gaps through that workflow rather than bypassing them. An existing proposed task
+keeps its status and permission; selecting todo requires an explicit caller
+decision, and enabling allowAgents alone cannot make it eligible. A completed or
+already active task follows its existing state-specific handling.
 
 Return the task reference, preparation and handoff conclusions, observed
 version, assignee, platform, permission, status, dependency blockers and any

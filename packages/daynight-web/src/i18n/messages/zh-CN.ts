@@ -25,7 +25,7 @@ export const zhCN: Messages = {
   execution,
   common: {
     retrySave: "重试保存语言",
-    status: { todo: "待处理", in_progress: "进行中", done: "已完成", cancelled: "已取消", ended: "已结束" },
+    status: { proposed: "待确认", todo: "待处理", in_progress: "进行中", done: "已完成", cancelled: "已取消", ended: "已结束" },
     requestId: "请求 ID：",
   },
   language: {

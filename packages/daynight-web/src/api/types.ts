@@ -2,7 +2,7 @@ import type { ProjectAccess, ProjectOwnership, ProjectPersonVersion } from "./au
 
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
-export type TaskStatus = "todo" | "in_progress" | "done" | "cancelled";
+export type TaskStatus = "proposed" | "todo" | "in_progress" | "done" | "cancelled";
 
 export type Project = {
   readonly ownership: ProjectOwnership;
@@ -45,6 +45,7 @@ export type GraphTask = {
 
 export type TaskGraphSummary = {
   readonly total: number;
+  readonly proposed: number;
   readonly todo: number;
   readonly inProgress: number;
   readonly done: number;

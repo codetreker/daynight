@@ -103,7 +103,7 @@ var stepID = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
 func validUUID(s string) bool { u, err := uuid.Parse(s); return err == nil && u.String() == s }
 func taskStatus(s string) bool {
-	return s == "todo" || s == "in_progress" || s == "done" || s == "cancelled"
+	return s == "proposed" || s == "todo" || s == "in_progress" || s == "done" || s == "cancelled"
 }
 func stepStatus(s string) bool {
 	return s == "todo" || s == "in_progress" || s == "done" || s == "skipped"

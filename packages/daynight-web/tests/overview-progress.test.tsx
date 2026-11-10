@@ -26,7 +26,7 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
   });
   const graph: TaskGraph = { observedAt: observed,
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: "project", name: "Project", repoUrl: "https://example.com/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: cutoff, updatedAt: observed },
-    tasks, summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
+    tasks, summary: { proposed: tasks.filter((task) => task.status === "proposed").length, total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length, cancelled: tasks.filter((task) => task.status === "cancelled").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.ready === false && task.status === "todo").length } };
   return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
@@ -64,6 +64,8 @@ const presentation = (value: GraphSnapshot) => {
 describe("overview and task-list visibility", () => {
   it.each<[{ statuses: TaskStatus[]; expected: TaskStatus }]>([
     [{ statuses: ["todo"], expected: "todo" }],
+    [{ statuses: ["proposed", "proposed"], expected: "proposed" }],
+    [{ statuses: ["proposed", "todo"], expected: "todo" }],
     [{ statuses: ["todo", "todo"], expected: "todo" }],
     [{ statuses: ["in_progress", "todo"], expected: "in_progress" }],
     [{ statuses: ["done", "todo"], expected: "in_progress" }],

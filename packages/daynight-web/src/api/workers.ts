@@ -188,7 +188,7 @@ export const parseWorkerPage = (value: unknown): WorkerPage => {
 const task = (value: unknown): WorkerTaskSnapshot => {
   const data = fields(value, ['projectId', 'taskId', 'claimId', 'title', 'projectName', 'status', 'phase', 'agent']);
   return { projectId: id(data.projectId), taskId: id(data.taskId), claimId: id(data.claimId), title: text(data.title), projectName: text(data.projectName),
-    status: choice<TaskStatus>(data.status, ['todo', 'in_progress', 'done', 'cancelled']), phase: choice<WorkerPhase>(data.phase, ['preparing', 'executing', 'verifying', 'completing', 'waiting', 'paused']), agent: choice<WorkerAgent>(data.agent, ['codex', 'copilot', 'claude']) };
+    status: choice<TaskStatus>(data.status, ['proposed', 'todo', 'in_progress', 'done', 'cancelled']), phase: choice<WorkerPhase>(data.phase, ['preparing', 'executing', 'verifying', 'completing', 'waiting', 'paused']), agent: choice<WorkerAgent>(data.agent, ['codex', 'copilot', 'claude']) };
 };
 export const parseWorkerDetail = (value: unknown, workerId: string): WorkerDetailResponse => {
   const data = fields(value, ['observedAt', 'worker']);

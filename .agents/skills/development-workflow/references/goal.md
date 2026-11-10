@@ -21,7 +21,7 @@ Discussion acceptance does not automatically add repository PR merge requirement
 
 First create or reuse the single requirements-discussion task, titled `[Goal]<outcome>`.
 At initial registration, create only the requirements stage; do not pre-create architecture placeholders or delivery items.
-Return for registration-only requests; when explicitly asked to start the discussion, start or resume through [ordinary execution](run-task.md).
+Return with the task proposed for registration-only requests unless the caller explicitly selects todo; when explicitly asked to start the discussion, start or resume through [ordinary execution](run-task.md).
 
 Requirements discussion defines the problem and behavior without deciding architecture or implementing production code.
 Its complete spec is a result of this stage, not a prerequisite for registering or starting the Goal.
@@ -46,7 +46,7 @@ Attachments do not change the task version; follow [write safety](../../../../pa
 ### Register the next discussion before completion
 
 After the user confirms the current spec and directs progression to solution discussion, create or reuse the solution-discussion task while the requirements task remains `in_progress`.
-Use the requirements task as an ordinary prerequisite; the solution task stays `todo` and blocked until that prerequisite is done.
+Use the requirements task as an ordinary prerequisite and explicitly create the confirmed internal solution task with `--status todo`; it stays `todo` and blocked until that prerequisite is done.
 Its description must directly identify the requirements task ID, the full `spec.md` attachment path, and applicable prototype resources; read those actual sources and prepare the stage brief.
 Keep the shared spec in its owning requirements task.
 
@@ -61,6 +61,8 @@ Keep the current solution and breakdown in this stage's own material; do not reg
 After the user confirms the solution, perform the registration checks below before completing the solution task.
 
 ## Register the delivery breakdown
+
+Explicitly create confirmed internal delivery tasks with `--status todo`. Registration does not start execution or enable automatic execution.
 
 Prepare each proposed delivery task under the brief and boundary rules below, then review the breakdown as a whole before requesting solution confirmation.
 

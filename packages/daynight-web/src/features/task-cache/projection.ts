@@ -41,14 +41,15 @@ export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphI
 export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
   const nodes = new Map(ordered.map((task) => [task.id, task]));
-  const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordered.length, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
+  const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordered.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
   const tasks = ordered.map(({ version: _version, properties: _properties, ...task }) => {
     const blockedBy = task.dependsOn.filter((dependency) => !nodes.has(dependency) || !isTerminalStatus(nodes.get(dependency)!.status));
     const ready = task.status === "todo" && blockedBy.length === 0;
     if (task.status === "todo") { summary.todo++; if (ready) summary.ready++; else summary.blocked++; }
     else if (task.status === "in_progress") summary.inProgress++;
     else if (task.status === "done") summary.done++;
-    else summary.cancelled++;
+    else if (task.status === "cancelled") summary.cancelled++;
+    else summary.proposed++;
     return { ...task, blockedBy, ready };
   });
   const workerMachines = new Map<string, Pick<WorkerClaim, "state" | "machine">>();

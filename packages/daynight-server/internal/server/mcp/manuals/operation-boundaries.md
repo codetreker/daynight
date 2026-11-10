@@ -9,7 +9,7 @@ These are separate questions. Access to a task does not authorize implementation
 | Operation | Product effect | Decision boundary |
 | --- | --- | --- |
 | Read | Observe projects, task fields, Steps, Thread messages, attachments, or documentation | Reading related information does not expand the work to those objects. |
-| Register work | Create a task and define its scope, inputs, outputs, and relationships | Registration records work. New tasks are `todo` with `allowAgents: false`; creation does not execute them. |
+| Register work | Create a task and define its scope, inputs, outputs, and relationships | Registration records work. New tasks default to `proposed` with `allowAgents: false`; explicitly select `todo` for confirmed work. Creation does not execute them. |
 | Discuss | Read or post immutable Thread messages and maintain effective requirements or results | Posting does not start an Agent or change task status. An accepted discussion conclusion belongs in its effective description or attachment. |
 | Execute | Perform the work of a specified task using the required host capabilities | Execution requires sufficient inputs, satisfied prerequisites, and existing authorization for that work. |
 | Hand off | Review a selected task and enable its eligibility for automatic execution | Review content and authenticated responsibility before enabling `allowAgents`. The Worker may then acquire the task when eligible. |
@@ -38,6 +38,7 @@ Likewise, `readOnlyHint`, `destructiveHint`, and similar tool annotations descri
 | `allowAgents` | Permission for automatic selection when other eligibility conditions hold | Current execution, permanent proof of content review, or blanket permission for repository operations |
 | `ready` | The observed scheduling prerequisites are satisfied for the query’s task | Complete inputs, authorization to start, or exclusive ownership |
 | `requiredPlatform` | The automatic-selection platform requirement; `null` is unrestricted | The caller’s actual runtime platform or a reason to bypass a task’s required capabilities |
+| `status: "proposed"` | An unconfirmed suggestion, excluded from automatic execution | A mandatory approval gate or permission to begin work |
 | `status: "in_progress"` | The task is in its current execution interval | A process lock, lease, stop signal, or proof that this conversation owns execution |
 | `status: "done"` | Successful delivery is recorded for that task | Independent proof of every claimed output or completion of all related tasks |
 | `status: "cancelled"` | Further execution is not required and the task is terminal | Delivery of the original requirements |
@@ -93,6 +94,7 @@ A well-defined blocked `todo` task can be prepared for automatic execution befor
 
 | Observed state | Appropriate handoff action |
 | --- | --- |
+| `proposed` | Review authorized content while preserving status and permission; an explicit caller decision is needed to choose todo for automatic execution. Permission alone cannot make proposed executable. |
 | `todo`, `allowAgents: false`, content and responsibility sufficient | Enable permission using the exact task version on which the decision was based. |
 | `todo`, `allowAgents: false`, unresolved content or responsibility gap | Report the gap and preserve assignment and permission. |
 | `todo`, `allowAgents: true` | Review read-only. Rewriting the same permission is not a review receipt. |
@@ -127,7 +129,7 @@ See [write safety](daynight://manuals/write-safety.md) before another mutation f
 
 For an explicitly selected task without a Worker-owned execution, first establish its complete requirements, actual inputs, dependency state, authorization, and the host’s necessary tools. Read related material only as needed for those decisions. Reading a predecessor, sibling, or successor does not authorize doing its work.
 
-Once an ordinary `todo` task is ready and execution is authorized, entering `in_progress` uses the version observed for that decision:
+Once an ordinary proposed or todo task has satisfied all direct prerequisites and execution is authorized, entering `in_progress` uses the version observed for that decision:
 
 ```json
 {
