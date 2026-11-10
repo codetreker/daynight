@@ -195,7 +195,7 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 macOS APFS 的跨重启身份由不可变 `daynight-identity.json` 补充记录提供，旧 locked marker 的七字段和原字节保持不变。记录绑定 owner、原 marker SHA-256，以及 root/common/admin/leaf 各自的卷 UUID 和持久对象 ID。平台使用已打开目录句柄读取 fgetattrlist，分别验证文件属性、卷属性、APFS 类型与持久对象 ID 能力，采样前后复核句柄和路径。对象 ID 以十进制字符串保存；当前 dev/inode 仍用于同次操作中的替换检查，不使用 HEAD、mtime、ctime 或写入计数作为持久身份。
 
-新建及有权准备/验证路径在旧身份和全部 Git 证明成立时补录；普通 inventory 不写入。补充文件要求限长、普通文件、当前用户所有、0600 和单链接，读取不跟随符号链接。发布在 admin 目录独占写入临时文件并同步，复验所有证据后通过无覆盖原子操作发布、同步目录并读回。既有相同证据可幂等复用，不覆盖冲突或损坏文件。旧 marker 不更新，因此不需要两个身份文件的更新事务；发布后设备号变化仅需重新验证稳定证据。
+新建、准备及显式 enrollWorktreeIdentity 路径在旧身份和全部 Git 证明成立时补录；普通 inventory 和 verifyWorktree 保持只读。终态归档前的有权清理路径负责为仍完整的旧工作树补录，避免归档长期阻塞使该资源始终缺少稳定证据。补充文件要求限长、普通文件、当前用户所有、0600 和单链接，读取不跟随符号链接。发布在 admin 目录独占写入临时文件并同步，复验所有证据后通过无覆盖原子操作发布、同步目录并读回。既有相同证据可幂等复用，不覆盖冲突或损坏文件。旧 marker 不更新，因此不需要两个身份文件的更新事务；发布后设备号变化仅需重新验证稳定证据。
 
 有效补充记录只替代旧历史指纹比较，四 UUID、唯一注册、分支、origin、双向 Git 指针和当前 common 物理一致性仍完整验证。清理 mutation guard 同时保护补充记录和当前目录身份。leaf 已消失时只按既有终态规则验证剩余资源，不能重建原执行。缺少历史证据且旧设备号已漂移、卷或对象变化、摘要不一致、记录损坏均明确拒绝；非支持平台继续旧严格规则。旧 Worker 可识别并计数原 marker，但不获得跨设备号恢复能力。完整卷克隆可能复制全部证据，仍依赖受控文件系统写入和单 Worker 归属，不能当作反克隆或恶意并发替换防护。
 
@@ -342,7 +342,7 @@ Web 归档完整性由类型化 `ArchiveRepairRequiredError` 区分 `archive_inc
 
 cleanup_schedules 的 nullable archiveRepairCode 保存待修复原因，nextAttemptAt 表示下次条件探测，间隔为 15 分钟。到期 job 通过 Web backend 注入的 probeArchive 只读检查原 execution/generation，不扫描正文、blob 或启动 Provider；仍阻塞或读取失败时保留责任与容量，不增加完整归档失败计数。条件允许后重入原完整 cleanup，不能用探测成功走删除 schedule、释放 ending 或报告恢复的成功分支。持久化失败保留进程内退避并报告未确认；重启只恢复已确认持久状态。
 
-首次与后续探测均保留 receipt 优先对账：发现原 generation 的 receipt 时进入原上传入口核验远端摘要、长度和旧 receipt 迁移映射，即使本地仍有不完整标记，也不能永久阻止这条核对路径。receipt 存在不代表成功。历史 archive backfill 同样使用前置探测和低频策略；临时上传失败保持普通退避。监控复用 recovery-blocked 原因，等待活动与下次检查时间；只有真正归档及清理完成才报告恢复。自动补齐缺失历史、接受带缺口归档或将积压移出执行容量需要另行的数据保留设计，本机制不清除完整性标记、丢弃 outbox 或伪造 ACK。
+首次与后续探测均保留 receipt 优先对账：发现原 generation 的 receipt 时进入原上传入口核验远端摘要、长度和旧 receipt 迁移映射，即使本地仍有不完整标记，也不能永久阻止这条核对路径。receipt 存在不代表成功。历史 archive backfill 同样使用前置探测和低频策略，通过独立 archive_backfill_schedules 表保存 serverOrigin、execution/generation、launch 和 claim 身份及下次探测时间。该表不创建工作树清理责任，已完成执行的历史补归档不会因此重新触发目录删除；身份冲突不得覆盖或删除原记录。临时上传失败保持普通退避。监控复用 recovery-blocked 原因，等待活动与下次检查时间；只有真正归档及清理完成才报告恢复。自动补齐缺失历史、接受带缺口归档或将积压移出执行容量需要另行的数据保留设计，本机制不清除完整性标记、丢弃 outbox 或伪造 ACK。
 
 每次实际失败保留原错误及 cause，并记录 observation、agent-stop、backend-close、archive 或 worktree-removal 阶段与下一次重试时间。backend-close 表示 Agent 已停止但 IPC endpoint 等后端资源关闭未确认；归档和目录删除阶段同样明确 Agent 已停止。达到容量上限且存在失败清理时，按阻塞 claim 集合变化输出 cleanup-capacity-blocked；提示对应阶段、错误及恢复原因后自动重试，普通 tick 不反复输出同一集合。具体间隔、错误和恢复责任由[清理重试决策](../../.agents/notes/archived/bug-fix/2026-11-04-worker-cleanup-retry.md)解释。
 
