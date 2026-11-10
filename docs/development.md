@@ -375,7 +375,13 @@ watchdog for native Git execution. Its commit, shared-ref and private-ref cleanu
 assertions remain in that workflow; discovery-only cases retain their separate
 preparation hooks and default behavior budget. The
 [concurrent fetch budget decision](../.agents/notes/implemented/testing/2026-11-09-worker-concurrent-fetch-budget.md)
-records why that interleaving needs its own bound. Direct mutation checks verify
+records why that interleaving needs its own bound. The foreign-claim, nonempty
+reservation and mismatched-project case also owns a local 30-second watchdog:
+it creates and removes a real managed worktree while checking every refusal and
+the retained foreign content. The
+[ownership refusal budget decision](../.agents/notes/implemented/testing/2026-11-10-worker-ownership-refusal-budget.md)
+records its measured command sequence. Other cases without an explicit budget
+retain the runner's five-second default. Direct mutation checks verify
 independent tracked bytes, refs and Git objects in each copy. The
 [Worker seed decision](../.agents/notes/archived/testing/2026-11-04-worker-git-fixture-seeds.md) records the rationale for that fixture lifetime. Tests within a file stay sequential so environment
 changes and cleanup have one owner.
