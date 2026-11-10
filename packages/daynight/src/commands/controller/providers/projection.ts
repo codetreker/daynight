@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { record, string } from "./native-rpc.js";
 import type { ProviderEntry } from "./types.js";
 import { codexSubagentActivity } from "../../../session/codex-subagent-activity.js";
+import type { CodexImageProjection } from "./codex-image-projection.js";
 
 // Native item IDs survive reconnects; transport IDs must never create new timeline rows.
 export const nativeEntryId = (session: string, item: string): string => {
@@ -34,7 +35,7 @@ export const parseProviderArguments = (provider: "codex" | "claude" | "copilot",
 export class CodexProjection {
   private readonly content = new Map<string, string>();
   private readonly tools = new Map<string, Extract<ProviderEntry, {kind: "tool_call"}>>();
-  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry) => void) {}
+  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry) => void, private readonly images?: CodexImageProjection) {}
   private base(id: string) { return { entryId: nativeEntryId(this.sessionId, id), revision: "1" }; }
   delta(id: string, delta: string, kind: "assistant_message" | "reasoning"): void {
     const value = (this.content.get(id) ?? "") + delta; this.content.set(id, value);
@@ -42,14 +43,16 @@ export class CodexProjection {
     this.emit(kind === "reasoning" ? { ...this.base(id), kind, text: limited(value) } : { ...this.base(id), kind, content: [{ type: "text", text: limited(value) }] });
   }
   toolDelta(id: string, delta: string): void {
+    if (this.images?.toolDelta(id, delta)) return;
     const old = this.tools.get(id); if (!old) return;
     const prior = old.output.map(part => part.type === "text" ? part.text : "").join("");
     const output = prior + delta;
     const entry = { ...old, output: [{ type: "text" as const, text: limited(output) }], truncated: old.truncated || output.length > 200_000 };
     this.tools.set(id, entry); this.emit(entry);
   }
-  item(value: unknown, completed: boolean): void {
+  item(value: unknown, completed: boolean, turnId = ""): void {
     const item = record(value), id = string(item.id), type = string(item.type); if (!id) return;
+    if (this.images?.item(item, completed, turnId)) return;
     const base = this.base(id);
     if (type === "agentMessage") { const text = string(item.text); this.content.set(id, text); this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(text) }] }); }
     else if (type === "userMessage") this.emit({ ...base, kind: "user_message", content: (Array.isArray(item.content) ? item.content : []).flatMap(part => { const p = record(part); return p.type === "text" ? [{ type: "text" as const, text: limited(string(p.text)) }] : [{ type: "text" as const, text: `[${string(p.type) || "unsupported native content"}]` }]; }) });
@@ -77,6 +80,6 @@ export class CodexProjection {
       this.tools.set(id, entry); this.emit(entry);
     } else if (type === "contextCompaction") this.emit({ ...base, kind: "compaction", summary: "Native conversation context compacted." });
     else if (type === "plan") this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(string(item.text) || readable(item)) }] });
-    else this.emit({ ...base, kind: "error", code: "unsupported_native_item", message: `Unsupported native timeline item: ${type || "unknown"}. ${limited(readable(item))}` });
+    else this.emit({ ...base, kind: "error", code: "unsupported_native_item", message: `Unsupported native timeline item: ${type || "unknown"}.` });
   }
 }

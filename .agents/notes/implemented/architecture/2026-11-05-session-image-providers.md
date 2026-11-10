@@ -13,10 +13,11 @@ costs, which cannot safely share a text-only projection shortcut.
 ## Decision
 
 The adopted [provider design](../../../../docs/design/session-image-providers.md)
-publishes separate native encoders and evidence matchers, with one shared
-operation, occurrence and immutable-resource contract. This note records the
-published design decision; native image implementation and runtime acceptance
-remain pending.
+uses separate native encoders and evidence matchers, with one shared operation,
+occurrence and immutable-resource contract. The original decision established
+these boundaries before native implementation. The adapters now connect them
+through the existing Controller journal and media owner; production qualification
+still requires the exact backend, model and platform evidence.
 
 Codex uses stable localImage files and request/client identity, Claude uses
 ordered base64 sources and profile-proven root execution evidence, and Copilot
@@ -67,6 +68,30 @@ Each supported native version/backend/model must maintain payload, receipt,
 history and resource-limit evidence. Bounded readers cost schema maintenance and
 platform validation; RSS monitoring must not be described as hard isolation.
 The shared journal remains the only durable identity owner.
+
+Copilot's durable publication plan currently precedes separate timeline and
+occurrence materialization. It can recover an interrupted publication, but does
+not satisfy the design's atomic alias, reference and entry-revision requirement:
+readers still consume independently written pending-content files. Closing this
+gap requires a shared journal commit-visibility mechanism; wrapping provider
+callbacks in SQLite transactions cannot roll back those file writes. The atomic
+requirement remains in force.
+
+Provider aliases, cursors and occurrence state use the existing bounded metadata
+store. Wire spools charge actual bytes to the shared media ledger and retain their
+charge until readers stop and removal is durable. Transcript index writers retain
+a process-bound reservation across crashes; recovery must prove that the original
+writer stopped before admitting another writer. None of these private adapters
+creates an independent upload or public resource protocol.
+
+An image modality in a model catalog does not prove geometry. Codex binds the
+actual thread backend before applying a profile; Copilot combines its model
+catalog limits with an explicitly verified geometry profile. Claude observes the
+SDK-selected executable and effective backend settings rather than assuming a
+fixed JavaScript entry point or trusting the parent's environment alone. Unknown
+geometry or backend identity keeps image input unavailable, even when a direct
+native probe can describe a small image. Controlled profile injection belongs to
+tests and cannot widen production capability.
 
 The design deliberately preserves unresolved sends, even when a local echo looks
 successful. A few Copilot late-response cases display two labelled image sources.

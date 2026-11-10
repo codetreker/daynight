@@ -1,0 +1,246 @@
+import { expect, test, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { ProviderImageProjector } from "../../../src/commands/controller/providers/image-projector.js";
+import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../src/session/image-values.js";
+import { parseTimelineEntry } from "../../../src/session/protocol.js";
+
+const fixture = () => {
+  let acknowledged = false;
+  const states = new Map<string, unknown>(), calls: string[] = [], entries: ProviderEntry[] = [];
+  const resourceId = randomUUID();
+  let request: ImageCaptureRequest;
+  const receipt = (state: ImageCaptureReceipt["state"]): ImageCaptureReceipt => ({ captureId: request.captureId, attemptId: request.attemptId, revision: state === "committed" ? "2" : "1", occurrence: request.occurrence, state, resourceId, resource: null, error: null });
+  const options = {
+    onTimeline: (entry: ProviderEntry) => { calls.push("position"); entries.push(structuredClone(entry)); },
+    onImageOccurrence: () => { calls.push("occurrence"); return acknowledged; }, imageOccurrenceAcknowledged: () => acknowledged,
+    imageRuntime: { readState: (key: string) => states.get(key) ?? null, writeState: (key: string, value: unknown) => { states.set(key, structuredClone(value)); } },
+    registerImageCapture: vi.fn(async (value: ImageCaptureRequest) => { calls.push("register"); request = value; return receipt("reserved"); }),
+    queryImageCapture: vi.fn(async () => receipt("committed")),
+    stageImageCapture: vi.fn(async () => { calls.push("stage"); return { mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 }; }),
+    commitImageCapture: vi.fn(async () => { calls.push("commit"); return receipt("committed"); }),
+    failImageCapture: vi.fn(async () => receipt("failed")),
+  } as unknown as ProviderOptions;
+  const entry: ProviderEntry = { entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "before" }, { type: "text", text: "slot" }, { type: "text", text: "after" }] };
+  const release = vi.fn();
+  const slot = { index: 1, label: "Native image", native: { provider: "codex" as const, nativeSessionId: "native", nativeMessageId: "message", nativePartId: "content/1" }, payload: { kind: "file" as const, path: "/private/controlled-spool", byteLength: "3", sha256: "a".repeat(64), release } };
+  return { options, states, calls, entries, entry, slot, release, resourceId, acknowledge: () => { acknowledged = true; } };
+};
+
+test.each(["user_message", "assistant_message", "tool_call"] as const)("%s image positions and committed originals survive the timeline protocol", async kind => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options);
+  const parts = [{ type: "text" as const, text: "before" }, { type: "text" as const, text: "slot" }, { type: "text" as const, text: "after" }];
+  const entry: ProviderEntry = kind === "tool_call"
+    ? { entryId: f.entry.entryId, revision: "1", kind, callId: "tool-call", name: "image tool", input: "{}", output: parts, status: "completed", truncated: false }
+    : { entryId: f.entry.entryId, revision: "1", kind, content: parts };
+  try {
+    projector.publish(entry, [f.slot]); await projector.settled();
+    expect(parseTimelineEntry({ ...f.entries.at(-1), entrySeq: "1" })).toMatchObject({ imageProjectionError: null });
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    const restored = parseTimelineEntry({ ...f.entries.at(-1), entrySeq: "1" });
+    expect(restored).toMatchObject({ imageProjectionError: null, [kind === "tool_call" ? "output" : "content"]: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+
+test("the original image position is published and acknowledged before capture and keeps its order", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    expect(f.calls).toEqual(["position", "occurrence"]);
+    expect(f.options.registerImageCapture).not.toHaveBeenCalled();
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(f.calls.indexOf("register")).toBeGreaterThan(f.calls.indexOf("occurrence"));
+    expect(f.calls.indexOf("stage")).toBeGreaterThan(f.calls.indexOf("register"));
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(f.release).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+});
+
+test("reopened projection reuses the saved original without staging or reading the source again", async () => {
+  const f = fixture(); f.acknowledge();
+  let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [f.slot]); await projector.settled(); await projector.close();
+  const release = vi.fn(); projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { ...f.slot.payload, path: "/a/replaced/source", release } }]); await projector.settled();
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(release).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+});
+
+test("a lost register response is queried by its original capture identity and never registered twice", async () => {
+  const f = fixture(); f.acknowledge();
+  vi.mocked(f.options.registerImageCapture!).mockImplementationOnce(async () => { throw new Error("lost receipt"); });
+  vi.mocked(f.options.queryImageCapture!).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "2", occurrence: saved.request.occurrence, state: "committed", resourceId: f.resourceId, resource: null, error: null };
+  });
+  let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [f.slot]); await projector.settled(); await projector.close();
+  projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "unavailable", error: { code: "source_missing", message: "The source is unavailable." } } }]); await projector.settled();
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.queryImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+
+test("an unresolved commit is never replayed when a query still reports reserved", async () => {
+  const f = fixture(); f.acknowledge();
+  vi.mocked(f.options.commitImageCapture!).mockRejectedValue(new Error("commit response lost"));
+  vi.mocked(f.options.queryImageCapture!).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "1", occurrence: saved.request.occurrence, state: "reserved", resourceId: f.resourceId, resource: null, error: null };
+  });
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(f.options.commitImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.queryImageCapture).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+});
+
+test("a pending native slot waits for its final bytes and retains its published identity", async () => {
+  const f = fixture(); f.acknowledge(); const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled();
+    const first = (f.entries[0] as any).content[1].imageId;
+    expect(f.options.registerImageCapture).not.toHaveBeenCalled();
+    projector.publish({ ...f.entry, revision: "2" }, [f.slot]); await projector.settled();
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce();
+    expect((f.entries.at(-1) as any).content[1]).toMatchObject({ type: "image", imageId: first });
+  } finally { await projector.close(); }
+});
+
+test("source resolution and native transcript reads start only after ACK and registration", async () => {
+  const f = fixture(), read = vi.fn(async () => { f.calls.push("source"); return f.slot.payload; });
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "deferred", read } }]); await projector.settled();
+    expect(read).not.toHaveBeenCalled();
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(read).toHaveBeenCalledOnce();
+    expect(f.calls.indexOf("source")).toBeGreaterThan(f.calls.indexOf("register"));
+    expect(f.release).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+});
+
+test("an injected safe source resolver preserves the original locator and is skipped on reopen", async () => {
+  const f = fixture(); f.acknowledge();
+  const resolve = vi.fn(async (_request: ImageCaptureRequest) => f.slot.payload);
+  f.options.resolveImageCaptureSource = resolve;
+  const slot = { ...f.slot, payload: { kind: "source" as const, locator: { kind: "local" as const, path: "image.png", contextId: "native-cwd" } } };
+  let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [slot]); await projector.settled(); await projector.close();
+  expect(resolve).toHaveBeenCalledOnce();
+  expect(resolve.mock.calls[0]?.[0]).toMatchObject({ locator: slot.payload.locator });
+  projector = new ProviderImageProjector(f.options);
+  try { projector.publish(f.entry, [slot]); await projector.settled(); expect(resolve).toHaveBeenCalledOnce(); }
+  finally { await projector.close(); }
+});
+
+test("closing projection aborts and joins an active deferred source before releasing its bytes", async () => {
+  const f = fixture(); f.acknowledge(); let aborted = false, finish!: () => void;
+  const started = new Promise<void>(resolve => { finish = resolve; });
+  const projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [{ ...f.slot, payload: { kind: "deferred", read: async signal => {
+    finish(); await new Promise<void>(resolve => signal.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true })); return f.slot.payload;
+  } } }]);
+  await started; await projector.close();
+  expect(aborted).toBe(true); expect(f.release).toHaveBeenCalledOnce();
+  expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+});
+
+test("late input evidence cannot replace an already published native image identity", async () => {
+  const f = fixture(); f.acknowledge(); let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [f.slot]); await projector.settled(); await projector.close();
+  projector = new ProviderImageProjector(f.options);
+  try {
+    expect(() => projector.publish(f.entry, [{ ...f.slot, original: { imageId: randomUUID(), resourceId: randomUUID() } }])).toThrow(/identity/);
+  } finally { await projector.close(); }
+});
+
+test("rejected positions release every incoming file that the projector did not adopt", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options), laterRelease = vi.fn();
+  try {
+    expect(() => projector.publish(f.entry, [{ ...f.slot, index: -1 }, { ...f.slot, payload: { ...f.slot.payload, release: laterRelease } }])).toThrow(/position/);
+    expect(f.release).toHaveBeenCalledOnce(); expect(laterRelease).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+  expect(f.release).toHaveBeenCalledOnce(); expect(laterRelease).toHaveBeenCalledOnce();
+});
+
+test("shutdown retains a failed lease for retry while releasing the other owned files", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options), otherRelease = vi.fn();
+  f.release.mockImplementationOnce(() => { throw new Error("controlled unlink failure"); });
+  projector.publish(f.entry, [f.slot, { ...f.slot, index: 2, native: { ...f.slot.native, nativePartId: "content/2" }, payload: { ...f.slot.payload, release: otherRelease } }]);
+  await projector.settled();
+  await expect(projector.close()).rejects.toThrow(/release/);
+  expect(f.release).toHaveBeenCalledOnce(); expect(otherRelease).toHaveBeenCalledOnce();
+  await projector.close();
+  expect(f.release).toHaveBeenCalledTimes(2); expect(otherRelease).toHaveBeenCalledOnce();
+});
+
+test("failed cleanup of a rejected file remains retryable and does not skip other files", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options), otherRelease = vi.fn();
+  f.release.mockImplementationOnce(() => { throw new Error("controlled unlink failure"); });
+  expect(() => projector.publish(f.entry, [{ ...f.slot, index: -1 }, { ...f.slot, payload: { ...f.slot.payload, release: otherRelease } }])).toThrow();
+  expect(otherRelease).toHaveBeenCalledOnce();
+  await projector.close();
+  expect(f.release).toHaveBeenCalledTimes(2); expect(otherRelease).toHaveBeenCalledOnce();
+});
+
+test("a committed resource stays visible when removing redundant native bytes needs a retry", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options); f.acknowledge();
+  f.release.mockImplementationOnce(() => { throw new Error("controlled unlink failure"); });
+  vi.mocked(f.options.registerImageCapture!).mockImplementation(async request => ({ captureId: request.captureId, attemptId: request.attemptId, revision: "1", occurrence: request.occurrence, state: "committed", resourceId: f.resourceId, resource: null, error: null }));
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+  } finally { await projector.close(); }
+  expect(f.release).toHaveBeenCalledTimes(2);
+});
+
+test("a local release error cannot suppress the definite staging failure receipt", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options); f.acknowledge();
+  vi.mocked(f.options.stageImageCapture!).mockRejectedValue(new Error("invalid native image"));
+  f.release.mockImplementationOnce(() => { throw new Error("controlled unlink failure"); });
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    expect(f.options.failImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.failImageCapture).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ code: "source_validation_failed" }));
+    expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    expect(f.options.commitImageCapture).not.toHaveBeenCalled();
+  } finally { await projector.close(); }
+  expect(f.release).toHaveBeenCalledTimes(2);
+});
+
+test("a source discovered after a pending slot uses its final locator before registration", async () => {
+  const f = fixture(); f.acknowledge(); const projector = new ProviderImageProjector(f.options);
+  f.options.resolveImageCaptureSource = vi.fn(async () => f.slot.payload);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled();
+    const locator = { kind: "external" as const, url: "https://example.test/actual.png" };
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "source", locator } }]); await projector.settled();
+    expect(f.options.registerImageCapture).toHaveBeenCalledWith(expect.objectContaining({ locator }));
+  } finally { await projector.close(); }
+});
+
+test("a reopened pending slot registers the discovered source without changing its occurrence", async () => {
+  const f = fixture(); f.acknowledge(); let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled(); await projector.close();
+  const imageId = (f.entries.at(-1) as any).content[1].imageId;
+  f.options.resolveImageCaptureSource = vi.fn(async () => f.slot.payload);
+  projector = new ProviderImageProjector(f.options);
+  try {
+    const locator = { kind: "local" as const, path: "/original/final.png", contextId: "same-native-context" };
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "source", locator } }]); await projector.settled();
+    expect(f.options.registerImageCapture).toHaveBeenCalledWith(expect.objectContaining({ locator, occurrence: expect.objectContaining({ imageId }) }));
+  } finally { await projector.close(); }
+});

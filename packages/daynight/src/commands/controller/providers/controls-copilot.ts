@@ -2,12 +2,33 @@ import type { CopilotSession } from "@github/copilot-sdk";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
 import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
+import { IMAGE_LIMITS, type InputMime, type ProviderImageCapabilities } from "../../../session/image-values.js";
+import { unknownCopilotGeometry, type CopilotImageProfile } from "./copilot-image-profile.js";
 export class CopilotControls {
   readonly store: ProviderControls;
   private toolApproval: string | null = null;
   private pending = new Map<string, { model: string; resolve(): void; reject(error: Error): void }>();
   private pollTimer: ReturnType<typeof setInterval> | undefined; private polling = false; private closed = false;
+  private capabilityModels: Record<string, unknown>[] = [];
+  private currentModel: string | null = null;
+  private unconfirmed = false;
+  private unsettled: { id: string; value: string } | null = null;
   constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null) { this.store = new ProviderControls(changed, revisionFloor); }
+  imageCapabilities(profile: CopilotImageProfile | null, sessionId: string | null): Omit<ProviderImageCapabilities, "revision"> {
+    const matches = this.capabilityModels.filter(item => item.id === this.currentModel), model = matches.length === 1 ? matches[0] : undefined;
+    const vision = record(record(model?.capabilities).supports).vision, limits = record(record(record(model?.capabilities).limits).vision);
+    const mime = limits.supported_media_types;
+    const valid = Array.isArray(mime) && mime.every(value => typeof value === "string" && value.length > 0) && new Set(mime).size === mime.length && Number.isSafeInteger(limits.max_prompt_images) && Number(limits.max_prompt_images) > 0 && Number.isSafeInteger(limits.max_prompt_image_size) && Number(limits.max_prompt_image_size) > 0;
+    const media = valid ? ["image/png", "image/jpeg", "image/webp"].filter(type => (mime as string[]).includes(type)) as InputMime[] : [];
+    const stable = !this.closed && !this.unconfirmed && this.pending.size === 0 && this.store.value.settingsError === null;
+    const geometry = profile?.geometry ?? unknownCopilotGeometry;
+    const send = !profile || !sessionId || !stable || !model || typeof vision !== "boolean" ? "unknown" : !vision ? "unsupported" : !valid ? "unknown" : !media.length ? "unsupported" : geometry.known ? "supported" : "unknown";
+    return { expectedNativeSessionId: sessionId, modelId: this.currentModel, controlsRevision: this.store.value.revision, send, steer: send === "unsupported" ? "unsupported" : "unknown",
+      reasonCode: !profile ? "profile_disabled" : send === "unsupported" ? "model_unsupported" : "capability_unknown",
+      inputMediaTypes: send === "supported" ? media : [], maxImageBytes: String(valid ? Math.min(Number(limits.max_prompt_image_size), IMAGE_LIMITS.imageBytes) : IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: valid ? Math.min(Number(limits.max_prompt_images), IMAGE_LIMITS.images) : IMAGE_LIMITS.images,
+      geometry };
+  }
+  invalidateImages(): void { this.unconfirmed = true; }
   private permissions(): SessionSetting { return { id: "tool_approval", category: "permission", label: "Tool approvals", value: this.toolApproval, mutable: typeof this.native.rpc.permissions.setApproveAll === "function", scope: "session", description: "Native tool approval policy. Existing grants, path and network permissions are independent.", options: [{ value: "ask", label: "Ask for approval" }, { value: "allow", label: "Allow tools" }] }; }
   async initialize(resume: boolean, unattended = false) {
     if (!resume && unattended) {
@@ -38,13 +59,16 @@ export class CopilotControls {
       if (this.closed) return;
       if (!Array.isArray(listing.list) || listing.list.length > 500) throw new Error("Invalid Copilot model catalog.");
       const models = listing.list.map(record), metadata = models.find(model => model.id === current.modelId), supports = record(record(metadata?.capabilities).supports);
+      this.capabilityModels = models; this.currentModel = current.modelId ?? null;
       const levels = metadata?.supportedReasoningEfforts ?? supports.reasoning_effort;
       const settings: SessionSetting[] = [{ id: "model", category: "model", label: "Model", value: current.modelId ?? null, mutable: models.length > 0, scope: "next_turn", description: "Native model switches can remain queued until the current turn finishes.", options: uniqueOptions(models.map(model => ({ value: string(model.id), label: string(model.name) || string(model.id) }))) }, this.permissions()];
       if (Array.isArray(levels) && levels.length) settings.push({ id: "effort", category: "reasoning", label: "Reasoning effort", value: current.reasoningEffort ?? null, mutable: true, scope: "next_turn", description: "Omitted effort follows native defaults. Changes apply to subsequent turns.", options: uniqueOptions(levels.filter(value => typeof value === "string").map(value => ({ value, label: value }))) });
-      this.store.update({ settings, settingsError: null });
       for (const [id, pending] of this.pending) if (pending.model === current.modelId) { this.pending.delete(id); pending.resolve(); this.confirmed?.(id); }
+      if (this.unsettled && (this.unsettled.id === "model" ? current.modelId === this.unsettled.value : this.unsettled.id === "effort" ? current.reasoningEffort === this.unsettled.value : this.toolApproval === this.unsettled.value)) this.unsettled = null;
+      if (!this.pending.size && !this.unsettled) this.unconfirmed = false;
+      this.store.update({ settings, settingsError: null });
       if (!this.pending.size && this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = undefined; }
-    } catch (error) { if (!this.closed) this.store.update({ settings: [this.permissions()], settingsError: controlError(error) }); }
+    } catch (error) { this.capabilityModels = []; this.currentModel = null; this.unconfirmed = true; if (!this.closed) this.store.update({ settings: [this.permissions()], settingsError: controlError(error) }); }
     if (!includeCommands) return;
     try {
       if (this.skillDiscoveryError) throw new Error(this.skillDiscoveryError);
@@ -56,10 +80,11 @@ export class CopilotControls {
   }
   async set(id: string, value: string, operationId: string, revision: string) {
     this.store.setting(id, value, revision); if (this.closed) throw new Error("Native session closed.");
+    this.invalidateImages(); this.unsettled = { id, value };
     if (id === "tool_approval") {
       const operation = this.native.rpc.permissions.setApproveAll({ enabled: value === "allow" }).then(result => { if (!result.success) throw new Error("Copilot did not confirm tool permission update."); if (this.closed) throw new Error("Native session closed."); this.toolApproval = value; this.store.update({ settings: [...this.store.value.settings.filter(item => item.id !== id), this.permissions()] }); this.confirmed?.(operationId); });
       try { await controlDeadline(operation, "Copilot permission update"); } catch (error) { this.toolApproval = null; this.store.update({ settings: [...this.store.value.settings.filter(item => item.id !== id), this.permissions()], settingsError: controlError(error) }); throw error; }
-      return;
+      await this.refresh(false); return;
     }
     if (id === "effort") {
       await controlDeadline(this.native.rpc.model.setReasoningEffort({ reasoningEffort: value }), "Copilot effort update"); await this.refresh();

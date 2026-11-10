@@ -1,6 +1,6 @@
 # Session 图片原生 Provider 设计
 
-本文定义 Codex、Claude Code、Copilot 的图片输入、接受证据、原生图片投影和有界历史读取。三 Provider 的文字已使用统一结构化 `send` 入口；图片原生编码、来源投影和支持 profile 仍由 Provider 消费者交付。本文的发布不表示原生模型识图或平台验收已经完成。图片输入要求由[输入与草稿规格](../spec/session-image-input.md)拥有，显示与保存要求由[历史规格](../spec/session-image-history.md)拥有，验收证据由[验收规格](../spec/session-image-acceptance.md)拥有。
+本文定义 Codex、Claude Code、Copilot 的图片输入、接受证据、原生图片投影和有界历史读取。三 Provider 的文字和图片共用结构化 `send` 入口，分别通过原生编码器、证据 matcher 和有界读取器接入公共存储。运行时只对证据完整的 executable、SDK、backend 和模型组合开放图片资格；本地实现和受控回归不表示真实模型识图或平台验收已经完成。图片输入要求由[输入与草稿规格](../spec/session-image-input.md)拥有，显示与保存要求由[历史规格](../spec/session-image-history.md)拥有，验收证据由[验收规格](../spec/session-image-acceptance.md)拥有。
 
 [协议与存储设计](session-image-contracts.md)是 `send`、能力、operation、occurrence、capture、错误、预算和字节存储的唯一公共定义。Provider 只实现各自原生编码器、强关联证据和来源投影，不另建上传协议、数据库或预览接口。本地及外部来源使用[来源采集设计](session-image-sources.md)，展示使用[浏览器设计](session-image-browser.md)，封存与恢复使用[归档设计](session-image-archives.md)。[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-providers.md)保留备选与维护代价。
 
@@ -14,7 +14,22 @@
 | Claude Agent SDK `0.3.247` 的类型及 Daynight [Claude adapter](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/commands/controller/providers/claude.ts)、[controls](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/commands/controller/providers/controls-claude.ts) | `SDKUserMessage.message` 可包含 image source；模型目录本身不提供足够的 vision 证明。`user_message_uuid` 可表达输入关联，但不同生产者、hook 和终态的投递含义必须分别验证。SDK 历史 offset/limit 在完整读取和建链后切片，不能作为内存上限。 |
 | Copilot SDK `1.0.11` [session](https://github.com/github/copilot-sdk/blob/a550258d5c37bd662197536992a23d633bfe5804/nodejs/src/session.ts)、[types](https://github.com/github/copilot-sdk/blob/a550258d5c37bd662197536992a23d633bfe5804/nodejs/src/types.ts)、[events](https://github.com/github/copilot-sdk/blob/a550258d5c37bd662197536992a23d633bfe5804/nodejs/src/generated/session-events.ts)、[image input](https://github.com/github/copilot-sdk/blob/a550258d5c37bd662197536992a23d633bfe5804/docs/features/image-input.md) | 支持 blob attachments，send 返回 messageId，但未承诺它等于 user event.id。模型目录给出 vision 和限制；原生处理可缩放或省略图片，发送成功与每图模型消费是不同证据。`getEvents` 全量读取不能承担大图历史。 |
 
-Daynight 的源码定位基线为 `7fe4684b83d4d850f3b2dc6e7772392f75b175ef`。对应[公共 Provider 接口](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/commands/controller/providers/types.ts)和[Controller runtime](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/commands/controller/runtime.ts)仍需图片接线；实现时应保留实际主线的错误分类、角色说明、子 Agent、控制、恢复和历史行为。
+设计形成时的 Daynight 源码定位基线为 `7fe4684b83d4d850f3b2dc6e7772392f75b175ef`，当时的 Provider 接口和 Controller runtime 尚无完整图片接线。当前[公共 Provider 接口](../../packages/daynight/src/commands/controller/providers/types.ts)通过 `imageRuntime`、接受观察、出现位置与 capture callbacks 连接[Controller runtime](../../packages/daynight/src/commands/controller/runtime.ts)，保留原有错误分类、角色说明、子 Agent、控制、恢复和历史行为。
+
+## 实现所有者与持久边界
+
+| 所有者 | 职责 |
+| --- | --- |
+| [共享 projector](../../packages/daynight/src/commands/controller/providers/image-projector.ts) | 将完整 content/tool output 布局中的图片位置、稳定来源 tuple 和 capture 状态存入原 journal；为富图片条目设置 `imageProjectionError`，经位置 ACK 后开始 register/query/stage/commit。 |
+| [原生状态](../../packages/daynight/src/commands/controller/media/native-state.ts) | 在既有 `image_runtime_state` 中保存 matcher、别名、分页及出现状态；单值不超过 1 MiB，消费普通元数据预算。 |
+| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按实际暂存字节计公共磁盘账本，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
+| [Codex RPC](../../packages/daynight/src/commands/controller/providers/codex-rpc.ts) | 有界解析原生流，将明确媒体字段交独立 token 暂存，保持 RPC 回执与原连接。 |
+| [Claude live helper](../../packages/daynight/src/commands/controller/providers/claude-live.ts) 与 [transcript helper](../../packages/daynight/src/commands/controller/providers/claude-transcript.ts) | 隔离 SDK 全量解析和受权历史索引，使用有界 IPC 与媒体 ACK；Controller 保存实际 native 子进程证明。 |
+| [Copilot bridge](../../packages/daynight/src/commands/controller/providers/copilot-bridge.ts) | 同一 runtime 的唯一 SDK 连接承载输入、控制、交互、订阅和分页；帧代理限制输入，私有媒体 lease 把字节逐块交给 Controller。 |
+
+索引 writer 的预算 reservation 与实际进程证明持久保存。恢复只有在原 writer 已停止或已被其他进程替代时才释放 reservation；存活、无法确认或缺少证明时拒绝新 writer。实际索引、sidecar 和 reservation 按占用上界计量，避免重复计费；原生状态不能借用结算专用额度。
+
+Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL。公共 `resolveImageCaptureSource` 在原出现已 ACK 且 capture 已 reserved 后读取；组件缺失时保留同位置的 `component_unsupported`。已保存的图片直接复用服务 resource，重开不重新访问原来源。待到达来源保留 pending，最终 payload 到达后更新同一位置；完成布局由 normalizer 完整提供，不能用纯文字 delta 覆盖图片槽。
 
 ## 三者共同的发送屏障
 
@@ -35,6 +50,8 @@ Daynight 的源码定位基线为 `7fe4684b83d4d850f3b2dc6e7772392f75b175ef`。�
 ### 能力、编码与接受
 
 当前精确模型必须在完整 `model/list` 分页结果中得到可靠映射，并明确 `inputModalities` 含 image；`imageGeneration` 是输出能力。缺字段、模型未知、设置未确认或版本 profile 不匹配时禁图片。steer 按当前回合的已确认模型判断，不能沿用未来默认模型；二者无法同时准确表达时 steer=unknown。
+
+profile 还绑定 `thread/start` 或 `thread/resume` 返回的实际 `modelProvider`。模型目录的 image modality 不能证明宽高、像素或帧数限制；自定义 gateway 不能借用官方 OpenAI backend 的几何规则。缺少精确 backend/model 的几何证据时，公共能力为 `unknown`、`capability_unknown` 和全零 unknown geometry。受控测试注入的 profile 只证明编码和回执处理，不构成生产支持证据。
 
 原生数组保持顺序：可选 `{type:"text",text,text_elements:[]}` 后接 `{type:"localImage",path}`。path 仅来自稳定私有文件，纯图片省略文字块，不添加提示词、文件名、Markdown 或空 TextPart；detail 沿原生缺省。不以 data URL 或远程 URL 作隐式 fallback。
 
@@ -88,6 +105,8 @@ Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reje
 ### 能力和完整输入
 
 兼容 profile 绑定实际 SDK/executable、backend、已确认 effective model、输入及接受事件、历史 schema。保留原生选择值 `default`，另存实际 resolved model；未知 backend、default 未解析、设置超时或 profile 不匹配时图片 unknown，不能隐式发一轮探测。图片 steer 固定 unsupported；文本 steer 保持原有能力，图片不入队、不 interrupt。
+
+实际 executable 从 SDK 的 `spawnClaudeCodeProcess` 观察，不猜测固定 `cli.js`。helper 在该入口探测版本，并结合实际 spawn 环境和 SDK effective settings 判断 backend；覆盖冲突、不可解析的设置来源或未执行的 policy helper 均不能证明 first-party backend。模型别名、点号与短横线拼写不自行等同，必须取得精确 resolved model 或经过独立验证的映射。
 
 原生限制单位必须明确；编码上限 L 按 `4 * ceil(rawBytes / 3) <= L` 换算，不把 5 MB 编码额度当 5 MiB 文件。请求整体还受历史、工具和文字影响。累计上下文超过某阈值的几何限制必须纳入公共 geometry，不能以单条图数或普通 decoder 的 16384 上限代替 backend profile。
 
@@ -153,6 +172,8 @@ SDK 未保证 messageId 等于 user.message.id。运行时只在同 native Sessi
 | send 超时且无可信 ID | 原生 event 作为独立事实公开，分配其 occurrence/capture；原 operation 仍 unknown，不能长期阻塞其他消息。 |
 | 原生槽已公开，原 Promise 迟到返回且精确匹配 | 原槽位、原生 bytes 和顺序不变；持久 provenance，在同 entry 末尾追加有序“原上传图片”槽，用原 image/resource；既有槽标“原生记录图片”。 |
 | 同迟到证据重放 | operation+原 imageId 唯一键复用同附加槽，不重复追加；alias、引用和单调 entry revision 同事务。 |
+
+当前 Copilot matcher 在既有元数据表中原子保存原回执与不可变 publication 计划，再分别物化 timeline 和 occurrence。该计划支持恢复，但读取者仍从 pending-content 文件取得 timeline；计划提交后、物化前的中断会留下旧图片布局及旧 revision。因此现有实现尚未满足上表的同事务要求。该要求需要公共 journal 提供统一的提交可见性；Provider 内部的重放或 SQLite transaction wrapper 不能回滚已覆盖的独立内容文件。
 
 少数迟到情况显示两种真实来源，即使同摘要也不能改绑已公开身份。原接纳时须按每图最坏双槽预留统一 timeline 的元数据空间及132 MiB保守归档额度，正常早回执释放余量；不能等迟到后因历史已满丢原图。原生 capture 另按资源预算准入，不足时原生槽不可用，已保存原上传图仍可在可信迟到关联后读取。
 

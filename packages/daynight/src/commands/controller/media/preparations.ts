@@ -1,4 +1,5 @@
 import { createImageCaptureSource } from "./capture-source.js";
+import { openNativeMediaSpool, type NativeMediaSpool } from "./native-spool.js";
 import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./release-error.js";
 import { openMediaBudgetLedger } from "./budget-ledger.js";
@@ -33,8 +34,8 @@ const snapshotTarget = (ticket: ControllerLaunchTicket, snapshot: ControllerSnap
 
 /** Local validation never publishes a service-owned available resource receipt. */
 export const openControllerMediaStore = (file: string, ticket: ControllerLaunchTicket, db: Database.Database, content: PendingContent, transactions: Transactions, snapshot: () => ControllerSnapshot, decoder: ImageDecoder = bundledImageDecoder(), stateDirectory = path.dirname(file)) => {
-  const root = `${file}.media-staging`, nativeRoot = path.join(root, "native");
-  checkedDirectory(root); checkedDirectory(nativeRoot); syncDirectory(path.dirname(root));
+  const root = `${file}.media-staging`, nativeRoot = path.join(root, "native"), wireRoot = path.join(root, "wire");
+  checkedDirectory(root); checkedDirectory(nativeRoot); checkedDirectory(wireRoot); syncDirectory(path.dirname(root));
   const ownerFile = path.join(root, "owner.json"), owner = { schemaVersion: 1, serverOrigin: ticket.serverOrigin, executionId: ticket.executionId, sessionId: ticket.sessionId, ...sessionBinding(ticket) };
   if (existsSync(ownerFile)) {
     const fd = openSync(ownerFile, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -43,11 +44,13 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
   const ledger = openMediaBudgetLedger(stateDirectory, ticket.executionId);
   const metadataBudget = controllerMetadataBudget(file, db);
   const captureSource = createImageCaptureSource(db, transactions, snapshot, metadataBudget);
-  let closed = false, decoderCount = 0;
+  let closed = false, ledgerClosed = false, decoderCount = 0;
   const inFlight = new Map<string, { controller: AbortController; promise: Promise<LocalImagePreparation> }>();
   const captureInFlight = new Map<string, { controller: AbortController; promise: Promise<ValidatedImage>; filename: string; byteLength: number }>();
   const reads = new Map<string, number>();
   const inputLeases = new Set<string>();
+  const wireReservations = new Map<string, number>();
+  const wireSpools = new Set<NativeMediaSpool>();
   const checkOpen = () => { if (closed) throw new Error("Controller media store is closed."); };
   const get = (uploadId: string): Preparation => transactions.read(() => {
     imageId(uploadId);
@@ -68,18 +71,44 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     if (!stat.isFile() || stat.isSymbolicLink() || stat.dev !== current.dev || stat.ino !== current.ino || process.platform !== "win32" && (current.mode & 0o077) !== 0) { closeSync(fd); throw new Error("Image preparation file is not a private regular file."); }
     return fd;
   };
-  const checkBudgets = (next: number) => transactions.read(() => {
-    metadataBudget.assert(16384);
+  const refreshMediaBudget = (next: number) => transactions.read(() => {
     const rows = db.prepare("SELECT value FROM image_preparations").all() as { value: string }[];
-    if (rows.length >= 10000 || rows.reduce((sum, row) => sum + Buffer.byteLength(row.value), 0) + 16384 > 128 * 1024 * 1024) throw new Error("Image preparation metadata budget exceeded.");
     const reservations = new Map(rows.map(row => JSON.parse(row.value) as Preparation).filter(p => p.receipt.state !== "released").map(p => [path.join(root, p.filename), Number(p.spec.byteLength)]));
     for (const capture of captureInFlight.values()) reservations.set(capture.filename, capture.byteLength);
+    for (const [filename, bytes] of wireReservations) reservations.set(filename, bytes);
     // Unknown files retain their actual charge after interrupted preparation or
     // capture. Native names share only private immutable original inodes.
     const mediaBytes = controllerMediaDiskBytes([root, path.join(content.root, "blobs")], reservations);
     ledger.reserve(mediaBytes + next + CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES);
+  });
+  const checkBudgets = (next: number) => transactions.read(() => {
+    metadataBudget.assert(16384);
+    const rows = db.prepare("SELECT value FROM image_preparations").all() as { value: string }[];
+    if (rows.length >= 10000 || rows.reduce((sum, row) => sum + Buffer.byteLength(row.value), 0) + 16384 > 128 * 1024 * 1024) throw new Error("Image preparation metadata budget exceeded.");
+    refreshMediaBudget(next);
     const space = statfsSync(root, { bigint: true }); if (space.bavail * space.bsize < 536_870_912n + BigInt(next)) throw new Error("Controller media storage free-space budget exceeded.");
   });
+  const createSpool = (maximumBytes: number): NativeMediaSpool => {
+    checkOpen();
+    const filename = path.join(wireRoot, `${randomUUID()}.wire`);
+    let spool: NativeMediaSpool;
+    try {
+      spool = openNativeMediaSpool(filename, maximumBytes, bytes => {
+        checkOpen();
+        const previous = wireReservations.get(filename);
+        wireReservations.set(filename, bytes);
+        try {
+          refreshMediaBudget(0);
+          const space = statfsSync(root, { bigint: true });
+          if (space.bavail * space.bsize < 536_870_912n + BigInt(Math.max(0, bytes - (previous ?? 0)))) throw new Error("Controller media storage free-space budget exceeded.");
+        } catch (error) {
+          if (previous === undefined) wireReservations.delete(filename); else wireReservations.set(filename, previous);
+          throw error;
+        }
+      }, () => { wireReservations.delete(filename); refreshMediaBudget(0); wireSpools.delete(spool); });
+    } catch (error) { wireReservations.delete(filename); throw error; }
+    wireSpools.add(spool); return spool;
+  };
   // Only an uncommitted suffix may be discarded. Confirmed-prefix loss is corruption.
   for (const row of transactions.read(() => db.prepare("SELECT value FROM image_preparations").all() as { value: string }[])) {
     const p = JSON.parse(row.value) as Preparation;
@@ -328,13 +357,24 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       releaseImported(); throw error;
     }
   };
-  return { prepare, write, complete, release, readPrepared, read, stageCapture, readCapture, acquireInput, preparationPath,
+  return { prepare, write, complete, release, readPrepared, read, stageCapture, readCapture, acquireInput, preparationPath, createSpool,
+    nativeIndexDirectory: (): string => { checkOpen(); metadataBudget.assert(16384); const directory = `${file}.native-index`; checkedDirectory(directory); return directory; },
+    reserveNativeIndex: (additional: number): void => { checkOpen(); metadataBudget.assert(additional); },
     captureStatus: (captureId: string, attemptId: string): ValidatedImage | null => {
       checkOpen(); imageId(attemptId); captureSource.assertImageCaptureAttempt(captureId, attemptId);
       return transactions.read(() => { const row = db.prepare("SELECT validated FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`) as { validated: string } | undefined; return row ? JSON.parse(row.validated) as ValidatedImage : null; });
     },
     status: async ({ uploadId }: { uploadId: string }): Promise<LocalImagePreparation> => { checkOpen(); return get(uploadId).receipt; },
-    async close(): Promise<void> { if (closed) return; closed = true; const pending = [...inFlight.values(), ...captureInFlight.values()]; for (const item of pending) item.controller.abort(new Error("Controller media stopped.")); await Promise.allSettled(pending.map(item => item.promise)); ledger.close(); },
+    async close(): Promise<void> {
+      if (ledgerClosed) return; closed = true;
+      const pending = [...inFlight.values(), ...captureInFlight.values()];
+      for (const item of pending) item.controller.abort(new Error("Controller media stopped."));
+      await Promise.allSettled(pending.map(item => item.promise));
+      const failures: unknown[] = [];
+      for (const spool of wireSpools) try { spool.remove(); } catch (error) { failures.push(error); }
+      if (failures.length) throw new AggregateError(failures, "Native media readers or files remain after shutdown.");
+      ledger.close(); ledgerClosed = true;
+    },
   };
 };
 export type ControllerMediaStore = ReturnType<typeof openControllerMediaStore>;

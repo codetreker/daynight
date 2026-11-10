@@ -9,7 +9,7 @@ vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunch
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: async () => ({ pid: 1 }), captureProcessProof: async () => ({ pid: 1 }) }));
 vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: async (options: unknown) => { f.options = options; return { send: f.send, close: async () => {} }; } }));
 vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_: unknown, __: unknown, callbacks: any) => { f.callbacks = callbacks; return { flush: async () => {}, close: () => {}, connected: () => true, authorize: async () => { f.order.push("authorize"); }, receipt: f.receipt }; } }));
-vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => ({ listOperations: () => [], patchSnapshot: () => {}, getSnapshot: () => ({ nativeSessionId: "native", initialInputState: "confirmed", activity: "idle", currentTurnId: f.turn, capabilities: { send: true, steer: true, cancel: true, respond: true } }), providerImageCapabilities: (value: object) => f.actualState ? { ...value, revision: "1" } : ({ revision: f.revision, send: "supported", steer: "supported" }), appendEvent: () => {}, prepareOperation: () => ({ operationId: "op", kind: "send_message", state: "accepted" }), media: () => ({ acquireInput: f.acquire }), assertInputCapacity: () => {}, markDispatching: () => { f.order.push("dispatch"); f.state = "dispatching"; }, getOperation: () => ({ state: f.state }), recordOperation: (_: unknown, state: string) => { f.state = state; return { state }; }, close: () => {} }) }));
+vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => ({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: () => {}, getSnapshot: () => ({ nativeSessionId: "native", initialInputState: "confirmed", activity: "idle", currentTurnId: f.turn, capabilities: { send: true, steer: true, cancel: true, respond: true } }), providerImageCapabilities: (value: object) => f.actualState ? { ...value, revision: "1" } : ({ revision: f.revision, send: "supported", steer: "supported" }), appendEvent: () => {}, prepareOperation: () => ({ operationId: "op", kind: "send_message", state: "accepted" }), media: () => ({ acquireInput: f.acquire }), assertInputCapacity: () => {}, markDispatching: () => { f.order.push("dispatch"); f.state = "dispatching"; }, getOperation: () => ({ state: f.state }), recordOperation: (_: unknown, state: string) => { f.state = state; return { state }; }, close: () => {} }) }));
 vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: async () => ({}) }));
 import { runController } from "../../../src/commands/controller/runtime.js";
 beforeEach(() => { f.callbacks = null; f.options = null; f.state = "accepted"; f.revision = "1"; f.turn = null; f.actualState = false; f.order.length = 0; f.acquire.mockReset(); f.send.mockReset(); f.receipt.mockClear(); f.send.mockImplementation(async () => { f.order.push("native"); return { disposition: "started", turnId: "turn" }; }); });
@@ -38,4 +38,17 @@ test("the production runtime state matches the shared Go wire vector while nativ
   f.actualState = true; const c = await start();
   try { const state = f.callbacks.readState(); expect(state).toEqual(stateVector); expect(parseControllerState(JSON.parse(JSON.stringify(state)))).toEqual(stateVector); }
   finally { c.stop(); await c.running; }
+});
+
+test("provider image qualification is published through the existing durable capability revision owner", async () => {
+  f.actualState = true; const c = await start();
+  try {
+    const images = { expectedNativeSessionId: "native", modelId: "exact-model", controlsRevision: null, send: "supported", steer: "unsupported", reasonCode: null,
+      inputMediaTypes: ["image/png"], maxImageBytes: "10485760", maxMessageImageBytes: "20971520", maxImagesPerMessage: 8,
+      geometry: { version: 1, known: true, maxWidth: 4096, maxHeight: 4096, maxPixels: 16777216, maxFrames: 1 } };
+    f.options.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false }, images });
+    expect(f.callbacks.readState().providerImages).toEqual({ ...images, revision: "1" });
+    f.options.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false }, images: { ...images, expectedNativeSessionId: "another-native" } });
+    expect(f.callbacks.readState().providerImages).toMatchObject({ send: "unsupported", reasonCode: "profile_disabled" });
+  } finally { c.stop(); await c.running; }
 });

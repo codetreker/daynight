@@ -44,12 +44,14 @@ export const createControllerCaptureBridge = (options: {
       const key = `${captureId}:${attemptId}`, pending = retries.get(key); if (pending) return pending;
       const work = (async () => {
         const source = await provider.retryImageCapture!(request, signal);
-        signal.throwIfAborted();
-        if (!options.writable()) throw new Error("Image source retry target_changed.");
-        const validated = await journal.media().stageCapture({ ...source, captureId, attemptId, imageId: request.occurrence.imageId });
-        signal.throwIfAborted();
-        if (!options.writable()) throw new Error("Image source retry target_changed.");
-        return validated;
+        try {
+          signal.throwIfAborted();
+          if (!options.writable()) throw new Error("Image source retry target_changed.");
+          const validated = await journal.media().stageCapture({ ...source, captureId, attemptId, imageId: request.occurrence.imageId });
+          signal.throwIfAborted();
+          if (!options.writable()) throw new Error("Image source retry target_changed.");
+          return validated;
+        } finally { source.release?.(); }
       })();
       retries.set(key, work);
       try { return await work; } finally { if (retries.get(key) === work) retries.delete(key); }

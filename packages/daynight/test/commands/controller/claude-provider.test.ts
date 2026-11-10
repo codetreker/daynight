@@ -2,12 +2,19 @@ import { textNativeInput } from "../../../src/commands/controller/providers/nati
 import { test, expect, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ProviderEntry } from "../../../src/commands/controller/providers/types.js";
-const historyReader = vi.hoisted(() => vi.fn());
-vi.mock("node:child_process", async importOriginal => ({ ...await importOriginal<typeof import("node:child_process")>(), execFile: historyReader }));
+import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+const historyOpen = vi.hoisted(() => vi.fn());
+vi.mock("../../../src/commands/controller/providers/claude-transcript-helper.js", () => ({ openClaudeTranscriptHelper: historyOpen }));
 const sdk = vi.hoisted(() => ({ query: vi.fn(), getSessionInfo: vi.fn(), getSessionMessages: vi.fn() }));
-vi.mock("@anthropic-ai/claude-agent-sdk", () => sdk);
-import { openClaudeProvider } from "../../../src/commands/controller/providers/claude.js";
+vi.mock("../../../src/commands/controller/providers/claude-live.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/claude-live.js")>(), queryClaudeLive: sdk.query }));
+import { openClaudeProvider as openProvider } from "../../../src/commands/controller/providers/claude.js";
+const openClaudeProvider = (options: ProviderOptions) => {
+  const saved = new Map<string, unknown>();
+  return openProvider({ imageRuntime: { getIntent: () => null, readState: key => saved.get(key) ?? null, writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => "/private/test-index", reserveIndex() {}, acquireIndexReservation: () => ({ release() {} }), createSpool: () => { throw new Error("This controlled fixture has no image source."); } }, ...options });
+};
+const historyFixture = (nativeSessionId: string, messages: unknown[]) => ({
+  snapshot: { nativeSessionId }, nextPage: async () => ({ done: true, cursor: "cursor", records: messages.map(message => ({ value: { ...message as object, session_id: nativeSessionId }, media: [], assistantBlockOffset: null })) }), acknowledge: async () => {}, close: async () => {},
+});
 import { startupFailure } from "../../../src/commands/controller/startup.js";
 import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
 
@@ -64,6 +71,11 @@ test("Claude approval stays pending after SDK callback resolution until the matc
 });
 
 const nativeFixture = (echo = true) => {
+  historyOpen.mockImplementation(async options => {
+    const info = await sdk.getSessionInfo(options.nativeSessionId, { dir: options.cwd });
+    if (!info || info.sessionId !== options.nativeSessionId) throw new Error("Claude history identity is unavailable.");
+    return historyFixture(options.nativeSessionId, await sdk.getSessionMessages(options.nativeSessionId));
+  });
   const interrupt = vi.fn(async (): Promise<unknown> => ({}));
   let captured!: Options, wake: (() => void) | undefined, ended = false, failure: Error | undefined;
   const messages: unknown[] = [], inputs: SDKUserMessage[] = [];
@@ -82,6 +94,39 @@ const nativeFixture = (echo = true) => {
   });
   return { emit, interrupt, inputs, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
 };
+test("Claude provider retries failed native resource cleanup without requesting another native stop", async () => {
+  nativeFixture(); const activities: string[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState: state => activities.push(state.activity), onSpawn() {} });
+  const native = sdk.query.mock.results.at(-1)!.value, originalClose = native.close;
+  native.close = vi.fn(originalClose); let unavailable = true;
+  native.join = vi.fn(async () => { if (unavailable) throw new Error("Native media cleanup failed after stop."); });
+  await expect(provider.close()).rejects.toThrow("cleanup failed"); expect(activities).not.toContain("stopped");
+  unavailable = false;
+  await expect(provider.close()).resolves.toBeUndefined();
+  expect(activities.at(-1)).toBe("stopped"); expect(native.close).toHaveBeenCalledOnce(); expect(native.join).toHaveBeenCalledTimes(2);
+});
+
+test("Claude provider cannot report stopped while native stop proof remains unknown across close retries", async () => {
+  nativeFixture(); const activities: string[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState: state => activities.push(state.activity), onSpawn() {} });
+  const native = sdk.query.mock.results.at(-1)!.value;
+  native.join = async () => { throw new Error("Native process stop remains unconfirmed."); };
+  await expect(provider.close()).rejects.toThrow("unconfirmed");
+  await expect(provider.close()).rejects.toThrow("unconfirmed");
+  expect(activities).not.toContain("stopped");
+});
+
+test("a failed helper submission disconnects without replay or a retained acceptance waiter", async () => {
+  const fixture = nativeFixture(), fatal = vi.fn(), observed = vi.fn(), states: unknown[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState: state => states.push(state), onSpawn() {}, onFatalError: fatal, onInputObserved: observed });
+  const native = sdk.query.mock.results.at(-1)!.value, submit = vi.fn(async () => { throw new Error("Transport response lost."); }); native.submit = submit;
+  try {
+    await expect(provider.send(textNativeInput("work"), randomUUID(), null)).rejects.toThrow("response lost");
+    expect(fatal).toHaveBeenCalledOnce(); expect(states.at(-1)).toMatchObject({ activity: "unknown", currentTurnId: null, capabilities: { send: false } });
+    await expect(provider.send(textNativeInput("work"), randomUUID(), null)).rejects.toThrow("session state");
+    expect(submit).toHaveBeenCalledOnce(); expect(observed).not.toHaveBeenCalled(); expect(fixture.inputs).toEqual([]);
+  } finally { await provider.close(); }
+});
 test("new Claude selection cannot pass startup when native effective settings are unknown", async () => {
   const fixture = nativeFixture();
   const result = await openClaudeProvider({ cwd: process.cwd(), model: "sonnet", args: [], resumeNativeSessionId: null, validateNativeSelection: true, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
@@ -177,10 +222,9 @@ test("Claude reports only exact native user text UUIDs from history and live mes
 test("Claude resume reads the private native home without changing the parent environment", async () => {
   nativeFixture(); const nativeId = randomUUID(), observed: string[] = [], operationId = randomUUID();
   const parentHome = process.env.CLAUDE_CONFIG_DIR;
-  historyReader.mockImplementation((_file, _args, options, callback) => {
-    expect(options.env.CLAUDE_CONFIG_DIR).toBe("/private/isolated-claude-home");
-    expect(options.timeout).toBe(30_000); expect(options.maxBuffer).toBeGreaterThan(0);
-    callback(null, JSON.stringify({ info: { sessionId: nativeId, cwd: process.cwd() }, messages: [{ type: "user", uuid: operationId, message: { content: "accepted before restart" } }] }));
+  historyOpen.mockImplementation(async options => {
+    expect(options.nativeHome).toBe("/private/isolated-claude-home");
+    return historyFixture(nativeId, [{ type: "user", uuid: operationId, message: { content: "accepted before restart" } }]);
   });
   const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], env: { ...process.env, CLAUDE_CONFIG_DIR: "/private/isolated-claude-home" }, resumeNativeSessionId: nativeId, onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   expect(observed).toEqual([operationId]); expect(process.env.CLAUDE_CONFIG_DIR).toBe(parentHome);
@@ -189,7 +233,7 @@ test("Claude resume reads the private native home without changing the parent en
 
 test.each(["error", "wrong_identity", "invalid_json"])("Claude fails closed on private history reader %s", async failure => {
   nativeFixture(); sdk.query.mockClear(); const nativeId = randomUUID();
-  historyReader.mockImplementation((_file, _args, _options, callback) => callback(failure === "error" ? new Error("private output must not leak") : null, failure === "invalid_json" ? "private malformed output" : JSON.stringify({ info: { sessionId: randomUUID() }, messages: [] })));
+  historyOpen.mockImplementation(async () => { throw new Error(`Claude history ${failure} rejected.`); });
   await expect(openClaudeProvider({ cwd: process.cwd(), model: null, args: [], env: { ...process.env, CLAUDE_CONFIG_DIR: "/private/isolated-claude-home" }, resumeNativeSessionId: nativeId, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} })).rejects.toThrow(/history/);
   expect(sdk.query).not.toHaveBeenCalled();
 });
@@ -479,7 +523,8 @@ test.each([false, true])("Claude preserves ordinary text and tool results around
   const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: history ? nativeId : null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
   try {
     if (!history) { for (const message of messages) fixture.emit(message); await new Promise(resolve => setImmediate(resolve)); }
-    expect(entries.filter(entry => entry.kind === "user_message")).toHaveLength(4);
+    expect(entries.filter(entry => entry.kind === "user_message")).toHaveLength(3);
+    expect(entries.flatMap(entry => entry.kind === "user_message" ? entry.content.map(part => part.type === "text" ? part.text : "") : [])).toEqual([`Explain ${marker}`, `${marker}\n`, marker, "quoted example"]);
     expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1);
     expect(entries.filter(entry => entry.kind === "tool_call")).toEqual([expect.objectContaining({ status: "failed", output: [{ type: "text", text: marker }] })]);
     expect(entries.filter(entry => entry.kind === "error")).toEqual([]);

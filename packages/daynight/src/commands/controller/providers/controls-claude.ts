@@ -2,6 +2,8 @@ import type { Query, PermissionMode, Options } from "@anthropic-ai/claude-agent-
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
 import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
+import type { ClaudeRuntimeProfile } from "./claude-live.js";
+import type { ProviderImageCapabilities } from "../../../session/image-values.js";
 export type ClaudeControlQuery = Pick<Query, "setModel" | "setPermissionMode" | "supportedModels" | "supportedCommands" | "reloadSkills" | "applyFlagSettings"> & { getSettings?: () => Promise<unknown> };
 const modes = ["default", "acceptEdits", "dontAsk", "plan", "bypassPermissions"] as const;
 const excluded = new Set(["clear", "context", "debug", "extra-usage", "heapdump", "loop", "schedule", "usage", "cost", "stats", "resume", "fork", "model", "permissions", "login", "logout", "exit", "quit", "agents", "mcp", "config", "settings"]);
@@ -12,6 +14,9 @@ export class ClaudeControls {
   private model: string | null; private permission: string | null = null; private effort: string | null | undefined;
   private effortDefault: boolean;
   private appliedModel: string | null = null;
+  private actualModel: string | null = null;
+  private appliedSettings = false;
+  private modelReadbackRequired = false;
   constructor(private readonly native: ClaudeControlQuery, model: string | null, effort: string | undefined, changed: () => void, private readonly confirmed?: (id: string) => void, private readonly resumed = false, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); this.model = resumed ? null : model ?? "default"; this.effortDefault = effort === undefined; }
   observe(raw: unknown) {
     if (this.closed) return;
@@ -20,6 +25,7 @@ export class ClaudeControls {
     if (typeof message.permissionMode === "string") this.permission = message.permissionMode;
     // Preserve the native default selection instead of replacing it with a resolved alias.
     if (message.subtype === "init" && this.model !== "default" && typeof message.model === "string") this.model = this.catalogModel(message.model);
+    if (message.subtype === "init" && typeof message.model === "string") this.actualModel = message.model;
     this.describe();
   }
   private catalogModel(actual: string): string {
@@ -38,16 +44,29 @@ export class ClaudeControls {
     this.store.update({ settings, settingsError: error });
   }
   private async readSettings() {
-    this.appliedModel = null;
+    this.appliedModel = null; this.appliedSettings = false;
     if (!this.native.getSettings) { this.effort = undefined; return; }
     const applied = record(record(await controlDeadline(this.native.getSettings(), "Claude settings readback")).applied);
     this.appliedModel = string(applied.model) || null;
     if (applied.effort !== null && typeof applied.effort !== "string") throw new Error("Claude did not report applied effort.");
     this.effort = applied.effort; this.effortDefault = applied.effort === null;
+    this.appliedSettings = true;
+    this.modelReadbackRequired = false;
     if (this.model !== "default" && typeof applied.model === "string") this.model = this.catalogModel(applied.model);
   }
   validateSelection(requested: NativeModelSelection): void {
     assertNativeModelSelection("Claude", requested, { model: this.appliedModel, effort: this.effort ?? null, models: this.models.map(item => ({ id: string(item.value), aliases: typeof item.resolvedModel === "string" ? [item.resolvedModel] : [], efforts: item.supportsEffort && Array.isArray(item.supportedEffortLevels) ? item.supportedEffortLevels.filter((value): value is string => typeof value === "string") : null })) });
+  }
+  imageCapabilities(nativeSessionId: string | null, profile: ClaudeRuntimeProfile | null, available: boolean): Omit<ProviderImageCapabilities, "revision"> {
+    const selected = this.modelReadbackRequired ? null : this.appliedModel ?? this.actualModel ?? (this.appliedSettings && this.model === "default" ? "default" : null);
+    const modelId = selected === null ? null : string(this.models.find(model => model.value === selected)?.resolvedModel) || selected;
+    // The pinned SDK/CLI image-block contract is paired with explicit model IDs
+    // from https://platform.claude.com/docs/en/about-claude/models/overview.
+    const supported = available && profile?.sdkVersion === "0.3.247" && profile.cliVersion === "2.1.247" && profile.backend === "anthropic" && modelId !== null && ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"].includes(modelId);
+    // https://platform.claude.com/docs/en/build-with-claude/vision bounds
+    // many-image contexts to 3000 px and Bedrock to 5 MB encoded per image.
+    // 3,750,000 raw bytes encode to at most 5,000,000 bytes, including padding.
+    return { expectedNativeSessionId: nativeSessionId, modelId, controlsRevision: this.store.value.revision, send: supported ? "supported" : "unknown", steer: "unsupported", reasonCode: supported ? null : available ? "capability_unknown" : "component_unsupported", inputMediaTypes: supported ? ["image/png", "image/jpeg", "image/webp"] : [], maxImageBytes: supported ? "3750000" : "0", maxMessageImageBytes: supported ? "20971520" : "0", maxImagesPerMessage: supported ? 8 : 0, geometry: { version: 1, known: supported, maxWidth: supported ? 3000 : 0, maxHeight: supported ? 3000 : 0, maxPixels: supported ? 9_000_000 : 0, maxFrames: supported ? 1 : 0 } };
   }
   async refresh() {
     try { const models: unknown = await controlDeadline(this.native.supportedModels(), "Claude model discovery"); if (!Array.isArray(models) || models.length > 500) throw new Error("Invalid Claude model catalog."); this.models = models.map(record); await this.readSettings(); this.describe(null); }
@@ -62,8 +81,12 @@ export class ClaudeControls {
   }
   async set(id: string, value: string, operationId: string, revision: string) {
     this.store.setting(id, value, revision); if (this.closed) throw new Error("Native session closed.");
+    if (id === "model") {
+      this.model = null; this.appliedModel = null; this.actualModel = null; this.appliedSettings = false; this.modelReadbackRequired = true;
+      this.describe("Claude model update is awaiting native confirmation.");
+    }
     const apply = async () => {
-      if (id === "model") { await this.native.setModel(value); this.model = value; await this.readSettings(); }
+      if (id === "model") { await this.native.setModel(value); this.model = value; this.actualModel = null; await this.readSettings(); }
       else if (id === "effort") { await this.native.applyFlagSettings({ effortLevel: value === "default" ? null : value as NonNullable<Options["effort"]> }); this.effortDefault = value === "default"; await this.readSettings(); if (value !== "default" && this.effort !== value) throw new Error("Claude did not apply the requested effort."); }
       else {
         if (value !== "bypassPermissions" && this.native.applyFlagSettings) await this.native.applyFlagSettings({ sandbox: null });
@@ -73,7 +96,8 @@ export class ClaudeControls {
       if (this.closed) throw new Error("Native session closed before control confirmation.");
       this.describe(null); this.confirmed?.(operationId);
     };
-    await controlDeadline(apply(), "Claude setting update");
+    try { await controlDeadline(apply(), "Claude setting update"); }
+    catch (error) { this.describe(controlError(error)); throw error; }
   }
   close() { this.closed = true; }
   command(id: string, revision: string) { return this.store.command(id, revision); }

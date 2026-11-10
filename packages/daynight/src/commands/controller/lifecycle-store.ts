@@ -1,4 +1,5 @@
 import { createImageCaptureSource } from "./media/capture-source.js";
+import { createNativeImageState } from "./media/native-state.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { createImageHistorySource } from "./media/history-source.js";
 import { openControllerMediaStore, type ControllerMediaStore } from "./media/preparations.js";
@@ -148,6 +149,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   let mediaInstance: ControllerMediaStore | undefined;
   const media = () => mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory);
   return {
+    ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
     ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,
@@ -253,10 +255,11 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
       const observation = parseInputObservation(input), operation = getOperation(observation.operationId), snapshot = getSnapshot();
       const intent = db.prepare("SELECT sha256 FROM input_intents WHERE operation_id=?").get(observation.operationId) as { sha256: string } | undefined;
-      if (!operation || !intent || intent.sha256 !== observation.intentSha256 || snapshot.nativeSessionId !== observation.nativeSessionId || ticket.provider !== observation.provider || !["dispatching", "unknown", "provider_accepted"].includes(operation.state)) return false;
+      if (!operation || !intent || intent.sha256 !== observation.intentSha256 || snapshot.nativeSessionId !== observation.nativeSessionId || ticket.provider !== observation.provider || !["dispatching", "unknown", "provider_accepted", "confirmed"].includes(operation.state)) return false;
       const previous = db.prepare("SELECT observation FROM input_observations WHERE operation_id=?").get(observation.operationId) as { observation: string } | undefined;
       const value = JSON.stringify(observation);
       if (previous && previous.observation !== value) throw new Error("Native input observation conflicts with its original operation.");
+      if (operation.state === "confirmed") return previous !== undefined;
       if (!previous) db.prepare("INSERT INTO input_observations VALUES(?,?)").run(observation.operationId, value);
       return true;
     }),
