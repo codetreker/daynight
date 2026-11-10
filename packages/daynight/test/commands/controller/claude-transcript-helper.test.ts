@@ -14,7 +14,7 @@ const observeExit = (child: ChildProcess) => child.exitCode !== null || child.si
 beforeAll(async () => {
   await mkdir(".tmp", { recursive: true }); compiled = await mkdtemp(path.resolve(".tmp/claude-helper-code-")); await mkdir(path.join(compiled, "providers"));
   // The actual fork executes the production module as emitted JavaScript; no loader or subprocess double is installed.
-  for (const name of ["claude-transcript-json", "claude-transcript", "claude-transcript-helper"]) {
+  for (const name of ["claude-text", "claude-transcript-json", "claude-transcript", "claude-transcript-helper"]) {
     const source = await readFile(path.resolve(`src/commands/controller/providers/${name}.ts`), "utf8");
     await writeFile(path.join(compiled, "providers", `${name}.js`), stripTypeScriptTypes(source, { mode: "transform" }));
   }

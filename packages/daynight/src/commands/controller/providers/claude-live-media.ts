@@ -3,6 +3,7 @@ import { createHash, type randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { validateNativeInput, verifyNativeImageFiles } from "./native-input.js";
+import { claudeToolTextPrefix } from "./claude-text.js";
 import type { NativeInput } from "./types.js";
 
 export type ClaudeLiveInput = { readonly uuid: string; readonly sessionId: string; readonly input: NativeInput };
@@ -33,7 +34,10 @@ export const encodeClaudeLiveInput = async (value: ClaudeLiveInput): Promise<SDK
 /** Whitelisted SDK image slots are extracted before any message enters Controller IPC. */
 export const exportClaudeLiveMedia = async (input: unknown, transfer: (data: string, mediaType: string) => Promise<{ transferId?: string; error?: string }>): Promise<ClaudeLiveExport> => {
   const images: ClaudeLiveExport["images"] = [];
-  const visit = async (raw: unknown, at: (string | number)[], depth: number): Promise<Record<string, unknown>> => {
+  const value = { ...object(input) }, output = object(value.tool_use_result), file = object(output.file);
+  const readImage = value.type === "user" && output.type === "image" && typeof file.base64 === "string" && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(String(file.type)) && Number.isSafeInteger(file.originalSize) && Number(file.originalSize) >= 0;
+  let readTransfer: { transferId?: string; error?: string } | undefined;
+  const visit = async (raw: unknown, at: (string | number)[], depth: number, toolResult = false): Promise<Record<string, unknown>> => {
     if (depth > 32 || images.length >= 1000) throw new Error("Claude media metadata limit exceeded.");
     const part = { ...object(raw) };
     if (part.type === "image") {
@@ -42,15 +46,20 @@ export const exportClaudeLiveMedia = async (input: unknown, transfer: (data: str
         const encoded = source.data; source.data = null;
         const result = typeof encoded === "string" && ["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"].includes(String(source.media_type)) ? await transfer(encoded, String(source.media_type)) : { error: "unsupported_media_source" };
         images.push({ path: [...at, "source", "data"], ...result });
+        if (toolResult && readImage && readTransfer === undefined && file.type === source.media_type && file.base64 === encoded) readTransfer = result;
       }
-    } else if (part.type === "tool_result" && Array.isArray(part.content)) {
-      const content: unknown[] = [];
-      for (const [index, child] of part.content.entries()) content.push(await visit(child, [...at, "content", index], depth + 1));
-      part.content = content;
+    } else if (part.type === "tool_result") {
+      if (value.type === "user" && typeof part.content === "string") part.content = claudeToolTextPrefix(part.content);
+      else if (Array.isArray(part.content)) {
+        const content: unknown[] = [];
+        for (const [index, child] of part.content.entries()) content.push(await visit(child, [...at, "content", index], depth + 1, value.type === "user"));
+        part.content = content;
+      }
+    } else if (toolResult && part.type === "text" && typeof part.text === "string") {
+      part.text = claudeToolTextPrefix(part.text);
     }
     return part;
   };
-  const value = { ...object(input) };
   if (value.type === "user" || value.type === "assistant") {
     const message = { ...object(value.message) }; value.message = message;
     if (Array.isArray(message.content)) {
@@ -61,6 +70,13 @@ export const exportClaudeLiveMedia = async (input: unknown, transfer: (data: str
   } else if (value.type === "stream_event") {
     const event = { ...object(value.event) }; value.event = event;
     if (event.type === "content_block_start") event.content_block = await visit(event.content_block, ["event", "content_block"], 0);
+  }
+  if (readTransfer !== undefined) {
+    // FileReadOutput repeats the rendered image bytes. Preserve its metadata and
+    // use the same bounded transfer only when the image and MIME match exactly.
+    if (images.length >= 1000) throw new Error("Claude media metadata limit exceeded.");
+    value.tool_use_result = { ...output, file: { ...file, base64: null } };
+    images.push({ path: ["tool_use_result", "file", "base64"], ...readTransfer });
   }
   const result = { value, images };
   if (Buffer.byteLength(JSON.stringify(result)) > 1_048_576 - 4096) throw new Error("Claude live metadata exceeds its frame limit.");

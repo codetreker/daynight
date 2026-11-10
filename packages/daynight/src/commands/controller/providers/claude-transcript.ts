@@ -125,6 +125,10 @@ class TranscriptIndex {
     if (raw.message !== undefined) value.message = { ...(key(message.id) ? { id: message.id } : {}), ...(typeof message.role === "string" ? { role: message.role } : {}), content };
     if (typeof raw.timestamp === "string") value.timestamp = raw.timestamp;
     if (key(raw.user_message_uuid)) value.user_message_uuid = raw.user_message_uuid;
+    if (raw.type === "assistant") {
+      if (raw.error !== undefined) value.error = raw.error;
+      if (raw.isApiErrorMessage !== undefined) value.isApiErrorMessage = raw.isApiErrorMessage;
+    }
     if (raw.type === "system" && raw.subtype === "compact_boundary") value.subtype = "compact_boundary";
     const data = JSON.stringify({ value, media });
     if (!data.isWellFormed() || Buffer.byteLength(data) > MAX_PAGE - 4096) fail("limit_exceeded", "Claude transcript record metadata exceeds the page limit.");

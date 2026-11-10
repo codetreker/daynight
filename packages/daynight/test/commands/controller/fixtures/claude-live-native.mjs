@@ -32,6 +32,15 @@ createInterface({ input: process.stdin }).on("line", line => {
     log({ event: "stress", frameBytes: Buffer.byteLength(frame), count, rawBytes: size * count });
     process.stdout.write(frame + "\n"); return;
   }
+  if (process.env.DAYNIGHT_TEST_CLAUDE_READ_RESULT) {
+    const image = blocks.find(part => part.type === "image"), data = image.source.data;
+    const content = [{ type: "text", text: "before" }, image, { type: "text", text: "a".repeat(199_999) + "😀" + "tail".repeat(300_000) }, { type: "text", text: "after" }];
+    const value = { type: "user", uuid: randomUUID(), session_id: request.session_id, parent_tool_use_id: null, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-image", content }] }, tool_use_result: { type: "image", file: { base64: data, type: image.source.media_type, originalSize: Buffer.from(data, "base64").length, dimensions: { originalWidth: 520, originalHeight: 520, displayWidth: 520, displayHeight: 520 } } } };
+    if (process.env.DAYNIGHT_TEST_CLAUDE_READ_RESULT === "unknown-metadata") value.unknown_metadata = data;
+    send(value);
+    send({ type: "result", subtype: "success", uuid: randomUUID(), session_id: request.session_id, parent_tool_use_id: null, user_message_uuid: request.uuid, is_error: false, result: "Read complete", num_turns: 1 });
+    return;
+  }
   send(request);
   send({ type: "assistant", uuid: randomUUID(), session_id: request.session_id, parent_tool_use_id: null, user_message_uuid: request.uuid, message: { id: "fixture-answer", role: "assistant", content: [{ type: "text", text: "Controlled reply" }] } });
   send({ type: "result", subtype: "success", uuid: randomUUID(), session_id: request.session_id, parent_tool_use_id: null, user_message_uuid: request.uuid, is_error: false, result: "Controlled reply", num_turns: 1, duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [] });

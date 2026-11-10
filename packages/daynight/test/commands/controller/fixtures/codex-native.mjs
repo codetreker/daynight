@@ -79,7 +79,7 @@ for await (const line of createInterface({input:process.stdin})) {
  }
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
- if(m.method==='skills/list')out({id:m.id,result:{data:[]}});
+ if(m.method==='skills/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_SKILLS ?? '[]')}});
  if(m.method==='turn/steer') {if(interruptCase?.startsWith('race:')){pendingSteer=m.id;continue;}if(interruptCase==='steer-rejected'){out({id:m.id,error:{code:-32602,message:'Steer rejected'}});continue;}out({id:m.id,result:{turnId:m.params.expectedTurnId}});continue;}
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;

@@ -11,6 +11,36 @@ let nativeHome: string;
 beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); nativeHome = await mkdtemp(join(base, "codex-provider-home-")); vi.stubEnv("CODEX_HOME", nativeHome); });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(nativeHome, { recursive: true, force: true }); });
 
+test.each(["", "Inspect this change"])("Codex dispatches a discovered skill with arguments %j", async args => {
+  const log = join(nativeHome, "requests.jsonl"), skillPath = join(nativeHome, "review", "SKILL.md"), states: ProviderState[] = [];
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_SKILLS: JSON.stringify([{ cwd: process.cwd(), skills: [{ name: "review", path: skillPath, enabled: true }] }]) },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: state => states.push(state), onSpawn: () => {} });
+  try {
+    const controls = states.at(-1)!.controls!, command = controls.commands.find(value => value.name === "review")!, operationId = randomUUID();
+    const receipt = await provider.executeCommand!(command.id, args, operationId, controls.revision, null);
+    await provider.waitForTurn(receipt.turnId!, Date.now() + 1000);
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const inputs = requests.filter(request => ["turn/start", "turn/steer"].includes(request.method));
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toMatchObject({ method: "turn/start", params: { clientUserMessageId: operationId, input: [
+      { type: "text", text: args, text_elements: [] }, { type: "skill", name: "review", path: skillPath },
+    ] } });
+  } finally { await provider.close(); }
+});
+
+test("Codex rejects an empty ordinary message before native dispatch", async () => {
+  const log = join(nativeHome, "requests.jsonl");
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  try {
+    await expect(provider.send(textNativeInput(""), randomUUID(), null)).rejects.toThrow("Native input is empty");
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await provider.close(); }
+});
+
 test("Codex startup waits past an empty settings acknowledgement until the matching native record is complete", async () => {
   const log = join(nativeHome, "requests.jsonl"), rollout = join(nativeHome, "sessions", "rollout.jsonl"), states: ProviderState[] = [];
   let resolved = false, provider: Awaited<ReturnType<typeof openCodexProvider>> | undefined;

@@ -16,7 +16,7 @@ test.each([{ count: 1, imageBytes: 25 * 1024 * 1024, available: false }, { count
   try {
     await mkdir(path.dirname(transcriptPath), { recursive: true }); await mkdir(cwd); await mkdir(indexDirectory, { mode: 0o700 }); await mkdir(compiled);
     await mkdir(path.join(compiled, "providers"));
-    for (const name of ["claude-transcript-json", "claude-transcript", "claude-transcript-helper"]) await writeFile(path.join(compiled, "providers", `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/providers/${name}.ts`, "utf8"), { mode: "transform" }));
+    for (const name of ["claude-text", "claude-transcript-json", "claude-transcript", "claude-transcript-helper"]) await writeFile(path.join(compiled, "providers", `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/providers/${name}.ts`, "utf8"), { mode: "transform" }));
     for (const name of ["process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(compiled, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
     const helper: typeof OpenHelper = (await import(/* @vite-ignore */ pathToFileURL(path.join(compiled, "providers", "claude-transcript-helper.js")).href)).openClaudeTranscriptHelper;
     const file = await open(transcriptPath, "wx", 0o600), raw = Buffer.alloc(49_152, 149), expected = createHash("sha256");

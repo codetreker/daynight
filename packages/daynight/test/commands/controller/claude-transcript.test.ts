@@ -1,8 +1,12 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openClaudeTranscript } from "../../../src/commands/controller/providers/claude-transcript.js";
+import { ClaudeImageInputs } from "../../../src/commands/controller/providers/claude-image-input.js";
+import { ClaudeProjection } from "../../../src/commands/controller/providers/claude-image-projection.js";
+import { limited } from "../../../src/commands/controller/providers/projection.js";
+import type { NativeInput, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -43,6 +47,24 @@ test("selects the root parent chain and assistant siblings independently of phys
   } finally { await reader.close(); }
 });
 
+test.each([{ error: "authentication_failed" }, { error: "invalid_request" }, { isApiErrorMessage: true }])("history preserves assistant failure evidence before matching the original image input: %j", async failure => {
+  const f = await fixture(), operationId = randomUUID(), state = new Map<string, unknown>();
+  const input: NativeInput = { content: [{ type: "image", imageId: randomUUID(), resourceId: randomUUID(), mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), localPath: "/unused-original" }] };
+  const intent = { sha256: "b".repeat(64), state: "unknown", command: { kind: "send_message", operationId, payload: { expectedTurnId: null, target: { expectedNativeSessionId: f.nativeSessionId }, content: input.content } } };
+  const options = { imageRuntime: { getIntent: (id: string) => id === operationId ? intent : null, readState: (key: string) => state.get(key) ?? null, writeState: (key: string, value: unknown) => state.set(key, structuredClone(value)) }, onInputObserved: vi.fn(() => true) } as unknown as ProviderOptions;
+  const inputs = new ClaudeImageInputs(options, f.nativeSessionId); inputs.prepare(input, operationId);
+  await f.write([f.record(operationId, null, "user", [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AQID" } }]), f.record("progress", operationId, "progress", "waiting"), f.record("failure", "progress", "assistant", [{ type: "text", text: "API request failed" }], failure)]);
+  const reader = await openClaudeTranscript(f);
+  try {
+    const first = await reader.nextPage({ maxRecords: 1 }); await reader.acknowledge(first.cursor);
+    const row = (await reader.nextPage()).records[0]!;
+    expect(row.rootInputUuid).toBe(operationId);
+    expect(inputs.observe({ ...row.value, user_message_uuid: row.rootInputUuid }, true)).toBeNull();
+    expect(inputs.observe({ type: "result", session_id: f.nativeSessionId, user_message_uuid: operationId, is_error: true }, true)).toBeNull();
+    expect(options.onInputObserved).not.toHaveBeenCalled(); expect(row.value).toMatchObject(failure);
+  } finally { await reader.close(); }
+});
+
 test("indexes image strings without publishing bytes and reads only an acknowledged selected occurrence", async () => {
   const f = await fixture(), bytes = Buffer.from([1, 2, 3, 4, 5]);
   const image = { source: { data: bytes.toString("base64"), media_type: "image/png", type: "base64" }, type: "image" };
@@ -60,6 +82,74 @@ test("indexes image strings without publishing bytes and reads only an acknowled
     expect(Buffer.concat(received)).toEqual(bytes);
     await expect(reader.readMedia("not-selected", () => {})).rejects.toThrow("selected");
   } finally { await reader.close(); }
+});
+
+test.each(["string", "nested"] as const)("large %s tool text reaches projection with the existing text limit and adjacent content intact", async kind => {
+  const f = await fixture(), text = "x".repeat(199_999) + "😀" + "tail".repeat(300_000), entries: ProviderEntry[] = [];
+  const content = kind === "string" ? text : [{ text, type: "text" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AQID" } }, { type: "text", text: "after image" }];
+  await f.write([f.record("root", null, "user", "question"), f.record("tool", "root", "assistant", [{ type: "tool_use", id: "call", name: "Read", input: {} }]), f.record("result", "tool", "user", [{ content, tool_use_id: "call", type: "tool_result" }, { type: "text", text: "adjacent user text" }]), f.record("answer", "result", "assistant", [{ type: "text", text: "finished" }])]);
+  const reader = await openClaudeTranscript(f), projection = new ClaudeProjection({ cwd: f.cwd, model: null, args: [], resumeNativeSessionId: f.nativeSessionId, onTimeline: entry => entries.push(entry), onState: () => { throw new Error("History projection must not change provider state."); }, onSpawn: () => { throw new Error("History projection must not start a provider."); } }, f.nativeSessionId, () => null);
+  try {
+    const page = await reader.nextPage(); expect(page.records.map(row => row.value.uuid)).toEqual(["root", "tool", "result", "answer"]);
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(1_048_576);
+    for (const row of page.records) projection.message(row.value, { row, reader });
+    const output = entries.findLast(entry => entry.kind === "tool_call" && entry.status === "completed");
+    expect(output).toMatchObject({ output: [{ type: "text", text: limited(text) }, ...(kind === "nested" ? [{ type: "image_unavailable" }, { type: "text", text: "after image" }] : [])] });
+    expect(entries).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "user_message", content: [{ type: "text", text: "adjacent user text" }] }), expect.objectContaining({ kind: "assistant_message", content: [{ type: "text", text: "finished" }] })]));
+  } finally { await projection.close(); await reader.close(); }
+});
+
+test("escaped large tool text is bounded by decoded characters before metadata admission", async () => {
+  const f = await fixture(), text = "a".repeat(210_000);
+  const line = JSON.stringify(f.record("result", null, "user", [{ content: "ESCAPED_TOOL_TEXT", type: "tool_result", tool_use_id: "call" }])).replace('"ESCAPED_TOOL_TEXT"', '"' + "\\u0061".repeat(text.length) + '"');
+  await writeFile(f.transcriptPath, line + "\n");
+  const reader = await openClaudeTranscript(f);
+  try {
+    const row = (await reader.nextPage()).records[0]!, content = (row.value.message as { content: { content: string }[] }).content[0]!.content;
+    expect(content.length).toBeLessThanOrEqual(200_002); expect(limited(content)).toBe(limited(text));
+  } finally { await reader.close(); }
+});
+
+test("large non-ASCII tool text keeps complete UTF-8 characters across scanner buffers", async () => {
+  const f = await fixture(), text = "汉😀".repeat(180_000);
+  await f.write([f.record("result", null, "user", [{ content: text, type: "tool_result", tool_use_id: "call" }])]);
+  const reader = await openClaudeTranscript(f);
+  try {
+    const row = (await reader.nextPage()).records[0]!, content = (row.value.message as { content: { content: string }[] }).content[0]!.content;
+    expect(content.isWellFormed()).toBe(true); expect(limited(content)).toBe(limited(text));
+  } finally { await reader.close(); }
+});
+
+test.each(["escaped prefix", "aggregate"] as const)("bounded tool text still respects the %s metadata byte ceiling", async kind => {
+  const f = await fixture();
+  const content = kind === "escaped prefix" ? [{ type: "tool_result", tool_use_id: "call", content: "\0".repeat(210_000) }]
+    : Array.from({ length: 6 }, (_, index) => ({ type: "tool_result", tool_use_id: `call-${index}`, content: "x".repeat(210_000) }));
+  await f.write([f.record("result", null, "user", content)]);
+  await expect(openClaudeTranscript(f)).rejects.toThrow("metadata"); expect(await readdir(f.indexDirectory)).toEqual([]);
+});
+
+test.each(["escape", "utf8", "unclosed", "duplicate"] as const)("truncated tool text still rejects an invalid %s tail", async kind => {
+  const f = await fixture(), line = JSON.stringify(f.record("result", null, "user", [{ content: "x".repeat(1_048_576) + "INVALID_TAIL", type: "tool_result", tool_use_id: "call" }]));
+  const offset = line.indexOf("INVALID_TAIL");
+  const bytes = kind === "utf8" ? Buffer.concat([Buffer.from(line.slice(0, offset)), Buffer.from([255]), Buffer.from(line.slice(offset + 12) + "\n")])
+    : Buffer.from(kind === "escape" ? line.replace("INVALID_TAIL", "\\q") + "\n" : kind === "unclosed" ? line.slice(0, offset) + "\n" : line.replace('"type":"tool_result"', '"type":"tool_result","type":"tool_result"') + "\n");
+  await writeFile(f.transcriptPath, bytes);
+  await expect(openClaudeTranscript(f)).rejects.toThrow(kind === "escape" ? /escape/ : kind === "utf8" ? /encoded data|UTF-8/ : kind === "unclosed" ? /complete Claude transcript/ : /duplicate/);
+  expect(await readdir(f.indexDirectory)).toEqual([]);
+});
+
+test.each(["unknown block", "assistant tool", "unknown child"] as const)("large %s text cannot bypass the metadata limit through a tool-like path", async kind => {
+  const f = await fixture(), text = "x".repeat(1_048_576), content = kind === "unknown child" ? [{ text, type: "unknown" }] : text;
+  await f.write([f.record("result", null, kind === "assistant tool" ? "assistant" : "user", [{ content, type: kind === "unknown block" ? "unknown" : "tool_result", tool_use_id: "call" }])]);
+  await expect(openClaudeTranscript(f)).rejects.toThrow("metadata"); expect(await readdir(f.indexDirectory)).toEqual([]);
+});
+
+test("an unknown text field within the original metadata budget is retained in full", async () => {
+  const f = await fixture(), text = "x".repeat(300_000);
+  await f.write([f.record("result", null, "user", [{ content: text, type: "unknown" }])]);
+  const reader = await openClaudeTranscript(f);
+  try { expect((await reader.nextPage()).records[0]!.value.message).toMatchObject({ content: [{ content: text, type: "unknown" }] }); }
+  finally { await reader.close(); }
 });
 
 test("preservedMessages rewrites the selected chain while preserving the explicit array order", async () => {

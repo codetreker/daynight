@@ -1,4 +1,4 @@
-import { textNativeInput, validateNativeInput, verifyNativeImageFiles } from "./native-input.js";
+import { nativeInputText, textNativeInput, validateNativeInput, verifyNativeImageFiles } from "./native-input.js";
 import type { NativeInput } from "./types.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { codexNativeHome } from "./codex-settings-metadata.js";
@@ -237,7 +237,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     activity = "idle"; state();
   } catch (error) { await close(); throw error; }
   const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, skill?: { name: string; path: string }): Promise<ProviderReceipt> => {
-      const { text, images } = validateNativeInput(inputValue);
+      // A discovered skill supplies native input even when its text arguments are empty.
+      const { text, images } = skill ? { text: nativeInputText(inputValue), images: [] } : validateNativeInput(inputValue);
       if (closed || transportFailed || sending || pending.size || expectedTurnId !== currentTurnId) throw new NativeRpcError(-32602, "Native turn changed or interaction is pending.");
       sending = true;
       const revision = controls.store.value.revision;

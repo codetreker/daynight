@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
+import sharp from "sharp";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 import { openNativeMediaSpool } from "../../../src/commands/controller/media/native-spool.js";
 import { inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
@@ -42,6 +43,47 @@ test("actual SDK helper joins its native child, preserves control RPC and transf
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
     for (const proof of nativeProofs) expect(await inspectProcessProof(proof)).toBe("stopped");
     expect(await readdir(spoolDirectory)).toEqual([]); await rm(root, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test.each(["read", "unknown-metadata"])("the SDK helper bounds duplicate Read images and tool text and cleans every transfer after %s", async mode => {
+  await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-read-")), imagePath = path.join(root, "image.png"), spoolDirectory = path.join(root, "spools"); await mkdir(spoolDirectory);
+  const bytes = await sharp(Buffer.alloc(520 * 520 * 3, 73), { raw: { width: 520, height: 520, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
+  await writeFile(imagePath, bytes, { mode: 0o400 });
+  const sessionId = randomUUID(), proofs: ProcessProof[] = [], events: any[] = [], media: Buffer[] = []; let child!: ChildProcess, peakFrame = 0, spools = 0;
+  const owner = { cwd: root, env: { ...process.env, DAYNIGHT_TEST_CLAUDE_READ_RESULT: mode }, onSpawn: (process: ChildProcess) => { child = process; child.on("message", value => { peakFrame = Math.max(peakFrame, Buffer.byteLength(JSON.stringify(value))); }); }, onNativeProcessProof: (proof: ProcessProof) => { proofs.push(proof); }, imageRuntime: { createSpool: (maximum: number) => { spools++; return openNativeMediaSpool(path.join(spoolDirectory, randomUUID()), maximum, () => {}, () => {}); } } } as unknown as ProviderOptions;
+  const native = queryClaudeLive({ prompt: (async function* () {})(), options: { cwd: root, sessionId, pathToClaudeCodeExecutable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env: owner.env ?? process.env } }, owner);
+  const pump = (async () => { for await (const event of native) {
+    events.push(event);
+    const value = event as any;
+    try {
+      if (value.type !== "user") continue;
+      const content = value.message.content[0].content, marker = content[1].source.data;
+      expect(value.tool_use_result.file.base64).toBe(marker);
+      expect(value.tool_use_result.file.dimensions).toEqual({ originalWidth: 520, originalHeight: 520, displayWidth: 520, displayHeight: 520 });
+      expect(content[0]).toEqual({ type: "text", text: "before" }); expect(content[3]).toEqual({ type: "text", text: "after" });
+      expect(content[2].text.length).toBeLessThanOrEqual(200_002); expect(content[2].text.isWellFormed()).toBe(true);
+      const source = claudeLiveImage(marker); expect(source).not.toBeNull();
+      const lease = source!.retain(); try { media.push(await readFile(lease.path)); } finally { lease.release(); }
+    } finally { releaseClaudeLiveRecord(event); }
+  } })().catch(error => error);
+  try {
+    await native.initializationResult();
+    await native.submit({ uuid: randomUUID(), sessionId, input: { content: [{ type: "image", imageId: randomUUID(), resourceId: randomUUID(), mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), localPath: imagePath }] } });
+    if (mode === "read") {
+      await expect.poll(() => events.some(event => event.type === "result")).toBe(true);
+      expect(media).toHaveLength(1); expect(media[0]!.equals(bytes)).toBe(true);
+      expect(await native.supportedModels()).toHaveLength(1);
+    } else { expect(await pump).toBeInstanceOf(Error); expect(events.some(event => event.type === "user")).toBe(false); }
+    expect(spools).toBe(1); expect(peakFrame).toBeLessThanOrEqual(1_048_576);
+  } finally {
+    try {
+      native.close(); await native.join(); const pumpResult = await pump;
+      if (mode === "read") expect(pumpResult).toBeUndefined();
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      for (const proof of proofs) expect(await inspectProcessProof(proof)).toBe("stopped");
+      expect(await readdir(spoolDirectory)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
   }
 }, 20_000);
 

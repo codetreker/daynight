@@ -32,6 +32,16 @@ the worst-case metadata before dispatch. Codex owns a streaming native parser;
 Copilot owns a single-connection SDK bridge; Claude owns a versioned transcript
 reader and uses SDK isolation when its allocation bound requires it.
 
+Media extraction preserves native command and text semantics. A discovered Codex
+skill supplies input even without text arguments; this does not permit empty
+ordinary messages. Claude history retains assistant failure evidence through
+indexing and paging so reopening cannot turn a failed request into acceptance.
+Known tool-result text is bounded before metadata accounting while the scanner
+still validates its discarded tail. Unknown fields retain the metadata ceiling.
+An SDK FileReadOutput image can share a transfer with its exact content-block
+mirror; similar bytes or an unrecognized structured field do not establish that
+relationship.
+
 ## Alternatives
 
 **Send paths or Markdown through text.** This would avoid native encoders but

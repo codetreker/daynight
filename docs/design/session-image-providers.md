@@ -55,6 +55,8 @@ profile 还绑定 `thread/start` 或 `thread/resume` 返回的实际 `modelProvi
 
 原生数组保持顺序：可选 `{type:"text",text,text_elements:[]}` 后接 `{type:"localImage",path}`。path 仅来自稳定私有文件，纯图片省略文字块，不添加提示词、文件名、Markdown 或空 TextPart；detail 沿原生缺省。不以 data URL 或远程 URL 作隐式 fallback。
 
+已发现的原生技能由独立 `skill` 块提供命令输入，允许其文字参数为空；命令仍须通过当前 controls revision 和空闲状态校验。该例外只用于技能命令，普通空消息仍在原生调用前拒绝。
+
 空闲使用 `turn/start`，原 operationId 放入 `clientUserMessageId`；活动回合仅在图片 steer 已证明时使用 `turn/steer` 和精确 `expectedTurnId`。过期 steer 不改成 start，不新增队列，不自动取消回合。start 内部可能进入 start-or-steer 路径，外部并发造成返回与预期不符时保留 unknown，不能只凭方法名推定新回合。
 
 | 观察 | 判定 |
@@ -126,7 +128,7 @@ Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reje
 | 根 success result 精确关联且 profile 证明实际回合执行 | 可补结算；hook-blocked success/num_turns=0、仅追加或空终态均不是正例。 |
 | error、cancelled、delivery failure | 已开始后的失败不撤销接受；只有原生证明确定未投递才能拒绝，其他 unknown。 |
 
-历史 user 落盘不能单独证明通过 UserPromptSubmit hook 或执行。历史缺 user_message_uuid 时只可用已验证 schema 的 parentUuid 执行链补强，不按“下一条 assistant”猜测。matcher 先持久关联再通知 runtime，重复证据幂等，不覆盖其他操作。空历史、取消或查不到记录都不证明未派发。
+历史 user 落盘不能单独证明通过 UserPromptSubmit hook 或执行。历史缺 user_message_uuid 时只可用已验证 schema 的 parentUuid 执行链补强，不按“下一条 assistant”猜测。索引和分页保留 assistant 的 `error`、`isApiErrorMessage`，认证或无效请求错误不能因重开而变成无错误的执行证据。matcher 先持久关联再通知 runtime，重复证据幂等，不覆盖其他操作。空历史、取消或查不到记录都不证明未派发。
 
 ### 图片投影和 transcript 恢复
 
@@ -136,11 +138,15 @@ live、final 和历史用同一 normalizer，先识别图片/工具再做文字�
 
 base64 image source、tool_result 的有序 text/image 和明确 native URL/path 分别走公共 capture、外部及本地采集；tool `is_error` 保留。展示接受五格式，不能因输入三格式删 GIF/AVIF。缺 bytes/坏源同位置不可用，已有 committed 图不再访问原源。
 
+SDK user 工具事件的 `tool_use_result` 若为明确的 image `FileReadOutput`，且 `file.base64` 与同事件工具内容中的图片及 MIME 完全匹配，冗余位置复用同一 transfer 和结果，不重复传输或把 Base64 副本计作 IPC 元数据。文件尺寸等其他字段保留；未知结构及不匹配的副本仍受原元数据上限约束。
+
 新增只读 transcript helper，不用 getSessionMessages 的全量数组或 execFile 全量 JSON。SessionStart transcript_path 只是线索，须核 native ID、cwd、配置 home、文件身份；旧布局只在当前已授权 home 内按固定 resolver 精确查找，未知布局失败，不跨账户搜索。授权 FD 固定快照的身份、初始长度、完整行边界和前缀摘要。
 
 第一遍增量 tokenizer 扫描 JSONL，媒体按 token 跳过并记录 offset；受限磁盘索引保存 uuid/parentUuid/message.id/block、tool、sidechain/meta 与 compaction 字段。按真实 parent chain、preservedMessages/preservedSegment、父链重写及 sibling/tool_result 选可见分支，不以物理行序当最终对话。helper 只输出元数据，由 Controller 唯一 journal writer 提交：每页最多 100 条、序列化最多 1 MiB，ACK 后下一页。
 
 第二遍只读取所选出现，register 后逐块解码其媒体到已预留 staging。单行或总历史大于旧 32 MiB 不是失败理由；超单图 10 MiB 有界跳过并保留位置，不吞同行文字。结构深度 64，身份沿公共上限，文字沿既有截断规则。末尾未完成行等待后续扫描；截断、替换、前缀变化或父链缺口停止新导入且保留旧图。cursor 绑定快照/chain/表示/historyEpoch；append 验证连续前缀，不重建身份。helper 不 query/send、不恢复或修改原生会话。
+
+已知 `tool_result.content` 字符串及其 text 块在元数据预算前保留有界前缀，最终显示仍由既有文字投影生成截断标记。历史扫描继续检查被丢弃尾部的 JSON 转义、UTF-8 和完整结构，完整解析后核对所属块类型；未知字段不能借用文字截断通道绕过容量限制。live 与历史共享前缀规则，保留图片位置和相邻正文；总元数据和页预算不变。
 
 ### 内存与保留
 
