@@ -18,7 +18,8 @@ rules with the same inputs, including refusal precedence, no-op, text limits
 and preservation of rows and timestamps. The [earlier Task service test
 decision](2026-11-08-task-service-test-ownership.md) retains the history of the
 DAO boundary; the [Step read decision](2026-11-10-step-read-coordination-tests.md)
-owns the separate read boundary.
+owns the separate read boundary. The [Step order write decision](2026-11-10-step-order-write-coordination-tests.md)
+extends the shared write operations to Move and Delete.
 
 ## Alternatives
 

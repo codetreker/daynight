@@ -608,3 +608,283 @@ func assertReceiverTextRefusal(t *testing.T, err error, field string, mutation M
 		t.Fatalf("%s refusal: %+v %v", field, mutation, err)
 	}
 }
+
+// orderedReceiverRows matches the public ordering scenarios, including each
+// record's distinct content and timestamps.
+func orderedReceiverRows() []model.TaskStep {
+	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
+	statuses := []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}
+	rows := make([]model.TaskStep, len(ids))
+	for i, id := range ids {
+		rows[i] = model.TaskStep{
+			ID: id, Position: int64(i), Title: "same", Description: "  # " + id + "\n<原值&>  ", Status: statuses[i],
+			CreatedAt: time.Date(2026, 1, 2+i, 3, 4, 5, 123456000, time.UTC),
+			UpdatedAt: time.Date(2026, 2, 3+i, 4, 5, 6, 654321000, time.UTC),
+		}
+	}
+	return rows
+}
+
+// orderedReceiverExpected builds the specified result from independent facts.
+func orderedReceiverExpected(t *testing.T, ids ...string) []model.TaskStep {
+	t.Helper()
+	facts := orderedReceiverRows()
+	rows := make([]model.TaskStep, 0, len(ids))
+	for position, id := range ids {
+		index := slices.IndexFunc(facts, func(row model.TaskStep) bool { return row.ID == id })
+		if index < 0 {
+			t.Fatalf("unknown expected row %q", id)
+		}
+		row := facts[index]
+		row.Position = int64(position)
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func assertOrderedReceiverIndependent(t *testing.T, current, original []model.TaskStep, candidate []model.TaskStep) {
+	t.Helper()
+	if !reflect.DeepEqual(current, original) {
+		t.Fatalf("source rows changed: got %+v want %+v", current, original)
+	}
+	for i := range current {
+		for j := range candidate {
+			if &current[i] == &candidate[j] {
+				t.Fatal("candidate shares source row storage")
+			}
+		}
+	}
+}
+
+func TestWriteReceiverMoveSequence(t *testing.T) {
+	header := receiverHeader(1)
+	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	current := orderedReceiverRows()
+	for _, tc := range []struct {
+		name, target string
+		placement    Placement
+		from, to     int
+		order        []string
+	}{
+		{"after", "00000000", Placement{After: new("ABCDEF01")}, 0, 2, []string{"11111111", "abcdef01", "00000000", "fedcba98"}},
+		{"before", "fedcba98", Placement{Before: new("ABCDEF01")}, 3, 1, []string{"11111111", "fedcba98", "abcdef01", "00000000"}},
+		{"first", "abcdef01", Placement{Position: new("first")}, 2, 0, []string{"abcdef01", "11111111", "fedcba98", "00000000"}},
+		{"last", "abcdef01", Placement{Position: new("last")}, 0, 3, []string{"11111111", "fedcba98", "00000000", "abcdef01"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := slices.Clone(current)
+			placement, err := CanonicalPlacement(tc.placement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutation, err := AdmitMove(header, current, tc.target, placement)
+			if err != nil || !mutation.Changed || mutation.From != tc.from || mutation.To != tc.to {
+				t.Fatalf("move admission: %+v %v", mutation, err)
+			}
+			expected := orderedReceiverExpected(t, tc.order...)
+			assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+			receiverEncoded(t, header, mutation, observed, "", expected)
+			assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+			current = expected
+			header.Version++
+		})
+	}
+}
+
+func TestWriteReceiverMoveNoOpAndRefusals(t *testing.T) {
+	for _, version := range []int64{9007199254740993, math.MaxInt64} {
+		for _, tc := range []struct {
+			name, target string
+			placement    Placement
+			index        int
+		}{
+			{"first", "00000000", Placement{Position: new("first")}, 0},
+			{"last", "fedcba98", Placement{Position: new("last")}, 3},
+			{"before", "11111111", Placement{Before: new("ABCDEF01")}, 1},
+			{"after", "abcdef01", Placement{After: new("11111111")}, 2},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", version, tc.name), func(t *testing.T) {
+				header, current := receiverHeader(version), orderedReceiverRows()
+				original := slices.Clone(current)
+				placement, err := CanonicalPlacement(tc.placement)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutation, err := AdmitMove(header, current, tc.target, placement)
+				if err != nil || mutation.Changed || mutation.From != tc.index || mutation.To != tc.index {
+					t.Fatalf("no-op: %+v %v", mutation, err)
+				}
+				assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+				receiverEncoded(t, header, mutation, time.Time{}, "", original)
+				assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+			})
+		}
+	}
+	for _, position := range []string{"first", "last"} {
+		t.Run("singleton/"+position, func(t *testing.T) {
+			current := orderedReceiverRows()[:1]
+			original := slices.Clone(current)
+			placement, err := CanonicalPlacement(Placement{Position: &position})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutation, err := AdmitMove(receiverHeader(math.MaxInt64), current, "00000000", placement)
+			if err != nil || mutation.Changed || mutation.From != 0 || mutation.To != 0 {
+				t.Fatalf("singleton: %+v %v", mutation, err)
+			}
+			assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+			receiverEncoded(t, receiverHeader(math.MaxInt64), mutation, time.Time{}, "", original)
+		})
+	}
+	for _, tc := range []struct {
+		name, target, code string
+		placement          Placement
+		cause              error
+		absent             bool
+		version            int64
+	}{
+		{"exhausted", "00000000", "version_exhausted", Placement{Position: new("last")}, nil, false, math.MaxInt64},
+		{"max target", "ffffffff", "not_found", Placement{Before: new("eeeeeeee")}, ErrTargetNotFound, true, math.MaxInt64},
+		{"max anchor", "00000000", "not_found", Placement{Before: new("ffffffff")}, ErrAnchorNotFound, false, math.MaxInt64},
+		{"target", "ffffffff", "not_found", Placement{Before: new("ffffffff")}, ErrTargetNotFound, true, 1},
+		{"anchor", "00000000", "not_found", Placement{Before: new("ffffffff")}, ErrAnchorNotFound, false, 1},
+		{"self before", "abcdef01", "invalid_input", Placement{Before: new("ABCDEF01")}, ErrSelfAnchor, false, 1},
+		{"self after", "abcdef01", "invalid_input", Placement{After: new("ABCDEF01")}, ErrSelfAnchor, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := orderedReceiverRows()
+			original := slices.Clone(current)
+			placement, err := CanonicalPlacement(tc.placement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutation, err := AdmitMove(receiverHeader(tc.version), current, tc.target, placement)
+			assertOrderedReceiverRefusal(t, mutation, err, tc.code, tc.cause, tc.absent, tc.version)
+			if !reflect.DeepEqual(current, original) {
+				t.Fatal("refusal changed source rows")
+			}
+		})
+	}
+}
+
+func assertOrderedReceiverRefusal(t *testing.T, mutation Mutation, err error, code string, cause error, absent bool, version int64) {
+	t.Helper()
+	receiverFault(t, err, code)
+	if cause != nil && !errors.Is(err, cause) {
+		t.Fatalf("missing cause %v: %v", cause, err)
+	}
+	var absence *StepAbsence
+	if found := errors.As(err, &absence); found != absent || found && absence.Version != version {
+		t.Fatalf("wrong absence/version: %+v in %v", absence, err)
+	}
+	if !reflect.DeepEqual(mutation, Mutation{}) {
+		t.Fatalf("refusal returned mutation: %+v", mutation)
+	}
+}
+
+func TestWriteReceiverDeleteSequence(t *testing.T) {
+	header := receiverHeader(1)
+	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	current := orderedReceiverRows()
+	for _, tc := range []struct {
+		target string
+		from   int
+		order  []string
+	}{
+		{"abcdef01", 2, []string{"00000000", "11111111", "fedcba98"}},
+		{"00000000", 0, []string{"11111111", "fedcba98"}},
+		{"fedcba98", 1, []string{"11111111"}},
+		{"11111111", 0, []string{}},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			original := slices.Clone(current)
+			mutation, err := AdmitDelete(header, current, tc.target)
+			if err != nil || !mutation.Changed || mutation.From != tc.from || mutation.Candidate == nil {
+				t.Fatalf("delete admission: %+v %v", mutation, err)
+			}
+			expected := orderedReceiverExpected(t, tc.order...)
+			assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+			receiverEncoded(t, header, mutation, observed, "", expected)
+			assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+			if len(expected) == 0 {
+				resource, data, err := EncodeMutation(header, mutation, observed, "")
+				if err != nil || resource.Steps == nil || !bytes.Contains(data, []byte(`"steps":[]`)) {
+					t.Fatalf("empty collection: %s %v", data, err)
+				}
+			}
+			current = expected
+			header.Version++
+		})
+	}
+}
+
+func TestWriteReceiverDeleteRefusalsAndReuse(t *testing.T) {
+	for _, version := range []int64{9007199254740993, math.MaxInt64} {
+		t.Run(fmt.Sprintf("missing/%d", version), func(t *testing.T) {
+			current := orderedReceiverRows()
+			original := slices.Clone(current)
+			mutation, err := AdmitDelete(receiverHeader(version), current, "ffffffff")
+			assertOrderedReceiverRefusal(t, mutation, err, "not_found", ErrTargetNotFound, true, version)
+			if !reflect.DeepEqual(current, original) {
+				t.Fatal("missing changed source")
+			}
+		})
+	}
+	current := orderedReceiverRows()
+	original := slices.Clone(current)
+	mutation, err := AdmitDelete(receiverHeader(math.MaxInt64), current, "00000000")
+	assertOrderedReceiverRefusal(t, mutation, err, "version_exhausted", nil, false, math.MaxInt64)
+	if !reflect.DeepEqual(current, original) {
+		t.Fatal("exhaustion changed source")
+	}
+
+	header := receiverHeader(2)
+	current = orderedReceiverExpected(t, "00000000", "11111111", "fedcba98")
+	original = slices.Clone(current)
+	mutation, err = AdmitDelete(header, current, "abcdef01")
+	assertOrderedReceiverRefusal(t, mutation, err, "not_found", ErrTargetNotFound, true, 2)
+	if !reflect.DeepEqual(current, original) {
+		t.Fatal("missing changed source")
+	}
+	step, before, after, err := PrepareAdd("ABCDEF01", "New record", "", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, err = AdmitAdd(header, current, step, before, after)
+	if err != nil || !mutation.Changed || mutation.To != 3 {
+		t.Fatalf("reuse admission: %+v %v", mutation, err)
+	}
+	assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	expected := append(slices.Clone(original), model.TaskStep{ID: "abcdef01", Position: 3, Title: "New record", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed})
+	receiverEncoded(t, header, mutation, observed, "add", expected)
+	assertOrderedReceiverIndependent(t, current, original, mutation.Candidate)
+	if expected[3].CreatedAt.Equal(orderedReceiverRows()[2].CreatedAt) || expected[3].UpdatedAt.Equal(orderedReceiverRows()[2].UpdatedAt) {
+		t.Fatal("reused ID retained old times")
+	}
+}
+
+func TestWriteReceiverOrderRejectsCorruptCollection(t *testing.T) {
+	for _, kind := range []string{"move", "delete"} {
+		t.Run(kind, func(t *testing.T) {
+			current := orderedReceiverRows()
+			current[2].Position = 9
+			original := slices.Clone(current)
+			var mutation Mutation
+			var err error
+			if kind == "move" {
+				placement, placementErr := CanonicalPlacement(Placement{Position: new("last")})
+				if placementErr != nil {
+					t.Fatal(placementErr)
+				}
+				mutation, err = AdmitMove(receiverHeader(1), current, "00000000", placement)
+			} else {
+				mutation, err = AdmitDelete(receiverHeader(1), current, "00000000")
+			}
+			var fault *model.Fault
+			if err == nil || errors.As(err, &fault) || !reflect.DeepEqual(mutation, Mutation{}) || !reflect.DeepEqual(current, original) {
+				t.Fatalf("corrupt %s collection was not rejected as technical error: %v", kind, err)
+			}
+		})
+	}
+}
