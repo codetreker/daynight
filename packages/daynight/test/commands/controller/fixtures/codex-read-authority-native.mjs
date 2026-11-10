@@ -3,6 +3,7 @@ import { appendFileSync } from 'node:fs';
 
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 const cwd = process.cwd(), threadId = 'authority-thread';
+let pendingStarted;
 let settings = { cwd, approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' }, activePermissionProfile: null, model: 'model', effort: 'medium' };
 if (process.env.CODEX_AUTHORITY_CASE === 'restricted') settings.sandboxPolicy = { type: 'readOnly' };
 for await (const line of createInterface({ input: process.stdin })) {
@@ -14,11 +15,19 @@ for await (const line of createInterface({ input: process.stdin })) {
     out({ id, result: { status: process.env.CODEX_AUTHORITY_CASE === 'remote' ? 'connected' : 'disabled', environmentId: null } });
   }
   if (method === 'thread/start' || method === 'thread/resume') {
+    const thread = { id: threadId, sessionId: threadId, cwd, turns: [], environments: [{ environmentId: 'local', cwd, runtimeWorkspaceRoots: [cwd] }] };
     out({ id, result: { ...settings, sandbox: settings.sandboxPolicy, runtimeWorkspaceRoots: [cwd],
-      thread: { id: threadId, sessionId: threadId, cwd, environments: [{ environmentId: 'local', cwd, runtimeWorkspaceRoots: [cwd] }] } } });
+      thread } });
     if (process.env.CODEX_AUTHORITY_CASE === 'startup-restrict') out({ method: 'thread/settings/updated', params: { threadId, threadSettings: { ...settings, sandboxPolicy: { type: 'readOnly' } } } });
+    if (method === 'thread/start') {
+      if (process.env.CODEX_AUTHORITY_CASE === 'started-after-install') pendingStarted = thread;
+      else out({ method: 'thread/started', params: { thread } });
+    }
   }
-  if (method === 'model/list') out({ id, result: { data: [{ model: 'model' }, { model: 'other-model' }], nextCursor: null } });
+  if (method === 'model/list') {
+    if (pendingStarted) { out({ method: 'thread/started', params: { thread: pendingStarted } }); pendingStarted = undefined; }
+    out({ id, result: { data: [{ model: 'model' }, { model: 'other-model' }], nextCursor: null } });
+  }
   if (method === 'configRequirements/read') out({ id, result: { requirements: null } });
   if (method === 'skills/list') out({ id, result: { data: [] } });
   if (method === 'thread/read') out({ id, result: { thread: { id: threadId, turns: [] } } });

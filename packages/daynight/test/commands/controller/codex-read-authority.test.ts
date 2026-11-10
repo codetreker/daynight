@@ -9,7 +9,7 @@ const startup = () => ({
   initialized: { userAgent: "daynight/0.167.0 (Linux; x86_64) (daynight; 0.22.0)" },
   remoteControl: { status: "disabled", serverName: "host", installationId: "installation", environmentId: null },
   response: { cwd, runtimeWorkspaceRoots: [cwd], approvalPolicy: "never", sandbox: { type: "dangerFullAccess" }, activePermissionProfile: null,
-    thread: { id: nativeSessionId, sessionId: nativeSessionId, cwd, environments: [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }] } },
+    thread: { id: nativeSessionId, sessionId: nativeSessionId, cwd, turns: [], environments: [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }] } },
   nativeSessionId, nativeCwd: cwd,
 });
 const hooks = (items: unknown[] = []) => ({ data: [{ cwd, hooks: items, warnings: [], errors: [] }] });
@@ -42,6 +42,94 @@ test("Codex authorizes each source checkpoint against the live native thread wit
   request.mockResolvedValue(hooks([hook()]));
   await expect(policy.authorizeCheckpoint(checkpoint("block"))).rejects.toMatchObject({ code: "source_forbidden" });
   expect(() => policy.verify()).toThrow();
+});
+
+test.each(["before installation", "after installation", "before response continuation"])("the correlated thread/start notification preserves authority %s and is consumed once", async order => {
+  const value = startup(), published: (NativeReadPolicy | null)[] = [];
+  let respond!: (value: unknown) => void;
+  const request = vi.fn((method: string): Promise<unknown> => method === "thread/start" ? new Promise(resolve => { respond = resolve; }) : Promise.resolve(hooks()));
+  const authority = new CodexReadAuthority({ cwd, request, publish: policy => published.push(policy) });
+  const opening = authority.request("thread/start", { cwd });
+  const notification = { thread: structuredClone(value.response.thread) };
+  if (order === "before response continuation") authority.observe("thread/started", notification);
+  respond(value.response); await opening;
+  if (order === "before installation") authority.observe("thread/started", notification);
+  authority.install(value);
+  const policy = published.at(-1)!;
+  expect(policy).not.toBeNull();
+  if (order === "after installation") authority.observe("thread/started", notification);
+  expect(policy.verify()).toBeUndefined();
+  await expect(policy.authorizeCheckpoint(checkpoint())).resolves.toBeUndefined();
+  expect(published.at(-1)).toBe(policy);
+  authority.observe("thread/started", notification);
+  expect(published.at(-1)).toBeNull();
+  expect(() => policy.verify()).toThrow();
+});
+
+test.each(["cwd", "sessionId", "environments", "permission"])("a same-ID startup notification with changed %s revokes authority", async field => {
+  const value = startup(), published: (NativeReadPolicy | null)[] = [];
+  const authority = new CodexReadAuthority({ cwd, request: vi.fn(async () => value.response), publish: policy => published.push(policy) });
+  await authority.request("thread/start", { cwd }); authority.install(value);
+  const policy = published.at(-1)!, thread = structuredClone(value.response.thread);
+  if (field === "cwd") thread.cwd = "/changed";
+  if (field === "sessionId") thread.sessionId = "parent-thread";
+  if (field === "environments") thread.environments[0]!.runtimeWorkspaceRoots = ["/changed"];
+  if (field === "permission") Object.assign(thread, { approvalPolicy: "on-request" });
+  authority.observe("thread/started", { thread });
+  expect(published.at(-1)).toBeNull(); expect(() => policy.verify()).toThrow();
+});
+
+test.each(["before installation", "after installation"])("thread/resume cannot authorize a same-ID thread/started notification %s", async order => {
+  const value = startup(), published: (NativeReadPolicy | null)[] = [];
+  const authority = new CodexReadAuthority({ cwd, request: vi.fn(async () => value.response), publish: policy => published.push(policy) });
+  await authority.request("thread/resume", { threadId: nativeSessionId });
+  if (order === "after installation") authority.install(value);
+  const policy = published.at(-1);
+  authority.observe("thread/started", { thread: structuredClone(value.response.thread) });
+  authority.install(value);
+  expect(published.at(-1)).toBeNull();
+  if (policy) expect(() => policy.verify()).toThrow();
+});
+
+test("another thread's notification after installation cannot consume the expected startup notification", async () => {
+  const value = startup(), published: (NativeReadPolicy | null)[] = [];
+  const authority = new CodexReadAuthority({ cwd, request: vi.fn(async () => value.response), publish: policy => published.push(policy) });
+  await authority.request("thread/start", { cwd }); authority.install(value);
+  const policy = published.at(-1)!;
+  authority.observe("thread/started", { thread: { ...structuredClone(value.response.thread), id: "another-thread" } });
+  authority.observe("thread/started", { thread: structuredClone(value.response.thread) });
+  expect(published.at(-1)).toBe(policy); expect(policy.verify()).toBeUndefined();
+});
+
+test("a repeated startup notification before installation cannot leave reusable authority", async () => {
+  const value = startup(), publish = vi.fn();
+  const authority = new CodexReadAuthority({ cwd, request: vi.fn(async () => value.response), publish });
+  await authority.request("thread/start", { cwd });
+  authority.observe("thread/started", { thread: structuredClone(value.response.thread) });
+  authority.observe("thread/started", { thread: structuredClone(value.response.thread) });
+  authority.install(value);
+  expect(publish.mock.calls.every(([policy]) => policy === null)).toBe(true);
+});
+
+test("startup notification admission belongs to the actual thread/start response", async () => {
+  const value = startup(), publish = vi.fn();
+  const authority = new CodexReadAuthority({ cwd, request: vi.fn(async () => value.response), publish });
+  await authority.request("thread/start", { cwd });
+  authority.install({ ...value, response: structuredClone(value.response) });
+  expect(publish.mock.calls.every(([policy]) => policy === null)).toBe(true);
+});
+
+test.each(["before installation", "after installation"])("a real authority change %s wins over the expected startup notification", async order => {
+  const value = startup(), published: (NativeReadPolicy | null)[] = [];
+  const authority = new CodexReadAuthority({ cwd, request: vi.fn(async () => value.response), publish: policy => published.push(policy) });
+  await authority.request("thread/start", { cwd });
+  if (order === "after installation") authority.install(value);
+  const old = published.at(-1);
+  authority.observe("thread/settings/updated", { threadId: nativeSessionId, threadSettings: { cwd, sandboxPolicy: { type: "readOnly" } } });
+  authority.observe("thread/started", { thread: structuredClone(value.response.thread) });
+  authority.install(value);
+  expect(published.at(-1)).toBeNull();
+  if (old) expect(() => old.verify()).toThrow();
 });
 
 test.each([

@@ -30,6 +30,13 @@ uses blob attachments and the original send Promise's durable messageId. An
 unknown result retains the original operation and pins without replay. Model
 consumption is verified separately from native acceptance.
 
+Codex preserves Markdown eligibility for a single trusted text block alongside
+native images in accepted input and history. Completion still requires native
+terminal evidence or the durable input intent. Multiple text blocks remain
+unmapped rather than being joined into a new source body. The text part and
+native image slots keep their identities and acceptance receipts; the presence
+of an image does not make an otherwise trusted Markdown body plain text.
+
 History uses persistent source mappings and bounded provider-specific readers.
 Copilot preserves an already-public native slot when an exact late receipt
 arrives, then adds a separately labelled original-upload slot. Admission reserves

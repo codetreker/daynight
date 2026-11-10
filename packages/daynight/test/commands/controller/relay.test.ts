@@ -369,3 +369,20 @@ test("retry_capture consumes the source hook separately from native commands and
   socket.close(); expect(signal.aborted).toBe(true); const count = socket.sent.length;
   finish(); await relay.close(); expect(socket.sent).toHaveLength(count); expect(callbacks.onCommand).not.toHaveBeenCalled();
 });
+
+test("retry source admission refusal leaves the original request available for reoffer", async () => {
+  const { relay, socket, emit, frame, callbacks } = await setup([], false, true);
+  emit(frame("reconcile_result", { operations: [] }));
+  const validated = { mediaType: "image/png" as const, byteLength: "1", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 };
+  callbacks.onRetryCapture.mockRejectedValueOnce(Object.assign(new Error("Controller source capture capacity is unavailable."), { code: "rate_limited" })).mockResolvedValueOnce(validated);
+  const requestId = randomUUID(), body = { captureId: randomUUID(), attemptId: randomUUID() };
+  const request = frame("image_request", { requestId, action: "retry_capture", body });
+  emit(request);
+  await vi.waitFor(() => expect(socket.sent.filter(message => message.type === "image_response")).toHaveLength(1));
+  expect(socket.sent.filter(message => message.type === "image_response").at(-1)).toMatchObject({ requestId, action: "retry_capture", result: null, error: { code: "rate_limited" } });
+  emit(request);
+  await vi.waitFor(() => expect(socket.sent.filter(message => message.type === "image_response")).toHaveLength(2));
+  expect(socket.sent.filter(message => message.type === "image_response").at(-1)).toMatchObject({ requestId, action: "retry_capture", result: validated, error: null });
+  expect(callbacks.onRetryCapture.mock.calls.map(([value]) => value)).toEqual([body, body]);
+  await relay.close();
+});

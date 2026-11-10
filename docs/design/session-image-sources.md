@@ -44,6 +44,8 @@ Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd �
 
 进程使用 0.167.0 的 `CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED` 关闭独立控制面，并读回真实状态。每个 checkpoint 再调用线程绑定的 `hooks/list`，只接受完整已知结构、同 cwd、没有 warnings/errors 且没有 enabled `PreToolUse` 的结果；不解释用户 hook 的脚本或 matcher，也不关闭它。后台新增 hook 不能被启动时的空列表掩盖，下一次查询必须重新判断。未知版本、格式、相关限制、协议失败或无法确认的变化均关闭本次 authority；关闭后同一 execution 不自动重开，原生进程重建须重新取得完整事实。RPC 设置变化、native 生命周期及同步 transport failure 走同一失效入口。
 
+`thread/start` 的响应与随后正常的 `thread/started` 通知属于同一次启动；Codex authority 只容许一次与该请求响应的完整 thread 快照一致、`turns` 按原生通知规则清空的通知，无论通知先于还是晚于 policy 安装。没有 start 关联且尚未安装时，`thread/started` 通知使 authority 失效；已有 start 响应后，其他 thread 的通知不改变该启动关联。当前 thread 重复或快照不一致的通知仍使 authority 失效，`thread/resume` 不取得启动豁免。
+
 [Copilot authority](../../packages/daynight/src/commands/controller/providers/copilot-read-authority.ts) 固定为 SDK 1.0.11、CLI 1.0.105、macOS ARM64。它核验安装的 SEA executable 以及私有有界解包得到的 `index.js`、`cli-main.js`、`runtime.node` 摘要，再由 Node 运行未修改的发行入口并加载 Daynight preload。独占 bridge worker 使用原 SDK/TCP 连接；preload 从同一真实 Session registry 调用固定 N-API 判定，不创建第二个授权 Session。未知版本、平台或摘要不匹配保留普通 Provider 路径，不发布图片来源策略。
 
 每个 checkpoint 核对真实 Session/cwd、账户身份、当前原生模式、完整 hooks snapshot、SDK callback registry 和 strict content-exclusion 结果，再调用该 Session 的原生 Read permission route；只有明确 `result + approved` 可以继续。来源只接受与 held proof 对应的普通组件链；alias、symlink、目录链接、parent 折返，以及显式 `.` 或空组件均拒绝；`./image.png` 不属于该 Copilot profile 的路径子集。内容排除结果按固定发行物的完整路径策略合同消费，不把路径判断说成 inode 或内容权限。未知、不可用和相关 hook 状态拒绝，既不实现自己的 permission matcher，也不关闭用户 hooks。
@@ -77,6 +79,8 @@ SDK callback 与 permission event 的共享对象跨进程时，由 worker 对�
 Provider 通过 `onTimeline(entry, metadata?)` 交付 `MarkdownTimelineMetadata {complete,format,truncated}`。真实 text/thinking block 终态或可信完整历史才标记 `complete:true`，delta 标记 false；工具 raw output、工具参数和结构化 JSON 保持 `format:"plain"`。Codex 的未完成历史 turn 不标完成；最终 reasoning 不再携带可读文本时，完成信号仍关联原条目已流式收到的正文。缺少可靠 block 身份的多 text 内容不猜片段映射。pipeline 还合并 `providerDisplayEntry` 的实际截断事实：完成但截断的正文不触发首次采集，缺少 metadata 的普通文字沿原文字投影保存。完成元数据不携带或授予原生读取权限。
 
 正文修订中，无歧义保留的同节点可继续原 imageId；locator、definition 目标或可信来源 context 改变就是新出现，旧图进入 retained。重复同路径的两个节点分别建 imageId，不按 URL/SHA 合并。无法可靠对齐时保留旧图关系，并给新位置新身份或明确缺失。正文截断必须先于绑定；不能把截断恰巧造成的闭合当完整节点，必须证明节点在原文中也成立，不能使用截断前 offset 匹配显示文本。
+
+Codex 用户消息或已接受输入中，只有一个 string text block 且其余均为 image/localImage 时，该正文可取得 Markdown 资格。其完整性沿原生终态或已持久化输入判定；多 text block 不合并猜测，只有图片时不制造正文。Markdown 投影保持原生图片 index、imageId、既有回执及正文 partId。
 
 ## Markdown part 与保留图片交换
 
@@ -273,6 +277,8 @@ coordinator 在 register 或 commit 发出前持久原请求及 unknown 阶段�
 | 未提交 local/external 的 invalid_image、unsupported_media_type、decode_failed | 允许源修复后的显式 prepare；不自动循环。input 与 saved 错误仍保持 never。 |
 | forbidden、permission_denied | 不得靠 retry 绕过；真实权限/策略恢复后仍需服务重新判定 action。 |
 | committed 原件读失败/摘要错/丢失 | 保持原 descriptor，读失败可重读同原件；不能重新抓源修复或转成“从未采集”。 |
+
+来源格式与完整解码的已确认失败通过 helper 的结构化错误传递，保留可重试的失败类别；进程崩溃、IO 错误或未知错误不能仅按文案归为图片解码失败。Sharp 的普通异常不能区分坏内容和运行故障，因此只有明确容器、CRC、格式、几何及完整帧检查等确认的拒绝获得内容类别；仅由 Sharp 模糊异常报告的损坏也保持 `source_unavailable`。两个活动来源占满容量时，尚未开始的 `retry_capture` 返回 `rate_limited`，relay 保留此准入结果。服务重新下发原 request/capture/attempt，不写入终态错误，也不新建来源读取身份。
 
 重试可接受原未成功来源修复后的 bytes，但首次 committed 关闭该出现采集。未知保留原 pins，不能趁新 attempt 换资源。新 generation 不复用旧写凭据，只在可信同执行/native 链与当前授权下协调；无法证明则 context_unavailable。只读归档永远无 retry_source，只重读已保存图。最终同步可登记已经发生的本地来源和 validated 结果，但原生停止后不能启动新来源 IO。
 

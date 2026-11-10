@@ -86,6 +86,9 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         }
         respond(result, null);
       } catch (error) {
+        if (request.action === "retry_capture" && error !== null && typeof error === "object" && "code" in error && error.code === "rate_limited") {
+          respond(null, { code: "rate_limited", message: "Controller source capture capacity is unavailable." }); return;
+        }
         const description = String(error);
         const code = request.action === "release" && (error instanceof ImageReleaseStorageError || isImageReleaseStorageFailure(error)) ? "release_storage_unavailable" : description.includes("component_unsupported") ? "component_unsupported" : description.includes("target_changed") ? "target_changed" : description.includes("budget") || description.includes("capacity") ? "budget_exceeded" : description.includes("conflict") ? "upload_conflict" : description.includes("in_use") ? "upload_in_use" : "image_unavailable";
         respond(null, { code, message: "The Controller could not complete this image request." });

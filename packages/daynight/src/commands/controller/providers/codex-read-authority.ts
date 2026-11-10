@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { parseLocalImageCheckpoint, type LocalImageCheckpoint } from "../markdown/local-source-proof.js";
 import { record } from "./native-rpc.js";
 import type { CodexRpc } from "./codex-rpc.js";
@@ -7,6 +8,7 @@ import type { NativeReadPolicy } from "./types.js";
 type Request = CodexRpc["request"];
 type AuthorityOptions = { cwd: string; request: Request; publish(policy: NativeReadPolicy | null): void; drain?(): Promise<void> };
 type Startup = { initialized: unknown; remoteControl: unknown; response: unknown; nativeSessionId: string; nativeCwd: string };
+type StartedReceipt = { responded: boolean; response: unknown; notified: boolean; notification: unknown };
 const forbidden = () => Object.assign(new Error("Native Codex local Read authority is unavailable."), { code: "source_forbidden" });
 const exactKeys = (value: unknown, keys: readonly string[]): boolean => value !== null && typeof value === "object" && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -60,6 +62,7 @@ export class CodexReadAuthority {
   private installed = false;
   private policy: NativeReadPolicy | null = null;
   private nativeCwd = "";
+  private startedReceipt: StartedReceipt | undefined;
   constructor(private readonly options: AuthorityOptions) { options.publish(null); }
 
   static supports(initialized: unknown): boolean {
@@ -69,6 +72,7 @@ export class CodexReadAuthority {
 
   install(startup: Startup): void {
     if (this.invalid || this.installed) return;
+    if (this.startedReceipt && (!this.startedReceipt.responded || this.startedReceipt.response !== startup.response)) { this.invalidate(); return; }
     const remote = record(startup.remoteControl), response = record(startup.response), thread = record(response.thread);
     const environments = thread.environments, environment = Array.isArray(environments) && environments.length === 1 ? record(environments[0]) : {};
     if (!CodexReadAuthority.supports(startup.initialized)
@@ -101,7 +105,7 @@ export class CodexReadAuthority {
 
   invalidate(): void {
     if (this.invalid) return;
-    this.invalid = true; ++this.generation; this.policy = null;
+    this.invalid = true; ++this.generation; this.policy = null; this.startedReceipt = undefined;
     this.options.publish(null);
   }
 
@@ -112,12 +116,43 @@ export class CodexReadAuthority {
       this.invalidate();
       await this.options.drain?.();
     }
-    return onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
+    let started: StartedReceipt | undefined;
+    if (method === "thread/start" && !this.installed && !this.invalid) {
+      if (this.startedReceipt) this.invalidate();
+      else started = this.startedReceipt = { responded: false, response: undefined, notified: false, notification: undefined };
+    }
+    const pending = onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
+    if (!started) return pending;
+    try {
+      const response = await pending;
+      started.response = response; started.responded = true;
+      if (started.notified) this.verifyStartedReceipt(started);
+      return response;
+    } catch (error) { this.invalidate(); throw error; }
+  }
+
+  private verifyStartedReceipt(started: StartedReceipt): void {
+    // 0.167.0 emits the response's exact thread snapshot with turns cleared:
+    // https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/request_processors/thread_summary.rs#L220-L223
+    const expected = { ...record(record(started.response).thread), turns: [] };
+    const observed = { ...record(record(started.notification).thread) };
+    if (!exactKeys(started.notification, ["thread"]) || !isDeepStrictEqual(observed, expected)) this.invalidate();
   }
 
   observe(method: string, params: unknown): void {
+    if (this.invalid) return;
     const raw = record(params);
     if (method === "remoteControl/status/changed") { if (raw.status !== "disabled") this.invalidate(); return; }
+    if (method === "thread/started") {
+      const started = this.startedReceipt;
+      if (started) {
+        if (started.responded && record(raw.thread).id !== record(record(started.response).thread).id) return;
+        if (started.notified) { this.invalidate(); return; }
+        started.notification = params; started.notified = true;
+        if (started.responded) this.verifyStartedReceipt(started);
+      } else if (!this.policy || record(raw.thread).id === this.policy.nativeSessionId) this.invalidate();
+      return;
+    }
     // Identity verification awaits realpath after the startup receipt. A newer
     // native restriction during that await must win over the older receipt.
     if (!this.policy) { if (method === "thread/settings/updated" || invalidatingNotifications.has(method)) this.invalidate(); return; }
@@ -125,6 +160,5 @@ export class CodexReadAuthority {
     if (method === "thread/settings/updated") {
       if (!permissionSnapshot(raw.threadSettings, this.nativeCwd, "sandboxPolicy")) this.invalidate();
     } else if (invalidatingNotifications.has(method)) this.invalidate();
-    else if (method === "thread/started" && record(raw.thread).id === this.policy.nativeSessionId) this.invalidate();
   }
 }

@@ -24,8 +24,11 @@ export type MarkdownCaptureRecord = {
 };
 type Hooks = Required<Pick<ProviderOptions, "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture">>;
 const failure = (code: string): ImageError => ({ code, message: "The original image source could not be captured." });
+const validationFailures = new Map<string, string>([["image_decode_failed", "decode_failed"], ["image_format_unsupported", "unsupported_media_type"], ["image_integrity_failed", "source_changed"], ["image_geometry_exceeded", "invalid_image"], ["image_too_large", "source_too_large"]]);
 const sourceError = (error: unknown): ImageError => {
   const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "";
+  const validation = validationFailures.get(code);
+  if (validation) return failure(validation);
   if (["policy_restricted", "source_forbidden", "context_unavailable", "permission_denied", "source_not_found", "source_timeout", "source_changed", "source_busy", "source_rate_limited", "source_capacity", "source_queue_timeout", "source_too_large", "invalid_image", "unsupported_media_type", "decode_failed"].includes(code)) return failure(code);
   return failure(String(error).includes("capacity") || String(error).includes("budget") || String(error).includes("free-space") ? "source_capacity" : "source_unavailable");
 };
@@ -262,7 +265,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     const old = get(request.occurrence.imageId);
     if (!old?.request || old.request.captureId !== request.captureId || canonicalImageJson(old.request.locator) !== canonicalImageJson(request.locator)) return refuse("context_unavailable");
     const running = active.get(request.occurrence.imageId); if (running) { await running.work; return retry(request, signal); }
-    if (active.size >= 2) return refuse("source_capacity");
+    if (active.size >= 2) return refuse("rate_limited");
     const existing = journal.media().captureStatus(request.captureId, request.attemptId); if (existing) { if (!hasAdmission(old, existing)) return refuse("source_unavailable"); return existing; }
     if (old.request.attemptId === request.attemptId && old.started) return refuse("source_unavailable");
     return track(request.occurrence.imageId, async joined => {

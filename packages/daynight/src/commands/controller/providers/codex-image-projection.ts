@@ -11,6 +11,17 @@ type Owner = { entryId: string; nativeMessageId: string; original: boolean; turn
 const unavailable = (code = "native_source_unavailable"): NativeImagePayload => ({ kind: "unavailable", error: { code, message: "The original native image is unavailable." } });
 const safeSlots = (slots: readonly NativeImageSlot[]): NativeImageSlot[] => slots.map(slot => ({ ...slot, payload: slot.payload.kind === "pending" ? slot.payload : unavailable() }));
 
+// Qualify native containers before projecting image placeholders or fallback text.
+function userMessageFormat(content: readonly unknown[]): "markdown" | "plain" {
+  let texts = 0;
+  for (const raw of content) {
+    const part = record(raw);
+    if (part.type === "text" && typeof part.text === "string") texts++;
+    else if (part.type !== "image" && part.type !== "localImage") return "plain";
+  }
+  return texts === 1 ? "markdown" : "plain";
+}
+
 /** Explicit native containers share one position-preserving image publisher. */
 export class CodexImageProjection {
   private readonly tools = new Map<string, { entry: Tool; slots: NativeImageSlot[] }>();
@@ -23,7 +34,7 @@ export class CodexImageProjection {
       return { type: "text" as const, text: "" };
     });
     this.publisher.publish({ entryId: match.entryId, revision: "1", kind: "user_message", content }, slots,
-      { complete: true, format: "plain", truncated: input.content.some(part => part.type === "text" && part.text.length > 200_000) });
+      { complete: true, format: userMessageFormat(input.content), truncated: input.content.some(part => part.type === "text" && part.text.length > 200_000) });
     return this.inputs.confirm(match);
   }
   private payload(value: unknown, local = false): NativeImagePayload {
@@ -70,7 +81,7 @@ export class CodexImageProjection {
         else if (part.type === "image" || part.type === "localImage") image(part.type === "localImage" ? part.path : part.url, `content/${index}`, index, part.type === "localImage");
         else text(`[Unsupported native content: ${string(part.type) || "unknown"}]`);
       }
-      this.publisher.publish({ ...base, kind: "user_message", content: parts }, slots, { complete: completed, format: "plain", truncated });
+      this.publisher.publish({ ...base, kind: "user_message", content: parts }, slots, { complete: completed, format: userMessageFormat(item.content as unknown[]), truncated });
       if (matched) this.inputs.confirm(matched);
       return true;
     }

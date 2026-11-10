@@ -42,6 +42,18 @@ environment rooted at the same cwd. This conjunction is a property of the pinned
 native implementation, not an inference from requested CLI flags. It leaves
 the source root and OS restrictions intact and never widens the user's sandbox.
 
+The pinned native start sends its response before a `thread/started` notification.
+Provider continuation and policy installation can fall on either side of that
+notification. The authority associates one notification with its own start
+request and the complete returned thread snapshot, with `turns` cleared as in
+the native notification. With no start association before installation, a
+notification invalidates authority. After the start response, notifications for
+other threads do not affect that association. A duplicate or different snapshot
+for the current thread still invalidates authority. Resume grants no such
+allowance. Matching only the thread
+ID would hide later lifecycle changes; invalidating every notification would
+close a normally started thread before its first source read.
+
 Every checkpoint also calls the loaded thread's `hooks/list`. Unknown structures,
 warnings, errors and enabled `PreToolUse` hooks refuse capture; the adapter does
 not interpret scripts or disable user hooks. A background plugin change cannot

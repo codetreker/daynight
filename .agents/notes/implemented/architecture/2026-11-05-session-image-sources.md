@@ -129,6 +129,17 @@ service retry attempt persists `awaitingRetry` and observes it without starting
 a writer. Only the original `retry_capture` control can start that attempt after
 the prior writer and reservation have stopped and current permission is checked.
 
+Confirmed format and complete-decode failures retain their structured category
+across the helper boundary, so fixing a never-committed source can remain
+retryable. A worker crash, IO failure or unknown error cannot be classified as
+bad image content from its message. Sharp can report both IO failures and bad
+content as an unstructured Error, so those ambiguous failures remain unavailable;
+only explicit validation checks establish a content rejection. A retry refused
+before source work because
+both source slots are occupied returns `rate_limited` through the relay. The
+service reoffers the original request rather than terminalizing that attempt;
+capacity pressure has not read or invalidated the source.
+
 ## Alternatives
 
 **Scan paths or image-looking strings with regular expressions.** Such scans

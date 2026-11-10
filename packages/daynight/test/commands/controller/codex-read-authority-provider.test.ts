@@ -22,6 +22,16 @@ const open = async (overrides: Partial<ProviderOptions> = {}, scenario = "") => 
   providers.push(provider); return { provider, policies, states };
 };
 
+test.each(["started-before-install", "started-after-install"])("normal Codex %s notification preserves the published local Read policy", async scenario => {
+  const { provider, policies } = await open({}, scenario);
+  const policy = policies.at(-1)!;
+  expect(policy).not.toBeNull();
+  expect(policy.nativeSessionId).toBe(provider.nativeSessionId);
+  expect(policy.verify()).toBeUndefined();
+  await expect(policy.authorizeCheckpoint(checkpoint())).resolves.toBeUndefined();
+  expect(policies.at(-1)).toBe(policy);
+});
+
 test("the live Codex adapter publishes native authority before projecting resumed Markdown", async () => {
   const published: (NativeReadPolicy | null)[] = [], observed: boolean[] = [];
   const { provider } = await open({ resumeNativeSessionId: "authority-thread", unattended: true,

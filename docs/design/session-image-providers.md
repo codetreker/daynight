@@ -73,6 +73,8 @@ live、final、原生恢复和分页共用一个 normalizer。稳定原生 item 
 
 sourceKey 来自版本化的原生位置 tuple，包含 canonical item/operation、container、callId、原生 part ID 或源数组索引；不含 URL、path 或 bytes。文字 delta 只更新文字槽，异步图片保持 entry/imageId 和工具状态，已终结工具不被迟到 start 改回 running。
 
+用户消息中只有一个 string text block 且其余均为 image/localImage 时，该正文保留 Markdown 资格，包括已接受输入及历史。完整性来自原生终态或已持久化原输入；多 text block 不合并为一个可采集正文，纯图不添加空正文。Markdown bindings 复用稳定正文 partId，原生图片仍保持原位置、imageId 和接受回执。
+
 | 原生形态 | 来源与所属 |
 | --- | --- |
 | userMessage.content 的 text/localImage/image | 保留顺序。自有操作关联原件；外来 localImage 交安全本地读取，data URL 交 inline 解码，历史 HTTP(S) 交外部采集。 |
