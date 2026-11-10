@@ -42,6 +42,15 @@ An SDK FileReadOutput image can share a transfer with its exact content-block
 mirror; similar bytes or an unrecognized structured field do not establish that
 relationship.
 
+Claude's persisted Read result uses `toolUseResult`, while the live SDK exposes
+`tool_use_result`. The transcript scanner verifies a persisted mirror with a
+bounded logical-string signature and the complete native record's schema before
+discarding the redundant bytes. It retains the authoritative content block's
+offset, occurrence and failure state. Unknown or unmatched copies remain subject
+to the original metadata budget. This comparison only identifies a documented
+copy within one record; it cannot establish input acceptance or merge distinct
+image occurrences.
+
 ## Alternatives
 
 **Send paths or Markdown through text.** This would avoid native encoders but

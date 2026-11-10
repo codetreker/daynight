@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import sharp from "sharp";
 import type { openClaudeTranscriptHelper as OpenHelper } from "../../../src/commands/controller/providers/claude-transcript-helper.js";
 
 const roots: string[] = [], children: ChildProcess[] = [];
@@ -67,6 +68,34 @@ test("real helper waits for each index lease, returns bounded metadata and strea
   } finally { await reader.close(); }
   expect(child.exitCode !== null || child.signalCode !== null).toBe(true); expect(await readdir(f.indexDirectory)).toEqual([]);
   expect(await readFile(f.transcriptPath, "utf8")).toBe(f.source);
+});
+
+test("the real helper reopens a persisted Read image mirror with bounded IPC and ACKed authoritative bytes", async () => {
+  const f = await fixture(0), pixels = Buffer.alloc(520 * 520 * 3, 73);
+  const bytes = await sharp(pixels, { raw: { width: 520, height: 520, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer(), data = bytes.toString("base64");
+  expect(data.length).toBeGreaterThan(1_048_576);
+  const source = JSON.stringify({ uuid: "u", parentUuid: null, type: "user", sessionId: f.nativeSessionId, cwd: f.cwd, toolUseResult: { type: "image", file: { base64: data, type: "image/png", originalSize: 4_000_000 } }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-image", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }] }] } }) + "\n";
+  await writeFile(f.transcriptPath, source);
+  let firstMedia: string | undefined, firstSnapshot: string | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let child!: ChildProcess;
+    const reader = await openHelper({ ...f, onSpawn: process => {
+      child = process; children.push(child);
+      child.on("message", message => { expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThanOrEqual(1_048_576); });
+    }, acquireIndexReservation: () => ({ release() {} }) });
+    try {
+      const page = await reader.nextPage(), media = page.records[0]!.media;
+      expect(media).toHaveLength(1); expect(JSON.stringify(page)).not.toContain(data);
+      if (firstMedia) { expect(media[0]!.mediaId).toBe(firstMedia); expect(reader.snapshot.snapshotId).toBe(firstSnapshot); }
+      else { firstMedia = media[0]!.mediaId; firstSnapshot = reader.snapshot.snapshotId; }
+      await expect(reader.readMedia(media[0]!.mediaId, () => {})).rejects.toThrow("acknowledged");
+      await reader.acknowledge(page.cursor);
+      const chunks: Buffer[] = []; await reader.readMedia(media[0]!.mediaId, chunk => { chunks.push(Buffer.from(chunk)); });
+      const decoded = Buffer.concat(chunks); expect(decoded.equals(bytes)).toBe(true); expect((await sharp(decoded).raw().toBuffer()).equals(pixels)).toBe(true);
+    } finally { await reader.close(); }
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true); expect(await readdir(f.indexDirectory)).toEqual([]);
+  }
+  expect(await readFile(f.transcriptPath, "utf8")).toBe(source);
 });
 
 test("the real helper serializes next-page reads with acknowledged media from the preceding page", async () => {

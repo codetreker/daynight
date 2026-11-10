@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CLAUDE_TOOL_TEXT_PREFIX_UNITS, claudeToolTextPrefix } from "./claude-text.js";
 
 /** Byte ranges stay inside the authorized transcript reader and never cross its IPC boundary. */
@@ -11,6 +12,7 @@ const mediaPath = (path: readonly (string | number)[]) => {
   while (path[i] === "content" && typeof path[i + 1] === "number") i += 2;
   return i === path.length - 2 && path[i] === "source" && path[i + 1] === "data";
 };
+const mirrorPath = (path: readonly (string | number)[]) => path.length === 3 && path[0] === "toolUseResult" && path[1] === "file" && path[2] === "base64";
 const toolTextPath = (path: readonly (string | number)[]) => {
   if (path[0] !== "message" || path[1] !== "content" || typeof path[2] !== "number") return false;
   let i = 3;
@@ -30,26 +32,76 @@ const knownToolText = (value: Record<string, unknown>, path: readonly (string | 
   }
   return false;
 };
+const knownToolImage = (value: Record<string, unknown>, path: readonly (string | number)[], mediaType: unknown) => {
+  if (value.type !== "user" || path.length < 7) return false;
+  const content = object(value.message).content;
+  let block = object(Array.isArray(content) ? content[path[2] as number] : null);
+  for (let i = 3; i < path.length - 2; i += 2) {
+    if (block.type !== "tool_result") return false;
+    block = object(Array.isArray(block.content) ? block.content[path[i + 1] as number] : null);
+  }
+  const source = object(block.source);
+  return block.type === "image" && source.type === "base64" && source.media_type === mediaType;
+};
 type TextValue = { path: (string | number)[]; raw: string | null; rawBytes: number; normalized: string };
+type Signature = { digest: string; units: number };
+type MirrorValue = { signature: Signature; raw: string | null; rawBytes: number };
 
-/** Keep a bounded fallback until later type fields prove that this is tool text. */
-class TextCandidate {
+/** Unknown strings retain their original admission without unbounded buffering. */
+class EncodedString {
   private buffers: Buffer[] = [];
   private buffer = Buffer.allocUnsafe(4096);
   private used = 0;
-  private bytes = 0;
+  bytes = 0;
+  write(byte: number): void {
+    if (this.bytes > MAX_METADATA) return;
+    if (++this.bytes > MAX_METADATA) { this.buffers = []; this.used = 0; return; }
+    if (this.used === this.buffer.length) { this.buffers.push(this.buffer); this.buffer = Buffer.allocUnsafe(4096); this.used = 0; }
+    this.buffer[this.used++] = byte;
+  }
+  json(): string | null {
+    return this.bytes > MAX_METADATA ? null : Buffer.concat([...this.buffers, this.buffer.subarray(0, this.used)], this.bytes).toString("utf8");
+  }
+}
+
+/** Hash logical UTF-16 units so JSON escapes and raw UTF-8 compare equally. */
+class StringSignature {
+  private hash = createHash("sha256");
+  private buffer = Buffer.allocUnsafe(4096);
+  private used = 0;
+  private units = 0;
+  private utf8 = 0;
+  private remaining = 0;
+  decoded(unit: number): void {
+    if (this.used === this.buffer.length) { this.hash.update(this.buffer); this.used = 0; }
+    this.buffer.writeUInt16LE(unit, this.used); this.used += 2; this.units++;
+  }
+  character(byte: number): void {
+    if (this.remaining) {
+      this.utf8 = this.utf8 << 6 | byte & 63;
+      if (--this.remaining === 0) {
+        if (this.utf8 <= 0xffff) this.decoded(this.utf8);
+        else { const scalar = this.utf8 - 0x10000; this.decoded(0xd800 + (scalar >> 10)); this.decoded(0xdc00 + (scalar & 1023)); }
+      }
+    } else if (byte < 128) this.decoded(byte);
+    else {
+      this.remaining = byte < 224 ? 1 : byte < 240 ? 2 : 3;
+      this.utf8 = byte & (this.remaining === 1 ? 31 : this.remaining === 2 ? 15 : 7);
+    }
+  }
+  finish(): Signature { return { digest: this.hash.update(this.buffer.subarray(0, this.used)).digest("hex"), units: this.units }; }
+}
+
+/** Keep a bounded fallback until later type fields prove that this is tool text. */
+class TextCandidate {
+  private encoded = new EncodedString();
   private chunks: string[] = [];
   private chunk = "";
   private units = 0;
   private utf8 = 0;
   private remaining = 0;
   constructor(private readonly path: (string | number)[]) {}
-  raw(byte: number): void {
-    if (this.bytes > MAX_METADATA) return;
-    if (++this.bytes > MAX_METADATA) { this.buffers = []; this.used = 0; return; }
-    if (this.used === this.buffer.length) { this.buffers.push(this.buffer); this.buffer = Buffer.allocUnsafe(4096); this.used = 0; }
-    this.buffer[this.used++] = byte;
-  }
+  raw(byte: number): void { this.encoded.write(byte); }
   decoded(text: string): void {
     // One following scalar lets the shared prefix preserve a surrogate pair.
     if (this.units > CLAUDE_TOOL_TEXT_PREFIX_UNITS) return;
@@ -67,7 +119,7 @@ class TextCandidate {
     }
   }
   finish(): TextValue {
-    return { path: this.path, rawBytes: this.bytes, raw: this.bytes > MAX_METADATA ? null : Buffer.concat([...this.buffers, this.buffer.subarray(0, this.used)], this.bytes).toString("utf8"), normalized: JSON.stringify(claudeToolTextPrefix(this.chunks.join("") + this.chunk)) };
+    return { path: this.path, rawBytes: this.encoded.bytes, raw: this.encoded.json(), normalized: JSON.stringify(claudeToolTextPrefix(this.chunks.join("") + this.chunk)) };
   }
 }
 
@@ -84,10 +136,12 @@ export class ClaudeTranscriptJson {
   private escaped = false;
   private unicode = "";
   private unicodeLeft = 0;
-  private candidate: { path: (string | number)[]; start: number; chars: number; padding: number; last: number; invalid: boolean } | null = null;
+  private candidate: { path: (string | number)[]; start: number; chars: number; padding: number; last: number; invalid: boolean; signature: StringSignature; encoded: EncodedString | null } | null = null;
   private text: TextCandidate | null = null;
   private texts: TextValue[] = [];
   private media: TranscriptMediaRange[] = [];
+  private signatures: Signature[] = [];
+  private mirror: MirrorValue | null = null;
   private decoder = new TextDecoder("utf-8", { fatal: true });
   private error: Error | null = null;
   private tokens = 0;
@@ -127,12 +181,13 @@ export class ClaudeTranscriptJson {
   private byte(byte: number, offset: number): void {
     if (this.quoted) {
       if (this.text) this.text.raw(byte);
-      else if (!this.candidate) { this.append(byte); if (this.key) { if (this.keyBytes.length >= 1024) throw new Error("Claude transcript key limit exceeded."); this.keyBytes.push(byte); } }
+      else if (this.candidate) this.candidate.encoded?.write(byte);
+      else { this.append(byte); if (this.key) { if (this.keyBytes.length >= 1024) throw new Error("Claude transcript key limit exceeded."); this.keyBytes.push(byte); } }
       if (this.unicodeLeft) {
         if (!(byte >= 48 && byte <= 57 || byte >= 65 && byte <= 70 || byte >= 97 && byte <= 102)) throw new Error("Invalid Claude transcript JSON escape.");
         this.unicode += String.fromCharCode(byte);
         if (--this.unicodeLeft === 0) {
-          if (this.candidate) this.imageCharacter(parseInt(this.unicode, 16));
+          if (this.candidate) { const unit = parseInt(this.unicode, 16); this.imageCharacter(unit); this.candidate.signature.decoded(unit); }
           else this.text?.decoded(String.fromCharCode(parseInt(this.unicode, 16)));
         }
         return;
@@ -142,7 +197,7 @@ export class ClaudeTranscriptJson {
         if (byte === 117) { this.unicode = ""; this.unicodeLeft = 4; return; }
         const escapes: Record<number, number> = { 34: 34, 47: 47, 92: 92, 98: 8, 102: 12, 110: 10, 114: 13, 116: 9 };
         if (escapes[byte] === undefined) throw new Error("Invalid Claude transcript JSON escape.");
-        if (this.candidate) this.imageCharacter(escapes[byte]!);
+        if (this.candidate) { this.imageCharacter(escapes[byte]!); this.candidate.signature.decoded(escapes[byte]!); }
         else this.text?.decoded(String.fromCharCode(escapes[byte]!));
         return;
       }
@@ -157,7 +212,11 @@ export class ClaudeTranscriptJson {
         }
         if (this.candidate) {
           const c = this.candidate, byteLength = c.chars / 4 * 3 - c.padding;
-          this.media.push({ path: c.path, start: c.start, end: offset, byteLength, error: c.invalid || !c.chars || c.chars % 4 !== 0 ? "invalid_base64" : byteLength > MAX_IMAGE ? "image_too_large" : null });
+          if (c.encoded) this.mirror = { signature: c.signature.finish(), raw: c.encoded.json(), rawBytes: c.encoded.bytes };
+          else {
+            this.media.push({ path: c.path, start: c.start, end: offset, byteLength, error: c.invalid || !c.chars || c.chars % 4 !== 0 ? "invalid_base64" : byteLength > MAX_IMAGE ? "image_too_large" : null });
+            this.signatures.push(c.signature.finish());
+          }
           this.candidate = null;
         }
         if (this.text) {
@@ -168,7 +227,7 @@ export class ClaudeTranscriptJson {
         return;
       }
       if (byte < 32) throw new Error("Invalid Claude transcript JSON string.");
-      if (this.candidate) this.imageCharacter(byte);
+      if (this.candidate) { this.imageCharacter(byte); this.candidate.signature.character(byte); }
       else this.text?.character(byte);
       return;
     }
@@ -178,9 +237,11 @@ export class ClaudeTranscriptJson {
       this.key = !!parent && parent.kind === "object" && parent.expectingKey;
       if (this.key) { this.keyBytes = [34]; this.append(byte); return; }
       const path = this.valuePath();
-      if (mediaPath(path)) {
-        if (this.media.length >= 1000) throw new Error("Claude transcript media position limit exceeded.");
-        this.candidate = { path, start: offset + 1, chars: 0, padding: 0, last: 0, invalid: false };
+      if (mediaPath(path) || mirrorPath(path)) {
+        const encoded = mirrorPath(path) ? new EncodedString() : null;
+        if (!encoded && this.media.length >= 1000) throw new Error("Claude transcript media position limit exceeded.");
+        encoded?.write(byte);
+        this.candidate = { path, start: offset + 1, chars: 0, padding: 0, last: 0, invalid: false, signature: new StringSignature(), encoded };
         this.append(34); this.append(34);
       } else if (toolTextPath(path)) { this.text = new TextCandidate(path); this.text.raw(byte); }
       else this.append(byte);
@@ -210,6 +271,22 @@ export class ClaudeTranscriptJson {
     const value: unknown = JSON.parse(bytes.toString("utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Claude transcript record must be an object.");
     let metadataBytes = this.size;
+    if (this.mirror) {
+      const output = object(object(value).toolUseResult), file = object(output.file), mirror = this.mirror;
+      const readImage = output.type === "image" && typeof file.type === "string" && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) && Number.isSafeInteger(file.originalSize) && Number(file.originalSize) >= 0;
+      const proved = readImage && this.media.some((range, i) => {
+        const signature = this.signatures[i]!;
+        return signature.units === mirror.signature.units && signature.digest === mirror.signature.digest && knownToolImage(value as Record<string, unknown>, range.path, file.type);
+      });
+      // Only a proved native Read mirror is redundant. Matching unavailable
+      // sources keep their original media error and never become metadata errors.
+      if (proved) delete file.base64;
+      else {
+        metadataBytes += mirror.rawBytes - 2;
+        if (metadataBytes > MAX_METADATA || mirror.raw === null) throw new Error("Claude transcript metadata limit exceeded.");
+        file.base64 = JSON.parse(mirror.raw);
+      }
+    }
     for (const text of this.texts) {
       if (knownToolText(value as Record<string, unknown>, text.path)) continue;
       // Unknown fields retain both their full value and original encoded-byte

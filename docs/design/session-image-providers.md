@@ -140,6 +140,8 @@ base64 image source、tool_result 的有序 text/image 和明确 native URL/path
 
 SDK user 工具事件的 `tool_use_result` 若为明确的 image `FileReadOutput`，且 `file.base64` 与同事件工具内容中的图片及 MIME 完全匹配，冗余位置复用同一 transfer 和结果，不重复传输或把 Base64 副本计作 IPC 元数据。文件尺寸等其他字段保留；未知结构及不匹配的副本仍受原元数据上限约束。
 
+原生 transcript 使用 `toolUseResult.file.base64` 保存同一结构化 Read 结果。扫描器以有界状态计算逻辑字符串签名，在完整记录解析后核对 user、`FileReadOutput` 形状、MIME 和同记录工具图片的内容签名，再移除已证明的副本字节；JSON 字段顺序和等价转义不改变判定。权威 `message.content` 图片继续保留原 offset、出现身份及不可用原因，不为副本新增采集。未知形状、不匹配或没有权威图片的字段仍按原编码字节计入元数据，不能借此通道跳过容量限制。
+
 新增只读 transcript helper，不用 getSessionMessages 的全量数组或 execFile 全量 JSON。SessionStart transcript_path 只是线索，须核 native ID、cwd、配置 home、文件身份；旧布局只在当前已授权 home 内按固定 resolver 精确查找，未知布局失败，不跨账户搜索。授权 FD 固定快照的身份、初始长度、完整行边界和前缀摘要。
 
 第一遍增量 tokenizer 扫描 JSONL，媒体按 token 跳过并记录 offset；受限磁盘索引保存 uuid/parentUuid/message.id/block、tool、sidechain/meta 与 compaction 字段。按真实 parent chain、preservedMessages/preservedSegment、父链重写及 sibling/tool_result 选可见分支，不以物理行序当最终对话。helper 只输出元数据，由 Controller 唯一 journal writer 提交：每页最多 100 条、序列化最多 1 MiB，ACK 后下一页。
