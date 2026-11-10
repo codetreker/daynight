@@ -25,13 +25,17 @@ test("native input retains optional text then ordered images without invented pr
   expect(() => validateNativeInput({ content: [{ type: "unknown" }] } as unknown as NativeInput)).toThrow(/invalid/);
 });
 
-test("every native image must still be a private immutable regular file with original bytes and MIME", async () => {
+test("every native image must still be a regular file with original bytes and MIME", async () => {
   const a = await fixture(), b = await fixture();
   await expect(verifyNativeImageFiles([a, b])).resolves.toBeUndefined();
   await expect(verifyNativeImageFiles([a, { ...b, sha256: "f".repeat(64) }])).rejects.toThrow(/integrity/);
   await expect(verifyNativeImageFiles([{ ...a, mediaType: "image/jpeg" }])).rejects.toThrow(/MIME/);
   const link = path.join(path.dirname(a.localPath), "alias.png"); await symlink(a.localPath, link);
   await expect(verifyNativeImageFiles([{ ...a, localPath: link }])).rejects.toThrow();
-  await chmod(b.localPath, 0o600);
-  await expect(verifyNativeImageFiles([a, b])).rejects.toThrow(/immutable/);
+});
+
+test.skipIf(process.platform === "win32")("POSIX native image permissions reject writable originals", async () => {
+  const image = await fixture();
+  await chmod(image.localPath, 0o600);
+  await expect(verifyNativeImageFiles([image])).rejects.toThrow(/immutable/);
 });

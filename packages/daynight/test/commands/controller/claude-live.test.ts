@@ -45,16 +45,21 @@ test("actual SDK helper joins its native child, preserves control RPC and transf
   }
 }, 20_000);
 
-test("an unexpectedly killed helper never confirms its still-running native child stopped", async () => {
+test("helper loss remains unknown even after native child stop is independently observed", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-loss-")); let child!: ChildProcess; const proofs: ProcessProof[] = [];
   const env = { ...process.env, DAYNIGHT_TEST_CLAUDE_HOLD_ON_EOF: "1" };
   const native = queryClaudeLive({ prompt: (async function* () {})(), options: { cwd: root, sessionId: randomUUID(), pathToClaudeCodeExecutable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env } }, { cwd: root, env, onSpawn: (process: ChildProcess) => { child = process; }, onNativeProcessProof: (proof: ProcessProof) => { proofs.push(proof); } } as unknown as ProviderOptions);
   const pump = (async () => { for await (const event of native) releaseClaudeLiveRecord(event); })().catch(error => error);
   try {
     await native.initializationResult(); expect(proofs).toHaveLength(1);
-    const exited = new Promise<void>(resolve => child.once("exit", () => resolve())); child.kill("SIGKILL"); await exited;
     expect(await inspectProcessProof(proofs[0]!)).toBe("running");
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve())); child.kill("SIGKILL"); await exited;
+    // Holding this fixture open after helper death is a POSIX mechanism. Every
+    // platform still requires the missing helper stop receipt, even after exit.
+    if (process.platform !== "win32") expect(await inspectProcessProof(proofs[0]!)).toBe("running");
     await expect(native.join()).rejects.toThrow(/closed|unknown/); expect(await pump).toBeInstanceOf(Error);
+    for (const proof of proofs) if (await inspectProcessProof(proof) === "running") process.kill(proof.pid, "SIGTERM");
+    for (const proof of proofs) await expect.poll(() => inspectProcessProof(proof)).toBe("stopped");
     await expect(native.join()).rejects.toThrow(/closed|unknown/);
   } finally {
     if (child.exitCode === null && child.signalCode === null) { const exited = new Promise<void>(resolve => child.once("exit", () => resolve())); child.kill("SIGTERM"); await exited; }

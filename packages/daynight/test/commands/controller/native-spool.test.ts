@@ -10,7 +10,7 @@ vi.mock("node:fs", async importOriginal => {
 });
 const directories: string[] = [];
 afterEach(async () => { faults.sync = false; await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
-test("an unlinked spool retains its charge until directory sync succeeds on retry", async () => {
+test.skipIf(process.platform === "win32")("an unlinked spool retains its charge until POSIX directory sync succeeds on retry", async () => {
   const root = path.resolve("../../.tmp/native-spool-tests"); await mkdir(root, { recursive: true });
   const directory = await mkdtemp(path.join(root, "wire-")); directories.push(directory);
   let charged = 0;
@@ -23,7 +23,7 @@ test("an unlinked spool retains its charge until directory sync succeeds on retr
   spool.remove(); expect(charged).toBe(0); expect(removed).toHaveBeenCalledOnce();
 });
 
-test("a failed directory sync while sealing can finish without reopening the immutable file", async () => {
+test.skipIf(process.platform === "win32")("a failed POSIX directory sync while sealing can finish without reopening the immutable file", async () => {
   const root = path.resolve("../../.tmp/native-spool-tests"); await mkdir(root, { recursive: true });
   const directory = await mkdtemp(path.join(root, "seal-")); directories.push(directory);
   let charged = 0;
@@ -35,4 +35,16 @@ test("a failed directory sync while sealing can finish without reopening the imm
   vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { if (++calls === 2) throw new Error("controlled directory sync failure"); sync(fd); });
   try { expect(() => spool.seal()).toThrow(/sync failure/); spool.seal(); expect(Buffer.concat([...spool.read()])).toEqual(Buffer.from("original bytes")); spool.remove(); expect(charged).toBe(0); }
   finally { vi.restoreAllMocks(); }
+});
+
+test("a failed file sync leaves the spool charged and unreadable until sealing succeeds", async () => {
+  const root = path.resolve("../../.tmp/native-spool-tests"); await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(path.join(root, "file-sync-")); directories.push(directory);
+  let charged = 0;
+  const spool = openNativeMediaSpool(path.join(directory, "bytes"), 1024, bytes => { charged = bytes; }, () => { charged = 0; });
+  spool.write(Buffer.from("original bytes")); faults.sync = true;
+  expect(() => spool.seal()).toThrow(/sync failure/);
+  expect(charged).toBe(14); expect(() => [...spool.read()]).toThrow(/sealed/);
+  spool.seal(); expect(Buffer.concat([...spool.read()])).toEqual(Buffer.from("original bytes"));
+  spool.remove(); expect(charged).toBe(0);
 });

@@ -16,9 +16,14 @@ test("Claude helper creates one ordered native user message, including image-onl
   expect(message).toEqual({ type: "user", uuid, session_id: sessionId, parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "look" }, { type: "image", source: { type: "base64", media_type: "image/png", data: f.bytes.toString("base64") } }] } });
   expect((await encodeClaudeLiveInput({ uuid, sessionId, input: { content: [f.image] } })).message.content).toHaveLength(1);
 });
-test("a later invalid original prevents the entire SDK user message from being created", async () => {
+test.each(["integrity", "missing"])("a later %s failure prevents the entire SDK user message from being created", async failure => {
+  const first = await fixture(), second = await fixture();
+  if (failure === "missing") await rm(second.image.localPath);
+  else second.image.sha256 = "f".repeat(64);
+  await expect(encodeClaudeLiveInput({ uuid: randomUUID(), sessionId: randomUUID(), input: { content: [first.image, second.image] } })).rejects.toThrow(failure === "missing" ? "ENOENT" : "integrity");
+});
+test.skipIf(process.platform === "win32")("POSIX writable originals cannot become SDK user messages", async () => {
   const f = await fixture();
-  await expect(encodeClaudeLiveInput({ uuid: randomUUID(), sessionId: randomUUID(), input: { content: [f.image, { ...f.image, sha256: "f".repeat(64) }] } })).rejects.toThrow("integrity");
   await chmod(f.image.localPath, 0o600);
   await expect(encodeClaudeLiveInput({ uuid: randomUUID(), sessionId: randomUUID(), input: { content: [f.image] } })).rejects.toThrow("immutable");
 });
