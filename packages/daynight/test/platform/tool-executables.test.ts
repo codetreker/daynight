@@ -1,5 +1,5 @@
 import path from "node:path";
-import { chmod, copyFile, mkdir, mkdtemp, open, realpath, rm, symlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, copyFile, link, mkdir, mkdtemp, open, realpath, rm, symlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
 import { fstatSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -48,7 +48,11 @@ describe("resolved tool commands", () => {
     const root = await fixture(), node = path.join(root, process.platform === "win32" ? "worker-node.exe" : "worker-node");
     await copyFile(process.execPath, node); await chmod(node, 0o755);
     const entry = await script(root, "nvm-C/bin/codex.js", "C");
-    const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: root, workerNode: node, environment: { PATH: path.join(root, "missing-node-B") } }, operation());
+    const pathNode = path.join(root, "node-B"), nodeName = process.platform === "win32" ? "node.exe" : "node";
+    await mkdir(pathNode);
+    await link(node, path.join(pathNode, nodeName));
+    await link(node, path.join(path.dirname(entry), nodeName));
+    const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: root, workerNode: node, environment: { PATH: pathNode } }, operation());
     const command = toolCommand(launch, []);
     expect(JSON.parse((await execute(command.file, command.args, { cwd: root, timeout: 5000 })).stdout).node).toBe(await realpath(node));
     await rm(node);
@@ -175,9 +179,11 @@ describe("resolved tool commands", () => {
 
   it("keeps Web Copilot bundled while Herdr uses the captured external installation", async () => {
     const root = await fixture(), entry = await script(root, "copilot.js", "external");
+    if (process.platform !== "win32") await symlink(entry, path.join(root, "copilot"), "file");
     const web = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "auto" }, cwd: root, environment: { PATH: root } }, operation());
-    const external = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: entry }, cwd: root, environment: { PATH: root } }, operation());
+    const external = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "auto" }, cwd: root, environment: { PATH: root, PATHEXT: ".JS" } }, operation());
     expect(web.source).toBe("bundled"); expect(web.interpreterPath).toBeNull();
+    expect(external.source).toBe("path");
     expect(web.artifacts.some(item => item.role === "runtime" && item.realPath === web.executablePath)).toBe(true);
     expect(web.executablePath).not.toBe(external.executablePath);
     const command = toolCommand(external, []);
