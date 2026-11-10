@@ -25,6 +25,140 @@ func workerStorage(t *testing.T) *postgres.Store {
 	return testutil.OpenStore(t, postgres.Open)
 }
 
+func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
+	database := workerStorage(t)
+	owner, foreign, project := testutil.ProjectMembershipFixture(t, database)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	workerID := testutil.QueryID(90)
+	configuration := func(max int64) model.WorkerConfiguration {
+		return model.WorkerConfiguration{
+			PreferPlatformSpecificTasks: false, MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
+			Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+			Projects: []model.WorkerProjectConfiguration{{ProjectID: project.ID, NativeOverrides: map[string]json.RawMessage{}}},
+		}
+	}
+	expected := func(revision string, stamp time.Time, max int64) model.WorkerConfigurationResource {
+		return model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: stamp, Value: configuration(max)}, ObservationRevision: "0", Observation: nil}
+	}
+	check := func(got, want model.WorkerConfigurationResource) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("configuration: got=%+v want=%+v", got, want)
+		}
+	}
+	read := func(want model.WorkerConfigurationResource) {
+		t.Helper()
+		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, owner.UserID, workerID)
+			if err == nil {
+				check(got, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var missing error
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		_, missing = scope.WorkerDAO().WorkerConfiguration(ctx, owner.UserID, workerID)
+		return nil
+	}); err != nil || !errors.Is(missing, model.ErrNotFound) {
+		t.Fatalf("unknown Worker configuration: query=%v snapshot=%v", missing, err)
+	}
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, owner.UserID, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		_, err = scope.WorkerDAO().UpsertWorker(ctx, testutil.WorkerSnapshotFixture(owner.UserID, workerID, admission.ObservedAt))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("legacy Worker creation: completion=%+v err=%v", completion, err)
+	}
+	read(model.WorkerConfigurationResource{Desired: nil, ObservationRevision: "0", Observation: nil})
+	var initial model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		if err := dao.ConfigurationProjectAccess(ctx, owner.UserID, project.ID); err != nil {
+			return err
+		}
+		var err error
+		initial, err = dao.SetWorkerConfiguration(ctx, owner.UserID, workerID, 1, configuration(2))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || initial.UpdatedAt.IsZero() || initial.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("initial configuration: completion=%+v result=%+v err=%v", completion, initial, err)
+	}
+	if !reflect.DeepEqual(initial, *expected("1", initial.UpdatedAt, 2).Desired) {
+		t.Fatalf("initial setter result: %+v", initial)
+	}
+	read(expected("1", initial.UpdatedAt, 2))
+	var updated model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		current, err := dao.WorkerConfiguration(ctx, owner.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		check(current, expected("1", initial.UpdatedAt, 2))
+		updated, err = dao.SetWorkerConfiguration(ctx, owner.UserID, workerID, 2, configuration(7))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || updated.UpdatedAt.IsZero() || updated.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("updated configuration: completion=%+v result=%+v err=%v", completion, updated, err)
+	}
+	if !reflect.DeepEqual(updated, *expected("2", updated.UpdatedAt, 7).Desired) {
+		t.Fatalf("updated setter result: %+v", updated)
+	}
+	read(expected("2", updated.UpdatedAt, 7))
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE user_id=$1 AND worker_id=$2`, owner.UserID, workerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		observed, err := scope.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		if observed.IsZero() || observed.Location() != time.UTC {
+			t.Errorf("invalid snapshot clock: %v", observed)
+		}
+		dao := scope.WorkerDAO()
+		got, err := dao.WorkerConfiguration(ctx, owner.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		check(got, expected("2", updated.UpdatedAt, 7))
+		_, workerErr := dao.Worker(ctx, owner.UserID, workerID, observed)
+		if !errors.Is(workerErr, model.ErrNotFound) {
+			t.Errorf("expired Worker: %v", workerErr)
+		}
+		page, err := dao.WorkerSummaries(ctx, owner.UserID, observed, Page{Limit: 10})
+		if err == nil && (page.Items == nil || len(page.Items) != 0 || page.HasMore) {
+			t.Errorf("expired Worker summaries: %+v", page)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		_, missing = scope.WorkerDAO().WorkerConfiguration(ctx, foreign.UserID, workerID)
+		return nil
+	}); err != nil || !errors.Is(missing, model.ErrNotFound) {
+		t.Fatalf("foreign reader: query=%v snapshot=%v", missing, err)
+	}
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		_, err := scope.WorkerDAO().WorkerConfiguration(ctx, foreign.UserID, workerID)
+		return err
+	})
+	var transaction *TransactionError
+	if !errors.Is(err, model.ErrNotFound) || completion.Outcome != TransactionNotCommitted || !errors.As(err, &transaction) || transaction.CleanupFailed {
+		t.Fatalf("foreign writer: completion=%+v err=%v", completion, err)
+	}
+	read(expected("2", updated.UpdatedAt, 7))
+}
+
 func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	database := workerStorage(t)
 	admin, member, project := testutil.ProjectMembershipFixture(t, database)
