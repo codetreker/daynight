@@ -1,6 +1,7 @@
 import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt, type ImageError, type ImageLocator, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type ValidatedImage } from "../../../session/image-values.js";
 import type { NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
 import { nativeEntryId } from "./projection.js";
+import type { NativeImageProjectionState, NativeInputPublicationView } from "../media/native-publication-types.js";
 
 export type NativeImagePayload =
   | { kind: "resource"; resourceId: string }
@@ -18,7 +19,7 @@ export type NativeImageSlot = {
   original?: { imageId: string; resourceId: string };
 };
 type Part = ImagePart | ImageUnavailablePart;
-type Saved = { request: ImageCaptureRequest; index: number; waitingForSource: boolean; phase: "new" | "query" | "reserved" | "commit" | "settled"; unknownAction: "register" | "commit" | "failure" | null; part: Part; validated: ValidatedImage | null };
+type Saved = NativeImageProjectionState;
 type Pending = { saved: Saved; slot: NativeImageSlot; key: string; released: boolean };
 
 const pendingPart = (imageId: string, label: string, error: ImageError = { code: "capture_pending", message: "The original image is being saved." }): ImageUnavailablePart => ({ type: "image_unavailable", imageId, label, error });
@@ -36,6 +37,62 @@ export class ProviderImageProjector {
   private timer: NodeJS.Timeout | null = null;
   private readonly controller = new AbortController();
   constructor(private readonly options: ProviderOptions) {}
+
+  /** Consume every unsubmitted lease, retaining failed removals for close. */
+  discard(slots: readonly NativeImageSlot[]): void {
+    const failures: unknown[] = [];
+    for (const slot of slots) try { this.releasePayload(slot.payload); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Unsubmitted native image leases could not be released.");
+  }
+
+  /** Adopt the owner's current commit without publishing its entry or occurrences again. */
+  adoptCommitted(view: NativeInputPublicationView, payloads: readonly NativeImageSlot[] = []): void {
+    const handled = new Set<NativeImageSlot>(), failures: unknown[] = [];
+    const release = (slot: NativeImageSlot) => { handled.add(slot); try { this.releasePayload(slot.payload); } catch (error) { failures.push(error); } };
+    if (this.stopped) {
+      for (const slot of payloads) release(slot);
+      if (failures.length) throw new AggregateError(failures, "Stopped native image leases could not be released.");
+      return;
+    }
+    try {
+      const restored = structuredClone(view), indexes = new Set<number>(), images = new Set<string>();
+      for (const slot of restored.slots) {
+        const { state: saved, key } = slot, { occurrence, nativeSource } = saved.request, part = restored.entry.content[saved.index];
+        const sourceKey = nativeSource && canonicalImageJson([1, nativeSource, restored.entry.entryId, "content", null, saved.index]);
+        if (!nativeSource || !Number.isSafeInteger(saved.index) || saved.index < 0 || indexes.has(saved.index) || images.has(occurrence.imageId) || occurrence.entryId !== restored.entry.entryId || occurrence.container !== "content" || occurrence.callId !== null || occurrence.sourceKey !== sourceKey || key !== `image-slot:${nativeEntryId(nativeSource.nativeSessionId, sourceKey!)}` || !part || part.type !== "image" && part.type !== "image_unavailable" || part.imageId !== occurrence.imageId || saved.part.imageId !== occurrence.imageId) throw new Error("Committed native image position or state differs from its current entry.");
+        const active = this.pending.get(occurrence.imageId);
+        if (active && (active.key !== key || canonicalImageJson(active.saved.request.occurrence) !== canonicalImageJson(occurrence))) throw new Error("Committed native image cannot replace an active capture identity.");
+        indexes.add(saved.index); images.add(occurrence.imageId);
+      }
+      if (restored.entry.content.some(part => (part.type === "image" || part.type === "image_unavailable") && !images.has(part.imageId))) throw new Error("Committed native image has no capture owner.");
+      const { entrySeq: _entrySeq, ...entry } = restored.entry;
+      this.entries.set(entry.entryId, entry);
+      for (const committed of restored.slots) {
+        const { state: saved, key, label, original } = committed, native = saved.request.nativeSource!;
+        const incoming = payloads.find(slot => !handled.has(slot) && canonicalImageJson(slot.native) === canonicalImageJson(native));
+        const active = this.pending.get(saved.request.occurrence.imageId);
+        if (saved.phase === "settled" && canonicalImageJson(restored.entry.content[saved.index]) === canonicalImageJson(saved.part)) {
+          if (active) { active.saved = saved; this.retire(active); }
+          if (incoming) release(incoming);
+          continue;
+        }
+        const locator = saved.request.locator;
+        const fallback: NativeImagePayload = original ? { kind: "resource", resourceId: original.resourceId } : locator.kind === "resource" ? { kind: "resource", resourceId: locator.resourceId } : locator.kind === "local" || locator.kind === "external" ? { kind: "source", locator } : { kind: "pending" };
+        const replace = !active || active.slot.payload.kind === "pending" && incoming && incoming.payload.kind !== "pending";
+        const payload = original ? fallback : replace && incoming ? incoming.payload : active?.slot.payload ?? fallback;
+        if (incoming) { if (payload === incoming.payload) handled.add(incoming); else release(incoming); }
+        const slot: NativeImageSlot = { index: saved.index, label, native, payload, ...(original ? { original } : {}) };
+        const pending = active ?? { saved, slot, key, released: false };
+        pending.saved = saved; pending.slot = slot;
+        if (replace) pending.released = false;
+        this.pending.set(saved.request.occurrence.imageId, pending);
+        this.resolvePending(pending);
+      }
+      this.acknowledged();
+    } catch (error) { failures.push(error); }
+    finally { for (const slot of payloads) if (!handled.has(slot)) release(slot); }
+    if (failures.length) throw new AggregateError(failures, "Committed native image resources could not be adopted.");
+  }
 
   publish(input: ProviderEntry, slots: readonly NativeImageSlot[] = []): void {
     if (this.stopped) {
@@ -131,12 +188,17 @@ export class ProviderImageProjector {
     saved.waitingForSource = false; this.save(pending);
   }
   private emitPart(pending: Pending): void {
-    const { occurrence } = pending.saved.request, entry = this.entries.get(occurrence.entryId);
+    const { occurrence } = pending.saved.request, patch = this.options.imageRuntime?.patchNativeImagePart;
+    if (patch) {
+      const { entrySeq: _entrySeq, ...entry } = patch(occurrence, pending.saved.part);
+      this.entries.set(entry.entryId, entry); return;
+    }
+    const entry = this.entries.get(occurrence.entryId);
     if (!entry) return;
     const content = contentOf(entry); if (!content) return;
     const parts = content.map(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId ? pending.saved.part : part);
     const updated = entry.kind === "tool_call" ? { ...entry, output: parts } : { ...entry, content: parts } as ProviderEntry;
-    this.entries.set(entry.entryId, updated); this.options.onTimeline(updated);
+    this.options.onTimeline(updated); this.entries.set(entry.entryId, updated);
   }
   private releasePayload(payload: NativeImagePayload): void {
     if (payload.kind !== "file") return;
@@ -161,8 +223,18 @@ export class ProviderImageProjector {
   }
   private async capture(pending: Pending): Promise<void> {
     const { options } = this, { request } = pending.saved;
-    if (pending.saved.phase === "settled") { this.retire(pending); return; }
-    if (pending.slot.payload.kind === "pending") return;
+    if (pending.saved.phase === "settled") {
+      try {
+        // The known receipt may precede either durable state or timeline
+        // projection. Retry only these writes, never its capture or source IO.
+        this.save(pending);
+        const entry = this.entries.get(request.occurrence.entryId), part = entry && contentOf(entry)?.[pending.saved.index];
+        if (canonicalImageJson(part) !== canonicalImageJson(pending.saved.part)) this.emitPart(pending);
+        this.retire(pending);
+      } catch { this.scheduleQuery(); }
+      return;
+    }
+    if (pending.slot.payload.kind === "pending" && pending.saved.phase === "new") return;
     if (!options.imageRuntime || !options.registerImageCapture || !options.queryImageCapture || !options.stageImageCapture || !options.commitImageCapture || !options.failImageCapture) {
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "component_unsupported", message: "The native image capture component is unavailable." });
       this.emitPart(pending); this.release(pending); this.pending.delete(request.occurrence.imageId); return;
@@ -184,6 +256,7 @@ export class ProviderImageProjector {
       if (this.stopped) return;
       if (pending.saved.phase === "reserved") {
         if (!pending.saved.validated) {
+          if (pending.slot.payload.kind === "pending") return;
           let payload = pending.slot.payload;
           if (payload.kind === "deferred" || payload.kind === "source") {
             const deferred = payload.kind === "deferred" ? payload : null;
@@ -223,11 +296,12 @@ export class ProviderImageProjector {
       }
       this.scheduleQuery();
     } catch {
+      if ((pending.saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "capture_unknown", message: "The original image capture result is unknown." });
-      this.save(pending); this.emitPart(pending);
       // Reconciliation retains the same capture and attempt. It never repeats
       // register or commit after a response with an unknown outcome.
       this.scheduleQuery();
+      this.save(pending); this.emitPart(pending);
     }
   }
   private scheduleQuery(): void {

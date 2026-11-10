@@ -1,3 +1,4 @@
+import { createNativeInputPublication } from "./media/native-publication.js";
 import { createImageCaptureSource } from "./media/capture-source.js";
 import { createNativeImageState } from "./media/native-state.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
@@ -5,8 +6,8 @@ import { createImageHistorySource } from "./media/history-source.js";
 import { openControllerMediaStore, type ControllerMediaStore } from "./media/preparations.js";
 import type { ImageDecoder } from "./media/image-decoder.js";
 import { createHash } from "node:crypto";
-import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
-import type { SessionCommand } from "../../session/protocol.js";
+import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
+import type { SessionCommand, TimelineEntry } from "../../session/protocol.js";
 import { parseStartupObservation, type StartupObservation } from "../../session/startup.js";
 import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
@@ -91,14 +92,19 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
     }
     if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
-    pendingContent = openPendingContent(file, ticket.sessionId);
-    if (existing === undefined && (pendingContent.entries.size !== 0 || pendingContent.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
+    pendingContent = openPendingContent(file, ticket.sessionId, db);
+    if (existing === undefined && (pendingContent.hasRetainedEntries() || pendingContent.entries.size !== 0 || pendingContent.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
     reconcilePendingContent(db, pendingContent);
     },
   });
   finalizePendingMigration(db, pendingContent);
   const metadataBudget = controllerMetadataBudget(file, db);
+  let quarantined = false;
+  const assertUsable = (): void => { if (quarantined) throw new Error("Controller journal has an unresolved transaction; independent recovery is required."); };
+  const quarantine = (_cause: unknown): void => { quarantined = true; };
   const transaction = <T>(action: () => T, mode: "deferred" | "immediate"): T => {
+    assertUsable();
+    const nested = db.inTransaction;
     let failed = false, primary: unknown;
     try {
       return db.transaction(() => {
@@ -106,6 +112,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
         catch (cause) { failed = true; primary = cause; throw cause; }
       })[mode]();
     } catch (cause) {
+      if (!nested && db.open && db.inTransaction) quarantine(cause);
       if (failed && cause !== primary) throw new AggregateError([primary, cause], "Controller journal operation and rollback failed.");
       throw cause;
     }
@@ -123,7 +130,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
   const outboxBytes = (): number => read(() => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes);
-  const assertInputCapacity = (): void => { metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
+  const assertInputCapacity = (): void => { assertUsable(); metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
   const localContent = createLocalSessionContent(pendingContent, ticket.sessionId, { read, write: atomic });
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
     if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
@@ -147,14 +154,74 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   });
   let closed = false;
   let mediaInstance: ControllerMediaStore | undefined;
-  const media = () => mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory);
+  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
+  const projectTimeline = (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+    metadataBudget.assert(Buffer.byteLength(JSON.stringify(entry)) * 2 + 16384, true);
+    const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
+    void ignored; void ignoredSequence;
+    const originals = db.prepare("SELECT i.image_id,i.resource_id,i.part_index FROM native_input_publication_images i JOIN native_input_publications p ON p.operation_id=i.operation_id WHERE json_extract(p.value,'$.receipt.identity.entryId')=?").all(entry.entryId) as { image_id: string; resource_id: string; part_index: number }[];
+    for (const original of originals) {
+      const part = entry.kind === "user_message" ? entry.content[original.part_index] : undefined;
+      if (!part || part.type !== "image" && part.type !== "image_unavailable" || part.imageId !== original.image_id || part.type === "image" && part.resourceId !== original.resource_id) throw new Error("Timeline update cannot move or replace a committed original image association.");
+    }
+    const contentHash = controllerPayloadHash(content);
+    const previous = pendingContent.getEntry(entry.entryId);
+    const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
+    if (previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
+    const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
+    const entrySeq = previous?.entrySeq ?? pendingContent.nextEntrySequence();
+    const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
+    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
+    // The immutable candidate is visible only through the transaction's committed pointer.
+    const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
+    pendingContent.saveEntry(durableEntry);
+    return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
+  });
+  const publishTimelineSnapshot = (entry: TimelineEntry): ControllerOutboxEvent => atomic(() => {
+    const current = pendingContent.getEntry(entry.entryId);
+    if (!current || controllerPayloadHash(current) !== controllerPayloadHash(entry)) throw new Error("Timeline publication requires its current committed content.");
+    const { entrySeq, ...content } = entry;
+    const payload = options.contentOwnedLocally ? { ...content, entrySeq } : content;
+    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
+    return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
+  });
+  const registerImageOccurrence = (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
+    metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
+    const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
+    if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
+    const entry = pendingContent.getEntry(occurrence.entryId);
+    if (!entry || occurrence.container === "tool_output" && (entry.kind !== "tool_call" || entry.callId !== occurrence.callId) || occurrence.container === "reasoning" && entry.kind !== "reasoning" || occurrence.container === "content" && !["user_message", "assistant_message"].includes(entry.kind)) throw new Error("Image occurrence has no durable original position.");
+    const value = JSON.stringify(occurrence), source = nativeSource === null ? null : JSON.stringify(nativeSource);
+    const previous = db.prepare("SELECT occurrence,native_source,source_sequence,acknowledged FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null; source_sequence: string; acknowledged: number } | undefined;
+    if (previous) {
+      if (previous.occurrence !== value || previous.native_source !== source) throw new Error("Image occurrence cannot move from its original source.");
+      return { occurrence, sourceSequence: previous.source_sequence, acknowledged: previous.acknowledged === 1 };
+    }
+    const sequence = (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
+    const ack = (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
+    const acknowledged = BigInt(ack) >= BigInt(sequence);
+    db.prepare("INSERT INTO image_occurrences VALUES(?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0);
+    return { occurrence, sourceSequence: sequence, acknowledged };
+  });
   return {
+    ...createNativeInputPublication({ db, ticket, pendingContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
     ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
     ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
-    getSnapshot, patchSnapshot, getOperation, assertInputCapacity,
+    getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
+    patchNativeImagePart: (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
+      const occurrence = parseImageOccurrence(input);
+      const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
+      if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
+      const entry = pendingContent.getEntry(occurrence.entryId);
+      const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
+      if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
+      const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
+      projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
+      return pendingContent.getEntry(entry.entryId)!;
+    }),
     providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
       const previous = row ? parseProviderImageCapabilities(JSON.parse(row.value)) : null;
@@ -215,25 +282,8 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
-    hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.entries.has(entryId)),
-    projectTimeline: (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
-      metadataBudget.assert(Buffer.byteLength(JSON.stringify(entry)) * 2 + 16384, true);
-      const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
-      void ignored; void ignoredSequence;
-      const contentHash = controllerPayloadHash(content);
-      const previous = pendingContent.entries.get(entry.entryId);
-      const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
-      if (previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
-      const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
-      const entrySeq = previous?.entrySeq ?? pendingContent.nextEntrySequence();
-      const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
-      parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
-      // Durable file first: a failed SQL outbox commit still rehydrates the latest content.
-      const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
-      pendingContent.saveEntry(durableEntry);
-      db.prepare("INSERT INTO content_index VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,entry_seq=excluded.entry_seq").run(entry.entryId, controllerPayloadHash(durableEntry), revision, entrySeq);
-      return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
-    }),
+    hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.hasEntry(entryId)),
+    projectTimeline,
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload"> & { intent?: SessionCommand }): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");
       const images = input.kind === "send_message" && input.payload !== null && typeof input.payload === "object" && "content" in input.payload && Array.isArray(input.payload.content) && input.payload.content.some((part: unknown) => part !== null && typeof part === "object" && "type" in part && part.type === "image");
@@ -263,24 +313,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       if (!previous) db.prepare("INSERT INTO input_observations VALUES(?,?)").run(observation.operationId, value);
       return true;
     }),
-    registerImageOccurrence: (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
-      metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
-      const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
-      if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
-      const entry = pendingContent.entries.get(occurrence.entryId);
-      if (!entry || occurrence.container === "tool_output" && (entry.kind !== "tool_call" || entry.callId !== occurrence.callId) || occurrence.container === "reasoning" && entry.kind !== "reasoning" || occurrence.container === "content" && !["user_message", "assistant_message"].includes(entry.kind)) throw new Error("Image occurrence has no durable original position.");
-      const value = JSON.stringify(occurrence), source = nativeSource === null ? null : JSON.stringify(nativeSource);
-      const previous = db.prepare("SELECT occurrence,native_source,source_sequence,acknowledged FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null; source_sequence: string; acknowledged: number } | undefined;
-      if (previous) {
-        if (previous.occurrence !== value || previous.native_source !== source) throw new Error("Image occurrence cannot move from its original source.");
-        return { occurrence, sourceSequence: previous.source_sequence, acknowledged: previous.acknowledged === 1 };
-      }
-      const sequence = (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
-      const ack = (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
-      const acknowledged = BigInt(ack) >= BigInt(sequence);
-      db.prepare("INSERT INTO image_occurrences VALUES(?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0);
-      return { occurrence, sourceSequence: sequence, acknowledged };
-    }),
+    registerImageOccurrence,
     imageOccurrenceAcknowledged: (imageId: string): boolean => read(() => (db.prepare("SELECT acknowledged FROM image_occurrences WHERE image_id=?").get(imageId) as { acknowledged: number } | undefined)?.acknowledged === 1),
     markDispatching: (operationId: string): ControllerOperation => atomic(() => {
       const operation = getOperation(operationId); if (operation === null || operation.state !== "accepted") throw new Error("Controller operation cannot replay a possible native dispatch.");
@@ -308,7 +341,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     close: (): void => {
       if (closed) return;
-      try { closeJournal(db, db.name, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
+      try { if (quarantined) { closeSqliteDatabase(db, { file: db.name, format: controllerJournalFormat }, "unknown"); return; } closeJournal(db, db.name, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
       finally { closed = !db.open; }
     },
   };

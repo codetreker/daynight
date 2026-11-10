@@ -1,3 +1,4 @@
+import { restoreCanonicalInputIntent } from "../../../src/commands/controller/media/input-intent.js";
 import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -106,5 +107,25 @@ test("final history evidence uses the exact durable epoch and acknowledged sourc
     expect(store.getHistoryCheckpoint()).toEqual({ historyEpoch, sourceThrough: event.sequence });
     store.markProjectionGap("Native projection is incomplete.");
     expect(() => store.recordHistoryCheckpoint({ historyEpoch, sourceThrough: event.sequence })).toThrow();
+  } finally { store.close(); }
+});
+
+
+test("provider restoration reads the exact persisted image intent without a transport request ID", async () => {
+  const { filename, ticket, command } = await fixture();
+  let store = openControllerLifecycleStore(filename, ticket);
+  store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
+  store.markDispatching(command.operationId); store.recordOperation(command.operationId, "unknown"); store.close();
+  store = openControllerLifecycleStore(filename, ticket);
+  try {
+    const intent = store.getInputIntent(command.operationId)!;
+    expect(JSON.parse(intent.canonical)).not.toHaveProperty("requestId");
+    const restored = restoreCanonicalInputIntent(intent, command.operationId);
+    expect(restored).toEqual({ ...command, requestId: command.operationId });
+    expect(() => restoreCanonicalInputIntent(intent, randomUUID())).toThrow(/original operation/);
+    expect(() => restoreCanonicalInputIntent({ ...intent, sha256: "b".repeat(64) }, command.operationId)).toThrow(/original operation/);
+    expect(() => restoreCanonicalInputIntent({ ...intent, canonical: intent.canonical + " " }, command.operationId)).toThrow(/original operation/);
+    expect(store.getInputIntent(command.operationId)).toEqual(intent);
+    expect(store.getOperation(command.operationId)?.state).toBe("unknown");
   } finally { store.close(); }
 });

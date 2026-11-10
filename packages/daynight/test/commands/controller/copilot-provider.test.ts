@@ -548,8 +548,22 @@ test("Copilot image acceptance remains unknown if its durable callback does not 
 
 test("a timed-out Copilot image send keeps its original Promise and appends late original provenance without replay", async () => {
   const f = await imageFixture(); let provider;
+  const { openControllerLifecycleStore } = await import("../../../src/commands/controller/lifecycle-store.js");
+  const { observeNativeInput } = await import("../../../src/commands/controller/recovery.js");
+  const ticket: import("../../../src/commands/controller/launch-ticket.js").ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "copilot", cwd: f.root, nativeHome: path.join(f.root, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const journal = openControllerLifecycleStore(path.join(f.root, "journal.sqlite"), ticket, { contentOwnedLocally: true });
+  const { readFile } = await import("node:fs/promises");
+  journal.saveResource({ resourceId: f.image.resourceId, revision: "1", status: "available", name: "original.png", mediaType: "image/png", byteLength: f.image.byteLength, sha256: f.image.sha256, width: 1, height: 1, frameCount: 1, error: null }, await readFile(f.image.localPath));
+  const payload = { content: [{ type: "text" as const, text: "Inspect the image" }, { type: "image" as const, imageId: f.image.imageId, resourceId: f.image.resourceId, uploadId: randomUUID(), sha256: f.image.sha256, byteLength: f.image.byteLength }], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: null }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
+  const command: import("../../../src/session/protocol.js").SessionCommand = { protocol: "daynight.session.v1", contentRevision: 2, requestId: randomUUID(), operationId: f.operationId, sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1", kind: "send_message", payload };
+  journal.prepareOperation({ operationId: f.operationId, kind: "send_message", payload, intent: command }); journal.markDispatching(f.operationId);
+  Object.assign(f.options.imageRuntime!, { getIntent: (operationId: string) => { const intent = journal.getInputIntent(operationId), operation = journal.getOperation(operationId); return intent && operation ? { command: JSON.parse(intent.canonical), sha256: intent.sha256, state: operation.state } : null; }, readState: journal.readNativeImageState, writeState: journal.writeNativeImageState, publishNativeInputAssociation: journal.publishNativeInputAssociation, queryNativeInputAssociation: journal.queryNativeInputAssociation });
+  const timeline = f.options.onTimeline; f.options.onTimeline = entry => { journal.projectTimeline(entry); timeline(entry); };
+  f.options.onInputObserved = observation => { f.observed(); return observeNativeInput(journal, observation); };
+  f.options.onImageOccurrence = (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged;
+  f.options.imageOccurrenceAcknowledged = imageId => journal.imageOccurrenceAcknowledged(imageId);
   try {
-    provider = await openCopilotProvider(f.options); let acknowledge!: (id: string) => void;
+    provider = await openCopilotProvider(f.options); journal.patchSnapshot({ nativeSessionId: provider.nativeSessionId }); let acknowledge!: (id: string) => void;
     sdk.imageSend.mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
     vi.useFakeTimers();
     const sending = provider.send(f.input, f.operationId, null), rejected = expect(sending).rejects.toThrow("unknown");
@@ -559,9 +573,9 @@ test("a timed-out Copilot image send keeps its original Promise and appends late
     await vi.advanceTimersByTimeAsync(60_001); await rejected; expect(f.observed).not.toHaveBeenCalled();
     acknowledge("late-native"); await vi.advanceTimersByTimeAsync(0);
     expect(f.observed).toHaveBeenCalledOnce(); expect(sdk.imageSend).toHaveBeenCalledOnce();
-    const after = fixture.entries.filter(entry => entry.kind === "user_message").at(-1) as any;
+    const after = journal.readTimeline({ historyEpoch: "epoch", direction: "tail", cursor: null, limit: 10 }).items.find(entry => entry.kind === "user_message") as any;
     expect(after.content).toHaveLength(3); expect(after.content[1].imageId).toBe(before); expect(after.content[2].imageId).toBe(f.image.imageId);
-  } finally { await provider?.close(); vi.useRealTimers(); await rm(f.root, { recursive: true, force: true }); }
+  } finally { await provider?.close(); vi.useRealTimers(); journal.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
 

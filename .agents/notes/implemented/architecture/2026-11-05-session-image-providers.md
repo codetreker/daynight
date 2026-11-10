@@ -69,13 +69,14 @@ history and resource-limit evidence. Bounded readers cost schema maintenance and
 platform validation; RSS monitoring must not be described as hard isolation.
 The shared journal remains the only durable identity owner.
 
-Copilot's durable publication plan currently precedes separate timeline and
-occurrence materialization. It can recover an interrupted publication, but does
-not satisfy the design's atomic alias, reference and entry-revision requirement:
-readers still consume independently written pending-content files. Closing this
-gap requires a shared journal commit-visibility mechanism; wrapping provider
-callbacks in SQLite transactions cannot roll back those file writes. The atomic
-requirement remains in force.
+Copilot retains its accepted native identity separately from publication. The
+shared [content commit owner](2026-11-10-atomic-content-publication.md) publishes
+aliases, original references, occurrences, the actual entry revision and outbox
+sequence together. The original implementation persisted a recoverable plan
+before separate timeline and occurrence writes; that preserved recovery facts
+but could not meet the atomic requirement. Immutable candidate files and a
+SQLite commit pointer now govern every content reader. The Provider adopts the
+current committed view rather than replaying an older entry draft.
 
 Provider aliases, cursors and occurrence state use the existing bounded metadata
 store. Wire spools charge actual bytes to the shared media ledger and retain their

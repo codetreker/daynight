@@ -1,5 +1,6 @@
+import type { NativeInputPublicationIdentity, NativeInputPublicationRequest, NativeInputPublicationResult, NativeInputPublicationQuery } from "../media/native-publication-types.js";
 import type { CaptureStageInput } from "../media/preparations.js";
-import type { ImageCaptureRequest, ImageCaptureReceipt, ImageError, ImageOccurrence, NativeImageSource, InputObservation, ValidatedImage, ProviderImageCapabilities } from "../../../session/image-values.js";
+import type { ImagePart, ImageUnavailablePart, ImageCaptureRequest, ImageCaptureReceipt, ImageError, ImageOccurrence, NativeImageSource, InputObservation, ValidatedImage, ProviderImageCapabilities } from "../../../session/image-values.js";
 import type { NativeMediaSpool } from "../media/native-spool.js";
 import type { SessionCommand, OperationState } from "../../../session/protocol.js";
 import type { SessionControls } from "../../../session/controls.js";
@@ -13,6 +14,11 @@ export type NativeImageFile = { kind: "file"; path: string; byteLength: string; 
 export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEntry ? Omit<T, "entrySeq"> : never : never;
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null; images?: Omit<ProviderImageCapabilities, "revision"> };
 export type NativeImageRuntime = {
+  /** Patch one original image on the current committed entry, preserving late associations. */
+  patchNativeImagePart?(occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry;
+  /** Commit and query by the original accepted identity; unknown never authorizes another native send. */
+  publishNativeInputAssociation?(request: NativeInputPublicationRequest): NativeInputPublicationResult;
+  queryNativeInputAssociation?(identity: NativeInputPublicationIdentity): NativeInputPublicationQuery;
   getIntent(operationId: string): { sha256: string; command: SessionCommand; state: OperationState } | null;
   readState(key: string): unknown;
   writeState(key: string, value: unknown): void;

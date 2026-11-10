@@ -10,8 +10,9 @@ import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion, upgradeSqlite } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const roots: string[] = [], readers: Database.Database[] = [];
+const pending = (file: string, sessionId: string) => { const db = new Database(file, { readonly: true }); readers.push(db); return openPendingContent(file, sessionId, db); };
+afterEach(async () => { vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -109,36 +110,38 @@ test("an unknown manifest response queries the same identity and retry preserves
  const f=await fixture(),bodies:string[]=[];let fail=true;
  const receiver=archiveTestReceiver({bodies,sourceThrough:f.sourceThrough,fail:()=>fail});
  await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request})).rejects.toThrow("503");
- expect(openPendingContent(f.journalPath,f.ticket.sessionId).entries.size).toBe(1);fail=false;
+ expect(pending(f.journalPath,f.ticket.sessionId).entries.size).toBe(1);
+ // A crash candidate has no SQL commit and cannot change the original upload.
+ await writeFile(path.join(`${f.journalPath}.pending-content/entries`, `${randomUUID()}.json`), "incomplete candidate");fail=false;
  await uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request});expect(bodies).toHaveLength(2);expect(bodies[1]).toBe(bodies[0]);
 });
 test("lost pending entry cannot become a ready empty archive", async () => {
-  const f = await fixture(); const directory = `${f.journalPath}.pending-content/timeline`;
+  const f = await fixture(); const directory = `${f.journalPath}.pending-content/entries`;
   await unlink(path.join(directory, (await readdir(directory))[0]!));
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: emptyStatus }));
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("incomplete");
   expect(request.mock.calls.every(call => call[1]?.method === "POST")).toBe(true);
 });
 test("legacy completed SQL history migrates atomically and is readable after worktree deletion", async () => {
-  const f = await fixture(); const content = openPendingContent(f.journalPath, f.ticket.sessionId);
+  const f = await fixture(); const content = pending(f.journalPath, f.ticket.sessionId);
   const original = content.entries.get(f.entry.entryId)!;
   const db = new Database(f.journalPath);
-  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
+  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
   db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
   db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate();
-  const migrated = openPendingContent(f.journalPath, f.ticket.sessionId);
+  const migrated = pending(f.journalPath, f.ticket.sessionId);
   expect(migrated.entries.get(original.entryId)).toEqual(original);
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('projection','resources')").all()).toEqual([]);
   db.close();
-  expect(openPendingContent(f.journalPath, f.ticket.sessionId).entries.get(original.entryId)).toEqual(original);
+  expect(pending(f.journalPath, f.ticket.sessionId).entries.get(original.entryId)).toEqual(original);
 });
 test("failed legacy migration retains SQL originals and safely resumes an already written file", async () => {
-  const f = await fixture(); const db = new Database(f.journalPath); const content = openPendingContent(f.journalPath, f.ticket.sessionId);
+  const f = await fixture(); const db = new Database(f.journalPath); const content = pending(f.journalPath, f.ticket.sessionId);
   const original = content.entries.get(f.entry.entryId)!;
-  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
+  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
   db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
@@ -148,15 +151,17 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate();
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); db.close();
 });
-test("file committed before an outbox rollback survives restart with relay resynchronization", async () => {
+test("an outbox rollback preserves the committed timeline in memory and after restart", async () => {
   const f = await fixture();
   let store = openControllerLifecycleStore(f.journalPath, f.ticket, { maxOutboxBytes: 256 });
   const next = { ...f.entry, content: [{ type: "text" as const, text: "x".repeat(1000) }] };
-  expect(() => store.projectTimeline(next)).toThrow("capacity"); store.close();
+  expect(() => store.projectTimeline(next)).toThrow("capacity");
+  expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 }).items[0]).toMatchObject({ content: f.entry.content, revision: "1", entrySeq: "1" });
+  store.close();
   store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
-  expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 }).items[0]).toMatchObject({ content: next.content, revision: "2", entrySeq: "1" });
+  expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 }).items[0]).toMatchObject({ content: f.entry.content, revision: "1", entrySeq: "1" });
   store.acknowledgeEvents(store.getLastSourceSequence());
-  expect(store.drainProjectionGap()).toMatchObject({ payload: { kind: "gap" } }); store.close();
+  expect(store.drainProjectionGap()).toBeNull(); store.close();
 });
 
 test("a delivered relay gap remains a permanent incomplete-archive marker", async () => {
@@ -174,7 +179,7 @@ test("archive migrates an original resource into the common blob model and rejec
  const bodies:string[]=[];const receiver=archiveTestReceiver({bodies,sourceThrough:through,onManifest:body=>Response.json({archive:{state:"ready",schemaVersion:3,completeness:"complete",sha256:"0".repeat(64),byteLength:String(Buffer.byteLength(body)),errorCode:null}})});
  await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request})).rejects.toThrow("matching integrity");
  const manifest=JSON.parse(bodies[0]!);expect(manifest.resources[0].resource).toEqual(resource);expect(manifest.resources[0].blobId).toBeTypeOf("string");expect(manifest.resources[0]).not.toHaveProperty("data");expect(receiver.files.get(manifest.resources[0].blobId)?.equals(bytes)).toBe(true);
- expect(openPendingContent(f.journalPath,f.ticket.sessionId).resources.get(resource.resourceId)?.data).toBeNull();
+ expect(pending(f.journalPath,f.ticket.sessionId).resources.get(resource.resourceId)?.data).toBeNull();
 });
 test("stopped archival retains and retries an available zero-byte legacy resource", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
@@ -215,7 +220,8 @@ test("timeline growth keeps file inventory writes bounded while SQL detects dele
   expect(after.size).toBe(before.size);
   expect(after.mtimeMs).toBe(before.mtimeMs);
   store.close();
-  const files = await readdir(`${f.journalPath}.pending-content/timeline`);
-  await unlink(path.join(`${f.journalPath}.pending-content/timeline`, files[6]!));
+  const db = new Database(f.journalPath, { readonly: true });
+  const file = (db.prepare("SELECT content_file FROM content_index ORDER BY entry_seq LIMIT 1 OFFSET 6").get() as { content_file: string }).content_file; db.close();
+  await unlink(path.join(`${f.journalPath}.pending-content/entries`, file));
   expect(() => openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true })).toThrow("incomplete");
 });

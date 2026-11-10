@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { expect, test, vi } from "vitest";
 import { CopilotImageInputs } from "../../../src/commands/controller/providers/copilot-image-input.js";
 import type { NativeInput, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import { nativeEntryId } from "../../../src/commands/controller/providers/projection.js";
+import type { NativeInputPublicationRequest } from "../../../src/commands/controller/media/native-publication-types.js";
 
 const fixture = () => {
   const operationId = randomUUID(), sessionId = randomUUID(), messageId = randomUUID();
@@ -53,4 +55,44 @@ test("matching an event alone does not publish an alias before its durable publi
   const f = fixture(); f.inputs.prepare(f.input, f.operationId, null); f.inputs.accept(f.operationId, f.messageId);
   expect(f.inputs.match(f.event)).not.toBeNull(); f.inputs.finishTurn();
   expect(f.inputs.profileAllowed).toBe(false); expect(f.inputs.pendingAccepted()).toHaveLength(1);
+});
+
+const publication = (f: ReturnType<typeof fixture>) => {
+  const nativeSource = { provider: "copilot" as const, nativeSessionId: f.sessionId, nativeMessageId: f.messageId, nativePartId: "attachment/0" };
+  return { raw: f.event, seed: { entry: { kind: "user_message" as const, entryId: nativeEntryId(f.sessionId, `:user:${f.messageId}`), content: [{ type: "text" as const, text: "same" }, { type: "image_unavailable" as const, imageId: randomUUID(), label: "Native image", error: { code: "capture_pending", message: "Pending" } }] }, nativeSlots: [{ index: 1, nativeSource, label: "Native image" }] }, originals: [{ imageId: f.image.imageId, resourceId: f.image.resourceId, nativeSlotIndex: 1, appendNativeSource: { ...nativeSource, nativePartId: "original/0" } }] };
+};
+
+test("an unknown publication only queries its original identity and retains intent across reopen", () => {
+  const f = fixture(); f.inputs.prepare(f.input, f.operationId, null); const match = f.inputs.accept(f.operationId, f.messageId), intent = publication(f);
+  const unknown = { state: "unknown" as const, error: { code: "publication_unknown" as const, message: "Lost commit response" } };
+  const query = vi.fn().mockReturnValueOnce({ state: "absent" }).mockReturnValue(unknown), publish = vi.fn((_request: NativeInputPublicationRequest) => unknown);
+  Object.assign(f.options.imageRuntime!, { publishNativeInputAssociation: publish, queryNativeInputAssociation: query });
+  expect(f.inputs.associate(match, intent)).toEqual(unknown); expect(publish).toHaveBeenCalledOnce();
+  const identity = publish.mock.calls[0]![0].identity;
+  const reopened = new CopilotImageInputs(f.options, f.sessionId); reopened.restoreAccepted();
+  expect(reopened.associate(match, intent)).toEqual(unknown);
+  expect(publish).toHaveBeenCalledOnce(); expect(query).toHaveBeenLastCalledWith(identity);
+  reopened.finishTurn(); expect(reopened.profileAllowed).toBe(true); expect(reopened.pendingAccepted()).toHaveLength(1);
+});
+
+test("a lost publication call is not replayed until the original query proves absence", () => {
+  const f = fixture(); f.inputs.prepare(f.input, f.operationId, null); const match = f.inputs.accept(f.operationId, f.messageId), intent = publication(f);
+  const query = vi.fn().mockReturnValueOnce({ state: "absent" }).mockImplementationOnce(() => { throw new Error("Journal unreadable"); }).mockReturnValue({ state: "absent" });
+  const publish = vi.fn().mockImplementationOnce(() => { throw new Error("Commit outcome lost"); }).mockReturnValue({ state: "not_committed", error: { code: "publication_unavailable", message: "Original missing" } });
+  Object.assign(f.options.imageRuntime!, { publishNativeInputAssociation: publish, queryNativeInputAssociation: query });
+  expect(f.inputs.associate(match, intent)).toMatchObject({ state: "unknown" });
+  expect(f.inputs.associate(match, intent)).toMatchObject({ state: "unknown" }); expect(publish).toHaveBeenCalledOnce();
+  expect(f.inputs.associate(match, intent)).toMatchObject({ state: "not_committed" }); expect(publish).toHaveBeenCalledTimes(2);
+  expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0]);
+});
+
+test("a legacy provider publication is recovery intent and cannot stand in for the shared receipt", () => {
+  const f = fixture(); f.inputs.prepare(f.input, f.operationId, null); const match = f.inputs.accept(f.operationId, f.messageId), intent = publication(f);
+  const saved = [...f.state.entries()].find(([key]) => key.startsWith("copilot:input:"))!;
+  f.state.set(saved[0], { ...saved[1] as object, publication: { nativeEventId: f.messageId, raw: f.event, entry: intent.seed.entry, slots: [] } });
+  const query = vi.fn(() => ({ state: "absent" })), publish = vi.fn(() => ({ state: "unknown", error: { code: "publication_unknown", message: "Lost" } }));
+  Object.assign(f.options.imageRuntime!, { publishNativeInputAssociation: publish, queryNativeInputAssociation: query });
+  expect(f.inputs.publication(f.messageId)).toEqual({ state: "absent" }); expect(f.inputs.pendingAccepted()).toHaveLength(1);
+  expect(f.inputs.associate(match, intent)).toMatchObject({ state: "unknown" }); expect(publish).toHaveBeenCalledOnce();
+  expect(f.inputs.publicationIntent(f.messageId)?.request.originals).toEqual(intent.originals);
 });

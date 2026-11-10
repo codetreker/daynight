@@ -4,6 +4,7 @@ import { ProviderImageProjector } from "../../../src/commands/controller/provide
 import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../src/session/image-values.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
+import type { NativeInputPublicationView, NativeImageProjectionState } from "../../../src/commands/controller/media/native-publication-types.js";
 
 const fixture = () => {
   let acknowledged = false;
@@ -221,6 +222,55 @@ test("a local release error cannot suppress the definite staging failure receipt
   expect(f.release).toHaveBeenCalledTimes(2);
 });
 
+test.each(["owner", "legacy"] as const)("a committed capture survives repeated %s metadata patch failures without repeating source or capture RPCs", async mode => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options); f.acknowledge();
+  const timeline = f.options.onTimeline;
+  let failures = 2;
+  const patch = vi.fn((entry: ProviderEntry) => {
+    if (failures-- > 0) throw new Error("Controlled timeline patch failure");
+    timeline(entry);
+    return { ...entry, entrySeq: "1" };
+  });
+  if (mode === "owner") f.options.imageRuntime!.patchNativeImagePart = (occurrence, part) => {
+    const entry = f.entries.at(-1)! as Extract<ProviderEntry, { kind: "user_message" | "assistant_message" }>;
+    return patch({ ...entry, content: entry.content.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value) });
+  };
+  else f.options.onTimeline = entry => {
+    if (entry.kind === "assistant_message" && entry.content[1]?.type === "image") patch(entry);
+    else timeline(entry);
+  };
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    const saved = () => [...f.states.values()][0] as NativeImageProjectionState;
+    expect(saved()).toMatchObject({ phase: "settled", part: { type: "image", resourceId: f.resourceId } });
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable" }, { text: "after" }] });
+    projector.acknowledged(); await projector.settled();
+    expect(saved()).toMatchObject({ phase: "settled", part: { type: "image", resourceId: f.resourceId } });
+    projector.acknowledged(); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(patch).toHaveBeenCalledTimes(3);
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).toHaveBeenCalledOnce(); expect(f.options.commitImageCapture).toHaveBeenCalledOnce(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+  } finally { await projector.close(); }
+});
+
+test("a known capture receipt is persisted again after its first settled-state write fails", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options); f.acknowledge();
+  const write = f.options.imageRuntime!.writeState;
+  let failures = 1;
+  f.options.imageRuntime!.writeState = (key, value) => {
+    if ((value as NativeImageProjectionState).phase === "settled" && failures-- > 0) throw new Error("Controlled settled-state write failure");
+    write(key, value);
+  };
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    expect([...f.states.values()][0]).toMatchObject({ phase: "query" });
+    projector.acknowledged(); await projector.settled();
+    expect([...f.states.values()][0]).toMatchObject({ phase: "settled", part: { type: "image", resourceId: f.resourceId } });
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce(); expect(f.options.commitImageCapture).toHaveBeenCalledOnce(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+  } finally { await projector.close(); }
+});
+
 test("a source discovered after a pending slot uses its final locator before registration", async () => {
   const f = fixture(); f.acknowledge(); const projector = new ProviderImageProjector(f.options);
   f.options.resolveImageCaptureSource = vi.fn(async () => f.slot.payload);
@@ -242,5 +292,65 @@ test("a reopened pending slot registers the discovered source without changing i
     const locator = { kind: "local" as const, path: "/original/final.png", contextId: "same-native-context" };
     projector.publish(f.entry, [{ ...f.slot, payload: { kind: "source", locator } }]); await projector.settled();
     expect(f.options.registerImageCapture).toHaveBeenCalledWith(expect.objectContaining({ locator, occurrence: expect.objectContaining({ imageId }) }));
+  } finally { await projector.close(); }
+});
+
+test("adopting a committed current view emits no timeline or occurrence and retains settled image resources", async () => {
+  const f = fixture(); f.acknowledge(); let projector = new ProviderImageProjector(f.options);
+  projector.publish({ ...f.entry, kind: "user_message" }, [f.slot]); await projector.settled(); await projector.close();
+  const [key, saved] = [...f.states.entries()][0]!;
+  const view: NativeInputPublicationView = { entry: { ...f.entries.at(-1), kind: "user_message", entrySeq: "1", revision: "8" } as NativeInputPublicationView["entry"], slots: [{ key, label: "Native image", state: structuredClone(saved) as NativeImageProjectionState }] };
+  const previous = [...f.calls], release = vi.fn(); projector = new ProviderImageProjector(f.options);
+  try {
+    projector.adoptCommitted(view, [{ ...f.slot, payload: { ...f.slot.payload, release } }]); await projector.settled();
+    expect(f.calls).toEqual(previous); expect(release).toHaveBeenCalledOnce();
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(view.entry).toMatchObject({ revision: "8", content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+
+test("adopted pending positions wait for their existing ACK before native source IO", async () => {
+  const f = fixture(); let projector = new ProviderImageProjector(f.options);
+  projector.publish({ ...f.entry, kind: "user_message" }, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled(); await projector.close();
+  const [key, saved] = [...f.states.entries()][0]!, read = vi.fn(async () => f.slot.payload);
+  const view: NativeInputPublicationView = { entry: { ...f.entries.at(-1), kind: "user_message", entrySeq: "1", revision: "4" } as NativeInputPublicationView["entry"], slots: [{ key, label: "Native image", state: structuredClone(saved) as NativeImageProjectionState }] };
+  const before = [...f.calls]; projector = new ProviderImageProjector(f.options);
+  try {
+    projector.adoptCommitted(view, [{ ...f.slot, payload: { kind: "deferred", read } }]); await projector.settled();
+    expect(f.calls).toEqual(before); expect(read).not.toHaveBeenCalled();
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(read).toHaveBeenCalledOnce(); expect(f.options.registerImageCapture).toHaveBeenCalledWith((saved as NativeImageProjectionState).request);
+  } finally { await projector.close(); }
+});
+
+test("a settled capture repairs only its current committed slot after a crash before timeline projection", async () => {
+  const f = fixture(); let projector = new ProviderImageProjector(f.options);
+  projector.publish({ ...f.entry, kind: "user_message" }, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled(); await projector.close();
+  const [key, state] = [...f.states.entries()][0]!, saved = structuredClone(state) as NativeImageProjectionState;
+  saved.phase = "settled"; saved.waitingForSource = false; saved.part = { type: "image", imageId: saved.request.occurrence.imageId, resourceId: f.resourceId, label: "Native image" };
+  f.states.set(key, saved);
+  const view: NativeInputPublicationView = { entry: { ...f.entries.at(-1), kind: "user_message", entrySeq: "1", revision: "7" } as NativeInputPublicationView["entry"], slots: [{ key, label: "Native image", state: saved }] };
+  const before = [...f.calls]; f.acknowledge(); projector = new ProviderImageProjector(f.options);
+  try {
+    projector.adoptCommitted(view); expect(f.calls).toEqual(before); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, saved.part, { text: "after" }] });
+    expect(f.calls.slice(before.length)).toEqual(["position"]);
+    expect(f.options.registerImageCapture).not.toHaveBeenCalled(); expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+  } finally { await projector.close(); }
+});
+
+test("an adopted unknown capture queries its saved receipt even when native bytes have not replayed", async () => {
+  const f = fixture(); f.acknowledge(); let projector = new ProviderImageProjector(f.options);
+  vi.mocked(f.options.registerImageCapture!).mockRejectedValue(new Error("Controlled lost register response"));
+  projector.publish({ ...f.entry, kind: "user_message" }, [f.slot]); await projector.settled(); await projector.close();
+  const [key, state] = [...f.states.entries()][0]!, saved = structuredClone(state) as NativeImageProjectionState;
+  vi.mocked(f.options.queryImageCapture!).mockResolvedValue({ captureId: saved.request.captureId, attemptId: saved.request.attemptId, revision: "2", occurrence: saved.request.occurrence, state: "committed", resourceId: f.resourceId, resource: null, error: null });
+  const view: NativeInputPublicationView = { entry: { ...f.entries.at(-1), kind: "user_message", entrySeq: "1", revision: "5" } as NativeInputPublicationView["entry"], slots: [{ key, label: "Native image", state: saved }] };
+  projector = new ProviderImageProjector(f.options);
+  try {
+    projector.adoptCommitted(view); await projector.settled();
+    expect(f.options.queryImageCapture).toHaveBeenCalledWith(saved.request.captureId);
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
   } finally { await projector.close(); }
 });

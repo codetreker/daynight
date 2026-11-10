@@ -2,17 +2,17 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import stateVector from "../../session/fixtures/runtime-image-state.json" with { type: "json" };
 import { parseControllerState } from "../../../src/session/controller-protocol.js";
-const f = vi.hoisted(() => ({ callbacks: null as any, options: null as any, acquire: vi.fn(), send: vi.fn(), receipt: vi.fn(), order: [] as string[], state: "accepted", revision: "1", turn: null as string | null, actualState: false }));
+const f = vi.hoisted(() => ({ callbacks: null as any, options: null as any, acquire: vi.fn(), send: vi.fn(), receipt: vi.fn(), order: [] as string[], state: "accepted", revision: "1", turn: null as string | null, actualState: false, storageFault: false, nativeClose: vi.fn(), journalClose: vi.fn(), mediaClose: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (v: string) => v, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: () => { const s: any = new EventEmitter(); s.listen = (_: unknown, cb: () => void) => queueMicrotask(cb); s.close = () => {}; return s; } }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: "codex", cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null }), controllerExecutionDirectory: () => "/private/controller" }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: async () => ({ pid: 1 }), captureProcessProof: async () => ({ pid: 1 }) }));
-vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: async (options: unknown) => { f.options = options; return { send: f.send, close: async () => {} }; } }));
+vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: async (options: unknown) => { f.options = options; return { send: f.send, close: f.nativeClose }; } }));
 vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_: unknown, __: unknown, callbacks: any) => { f.callbacks = callbacks; return { flush: async () => {}, close: () => {}, connected: () => true, authorize: async () => { f.order.push("authorize"); }, receipt: f.receipt }; } }));
-vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => ({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: () => {}, getSnapshot: () => ({ nativeSessionId: "native", initialInputState: "confirmed", activity: "idle", currentTurnId: f.turn, capabilities: { send: true, steer: true, cancel: true, respond: true } }), providerImageCapabilities: (value: object) => f.actualState ? { ...value, revision: "1" } : ({ revision: f.revision, send: "supported", steer: "supported" }), appendEvent: () => {}, prepareOperation: () => ({ operationId: "op", kind: "send_message", state: "accepted" }), media: () => ({ acquireInput: f.acquire }), assertInputCapacity: () => {}, markDispatching: () => { f.order.push("dispatch"); f.state = "dispatching"; }, getOperation: () => ({ state: f.state }), recordOperation: (_: unknown, state: string) => { f.state = state; return { state }; }, close: () => {} }) }));
+vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => ({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: () => { if (f.storageFault) throw new Error("Unresolved journal transaction"); }, getSnapshot: () => { if (f.storageFault) throw new Error("Unresolved journal transaction"); return ({ nativeSessionId: "native", initialInputState: "confirmed", activity: "idle", currentTurnId: f.turn, capabilities: { send: true, steer: true, cancel: true, respond: true } }); }, providerImageCapabilities: (value: object) => f.actualState ? { ...value, revision: "1" } : ({ revision: f.revision, send: "supported", steer: "supported" }), appendEvent: () => {}, prepareOperation: () => ({ operationId: "op", kind: "send_message", state: "accepted" }), media: () => ({ acquireInput: f.acquire }), assertInputCapacity: () => {}, markDispatching: () => { f.order.push("dispatch"); f.state = "dispatching"; }, getOperation: () => ({ state: f.state }), recordOperation: (_: unknown, state: string) => { f.state = state; return { state }; }, markProjectionGap: () => { if (f.storageFault) throw new Error("Unresolved journal transaction"); }, close: f.journalClose, stopMedia: f.mediaClose, assertUsable: () => { if (f.storageFault) throw new Error("Unresolved journal transaction"); }, publishNativeInputAssociation: () => { f.storageFault = true; return { state: "unknown", error: { code: "publication_unknown", message: "Unresolved journal transaction" } }; } }) }));
 vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: async () => ({}) }));
 import { runController } from "../../../src/commands/controller/runtime.js";
-beforeEach(() => { f.callbacks = null; f.options = null; f.state = "accepted"; f.revision = "1"; f.turn = null; f.actualState = false; f.order.length = 0; f.acquire.mockReset(); f.send.mockReset(); f.receipt.mockClear(); f.send.mockImplementation(async () => { f.order.push("native"); return { disposition: "started", turnId: "turn" }; }); });
+beforeEach(() => { f.callbacks = null; f.options = null; f.state = "accepted"; f.revision = "1"; f.turn = null; f.actualState = false; f.storageFault = false; f.nativeClose.mockReset(); f.nativeClose.mockResolvedValue(undefined); f.journalClose.mockReset(); f.mediaClose.mockReset(); f.mediaClose.mockResolvedValue(undefined); f.order.length = 0; f.acquire.mockReset(); f.send.mockReset(); f.receipt.mockClear(); f.send.mockImplementation(async () => { f.order.push("native"); return { disposition: "started", turnId: "turn" }; }); });
 const command = () => ({ sessionId: "session", claimId: "claim", executionGeneration: "2", operationId: "op", kind: "send_message", payload: { content: [{ type: "image", imageId: "image" }], expectedTurnId: null, target: { expectedNativeSessionId: "native" }, expectedImageCapabilityRevision: "1" } });
 const start = async () => { const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" }); await vi.waitFor(() => expect(f.options).not.toBeNull()); f.callbacks.onConnection(true); return { running, stop: () => process.emit("SIGTERM") }; };
 test("all native files are acquired before dispatch and capability is rechecked after asynchronous preparation", async () => {
@@ -51,4 +51,18 @@ test("provider image qualification is published through the existing durable cap
     f.options.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false }, images: { ...images, expectedNativeSessionId: "another-native" } });
     expect(f.callbacks.readState().providerImages).toMatchObject({ send: "unsupported", reasonCode: "profile_disabled" });
   } finally { c.stop(); await c.running; }
+});
+
+
+test("an unresolved publication transaction still closes the native provider and each independent owner", async () => {
+  const c = await start();
+  // Cleanup errors cannot prevent later owners from releasing their own handles.
+  f.mediaClose.mockRejectedValueOnce(new Error("Controlled media close failure"));
+  const result = f.options.imageRuntime.publishNativeInputAssociation({});
+  expect(result.state).toBe("unknown");
+  await c.running;
+  expect(f.nativeClose).toHaveBeenCalledOnce();
+  expect(f.mediaClose).toHaveBeenCalledOnce();
+  expect(f.journalClose).toHaveBeenCalledOnce();
+  expect(f.send).not.toHaveBeenCalled();
 });

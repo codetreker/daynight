@@ -3,13 +3,13 @@ import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { currentSqliteVersion, type SqliteFormat, type SqliteSource } from "../../platform/sqlite-format.js";
 import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 import { canonicalId } from "../../api/parse.js";
-import { migratePendingContent, openPendingContent } from "./pending-content.js";
+import { migratePendingContent, migratePendingEntryPointers } from "./pending-content.js";
 
 const steps = loadSqliteSequence(new URL("./sqlite/journal/", import.meta.url));
 const [baseline, ...upgrades] = steps;
 const schemas = sqliteSchemaSnapshots(steps);
-// These shipped definitions contain no string literals; whitespace and case do
-// not distinguish their finite CREATE/ALTER layouts.
+// These shipped definitions contain no case- or whitespace-sensitive string
+// literals; normalize only their finite CREATE/ALTER layouts.
 const normalized = (sql: string): string => sql.replace(/\s+/g, "").replace(/;$/, "").toLowerCase();
 const validateVersioned = (db: Database.Database, version: number): undefined => {
   const expected = schemas.get(version);
@@ -22,17 +22,18 @@ export const controllerJournalFormat: SqliteFormat = {
   name: "controller-journal",
   baseline: { version: baseline.version, create: (db) => { db.exec(baseline.sql); } },
   migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database, source: SqliteSource): undefined => {
-    if (step.version !== 6) { db.exec(step.sql); return; }
+    if (step.version !== 6 && step.version !== 8) { db.exec(step.sql); return; }
     const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
     if (row === undefined) {
-      if (db.prepare("SELECT 1 FROM projection LIMIT 1").get() !== undefined || db.prepare("SELECT 1 FROM resources LIMIT 1").get() !== undefined) throw new Error("Legacy archive content has no original controller execution.");
+      if (step.version === 6 ? db.prepare("SELECT 1 FROM projection LIMIT 1").get() !== undefined || db.prepare("SELECT 1 FROM resources LIMIT 1").get() !== undefined : db.prepare("SELECT 1 FROM content_index LIMIT 1").get() !== undefined) throw new Error("Legacy archive content has no original controller execution.");
       db.exec(step.sql); return;
     }
     const snapshot = JSON.parse(row.snapshot) as { sessionId?: unknown };
     if (typeof snapshot.sessionId !== "string" || canonicalId(snapshot.sessionId) !== snapshot.sessionId) throw new Error("Legacy journal session identity is invalid.");
     // Files survive an enclosing migration rollback; SQL sources disappear only
     // after their complete pending archive has reached durable storage.
-    migratePendingContent(db, openPendingContent(db.name, snapshot.sessionId), step.sql);
+    if (step.version === 8) { migratePendingEntryPointers(db, snapshot.sessionId, step.sql); return; }
+    migratePendingContent(db, snapshot.sessionId, step.sql);
     // Version 1 has no durable projection, and its acknowledged outbox may have
     // discarded history. Intermediate DDL cannot establish that source as complete.
     if (source.kind === "outdated" && source.version === 1) db.exec("UPDATE execution SET archive_incomplete=1 WHERE id=1");

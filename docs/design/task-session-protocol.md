@@ -238,9 +238,9 @@ observedAt 是观测发生时间，不是心跳。读到未来时间或超过 90
 
 ### 本机内容与在线读取
 
-活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/，每个条目使用独立原子文件，替换前 flush 文件、替换后同步目录；内存索引提供在线分页。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
+活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/。每个 entry revision 先写入不可变候选文件并 flush，再由同一 SQLite 事务提交 `content_index` 指针和 outbox。在线分页、inspection、历史同步和归档均按调用者 SQLite 快照的指针读取，不从目录扫描或可变内存 Map 推断当前 revision。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
 
-sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；内容文件先可靠写入，再提交 SQL 索引与投递事务；超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
+sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；不可变内容候选先可靠写入，再提交 SQL 指针与投递事务；超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
 
 Controller 每次连接先分批 reconcile，排空剩余 outbox，再发送 sync_state，内容为当前状态及最多 100 个待处理交互。服务端收到后返回 sync_ack，完成前禁止网页控制。executionGeneration 隔离原生实例，connectionEpoch 隔离连接；historyEpoch 标识可用展示缓存，改变时网页重新读取本机内容，不创建或恢复另一段原生执行。
 
@@ -256,7 +256,7 @@ Poll 使用相同的 MarshalWire 编码计算 operation_offer 的完整封装字
 
 ### 完成后的文件归档
 
-Controller journal v6 将旧 projection/resources 表导出到待归档文件，再在 SQL 事务中建立 content_index、删除正文表并升级版本。停止后的归档上传器先只读核对受支持版本和原停止身份，再使用与正常 opener 共用的格式定义，在同一 immediate 事务内完成 v2–v5 的结构升级和 v6 文件导出；迁移前拒绝活跃或不可确认的旧 writer，不获取 writer lease、不推进执行代次，也不启动原生进程。所有迁移入口向各步传递同一次事务的原始来源；若原来源为 v1 且存在旧执行，v6 持久设置 `archive_incomplete=1`。v1 没有完整 projection，outbox 可能已确认并裁剪；中间步骤新建的空 projection 不能证明历史为空。停止对账、快照或操作读取以及 writer 打开均保留该限制，上传器不能仅因当前版本已变成 v6 就接受不完整归档；正常空库初始化不被标为不完整。内容导出失败时 SQL 回滚到原版本，已可靠落盘的文件保留供核验重试；`006-pending-content.sql` 的结构转换、正文表删除、索引和 v6 版本在文件可靠写入后同一事务提交。迁移失败保留原表；文件先于 SQL 提交的更新在重启时核验并触发完整 relay 重同步。缺文件、回退的 revision 或内容 hash 不匹配须明确失败，不把损坏源解释为空历史。索引和传输积压的裁剪不能删除归档内容。
+Controller journal v6 将旧 projection/resources 表导出到待归档文件，再在 SQL 事务中建立 content_index、删除正文表并升级版本。停止后的归档上传器先只读核对受支持版本和原停止身份，再使用与正常 opener 共用的格式定义，在同一 immediate 事务内完成 v2–v5 的结构升级和 v6 文件导出；迁移前拒绝活跃或不可确认的旧 writer，不获取 writer lease、不推进执行代次，也不启动原生进程。所有迁移入口向各步传递同一次事务的原始来源；若原来源为 v1 且存在旧执行，v6 持久设置 `archive_incomplete=1`。v1 没有完整 projection，outbox 可能已确认并裁剪；中间步骤新建的空 projection 不能证明历史为空。停止对账、快照或操作读取以及 writer 打开均保留该限制，上传器不能仅因当前版本已变成 v6 就接受不完整归档；正常空库初始化不被标为不完整。内容导出失败时 SQL 回滚到原版本，已可靠落盘的文件保留供核验重试；`006-pending-content.sql` 的结构转换、正文表删除、索引和 v6 版本在文件可靠写入后同一事务提交。迁移失败保留原表。journal v8 将已验证的 v6/v7 内容转换成不可变候选与提交指针；旧文件必须与原 SQL 的 ID、seq、revision 和内容 hash 完全匹配。文件超前、未登记、缺失或不一致均拒绝迁移并保留原源，不能猜测其提交状态。新格式的未提交候选不会被重开或归档采纳；缺失或损坏的已提交候选明确失败，不把损坏源解释为空历史。旧候选保留以保护仍持有旧 WAL 快照的读取者，全部计入既有元数据预算；容量不足时拒绝新写，不删除仍可能被引用的正文。索引和传输积压的裁剪不能删除归档内容。
 
 确认原生进程停止后，上传器从同一执行的待归档文件生成 schemaVersion=1 的 SessionArchive：包含 Session fence、Controller 身份、Provider/nativeSessionId、有序最终 entries 和资源描述及 base64 数据。它保留最终阅读内容而非逐 token 事件录像。Task 结束由 Worker 收尾上传；Test launcher 先确认服务端 /stop，再上传。独立上传失败可运行 controller <provider> archive <test-session-id>，以原私有 ticket 和停止证明对账后重试；该路径不启动或 resume 原生会话。上传不启动 Provider，不要求已删除的工作目录存在。Worker 每轮最多尝试一个旧 completed 执行补归档，进程内按上次尝试的执行 ID 轮转库存，成功或失败后都从下一项继续；各执行独立退避，单个损坏源不能阻塞其他历史。正常收尾只有 ready 才能删除 worktree；退出停止路径以本次 shutdown 调用意图为准，确认停止后不执行归档或删除，即使持久状态已是 terminal。原 terminal 状态仍保留，重启后的正常对账继续履行归档与删除责任。
 

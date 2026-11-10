@@ -4,6 +4,7 @@ import { nativeEntryId } from "./projection.js";
 import { copilotOwner } from "./copilot-projection.js";
 import type { NativeImageSlot } from "./image-projector.js";
 import type { NativeImagePart, NativeInput, ProviderEntry, ProviderOptions } from "./types.js";
+import type { NativeInputPublicationIdentity, NativeInputPublicationQuery, NativeInputPublicationRequest, NativeInputPublicationResult } from "../media/native-publication-types.js";
 
 export type CopilotPublicationSlot = Omit<NativeImageSlot, "payload"> & { imageId: string; sourceKey: string };
 export type CopilotInputPublication = {
@@ -12,13 +13,16 @@ export type CopilotInputPublication = {
   entry: Extract<ProviderEntry, { kind: "user_message" | "assistant_message" }> & { kind: "user_message" };
   slots: CopilotPublicationSlot[];
 };
-type Saved = { nativeSessionId: string; operationId: string; intentSha256: string; input: NativeInput; expectedTurnId: string | null; messageId: string | null; publication: CopilotInputPublication | null };
+export type CopilotPublicationIntent = { raw: unknown; request: NativeInputPublicationRequest };
+export type CopilotPublicationProposal = Omit<NativeInputPublicationRequest, "identity"> & { raw: unknown };
+type Saved = { nativeSessionId: string; operationId: string; intentSha256: string; input: NativeInput; expectedTurnId: string | null; messageId: string | null; publication?: CopilotInputPublication | null; publicationIntent?: CopilotPublicationIntent };
 export type CopilotInputMatch = { operationId: string; messageId: string; images: readonly NativeImagePart[] };
 
-/** Each original receipt and its immutable publication plan have one durable identity owner. */
+/** Native acceptance and publication intent survive independently of the shared commit receipt. */
 export class CopilotImageInputs {
   private readonly receipts = new Map<string, string>();
   private readonly confirmed = new Set<string>();
+  private readonly committed = new Set<string>();
   constructor(private readonly options: ProviderOptions, private readonly session: string) {
     for (const id of this.operationIds()) {
       const saved = this.get(id);
@@ -88,30 +92,65 @@ export class CopilotImageInputs {
     })) { this.block(); return null; }
     return match;
   }
-  publication(messageId: string): CopilotInputPublication | null {
+  private identity(saved: Saved): NativeInputPublicationIdentity {
+    return { provider: "copilot", nativeSessionId: this.session, operationId: saved.operationId, intentSha256: saved.intentSha256, nativeMessageId: saved.messageId!, entryId: nativeEntryId(this.session, `:user:${saved.messageId}`) };
+  }
+  private checked(saved: Saved, result: NativeInputPublicationResult | NativeInputPublicationQuery): typeof result {
+    if (result.state === "committed") {
+      const originals = this.matchOf(saved).images;
+      if (canonicalImageJson(result.receipt.identity) !== canonicalImageJson(this.identity(saved)) || result.view.entry.entryId !== this.identity(saved).entryId || result.receipt.originalSlots.length !== originals.length || result.receipt.originalSlots.some((slot, index) => slot.imageId !== originals[index]!.imageId || slot.resourceId !== originals[index]!.resourceId)) throw new Error("Copilot shared publication receipt identity differs.");
+      this.committed.add(saved.operationId);
+    }
+    return result;
+  }
+  private unknown(): Extract<NativeInputPublicationResult, { state: "unknown" }> {
+    return { state: "unknown", error: { code: "publication_unknown", message: "The original input publication outcome is unknown; only its committed identity can be queried." } };
+  }
+  publication(messageId: string): NativeInputPublicationQuery | null {
+    const operationId = this.receipts.get(messageId);
+    const saved = operationId && this.confirmed.has(operationId) ? this.get(operationId) : null;
+    if (!saved) return null;
+    const query = this.options.imageRuntime?.queryNativeInputAssociation;
+    if (!query) return this.unknown();
+    try { return this.checked(saved, query(this.identity(saved))) as NativeInputPublicationQuery; }
+    catch { return this.unknown(); }
+  }
+  publicationIntent(messageId: string): CopilotPublicationIntent | null {
+    const operationId = this.receipts.get(messageId);
+    return operationId && this.confirmed.has(operationId) ? this.get(operationId)?.publicationIntent ?? null : null;
+  }
+  acceptedMatch(messageId: string): CopilotInputMatch | null {
+    const operationId = this.receipts.get(messageId), saved = operationId && this.confirmed.has(operationId) ? this.get(operationId) : null;
+    return saved && this.digest(saved.input, saved.operationId, saved.expectedTurnId) === saved.intentSha256 ? this.matchOf(saved) : null;
+  }
+  legacyPublication(messageId: string): CopilotInputPublication | null {
     const operationId = this.receipts.get(messageId);
     return operationId && this.confirmed.has(operationId) ? this.get(operationId)?.publication ?? null : null;
   }
-  associate(match: CopilotInputMatch, publication: CopilotInputPublication): CopilotInputPublication {
+  associate(match: CopilotInputMatch, proposal: CopilotPublicationProposal): NativeInputPublicationResult {
     const saved = this.get(match.operationId);
-    if (!saved || !this.confirmed.has(match.operationId) || saved.messageId !== match.messageId || publication.nativeEventId !== match.messageId || this.match(publication.raw)?.operationId !== match.operationId) throw new Error("Copilot original image association is unconfirmed.");
-    const originals = publication.slots.flatMap(slot => slot.original ? [slot.original] : []);
-    if (publication.entry.entryId !== nativeEntryId(this.session, `:user:${match.messageId}`) || originals.length !== match.images.length || originals.some((original, index) => original.imageId !== match.images[index]!.imageId || original.resourceId !== match.images[index]!.resourceId)) throw new Error("Copilot original images changed their published owner or order.");
-    let previousIndex = -1;
-    for (const slot of publication.slots) {
-      const sourceKey = canonicalImageJson([1, slot.native, publication.entry.entryId, "content", null, slot.index]);
-      const part = publication.entry.content[slot.index];
-      if (!Number.isSafeInteger(slot.index) || slot.index <= previousIndex || slot.native.provider !== "copilot" || slot.native.nativeSessionId !== this.session || slot.native.nativeMessageId !== match.messageId || slot.sourceKey !== sourceKey || slot.imageId !== (slot.original?.imageId ?? nativeEntryId(this.session, `image:${sourceKey}`)) || !part || part.type !== "image" && part.type !== "image_unavailable" || part.imageId !== slot.imageId) throw new Error("Copilot publication contains an unstable image position.");
-      previousIndex = slot.index;
+    if (!saved || !this.confirmed.has(match.operationId) || saved.messageId !== match.messageId || this.match(proposal.raw)?.operationId !== match.operationId) throw new Error("Copilot original image association is unconfirmed.");
+    const identity = this.identity(saved), { seed, originals } = proposal;
+    if (seed.entry.entryId !== identity.entryId || originals.length !== match.images.length || originals.some((original, index) => original.imageId !== match.images[index]!.imageId || original.resourceId !== match.images[index]!.resourceId)) throw new Error("Copilot original images changed their published owner or order.");
+    for (const original of originals) {
+      const slot = seed.nativeSlots.find(slot => slot.index === original.nativeSlotIndex), source = original.appendNativeSource;
+      if (!slot || slot.nativeSource.provider !== "copilot" || slot.nativeSource.nativeSessionId !== this.session || slot.nativeSource.nativeMessageId !== match.messageId || source.provider !== "copilot" || source.nativeSessionId !== this.session || source.nativeMessageId !== match.messageId) throw new Error("Copilot original image source identity differs.");
     }
-    if (saved.publication) {
-      if (canonicalImageJson(saved.publication) !== canonicalImageJson(publication)) throw new Error("Copilot original image publication cannot change its stable identity.");
-      return saved.publication;
+    const request: NativeInputPublicationRequest = { identity, seed, originals };
+    if (saved.publicationIntent) {
+      if (canonicalImageJson(saved.publicationIntent.request) !== canonicalImageJson(request)) throw new Error("Copilot original image publication intent cannot change its stable identity.");
+    } else {
+      // This write is recovery intent only. The shared receipt and current view
+      // are the sole evidence of publication, including for legacy plans.
+      this.options.imageRuntime!.writeState(this.key("input", match.operationId), { ...saved, publicationIntent: { raw: proposal.raw, request } });
     }
-    // The full receipt, alias, slot identities and ordering commit in one row.
-    // Timeline and occurrence callbacks only materialize this immutable plan.
-    this.options.imageRuntime!.writeState(this.key("input", match.operationId), { ...saved, publication });
-    return publication;
+    const queried = this.publication(match.messageId);
+    if (!queried || queried.state === "unknown") return queried ?? this.unknown();
+    if (queried.state === "committed") return queried;
+    const publish = this.options.imageRuntime?.publishNativeInputAssociation;
+    if (!publish) return { state: "not_committed", error: { code: "publication_unavailable", message: "Atomic native input publication is unavailable." } };
+    try { return this.checked(saved, publish(request)) as NativeInputPublicationResult; }
+    catch { return this.unknown(); }
   }
   restoreAccepted(): CopilotInputMatch[] {
     const accepted: CopilotInputMatch[] = [];
@@ -123,8 +162,8 @@ export class CopilotImageInputs {
     return accepted;
   }
   pendingAccepted(): CopilotInputMatch[] {
-    return this.operationIds().flatMap(operationId => { const saved = this.get(operationId); return saved?.messageId && !saved.publication && this.confirmed.has(operationId) ? [this.matchOf(saved)] : []; });
+    return this.operationIds().flatMap(operationId => { const saved = this.get(operationId); return saved?.messageId && !this.committed.has(operationId) && this.confirmed.has(operationId) ? [this.matchOf(saved)] : []; });
   }
-  finishTurn(): void { if (this.pendingAccepted().length) this.block(); }
+  finishTurn(): void { if (this.pendingAccepted().some(match => { const saved = this.get(match.operationId); return !saved?.publicationIntent && !saved?.publication; })) this.block(); }
   get profileAllowed(): boolean { return record(this.options.imageRuntime?.readState(this.key("profile", "association"))).blocked !== true; }
 }

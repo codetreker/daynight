@@ -1,3 +1,4 @@
+import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
@@ -9,7 +10,7 @@ import { createNativeCommandQueue, assertControlCommand } from "./command-contro
 import { createServer, type Socket } from "node:net";
 import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
-import { parseSessionCommand, type SessionCommand } from "../../session/protocol.js";
+import type { SessionCommand } from "../../session/protocol.js";
 import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.js";
 import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
@@ -180,7 +181,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     shutdownPromise = (async () => {
     try {
       await startup?.catch(() => {});
-      journal.patchSnapshot({ lifecycle: "stopping" });
+      try { journal.patchSnapshot({ lifecycle: "stopping" }); } catch (error) { fail(error); }
       await provider?.close(); await Promise.all(processCaptures);
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
       if (projectionFailure) {
@@ -192,7 +193,17 @@ export const runController = async (options: { homeDirectory: string; provider: 
       publishState(); await relay.flush().catch(fail);
     }
     catch (error) { fail(error); }
-    finally { historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
+    finally {
+      historyAbort.abort(new Error("Controller history synchronization stopped."));
+      await historyWork?.catch(error => diagnostic(String(error)));
+      try { await relay.close(); } catch (error) { fail(error); }
+      try { await journal.stopMedia?.(); } catch (error) { fail(error); }
+      for (const socket of sockets) socket.destroy();
+      server.close();
+      try { journal.close(); } catch (error) { fail(error); }
+      if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {});
+      complete();
+    }
     })();
     return shutdownPromise;
   };
@@ -331,9 +342,16 @@ export const runController = async (options: { homeDirectory: string; provider: 
       imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
       ...captureBridge.providerOptions,
       imageRuntime: {
+        publishNativeInputAssociation: request => {
+          const result = journal.publishNativeInputAssociation(request);
+          nativeEvent(() => journal.assertUsable());
+          return result;
+        },
+        patchNativeImagePart: (occurrence, part) => journal.patchNativeImagePart(occurrence, part),
+        queryNativeInputAssociation: identity => journal.queryNativeInputAssociation(identity),
         getIntent: operationId => {
           const intent = journal.getInputIntent(operationId), operation = journal.getOperation(operationId);
-          return intent && operation ? { sha256: intent.sha256, command: parseSessionCommand(JSON.parse(intent.canonical)), state: operation.state } : null;
+          return intent && operation ? { sha256: intent.sha256, command: restoreCanonicalInputIntent(intent, operationId), state: operation.state } : null;
         },
         readState: key => journal.readNativeImageState(key),
         writeState: (key, value) => journal.writeNativeImageState(key, value),

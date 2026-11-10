@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -146,8 +147,11 @@ for (const provider of ["codex", "claude", "copilot"] as const) {
       expect(f.close).not.toHaveBeenCalled();
     } finally { await v.stop(); }
     // Reopening the actual pending archive source reparses bytes from disk.
-    const reopened = openPendingContent(v.journalFile, v.ticket.sessionId);
-    expect([...reopened.entries.values()].sort((a, b) => Number(a.entrySeq) - Number(b.entrySeq))).toEqual(saved!);
+    const db = new Database(v.journalFile, { readonly: true });
+    try {
+      const reopened = openPendingContent(v.journalFile, v.ticket.sessionId, db);
+      expect([...reopened.entries.values()].sort((a, b) => Number(a.entrySeq) - Number(b.entrySeq))).toEqual(saved!);
+    } finally { db.close(); }
   });
 }
 

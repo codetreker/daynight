@@ -1,6 +1,6 @@
 import { canonicalImageJson, type NativeImageSource } from "../../../session/image-values.js";
 import { isCopilotBridgeImage, releaseCopilotBridgeImage, retainCopilotBridgeImage, type CopilotBridgeImage } from "./copilot-bridge.js";
-import { CopilotImageInputs, type CopilotInputMatch, type CopilotInputPublication } from "./copilot-image-input.js";
+import { CopilotImageInputs, type CopilotInputMatch, type CopilotPublicationProposal } from "./copilot-image-input.js";
 import { ProviderImageProjector, type NativeImagePayload, type NativeImageSlot } from "./image-projector.js";
 import { record, string } from "./native-rpc.js";
 import { limited, nativeEntryId, readable } from "./projection.js";
@@ -22,6 +22,9 @@ export class CopilotImages {
   private readonly assets = new Map<string, Asset>();
   private readonly waiting = new Map<string, Map<string, () => void>>();
   private readonly missing = new Map<string, string>();
+  private readonly associations = new Map<string, { match: CopilotInputMatch; slots: NativeImageSlot[]; fallback?: Published }>();
+  private publicationTimer: NodeJS.Timeout | null = null;
+  private stopped = false;
   constructor(private readonly options: ProviderOptions, private readonly session: string, private readonly inputs: CopilotImageInputs) { this.projector = new ProviderImageProjector(options); }
   private key(id: string): string { return `copilot:published:${nativeEntryId(this.session, id)}`; }
   private unavailableAsset(id: string, reason: string): void { if (this.missing.size >= 1000 && !this.missing.has(id)) this.missing.delete(this.missing.keys().next().value!); this.missing.set(id, reason); }
@@ -31,7 +34,12 @@ export class CopilotImages {
     return Array.isArray(saved) && saved.some(key => typeof key === "string" && record(this.options.imageRuntime?.readState(key)).phase !== "settled");
   }
   private withSlots(entry: ProviderEntry, slots: readonly NativeImageSlot[]): void {
-    try { if (slots.length && this.options.imageRuntime) {
+    try { this.prepareSlots(entry, slots); }
+    catch (error) { this.discardUnsubmitted(slots, error); }
+    this.projector.publish(entry, slots);
+  }
+  private prepareSlots(entry: ProviderEntry, slots: readonly NativeImageSlot[]): void {
+    if (slots.length && this.options.imageRuntime) {
       const saved = this.options.imageRuntime.readState(this.pendingKey), keys = new Set<string>(Array.isArray(saved) ? saved.filter((key): key is string => typeof key === "string" && record(this.options.imageRuntime!.readState(key)).phase !== "settled") : []);
       for (const slot of slots) {
         const sourceKey = canonicalImageJson([1, slot.native, entry.entryId, entry.kind === "tool_call" ? "tool_output" : "content", entry.kind === "tool_call" ? entry.callId : null, slot.index]);
@@ -39,8 +47,12 @@ export class CopilotImages {
       }
       if (keys.size > 1000) throw new Error("Copilot pending source index exceeded its bound.");
       this.options.imageRuntime.writeState(this.pendingKey, [...keys]);
-    } } catch (error) { this.releaseSlots(slots); throw error; }
-    this.projector.publish(entry, slots);
+    }
+  }
+  private discardUnsubmitted(slots: readonly NativeImageSlot[], error: unknown): never {
+    try { this.projector.discard(slots); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "Native image preparation and release failed."); }
+    throw error;
   }
   private releaseSlots(slots: readonly NativeImageSlot[]): void { for (const slot of slots) if (slot.payload.kind === "file") slot.payload.release(); }
   private source(raw: unknown, field: string): NativeImageSource {
@@ -111,75 +123,135 @@ export class CopilotImages {
     const waiting = this.waiting.get(id); this.waiting.delete(id);
     for (const replay of waiting?.values() ?? []) replay();
   }
-  private plan(raw: unknown, entry: Message, slots: readonly NativeImageSlot[]): CopilotInputPublication {
+  private proposal(match: CopilotInputMatch, raw: unknown, entry: Message, slots: readonly SlotIdentity[]): CopilotPublicationProposal {
     const content = [...entry.content];
-    const positions = slots.map(({ payload: _payload, ...slot }) => {
+    const nativeSlots = slots.map(slot => {
       const sourceKey = canonicalImageJson([1, slot.native, entry.entryId, "content", null, slot.index]);
-      const imageId = slot.original?.imageId ?? nativeEntryId(this.session, `image:${sourceKey}`);
+      const imageId = nativeEntryId(this.session, `image:${sourceKey}`);
       content[slot.index] = { ...placeholder(slot.native), imageId };
-      return { ...slot, sourceKey, imageId };
+      return { index: slot.index, nativeSource: slot.native, label: slot.label };
     });
-    return { nativeEventId: string(record(raw).id), raw, entry: { ...entry, content }, slots: positions };
+    const { revision: _revision, ...seed } = entry;
+    return { raw, seed: { entry: { ...seed, content, imageProjectionError: seed.imageProjectionError ?? null }, nativeSlots }, originals: match.images.map((image, index) => {
+      const slot = nativeSlots[index]; if (!slot) throw new Error("Copilot original input has no exact native image position.");
+      return { imageId: image.imageId, resourceId: image.resourceId, nativeSlotIndex: slot.index, appendNativeSource: this.source(raw, `original:${match.operationId}:${image.imageId}`) };
+    }) };
   }
-  private materialize(plan: CopilotInputPublication, current: readonly NativeImageSlot[] = []): void {
-    const sources = new Map(current.map(slot => [slot.native.nativePartId, slot.payload]));
-    const used = new Set<string>();
-    const slots = plan.slots.map(({ imageId, sourceKey, ...slot }) => {
-      const expected = canonicalImageJson([1, slot.native, plan.entry.entryId, "content", null, slot.index]);
-      if (sourceKey !== expected || imageId !== (slot.original?.imageId ?? nativeEntryId(this.session, `image:${expected}`))) throw new Error("Copilot saved image slot identity changed.");
-      if (!slot.original) used.add(slot.native.nativePartId);
-      return { ...slot, payload: slot.original ? { kind: "resource" as const, resourceId: slot.original.resourceId } : sources.get(slot.native.nativePartId) ?? { kind: "pending" as const } };
-    });
-    for (const slot of current) if (!used.has(slot.native.nativePartId) && slot.payload.kind === "file") slot.payload.release();
-    this.withSlots(plan.entry, slots);
+  private hold(match: CopilotInputMatch, current: readonly NativeImageSlot[]): NativeImageSlot[] {
+    const held = this.associations.get(match.messageId)?.slots ?? [], failures: unknown[] = [];
+    for (const incoming of current) {
+      const index = held.findIndex(slot => canonicalImageJson(slot.native) === canonicalImageJson(incoming.native));
+      if (index < 0) held.push(incoming);
+      else if (held[index]!.payload.kind === "pending") held[index] = incoming;
+      else try { this.releaseSlots([incoming]); } catch (error) { held.push(incoming); failures.push(error); }
+    }
+    this.associations.set(match.messageId, { ...this.associations.get(match.messageId), match, slots: held });
+    if (failures.length) throw new AggregateError(failures, "Copilot repeated publication sources could not be released.");
+    return held;
+  }
+  private schedulePublication(): void {
+    if (this.stopped || this.publicationTimer) return;
+    this.publicationTimer = setTimeout(() => { this.publicationTimer = null; this.reconcilePublications(); }, 1000);
+    this.publicationTimer.unref();
+  }
+  private reconcilePublications(): void {
+    if (this.stopped) return;
+    for (const { match } of [...this.associations.values()]) {
+      try { this.accepted(match); }
+      catch { this.options.onDiagnostic?.("The original Copilot input publication could not be reconciled; its identity and sources are retained."); }
+    }
+    if (this.associations.size) this.schedulePublication();
   }
   user(raw: unknown, entry: Message): void {
     const event = record(raw), data = record(event.data), attachments = Array.isArray(data.attachments) ? data.attachments : [];
-    const plan = this.inputs.publication(string(event.id));
-    const existing = this.options.imageRuntime?.readState(this.key(string(event.id))) as Published | null;
-    const match = this.inputs.match(raw), parts = [...entry.content], slots: NativeImageSlot[] = [];
+    const match = this.inputs.match(raw), accepted = this.inputs.acceptedMatch(string(event.id)), parts = [...entry.content], slots: NativeImageSlot[] = [];
     const replay = () => this.user(raw, entry);
-    for (const [index, rawAttachment] of attachments.entries()) {
-      const attachment = record(rawAttachment);
-      if (attachment.type !== "blob" && !imageMime(attachment.mimeType)) continue;
-      const native = this.source(raw, `attachments[${index}]`), original = !existing && !plan && match ? match.images[index] : undefined;
-      const payload = original ? { kind: "resource" as const, resourceId: original.resourceId } : this.payload(attachment, attachment.data, entry.entryId, replay, native);
-      if (original && isCopilotBridgeImage(attachment.data)) releaseCopilotBridgeImage(attachment.data);
-      slots.push({ index: parts.length, label: "Native image", native, payload, ...(original ? { original: { imageId: original.imageId, resourceId: original.resourceId } } : {}) }); parts.push(placeholder(native));
-    }
-    if (plan) { this.materialize(plan, slots); return; }
-    if (existing) {
-      if (match) { this.accepted(match, slots); return; }
-      const current = new Map(slots.map(slot => [slot.native.nativePartId, slot.payload]));
-      this.withSlots(existing.entry, existing.slots.map(slot => ({ ...slot, payload: current.get(slot.native.nativePartId) ?? { kind: "pending" as const } })));
-      return;
-    }
-    const next = { ...entry, content: parts };
-    const safeRaw = { id: event.id, type: event.type, ...(event.agentId ? { agentId: event.agentId } : {}), data: { content: data.content, parentToolCallId: data.parentToolCallId, attachments: attachments.map(item => ({ type: record(item).type, mimeType: record(item).mimeType })) } };
-    if (match) {
-      let committed: CopilotInputPublication;
-      try { committed = this.inputs.associate(match, this.plan(safeRaw, next, slots)); }
-      catch (error) { this.releaseSlots(slots); throw error; }
-      this.materialize(committed, slots);
-    } else {
-      this.options.imageRuntime?.writeState(this.key(string(event.id)), { raw: safeRaw, entry: next, slots: slots.map(({ payload: _payload, ...slot }) => slot) } satisfies Published);
-      this.withSlots(next, slots);
+    let transferred = false;
+    try {
+      for (const [index, rawAttachment] of attachments.entries()) {
+        const attachment = record(rawAttachment);
+        if (attachment.type !== "blob" && !imageMime(attachment.mimeType)) continue;
+        const native = this.source(raw, `attachments[${index}]`), payload = this.payload(attachment, attachment.data, entry.entryId, replay, native);
+        slots.push({ index: parts.length, label: "Native image", native, payload }); parts.push(placeholder(native));
+      }
+      const next = { ...entry, content: parts };
+      const safeRaw = { id: event.id, type: event.type, ...(event.agentId ? { agentId: event.agentId } : {}), data: { content: data.content, parentToolCallId: data.parentToolCallId, attachments: attachments.map(item => ({ type: record(item).type, mimeType: record(item).mimeType })) } };
+      const published = { raw: safeRaw, entry: next, slots: slots.map(({ payload: _payload, ...slot }) => slot) } satisfies Published;
+      const proposal = match ? this.proposal(match, safeRaw, next, slots) : undefined;
+      transferred = true;
+      if (accepted) this.accepted(accepted, slots, proposal, published);
+      else this.publishNative(string(event.id), published, slots);
+    } catch (error) {
+      if (transferred) throw error;
+      this.discardUnsubmitted(slots, error);
     }
   }
-  accepted(match: CopilotInputMatch, current: readonly NativeImageSlot[] = []): void {
-    const committed = this.inputs.publication(match.messageId);
-    if (committed) { this.materialize(committed, current); return; }
-    const saved = this.options.imageRuntime?.readState(this.key(match.messageId)) as Published | null;
-    if (!saved || !this.inputs.match(saved.raw)) return;
-    const content = [...saved.entry.content], slots: NativeImageSlot[] = saved.slots.map(slot => ({ ...slot, label: "Native recorded image", payload: { kind: "pending" } }));
-    for (const image of match.images) {
-      const native = this.source(saved.raw, `original:${match.operationId}:${image.imageId}`);
-      slots.push({ index: content.length, label: "Original uploaded image", native, original: { imageId: image.imageId, resourceId: image.resourceId }, payload: { kind: "resource", resourceId: image.resourceId } }); content.push(placeholder(native));
+  private publishNative(messageId: string, published: Published, slots: readonly NativeImageSlot[]): void {
+    let prepared: ReturnType<CopilotImages["prepareNative"]>;
+    try { prepared = this.prepareNative(messageId, published, slots); }
+    catch (error) { this.discardUnsubmitted(slots, error); }
+    const selected = new Set(prepared.slots.map(slot => slot.payload));
+    try { this.projector.discard(slots.filter(slot => !selected.has(slot.payload))); }
+    catch (error) { this.discardUnsubmitted(prepared.slots, error); }
+    this.withSlots(prepared.entry, prepared.slots);
+  }
+  private prepareNative(messageId: string, published: Published, slots: readonly NativeImageSlot[]): { entry: Message; slots: readonly NativeImageSlot[] } {
+    const existing = this.options.imageRuntime?.readState(this.key(messageId)) as Published | null;
+    if (existing) {
+      const current = new Map(slots.map(slot => [slot.native.nativePartId, slot.payload]));
+      return { entry: existing.entry, slots: existing.slots.map(slot => ({ ...slot, payload: current.get(slot.native.nativePartId) ?? { kind: "pending" as const } })) };
     }
-    let plan: CopilotInputPublication;
-    try { plan = this.inputs.associate(match, this.plan(saved.raw, { ...saved.entry, content }, slots)); }
-    catch (error) { this.releaseSlots(current); throw error; }
-    this.materialize(plan, current);
+    this.options.imageRuntime?.writeState(this.key(messageId), published);
+    return { entry: published.entry, slots };
+  }
+  accepted(match: CopilotInputMatch, current: readonly NativeImageSlot[] = [], proposed?: CopilotPublicationProposal, fallback?: Published): void {
+    const held = this.hold(match, current), association = this.associations.get(match.messageId)!;
+    if (fallback) association.fallback ??= fallback;
+    const intent = this.inputs.publicationIntent(match.messageId);
+    let proposal = intent ? { raw: intent.raw, seed: intent.request.seed, originals: intent.request.originals } : proposed;
+    if (!proposal) {
+      const saved = this.options.imageRuntime?.readState(this.key(match.messageId)) as Published | null;
+      if (saved && this.inputs.match(saved.raw)) proposal = this.proposal(match, saved.raw, saved.entry, saved.slots);
+      const legacy = this.inputs.legacyPublication(match.messageId);
+      if (!proposal && legacy && this.inputs.match(legacy.raw)) {
+        const content: Parts = string(record(record(legacy.raw).data).content).trim() ? [{ type: "text", text: limited(string(record(record(legacy.raw).data).content)) }] : [];
+        const slots = match.images.map((_image, index) => { const native = this.source(legacy.raw, `attachments[${index}]`), slot = { index: content.length, label: "Native image", native }; content.push(placeholder(native)); return slot; });
+        proposal = this.proposal(match, legacy.raw, { ...legacy.entry, content }, slots);
+      }
+    }
+    const result = proposal ? this.inputs.associate(match, proposal) : this.inputs.publication(match.messageId);
+    if (!proposal && result?.state === "absent") {
+      const native = association.fallback;
+      if (native) {
+        const prepared = this.prepareNative(match.messageId, native, held);
+        this.prepareSlots(prepared.entry, prepared.slots);
+        const selected = new Set(prepared.slots.map(slot => slot.payload)), retained: NativeImageSlot[] = [], failures: unknown[] = [];
+        for (const slot of held) {
+          if (selected.has(slot.payload)) { retained.push(slot); continue; }
+          try { this.releaseSlots([slot]); } catch (error) { retained.push(slot); failures.push(error); }
+        }
+        association.slots = retained;
+        if (failures.length) throw new AggregateError(failures, "Unselected Copilot native image leases could not be released.");
+        // A shape mismatch prevents original association, not native display.
+        // Preparation retains ownership through every fallible read and write;
+        // publish consumes all selected leases, including on projection failure.
+        this.associations.delete(match.messageId); this.projector.publish(prepared.entry, prepared.slots);
+      } else if (!held.length) this.associations.delete(match.messageId);
+      return;
+    }
+    if (result?.state === "committed") {
+      const runtime = this.options.imageRuntime!;
+      const old = runtime.readState(this.pendingKey), keys = new Set<string>(Array.isArray(old) ? old.filter((key): key is string => typeof key === "string" && record(runtime.readState(key)).phase !== "settled") : []);
+      for (const slot of result.view.slots) if (slot.state.phase !== "settled") keys.add(slot.key);
+      if (keys.size > 1000) throw new Error("Copilot pending source index exceeded its bound.");
+      runtime.writeState(this.pendingKey, [...keys]);
+      this.associations.delete(match.messageId);
+      this.projector.adoptCommitted(result.view, held);
+      return;
+    }
+    if (result?.state === "not_committed" && result.error.code === "publication_conflict") throw new Error(result.error.message);
+    if (proposal || result?.state === "unknown" || fallback) this.schedulePublication();
+    else if (!held.length) this.associations.delete(match.messageId);
   }
   tool(raw: unknown, entry: Tool): void {
     const event = record(raw), data = record(event.data), result = record(data.result), parts: Parts = [], slots: NativeImageSlot[] = [];
@@ -220,14 +292,21 @@ export class CopilotImages {
     const owners = [...this.waiting.entries()]; this.waiting.clear();
     for (const [id, replays] of owners) { this.unavailableAsset(id, "native_bytes_missing"); for (const replay of replays.values()) replay(); }
   }
-  acknowledge(): void { this.projector.acknowledged(); }
+  acknowledge(): void { this.reconcilePublications(); this.projector.acknowledged(); }
   async settled(): Promise<void> { await this.projector.settled(); }
   async close(): Promise<void> {
+    this.stopped = true;
+    if (this.publicationTimer) clearTimeout(this.publicationTimer); this.publicationTimer = null;
     const errors: unknown[] = [];
     try { await this.projector.close(); } catch (error) { errors.push(error); }
     for (const [id, asset] of this.assets) {
       try { if ("marker" in asset) asset.release(); this.assets.delete(id); }
       catch (error) { errors.push(error); }
+    }
+    for (const [id, held] of this.associations) {
+      const pending: NativeImageSlot[] = [];
+      for (const slot of held.slots) try { this.releaseSlots([slot]); } catch (error) { pending.push(slot); errors.push(error); }
+      if (pending.length) held.slots = pending; else this.associations.delete(id);
     }
     this.waiting.clear();
     if (errors.length === 1) throw errors[0];

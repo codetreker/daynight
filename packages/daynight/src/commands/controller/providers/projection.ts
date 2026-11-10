@@ -1,14 +1,10 @@
-import { createHash } from "node:crypto";
+import { nativeEntryId } from "../native-identity.js";
+export { nativeEntryId } from "../native-identity.js";
 import { record, string } from "./native-rpc.js";
 import type { ProviderEntry } from "./types.js";
 import { codexSubagentActivity } from "../../../session/codex-subagent-activity.js";
 import type { CodexImageProjection } from "./codex-image-projection.js";
 
-// Native item IDs survive reconnects; transport IDs must never create new timeline rows.
-export const nativeEntryId = (session: string, item: string): string => {
-  const h = createHash("sha256").update(session).update("\0").update(item).digest("hex");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
-};
 export const readable = (value: unknown): string => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "";
 export const limited = (value: string): string => {
   if (value.length <= 200_000) return value;
