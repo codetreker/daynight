@@ -28,9 +28,12 @@ the original error and prevent subsequent work. Operation admission failures do
 not acquire a writer, and admitted operations close exactly once.
 
 The Session service retains its actual transaction callback and
-`Operation.Finish` binding. Production consumers exercise the Runtime constructor
-and default core operations. The service test supplies the runner result; it
-does not claim that callback execution or a mock outcome committed data.
+`Operation.Finish` binding. The production Runtime constructor test checks its
+default operation bindings, Engine receiver and admitted-operation lifetime.
+The service test supplies the runner result; it does not claim that callback
+execution or a mock outcome committed data. The
+[Bot expiry HTTP decision](2026-11-10-bot-expiry-http-test-owners.md) records
+the corresponding HTTP and registration proof owners.
 
 The existing core Bot authorization test owns deleted/foreign Bot decisions.
 The existing Engine stop test checks the precise `service_unavailable` admission

@@ -1,20 +1,61 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
 func TestBotRegistrationFreezesRoleAndReconcilesOriginalBinding(t *testing.T) {
 	f, bot, input := botFixture(t)
-	first, err := f.s.RegisterBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 2, "InsertBotSession": 1, "Bot": 1, "BindBotSession": 1}), f.p, bot.WorkerID, bot.ID, input)
+	expectedRegistration, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
+	}
+	registrationID := input.Registration.RegistrationID
+	phase := botPhase(t, f, t.Context(), map[string]int{"LockCredential": 2, "InsertBotSession": 1, "Bot": 1, "BindBotSession": 1})
+	originalInsert := f.dao.InsertBotSessionFn
+	var inserted *store.SessionRegistration
+	f.dao.InsertBotSessionFn = func(ctx context.Context, registration store.SessionRegistration) (bool, error) {
+		if ctx != phase || registration.BotID == nil || *registration.BotID != bot.ID || registration.OwnerID != f.p.UserID || registration.ParentCredentialID != f.p.CredentialID || registration.Location.ProjectID != "" || registration.Location.TaskID != "" || registration.Location.SessionID == "" || registration.Location.SessionID != registration.Snapshot.SessionID || registration.TestExecutionID != input.Registration.TestExecutionID || registration.RegistrationID != registrationID || !bytes.Equal(registration.Registration, expectedRegistration) {
+			t.Fatalf("wrong proposed Bot Session: %+v", registration)
+		}
+		copy := fixtureCopy(registration)
+		inserted = &copy
+		return originalInsert(ctx, registration)
+	}
+	first, err := f.s.RegisterBot(phase, f.p, bot.WorkerID, bot.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted == nil || first.Session.SessionID == "" || first.Session.HistoryEpoch == "" || first.Session.SessionID != inserted.Location.SessionID || first.Bot.SessionID == nil || *first.Bot.SessionID != inserted.Location.SessionID {
+		t.Fatal("registration did not retain the inserted Session identity")
+	}
+	wantInitial := sp.Snapshot{
+		ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: first.Session.SessionID, TestExecutionID: input.Registration.TestExecutionID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"},
+		Protocol:        sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1,
+		Identity:        sp.Identity{OwnerUserID: f.p.UserID, ControllerID: input.Registration.ControllerID, ControllerInstanceID: input.Registration.ControllerInstanceID, AgentControlMode: "web", Provider: input.Registration.Provider},
+		SessionRevision: "1", HistoryEpoch: first.Session.HistoryEpoch, LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_required", Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing",
+	}
+	wantDurable := sp.Snapshot{
+		ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: first.Session.SessionID, TestExecutionID: input.Registration.TestExecutionID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"},
+		Protocol:        sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1,
+		Identity:        sp.Identity{OwnerUserID: f.p.UserID, ControllerID: input.Registration.ControllerID, ControllerInstanceID: input.Registration.ControllerInstanceID, AgentControlMode: "web", Provider: input.Registration.Provider},
+		SessionRevision: "1", HistoryEpoch: first.Session.HistoryEpoch, LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_required", Lifecycle: "active", ConnectionState: "disconnected", Activity: "unknown",
+	}
+	if !reflect.DeepEqual(first.Session, wantInitial) {
+		t.Fatalf("initial Snapshot = %+v, want %+v", first.Session, wantInitial)
+	}
+	if !reflect.DeepEqual(inserted.Snapshot, wantDurable) {
+		t.Fatalf("durable Snapshot = %+v, want %+v", inserted.Snapshot, wantDurable)
 	}
 	selectBotBinding(t, f, first)
 	again, err := f.s.RegisterBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 3, "LockSession": 1, "Bot": 1}), f.p, bot.WorkerID, bot.ID, input)

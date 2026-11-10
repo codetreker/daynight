@@ -24,8 +24,8 @@ retained production module assembly and existing lower business decisions while
 removing persistence setup and making transaction outcomes and runtime barriers
 explicit.
 
-Root composition and runtime fixtures use those callbacks to assemble production
-modules, routes and authentication. Each test declares query inputs, returned
+Root composition and runtime fixtures that retain this boundary use those callbacks
+to assemble production modules, routes and authentication. Each test declares query inputs, returned
 facts, proposed writes, expected calls and transaction completion. A subsequent response is independently supplied;
 capturing a proposed write does not make it persistent. The fixtures contain no
 mutable model database or simulated rollback. Unconfigured access fails, and
@@ -77,6 +77,10 @@ assigns the second assistant-host case to controlled operations after its lower
 receivers exist, removing its unconsumed shared DAO/application fixture. Existing
 scenarios are corrected in place or consolidated with an existing mechanism owner; protocol
 matrices are not added to normal API integration or product E2E.
+
+The [Bot expiry HTTP decision](2026-11-10-bot-expiry-http-test-owners.md)
+assigns its Runtime and deletion request matrices to direct operations after
+preserving their registration and constructor observations at their owners.
 
 ## Alternatives
 
