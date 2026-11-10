@@ -17,6 +17,10 @@ establish which assertion or runtime operation failed. Already delivered test
 errors must remain readable while later tests are still running; process
 sampling cannot recover details that the test framework has not yet printed.
 
+A validation gate with its own test deadline can expire before the parent
+observes the failure. Its ready file remains after timeout, so readiness alone
+cannot prove that the run is still active before its final summary.
+
 ## Decision
 
 The macOS ARM64 entry in the ordinary `verify` matrix executes its unchanged
@@ -68,6 +72,15 @@ The ordinary native matrix always attempts to upload available JSONL files,
 including after cancellation. It retains the existing command, concurrency,
 deadlines and macOS observer.
 
+Real reporter checks use separate failure and gate modules with two fixture
+workers. The failure module can complete and Vitest can drain its reported
+events while the gate keeps the run active. Only the gate has `timeout: 0`;
+the parent releases it after checking the failure and absence of a final
+summary. Failure tests and hooks retain their ten-second budgets. The parent
+retains its twenty-second process watchdog, twenty-five-second test budget and
+`finally` cleanup, so an unreleased gate remains bounded while its parent runs.
+Releasing the gate must preserve the original failing exit status.
+
 ## Alternatives
 
 **Repeat the unchanged run.** A passing retry would not explain the earlier
@@ -94,6 +107,12 @@ unrelated metadata would amplify logs without a bounded failure record. Explicit
 field selection and encoded byte limits preserve the failing subject and its
 provided stack within a fixed cost.
 
+**Extend the validation gate's deadline.** A larger deadline still makes the
+observation order depend on parent scheduling. Parent ownership removes that
+race without increasing failure-test or job budgets. Keeping the gate inside
+the failure module also couples module completion and report draining to the
+parent's release; separate modules avoid that dependency.
+
 ## Consequences
 
 The observer adds periodic native-process work and a bounded post-test log
@@ -103,6 +122,10 @@ source. Collection failures do not replace the test result. An abrupt observer
 or runner death can leave only the incrementally written samples and framework
 errors. An unavailable console and filesystem together prevent diagnostic
 delivery; a failed write cannot turn the test failure into success.
+
+Blocked reporter fixtures require a second worker, without changing ordinary
+suite concurrency. They prove that delivered errors are readable before the
+whole run ends; they do not impose an intermediate event schedule on Vitest.
 
 The [development guide](../../../../docs/development.md#cli-development)
 owns execution and artifact guidance. A subsequent successful run establishes

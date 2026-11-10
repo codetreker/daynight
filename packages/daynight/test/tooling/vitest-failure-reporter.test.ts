@@ -115,16 +115,17 @@ const stopChild = (child: ChildProcess) => {
   if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { timeout: 5_000, stdio: "ignore", windowsHide: true });
   else { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }
 };
-async function runFixture(source: string, blocked = false, separateBlocker = false, writeFault = false) {
+async function runFixture(source: string, blocked = false, writeFault = false) {
   const root = directory(), output = path.join(root, "events"), gate = path.join(root, "release"), ready = path.join(root, "ready");
   const reporter = pathToFileURL(path.join(packageRoot, "scripts/vitest-failure-reporter.ts")).href;
   const vitest = pathToFileURL(path.join(packageRoot, "node_modules/vitest/dist/index.js")).href;
   const config = path.join(root, "vitest.config.mts");
-  writeFileSync(config, `import Reporter from ${JSON.stringify(reporter)}; const reporter = new Reporter({ directory: ${JSON.stringify(output)} }); export default { root: ${JSON.stringify(root)}, test: { include: ['*.test.mjs'], reporters: ['default', reporter], onUnhandledError: reporter.onUnhandledError, maxWorkers: ${separateBlocker ? 2 : 1}, fileParallelism: ${separateBlocker}, testTimeout: 10000, hookTimeout: 10000 } };`);
+  writeFileSync(config, `import Reporter from ${JSON.stringify(reporter)}; const reporter = new Reporter({ directory: ${JSON.stringify(output)} }); export default { root: ${JSON.stringify(root)}, test: { include: ['*.test.mjs'], reporters: ['default', reporter], onUnhandledError: reporter.onUnhandledError, maxWorkers: ${blocked ? 2 : 1}, fileParallelism: ${blocked}, testTimeout: 10000, hookTimeout: 10000 } };`);
   const imports = `import { test, expect, beforeAll, describe } from ${JSON.stringify(vitest)}; import { existsSync, writeFileSync } from 'node:fs'; import { setTimeout as delay } from 'node:timers/promises';\n`;
-  const blocker = `test('remains active after failure', async () => { writeFileSync(${JSON.stringify(ready)}, 'ready'); while (!existsSync(${JSON.stringify(gate)})) await delay(20); });`;
-  writeFileSync(path.join(root, "fixture.test.mjs"), imports + source + "\n" + (blocked && !separateBlocker ? blocker : ""));
-  if (separateBlocker) writeFileSync(path.join(root, "blocker.test.mjs"), imports + blocker);
+  // The failure module can drain its reports while the parent release or watchdog owns the gate's lifetime.
+  const blocker = `test('remains active after failure', async () => { writeFileSync(${JSON.stringify(ready)}, 'ready'); while (!existsSync(${JSON.stringify(gate)})) await delay(20); }, 0);`;
+  writeFileSync(path.join(root, "fixture.test.mjs"), imports + source + "\n");
+  if (blocked) writeFileSync(path.join(root, "blocker.test.mjs"), imports + blocker);
   if (writeFault) writeFileSync(output, "not a directory");
   const child = spawn(process.execPath, [path.join(packageRoot, "node_modules/vitest/vitest.mjs"), "run", "--config", config], { cwd: packageRoot, env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" }, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let transcript = "";
@@ -135,7 +136,7 @@ async function runFixture(source: string, blocked = false, separateBlocker = fal
   return { root, output, ready, child, exit, transcript: () => transcript, release: () => writeFileSync(gate, "release"), async close() { writeFileSync(gate, "release"); stopChild(child); try { await exit; } finally { clearTimeout(deadline); } } };
 }
 
-test("real Vitest failure details are readable while a later test is active before final summary", async () => {
+test("real Vitest failure details are readable while another test is active before final summary", async () => {
   const f = await runFixture("test('first assertion fails', () => { expect('observed').toBe('wanted'); });", true);
   try {
     await vi.waitFor(() => { expect(existsSync(f.ready)).toBe(true); expect(readEvents(f.output).some(event => event.kind === "test-failed")).toBe(true); }, { timeout: 12_000 });
@@ -148,11 +149,11 @@ test("real Vitest failure details are readable while a later test is active befo
 }, 25_000);
 
 test.each([
-  { name: "module initialization", source: "throw new Error('module initialization failure');", kind: "module-failed", message: "module initialization failure", separateBlocker: true },
-  { name: "suite hook", source: "describe('hook owner', () => { beforeAll(() => { throw new Error('suite hook failure'); }); test('blocked by hook', () => {}); });", kind: "suite-failed", message: "suite hook failure", separateBlocker: false },
-  { name: "unhandled rejection", source: "test('unhandled error', async () => { Promise.reject(new Error('unhandled fixture failure')); await new Promise(resolve => setImmediate(resolve)); });", kind: "unhandled-error", message: "unhandled fixture failure", separateBlocker: false },
-])("real Vitest preserves $name errors before final summary and its failing exit", async ({ source, kind, message, separateBlocker }) => {
-  const f = await runFixture(source, true, separateBlocker);
+  { name: "module initialization", source: "throw new Error('module initialization failure');", kind: "module-failed", message: "module initialization failure" },
+  { name: "suite hook", source: "describe('hook owner', () => { beforeAll(() => { throw new Error('suite hook failure'); }); test('blocked by hook', () => {}); });", kind: "suite-failed", message: "suite hook failure" },
+  { name: "unhandled rejection", source: "test('unhandled error', async () => { Promise.reject(new Error('unhandled fixture failure')); await new Promise(resolve => setImmediate(resolve)); });", kind: "unhandled-error", message: "unhandled fixture failure" },
+])("real Vitest preserves $name errors before final summary and its failing exit", async ({ source, kind, message }) => {
+  const f = await runFixture(source, true);
   try {
     await vi.waitFor(() => { expect(existsSync(f.ready)).toBe(true); expect(readEvents(f.output).find(event => event.kind === kind)?.errors[0].message).toContain(message); }, { timeout: 12_000 });
     expect(f.child.exitCode).toBeNull(); expect(f.transcript()).not.toContain("Test Files");
@@ -162,7 +163,7 @@ test.each([
 }, 25_000);
 
 test("a real JSONL write failure remains visible and cannot mask a failed Vitest run", async () => {
-  const f = await runFixture("test('fails', () => { throw new Error('original failed assertion'); });", false, false, true);
+  const f = await runFixture("test('fails', () => { throw new Error('original failed assertion'); });", false, true);
   try { expect(await f.exit).toBe(1); expect(f.transcript()).toContain("diagnostic-write-failed"); expect(f.transcript()).toContain("original failed assertion"); }
   finally { await f.close(); }
 }, 25_000);
