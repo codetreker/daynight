@@ -20,12 +20,21 @@ type StepsStore interface {
 }
 
 type TaskSteps struct {
-	store    StepsStore
-	capturer Capturer
+	store          StepsStore
+	capturer       Capturer
+	readOperations taskStepReadOperations
+}
+
+type taskStepReadOperations struct {
+	requireProjectRead func(context.Context, projectcore.ProjectAccessReader, model.Principal, string) (model.ProjectAccess, error)
 }
 
 func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
-	return &TaskSteps{store: database, capturer: capturer(capture)}
+	return &TaskSteps{
+		store:          database,
+		capturer:       capturer(capture),
+		readOperations: taskStepReadOperations{requireProjectRead: projectcore.RequireProjectRead},
+	}
 }
 
 type StepsDocument struct {
@@ -121,7 +130,7 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 		return err
 	}
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.readOperations.requireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			return err
 		}
 		header, err := snapshot.TaskDAO().TaskHeader(ctx, projectID, taskID)
