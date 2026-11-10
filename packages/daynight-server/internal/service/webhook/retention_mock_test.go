@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -179,7 +180,7 @@ func retentionEmptyStore(t *testing.T) *retentionStoreMock {
 }
 func retentionCallback(f func(store.WebhookRetentionScope) error, s store.WebhookRetentionScope) (store.Completion, error) {
 	if err := f(s); err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		s.(*retentionScopeMock).t.Errorf("unexpected successful history callback error: %v", err)
 	}
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
@@ -212,85 +213,188 @@ func retentionAssertCallOrder(t *testing.T, calls []string, want ...string) {
 	}
 }
 
-type retentionConfigCollectorMock struct {
-	t         *testing.T
-	mu        sync.Mutex
-	db        store.WebhookConfigGC
-	ctx       context.Context
-	want      []string
-	next      int
-	reconcile func(context.Context, store.WebhookConfigGC) error
-	pass      func(context.Context, store.WebhookConfigGC, int) (int, error)
+// Each queued activation describes one driver call, including history calls that
+// share the collector context. The plan does not model collector state or storage.
+type retentionCollectorOperation struct {
+	name       string
+	rows       int
+	completion store.Completion
+	err        error
+	invoke     func(context.Context) (int, store.Completion, error)
+}
+type retentionCollectorActivation struct {
+	calls []retentionCollectorOperation
+	next  int
+	ctx   context.Context
+}
+type retentionCollectorPlan struct {
+	t           *testing.T
+	mu          sync.Mutex
+	db          *retentionStoreMock
+	activations []*retentionCollectorActivation
+	history     func(context.Context, func(store.WebhookRetentionScope) error) (store.Completion, error)
 }
 
-func (m *retentionConfigCollectorMock) unexpected(method string) error {
-	m.t.Helper()
-	m.t.Errorf("unexpected config collector call: %s", method)
-	return fmt.Errorf("unexpected config collector call: %s", method)
+func (p *retentionCollectorPlan) queue(calls ...retentionCollectorOperation) {
+	p.t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(calls) == 0 {
+		p.t.Fatal("empty retention activation plan")
+	}
+	p.activations = append(p.activations, &retentionCollectorActivation{calls: append([]retentionCollectorOperation(nil), calls...)})
+}
+func (p *retentionCollectorPlan) take(ctx context.Context, db any, name string) (retentionCollectorOperation, error) {
+	p.t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	unexpected := func(reason string) (retentionCollectorOperation, error) {
+		err := fmt.Errorf("unexpected retention operation %s: %s", name, reason)
+		p.t.Error(err)
+		return retentionCollectorOperation{}, err
+	}
+	if len(p.activations) == 0 {
+		return unexpected("no queued activation")
+	}
+	activation := p.activations[0]
+	if activation.calls[activation.next].name != name {
+		return unexpected(fmt.Sprintf("want %s", activation.calls[activation.next].name))
+	}
+	if ctx == nil || ctx.Done() == nil || db != p.db {
+		return unexpected("context/store identity")
+	}
+	if activation.ctx == nil {
+		activation.ctx = ctx
+	} else if ctx != activation.ctx {
+		return unexpected("replaced activation context")
+	}
+	call := activation.calls[activation.next]
+	activation.next++
+	if activation.next == len(activation.calls) {
+		p.activations = p.activations[1:]
+	}
+	return call, nil
+}
+func (p *retentionCollectorPlan) result(ctx context.Context, db any, name string) (int, store.Completion, error) {
+	call, err := p.take(ctx, db, name)
+	if err != nil {
+		return 0, store.Completion{}, err
+	}
+	if call.invoke != nil {
+		return call.invoke(ctx)
+	}
+	return call.rows, call.completion, call.err
+}
+func (p *retentionCollectorPlan) consumed() {
+	p.t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.activations) != 0 {
+		p.t.Errorf("retention has %d unconsumed activations; next calls=%+v", len(p.activations), p.activations[0].calls[p.activations[0].next:])
+	}
+}
+func retentionOperation(name string) retentionCollectorOperation {
+	return retentionCollectorOperation{name: name}
+}
+func retentionConfigResult(rows int, err error) retentionCollectorOperation {
+	return retentionCollectorOperation{name: "config.pass", rows: rows, err: err}
+}
+func retentionReceiptResult(rows int, completion store.Completion, err error) retentionCollectorOperation {
+	return retentionCollectorOperation{name: "receipt.pass", rows: rows, completion: completion, err: err}
+}
+func retentionPassCalls(configRows, receiptRows int, classes ...string) []retentionCollectorOperation {
+	calls := []retentionCollectorOperation{retentionOperation("receipt.reconcile"), retentionOperation("config.reconcile")}
+	for _, class := range classes {
+		switch class {
+		case "config":
+			calls = append(calls, retentionConfigResult(configRows, nil))
+		case "receipt":
+			calls = append(calls, retentionReceiptResult(receiptRows, store.Completion{Outcome: store.TransactionCommitted}, nil))
+		case "history":
+			calls = append(calls, retentionOperation("history.write"))
+		default:
+			panic("invalid retention test class: " + class)
+		}
+	}
+	return calls
 }
 
-func (m *retentionConfigCollectorMock) call(ctx context.Context, db store.WebhookConfigGC, method string) error {
-	m.t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.next >= len(m.want) || m.want[m.next] != method {
-		return m.unexpected(method)
-	}
-	if ctx == nil || db != m.db {
-		return m.unexpected(method + " context/store")
-	}
-	if method == "reconcile" {
-		m.ctx = ctx
-	} else if ctx != m.ctx {
-		return m.unexpected(method + " replaced context")
-	}
-	m.next++
-	return nil
-}
+type retentionConfigCollectorMock struct{ plan *retentionCollectorPlan }
 
 func (m *retentionConfigCollectorMock) Reconcile(ctx context.Context, db store.WebhookConfigGC) error {
-	if err := m.call(ctx, db, "reconcile"); err != nil {
-		return err
-	}
-	if m.reconcile == nil {
-		return m.unexpected("unconfigured Reconcile")
-	}
-	return m.reconcile(ctx, db)
+	_, _, err := m.plan.result(ctx, db, "config.reconcile")
+	return err
 }
-
 func (m *retentionConfigCollectorMock) Pass(ctx context.Context, db store.WebhookConfigGC, budget int) (int, error) {
-	if err := m.call(ctx, db, "pass"); err != nil {
-		return 0, err
-	}
 	if budget != 125 {
-		return 0, m.unexpected(fmt.Sprintf("Pass budget %d, want 125", budget))
+		m.plan.t.Errorf("config budget=%d, want 125", budget)
 	}
-	if m.pass == nil {
-		return 0, m.unexpected("unconfigured Pass")
-	}
-	return m.pass(ctx, db, budget)
+	n, _, err := m.plan.result(ctx, db, "config.pass")
+	return n, err
 }
 
-func retentionWithConfigCollector(t *testing.T, db *retentionStoreMock, calls []string, pass func(context.Context, store.WebhookConfigGC, int) (int, error)) *Retention {
+type retentionReceiptCollectorMock struct{ plan *retentionCollectorPlan }
+
+func (m *retentionReceiptCollectorMock) Reconcile(ctx context.Context, db store.WebhookReceiptGC) error {
+	_, _, err := m.plan.result(ctx, db, "receipt.reconcile")
+	return err
+}
+func (m *retentionReceiptCollectorMock) Pass(ctx context.Context, db store.WebhookReceiptGC, budget int) (int, store.Completion, error) {
+	if budget != 125 {
+		m.plan.t.Errorf("receipt budget=%d, want 125", budget)
+	}
+	return m.plan.result(ctx, db, "receipt.pass")
+}
+func retentionWithCollectors(t *testing.T, db *retentionStoreMock) (*Retention, *retentionCollectorPlan) {
 	t.Helper()
 	r := NewRetention(db)
 	if collector, ok := r.config.(*core.ConfigCollector); !ok || collector == nil {
 		t.Fatal("retention constructor did not bind its stateful config collector")
 	}
+	if collector, ok := r.receipts.(*core.ReceiptCollector); !ok || collector == nil {
+		t.Fatal("retention constructor did not bind its stateful receipt collector")
+	}
 	db.scanConfig, db.configBarrier, db.writeConfig, db.observeConfig = nil, nil, nil, nil
-	m := &retentionConfigCollectorMock{t: t, db: db, want: append([]string(nil), calls...), pass: pass,
-		reconcile: func(context.Context, store.WebhookConfigGC) error { return nil },
+	db.expiredReceipts, db.writeReceipt, db.observeReceipt = nil, nil, nil
+	p := &retentionCollectorPlan{t: t, db: db, history: db.writeHistory}
+	config, receipts := &retentionConfigCollectorMock{plan: p}, &retentionReceiptCollectorMock{plan: p}
+	r.config, r.receipts = config, receipts
+	db.writeHistory = func(ctx context.Context, fn func(store.WebhookRetentionScope) error) (store.Completion, error) {
+		if _, err := p.take(ctx, db, "history.write"); err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		return retentionRequire(t, "controlled history.write", p.history, p.history != nil)(ctx, fn)
+	}
+	observe := db.observeHistory
+	db.observeHistory = func(ctx context.Context, kind, id string) error {
+		call, err := p.take(ctx, db, "history.observe")
+		if err != nil {
+			return err
+		}
+		if call.err != nil {
+			return call.err
+		}
+		return retentionRequire(t, "controlled history.observe", observe, observe != nil)(ctx, kind, id)
 	}
 	t.Cleanup(func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if m.next != len(m.want) {
-			t.Errorf("config collector consumed %d calls, want %v", m.next, m.want)
+		p.consumed()
+		if r.config != config || r.receipts != receipts {
+			t.Error("retention replaced its per-instance collector operations")
 		}
 	})
-	r.config = m
-	return r
+	return r, p
+}
+func retentionExpectCallback(t *testing.T, callback error, wantError bool, cause error) {
+	t.Helper()
+	if (callback != nil) != wantError {
+		t.Errorf("history callback error=%v wantError=%v", callback, wantError)
+	}
+	if cause != nil && !errors.Is(callback, cause) {
+		t.Errorf("history callback lost expected cause: %v", callback)
+	}
 }
 
 var _ retentionStore = (*retentionStoreMock)(nil)
 var _ store.WebhookRetentionScope = (*retentionScopeMock)(nil)
+var _ configCollector = (*retentionConfigCollectorMock)(nil)
+var _ receiptCollector = (*retentionReceiptCollectorMock)(nil)

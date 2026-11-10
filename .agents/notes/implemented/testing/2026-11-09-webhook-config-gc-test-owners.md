@@ -28,8 +28,10 @@ observation with the original candidate cursor.
 
 The [Retention configuration operation decision](2026-11-09-retention-config-operation-test-owners.md)
 uses the same plan for five eligibility rules, a pending barrier and all 125
-original configuration candidates. Its service tests supply operation results
-while retaining shared budgets, context and native unknown-state lifetime.
+original configuration candidates. The later
+[collector ownership decision](2026-11-10-retention-collector-operation-test-owners.md)
+uses finite service operation results for budgets, context and lifecycle while
+actual collector unknown state remains in the Core plans.
 
 PostgreSQL tests call the actual scan, barrier, write scope, lock and delete
 methods directly. An independently active earlier XID keeps the real barrier

@@ -90,6 +90,10 @@ func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, proj
 type terminalHistoryCursor struct{ Project, Task, Created, ID string }
 
 func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int) (map[string]any, error) {
+	return s.terminalHistory(ctx, p, project, taskID, token, limit, false)
+}
+
+func (s *Execution) terminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int, includeBinding bool) (map[string]any, error) {
 	if limit < 1 || limit > 200 || len(token) > v2.MaxHistoryCursorBytes {
 		return nil, fault("invalid_payload", "Invalid Session history page.")
 	}
@@ -112,7 +116,7 @@ func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, proj
 		beforeID = &position.ID
 	}
 	var out map[string]any
-	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, _ *TaskAccess, _ func(string) (*Access, error)) error {
+	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, _ func(string) (*Access, error)) error {
 		_, tx := op.scoped(scope)
 		rows, err := tx.dao.TerminalHistory(ctx, project, taskID, before, beforeID, limit+1)
 		if err != nil {
@@ -161,6 +165,10 @@ func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, proj
 				archiveState = *state
 			}
 			items = append(items, map[string]any{"sessionId": id, "claimId": claim, "executionGeneration": generation, "agentControlMode": backend, "contentKind": content, "createdAt": created.UTC().Format(time.RFC3339Nano), "endedAt": ended, "archive": map[string]any{"state": archiveState, "sha256": hash, "byteLength": size, "completeness": completeness}})
+			if includeBinding {
+				w := task.task.Worker
+				items[len(items)-1]["currentBinding"] = w != nil && w.ClaimID == claim && string(w.AgentControlMode) == backend
+			}
 		}
 		out = map[string]any{"items": items, "nextCursor": nextCursor}
 		return nil

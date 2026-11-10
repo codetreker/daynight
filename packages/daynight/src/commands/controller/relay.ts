@@ -9,6 +9,7 @@ import { SESSION_PROTOCOL, type SessionCommand, type SessionOperation, type Cont
 import { RELAY_LIMITS, parseControllerGrantResponse, parseRelayMessage, type ControllerMessage, type ControllerGrantResponse, type SourceEvent, type Reconciliation, type ControllerState, type ContentResponse, type ContentRequest, type ImageRequest, type ImageResponse, parseImageCaptureMessage, type ImageCaptureAction, type ImageCaptureBody, type ImageCaptureMessage } from "../../session/controller-protocol.js";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
+import { CONTENT_READ_VERSION_HEADER, SessionHistoryError } from "../../session/history.js";
 
 export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
 export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promise<ControllerGrantResponse> => {
@@ -108,7 +109,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     try {
       const grant = await readControllerGrant(ticket); if (stopped) return; currentToken = grant.token;
       const url = new URL("/api/v1/controller-channel", ticket.serverOrigin); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}` }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
+      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1" }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
       ws.on("error", error => callbacks.onError(error.message));
       ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
       ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
@@ -194,9 +195,15 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       if (request && !request.response) {
         let result: ContentResponse["result"] = null, error: ContentResponse["error"] = null;
         try {
-          if (request.request.kind === "timeline" && request.request.historyEpoch !== historyEpoch) throw new Error("Timeline cursor belongs to another connection.");
-          result = request.request.kind === "timeline" ? journal.readTimeline(request.request) : journal.readResource(request.request.resourceId, request.request.offset, request.request.limit);
-        } catch (failure) { error = { code: "content_unavailable", message: failure instanceof Error ? failure.message.slice(0, 4096) : "Local content is unavailable." }; }
+          const query = request.request;
+          if (query.kind !== "resource" && query.historyEpoch !== historyEpoch) throw new SessionHistoryError("reset_required", "The history cursor belongs to another connection.");
+          switch (query.kind) {
+            case "timeline": result = journal.readTimeline(query); break;
+            case "resource": result = journal.readResource(query.resourceId, query.offset, query.limit); break;
+            case "inspect_page": result = journal.readInspection(query); break;
+            case "entry_chunk": result = journal.readEntryChunk(query); break;
+          }
+        } catch (failure) { error = { code: failure instanceof SessionHistoryError ? failure.code : "content_unavailable", message: failure instanceof Error ? failure.message.slice(0, 4096) : "Local content is unavailable." }; }
         request.response = { requestId: request.request.requestId, sourceThrough: journal.getLastSourceSequence(), result, error };
       }
       const response = request?.response;

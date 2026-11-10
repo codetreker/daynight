@@ -21,10 +21,45 @@ If no target context is available, use `project_list` and have the user explicit
 | `task_properties` | What property definitions exist, or what complete property values does this task have? | Schema mode is service-wide; values mode is scoped to a Project and Task. |
 | `task_step_list`, `task_step_show` | What ordered Steps or selected Step belong to this Task? | An independent collection sharing the parent Task version; summary is the default. |
 | `task_thread_read` | What complete discussion messages are before or after this message, or in the latest page? | Independent message pagination; no task projection or task version fence. |
+| `task_session_current`, `task_session_list` | Which Session belongs to the current execution, or which Sessions belong to this Task's history? | Current association never falls back to an older Session; the directory has independent pagination. |
+| `task_session_show` | What identity, observed state and readable source belong to this exact Session? | Preserve the selected Session ID when the Task starts a new execution. |
+| `task_session_read`, `task_session_entry` | What messages or complete large entry belong to this exact Session? | Message pages and UTF-8 entry chunks have independent opaque cursors. |
 
 Task descriptions, Steps, Thread messages and attachment bytes are separate resources. A successful Task read does not prove that these other materials have been read. See [Materials](daynight://manuals/materials.md) and [Files and references](daynight://manuals/files-and-references.md).
 
 There is no `task_search` MCP tool. For inventory-based discovery or duplicate checks, use the available `task_list` filters, traverse all matching pages, and read relevant task details. Do not invent a search argument or transfer CLI search syntax into MCP calls.
+
+## Locate and read a Task Session
+
+Use the Session ID from an observation or `task_session_current`. The latter requires `projectId` and `taskId`, and returns `status`, nullable `claimId`, `agentControlMode` and `session`. `registered` supplies the exact inspection; `not_registered` means the current execution has no registered Session, and `not_applicable` means there is no execution association. Neither empty result selects historical content.
+
+`task_session_list` takes the same scope, optional `limit` (default 20, range 1–200) and optional `cursor`. Its `items` run newest to oldest; pass the returned `nextCursor` unchanged until it is null. Each row identifies the original claim and execution generation, control mode, content kind, current binding and archive status. Reading a historical Session does not replace it with a newer claim's Session.
+
+For `task_session_show`, supply `projectId`, `taskId` and the selected `sessionId`. Its inspection separates the exact Session identity and current fence from `currentBinding`, observed state and `source` (`live`, `archive` or `unavailable`). An unavailable observation remains explicitly unavailable; it does not prove that the Session is idle. `contentReadVersion` reports whether the live Controller supports original-content reads. Herdr Sessions identify `terminal_recording`; their recordings are not chat messages.
+
+Read the latest page with:
+
+```json
+{
+  "name": "task_session_read",
+  "arguments": {
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "taskId": "22222222-2222-4222-8222-222222222222",
+    "sessionId": "33333333-3333-4333-8333-333333333333",
+    "limit": 20
+  }
+}
+```
+
+The page returns `sessionId`, `historyEpoch`, `source`, `items`, `beforeCursor`, `hasMoreBefore`, `coverage` and `observedAt`. Items within the page run oldest to newest. To read earlier history, pass `beforeCursor` as `before` with the same Project, Task and Session. Continue according to `hasMoreBefore`; an empty filtered page can still have an earlier continuation. The optional `conversation: true` keeps user and assistant messages from the selected page only. It does not scan extra history to fill the page or alter its cursor boundary.
+
+The default page has at most 20 entries and accepts `limit` from 1 to 200. Its complete HTTP response is bounded to 256 KiB, including errors, the MCP envelope and request identity. Send each history read in a separate request; a one-element legacy batch is supported, while a multi-call batch containing a history read is rejected before any tool runs. An oversized request identity or encoded response receives a bounded HTTP `resource_limit_exceeded` error. A large entry can therefore have `body: null`, `truncated: true` and a `contentRef`, even when fewer than the requested entries fit. The cursor still advances past that entry. Resource descriptors are bounded and may set `resourcesTruncated`; they contain no resource bytes. `timestamp: null` means the entry has no common timestamp, not that the service inferred a time.
+
+To retrieve an entry's canonical JSON, pass its `contentRef.cursor` to `task_session_entry` with the same `projectId`, `taskId` and `sessionId`. The result includes `entryId`, `revision`, `sha256`, `byteLength`, `offset`, `fragment`, `nextCursor` and `eof`, plus its source, epoch and observation time. `fragment` contains at most 32 KiB of UTF-8 and never splits a code point. Append fragments in byte-offset order; continue with each returned `nextCursor` until `eof` is true. Preserve decimal byte lengths and offsets as strings. Verify the assembled UTF-8 byte length and SHA-256 before parsing its canonical JSON. A returned chunk is a content fragment, not necessarily independently parseable JSON.
+
+Every page and chunk rechecks access and the exact Session. Cursors bind their source and revision: `reset_required` requires restarting from the newest page, including when live content becomes an archive; `content_changed` requires obtaining a fresh entry reference before assembling again. Do not combine bytes from different revisions, hashes or epochs. `history_pending`, `history_unavailable` and `source_corrupt` distinguish unfinished archival, unavailable content and corrupt content. An older Controller can supply compatible short entries, but `upgrade_required` means its display-budget placeholder cannot supply the original entry. `unsupported_mode` identifies Herdr content that is not available through chat-history tools.
+
+Archive reads return the same bounded pages and chunks without making the client download the full archive. `coverage` and the observation's `partial` flag preserve incomplete content; a successful read does not prove that missing archive resources exist. These read tools never create a write receipt or authorize sending input to the Session.
 
 ## Summaries and full content
 

@@ -30,9 +30,11 @@ outcomes that cannot be interpreted as rollback.
 Configuration and redelivery cases own authorization, versions, budgets,
 idempotence, fresh observations and effect parameters. Capture cases own frozen
 audience grouping, immutable facts and responsibilities, schedule generation and
-error propagation. Delivery and retention cases own admission, finalization,
-recovery, reconciliation and lifecycle decisions from DAO results. Time-dependent
-rules receive explicit `ObservedAt`, `RecordedAt` and Fact times.
+error propagation. Delivery cases own admission, finalization, recovery and reconciliation from
+DAO results. The [Retention collector decision](2026-11-10-retention-collector-operation-test-owners.md)
+separates collector operations from service aggregation and lifecycle while
+retaining real history scopes. Time-dependent rules receive explicit
+`ObservedAt`, `RecordedAt` and Fact times.
 
 Concurrent mock calls synchronize actual callback entry and cancellation through
 channels. Ordering belongs to a logical worker, delivery or transaction, or to

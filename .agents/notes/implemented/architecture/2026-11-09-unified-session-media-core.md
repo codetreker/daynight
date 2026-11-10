@@ -117,6 +117,11 @@ Historical display snapshots use the same complete resource-reference traversal
 as archives, including Markdown, reasoning and retained bindings. They retain
 descriptor closure while allowing unresolved projections; sealing remains an
 archive-only requirement. Cached rows retain no original bytes or read authority.
+Task history inspection uses that same traversal and retains its six-field
+metadata preview, including the unified image name limit. Its schema3 reader
+uses the original archive operation to read and authorize the separate timeline;
+the shared archive permit and timeline read lease survive until response
+delivery. No legacy archive copy or second competing archive admission is needed.
 
 A source retry retains its capture, occurrence and locator while a new attempt
 fences private staging and every subsequent commit. Its reservation and durable

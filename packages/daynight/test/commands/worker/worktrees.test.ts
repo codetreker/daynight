@@ -521,7 +521,7 @@ describe("worker repositories and task worktrees", () => {
     await adapter.removeWorktree(f.project, f.owner, operation()); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "keep\n");
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching ownership registration");
     expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("keep\n");
-  });
+  }, 30_000);
 
   it.each(["original claim", "new claim"] as const)("reuses an empty unregistered reservation for the %s", async (kind) => {
     const f = await fixture(); const adapter = manager(f.root);

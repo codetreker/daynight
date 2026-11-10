@@ -36,12 +36,13 @@ type TaskSessionSend struct {
 }
 
 type TaskSessionInspection struct {
-	SchemaVersion  int                    `json:"schemaVersion"`
-	ProjectID      string                 `json:"projectId"`
-	TaskID         string                 `json:"taskId"`
-	SessionID      string                 `json:"sessionId"`
-	CurrentBinding bool                   `json:"currentBinding"`
-	Fence          ControllerFence        `json:"fence"`
-	Source         string                 `json:"source"`
-	Session        TaskSessionObservation `json:"session"`
+	ContentReadVersion int                    `json:"contentReadVersion"`
+	SchemaVersion      int                    `json:"schemaVersion"`
+	ProjectID          string                 `json:"projectId"`
+	TaskID             string                 `json:"taskId"`
+	SessionID          string                 `json:"sessionId"`
+	CurrentBinding     bool                   `json:"currentBinding"`
+	Fence              ControllerFence        `json:"fence"`
+	Source             string                 `json:"source"`
+	Session            TaskSessionObservation `json:"session"`
 }

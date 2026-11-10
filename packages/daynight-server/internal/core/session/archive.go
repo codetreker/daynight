@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -251,6 +252,9 @@ func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (j
 		}
 		object, err := s.files.Open(ctx, archiveBucket, path)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return &model.Fault{Code: "source_corrupt", Message: "The ready Session archive file is missing.", Cause: err}
+			}
 			return err
 		}
 		defer func() { result = archiveCleanupFailure(result, object.Body.Close()) }()
@@ -260,14 +264,15 @@ func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (j
 		}
 		sum := sha256.Sum256(data)
 		if status.SHA256 == nil || status.ByteLength == nil || strconv.Itoa(len(data)) != *status.ByteLength || hex.EncodeToString(sum[:]) != *status.SHA256 {
-			return errors.New("session archive integrity check failed")
+			return fault("source_corrupt", "Session archive integrity check failed.")
 		}
 		if status.SchemaVersion == 3 {
-			if _, err = sp.DecodeArchiveManifest(data); err != nil {
-				return err
-			}
-		} else if _, err = sp.DecodeArchive(data); err != nil {
-			return err
+			_, err = sp.DecodeArchiveManifest(data)
+		} else {
+			_, err = sp.DecodeArchive(data)
+		}
+		if err != nil {
+			return &model.Fault{Code: "source_corrupt", Message: "The Session archive format is invalid.", Cause: err}
 		}
 		if status.SchemaVersion != 3 {
 			if _, capable := tx.dao.(store.SessionArchiveDAO); capable {

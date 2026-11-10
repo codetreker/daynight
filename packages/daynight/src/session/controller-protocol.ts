@@ -2,6 +2,7 @@ import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChu
 import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage } from "./image-values.js";
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
+import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, historyCursorText, parseInspectionPage, parseEntryChunk, type InspectionPage, type EntryChunk } from "./history.js";
 import { assertSessionFence, sessionBinding, sessionBindingKeys, sessionFence, SESSION_PROTOCOL, parseSessionSnapshot, parseSessionCommand, parseSessionEvent, parseSessionOperation, parseSessionResource, parseTimelineEntry,
   type SessionBinding, type SessionFence, type ControllerFence, type DecimalSequence, type SessionCapabilities, type SessionCommand, type SessionEvent, type SessionOperation, type SessionProvider, type SessionResource, type SessionSnapshot, type TimelineEntry } from "./protocol.js";
 
@@ -27,8 +28,11 @@ export type SourceEvent = { readonly sourceSeq: DecimalSequence } & (
 export type Reconciliation = { readonly operationId: string; readonly state: "not_submitted" | "dispatching" | "provider_accepted" | "confirmed" | "failed" | "rejected" | "expired" | "unknown"; readonly providerResult: SessionOperation["providerResult"]; readonly error: SessionOperation["error"] };
 export type ContentRequest = { readonly requestId: string } & (
   | { readonly kind: "timeline"; readonly historyEpoch: string; readonly direction: "tail" | "before" | "after"; readonly cursor: string | null; readonly limit: number }
+  | { readonly kind: "inspect_page"; readonly historyEpoch: string; readonly cursor: string | null; readonly limit: number; readonly responseOverhead: number }
+  | { readonly kind: "entry_chunk"; readonly historyEpoch: string; readonly cursor: string; readonly limit: number }
   | { readonly kind: "resource"; readonly resourceId: string; readonly offset: string; readonly limit: number });
 export type ContentResult = (Omit<TimelinePage, "sessionId" | "lastEventSeq"> & { readonly kind: "timeline" })
+  | InspectionPage | EntryChunk
   | { readonly kind: "resource"; readonly resource: SessionResource; readonly offset: string; readonly data: string; readonly eof: boolean };
 export type ContentResponse = { readonly requestId: string; readonly sourceThrough: string; readonly result: ContentResult | null; readonly error: { readonly code: string; readonly message: string } | null };
 export type ControllerHello = Wire & SessionFence & { readonly contentRevision?: 2; readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly sourceFloor?: DecimalSequence };
@@ -161,6 +165,8 @@ export const parseSourceEvent = (x: unknown): SourceEvent => {
 };
 const parseContentResult = (value: unknown): ContentResult => {
   if (!value || typeof value !== "object" || !("kind" in value)) return fail();
+  if (value.kind === "inspect_page") return parseInspectionPage(value);
+  if (value.kind === "entry_chunk") return parseEntryChunk(value);
   if (value.kind === "timeline") {
     const o = obj(value, ["kind", "historyEpoch", "items", "resources", "beforeCursor", "afterCursor", "hasMoreBefore", "hasMoreAfter"]);
     return { kind: "timeline", historyEpoch: id(o.historyEpoch), items: list(o.items, parseTimelineEntry, 200), resources: list(o.resources, parseSessionResource, 1000), beforeCursor: nullable(o.beforeCursor, str), afterCursor: nullable(o.afterCursor, str), hasMoreBefore: bool(o.hasMoreBefore), hasMoreAfter: bool(o.hasMoreAfter) };
@@ -212,7 +218,8 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     for (const [k, v] of Object.entries(RELAY_LIMITS)) if (limits[k] !== v) return fail();
     return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}) };
   }
-  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && x.kind === "timeline" ? ["historyEpoch", "direction", "cursor", "limit"] : ["resourceId", "offset", "limit"])], heartbeat_ack: [], error: ["code", "message"] };
+  const contentFields: Record<string, readonly string[]> = { timeline: ["historyEpoch", "direction", "cursor", "limit"], resource: ["resourceId", "offset", "limit"], inspect_page: ["historyEpoch", "cursor", "limit", "responseOverhead"], entry_chunk: ["historyEpoch", "cursor", "limit"] };
+  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
   switch (x.type) {
@@ -233,6 +240,14 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     case "sync_ack": return { ...base, type: "sync_ack" };
     case "content_request": {
       if (typeof o.limit !== "number" || !Number.isSafeInteger(o.limit) || o.limit < 1) return fail();
+      if (o.kind === "inspect_page") {
+        if (o.limit > 200 || typeof o.responseOverhead !== "number" || !Number.isSafeInteger(o.responseOverhead) || o.responseOverhead < 0 || o.responseOverhead >= HISTORY_RESPONSE_BYTES) return fail();
+        return { ...base, type: "content_request", requestId: id(o.requestId), kind: "inspect_page", historyEpoch: id(o.historyEpoch), cursor: nullable(o.cursor, historyCursorText), limit: o.limit, responseOverhead: o.responseOverhead };
+      }
+      if (o.kind === "entry_chunk") {
+        if (o.limit > HISTORY_CHUNK_BYTES) return fail();
+        return { ...base, type: "content_request", requestId: id(o.requestId), kind: "entry_chunk", historyEpoch: id(o.historyEpoch), cursor: historyCursorText(o.cursor), limit: o.limit };
+      }
       if (o.kind === "timeline") {
         if (o.limit > 200) return fail();
         const direction = choice(o.direction, ["tail", "before", "after"]);

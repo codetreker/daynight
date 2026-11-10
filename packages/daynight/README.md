@@ -230,7 +230,8 @@ user home, load review configuration, open SQLite or require review tools. `revi
 `--path <path>` before or after its remote; `--path=value` and `--` are invalid.
 Unknown commands and invalid arguments exit with status 2; operation failures
 exit with status 1 and retain their cause. Task reads with partial Session
-observations print the available result and exit with status 3. The old `--daemon-review` and root
+observations print the available result and exit with status 3. Explicit Session
+read commands exit 130 on user signal cancellation. The old `--daemon-review` and root
 `add-repo` forms are invalid. The
 [client design](../../docs/design/daynight.md) owns command composition and lazy loading;
 the [composition decision](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)
@@ -1228,6 +1229,65 @@ transport failures exit 1. An old service yields `unsupported` and an upgrade
 instruction, with at most one plain Task traversal after an explicit
 negotiation refusal. `task ready`, `graph --depends-only`, write preflight and
 mutation receipts retain their original reads and output.
+
+### Inspect and read a Task Session
+
+```bash
+daynight task session current TASK --project PROJECT --json
+daynight task session list TASK --project PROJECT --limit 20 --json
+daynight task session show TASK SESSION --project PROJECT --json
+daynight task session read TASK SESSION --project PROJECT --json
+daynight task session read TASK SESSION --project PROJECT --before TOKEN --conversation --json
+daynight task session entry TASK SESSION --project PROJECT --cursor TOKEN --json
+```
+
+`SESSION` is the Daynight platform UUID, distinct from a native Provider ID.
+`current` returns the current association or explicit unregistered/not-applicable
+state; it never substitutes the latest historical Session. `list` returns one
+directory page with execution and archive facts, `currentBinding`, and
+`nextCursor` for an explicit `--cursor` continuation. `show` uses the selected
+Session's inspection, including its original fence, readable live/archive source
+and independent observation and send eligibility. A changed Task claim does not
+redirect a historical read.
+
+`read` returns the latest 20 timeline entries by default, with a 1–200 limit.
+Entries include tools and interactions, and are ordered oldest to newest within
+each page. `--before` consumes `beforeCursor` to move toward earlier history.
+`--conversation` filters only the selected page to user and assistant messages;
+an empty result retains the original continuation rather than fetching older
+pages to fill the limit. No command automatically follows a cursor. Timestamps
+remain null where the source has none.
+
+Message pages and entry blocks have a dedicated 256 KiB complete encoded HTTP
+response limit. Oversized entries provide `body=null`, `truncated=true` and a
+`contentRef` containing a cursor, SHA256 and UTF-8 byte length. `entry` reads at
+most 32 KiB of canonical JSON fragment, on UTF-8 code-point boundaries. In JSON,
+concatenate `fragment` values in `offset` order while the Session, source, epoch,
+entry, revision, hash and length remain equal, then verify the complete length
+and SHA256. Use each `nextCursor` explicitly until `eof=true`. Text output escapes
+terminal controls and is unsuitable for byte reconstruction. Resource metadata
+contains references only; these commands do not emit media bytes or base64.
+
+Valid archives remain readable while the original Worker is offline. `coverage`
+preserves visible gaps in original entries, resources or archives; `complete`
+does not prove exhaustive native history capture. Pending/unavailable history,
+corrupt archives and empty history are distinct results. Every page and block is reauthorized.
+`reset_required` rejects changed epochs or live/archive sources;
+`content_changed` rejects changed entry content. Discard the old continuation
+and explicitly read the same Session again. The CLI never switches targets or
+silently joins different versions. `contentReadVersion` reports the current live
+Controller connection's complete-content support; old Controllers may read
+short entries, but display-budget placeholders return `upgrade_required`.
+Herdr remains `terminal_recording` and does not provide chat messages.
+
+Complete queries exit 0. Partial observations or history pages print their data
+and exit 3; definite failures, including timeouts, exit 1 and usage errors exit 2.
+User signal cancellation exits 130. JSON retains the
+original body or explicit content reference; text retains readable line breaks
+while escaping terminal controls. Session reads do not execute message content,
+start Agents, change claims or grant sending permission. The bundled
+[Session inspection guide](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+describes the Agent workflow and equivalent MCP read tools.
 
 ### Task Session messages and recovery
 

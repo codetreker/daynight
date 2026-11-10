@@ -1,0 +1,36 @@
+{
+  "entry": {
+    "entryId": "00000000-0000-4000-8000-000000000001",
+    "entrySeq": "9007199254740993",
+    "interaction": {
+      "canDismiss": false,
+      "fields": [
+        {
+          "fieldId": "fraction",
+          "label": "<>& Unicode 😀  ",
+          "max": 1e+21,
+          "min": 0.1,
+          "required": true,
+          "type": "number"
+        },
+        {
+          "fieldId": "tiny",
+          "label": "Tiny",
+          "max": 1e-7,
+          "min": 0,
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "interactionId": "00000000-0000-4000-8000-000000000002",
+      "kind": "form",
+      "revision": "1",
+      "state": "pending",
+      "title": "Unicode and fractions"
+    },
+    "kind": "interaction",
+    "revision": "7"
+  },
+  "canonical": "{\"entryId\":\"00000000-0000-4000-8000-000000000001\",\"entrySeq\":\"9007199254740993\",\"interaction\":{\"canDismiss\":false,\"fields\":[{\"fieldId\":\"fraction\",\"label\":\"<>& Unicode 😀  \",\"max\":1e+21,\"min\":0.1,\"required\":true,\"type\":\"number\"},{\"fieldId\":\"tiny\",\"label\":\"Tiny\",\"max\":1e-7,\"min\":0,\"required\":false,\"type\":\"number\"}],\"interactionId\":\"00000000-0000-4000-8000-000000000002\",\"kind\":\"form\",\"revision\":\"1\",\"state\":\"pending\",\"title\":\"Unicode and fractions\"},\"kind\":\"interaction\",\"revision\":\"7\"}",
+  "sha256": "d3cf66e1eef3a58fa126e33673461d23bcfbd7f11e358d35aca97c017904bff7"
+}

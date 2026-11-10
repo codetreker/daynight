@@ -986,6 +986,11 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 	if err != nil {
 		return nil, err
 	}
+	return s.archiveTimelineContent(ctx, op, fileID, nil, "")
+}
+
+func (s *Execution) archiveTimelineContent(ctx context.Context, op *ArchiveOperation, fileID string, manifest *sp.ArchiveManifest, manifestHash string) (out *RetainedArchive, result error) {
+	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	leaseID := uuid.NewString()
 	ctx, finish, err := s.beginImageIO(ctx, id, leaseID)
 	if err != nil {
@@ -1022,6 +1027,9 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		if status.State != "ready" || status.SchemaVersion != 3 {
 			return fault("not_found", "Unified archive is unavailable.")
 		}
+		if manifest != nil && (status.SHA256 == nil || *status.SHA256 != manifestHash) {
+			return archiveConflict()
+		}
 		dao, e := archiveDAO(tx)
 		if e != nil {
 			return e
@@ -1041,6 +1049,9 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 			return e
 		}
 		if file.State != "complete" || file.Purpose != "timeline" {
+			return archiveConflict()
+		}
+		if manifest != nil && (manifest.RecordID != id || manifest.Timeline.FileID != file.FileID || manifest.Timeline.SHA256 != file.SHA256 || manifest.Timeline.ByteLength != decimal(file.ByteLength)) {
 			return archiveConflict()
 		}
 		media, e := archiveMediaDAO(tx)
@@ -1063,6 +1074,9 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 	leaseAcquired = true
 	data, err := op.readBundleFile(ctx, file, sp.MaxArchiveBytes)
 	if err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
 	timeline, err := sp.DecodeArchiveTimeline(data)
@@ -1117,6 +1131,9 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
 	return &RetainedArchive{Data: data, operation: op, closeFn: cleanup}, nil

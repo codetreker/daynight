@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,16 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
+
+func TestControllerHandshakePassesOnlyItsContentReadVersion(t *testing.T) {
+	for _, version := range []int{1, 0} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			f := sessionHTTPSetup(t)
+			conn, _ := f.controller(t, uuid.NewString(), version)
+			_ = conn.CloseNow()
+		})
+	}
+}
 
 func TestSessionRoutesExposeOnlyCurrentClaim(t *testing.T) {
 	f := sessionHTTPSetup(t)

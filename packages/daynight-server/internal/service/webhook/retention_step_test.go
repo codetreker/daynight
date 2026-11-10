@@ -194,7 +194,13 @@ func TestRetentionCloseValidatesAttemptBudgetAndCounts(t *testing.T) {
 			}
 			db := retentionEmptyStore(t)
 			db.writeHistory = func(_ context.Context, f func(store.WebhookRetentionScope) error) (store.Completion, error) {
-				return retentionCallback(f, s)
+				completion := store.Completion{Outcome: store.TransactionCommitted}
+				if tc.wantError {
+					completion.Outcome = store.TransactionNotCommitted
+				}
+				callback := f(s)
+				retentionExpectCallback(t, callback, tc.wantError, nil)
+				return completion, callback
 			}
 			n, found, more, err := NewRetention(db).step(t.Context(), tc.budget)
 			if (err != nil) != tc.wantError || more != tc.wantMore {
@@ -236,7 +242,13 @@ func TestRetentionPurgeDeletesChildrenBeforeDelivery(t *testing.T) {
 			}
 			db := retentionEmptyStore(t)
 			db.writeHistory = func(_ context.Context, f func(store.WebhookRetentionScope) error) (store.Completion, error) {
-				return retentionCallback(f, s)
+				completion := store.Completion{Outcome: store.TransactionCommitted}
+				if tc.wantError {
+					completion.Outcome = store.TransactionNotCommitted
+				}
+				callback := f(s)
+				retentionExpectCallback(t, callback, tc.wantError, nil)
+				return completion, callback
 			}
 			n, found, _, err := NewRetention(db).step(t.Context(), 11)
 			if (err != nil) != tc.wantError {
@@ -350,7 +362,9 @@ func TestRetentionStepPropagatesEveryDAOFailure(t *testing.T) {
 			}
 			db := retentionEmptyStore(t)
 			db.writeHistory = func(_ context.Context, f func(store.WebhookRetentionScope) error) (store.Completion, error) {
-				return retentionCallback(f, s)
+				callback := f(s)
+				retentionExpectCallback(t, callback, true, failure)
+				return store.Completion{Outcome: store.TransactionNotCommitted}, failure
 			}
 			n, found, more, err := NewRetention(db).step(t.Context(), 500)
 			if !errors.Is(err, failure) || n != 0 || found || more {

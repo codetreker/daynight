@@ -97,7 +97,7 @@ func (s *Execution) acceptContent(tx *operationTx, r *record, m sp.ControllerMes
 	} else if m.ContentError != nil {
 		code := m.ContentError.Code
 		switch code {
-		case "not_found", "reset_required", "payload_too_large", "content_unavailable", "resource_conflict", "rate_limited":
+		case "not_found", "reset_required", "payload_too_large", "content_unavailable", "resource_conflict", "rate_limited", "content_changed", "upgrade_required":
 		default:
 			code = "content_unavailable"
 		}
@@ -137,7 +137,15 @@ func (s *Execution) localContent(ctx context.Context, p model.Principal, project
 		for k, v := range fields {
 			msg[k] = v
 		}
-		if fields["kind"] == "timeline" {
+		if fields["kind"] == "inspect_page" || fields["kind"] == "entry_chunk" {
+			if value, ok := fields["historyEpoch"].(string); ok && value != "" && value != r.Snapshot.HistoryEpoch {
+				return fault("reset_required", "The history epoch changed.")
+			}
+			if r.Live.ContentReadVersion != 1 {
+				return fault("upgrade_required", "Reconnect an upgraded controller for full entry reads.")
+			}
+		}
+		if fields["kind"] == "timeline" || fields["kind"] == "inspect_page" || fields["kind"] == "entry_chunk" {
 			msg["historyEpoch"] = r.Snapshot.HistoryEpoch
 		}
 		pending = &pendingContent{projectID: project, fence: r.Snapshot.ControllerFence, epoch: r.Snapshot.HistoryEpoch, request: msg, kind: fields["kind"].(string), reply: make(chan contentReply, 1)}

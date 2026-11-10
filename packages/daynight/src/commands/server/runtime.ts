@@ -2,6 +2,7 @@ import type { EventEmitter } from "node:events";
 import { createApiClient, createOperation } from "../../api/index.js";
 import type { ApiClient, Operation, OperationLimits } from "../../api/index.js";
 import type { CliContext } from "../../cli/context.js";
+import { CliCancelledError } from "../../cli/cancellation.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
 import type { ServerConfiguration } from "../../config/server.js";
@@ -80,7 +81,7 @@ export const runServerCommand = async (
   const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(confirmed!.failureText(phase), 1, { cause: confirmed!.containsSecret === true ? protectSecretDiagnostic(cause) : cause });
   try {
     for (const signal of signals) {
-      const cancel = (): void => cancellation.abort(new Error(`Received ${signal}.`));
+      const cancel = (): void => cancellation.abort(new CliCancelledError(`Received ${signal}.`));
       emitter.on(signal, cancel);
       listeners.push([signal, cancel]);
     }

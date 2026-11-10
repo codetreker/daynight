@@ -31,8 +31,10 @@ scan or migration is added, and removed read budgets do not become write quotas.
 The [Task Session work overview](../feature/2026-11-10-task-session-observation.md)
 is a scoped exception: its independent summary pages retain a dedicated 256 KiB
 complete-response budget and resumable group/target prefixes. Ordinary Task
-list, show and graph remain complete. This exception does not restore shared
-MCP runtime output validation or generic read admission.
+list, show and graph remain complete. The [Task Session history reader](../feature/2026-11-10-task-session-history.md)
+also retains a dedicated 256 KiB budget for message pages and entry chunks.
+These exceptions do not restore shared MCP runtime output validation or generic
+read admission.
 
 Project, Team, member, invitation and attachment page operations select their
 requested count plus one lookahead in a batch, after current authorization and
