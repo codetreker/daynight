@@ -624,3 +624,115 @@ func TestValidConfigurationCanReplaceOverLimitStoredValue(t *testing.T) {
 		}
 	})
 }
+
+const authorityUser = "ec000000-0000-4000-8000-000000000001"
+const authorityWorker = "ec000000-0000-4000-8000-000000000002"
+const authorityProject = "ec000000-0000-4000-8000-000000000003"
+const authorityUnknownProject = "ec000000-0000-4000-8000-000000000004"
+
+func authorityConfiguration(max int64, project string) model.WorkerConfiguration {
+	return model.WorkerConfiguration{
+		PreferPlatformSpecificTasks: false,
+		MaxConcurrent:               max, PollIntervalMs: 60000, RecoveryLimit: 3,
+		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+		Projects: []model.WorkerProjectConfiguration{{ProjectID: project, NativeOverrides: map[string]json.RawMessage{}}},
+	}
+}
+
+func authorityResource(revision string, max int64, at time.Time) model.WorkerConfigurationResource {
+	return model.WorkerConfigurationResource{
+		Desired:             &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: at, Value: authorityConfiguration(max, authorityProject)},
+		ObservationRevision: "0", Observation: nil,
+	}
+}
+
+func TestConfigurationBootstrapCloudAuthority(t *testing.T) {
+	t1 := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Second)
+	for _, tc := range []struct {
+		name          string
+		current       func() model.WorkerConfigurationResource
+		input         func() model.WorkerConfiguration
+		exchange      bool
+		writeRevision int64
+		writeAt       time.Time
+		access        bool
+		fault         string
+		want          func() model.WorkerConfigurationResource
+		calls         []string
+	}{
+		{name: "uninitialized put", current: func() model.WorkerConfigurationResource {
+			return model.WorkerConfigurationResource{ObservationRevision: "0"}
+		}, input: func() model.WorkerConfiguration { return authorityConfiguration(2, authorityProject) }, fault: "configuration_not_initialized", calls: []string{"read"}},
+		{name: "bootstrap", current: func() model.WorkerConfigurationResource {
+			return model.WorkerConfigurationResource{ObservationRevision: "0"}
+		}, input: func() model.WorkerConfiguration { return authorityConfiguration(2, authorityProject) }, exchange: true, writeRevision: 1, writeAt: t1, access: true, want: func() model.WorkerConfigurationResource { return authorityResource("1", 2, t1) }, calls: []string{"read", "access", "desired"}},
+		{name: "no-op", current: func() model.WorkerConfigurationResource { return authorityResource("1", 2, t1) }, input: func() model.WorkerConfiguration { return authorityConfiguration(2, authorityProject) }, want: func() model.WorkerConfigurationResource { return authorityResource("1", 2, t1) }, calls: []string{"read"}},
+		{name: "update", current: func() model.WorkerConfigurationResource { return authorityResource("1", 2, t1) }, input: func() model.WorkerConfiguration { return authorityConfiguration(7, authorityProject) }, writeRevision: 2, writeAt: t2, want: func() model.WorkerConfigurationResource { return authorityResource("2", 7, t2) }, calls: []string{"read", "desired"}},
+		{name: "stale", current: func() model.WorkerConfigurationResource { return authorityResource("2", 7, t2) }, input: func() model.WorkerConfiguration { return authorityConfiguration(7, authorityProject) }, fault: "version_conflict", calls: []string{"read"}},
+		{name: "cloud authority", current: func() model.WorkerConfigurationResource { return authorityResource("2", 7, t2) }, input: func() model.WorkerConfiguration { return authorityConfiguration(2, authorityUnknownProject) }, exchange: true, want: func() model.WorkerConfigurationResource { return authorityResource("2", 7, t2) }, calls: []string{"read"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			principal := model.Principal{Kind: model.SessionCredential, UserID: authorityUser, CredentialID: "ec000000-0000-4000-8000-000000000005"}
+			current, input := tc.current(), tc.input()
+			var calls []string
+			d := &capacityConfigurationDAO{t: t}
+			d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+				calls = append(calls, "read")
+				if actual != ctx || user != authorityUser || worker != authorityWorker || d.reads != 1 {
+					t.Errorf("read context, authority or count differs: %s/%s reads=%d", user, worker, d.reads)
+				}
+				return current, nil
+			}
+			if tc.access {
+				d.access = func(actual context.Context, user, project string) error {
+					calls = append(calls, "access")
+					if actual != ctx || user != authorityUser || project != authorityProject {
+						t.Errorf("project access context or authority differs: %s/%s", user, project)
+					}
+					return nil
+				}
+			}
+			if tc.writeRevision != 0 {
+				// Setter results are independent of the input and of the expected result.
+				max := int64(2)
+				if tc.writeRevision == 2 {
+					max = 7
+				}
+				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+					calls = append(calls, "desired")
+					if actual != ctx || user != authorityUser || worker != authorityWorker || revision != tc.writeRevision || !reflect.DeepEqual(value, authorityConfiguration(max, authorityProject)) || d.desiredWrites != 1 {
+						t.Errorf("desired write differs: %s/%s revision=%d value=%+v writes=%d", user, worker, revision, value, d.desiredWrites)
+					}
+					return model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(tc.writeRevision, 10), UpdatedAt: tc.writeAt, Value: authorityConfiguration(max, authorityProject)}, nil
+				}
+			}
+			if tc.exchange {
+				got, err := ExchangeConfiguration(ctx, d, principal, authorityWorker, model.WorkerConfigurationExchange{Bootstrap: &input, Observation: nil})
+				want := tc.want()
+				expected := &model.WorkerConfigurationReceipt{Desired: want.Desired, ObservationRevision: "0", ObservationAccepted: false}
+				if err != nil || !reflect.DeepEqual(got, expected) {
+					t.Errorf("receipt = %+v, want %+v: %v", got, expected, err)
+				}
+			} else {
+				got, err := PutConfiguration(ctx, d, principal, authorityWorker, 1, input)
+				if tc.fault != "" {
+					fault := requireFault(t, err, tc.fault)
+					if err != fault || fault.Cause != nil || !reflect.DeepEqual(got, model.WorkerConfigurationResource{}) {
+						t.Errorf("refusal lost identity, cause, or zero result: %+v %v", got, err)
+					}
+				} else if want := tc.want(); err != nil || !reflect.DeepEqual(got, want) {
+					t.Errorf("resource = %+v, want %+v: %v", got, want, err)
+				}
+			}
+			wantWrites := 0
+			if tc.writeRevision != 0 {
+				wantWrites = 1
+			}
+			if !reflect.DeepEqual(calls, tc.calls) || d.reads != 1 || d.desiredWrites != wantWrites || d.observationWrites != 0 {
+				t.Fatalf("calls=%v want=%v reads=%d desired=%d observation=%d", calls, tc.calls, d.reads, d.desiredWrites, d.observationWrites)
+			}
+		})
+	}
+}

@@ -4,8 +4,9 @@ Use `scripts/capture-ui-evidence.mjs` after preparing an owned, isolated browser
 context with the [local identity procedure](local-identity.md). It accepts an
 existing Playwright-compatible `Page`; it does not launch a browser, connect to
 the user's profile, click controls, send messages or write application data.
-Use [website guidance](website.md) for interaction and server readback, and
-[the audit guide](ui-audit.md) to turn observations into individual findings.
+Use [website guidance](website.md) for interaction and server readback.
+Investigations decide which states matter and what evidence suffices under
+[the investigation evidence standard](../../discover-daynight-improvements/references/evidence.md).
 
 ## Select meaningful readiness
 
@@ -22,11 +23,27 @@ selectors from the observed DOM. Do not include a live clock, elapsed timer or
 other continuously changing text among the readiness conditions or text
 observations unless its change is the issue under examination.
 
+Because readiness requires a visible match, an element pushed out of the visible
+area never satisfies it. When that displacement is the observation, use a stable
+visible element of the same state as the readiness condition and record the
+displaced element's geometry as an observation.
+
+The compared text is the element's text content, which joins adjacent inline
+elements without a separator. A tab label followed by a count badge reads
+`独立任务3` even when the page renders a gap. Read the candidate element's
+`textContent` with the same normalization before choosing the expected text.
+
 Capture geometry and the visual artifact in the same call. A measurement taken
 during `Loading…` cannot be paired with a later PDF showing `Ready`. Once ready,
 the helper samples the selected state, captures the requested artifact, then
 samples again. Changes to readiness, selected geometry/text, viewport, route or
 document state mark the result `inconsistent`.
+
+Content still arriving below the fold, such as a description image or a lazily
+read section, changes a scroll container's `scrollHeight` between the samples.
+Before calling the helper, wait until requests settle and the relevant scroll
+containers keep the same extents for about a second. This waiting does not
+replace readiness conditions; the helper still verifies consistency.
 
 ## Call the helper
 
@@ -46,7 +63,7 @@ const { captureUiEvidence } = await import(pathToFileURL(path.join(
 const result = await captureUiEvidence(page, {
   expectedOrigin: 'http://127.0.0.1:5173',
   source: { commit: verifiedUiCommit, dirty: false },
-  outputDir: path.join(taskWorktree, '.tmp', 'ui-audit', 'bot-ready-390-01'),
+  outputDir: path.join(taskWorktree, '.tmp', 'evidence', 'bot-ready-390-01'),
   ready: [
     { selector: '[data-testid="bot-name"]', text: 'Layout fixture' },
     { selector: '[data-testid="bot-state"]', text: 'Ready' },
@@ -110,6 +127,28 @@ paginate content beyond the first viewport. PDF-to-PNG conversion remains PDF
 evidence and must not be labeled a screenshot. Neither PDF nor viewport emulation
 proves animation, compositor stability or a real mobile soft keyboard's behavior.
 
+Use `geometry` when an image would expose private content, for example a command
+catalog that lists the user's own skills and plugins.
+
+## Record a changing state
+
+The helper proves a stable state. A state that lasts a few seconds or less, such
+as a send receipt, an interruption in progress or a reconnect notice, needs a time
+series instead:
+
+- Start the clock at the triggering action and poll the page at a fixed interval,
+  typically 100–500 ms, with a bounded total budget and an explicit end
+  condition such as the state settling.
+- Read only the selected text, attributes and geometry, and record an entry only
+  when the observed values change, with the elapsed time.
+- Take a screenshot at changes when the visual state matters, and review it like
+  any other artifact.
+- Save the entries as JSON with a short note naming the method, source and build,
+  route, viewport, trigger, interval, budget and end condition.
+
+A time series is an interaction record, not a consistent capture: it shows the
+sampled values at the sampled moments and can miss shorter changes.
+
 ## Read and retain the result honestly
 
 The returned object contains `status`, `directory`, `manifestPath`, and
@@ -142,8 +181,9 @@ and discards captured bytes even if the page returns. Raw query strings and
 fragments are omitted; a route fingerprint detects their changes. The DOM sampler
 does not read cookies, storage, environment variables or form values, and text
 collection omits editable controls and script/style content. Visual artifacts
-still show painted page content, including displayed form text: use synthetic
-fixtures without credentials and review artifacts before sharing them.
+still show painted page content, including displayed form text. Use synthetic
+fixtures without credentials, and remember that sessions with real native Agents
+display the user's own configuration; review artifacts before sharing them.
 
 `consistent` means the chosen observations agree at both boundaries. It is not a
 UI pass, proof of application correctness, or a guarantee that no transient
