@@ -38,7 +38,8 @@ If retained preview state requires a separate verification root, use the exact
 root selected by the repository reference throughout this loop. Do not revert to
 the launcher's default root between commands.
 
-Discover or register the selected repository on this local service:
+Discover or register the selected repository on this local service. Set
+`DN_REPO_URL` to the canonical `url` returned by the repository check:
 
 ```bash
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" project list --json

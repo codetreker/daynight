@@ -1,5 +1,5 @@
 export type ArchiveRepairCode = "archive_incomplete" | "projection_gap";
-export type ArchiveProbeResult = { kind: "blocked"; code: ArchiveRepairCode } | { kind: "attempt" };
+export type ArchiveProbeResult = { kind: "blocked"; code: ArchiveRepairCode } | { kind: "attempt" } | { kind: "complete" };
 
 export class ArchiveRepairRequiredError extends Error {
   constructor(readonly code: ArchiveRepairCode) {

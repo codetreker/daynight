@@ -210,6 +210,9 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
             archiveObservations.set(identity.executionId, observationId);
             monitoring?.fail({ operationId: observationId, component: "archive", phase: "archive-backfill", scope, error, retryState: "scheduled", nextAttemptAt: next });
           }
+        } else {
+          const activity = archiveActivities.get(identity.executionId);
+          if (activity !== undefined) monitoring?.updateActivity(activity, { waitReason: "retry-backoff", nextAttemptAt: next });
         }
       } catch { /* Monitoring cannot change archival. */ }
     };
@@ -237,6 +240,11 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
           const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
           const admission = await probeArchive(task, journalPath, signal);
           if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
+          if (admission.kind === "complete") {
+            // Receipt admission alone does not establish that the source was repaired.
+            store.deleteArchiveBackfillSchedule(identity);
+            archiveRepairs.delete(execution.executionId);
+          }
           await archive(task, journalPath, signal);
           signal.throwIfAborted();
           store.deleteArchiveBackfillSchedule(identity);

@@ -1094,7 +1094,7 @@ without database or UniAuth fixtures:
 source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
-  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
+  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors|AuthorityService)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
   ./internal/service/worker
 ```
 
@@ -1104,8 +1104,12 @@ revoked-Project policy execute in Core with controlled DAO facts; candidate
 admission and supplied read results execute in the service subset. The Store
 contract suite retains actual stored 65 values, grant revocation, JSONB args,
 committed repair and fresh readback. The [historical configuration decision](../../.agents/notes/implemented/testing/2026-11-09-worker-historical-configuration-test-owners.md)
-records these owners. Other bootstrap, CAS and report-budget cases keep their
-existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
+records these owners. Core tests own bootstrap, cloud authority, no-op, update
+and stale revision decisions; service tests coordinate supplied reads, writes
+and report receipts. Store tests verify legacy and configuration persistence
+across telemetry expiry and account isolation with real Reader and Writer
+queries. Concurrent bootstrap, independent CAS and report-budget cases retain
+their existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
 records these proof owners.
 
 ### Identity service tests

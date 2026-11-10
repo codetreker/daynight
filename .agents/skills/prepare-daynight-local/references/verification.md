@@ -30,11 +30,12 @@ separately from a replacement Controller generation; follow
 [native environment and retained execution checks](refresh.md#native-provider-environment-and-retained-executions).
 Starting a process is not evidence that a failed turn was retried.
 
-For UI audits, record the viewport, locale, input method and tested state under
-[the audit procedure](ui-audit.md). DOM geometry, screen-media PDF, compositor
-capture and real mobile-keyboard checks are different evidence. A documented
-capture-platform failure does not invalidate successful pointer/CLI readback,
-but it leaves the missing visual or animation checks unverified.
+Record the viewport, locale, input method and tested state with every browser
+observation. DOM geometry, screen-media PDF, compositor capture and real
+mobile-keyboard checks are different evidence. A documented capture-platform
+failure does not invalidate successful pointer/CLI readback, but it leaves the
+missing visual or animation checks unverified. Investigations record their
+coverage under [the investigation method](../../discover-daynight-improvements/references/method.md).
 
 For an embedded or Compose site, health probes use the verified public origin.
 For Vite, probe `/` and API routing through the browser origin, but send health
