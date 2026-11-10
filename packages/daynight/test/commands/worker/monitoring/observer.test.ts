@@ -1,3 +1,4 @@
+import { ArchiveRepairRequiredError } from "../../../../src/commands/controller/archive-error.js";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../../src/api/client.js";
 import { OperationError } from "../../../../src/api/operation.js";
@@ -275,4 +276,11 @@ describe("safe monitoring diagnostics", () => {
     expect(observer.capture("2").currentFailures[0]!.error).toEqual(diagnostic("unavailable"));
     expect(observer.capture("2").delivery.lastFailure?.requestId).toBeNull();
   });
+});
+
+
+it.each(["archive_incomplete", "projection_gap"] as const)("reports typed archive repair %s without exposing its diagnostic text", code => {
+  const error = new ArchiveRepairRequiredError(code); error.message = secret;
+  expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic("recovery-blocked"));
+  expect(classifyFailure(new Error("archive_incomplete"))).toEqual(diagnostic("unknown"));
 });
