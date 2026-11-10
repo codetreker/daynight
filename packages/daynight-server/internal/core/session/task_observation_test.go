@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -337,5 +339,66 @@ func TestTaskObservationCopiesLiveAndDurablePointers(t *testing.T) {
 	*got.LastSeenAt = time.Time{}
 	if !reflect.DeepEqual(beforeLive, live) || *source.Session.Identity.NativeSessionID != beforeNative || !source.Session.LastSeen.Equal(beforeSeen) {
 		t.Fatal("observation aliases committed live or durable state")
+	}
+}
+
+func TestTaskObservationPublishesUTCTimestamps(t *testing.T) {
+	for _, clock := range []struct {
+		name              string
+		connectionLimited bool
+	}{
+		{name: "heartbeat deadline"},
+		{name: "connection deadline", connectionLimited: true},
+	} {
+		for _, inspect := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/inspection=%t", clock.name, inspect), func(t *testing.T) {
+				engine, actor, source, _ := observationFixture(t)
+				now := engine.now()
+				engine.now = func() time.Time { return now.In(time.FixedZone("server", 9*60*60)) }
+				lastSeen := now.Add(-time.Second).In(time.FixedZone("database", 8*60*60))
+				expiry := now.Add(time.Minute).In(time.FixedZone("credential", -5*60*60))
+				wantFresh := lastSeen.Add(HeartbeatTimeout)
+				if clock.connectionLimited {
+					expiry = now.Add(5 * time.Second).In(expiry.Location())
+					wantFresh = expiry
+				}
+				source.Session.LastSeen, source.Session.ConnectionExpiry = &lastSeen, &expiry
+				originalLastSeen, originalExpiry := lastSeen, expiry
+				var got sp.TaskSessionObservation
+				if inspect {
+					result, err := engine.InspectTaskSession(t.Context(), actor, source)
+					if err != nil {
+						t.Fatal(err)
+					}
+					got = result.Session
+				} else {
+					result, err := engine.ObserveTaskSessions(t.Context(), actor, []store.TaskSessionSource{source})
+					if err != nil {
+						t.Fatal(err)
+					}
+					got = result[source.TaskID]
+				}
+				encoded, err := json.Marshal(got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(encoded, &fields); err != nil {
+					t.Fatal(err)
+				}
+				for name, instant := range map[string]time.Time{"observedAt": now, "lastSeenAt": originalLastSeen, "freshUntil": wantFresh} {
+					var stamp string
+					if err := json.Unmarshal(fields[name], &stamp); err != nil {
+						t.Fatal(err)
+					}
+					if want := instant.UTC().Format(time.RFC3339Nano); stamp != want {
+						t.Errorf("%s = %q, want UTC timestamp %q", name, stamp, want)
+					}
+				}
+				if *source.Session.LastSeen != originalLastSeen || *source.Session.ConnectionExpiry != originalExpiry {
+					t.Fatal("observation changed the stored source timestamps")
+				}
+			})
+		}
 	}
 }

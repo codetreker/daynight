@@ -23,6 +23,8 @@ HTTP 的 Task list、show 和 graph 通过 `include=session` 请求观察。普�
 | `send.allowed`、`send.mode`、`send.reason` | 当前真实调用者发送普通消息的可用性，模式为 `start`、`steer` 或 `null` |
 | `observedAt`、`lastSeenAt`、`freshUntil` | 服务观察时刻和可得的新鲜度证据；不以 CLI 本机时钟伪造 Controller 新鲜度 |
 
+这三个时间字段在有值时统一使用 UTC、以 `Z` 结尾的 RFC3339 时间表示，保留原始时刻与精度，不受服务或数据库本地时区影响；缺失的新鲜度证据保持 `null`。
+
 `indicator` 仅使用 `working`、`notice`、`warning` 或 `null`。进行中的当前 Web Session 正常工作为 `working`，等待输入为 `notice`，空闲、停止、断线或生命周期异常为 `warning`。初始化、同步中、未知活动或没有适用的注册执行不补造颜色。Task 已结束时不参与进行中角标；Task `in_progress` 或 Worker active 也不能单独证明 Agent 正在工作。
 
 关注与发送资格独立。真实 owner 的 idle Session 可以同时为 `warning` 和允许 `start`；working 仅在实际支持 steer 且有当前回合时允许 `steer`。等待输入不能被解释为允许普通消息代答审批。非 owner、历史执行、失效连接、未同步或能力不符时保留具体拒绝原因；无法可靠观察则发送资格为未知。摘要始终可能在返回后过时，任何写入仍须在接受时重新授权并检查原目标身份。
