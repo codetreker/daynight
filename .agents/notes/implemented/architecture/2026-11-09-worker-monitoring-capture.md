@@ -19,9 +19,10 @@ owns the producer lifecycle. The [storage decision](2026-11-09-worker-current-mo
 owns the server's CAS and retention choices.
 
 Fixed failure summaries use concrete errors from trusted operation boundaries.
-Herdr and repository Git failures with an explicit nonzero safe-integer exit
-status share the command-failed category. Spawn failures, signal-only exits and
-unknown statuses retain unknown. The classifier unwraps only the known cleanup
+Herdr failures with an explicit nonzero safe-integer exit status and repository
+Git failures with a positive safe-integer exit status share the command-failed
+category. Negative spawn errno values are not Git process exits; they retain
+unknown alongside signal-only exits and unknown statuses. The classifier unwraps only the known cleanup
 wrapper and leaves arbitrary cause chains and aggregate errors uninterpreted.
 
 ## Alternatives

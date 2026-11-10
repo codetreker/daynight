@@ -68,6 +68,7 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
   if (error instanceof WorktreePreconditionError) return diagnostic(error.code === "branch_mismatch" ? "branch-mismatch" : "worktree-validation-failed");
   if (error instanceof NativeVersionOutputError) return diagnostic("invalid-output");
   if (error instanceof HerdrCommandDeadlineError) return diagnostic("timeout");
-  if ((error instanceof HerdrCommandError || error instanceof RepositoryGitError) && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
+  if (error instanceof HerdrCommandError && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
+  if (error instanceof RepositoryGitError && Number.isSafeInteger(error.exitCode) && error.exitCode !== null && error.exitCode > 0) return diagnostic("command-failed");
   return diagnostic("unknown");
 };

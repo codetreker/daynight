@@ -1,8 +1,10 @@
+import path from "node:path";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../../src/api/client.js";
-import { OperationError } from "../../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../../src/api/operation.js";
 import { ProtocolError } from "../../../../src/api/parse.js";
-import { RepositoryGitError } from "../../../../src/repository/git.js";
+import { RepositoryGitError, runRepositoryGit } from "../../../../src/repository/git.js";
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
 import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
@@ -266,7 +268,8 @@ describe("safe monitoring diagnostics", () => {
   it("classifies trusted Git exits through cleanup wrappers without exposing repository diagnostics", () => {
     const statuses: readonly [number | null, NodeJS.Signals | null, DiagnosticCode][] = [
       [23, null, "command-failed"], [null, null, "unknown"], [null, "SIGTERM", "unknown"],
-      [0, null, "unknown"], [1.5, null, "unknown"], [NaN, null, "unknown"],
+      [0, null, "unknown"], [-1, null, "unknown"], [-2, null, "unknown"],
+      [1.5, null, "unknown"], [NaN, null, "unknown"],
       [Infinity, null, "unknown"], [Number.MAX_SAFE_INTEGER + 1, null, "unknown"],
     ];
     const observer = createMonitoringObserver({ runId });
@@ -290,6 +293,26 @@ describe("safe monitoring diagnostics", () => {
     const snapshot = observer.capture("1");
     expect(snapshot.currentFailures).toContainEqual(expect.objectContaining({ error: diagnostic("command-failed") }));
     expect(JSON.stringify(snapshot)).not.toContain(secret);
+  });
+
+  it("keeps an actual Git spawn failure unknown through its cleanup wrapper", async () => {
+    const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp/monitoring-diagnostics-tests");
+    await mkdir(scratch, { recursive: true });
+    const directory = await mkdtemp(path.join(scratch, "missing-git-"));
+    const operation = createOperation({ limits: { totalMs: 5_000 } });
+    try {
+      const error: unknown = await runRepositoryGit(directory, ["version"], operation, {
+        timeoutMs: 1_000, environment: { PATH: directory, Path: undefined },
+      }).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(RepositoryGitError);
+      expect(error).toMatchObject({ cause: { code: "ENOENT" } });
+      const diagnostics = [error, new WorkerCleanupError("worktree-removal", error)].map(failure => classifyFailure(failure));
+      expect(diagnostics).toEqual([diagnostic("unknown"), diagnostic("unknown")]);
+      expect(JSON.stringify(diagnostics)).not.toContain(directory);
+    } finally {
+      operation.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("never copies secrets, paths, prompts or command output from error chains into snapshots", () => {
