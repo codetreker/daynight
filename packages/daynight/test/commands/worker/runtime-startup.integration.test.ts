@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
@@ -98,7 +99,7 @@ beforeEach(() => {
     project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
     reportConfiguration: vi.fn(), report: vi.fn(),
   });
-  mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) });
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockResolvedValue(() => "prompt");
   mocks.probe.mockResolvedValue("0.164.0");
@@ -390,7 +391,7 @@ describe("worker cloud-first startup", () => {
       if (projectId === undefined && scenario === "unavailable") throw new Error("Project does not exist for the configured worker repository.");
       return { id: projectId ?? uuid(1), repoUrl: projectId === undefined ? remoteUrl : second.remote };
     });
-    if (scenario === "foreign") mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]) });
+    if (scenario === "foreign") mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]) }, { scanWorktrees: scanFromList }));
     let options: WorkerCoordinatorOptions | undefined;
     mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
     const running = runWorker({ ...f, signal: cancellation.signal });

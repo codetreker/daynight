@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -93,7 +94,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   };
   mocks.remote.mockReturnValue(remote);
   const prepareRepository = vi.fn(async () => {}), dispose = vi.fn(async () => {});
-  mocks.git.mockReturnValue({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose });
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.backend.mockReturnValue({ advance, cleanup });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
