@@ -518,6 +518,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         signal.throwIfAborted();
         if (!launched) success(task, { kind: "cleanup", phase: "agent-stop" });
         if (kind === "shutdown") return { task, complete: true };
+        const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
+        const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
+        stage = "observation";
+        if (enroll) await cleanupOperation(operation => enroll.call(options.git, project, task, operation), signal);
         if (launched) {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
@@ -528,7 +532,6 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);
-        const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
         await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
         if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
         success(task, { kind: "cleanup", phase: "worktree-removal" });

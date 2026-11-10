@@ -1038,6 +1038,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
       if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
+      const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
+      if (enroll) await cleanupOperation(operation => enroll.call(options.git, projectFor(owner), owner, operation), normalSignal);
       const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
       if (!ready) { observe(m => { const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { status: "waiting", waitReason: "unknown" }); if (failure !== undefined) m.updateFailureRetry(failure, "none"); }); return; }
       observe(m => {
