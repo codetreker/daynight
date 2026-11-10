@@ -243,7 +243,10 @@ describe("worker runtime configuration reporting", () => {
     const running = start(f);
     await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
     await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
-    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    // Startup may already have requested reconciliation; observe its GET before advancing time.
+    coordinatorOptions.onInventory!(null);
     await eventuallyWithoutAdvancingTime(() => expect(readStarted).toBe(true));
     await vi.advanceTimersByTimeAsync(7_000); releaseRead.resolve();
     await eventuallyWithoutAdvancingTime(() => expect(reportSignal).toBeDefined());
