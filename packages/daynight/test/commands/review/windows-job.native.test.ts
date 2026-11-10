@@ -13,8 +13,7 @@ import { spawnWindowsReviewPhase } from "../../../src/commands/review/windows-ph
 let directory: string;
 beforeAll(async () => { const root = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(root, { recursive: true }); directory = await mkdtemp(path.join(root, "native-review-job-")); });
 afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
-const until = async (check: () => boolean | Promise<boolean>): Promise<void> => {
-  const deadline = performance.now() + 10_000;
+const until = async (check: () => boolean | Promise<boolean>, deadline = performance.now() + 10_000): Promise<void> => {
   while (!await check()) { if (performance.now() >= deadline) throw new Error("Native Job fixture barrier did not complete."); await new Promise(resolve => setTimeout(resolve, 10)); }
 };
 // libuv adds non-detached children to the parent's kill-on-close Job. Detach
@@ -70,7 +69,8 @@ describe.skipIf(process.platform !== "win32")("native Windows review Job ownersh
       await once(bystander, "spawn");
       const bystanderPid = await declaration("bystander"), bystanderHandle = capture("bystander", bystanderPid);
       let capturedBeforeTermination: number[] = [];
-      phase = spawnWindowsReviewPhase({ file: wrapper, args: [], cwd: root, environment: process.env, deadline: performance.now() + 15_000, graceMs: 5_000 }, {
+      const graceMs = 5_000;
+      phase = spawnWindowsReviewPhase({ file: wrapper, args: [], cwd: root, environment: process.env, deadline: performance.now() + 15_000, graceMs }, {
         createScope: () => createWindowsReviewJobScope({ ...api,
           create: name => { job = api.create(name); return job; },
           // A synthetic stale-list entry exercises IsProcessInJob on a real
@@ -126,7 +126,18 @@ describe.skipIf(process.platform !== "win32")("native Windows review Job ownersh
         expect(api.signaled(leaf)).toBe(false);
         record("root-close-with-live-leaf");
       }
+      const observationDeadline = performance.now() + graceMs;
       await phase.stop(); record("stop-return");
+      const captured = observed.filter(member => member.role !== "bystander" &&
+        (member.role === "guardian" || capturedBeforeTermination.includes(member.pid)));
+      expect(captured.every(member => api.signaled(member.handle))).toBe(true);
+      expect(api.signaled(bystanderHandle)).toBe(false);
+      // A fixture-only late member has no immediate captured-object guarantee.
+      await until(() => {
+        expect(api.signaled(bystanderHandle)).toBe(false);
+        return observed.filter(member => member.role !== "bystander").every(member => api.signaled(member.handle));
+      }, observationDeadline);
+      record("owned-processes-signaled");
       expect(observed.filter(member => member.role !== "bystander").every(member => api.signaled(member.handle))).toBe(true);
       expect(api.signaled(bystanderHandle)).toBe(false);
       const heartbeat = path.join(root, "bystander.heartbeat"); await until(() => existsSync(heartbeat));
