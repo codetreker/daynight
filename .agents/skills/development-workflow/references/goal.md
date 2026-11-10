@@ -41,7 +41,7 @@ Before requesting user confirmation, upload the complete current spec and necess
 Confirmation applies to that current readable spec and applicable prototypes.
 Missing, incomplete, failed, or unreadable uploads cannot pass the requirements gate.
 Coherently update the spec and affected description, prototypes, and references after substantive requirement changes, and obtain renewed confirmation before progression.
-Attachments do not change the task version; follow [write safety](write-safety.md#attachments-and-multi-step-operations) rather than treating an unchanged version as proof that confirmation remains valid.
+Attachments do not change the task version; follow [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#materials-and-files) rather than treating an unchanged version as proof that confirmation remains valid.
 
 ### Register the next discussion before completion
 
@@ -51,9 +51,9 @@ Its description must directly identify the requirements task ID, the full `spec.
 Keep the shared spec in its owning requirements task.
 
 Read back the solution task, its required sources, and the actual dependency graph before completing the requirements task under the [shared completion conditions](task-execution.md#completion-conditions).
-If registration or verification fails or its result is uncertain, keep the requirements task `in_progress`, reconcile actual resources, and resume with the confirmed IDs under [write safety](write-safety.md).
+If registration or verification fails or its result is uncertain, keep the requirements task `in_progress`, reconcile actual resources, and resume with the confirmed IDs under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
 Once the successor is verified and all requirements-stage conditions are met, complete the requirements task and verify it is done.
-Ordinary execution may then start the solution discussion at the user's explicit direction; managed execution completes only the original assignment and returns to the controller without starting the successor.
+Ordinary execution may then start the solution discussion at the user's explicit direction; a managed assignment completes only its original task and returns to the controller without starting the successor.
 If completion is uncertain, reconcile it before starting the solution task.
 
 Solution discussion explains responsibilities, data flow, control flow, interfaces, error behavior, key decisions, verification, and the proposed breakdown.
@@ -96,7 +96,7 @@ Vague implementation placeholders, routine execution steps, and a collection of 
 Keep the reviewable breakdown in the solution task's material; substantive revisions to a confirmed solution require renewed confirmation.
 
 Every root delivery task without another ordinary implementation prerequisite must directly depend on the solution task through an ordinary dependency, so all delivery paths inherit the confirmed design's completion conditions.
-Verify cross-chain dependencies and follow [classification and reduction](task-management.md#dependency-classification); external prerequisites cannot replace ordinary design prerequisites.
+Verify cross-chain dependencies and follow [classification and reduction](dependencies.md#dependency-reduction); external prerequisites cannot replace ordinary design prerequisites.
 
 **Every delivery task's description must directly identify the architecture task ID and all required architecture source locations, including for indirect successors.**
 Identify the description and applicable sections for inline architecture, list full paths for actual attachments, and retain the owning task ID and verified immutable references for repository sources.
@@ -107,13 +107,13 @@ For example, in `architecture -> A -> B`, B declares only A as a direct dependen
 Source indexes do not create additional execution dependencies.
 
 Read back every delivery task and its required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task boundaries, whole-breakdown coverage and handovers, architecture indexes, and source readability.
-Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
-Keep the solution task in progress while gaps remain; recover partial registration under [write safety](write-safety.md).
+Check dependencies through [post-change verification](dependencies.md#verify-dependency-changes).
+Keep the solution task in progress while gaps remain; recover partial registration under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
 Registration and solution completion do not start delivery or enable automatic-execution permission.
 
 ## Whole-Goal completion
 
-Complete each task through the selected execution workflow; reading the Goal protocol does not change the return boundaries of ordinary or managed workflows.
+Complete each task under its actual assignment and applicable execution rules; reading the Goal protocol does not change the return boundaries of ordinary or managed workflows.
 A single done task, an empty ready page, completed requirements, or a completed solution does not mean the whole Goal has been delivered.
 Done and cancelled are both scheduling terminal states. A Goal whose members are
 all terminal has ended, but cancelled members do not establish successful delivery.

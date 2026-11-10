@@ -183,7 +183,7 @@ Delete 以仅含 version 的 JSON 正文请求单项目标；严格 200、princi
 
 严格写入回执的 `confirmedMutationId` 与既有 Thread 共用 transport 的实际确认机制，穿过后续清理；runtime 接受具体调用者的安全 failureText。确认后渲染、输出或清理失败保留已确认身份，不降为 unknown。可读成功输出对应操作的确认 ID 与完整集合，JSON 仅输出完整资源及 LF。终端控制/bidi 转义、PT4 可信发现事实和任意 cause 的安全边界保持。
 
-canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具日志和授权；task-management 拥有操作语义，write-safety 拥有父版本与核对，task-execution 按项目规则维护 Steps。SKILL/handbook 只增加概念与导航，不增加固定阶段、执行模式或原生 todo 提升规则。独立 CLI usage 手册同步已交付能力。
+仓库流程的 task-content 区分持久 Steps 与 Session 计划、工具日志和授权，task-execution 按项目规则维护 Steps；公共手册拥有操作语义、父版本与核对。CLI 输出与安装 skill 使用同一手册。
 
 ## Web 资源与单一写入所有者
 

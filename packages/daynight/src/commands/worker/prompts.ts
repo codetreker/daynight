@@ -3,10 +3,10 @@ import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
-import { captureInstalledSkill } from "../skill/install.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
 import type { WorkerPromptTuple } from "./prompt-source.js";
+import { assignmentInstruction, humanInterventionInstruction, ongoingWaitInstruction, completionInstruction } from "./execution-contract.js";
 
 export const appendWorkerPrompts = (builtin: string, values: WorkerPromptTuple): string => {
   const blocks = (["user", "project", "worker"] as const)
@@ -16,47 +16,37 @@ export const appendWorkerPrompts = (builtin: string, values: WorkerPromptTuple):
 };
 
 export type ManagedAssignment = LocalTask & { serverOrigin: string; workerId: string; worktreeId: string; configuration: ExecutionConfiguration; worktree: WorktreeBinding };
-const humanInterventionInstruction = "When human intervention is necessary to complete this assignment, you must set properties.paused=true on your own assigned task before waiting. This requires specific information, a decision, authorization or an action that you cannot supply within the task scope and existing authority. Follow the using-daynight managed skill's Request user interaction workflow. Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment.";
-const reviewWaitInstruction = "If review or CI is pending, wait and check it periodically yourself. Pending PR review, required reviewer approval, CI results and polling timeouts are not reasons to set properties.paused=true or request user intervention. When results arrive, address feedback, fix failures and complete the remaining delivery. Waiting is part of execution: do not end this turn or exit merely because review or CI is pending. Honor independent user pauses, restrictions and revocations.";
-
-export const createWorkerPromptBuilder = async (packageDirectory: string) => {
-  const bundle = await captureInstalledSkill(packageDirectory);
-  for (const name of ["SKILL.md", "references/autopilot-managed-task.md", "references/task-execution.md", "references/handbook.md", "references/goal.md", "references/task-content.md"]) {
-    const entry = bundle.find((item) => item.relativePath === name);
-    if (entry?.type !== "file" || entry.contents.length === 0) throw new Error(`The installed using-daynight bundle is missing ${name}; reinstall the package before starting a worker.`);
+export const buildWorkerPrompt = (task: ManagedAssignment, platform: TaskPlatform): string => {
+  if (task.status !== "active") throw new Error("A managed launch requires an active execution.");
+  for (const [name, value] of Object.entries({ projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId })) {
+    if (canonicalId(value) !== value) throw new Error(`Managed assignment ${name} must be a canonical UUID.`);
   }
-  const root = path.join(packageDirectory, "dist", "commands", "skill", "skills", "using-daynight");
-  return (task: ManagedAssignment, platform: TaskPlatform): string => {
-    if (task.status !== "active") throw new Error("A managed launch requires an active execution.");
-    for (const [name, value] of Object.entries({ projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId })) {
-      if (canonicalId(value) !== value) throw new Error(`Managed assignment ${name} must be a canonical UUID.`);
-    }
-    if (!["linux", "macos", "windows"].includes(platform)) throw new Error("Managed execution requires a supported actual platform.");
-    const { configuration, worktree } = task;
-    if (!path.isAbsolute(worktree.repositoryPath) || worktree.worktreePath !== path.join(worktree.repositoryPath, ".worktrees", "daynight", task.taskId) || worktree.branch !== `daynight/${task.taskId}`) throw new Error("The managed assignment must use the task's fixed worktree and branch.");
-    if (configuration.agent !== task.agent) throw new Error("The managed assignment configuration must use its recorded agent.");
-    if (configuration.agentControlMode === "web") parseProviderArguments(task.agent, configuration.args);
-    else validateHerdrAgentArguments(task.agent, configuration.args);
-    if (task.sessionId !== null && canonicalId(task.sessionId) !== task.sessionId) throw new Error("The native reference must be an exact session UUID.");
-    const assignment = {
-      serverOrigin: normalizeServerUrl(task.serverOrigin), projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
-      workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: worktree.worktreePath, branch: worktree.branch,
-      platform, nativeSessionId: task.sessionId, configuration,
-    };
-    return [
-      "The current execution environment is worker-managed.",
-      "This is a background task. Make decisions autonomously within this assignment and its existing authorization.",
-      "Use the using-daynight skill in autopilot-managed-task mode for this already-claimed assignment.",
-      `Read the installed skill entry at ${JSON.stringify(path.join(root, "SKILL.md"))} and its references/autopilot-managed-task.md at ${JSON.stringify(path.join(root, "references", "autopilot-managed-task.md"))}. Resolve its other references from that same bundle.`,
-      "Verify the current service task, original claim and actual worktree before business writes.",
-      "Execute only this assignment under its task and repository authorization. Preserve the controller-owned worktree and workspace. The controller owns scheduling and cleanup.",
-      humanInterventionInstruction,
-      reviewWaitInstruction,
-      "After all required delivery, acceptance and evidence, complete the task with the original claimId and the version observed for that decision as the final task mutation. Unconfirmed writes require observation before any further decision.",
-      task.sessionId === null ? "This is a new native conversation for this execution." : "Continue this execution in its original native conversation and worktree. Reconcile interrupted business work before proceeding.",
-      "Assignment:", JSON.stringify(assignment, null, 2),
-    ].join("\n\n");
+  if (!["linux", "macos", "windows"].includes(platform)) throw new Error("Managed execution requires a supported actual platform.");
+  const { configuration, worktree } = task;
+  if (!path.isAbsolute(worktree.repositoryPath) || worktree.worktreePath !== path.join(worktree.repositoryPath, ".worktrees", "daynight", task.taskId) || worktree.branch !== `daynight/${task.taskId}`) throw new Error("The managed assignment must use the task's fixed worktree and branch.");
+  if (configuration.agent !== task.agent) throw new Error("The managed assignment configuration must use its recorded agent.");
+  if (configuration.agentControlMode === "web") parseProviderArguments(task.agent, configuration.args);
+  else validateHerdrAgentArguments(task.agent, configuration.args);
+  if (task.sessionId !== null && canonicalId(task.sessionId) !== task.sessionId) throw new Error("The native reference must be an exact session UUID.");
+  const assignment = {
+    serverOrigin: normalizeServerUrl(task.serverOrigin), projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
+    workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: worktree.worktreePath, branch: worktree.branch,
+    platform, nativeSessionId: task.sessionId, configuration: {
+      agent: configuration.agent, model: configuration.model, args: configuration.args, recoveryLimit: configuration.recoveryLimit,
+      ...(configuration.agentControlMode === undefined ? {} : { agentControlMode: configuration.agentControlMode }),
+      ...(configuration.validateNativeSelection === undefined ? {} : { validateNativeSelection: configuration.validateNativeSelection }),
+    },
   };
+  return [
+    "The current execution environment is worker-managed.",
+    "This is a background task. Make decisions autonomously within this assignment and its existing authorization.",
+    assignmentInstruction,
+    humanInterventionInstruction,
+    ongoingWaitInstruction,
+    completionInstruction,
+    task.sessionId === null ? "This is a new native conversation for this execution." : "Continue this execution in its original native conversation and worktree. Reconcile interrupted business work before proceeding.",
+    "Assignment:", JSON.stringify(assignment, null, 2),
+  ].join("\n\n");
 };
 
 export const workerPingPrompt = (task: ClaimIdentity): string => [
@@ -64,8 +54,8 @@ export const workerPingPrompt = (task: ClaimIdentity): string => [
   `This is the worker's periodic check for project ${task.projectId}, task ${task.taskId}, original claim ${task.claimId}.`,
   "Continue the current assignment in its original native conversation and worktree, preserving its scope, existing authorization and worker-managed execution rules. This is a background task. Make decisions autonomously within that scope and authorization.",
   humanInterventionInstruction,
-  reviewWaitInstruction,
-  "Only after all required delivery, acceptance and evidence are complete, finish the task using its original claimId and the version observed for that decision. Reconcile unconfirmed writes before any further mutation.",
+  ongoingWaitInstruction,
+  completionInstruction,
   "</system remider>",
 ].join("\n\n");
 

@@ -1,8 +1,8 @@
 # Shared task execution
 
 Read this file after identifying the task in both ordinary and managed execution.
-It governs shared inputs, work, results, and completion conditions; the mode-specific files govern startup, final status operations, interaction, and return.
-Managed execution must also meet its [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard).
+It governs shared inputs, work, results, and completion conditions; the assignment and applicable repository rules govern startup, final status operations, interaction, and return.
+Managed execution must also meet its [complete delivery standard](delivery.md#worker-delivery-results).
 
 ## Inputs and readiness
 
@@ -10,7 +10,7 @@ Read the complete task, actually required references, and existing results under
 For Goal tasks, also apply the [stage protocol](goal.md) and check responsibilities, stage inputs, and the architecture index.
 Inspect required prototypes with their assets and actually interact with them.
 
-Verify status and all direct prerequisites under [task management](task-management.md), and apply [authorization and scope](authorization.md).
+Verify status and all direct prerequisites under [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#tasks-and-queries), and apply [authorization and scope](authorization.md).
 Execution is not ready when required content or authorization is missing, sources are unreadable, or dependencies are incomplete; report the specific blocker without executing predecessor tasks to bypass it.
 
 ## Work and results
@@ -19,12 +19,12 @@ Work within the confirmed scope, design, and acceptance criteria, following the 
 For independent final acceptance, apply the [acceptance standard](final-acceptance.md), not inapplicable development workflows.
 
 When authorized changes occur, coherently rewrite the actual owning material and affected references, preserving the strength of requirements and acceptance criteria; reconfirm material revisions at the corresponding confirmation points.
-Follow [task management](task-management.md) and [write safety](write-safety.md) when updating fields and editing dependencies.
+Follow [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#tasks-and-queries) and [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes) when updating fields and editing dependencies.
 
 When creating a PR, its description must clearly explain the problem being solved and how the change addresses it.
 If the PR is associated with a Daynight task, include the task's ID and title.
 
-Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list with [property setting](task-management.md#properties), preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in the owning task's material; keep session execution steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
+Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list with [property setting](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#properties), preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in the owning task's material; keep session execution steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
 
 ## Maintain Steps
 
@@ -42,7 +42,7 @@ review records as appropriate under the project rules. Overwriting or deleting a
 record loses its public prior content; it is not an audit history. Maintain status
 and results as work progresses without inferring authorization or Task completion
 from a Step. See [content ownership](task-content.md#task-steps-and-session-content),
-[operations](task-management.md#task-steps) and [write safety](write-safety.md#task-step-writes).
+[operations](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#steps) and [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#steps).
 
 ## Completion conditions
 
@@ -57,7 +57,7 @@ Verify actual merges through the hosting platform's native client or API, withou
 When the user requires PRs to remain open for review or prohibits merging, deliver reviewable results and keep the task in progress, without enabling auto-merge.
 Completion remains pending when permission is missing, verification is impossible, or merge conditions are unmet.
 
-Before returning to the mode-specific file for completion operations, confirm that required deliverables and acceptance conclusions are readable.
+Before completing the task, confirm that required deliverables and acceptance conclusions are readable.
 Completing a stage establishes only that stage's results, not completion of the whole Goal.
 
 ## Waiting context

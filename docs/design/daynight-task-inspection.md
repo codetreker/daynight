@@ -178,7 +178,7 @@ Markdown 引用反馈绑定其所属的语义任务/页签/文件选择；首次
 结果，同路径更新仍使用既有 revision 与 `updatedAt` 重读规则。
 
 公开 skill 源为 `packages/daynight/src/commands/skill/skills/using-daynight/`。
-入口及创建、handoff、执行和 Goal 指引共用 task-content 标准；任务定义、成果及
+公共手册说明 Markdown 与引用；仓库创建、handoff、执行和 Goal 指引共用 task-content 标准；任务定义、成果及
 session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-skill.md#文档职责与任务资料)
 拥有，阅读层不维护另一套栏目或强制证据位置。description 明确当前责任与资料入口，
 未指定附件交付时正文完整无需主附件；Goal 需求阶段的完整 `spec.md` 和 managed 必需

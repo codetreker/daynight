@@ -115,7 +115,7 @@ contents as one CLI argument. It must specify:
   source/version/root, actual command results and pass/fail judgments. Do not
   include tokens, full configuration or native account data.
 - Read back the attachment and complete the original claim using the managed
-  `using-daynight` workflow. Do not invent another task or report success from
+  assignment runtime contract and the task’s acceptance criteria. Do not invent another task or report success from
   simulated output. Report failures through that workflow.
 
 For example, from a shell with the description loaded into `DN_TEST_DESCRIPTION`:

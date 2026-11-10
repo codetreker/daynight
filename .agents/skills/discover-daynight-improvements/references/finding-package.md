@@ -103,7 +103,7 @@ cannot certify the new upload.
 
 ## Task description template
 
-Adapt the detail to the finding under the [task content standard](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md).
+Adapt the detail to the finding under the [task content standard](../../development-workflow/references/task-content.md).
 Resolve the investigation and design questions needed to select and implement the
 solution before delivery handoff. Preserve verification limitations accurately.
 This example is task material, so its prose is Chinese.
