@@ -1,3 +1,4 @@
+import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../../src/platform/sqlite-sql.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -43,7 +44,7 @@ describe("minimal worker SQLite schema", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const database = connect(file);
-    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat))!.filter(object => object.type === "table").map(({ name }) => ({ name })));
     expect((database.pragma("table_info(projects)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "repo_url", "local_path"]);
     expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
     expect((database.pragma("table_list") as { name: string; strict: number }[]).filter(({ name }) => name === "projects" || name === "tasks").every(({ strict }) => strict === 1)).toBe(true);
