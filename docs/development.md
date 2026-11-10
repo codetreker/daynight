@@ -324,6 +324,30 @@ absence of a short-lived process or identify a signal sender by itself. The
 [termination diagnostics decision](../.agents/notes/implemented/testing/2026-11-05-native-test-termination-diagnostics.md)
 describes the evidence limits and collection cost.
 
+Ordinary CLI Vitest runs retain Vitest's default reporter selection, including
+GitHub Actions annotations, and add `scripts/vitest-failure-reporter.ts`.
+Failed tests, suite hooks and module
+initialization errors are written when Vitest supplies their public result;
+the public `onUnhandledError` callback records unhandled errors without
+suppressing Vitest's failure decision. Readable console diagnostics and
+incremental JSONL files in `.tmp/cli-test-failures/` preserve those observations
+before the final summary. The ordinary CI matrix always attempts to upload the
+available files as `daynight-cli-tests-failures-<os>`. A runner stopped before
+delivering an event, or before artifact upload executes, may leave no such
+evidence; these diagnostics do not identify the cause of process termination.
+
+The reporter records only the framework's file, full test or suite name, and
+error name, message and stack. Field limits include JSON escaping: file 2 KiB,
+test name 4 KiB, error name 256 bytes, message 8 KiB and stack 16 KiB. Each event
+contains at most two errors and is capped at 64 KiB in each output. A run allows
+1,024 normal events and 4 MiB across JSONL and console, including reserved
+truncation and writer-failure notices. Truncation is explicit. Diagnostic write
+failures are reported through the remaining output, without changing the test
+result. No environment values, command arguments or additional process contents
+are collected; assertion messages and stacks retain the content supplied by
+Vitest. Existing test selection, concurrency, deadlines and the macOS observer
+remain unchanged.
+
 Explicit `pnpm test:apfs` diagnostics on macOS mount temporary case-sensitive and
 case-insensitive APFS images to check path identity against both behaviors.
 Routine `pnpm test` and the CLI CI matrix leave this image suite unselected;
