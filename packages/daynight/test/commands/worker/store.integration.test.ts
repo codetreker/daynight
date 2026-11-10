@@ -1,3 +1,6 @@
+import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../../src/platform/sqlite-sql.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,12 +44,12 @@ describe("minimal worker SQLite schema", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const database = connect(file);
-    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat))!.filter(object => object.type === "table").map(({ name }) => ({ name })));
     expect((database.pragma("table_info(projects)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "repo_url", "local_path"]);
     expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
     expect((database.pragma("table_list") as { name: string; strict: number }[]).filter(({ name }) => name === "projects" || name === "tasks").every(({ strict }) => strict === 1)).toBe(true);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
-    expect(database.pragma("user_version", { simple: true })).toBe(12);
+    expect(database.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     expect(database.pragma("foreign_key_list(projects)")).toEqual([]);
     expect(database.pragma("foreign_key_list(tasks)")).toEqual([]);
@@ -168,11 +171,11 @@ it("rebuilds the unversioned six-column index and discards every project and cla
   const { file, db } = legacyFixture();
   const events: unknown[] = [];
   const rebuilt = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(12);
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect((db.pragma("table_info(tasks)") as { name: string }[]).map(row => row.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 12 }, { kind: "completed", fromVersion: 0, toVersion: 12 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: currentSqliteVersion(workerStoreFormat) }, { kind: "completed", fromVersion: 0, toVersion: currentSqliteVersion(workerStoreFormat) }]);
   close(rebuilt);
   events.length = 0;
   const reopened = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
@@ -199,11 +202,11 @@ it("restores the entire unversioned index when rebuilding the baseline fails", (
 it("rejects newer formats and altered constraints without mutating their records", () => {
   const { file, store, register } = fixture(); register(); close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM tasks").all();
-  db.pragma("user_version = 13");
+  db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat) + 1}`);
   expect(() => open(file)).toThrow("unsupported-version");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
-  expect(db.pragma("user_version", { simple: true })).toBe(13);
-  db.pragma("user_version = 12");
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat) + 1);
+  db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat)}`);
   db.exec("DROP INDEX tasks_one_active_per_task; CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id, task_id) WHERE status = 'pending'");
   expect(() => open(file)).toThrow("invalid-format");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);

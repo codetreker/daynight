@@ -1,6 +1,8 @@
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import * as durableHerdr from "../../../src/commands/worker/herdr/durable.js";
 import { execFileSync } from "node:child_process";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -827,7 +829,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
   expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
-  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(12);
+  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(4);
@@ -841,7 +843,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(3);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(12);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   unchangedWorker.close();
 });
 
