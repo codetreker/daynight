@@ -1,3 +1,4 @@
+import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../../src/platform/sqlite-sql.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { readFileSync } from "node:fs";
@@ -164,7 +165,7 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   const rebuilt = open(db);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
-  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat))!.filter(object => object.type === "table").map(({ name }) => ({ name })));
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
 });
 
