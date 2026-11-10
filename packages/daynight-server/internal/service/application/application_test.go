@@ -15,13 +15,40 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	taskwork "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
+
+type strictObservations struct{ t *testing.T }
+
+var _ TaskObservationOperations = (*strictObservations)(nil)
+
+func (m *strictObservations) unexpected(name string) error {
+	m.t.Helper()
+	m.t.Errorf("unexpected observation operation %s", name)
+	return errors.New("unexpected observation operation: " + name)
+}
+func (m *strictObservations) ObserveGet(context.Context, model.Principal, string, string) (task.ObservedTask, error) {
+	return task.ObservedTask{}, m.unexpected("ObserveGet")
+}
+func (m *strictObservations) ObserveList(context.Context, model.Principal, string, task.TaskListRequest) (task.ObservedTaskPage, error) {
+	return task.ObservedTaskPage{}, m.unexpected("ObserveList")
+}
+func (m *strictObservations) ObserveGraph(context.Context, model.Principal, string, string) (task.ObservedGraph, error) {
+	return task.ObservedGraph{}, m.unexpected("ObserveGraph")
+}
+func (m *strictObservations) ObservedMCPList(context.Context, model.Principal, string, taskcore.MCPListRequest) (task.ObservedMCPPage, error) {
+	return task.ObservedMCPPage{}, m.unexpected("ObservedMCPList")
+}
+func (m *strictObservations) WorkList(context.Context, model.Principal, string, taskcore.WorkRequest) (taskwork.Page, error) {
+	return taskwork.Page{}, m.unexpected("WorkList")
+}
 
 type strictIdentity struct {
 	t *testing.T
@@ -216,6 +243,10 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		if !ok || actual == nil || actual.CallbackURL() != "https://daynight.test/callback" {
 			t.Fatalf("production Identity = %#v", app.Identity)
 		}
+		observations, ok := app.TaskObservations.(*task.Observations)
+		if !ok || observations == nil {
+			t.Fatalf("production TaskObservations = %#v", app.TaskObservations)
+		}
 		verifySharedEngine(t, app)
 	})
 	t.Run("constructor dependencies", func(t *testing.T) {
@@ -226,12 +257,14 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		}
 		const callbackURL = "https://daynight.test/callback"
 		marker := identity.New(database, client, callbackURL)
+		observationMarker := task.NewObservations(database, nil)
 		capturer := &assemblyCapturer{t: t}
 		var projects *project.Projects
 		var tasks *task.Tasks
 		var attachments *attachment.Attachments
 		var projectEngine *sessioncore.Engine
-		projectCalls, taskCalls, attachmentCalls, identityCalls := 0, 0, 0, 0
+		var observer task.SessionObserver
+		projectCalls, taskCalls, attachmentCalls, identityCalls, observationCalls := 0, 0, 0, 0, 0
 		app := assemble(database, files, client, callbackURL, time.Second, constructors{
 			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string) *identity.Identity {
 				identityCalls++
@@ -239,6 +272,14 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 					t.Error("Identity received another writer, client or callback")
 				}
 				return marker
+			},
+			taskObservations: func(reader store.SnapshotReader, actualObserver task.SessionObserver) *task.Observations {
+				observationCalls++
+				if reader != database {
+					t.Error("TaskObservations received another snapshot reader")
+				}
+				observer = actualObserver
+				return observationMarker
 			},
 			projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
 				projectCalls++
@@ -266,13 +307,14 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				return attachments
 			},
 		}, capturer)
-		if projectCalls != 1 || taskCalls != 1 || attachmentCalls != 1 || identityCalls != 1 {
-			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d Attachments=%d Identity=%d", projectCalls, taskCalls, attachmentCalls, identityCalls)
+		if projectCalls != 1 || taskCalls != 1 || attachmentCalls != 1 || identityCalls != 1 || observationCalls != 1 {
+			t.Fatalf("constructor calls differ: Projects=%d Tasks=%d Attachments=%d Identity=%d Observations=%d", projectCalls, taskCalls, attachmentCalls, identityCalls, observationCalls)
 		}
-		if app.Identity != marker || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
+		if app.Identity != marker || app.TaskObservations != observationMarker || observer != app.Engine || app.Projects != projects || app.Tasks != tasks || app.Attachments != attachments || app.Engine != projectEngine || app.TaskSearch != database {
 			t.Fatal("application replaced a constructor result or shared dependency")
 		}
 		verifySharedEngine(t, app)
 		app.Identity = &strictIdentity{t: t}
+		app.TaskObservations = &strictObservations{t: t}
 	})
 }
