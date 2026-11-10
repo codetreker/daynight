@@ -405,6 +405,13 @@ selected job runs its ordinary event checkout and its checked-in tests. Validati
 pairing receipts; the [checkout-source decision](.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
 preserves the source boundary and normal gates.
 
+The separate Windows Bot directory investigation records file-event history
+while explicitly replaying the PR base fixture. It records both source
+identities and restores the checked-out file; its diagnostic results do not
+replace ordinary validation or required gates. The
+[development guide](docs/development.md#cli-test-fixtures) owns this focused entry
+and its private-trace boundaries.
+
 | Changed paths | PR application jobs |
 |---|---|
 | CLI production source, manifest, build configuration and resources | CLI and product E2E |

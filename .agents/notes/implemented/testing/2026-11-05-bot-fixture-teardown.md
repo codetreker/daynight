@@ -75,6 +75,11 @@ blocked until the holder explicitly releases its handle. This validates the
 observation mechanism without attributing an earlier CI failure to that fixture
 holder or to a production process defect.
 
+The separate [original-fixture file-event investigation](2026-11-10-bot-directory-file-events.md)
+captures activity before launch when a short-lived holder may disappear before
+this reactive observer runs. Its baseline replay is diagnostic evidence and
+does not replace normal checked-out-source validation.
+
 The isolation regression uses a 100-millisecond fallback deadline only while
 registering this hook, whose explicit budget remains 180 seconds. This is the
 file's first runtime configuration override, so Vitest snapshots the inherited

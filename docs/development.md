@@ -186,6 +186,20 @@ outside the test process, and all duplicated handles and the child close before
 the after-Controller-close removal probe. A real Windows directory-handle
 regression verifies the candidate PID and release-before-delete transition.
 The original error remains observable even if the later removal succeeds.
+A separate [Windows Bot directory investigation](../.github/workflows/bot-directory-diagnostics.yml)
+runs `node packages/daynight/scripts/diagnose-bot-directory-release.mjs` with an
+exact `BOT_FIXTURE_BASE_SHA` and checkout-local `BOT_DIRECTORY_DIAGNOSTIC_OUTPUT`.
+It requires native Windows x64, Node.js 24, Python 3, locked dependencies, a built
+CLI and ETW privileges. The workflow supplies those inputs and always invokes
+the entry's `--cleanup` mode. It starts file-event capture before Vitest and
+replays the original PR base fixture prefix in fresh processes. It
+keeps the existing assertions and teardown, records the source identities and
+restores the checked-out file. Raw system traces stay private; only exact owned
+directory history and coverage results are retained. The
+[file-event investigation decision](../.agents/notes/implemented/testing/2026-11-10-bot-directory-file-events.md)
+owns attribution, bounded rounds and cleanup requirements. This explicit
+diagnostic entry is separate from ordinary validation and does not replace
+required checkout-source checks.
 Windows process-proof acquisition
 uses the existing Koffi dependency to query birth, parent identity and the full
 command line through one retained process handle. It retains the proof's field
