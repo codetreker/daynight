@@ -27,8 +27,12 @@ still guard every mutation. Unsupported platforms retain strict legacy checks.
 Complete discovery can retain a locally attributable invalid resource as a
 quarantined claim, with capacity and same-task fencing intact. Partial enumeration,
 unknown ownership or conflicting identities still prevent new acquisition.
-Mapping admission does not grant resource ownership. Strict readers used by
-cleanup cannot omit invalid records and infer absence.
+Registration uniqueness compares physical targets, including manual registrations
+and aliases. Only explicitly classified validation failures from observed metadata
+can become quarantine candidates; filesystem reads, native queries, response
+parsing and otherwise unclassified failures retain unknown coverage. Mapping
+admission does not grant resource ownership. Strict readers used by cleanup
+cannot omit invalid records and infer absence.
 
 Typed archive completeness blockers persist with their cleanup owner and a
 15-minute condition-probe schedule. Probes preserve original stopped-generation
@@ -57,6 +61,12 @@ intact.
 when enumeration is incomplete. Applying it to a fully observed and independently
 attributed single claim unnecessarily stops healthy work; quarantine preserves
 its reservation without treating validation failure as absence.
+
+**Infer local validation from the absence of a familiar error code.** Native
+queries can report numeric errno codes, and response parsing or wrapped I/O can
+have no code. A negative error-name filter would treat incomplete observation as
+safe quarantine. Explicit validation errors keep that decision with the code
+that actually observed the violated condition.
 
 **Retry every archive failure identically.** Exponential backoff bounds frequency
 but repeatedly scans unchanged incomplete sources. A typed, durable blocker allows
