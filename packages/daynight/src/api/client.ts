@@ -144,6 +144,7 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
 };
 
 export type ApiClient = TaskSessionClient & {
+  withExpectedUserId(userId: string): ApiClient;
   webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
   listBots(): Promise<readonly Bot[]>;
   getBot(botId: string): Promise<Bot>;
@@ -279,7 +280,7 @@ export const createApiClient = (options: {
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
-  const exchange = async <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", mode: ResponseMode<T>, statuses: readonly number[], body?: RequestBody, mutable = false): Promise<T> => {
+  const exchange = async <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", mode: ResponseMode<T>, statuses: readonly number[], body?: RequestBody, mutable = false, requestMs?: number): Promise<T> => {
     const secret = mode.kind === "json" ? mode.secret : undefined;
     const mutation = method !== "GET" && !(mode.kind === "json" && mode.readOnly === true);
     let phase: ApiPhase = "prepare";
@@ -342,10 +343,20 @@ export const createApiClient = (options: {
       const contentType = body === undefined ? undefined : body.kind === "json" ? "application/json" : body.contentType;
       const url = new URL(`/api/v1${path}`, origin);
       const remaining = operation.remainingMs();
-      const timeout = Math.min(operation.limits.requestMs, remaining);
-      totalBudgetCapped = remaining <= operation.limits.requestMs;
+      const timeout = Math.min(operation.limits.requestMs, remaining, requestMs ?? Infinity);
+      totalBudgetCapped = remaining <= timeout;
       requestDeadline = performance.now() + timeout;
-      timer = setTimeout(() => controller.abort(new OperationError(totalBudgetCapped ? "deadline" : "request_timeout")), Math.ceil(timeout));
+      const expireRequest = (): void => {
+        if (controller.signal.aborted) return;
+        const remaining = requestDeadline - performance.now();
+        if (remaining > 0) {
+          timer = setTimeout(expireRequest, Math.ceil(remaining));
+          timer.unref();
+          return;
+        }
+        controller.abort(new OperationError(totalBudgetCapped ? "deadline" : "request_timeout"));
+      };
+      timer = setTimeout(expireRequest, Math.ceil(timeout));
       timer.unref();
       const cancel = (): void => controller.abort(operation.signal.reason);
       operation.signal.addEventListener("abort", cancel, { once: true });
@@ -676,7 +687,11 @@ export const createApiClient = (options: {
   };
 
   return {
-    ...createTaskSessionClient((input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }) }, [200])),
+    withExpectedUserId: userId => createApiClient({ ...options, expectedUserId: userId }),
+    ...createTaskSessionClient(
+      (input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }), ...(expectedUserId === undefined ? {} : { requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }) }, [200], undefined, true, input.timeoutMs),
+      (input, body, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId, sentRequestId: body.requestId }, input.path, "POST", { kind: "json", parse: (value, metadata) => parse(value, metadata.locationHeader), requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }, [202], { kind: "json", value: body, maxBytes: 2 * 1_048_576 }, true),
+    ),
     webhookRequest: async <T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T> => {
       const user = resourceId(input.userId);
       if (user !== input.userId || !/^\/(?:webhook-event-types|me\/webhooks|teams\/[0-9a-f-]{36}\/webhooks)(?:[/?]|$)/.test(input.path)) throw new Error("Invalid webhook request scope.");

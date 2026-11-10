@@ -15,11 +15,12 @@ type botStore interface {
 	store.BotWriter
 }
 type Bots struct {
-	store  botStore
-	models modelRequester
+	store      botStore
+	models     modelRequester
+	operations botOperations
 }
 
-func New(database botStore) *Bots { return &Bots{store: database} }
+func New(database botStore) *Bots { return &Bots{store: database, operations: defaultBotOperations()} }
 
 func (s *Bots) Create(ctx context.Context, principal model.Principal, input botcore.CreateBot) (model.Bot, error) {
 	return s.create(ctx, principal, input, false)
@@ -41,7 +42,7 @@ func (s *Bots) create(ctx context.Context, principal model.Principal, input botc
 	var result model.Bot
 	completion, err := s.store.WriteBot(ctx, func(scope store.BotScope) error {
 		var err error
-		result, err = botcore.Create(ctx, scope.BotDAO(), principal, input, fingerprint, resolve)
+		result, err = s.operations.create(ctx, scope.BotDAO(), principal, input, fingerprint, resolve)
 		return err
 	})
 	if err != nil {
@@ -63,7 +64,7 @@ func (s *Bots) Get(ctx context.Context, principal model.Principal, id string) (m
 	var result model.Bot
 	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
 		var err error
-		result, err = botcore.Get(ctx, scope, principal, id)
+		result, err = s.operations.get(ctx, scope, principal, id)
 		return err
 	})
 	if err != nil {
@@ -92,7 +93,7 @@ func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *st
 	var records store.BotPage
 	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
 		var err error
-		records, err = botcore.List(ctx, scope, principal, workerID, page)
+		records, err = s.operations.list(ctx, scope, principal, workerID, page)
 		return err
 	})
 	if err != nil {
@@ -132,14 +133,14 @@ func (s *Bots) DefaultsFor(ctx context.Context, principal model.Principal, overr
 	if err != nil {
 		return botcore.BotDefaults{}, botcore.ResultError("defaults", err)
 	}
-	result, err := botcore.ResolveBotDefaults(defaults, overrides)
+	result, err := s.operations.defaults(defaults, overrides)
 	if err != nil || result.Configuration == nil {
 		return result, err
 	}
 	base := *result.Configuration
 	preference := defaults.WorkerPreferences[base.WorkerID].Native[base.Provider]
 	if botcore.RequiresNativeDiscovery(base, preference) {
-		baseline, err := botcore.WorkerNativeDefaults(defaults, overrides, base.WorkerID)
+		baseline, err := s.operations.workerDefaults(defaults, overrides, base.WorkerID)
 		if err != nil {
 			return botcore.BotDefaults{}, err
 		}

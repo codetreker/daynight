@@ -31,6 +31,11 @@ export const runCli = async (
     await command.run(selection.remaining, context);
     return 0;
   } catch (error) {
+    const session = definition.commands?.find(command => command.name === "task")?.commands?.find(command => command.name === "session");
+    if (error instanceof UsageError && error.grammar !== undefined && session !== undefined && (error.grammar.definition === session || session.commands?.includes(error.grammar.definition))) {
+      context.stderr(`Invalid Session command arguments. Run ${error.helpCommand} for usage.\n`);
+      return 2;
+    }
     const thread = definition.commands?.find((command) => command.name === "task")?.commands?.find((command) => command.name === "thread");
     if (error instanceof UsageError && error.grammar !== undefined && thread !== undefined && (error.grammar.definition === thread || thread.commands?.includes(error.grammar.definition))) {
       const diagnostic = new PublicDiagnosticError(`Invalid Thread command arguments. Run ${error.helpCommand} for usage.`, 2, { cause: error });

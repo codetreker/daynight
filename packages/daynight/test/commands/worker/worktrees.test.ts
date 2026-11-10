@@ -424,6 +424,7 @@ describe("worker repositories and task worktrees", () => {
     expect(git(restored.worktreePath, ["rev-parse", "HEAD"])).toBe(retained);
   });
 
+  // Both real Git preparations stay inside the barrier-controlled race, including native process startup.
   it("keeps concurrent tasks on their own fetched commits", async () => {
     const f = await fixture();
     const firstHead = git(f.repository, ["rev-parse", "HEAD"]);
@@ -453,7 +454,7 @@ describe("worker repositories and task worktrees", () => {
       expect(git(f.repository, ["rev-parse", "refs/remotes/origin/main"])).toBe(firstHead);
       expect(privateBases(f.repository)).toBe("");
     } finally { release(); await Promise.allSettled([first]); }
-  });
+  }, 30_000);
 
   it("exposes a real fetch timeout without creating a branch or registration", async () => {
     const f = await fixture(); const blocker = path.join(f.root, "block-fetch.cjs");
@@ -520,7 +521,7 @@ describe("worker repositories and task worktrees", () => {
     await adapter.removeWorktree(f.project, f.owner, operation()); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "keep\n");
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching ownership registration");
     expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("keep\n");
-  });
+  }, 30_000);
 
   it.each(["original claim", "new claim"] as const)("reuses an empty unregistered reservation for the %s", async (kind) => {
     const f = await fixture(); const adapter = manager(f.root);

@@ -90,7 +90,7 @@ func (w *sessionReadResponseWriter) WriteHeader(status int) {
 		w.status = status
 	}
 }
-func (w *sessionReadResponseWriter) Flush()            {}
+func (w *sessionReadResponseWriter) Flush()            { _ = w.FlushError() }
 func (w *sessionReadResponseWriter) FlushError() error { return nil }
 func (w *sessionReadResponseWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {

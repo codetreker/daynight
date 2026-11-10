@@ -22,7 +22,15 @@ type Operation struct {
 // TransactionRunner selects the application's Session scope and finishes each
 // operation after the database has reported its durable outcome.
 type TransactionRunner func(context.Context, *Operation, func(store.SessionScope) error) error
-type BrowserRunner func(context.Context, model.Principal, string, string, string, func(*Access) error) error
+type BrowserPurpose uint8
+
+const (
+	BrowserAccess BrowserPurpose = iota
+	TaskMessageAccess
+	TaskReceiptAccess
+)
+
+type BrowserRunner func(context.Context, model.Principal, string, string, string, BrowserPurpose, func(*Access) error) error
 type ControllerRunner func(context.Context, sp.ControllerFence, func(*Access) error) error
 type ArchivePreflightRunner func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error)
 type ArchiveRunner func(context.Context, model.Principal, string, string, string, bool, func(*Access) error) error

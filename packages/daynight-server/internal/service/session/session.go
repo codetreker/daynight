@@ -13,17 +13,18 @@ import (
 // Service coordinates each Session operation with the application's writer.
 type Service struct {
 	*sessioncore.Execution
-	engine     *sessioncore.Engine
-	writer     store.SessionWriter
-	historyOps historyScopeOperations
+	engine       *sessioncore.Engine
+	writer       store.SessionWriter
+	historyOps   historyScopeOperations
+	beginBrowser func() (browserOperation, error)
 }
 
 func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
-	s := &Service{engine: engine, writer: writer, historyOps: historyScopeBindings()}
+	s := &Service{engine: engine, writer: writer, historyOps: historyScopeBindings(), beginBrowser: func() (browserOperation, error) { return engine.BeginOperation() }}
 	botRuntime := botruntime.NewRuntime(engine, func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
 		return s.write(ctx, op.Finish, fn)
 	})
-	s.Execution = sessioncore.NewExecution(engine, s.browser, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
+	s.Execution = sessioncore.NewExecution(engine, s.browserFor, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
 	s.Execution.SetArchivePreflight(s.archivePreflight)
 	s.Execution.SetTaskReadRunners(s.taskContentRead, s.taskReadQuery, s.taskArchiveRead)
 	return s

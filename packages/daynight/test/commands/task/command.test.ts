@@ -29,6 +29,9 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    withExpectedUserId: () => { throw new Error("Unexpected actor binding"); },
+    readTaskSessionOperation: async () => { throw new Error("Unexpected operation read"); },
+    sendTaskSessionCommand: async () => { throw new Error("Unexpected Session send"); },
     inspectTaskSession: vi.fn<ApiClient["inspectTaskSession"]>(), listTaskWork: vi.fn<ApiClient["listTaskWork"]>(),
     currentTaskSession: vi.fn<ApiClient["currentTaskSession"]>(async () => { throw new Error("Unexpected Session read."); }),
     listTaskSessions: vi.fn<ApiClient["listTaskSessions"]>(async () => { throw new Error("Unexpected Session read."); }),

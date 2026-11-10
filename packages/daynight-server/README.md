@@ -950,6 +950,33 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Webhook retention configuration tests
+
+Retention binds one stateful Core configuration collector through its private
+Reconcile/Pass contract. The selected service tests control those operations and
+verify context, Store identity, exact quota, result aggregation, observations,
+internal timeouts and single-flight drain. Native ReceiptCollector work and
+history scope callbacks remain real. Configuration unknown-state and lifecycle
+cases keep the default collector and its state across passes.
+
+Core uses its existing strict collection plan for the original eligibility rules,
+pending barrier and all 125 configuration candidates. Complete context, identity
+and order checks supplement the original affected-row observation. Run the
+selected owners without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestConfigCollector|TestRetention)' \
+  ./internal/core/webhook ./internal/service/webhook
+```
+
+The [configuration operation test decision](../../.agents/notes/implemented/testing/2026-11-09-retention-config-operation-test-owners.md)
+records this allocation and the retained native-state proofs. Store continues to
+own actual SQL, locks, barriers, completion and persisted readback; stress cases
+retain their separate tagged entry.
+
 ### Worker admission tests
 
 The `internal/service/worker` admission subset controls directly invoked Core
@@ -982,8 +1009,8 @@ byte-field overflows arrive at the operation and receive a supplied service
 refusal; Report collection overflow is rejected by the actual wire parser.
 Configuration PUT and observation overflow inputs are parsed before any business
 call. Observation success additionally returns configuration protocol version 1
-and its complete accepted receipt. Assistant-host cases retain their separate
-DAO fixture.
+and its complete accepted receipt. Both assistant-host HTTP tests use the same
+strict operation fixture; their lower rules have separate receiving owners.
 
 `internal/core/worker` owns the original thirteen Report byte/count boundaries,
 normalization and full snapshot projection. Its Configuration capacity tests
@@ -1006,6 +1033,42 @@ and [Configuration capacity decision](../../.agents/notes/implemented/testing/20
 record their protocol, rule and projection proof owners. Other root HTTP tests
 retain their own environment requirements.
 
+### Worker assistant-host HTTP tests
+
+The first assistant-host reporting test registers Worker routes, real credential
+middleware and request logging with strict direct Report/Get/List operations.
+It preserves complete host input/output, unavailable providers, absent-field
+omission, private headers and log redaction. Protocol 2 calls Report once with a
+supplied lower validation refusal. Get/List results are independent supplied
+facts, without report-driven storage state.
+
+Core tests retain actual validation and complete snapshot projection with fresh
+host values. Admission service fixtures use independently allocated input,
+normalized, proposed and stored hosts with distinguishable directories, so the
+existing full argument comparisons expose lost or bypassed normalization.
+The configuration-exchange compatibility test preserves its nine requests through
+Report/Get/Configuration callbacks. Bootstrap and future-refusal inputs remain
+complete; subsequent reads supply independent facts. Legacy responses retain
+exactly two timestamps and no configuration header. Core executes the exact
+bootstrap/future-observation decisions; service verifies success, refusal and
+legacy sequencing. Store separately verifies real commits and fresh snapshots.
+The shared capacity fixture contains only pure expectation helpers. Run the
+selected HTTP/Core/Service owners without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestWorkerAssistantHostHTTP|TestWorkerAssistantHostReportValidationAndSnapshot|TestExchangeConfigurationAssistantHostCompatibility|TestWorkerAdmission)' \
+  ./internal/server ./internal/core/worker ./internal/service/worker
+```
+
+The [assistant-host test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-http-test-owners.md)
+records the protocol, Core and service proof owners. The
+[configuration compatibility HTTP decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+records its separate wire and lower observations. Other Root and Worker
+selections keep their own infrastructure requirements.
+
 ### Worker configuration service tests
 
 The selected `internal/service/worker` configuration tests execute revision
@@ -1019,13 +1082,18 @@ without database or UniAuth fixtures:
 source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
-  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)' \
+  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
   ./internal/service/worker
 ```
 
 The PostgreSQL Worker contract suite retains actual configuration write/read
-independence after Task storage is removed. Other bootstrap, CAS and capacity
-cases keep their existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
+independence after Task storage is removed. Historical configuration repair and
+revoked-Project policy execute in Core with controlled DAO facts; candidate
+admission and supplied read results execute in the service subset. The Store
+contract suite retains actual stored 65 values, grant revocation, JSONB args,
+committed repair and fresh readback. The [historical configuration decision](../../.agents/notes/implemented/testing/2026-11-09-worker-historical-configuration-test-owners.md)
+records these owners. Other bootstrap, CAS and report-budget cases keep their
+existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
 records these proof owners.
 
 ### Identity service tests
@@ -1057,6 +1125,31 @@ PostgreSQL receivers use the documented isolated database configuration and run
 with `go test ./internal/core/store/postgres/identity ./internal/core/store/postgres`.
 
 The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
+
+### Bot management service tests
+
+The `internal/service/bot` suite executes actual snapshot/write callbacks,
+normalization, native catalog transport, deletion stop-proof validation and
+Session/file cleanup. Private instance operations supply direct core creation,
+read and selection results and deletion decisions. Production constructors bind
+the real implementations and retain `time.Now`; strict unit expectations verify
+context, principal, identifiers, inputs, current-scope capabilities, call order,
+completion outcomes and error chains. Ordinary tests clear database and UniAuth
+fixture variables and do not simulate persisted state.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/bot
+```
+
+Core Bot tests own replay, configuration/default/native and deletion rules.
+PostgreSQL Bot/Session tests retain real locks, credential rechecks, preferences,
+rollback, cleanup visibility and precise persisted versions. Local archive tests
+retain actual orphan-file removal. The independent API integration suite owns representative normal flows
+through the assembled server.
+See the [Bot service test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-service-test-boundary.md).
 
 ### Bot runtime service tests
 

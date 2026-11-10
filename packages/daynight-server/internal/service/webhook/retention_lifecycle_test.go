@@ -17,10 +17,8 @@ import (
 func TestRetentionBackgroundReportsPermanentFailureAndDrains(t *testing.T) {
 	cause := errors.New("scan unavailable")
 	db := retentionEmptyStore(t)
-	db.scanConfig = func(context.Context, *store.WebhookConfigGCCandidate, int) (store.WebhookConfigGCScan, error) {
-		return store.WebhookConfigGCScan{}, cause
-	}
-	r := NewRetention(db)
+	r, plan := retentionWithCollectors(t, db)
+	plan.queue(retentionOperation("receipt.reconcile"), retentionOperation("config.reconcile"), retentionConfigResult(0, cause))
 	retentionFail(t, r.Stop(t.Context()))
 	retentionFail(t, r.Start(context.Background()))
 	select {
@@ -40,12 +38,27 @@ func TestRetentionStartRequiresValidSingleActivation(t *testing.T) {
 	if err := NewRetention(nil).Start(context.Background()); err == nil {
 		t.Fatal("missing DAO accepted")
 	}
-	r := NewRetention(retentionEmptyStore(t))
+	r, plan := retentionWithCollectors(t, retentionEmptyStore(t))
 	if err := r.Start(nil); err == nil {
 		t.Fatal("nil runtime context accepted")
 	}
+	entered := make(chan struct{})
+	plan.queue(retentionOperation("receipt.reconcile"), retentionOperation("config.reconcile"), retentionConfigAction(func(ctx context.Context) (int, error) { close(entered); <-ctx.Done(); return 0, ctx.Err() }))
 	parent, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		ctx, stop := context.WithTimeout(context.Background(), time.Second)
+		defer stop()
+		if err := r.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 	retentionFail(t, r.Start(parent))
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("collector operation did not start")
+	}
 	if err := r.Start(parent); err == nil {
 		t.Fatal("second activation accepted")
 	}
@@ -61,7 +74,8 @@ func TestRetentionStartRequiresValidSingleActivation(t *testing.T) {
 func TestRetentionBackgroundUnknownUsesScheduledReadback(t *testing.T) {
 	for _, mode := range []string{"config", "receipt", "history"} {
 		t.Run(mode, func(t *testing.T) {
-			r, _, observed, writes := retentionUnknownScenario(t, mode)
+			scenario := retentionUnknownScenario(t, mode)
+			r, observed, writes := scenario.r, &scenario.observed, &scenario.unknownCalls
 			waits, permit := make(chan time.Duration, 2), make(chan struct{})
 			r.wait = func(c context.Context, d time.Duration) bool {
 				select {
@@ -97,6 +111,7 @@ func TestRetentionBackgroundUnknownUsesScheduledReadback(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("first scheduling boundary missing")
 			}
+			scenario.queueReadback(nil)
 			permit <- struct{}{}
 			select {
 			case delay := <-waits:
@@ -116,25 +131,31 @@ func TestRetentionStopBoundsDelayedDAODrain(t *testing.T) {
 	db := retentionEmptyStore(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	defer once.Do(func() { close(release) })
-	db.scanConfig = func(c context.Context, _ *store.WebhookConfigGCCandidate, _ int) (store.WebhookConfigGCScan, error) {
+	r, plan := retentionWithCollectors(t, db)
+	plan.queue(retentionOperation("receipt.reconcile"), retentionOperation("config.reconcile"), retentionConfigAction(func(ctx context.Context) (int, error) {
 		close(entered)
-		<-c.Done()
+		<-ctx.Done()
 		<-release
-		return store.WebhookConfigGCScan{}, c.Err()
-	}
-	r := NewRetention(db)
+		return 0, ctx.Err()
+	}))
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := r.Stop(ctx); err != nil {
+			t.Errorf("delayed drain cleanup: %v", err)
+		}
+	})
 	retentionFail(t, r.Start(context.Background()))
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
-		t.Fatal("DAO not entered")
+		t.Fatal("collector not entered")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	err := r.Stop(ctx)
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
-		once.Do(func() { close(release) })
 		t.Fatalf("delayed drain did not exhaust stop deadline: %v", err)
 	}
 	once.Do(func() { close(release) })
@@ -145,10 +166,8 @@ func TestRetentionStopBoundsDelayedDAODrain(t *testing.T) {
 
 func TestRetentionBackgroundSanitizesPanics(t *testing.T) {
 	db := retentionEmptyStore(t)
-	db.scanConfig = func(context.Context, *store.WebhookConfigGCCandidate, int) (store.WebhookConfigGCScan, error) {
-		panic("private-payload-secret")
-	}
-	r := NewRetention(db)
+	r, plan := retentionWithCollectors(t, db)
+	plan.queue(retentionOperation("receipt.reconcile"), retentionOperation("config.reconcile"), retentionConfigAction(func(context.Context) (int, error) { panic("private-payload-secret") }))
 	retentionFail(t, r.Start(context.Background()))
 	select {
 	case e := <-r.Failures():
@@ -191,7 +210,8 @@ func TestRetentionObservationCountsLagAndLogsSafeIdentity(t *testing.T) {
 		}
 		return retentionCallback(f, retentionEmptyScope(t))
 	}
-	r := NewRetention(db)
+	r, plan := retentionWithCollectors(t, db)
+	plan.queue(retentionPassCalls(0, 0, "config", "receipt", "history", "history")...)
 	if r.Observation().Available {
 		t.Fatal("unrun observation was available")
 	}
@@ -230,7 +250,8 @@ func TestRetentionObservationUsesLaterMetadataDeadline(t *testing.T) {
 		}
 		return retentionCallback(f, retentionEmptyScope(t))
 	}
-	r := NewRetention(db)
+	r, plan := retentionWithCollectors(t, db)
+	plan.queue(retentionPassCalls(0, 0, "config", "receipt", "history", "history")...)
 	n, _, err := r.Pass(t.Context())
 	retentionFail(t, err)
 	if n != 1 || !r.Observation().LagKnown || r.Observation().OldestObservedLag != time.Hour {
@@ -249,7 +270,8 @@ func TestRetentionObservationDoesNotDiscloseFailureCause(t *testing.T) {
 				}
 				return store.Completion{Outcome: outcome}, cause
 			}
-			r := NewRetention(db)
+			r, plan := retentionWithCollectors(t, db)
+			plan.queue(retentionPassCalls(0, 0, "config", "receipt", "history")...)
 			n, _, err := r.Pass(t.Context())
 			if n != 0 || !errors.Is(err, cause) {
 				t.Fatalf("cause lost: n%d err%v", n, err)
@@ -304,17 +326,78 @@ func TestRetentionObservationConcurrentReadersSeeWholePass(t *testing.T) {
 }
 
 func TestRetentionBlockedEventConsumerDoesNotBlockPassOrStop(t *testing.T) {
-	r := NewRetention(retentionEmptyStore(t))
+	r, plan := retentionWithCollectors(t, retentionEmptyStore(t))
+	plan.queue(retentionPassCalls(0, 0, "config", "receipt", "history")...)
+	parent, cancelParent := context.WithCancel(context.Background())
 	consumed, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	go func() { defer close(done); <-r.Events(); close(consumed); <-release }()
-	defer func() { close(release); <-done }()
-	retentionFail(t, r.Start(context.Background()))
+	waiting, waitDone := make(chan struct{}, 1), make(chan struct{})
+	r.wait = func(ctx context.Context, _ time.Duration) bool {
+		defer close(waitDone)
+		select {
+		case waiting <- struct{}{}:
+		case <-ctx.Done():
+			return false
+		}
+		<-ctx.Done()
+		return false
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		cancelParent()
+		releaseOnce.Do(func() { close(release) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := r.Stop(ctx); err != nil {
+			t.Errorf("retention cleanup stop: %v", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("event consumer did not exit during cleanup")
+		}
+		select {
+		case err := <-r.Failures():
+			t.Errorf("retention background failure: %v", err)
+		default:
+		}
+	})
+	go func() {
+		defer close(done)
+		select {
+		case _, open := <-r.Events():
+			if !open {
+				t.Error("event stream closed before its first event")
+				return
+			}
+			close(consumed)
+		case <-parent.Done():
+			return
+		}
+		select {
+		case <-release:
+		case <-parent.Done():
+		}
+	}()
+	retentionFail(t, r.Start(parent))
+	ready := time.After(time.Second)
 	select {
 	case <-consumed:
-	case <-time.After(time.Second):
+	case err := <-r.Failures():
+		t.Fatalf("retention failed before its first event: %v", err)
+	case <-ready:
 		t.Fatal("event not published")
 	}
+	// Publishing the first event precedes the pass lock's deferred release.
+	select {
+	case <-waiting:
+	case err := <-r.Failures():
+		t.Fatalf("retention failed before its idle wait: %v", err)
+	case <-ready:
+		t.Fatal("background pass did not enter its idle wait")
+	}
 	for i := 0; i < 350 && r.Observation().DroppedEvents == 0; i++ {
+		classes := [][]string{{"receipt", "history", "config"}, {"history", "config", "receipt"}, {"config", "receipt", "history"}}
+		plan.queue(retentionPassCalls(0, 0, classes[i%3]...)...)
 		_, _, err := r.Pass(t.Context())
 		retentionFail(t, err)
 	}
@@ -325,11 +408,19 @@ func TestRetentionBlockedEventConsumerDoesNotBlockPassOrStop(t *testing.T) {
 	defer cancel()
 	retentionFail(t, r.Stop(ctx))
 	select {
-	case _, open := <-r.Events():
-		if !open {
-			t.Fatal("Stop closed the drainable event stream")
-		}
+	case <-waitDone:
 	default:
+		t.Fatal("retention stopped before its idle wait exited")
+	}
+	for {
+		select {
+		case _, open := <-r.Events():
+			if !open {
+				t.Fatal("Stop closed the drainable event stream")
+			}
+		default:
+			return
+		}
 	}
 }
 
@@ -347,7 +438,8 @@ func TestRetentionIdleLoopWaitsForItsOwnWakeup(t *testing.T) {
 		return retentionCallback(fn, retentionEmptyScope(t))
 	}
 	waits, permit := make(chan time.Duration, 2), make(chan struct{})
-	r := NewRetention(db)
+	r, plan := retentionWithCollectors(t, db)
+	plan.queue(retentionPassCalls(0, 0, "config", "receipt", "history")...)
 	r.wait = func(ctx context.Context, delay time.Duration) bool {
 		select {
 		case waits <- delay:
@@ -379,6 +471,7 @@ func TestRetentionIdleLoopWaitsForItsOwnWakeup(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("idle boundary absent")
 	}
+	plan.queue(retentionPassCalls(0, 0, "receipt", "history", "history", "config")...)
 	permit <- struct{}{}
 	select {
 	case delay := <-waits:

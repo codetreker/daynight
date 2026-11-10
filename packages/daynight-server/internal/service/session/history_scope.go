@@ -12,7 +12,7 @@ type historyScopeOperations struct {
 	lockTask    func(*core.Operation, context.Context, store.SessionScope, string, string) (*core.TaskAccess, error)
 	credential  func(*core.Operation, context.Context, store.SessionScope, model.Principal) error
 	project     func(*core.Operation, context.Context, store.SessionScope, model.Principal, string) error
-	load        func(context.Context, *core.Operation, store.SessionScope, string) (*core.Access, error)
+	load        func(context.Context, sessionAccessOperation, store.SessionScope, string) (*core.Access, error)
 	bindRead    func(*core.Operation, *core.Access, *core.TaskAccess, string, string) error
 	bindArchive func(*core.Operation, *core.Access, *core.TaskAccess, model.Principal, string, string, bool) error
 }
@@ -51,7 +51,10 @@ func (s *Service) taskReadQuery(ctx context.Context, p model.Principal, project,
 		return work(op, scope, task, func(id string) (*core.Access, error) { return s.historyOps.load(ctx, op, scope, id) })
 	})
 }
-func (s *Service) taskContentRead(ctx context.Context, p model.Principal, project, taskID, id string, work func(*core.Access) error) error {
+func (s *Service) taskContentRead(ctx context.Context, p model.Principal, project, taskID, id string, purpose core.BrowserPurpose, work func(*core.Access) error) error {
+	if purpose != core.BrowserAccess {
+		return &model.Fault{Code: "forbidden", Message: "Task history cannot authorize Session operations."}
+	}
 	return s.taskReadQuery(ctx, p, project, taskID, func(op *core.Operation, scope store.SessionScope, task *core.TaskAccess, load func(string) (*core.Access, error)) error {
 		a, err := load(id)
 		if err != nil {

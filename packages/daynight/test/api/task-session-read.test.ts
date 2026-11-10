@@ -95,9 +95,10 @@ describe("Task Session read API", () => {
     expect(f.fetch).toHaveBeenCalledOnce();
   });
 
-  it("rejects a message response exceeding the dedicated encoded transport limit", async () => {
+  it.each([false, true])("retains the dedicated encoded transport limit with principal binding %s", async bound => {
     const f = fixture({ ...page, items: [{ ...item, body: { ...body, content: [{ type: "text", text: "x".repeat(262144) }] } }] });
-    await expect(f.api.readTaskSession(projectId, taskId, sessionId)).rejects.toMatchObject({ phase: "response", cause: { kind: "response_limit" } });
+    const api = bound ? f.api.withExpectedUserId(actorId) : f.api;
+    await expect(api.readTaskSession(projectId, taskId, sessionId)).rejects.toMatchObject({ phase: "response", cause: { kind: "response_limit" } });
     expect(f.fetch).toHaveBeenCalledOnce();
   });
 });

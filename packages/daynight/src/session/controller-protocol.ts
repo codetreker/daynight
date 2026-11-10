@@ -13,6 +13,7 @@ export type ControllerGrantResponse = SessionFence & { readonly token: string; r
 export type CurrentSessionResponse = { readonly status: "not_applicable"; readonly claimId: string | null; readonly agentControlMode: "herdr" | null } | { readonly status: "not_registered"; readonly claimId: string; readonly agentControlMode: "web" } | { readonly status: "registered"; readonly session: SessionSnapshot; readonly startupReport?: SessionStartupReport | null };
 export type TimelinePage = { readonly sessionId: string; readonly historyEpoch: string; readonly items: readonly TimelineEntry[]; readonly resources: readonly SessionResource[]; readonly beforeCursor: string | null; readonly afterCursor: string | null; readonly hasMoreBefore: boolean; readonly hasMoreAfter: boolean; readonly lastEventSeq: DecimalSequence };
 export type OperationResponse = { readonly operation: SessionOperation };
+export type TaskOperationResponse = OperationResponse & { readonly currentBinding: boolean };
 export type CommandResponse = OperationResponse & { readonly operationUrl: string };
 export type ControllerState = Pick<SessionSnapshot, "controls" | "turnStartedAt"> & { readonly cleanupInteractionIds?: readonly string[]; readonly nativeSessionId: string | null; readonly initialInputState: SessionSnapshot["initialInputState"]; readonly synchronized: boolean; readonly activity: SessionSnapshot["activity"]; readonly currentTurnId: string | null; readonly capabilities: SessionCapabilities };
 type WithoutEntrySeq<T> = T extends unknown ? Omit<T, "entrySeq"> : never;
@@ -114,6 +115,11 @@ export const parseTimelinePage = (x: unknown): TimelinePage => {
   return { sessionId: id(o.sessionId), historyEpoch: str(o.historyEpoch), items: list(o.items, parseTimelineEntry, 200), resources: list(o.resources, parseSessionResource, 1000), beforeCursor: nullable(o.beforeCursor, str), afterCursor: nullable(o.afterCursor, str), hasMoreBefore: bool(o.hasMoreBefore), hasMoreAfter: bool(o.hasMoreAfter), lastEventSeq: seq(o.lastEventSeq, true) };
 };
 export const parseOperationResponse = (x: unknown): OperationResponse => ({ operation: parseSessionOperation(obj(x, ["operation"]).operation) });
+export const parseTaskOperationResponse = (x: unknown): TaskOperationResponse => {
+  const o = obj(x, ["operation", "currentBinding"]), operation = parseSessionOperation(o.operation);
+  if (operation.claimId === undefined) return fail();
+  return { operation, currentBinding: bool(o.currentBinding) };
+};
 export const parseCommandResponse = (x: unknown): CommandResponse => { const o = obj(x, ["operation", "operationUrl"]); return { operation: parseSessionOperation(o.operation), operationUrl: str(o.operationUrl, 2048) }; };
 export const parseControllerState = (x: unknown): ControllerState => {
   const o = obj(x, [...sessionControlKeys(x), "nativeSessionId", "initialInputState", "synchronized", "activity", "currentTurnId", "capabilities", ...(x && typeof x === "object" && Object.hasOwn(x, "cleanupInteractionIds") ? ["cleanupInteractionIds"] : [])]);

@@ -48,24 +48,33 @@ type deletionBotDAO struct {
 
 func (d *deletionBotDAO) Bot(context.Context, string) (model.Bot, error) {
 	*d.calls = append(*d.calls, "bot")
-	return d.bot, nil
+	out := d.bot
+	if out.Deletion != nil {
+		copy := *out.Deletion
+		out.Deletion = &copy
+	}
+	return out, nil
 }
 func (d *deletionBotDAO) SaveBotDeletion(_ context.Context, _ string, value *model.BotDeletion) (model.Bot, error) {
 	*d.calls = append(*d.calls, "barrier")
-	d.bot.Deletion = value
-	return d.bot, nil
+	out := d.bot
+	out.Deletion = value
+	return out, nil
 }
 
 type deletionWriter struct {
-	scope   deletionScope
-	outcome store.TransactionOutcome
-	err     error
+	t             *testing.T
+	ctx           context.Context
+	callbackError callbackExpectation
+	scope         deletionScope
+	outcome       store.TransactionOutcome
+	err           error
 }
 
-func (w deletionWriter) WriteSession(_ context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-	if err := fn(w.scope); err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, err
-	}
+func (w deletionWriter) WriteSession(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	identical(w.t, ctx, w.ctx)
+	actual := fn(w.scope)
+	w.callbackError.check(w.t, actual)
 	return store.Completion{Outcome: w.outcome}, w.err
 }
 
@@ -84,7 +93,8 @@ func TestDeletionPublishesRevocationOnlyForCommittedOutcome(t *testing.T) {
 			bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: 1}}
 			cleanupErr := errors.New("cleanup failed")
 			live := &discardedSessions{}
-			s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}, outcome: outcome, err: cleanupErr}, nil, live)
+			s := NewDeletions(deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: outcome, err: cleanupErr}, nil, live)
+			bindDeletionFacts(t, s, bots, p, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1, "save": 1}})
 			_, err := s.DeleteBot(context.Background(), p, id, request)
 			if !errors.Is(err, cleanupErr) {
 				t.Fatalf("cleanup error lost: %v", err)
@@ -110,13 +120,17 @@ func TestDeletionChecksExhaustionAfterSessionRevocation(t *testing.T) {
 	request := store.DeleteBot{Version: math.MaxInt64, DeletionID: "3469e571-cc04-45c1-9b73-796d0c85fabe"}
 	dao := &deletionDAO{calls: &calls, revokeErr: cause}
 	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: math.MaxInt64}}
-	s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}}, nil, &discardedSessions{})
+	s := NewDeletions(deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionNotCommitted, callbackError: callbackCause(cause), err: cause}, nil, &discardedSessions{})
+	bindDeletionFacts(t, s, bots, p, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1}})
 	_, err := s.DeleteBot(context.Background(), p, id, request)
 	if !errors.Is(err, cause) || !reflect.DeepEqual(calls, []string{"credential", "bot", "sessions", "revoke"}) {
 		t.Fatalf("revocation failure must precede exhaustion: %v, %v", err, calls)
 	}
 	calls = nil
 	dao.revokeErr = nil
+	exhausted := &model.Fault{Code: "version_exhausted", Message: "exhausted"}
+	s.writer = deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionNotCommitted, callbackError: callbackCause(exhausted), err: exhausted}
+	bindDeletionFacts(t, s, bots, p, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1, "save": 1}, saveError: exhausted})
 	_, err = s.DeleteBot(context.Background(), p, id, request)
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "version_exhausted" || !reflect.DeepEqual(calls, []string{"credential", "bot", "sessions", "revoke"}) {
@@ -134,7 +148,8 @@ func TestDeletionRequiresConfirmedCommitForResultAndRevocation(t *testing.T) {
 			dao := &deletionDAO{calls: &calls}
 			bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: 1}}
 			live := &discardedSessions{}
-			s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}, outcome: outcome}, nil, live)
+			s := NewDeletions(deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: outcome}, nil, live)
+			bindDeletionFacts(t, s, bots, p, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1, "save": 1}})
 			result, err := s.DeleteBot(context.Background(), p, id, request)
 			if outcome == store.TransactionCommitted {
 				if err != nil || result.Deletion == nil || !reflect.DeepEqual(live.ids, []string{"session"}) {
@@ -148,6 +163,7 @@ func TestDeletionRequiresConfirmedCommitForResultAndRevocation(t *testing.T) {
 }
 
 type cleanupFailureWriter struct {
+	t     *testing.T
 	scope deletionScope
 	calls int
 	err   error
@@ -158,9 +174,10 @@ func (w *cleanupFailureWriter) WriteSession(_ context.Context, fn func(store.Ses
 	if w.calls == 2 {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, w.err
 	}
-	if err := fn(w.scope); err != nil {
-		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	if w.calls != 1 {
+		w.t.Fatal("unexpected cleanup scope")
 	}
+	callbackCause(nil).check(w.t, fn(w.scope))
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
 
@@ -173,8 +190,9 @@ func TestDeletionCleanupFailureRetainsCommittedBarrier(t *testing.T) {
 		Deletion: &model.BotDeletion{DeletionID: request.DeletionID, RequestedVersion: request.Version,
 			WorkerCleanup: model.BotCleanupResult{State: "completed"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}}}
 	cause := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.New("cleanup failed")}
-	writer := &cleanupFailureWriter{scope: deletionScope{dao: &deletionDAO{calls: &calls}, bot: bots}, err: cause}
+	writer := &cleanupFailureWriter{t: t, scope: deletionScope{dao: &deletionDAO{calls: &calls}, bot: bots}, err: cause}
 	svc := NewDeletions(writer, nil, &discardedSessions{})
+	bindDeletionFacts(t, svc, bots, principal, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1}, replay: true})
 	_, err := svc.DeleteBot(context.Background(), principal, id, request)
 	var failure *DeletionCleanupError
 	if !errors.As(err, &failure) || !errors.Is(err, cause) || writer.calls != 2 {
@@ -193,8 +211,9 @@ func TestDeletionReceiptDigestPreservesEncodedBytes(t *testing.T) {
 	deletionID := "3469e571-cc04-45c1-9b73-796d0c85fabe"
 	dao := &deletionDAO{calls: &calls}
 	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, WorkerID: workerID, Version: 1, Deletion: &model.BotDeletion{DeletionID: deletionID, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "completed"}}}}
-	s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionCommitted}, nil, &discardedSessions{})
+	s := NewDeletions(deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionCommitted}, nil, &discardedSessions{})
 	receipt := BotDeletionReceipt{DeletionID: deletionID, Result: model.BotCleanupResult{State: "completed"}}
+	bindDeletionFacts(t, s, bots, p, bots.bot, store.DeleteBot{DeletionID: deletionID}, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "worker": 1, "save": 1}, workerChange: true, needsProof: true, receipt: &receipt})
 	got, err := s.CompleteBotDeletion(context.Background(), p, workerID, id, receipt)
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +222,8 @@ func TestDeletionReceiptDigestPreservesEncodedBytes(t *testing.T) {
 	if got.Deletion.ReceiptDigest != want {
 		t.Fatalf("digest = %q, want %q", got.Deletion.ReceiptDigest, want)
 	}
+	bots.bot = got
+	bindDeletionFacts(t, s, bots, p, bots.bot, store.DeleteBot{DeletionID: deletionID}, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "worker": 1}, receipt: &receipt})
 	if _, err = s.CompleteBotDeletion(context.Background(), p, workerID, id, receipt); err != nil {
 		t.Fatalf("receipt replay: %v", err)
 	}

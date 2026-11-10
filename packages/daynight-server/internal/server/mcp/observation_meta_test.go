@@ -37,3 +37,23 @@ func TestReadObservationMetadataPreservesPartialResults(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionCompletionMetadataDoesNotReplaceNativeState(t *testing.T) {
+	f := newEntryFixture(t)
+	tool := &sdk.Tool{Name: "session_receipt", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"}}
+	err := f.entry.RegisterTool(tool, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{SuccessMetadata: true, Data: map[string]any{"operation": map[string]any{"state": "accepted"}}, WriteOutcome: "confirmed", Phase: "commit", Refs: map[string]any{"operationId": "original"}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client(t, "2026-07-28", "alice").CallTool(t.Context(), &sdk.CallToolParams{Name: tool.Name, Arguments: map[string]any{}})
+	if err != nil || result.IsError {
+		t.Fatalf("result %#v %v", result, err)
+	}
+	env := structured(t, result)
+	meta := object(t, env["meta"])
+	if meta["writeOutcome"] != "confirmed" || meta["phase"] != "commit" || object(t, meta["refs"])["operationId"] != "original" || object(t, object(t, env["data"])["operation"])["state"] != "accepted" {
+		t.Fatalf("completion/native facts lost: %#v", env)
+	}
+}

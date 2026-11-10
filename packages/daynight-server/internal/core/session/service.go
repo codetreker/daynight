@@ -135,7 +135,7 @@ func active(t task, r *record) bool {
 	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == model.WorkerActive)
 }
 func (s *Execution) browser(ctx context.Context, p model.Principal, project, taskID, id string, fn func(*operationTx, *record, task, bool) error) error {
-	return s.browserRun(ctx, p, project, taskID, id, func(a *Access) error {
+	return s.browserRun(ctx, p, project, taskID, id, BrowserAccess, func(a *Access) error {
 		return fn(a.tx, a.record, a.task, a.write)
 	})
 }

@@ -389,6 +389,35 @@ A boundary must identify a message in that same Task; `message_not_found` cannot
 
 Posting does not change Task status, version, timestamps, properties or dependencies, and does not trigger an Agent. A post receipt also does not advance the continuously read position. If the last consumed message was A, an unseen participant message B followed by a local post C must still be read from `afterId: A`; jumping to C would skip B. Keep accepted requirements and results in their [formal material owners](daynight://manuals/materials.md), and handle uncertain post outcomes through [Write safety](daynight://manuals/write-safety.md).
 
+## Read an original Session operation
+
+`task_session_operation` reads an explicitly identified Task Session operation,
+including a historical Session after the Task has acquired a new claim:
+
+```json
+{
+  "name": "task_session_operation",
+  "arguments": {
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "taskId": "22222222-2222-4222-8222-222222222222",
+    "sessionId": "33333333-3333-4333-8333-333333333333",
+    "operationId": "44444444-4444-4444-8444-444444444444"
+  }
+}
+```
+
+Successful `structuredContent.data` contains the original `operation` and
+`currentBinding`. The latter reports whether the original Session is still the
+current Task execution; it never substitutes a new Session. Reading checks the
+current credential and Project access, does not restore a command queue, and
+does not produce a write-commit result. Resource refs preserve all four IDs.
+
+The `not_found` error means no receipt was available for that query. The original
+send outcome remains unknown; absence does not prove that the request was never
+sent. Keep its IDs and query them again when appropriate, without replacing the
+operation ID or submitting again. Authentication and membership failures are not
+absence. Follow [Session send safety](daynight://manuals/write-safety.md).
+
 ## Recognize incomplete observations
 
 A successful empty collection, an exhausted cursor, a missing resource and an unsuccessful request mean different things. Preserve the actual error and request context. Do not convert an access failure, `list_changed`, `version_conflict`, invalid cursor, transport loss or resource contention into an empty result.

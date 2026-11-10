@@ -45,7 +45,7 @@ func (s *Service) credential(ctx context.Context, principal model.Principal, wor
 }
 
 func (s *Service) authorize(ctx context.Context, op *sessioncore.Operation, scope store.SessionScope, p model.Principal, authority sessioncore.Authority) error {
-	if err := op.LockCredential(ctx, scope, p); err != nil {
+	if err := op.LockPurposeCredential(ctx, scope, p, authority.Purpose); err != nil {
 		return err
 	}
 	if !authority.Test {

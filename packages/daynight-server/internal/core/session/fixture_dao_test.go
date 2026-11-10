@@ -190,6 +190,13 @@ func (d *fixtureDAO) invoke(ctx context.Context, name string, configured bool) {
 	}
 }
 
+func (d *fixtureDAO) LockOAuthCredential(ctx context.Context, p model.Principal, resource, scope string, now time.Time) error {
+	if resource != "/mcp" || scope != "daynight:mcp" {
+		d.t.Fatalf("unexpected OAuth audience/scope: %q %q", resource, scope)
+	}
+	return d.LockCredential(ctx, p, now)
+}
+
 func (d *fixtureDAO) LockCredential(a0 context.Context, a1 model.Principal, a2 time.Time) error {
 	d.invoke(a0, "LockCredential", d.LockCredentialFn != nil)
 	return d.LockCredentialFn(a0, a1, a2)

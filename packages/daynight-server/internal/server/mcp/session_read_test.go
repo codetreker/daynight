@@ -321,3 +321,37 @@ func TestSessionReadBodySchemaAcceptsSharedCanonicalFixture(t *testing.T) {
 		t.Fatalf("fractional form and exact decimal sequences: %v", err)
 	}
 }
+
+type sessionReadFailedCloser struct{ calls int }
+
+func (c *sessionReadFailedCloser) Close() error {
+	c.calls++
+	return fmt.Errorf("archive close failed")
+}
+
+func TestSessionReadCleanupFailuresRemainObservableAfterDelivery(t *testing.T) {
+	for _, scoped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("scope=%t", scoped), func(t *testing.T) {
+			var logs strings.Builder
+			entry := &Entry{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+			lease := &sessionReadFailedCloser{}
+			ctx := t.Context()
+			scope := &requestScope{}
+			if scoped {
+				ctx = context.WithValue(ctx, scopeKey{}, scope)
+			}
+			retainSessionRead(ctx, entry, lease)
+			if scoped {
+				if lease.calls != 0 || logs.Len() != 0 {
+					t.Fatal("archive released before response delivery")
+				}
+				scope.delivered()
+				scope.delivered()
+			}
+			var record map[string]any
+			if lease.calls != 1 || json.Unmarshal([]byte(logs.String()), &record) != nil || record["phase"] != "session_read_cleanup" || record["error_code"] != "internal_error" || record["level"] != "ERROR" || strings.Contains(logs.String(), "archive close failed") {
+				t.Fatalf("cleanup failure lost or repeated: calls=%d logs=%s", lease.calls, logs.String())
+			}
+		})
+	}
+}

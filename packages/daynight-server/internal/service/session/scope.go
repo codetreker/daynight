@@ -10,8 +10,29 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
+type sessionAccessOperation interface {
+	MissingSession(string)
+	CheckBot(string, *model.Bot) error
+	Load(context.Context, store.SessionScope, string, *model.Bot) (*sessioncore.Access, error)
+}
+
+type browserOperation interface {
+	sessionAccessOperation
+	Close()
+	Finish(store.TransactionOutcome)
+	LockTask(context.Context, store.SessionScope, string, string) (*sessioncore.TaskAccess, error)
+	LockCredential(context.Context, store.SessionScope, model.Principal) error
+	LockPurposeCredential(context.Context, store.SessionScope, model.Principal, sessioncore.BrowserPurpose) error
+	CheckProjectAccess(context.Context, store.SessionScope, model.Principal, string) error
+	CheckTestScope(*sessioncore.Access) error
+	CheckTestOwner(*sessioncore.Access, model.Principal) error
+	BindTestBrowser(context.Context, *sessioncore.Access) error
+	BindTaskPurpose(context.Context, *sessioncore.Access, *sessioncore.TaskAccess, model.Principal, string, string, sessioncore.BrowserPurpose) error
+	LoadTaskReceipt(context.Context, store.SessionScope, string, string, string) (*sessioncore.Access, error)
+}
+
 // loadSession acquires the Bot before the Session when a binding exists.
-func loadSession(ctx context.Context, op *sessioncore.Operation, scope store.SessionScope, id string) (*sessioncore.Access, error) {
+func loadSession(ctx context.Context, op sessionAccessOperation, scope store.SessionScope, id string) (*sessioncore.Access, error) {
 	botID, err := scope.SessionDAO().SessionBotID(ctx, id)
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
@@ -37,7 +58,7 @@ func loadSession(ctx context.Context, op *sessioncore.Operation, scope store.Ses
 	return op.Load(ctx, scope, id, bot)
 }
 
-func authorizeTest(ctx context.Context, op *sessioncore.Operation, scope store.SessionScope, p model.Principal, access *sessioncore.Access) error {
+func authorizeTest(ctx context.Context, op browserOperation, scope store.SessionScope, p model.Principal, access *sessioncore.Access) error {
 	if err := op.LockCredential(ctx, scope, p); err != nil {
 		return err
 	}
@@ -57,7 +78,11 @@ func authorizeTest(ctx context.Context, op *sessioncore.Operation, scope store.S
 // browser selects a Task or independent Test Session while retaining the
 // original database lock order and one transaction for admission and work.
 func (s *Service) browser(ctx context.Context, principal model.Principal, project, taskID, id string, work func(*sessioncore.Access) error) error {
-	op, err := s.engine.BeginOperation()
+	return s.browserFor(ctx, principal, project, taskID, id, sessioncore.BrowserAccess, work)
+}
+
+func (s *Service) browserFor(ctx context.Context, principal model.Principal, project, taskID, id string, purpose sessioncore.BrowserPurpose, work func(*sessioncore.Access) error) error {
+	op, err := s.beginBrowser()
 	if err != nil {
 		return err
 	}
@@ -83,17 +108,22 @@ func (s *Service) browser(ctx context.Context, principal model.Principal, projec
 		if err != nil {
 			return err
 		}
-		if err = op.LockCredential(ctx, scope, principal); err != nil {
+		if err = op.LockPurposeCredential(ctx, scope, principal, purpose); err != nil {
 			return err
 		}
 		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
-		access, err := loadSession(ctx, op, scope, id)
+		var access *sessioncore.Access
+		if purpose == sessioncore.TaskReceiptAccess {
+			access, err = op.LoadTaskReceipt(ctx, scope, project, taskID, id)
+		} else {
+			access, err = loadSession(ctx, op, scope, id)
+		}
 		if err != nil {
 			return err
 		}
-		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID); err != nil {
+		if err = op.BindTaskPurpose(ctx, access, task, principal, project, taskID, purpose); err != nil {
 			return err
 		}
 		return work(access)

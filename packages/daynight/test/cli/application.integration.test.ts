@@ -315,7 +315,7 @@ describe("built executable", () => {
 const blocked = JSON.parse(process.env.DAYNIGHT_TEST_BLOCK_IMPORTS);
 registerHooks({ resolve(specifier, context, nextResolve) {
   const resolved = nextResolve(specifier, context);
-  const commandMetadata = /\\/commands\\/[^/]+\\/definition\\.js$/.test(resolved.url) || resolved.url.endsWith('/commands/task/session/read-definition.js');
+  const commandMetadata = /\\/commands\\/[^/]+\\/definition\\.js$/.test(resolved.url) || resolved.url.endsWith('/commands/task/session/read-definition.js') || resolved.url.endsWith('/commands/task/session/send-definition.js');
   if (!commandMetadata && blocked.some(value => specifier.includes(value) || resolved.url.includes(value))) throw new Error('Unexpected module import: ' + specifier);
   return resolved;
 } });
@@ -327,6 +327,9 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       { args: ["--version"], blocked: ["/commands/"] },
       ...[["--skill"]].map((args) => ({
         args, blocked: ["which", "better-sqlite3", "yaml", "/platform/skill-bundle.js", "/commands/skill/skills/", "/commands/skill/agents.js", "/commands/skill/install.js", "/commands/skill/targets.js", "/commands/review/", "/config/", "/repository/", "/api/"],
+      })),
+      ...[["--help"], ["send", "--help"], ["operation", "--help"]].map(args => ({
+        args: ["task", "session", ...args], blocked: ["/commands/task/session/send.js", "/commands/task/session/input.js", "/commands/task/session/operation-store.js", "/commands/task/session/private-files.js", "/commands/task/session/windows-files.js", "/commands/task/session/output.js", "koffi", "/commands/server/runtime.js", "/api/", "/config/", "/repository/"],
       })),
       { args: ["update", "--help"], blocked: ["/commands/review/", "/commands/update/updater.js", "semver", "read-cmd-shim"] },
       { args: ["task", "session", "read", "--help"], blocked: ["/commands/task/session/read.js", "/api/", "better-sqlite3"] },

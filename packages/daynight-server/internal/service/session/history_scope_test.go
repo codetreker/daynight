@@ -117,8 +117,11 @@ func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 						}
 						return step("project")
 					},
-					load: func(actual context.Context, op *core.Operation, transaction store.SessionScope, id string) (*core.Access, error) {
-						checkScope(op, actual, transaction)
+					load: func(actual context.Context, op sessionAccessOperation, transaction store.SessionScope, id string) (*core.Access, error) {
+						if op != operation {
+							t.Fatal("load changed the transaction operation")
+						}
+						checkScope(operation, actual, transaction)
 						if id != "session" {
 							t.Fatal("session identity changed")
 						}
@@ -151,7 +154,7 @@ func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 					defer func() { caught = recover() }()
 					switch kind {
 					case "content":
-						err = s.taskContentRead(ctx, actor, "project", "task", "session", work)
+						err = s.taskContentRead(ctx, actor, "project", "task", "session", core.BrowserAccess, work)
 					case "archive":
 						err = s.taskArchiveRead(ctx, actor, "project", "task", "session", true, work)
 					case "query":
@@ -194,6 +197,17 @@ func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHistoryScopeCannotAuthorizeTaskSendOrReceipt(t *testing.T) {
+	s := &Service{}
+	for _, purpose := range []core.BrowserPurpose{core.TaskMessageAccess, core.TaskReceiptAccess} {
+		err := s.taskContentRead(t.Context(), model.Principal{}, "project", "task", "session", purpose, func(*core.Access) error {
+			t.Fatal("history admission reached operation work")
+			return nil
+		})
+		requireHistoryFault(t, err, "forbidden")
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
@@ -290,14 +291,14 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	f.ControllerWrite(t, controller, sp.ControllerMessage{Type: "operation_receipt", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, Operation: &confirmed})
 	sessionWSKind(t, controller, "receipt_ack")
 	f.backend.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
-		calls.Operation = func(ctx context.Context, p model.Principal, project, task, id, operation string) (sp.Operation, error) {
+		calls.TaskOperation = func(ctx context.Context, p model.Principal, project, task, id, operation string) (sessioncore.TaskOperationResult, error) {
 			if err := f.scopeArguments(ctx, p, project, task, id); err != nil {
-				return sp.Operation{}, err
+				return sessioncore.TaskOperationResult{}, err
 			}
 			if err := f.require(operation == command.OperationID, "Operation changed canonical ID"); err != nil {
-				return sp.Operation{}, err
+				return sessioncore.TaskOperationResult{}, err
 			}
-			return confirmed, nil
+			return sessioncore.TaskOperationResult{Operation: confirmed, CurrentBinding: false}, nil
 		}
 	})
 	got := decodeResponse[struct {

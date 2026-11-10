@@ -87,13 +87,18 @@ func TestSessionReadHTTPResponseBoundsLargeServiceErrors(t *testing.T) {
 }
 
 type sessionReadShortWriter struct {
-	header http.Header
-	writes int
+	header   http.Header
+	writes   int
+	deadline time.Time
 }
 
 func (w *sessionReadShortWriter) Header() http.Header         { return w.header }
 func (w *sessionReadShortWriter) WriteHeader(int)             {}
 func (w *sessionReadShortWriter) Write(p []byte) (int, error) { w.writes++; return len(p) - 1, nil }
+func (w *sessionReadShortWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
+}
 
 func TestSessionReadResponseWaitsForCompleteEncodingAndHandlesShortWrites(t *testing.T) {
 	for _, overflow := range []bool{false, true} {
@@ -108,6 +113,8 @@ func TestSessionReadResponseWaitsForCompleteEncodingAndHandlesShortWrites(t *tes
 			if err := http.NewResponseController(w).Flush(); err != nil {
 				t.Fatal(err)
 			}
+			var flusher http.Flusher = w
+			flusher.Flush()
 			second := "b"
 			if overflow {
 				second = "bc"
@@ -132,6 +139,10 @@ func TestSessionReadResponseWaitsForCompleteEncodingAndHandlesShortWrites(t *tes
 	}
 	target := &sessionReadShortWriter{header: make(http.Header)}
 	w := &sessionReadResponseWriter{ResponseWriter: target}
+	deadline := time.Now().Add(time.Second)
+	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil || target.deadline != deadline {
+		t.Fatalf("buffered response lost transport deadline: %v", err)
+	}
 	_, _ = w.Write([]byte("result"))
 	if err := w.finish(httptest.NewRequest(http.MethodPost, "/mcp", nil)); !errors.Is(err, io.ErrShortWrite) || target.writes != 1 {
 		t.Fatalf("short write: %v calls=%d", err, target.writes)
