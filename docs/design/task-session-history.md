@@ -14,6 +14,8 @@
 
 Controller 每次连接发送 `X-Daynight-Content-Read-Version: 1`。服务端只把本次握手值绑定到成功 Connect 创建的 live connection；缺少声明为版本 0，不继承持久注册或旧连接。版本 0 只收到旧 timeline 请求；短条目可读取，显示预算占位返回 `upgrade_required`。重连的能力变化不修改 Web timeline 合同。
 
+`inspect_page` 必须携带 `coverage`。Controller 从原始条目和资源集合计算已知缺口：工具原文的 `truncated=true` 对应 `entry_truncated`；没有此类缺口时，非 available 资源或条目引用的缺失资源对应 `resource_unavailable`。覆盖事实先于条目分页、正文引用和 conversation 过滤确定；服务端按原值传递，空过滤页仍可为 partial。归档先通过格式、引用及完整性校验，合法内容的投影应用同一覆盖规则，并保留归档自己的完整性事实；悬空资源引用仍作为损坏拒绝。
+
 ## 页、引用与正文块
 
 历史页默认取 20 条、最多 200 条，先按稳定序列选页，再应用 conversation 过滤。页内从旧到新排列，before 边界基于未过滤页。live cursor 绑定 Session、epoch 和边界序列；archive cursor 同时绑定归档 SHA256。来源或 epoch 改变须重置，不在续页时自动切换来源。

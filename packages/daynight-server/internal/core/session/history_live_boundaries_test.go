@@ -15,7 +15,7 @@ import (
 )
 
 func TestLiveHistoryControllerPageBoundariesAndLegacyBudget(t *testing.T) {
-	for _, scenario := range []string{"before", "invalid_cursor", "changed_epoch", "over_limit", "over_budget", "legacy_before", "legacy_changed_epoch", "legacy_trim", "legacy_large_entry", "legacy_failure", "legacy_wrong_boundary"} {
+	for _, scenario := range []string{"before", "invalid_cursor", "changed_epoch", "over_limit", "over_budget", "legacy_before", "legacy_changed_epoch", "legacy_trim", "legacy_trim_partial", "legacy_large_entry", "legacy_failure", "legacy_wrong_boundary"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, snapshot := connectFixture(t)
 			syncContent(t, f, snapshot)
@@ -46,10 +46,13 @@ func TestLiveHistoryControllerPageBoundariesAndLegacyBudget(t *testing.T) {
 				in.ResponseOverhead = sp.MaxHistoryResponseBytes - 10000
 				entries = []sp.TimelineEntry{historyEntry(t, "1", "reasoning", strings.Repeat("x", 20000))}
 				wantError = "content_unavailable"
-			case "legacy_trim", "legacy_large_entry":
+			case "legacy_trim", "legacy_trim_partial", "legacy_large_entry":
 				in.ResponseOverhead = 100000
 				entries = []sp.TimelineEntry{historyEntry(t, "1", "reasoning", strings.Repeat("x", 200000))}
-				if scenario == "legacy_trim" {
+				if scenario == "legacy_trim_partial" {
+					entries[0] = historyCoverageTool(t, strings.Repeat("x", 200000), true)
+				}
+				if scenario != "legacy_large_entry" {
 					entries = append(entries, localEntry(t, "2"))
 				} else {
 					wantError = "upgrade_required"
@@ -90,7 +93,7 @@ func TestLiveHistoryControllerPageBoundariesAndLegacyBudget(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				result = &sp.ContentResult{Kind: "inspect_page", HistoryEpoch: snapshot.HistoryEpoch, MessageItems: page.Items}
+				result = &sp.ContentResult{Kind: "inspect_page", HistoryEpoch: snapshot.HistoryEpoch, MessageItems: page.Items, Coverage: page.Coverage}
 			}
 			switch scenario {
 			case "invalid_cursor":
@@ -114,7 +117,10 @@ func TestLiveHistoryControllerPageBoundariesAndLegacyBudget(t *testing.T) {
 			if got.err != nil || len(got.page.Items) != 1 || got.page.Items[0].Truncated {
 				t.Fatalf("page %#v %v", got.page, got.err)
 			}
-			if scenario == "legacy_trim" || scenario == "legacy_before" {
+			if scenario == "legacy_trim_partial" && (got.page.Coverage.State != "partial" || got.page.Coverage.Reason == nil || *got.page.Coverage.Reason != "entry_truncated") {
+				t.Fatal("legacy budget trimming lost original source coverage", got.page.Coverage)
+			}
+			if scenario == "legacy_trim" || scenario == "legacy_trim_partial" || scenario == "legacy_before" {
 				if !got.page.HasMoreBefore || got.page.BeforeCursor == nil {
 					t.Fatal("legacy budget dropped its continuation")
 				}

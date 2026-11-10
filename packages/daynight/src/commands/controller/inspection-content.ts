@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, SessionHistoryError, canonicalHistoryJSON, decodeHistoryEntryCursor, decodeHistoryPageCursor, encodeHistoryEntryCursor, encodeHistoryPageCursor, type EntryChunk, type HistoryCursorIdentity, type InspectionPage, type InspectionResource, type SessionMessageItem } from "../../session/history.js";
+import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, SessionHistoryError, canonicalHistoryJSON, decodeHistoryEntryCursor, decodeHistoryPageCursor, encodeHistoryEntryCursor, encodeHistoryPageCursor, type EntryChunk, type HistoryCoverage, type HistoryCursorIdentity, type InspectionPage, type InspectionResource, type SessionMessageItem } from "../../session/history.js";
 import type { TimelineEntry } from "../../session/protocol.js";
 import type { PendingContent } from "./pending-content.js";
 
@@ -15,6 +15,7 @@ const byteDescription = (entry: TimelineEntry) => {
 // MCP embeds the result with Go's HTML-safe JSON encoder. Budget for its
 // escaping even though the Controller's WebSocket representation is smaller.
 const responseBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`));
+const resourceParts = (entry: TimelineEntry) => entry.kind === "tool_call" ? entry.output : entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : [];
 
 export const createInspectionContent = (store: PendingContent, sessionId: string) => {
   const identity = (historyEpoch: string): HistoryCursorIdentity => ({ source: "live", sessionId, historyEpoch, sourceVersion: historyEpoch });
@@ -22,8 +23,7 @@ export const createInspectionContent = (store: PendingContent, sessionId: string
     if (cursor.source !== "live" || cursor.sessionId !== sessionId || cursor.historyEpoch !== historyEpoch || cursor.sourceVersion !== historyEpoch) reset();
   };
   const resourcesFor = (entry: TimelineEntry): { resources: InspectionResource[]; resourcesTruncated: boolean } => {
-    const parts = entry.kind === "tool_call" ? entry.output : entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : [];
-    const ids = [...new Set(parts.flatMap(part => part.type === "resource" ? [part.resourceId] : []))];
+    const ids = [...new Set(resourceParts(entry).flatMap(part => part.type === "resource" ? [part.resourceId] : []))];
     const resources = ids.slice(0, 20).map(resourceId => {
       const saved = store.resources.get(resourceId)?.resource;
       if (!saved) return { resourceId, status: "unavailable" as const, name: resourceId, mediaType: null, byteLength: null, sha256: null };
@@ -32,6 +32,15 @@ export const createInspectionContent = (store: PendingContent, sessionId: string
     });
     return { resources, resourcesTruncated: ids.length > resources.length };
   };
+  const historyCoverage = (entries: readonly TimelineEntry[]): HistoryCoverage => {
+    let missingResource = false;
+    for (const entry of entries) {
+      if (entry.kind === "tool_call" && entry.truncated) return { state: "partial", reason: "entry_truncated" };
+      if (resourceParts(entry).some(part => part.type === "resource" && !store.resources.has(part.resourceId))) missingResource = true;
+    }
+    if (missingResource || [...store.resources.values()].some(value => value.resource.status !== "available")) return { state: "partial", reason: "resource_unavailable" };
+    return { state: "complete", reason: null };
+  };
   const itemFor = (entry: TimelineEntry): SessionMessageItem => ({ entryId: entry.entryId, entrySeq: entry.entrySeq, revision: entry.revision, kind: entry.kind, role: entry.kind === "user_message" ? "user" : entry.kind === "assistant_message" ? "assistant" : null, timestamp: null, body: entry, truncated: false, contentRef: null, ...resourcesFor(entry) });
   return {
     readInspection(query: LocalInspectionQuery): InspectionPage {
@@ -39,9 +48,12 @@ export const createInspectionContent = (store: PendingContent, sessionId: string
       let pivot: bigint | null = null;
       if (query.cursor !== null) { const cursor = decodeHistoryPageCursor(query.cursor); requireIdentity(cursor, query.historyEpoch); pivot = BigInt(cursor.entrySeq); }
       const ordered = [...store.entries.values()].sort((a, b) => BigInt(a.entrySeq) < BigInt(b.entrySeq) ? -1 : 1);
+      // Source gaps cover the whole observed history and survive page selection
+      // or replacing a large original body with a content reference.
+      const coverage = historyCoverage(ordered);
       const selected = ordered.filter(entry => pivot === null || BigInt(entry.entrySeq) < pivot).reverse().slice(0, query.limit);
       const items: SessionMessageItem[] = [];
-      const page = (): InspectionPage => ({ kind: "inspect_page", historyEpoch: query.historyEpoch, items, beforeCursor: items.length ? encodeHistoryPageCursor({ ...identity(query.historyEpoch), entrySeq: items[0]!.entrySeq }) : null, hasMoreBefore: items.length > 0 && ordered.some(entry => BigInt(entry.entrySeq) < BigInt(items[0]!.entrySeq)) });
+      const page = (): InspectionPage => ({ kind: "inspect_page", historyEpoch: query.historyEpoch, items, beforeCursor: items.length ? encodeHistoryPageCursor({ ...identity(query.historyEpoch), entrySeq: items[0]!.entrySeq }) : null, hasMoreBefore: items.length > 0 && ordered.some(entry => BigInt(entry.entrySeq) < BigInt(items[0]!.entrySeq)), coverage });
       for (const entry of selected) {
         items.unshift(itemFor(entry));
         if (responseBytes(page()) + query.responseOverhead <= HISTORY_RESPONSE_BYTES) continue;

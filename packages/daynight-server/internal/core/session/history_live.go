@@ -40,7 +40,7 @@ func (s *Execution) ReadLivePage(ctx context.Context, p model.Principal, project
 	}
 	empty.ObservedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
 	final, _ := json.Marshal(empty)
-	wire, _ := sp.MarshalWire(sp.ContentResult{Kind: "inspect_page", HistoryEpoch: empty.HistoryEpoch, MessageItems: []sp.MessageItem{}})
+	wire, _ := sp.MarshalWire(sp.ContentResult{Kind: "inspect_page", HistoryEpoch: empty.HistoryEpoch, MessageItems: []sp.MessageItem{}, Coverage: empty.Coverage})
 	overhead := in.ResponseOverhead + len(final) - len(wire)
 	if overhead < 0 {
 		overhead = 0
@@ -58,7 +58,7 @@ func (s *Execution) ReadLivePage(ctx context.Context, p model.Principal, project
 		return empty, fault("reset_required", "The controller returned a different history boundary.")
 	}
 	in.Epoch = result.HistoryEpoch
-	out := sp.MessagePage{SessionID: id, HistoryEpoch: in.Epoch, Source: "live", Items: result.MessageItems, BeforeCursor: result.BeforeCursor, HasMoreBefore: result.HasMoreBefore, Coverage: sp.HistoryCoverage{State: "complete"}, ObservedAt: s.now().UTC()}
+	out := sp.MessagePage{SessionID: id, HistoryEpoch: in.Epoch, Source: "live", Items: result.MessageItems, BeforeCursor: result.BeforeCursor, HasMoreBefore: result.HasMoreBefore, Coverage: result.Coverage, ObservedAt: s.now().UTC()}
 	if err = validateLiveHistoryPage(out, in); err != nil {
 		return empty, err
 	}
@@ -117,11 +117,13 @@ func (s *Execution) readLegacyPage(ctx context.Context, p model.Principal, proje
 	in.Epoch = reply.result.HistoryEpoch
 	entries := reply.result.Items
 	originalCount := len(entries)
+	coverage := historyCoverage(entries, reply.result.Resources)
 	for {
 		out, e := BuildHistoryPage(id, in.Epoch, "live", in.Epoch, entries, reply.result.Resources, "", in.Limit, false, in.ResponseOverhead, s.now())
 		if e != nil {
 			return out, e
 		}
+		out.Coverage = coverage
 		truncated := false
 		for _, item := range out.Items {
 			truncated = truncated || item.Truncated

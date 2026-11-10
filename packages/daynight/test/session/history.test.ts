@@ -24,11 +24,22 @@ it("keeps page and entry cursors in separate validated source domains", () => {
 });
 
 it("validates empty pages and content chunk progress independently from text rendering", () => {
-  expect(parseInspectionPage({ kind: "inspect_page", historyEpoch: id, items: [], beforeCursor: null, hasMoreBefore: false }).items).toEqual([]);
-  expect(() => parseInspectionPage({ kind: "inspect_page", historyEpoch: id, items: [], beforeCursor: null, hasMoreBefore: true })).toThrow();
+  expect(parseInspectionPage({ kind: "inspect_page", historyEpoch: id, items: [], beforeCursor: null, hasMoreBefore: false, coverage: { state: "complete", reason: null } }).items).toEqual([]);
+  expect(() => parseInspectionPage({ kind: "inspect_page", historyEpoch: id, items: [], beforeCursor: null, hasMoreBefore: true, coverage: { state: "complete", reason: null } })).toThrow();
   const fragment = "\n原文\u001b[0m";
   const chunk = { kind: "entry_chunk", historyEpoch: fixture.sha256, entryId: id, revision: "1", sha256: fixture.sha256, byteLength: String(Buffer.byteLength(fragment)), offset: "0", fragment, nextCursor: null, eof: true };
   expect(parseEntryChunk(chunk).fragment).toBe(fragment);
   expect(() => parseEntryChunk({ ...chunk, offset: "1" })).toThrow();
   expect(() => parseEntryChunk({ ...chunk, byteLength: "999", fragment: "", nextCursor: "cursor", eof: false })).toThrow();
+});
+
+it("requires exact and internally consistent inspection coverage", () => {
+  const page = { kind: "inspect_page", historyEpoch: id, items: [], beforeCursor: null, hasMoreBefore: false };
+  expect(() => parseInspectionPage(page)).toThrow();
+  for (const coverage of [{ state: "complete", reason: null }, { state: "partial", reason: "entry_truncated" }, { state: "partial", reason: "resource_unavailable" }]) {
+    expect(parseInspectionPage({ ...page, coverage }).coverage).toEqual(coverage);
+  }
+  for (const coverage of [null, {}, { state: "complete" }, { state: "complete", reason: "entry_truncated" }, { state: "partial", reason: null }, { state: "partial", reason: "unknown" }, { state: "unknown", reason: null }, { state: "complete", reason: null, extra: true }]) {
+    expect(() => parseInspectionPage({ ...page, coverage })).toThrow();
+  }
 });

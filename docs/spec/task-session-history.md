@@ -18,7 +18,7 @@ MCP 历史读取分别发送独立请求，兼容仅含一个调用的 legacy ba
 
 live 和 archive 游标分域；首次读取按真实可用来源选择，续页保持原来源。live 转归档后必须从归档重新开始。空历史、未就绪、缺件、损坏、部分覆盖和授权失败分别表达；不能把失败包装成空页。
 
-`coverage.state=partial` 保留原条目已截断、资源不可用或归档不完整等可见缺口。`complete` 只说明已取得的条目与资源未暴露缺口，不证明 Provider 原生历史已被完整采集。
+`coverage.state=partial` 保留原条目已截断、资源不可用或缺失、归档不完整等可见缺口。已知缺口不会因条目位于另一页、正文改为 `contentRef` 或 conversation 过滤而消失；仅为满足响应预算使用引用不构成缺口。`complete` 只说明已取得的条目与资源未暴露缺口，不证明 Provider 原生历史已被完整采集。CLI 先输出 partial 结果再以 3 退出，MCP 保留 `coverage` 并设置 `meta.partial=true`。
 
 ## 权限与兼容
 

@@ -33,7 +33,9 @@ it.each(['timeline', 'inspect_page'] as const)('hydrates over real WebSockets af
   const errors: string[] = [];
   try {
     journal.patchSnapshot({ nativeSessionId: 'native-test', initialInputState: 'confirmed', activity: 'idle', capabilities: { send: true, steer: false, cancel: false, respond: false } });
-    for (let i = 0; i < 10; i++) journal.projectTimeline({ entryId: randomUUID(), revision: '1', kind: 'reasoning', text: `Before reconnect ${i} ${'x'.repeat(100)}` });
+    for (let i = 0; i < 10; i++) journal.projectTimeline(kind === 'inspect_page' && i === 0
+      ? { entryId: randomUUID(), revision: '1', kind: 'tool_call', callId: 'original-tool', name: 'shell', input: 'command', output: [], status: 'completed', truncated: true }
+      : { entryId: randomUUID(), revision: '1', kind: 'reasoning', text: `Before reconnect ${i} ${'x'.repeat(100)}` });
     const floor = journal.getSourceFloor();
     expect(BigInt(floor)).toBeGreaterThan(0n);
     const fence = { protocol: 'daynight.session.v1', sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: '1', connectionEpoch: '1' };
@@ -77,6 +79,7 @@ it.each(['timeline', 'inspect_page'] as const)('hydrates over real WebSockets af
     const responseIndex = received.findIndex(m => m.type === 'content_response');
     const response = received[responseIndex]!;
     expect(response.type === 'content_response' && response.result?.kind === kind && response.result.items.length).toBe(10);
+    if (kind === 'inspect_page') expect(response.type === 'content_response' && response.result?.kind === 'inspect_page' && response.result.coverage).toEqual({ state: 'partial', reason: 'entry_truncated' });
     await vi.waitFor(() => expect(received.slice(responseIndex + 1).some(m => m.type === 'events' && m.events.some(e => e.kind === 'timeline_upsert' && e.payload.entryId === lateId))).toBe(true));
     expect(errors).toEqual([]);
     const reconnect = once(server, 'connection', { signal: AbortSignal.timeout(3000) });

@@ -165,6 +165,18 @@ describe("Task Session read commands", () => {
     expect(f.stderr.join("")).toMatch(/partial/i);
   });
 
+  it.each(["entry_truncated", "resource_unavailable"])("keeps live %s evidence for references and empty conversation pages", async reason => {
+    for (const conversation of [false, true]) {
+      const partial = { ...page, items: conversation ? [] : [{ ...message, body: null, truncated: true, contentRef: { cursor: "entry-start", sha256: "a".repeat(64), byteLength: "500000" } }], coverage: { state: "partial", reason } };
+      const f = fixture(partial);
+      expect(await f.run(["read", taskId, sessionId, "--project", projectId, "--json", ...(conversation ? ["--conversation"] : [])])).toBe(3);
+      expect(parseApiJson(f.stdout.join(""))).toEqual(partial);
+      expect(f.stderr.join("")).toMatch(/partial/i);
+      expect(f.fetch).toHaveBeenCalledOnce();
+      expect(new URL(String(f.fetch.mock.calls[0]![0])).searchParams.get("conversation")).toBe(conversation ? "true" : null);
+    }
+  });
+
   it.each(["reset_required", "content_changed", "upgrade_required", "unsupported_mode"]) ("explains %s without performing recovery", async code => {
     const f = fixture({ error: { code, message: "Read refused.", requestId: "read-refused" } }, 409);
     expect(await f.run(["read", taskId, sessionId, "--project", projectId])).toBe(1);

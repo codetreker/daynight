@@ -50,7 +50,7 @@ func TestLiveHistoryNegotiatesRequestsAndKeepsSourceBarrier(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				replyContent(t, f, v, request, &sp.ContentResult{Kind: "inspect_page", HistoryEpoch: v.HistoryEpoch, MessageItems: page.Items, BeforeCursor: page.BeforeCursor, HasMoreBefore: page.HasMoreBefore}, nil)
+				replyContent(t, f, v, request, &sp.ContentResult{Kind: "inspect_page", HistoryEpoch: v.HistoryEpoch, MessageItems: page.Items, BeforeCursor: page.BeforeCursor, HasMoreBefore: page.HasMoreBefore, Coverage: page.Coverage}, nil)
 			}
 			got := <-done
 			if got.err != nil || len(got.page.Items) != 1 || got.page.Items[0].EntryID != entry.EntryID || got.page.Source != "live" {
@@ -181,7 +181,7 @@ func TestLiveHistoryRechecksAuthorizationAfterNetworkWait(t *testing.T) {
 		done <- err
 	}()
 	request := nextContent(t, f, v)
-	replyContent(t, f, v, request, &sp.ContentResult{Kind: "inspect_page", HistoryEpoch: v.HistoryEpoch, MessageItems: []sp.MessageItem{}}, nil)
+	replyContent(t, f, v, request, &sp.ContentResult{Kind: "inspect_page", HistoryEpoch: v.HistoryEpoch, MessageItems: []sp.MessageItem{}, Coverage: sp.HistoryCoverage{State: "complete"}}, nil)
 	var fault *model.Fault
 	if err := <-done; !errors.As(err, &fault) || fault.Code != "unauthenticated" {
 		t.Fatal("revoked actor received page", err)

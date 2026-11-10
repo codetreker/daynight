@@ -24,6 +24,7 @@ type ContentResult struct {
 	Data          string          `json:"data,omitempty"`
 	EOF           bool            `json:"eof,omitempty"`
 	MessageItems  []MessageItem   `json:"-"`
+	Coverage      HistoryCoverage `json:"coverage"`
 	EntryID       string          `json:"entryId,omitempty"`
 	Revision      string          `json:"revision,omitempty"`
 	SHA256        string          `json:"sha256,omitempty"`
@@ -34,7 +35,7 @@ type ContentResult struct {
 
 func (v ContentResult) MarshalJSON() ([]byte, error) {
 	if v.Kind == "inspect_page" {
-		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.MessageItems, "beforeCursor": v.BeforeCursor, "hasMoreBefore": v.HasMoreBefore})
+		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.MessageItems, "beforeCursor": v.BeforeCursor, "hasMoreBefore": v.HasMoreBefore, "coverage": v.Coverage})
 	}
 	if v.Kind == "entry_chunk" {
 		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "entryId": v.EntryID, "revision": v.Revision, "sha256": v.SHA256, "byteLength": v.ByteLength, "offset": v.Offset, "fragment": v.Fragment, "nextCursor": v.NextCursor, "eof": v.EOF})
@@ -55,7 +56,7 @@ func contentResult(data json.RawMessage) bool {
 		return false
 	}
 	if k.Kind == "inspect_page" {
-		return len(data) <= MaxHistoryResponseBytes && validateObject(data, schema{"kind": enum("inspect_page"), "historyEpoch": identifier, "items": many(inspectionItem, 0, 200, "entryId"), "beforeCursor": optional(relayString(MaxHistoryCursorBytes)), "hasMoreBefore": boolean})
+		return len(data) <= MaxHistoryResponseBytes && validateObject(data, schema{"kind": enum("inspect_page"), "historyEpoch": identifier, "items": many(inspectionItem, 0, 200, "entryId"), "beforeCursor": optional(relayString(MaxHistoryCursorBytes)), "hasMoreBefore": boolean, "coverage": inspectionCoverage})
 	}
 	if k.Kind == "entry_chunk" {
 		return len(data) <= MaxHistoryResponseBytes && validateObject(data, schema{"kind": enum("entry_chunk"), "historyEpoch": identifier, "entryId": identifier, "revision": sequence, "sha256": pattern(`^[a-f0-9]{64}$`), "byteLength": sequence, "offset": zeroSequence, "fragment": func(v json.RawMessage) bool { return stringValue(v, true, MaxEntryChunkBytes) }, "nextCursor": optional(relayString(MaxHistoryCursorBytes)), "eof": boolean})

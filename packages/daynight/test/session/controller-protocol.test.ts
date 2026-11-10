@@ -58,7 +58,7 @@ it("keeps inspection pages and entry chunks separate from the existing display p
   expect(parseRelayMessage(pageRequest)).toEqual(pageRequest);
   for (const change of [{ limit: 201 }, { responseOverhead: 262144 }, { direction: "tail" }]) expect(() => parseRelayMessage({ ...pageRequest, ...change })).toThrow();
   const entry = { entryId: id, entrySeq: "1", revision: "1", kind: "reasoning", text: "original" };
-  const page = { kind: "inspect_page", historyEpoch: id, items: [{ entryId: id, entrySeq: "1", revision: "1", kind: "reasoning", role: null, timestamp: null, body: entry, truncated: false, contentRef: null, resources: [], resourcesTruncated: false }], beforeCursor: null, hasMoreBefore: false };
+  const page = { kind: "inspect_page", historyEpoch: id, items: [{ entryId: id, entrySeq: "1", revision: "1", kind: "reasoning", role: null, timestamp: null, body: entry, truncated: false, contentRef: null, resources: [], resourcesTruncated: false }], beforeCursor: null, hasMoreBefore: false, coverage: { state: "partial", reason: "resource_unavailable" } };
   const response = { ...fence, type: "content_response", requestId: id, sourceThrough: "1", result: page, error: null };
   expect(parseControllerMessage(response)).toEqual(response);
   expect(() => parseControllerMessage({ ...response, result: { ...page, items: [{ ...page.items[0], truncated: true }] } })).toThrow();

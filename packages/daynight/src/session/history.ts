@@ -12,7 +12,8 @@ export type SessionMessageItem = {
   readonly body: TimelineEntry | null; readonly truncated: boolean; readonly contentRef: SessionContentRef | null;
   readonly resources: readonly InspectionResource[]; readonly resourcesTruncated: boolean;
 };
-export type InspectionPage = { readonly kind: "inspect_page"; readonly historyEpoch: string; readonly items: readonly SessionMessageItem[]; readonly beforeCursor: string | null; readonly hasMoreBefore: boolean };
+export type HistoryCoverage = { readonly state: "complete"; readonly reason: null } | { readonly state: "partial"; readonly reason: "entry_truncated" | "resource_unavailable" };
+export type InspectionPage = { readonly kind: "inspect_page"; readonly historyEpoch: string; readonly items: readonly SessionMessageItem[]; readonly beforeCursor: string | null; readonly hasMoreBefore: boolean; readonly coverage: HistoryCoverage };
 export type EntryChunk = { readonly kind: "entry_chunk"; readonly historyEpoch: string; readonly entryId: string; readonly revision: string; readonly sha256: string; readonly byteLength: string; readonly offset: string; readonly fragment: string; readonly nextCursor: string | null; readonly eof: boolean };
 export type HistorySource = "live" | "archive";
 export type HistoryCursorIdentity = { readonly source: HistorySource; readonly sessionId: string; readonly historyEpoch: string; readonly sourceVersion: string };
@@ -69,13 +70,16 @@ export const parseSessionMessageItem = (value: unknown): SessionMessageItem => {
   return { entryId, entrySeq, revision, kind, role, timestamp: timestamp(data.timestamp), body, truncated, contentRef, resources, resourcesTruncated: bool(data.resourcesTruncated) };
 };
 export const parseInspectionPage = (value: unknown): InspectionPage => {
-  const data = exact(value, ["kind", "historyEpoch", "items", "beforeCursor", "hasMoreBefore"]);
+  const data = exact(value, ["kind", "historyEpoch", "items", "beforeCursor", "hasMoreBefore", "coverage"]);
   if (data.kind !== "inspect_page" || !Array.isArray(data.items) || data.items.length > 200) return fail();
   const items = data.items.map(parseSessionMessageItem);
   if (new Set(items.map(item => item.entryId)).size !== items.length || items.some((item, index) => index > 0 && BigInt(items[index - 1]!.entrySeq) >= BigInt(item.entrySeq))) return fail();
   const beforeCursor = nullableCursor(data.beforeCursor), hasMoreBefore = bool(data.hasMoreBefore);
   if (hasMoreBefore && beforeCursor === null) return fail();
-  return { kind: "inspect_page", historyEpoch: epoch(data.historyEpoch), items, beforeCursor, hasMoreBefore };
+  const rawCoverage = exact(data.coverage, ["state", "reason"]);
+  const coverage: HistoryCoverage = rawCoverage.state === "complete" && rawCoverage.reason === null ? { state: "complete", reason: null }
+    : rawCoverage.state === "partial" && (rawCoverage.reason === "entry_truncated" || rawCoverage.reason === "resource_unavailable") ? { state: "partial", reason: rawCoverage.reason } : fail();
+  return { kind: "inspect_page", historyEpoch: epoch(data.historyEpoch), items, beforeCursor, hasMoreBefore, coverage };
 };
 export const parseEntryChunk = (value: unknown): EntryChunk => {
   const data = exact(value, ["kind", "historyEpoch", "entryId", "revision", "sha256", "byteLength", "offset", "fragment", "nextCursor", "eof"]);

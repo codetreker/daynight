@@ -27,6 +27,12 @@ bytes prevent mixed-version assembly. Filtering applies only to the selected
 page. Archive cursors bind the immutable digest; live and archive cursors cannot
 be combined.
 
+Coverage comes from the original entries and resources, before page selection,
+body references or conversation filtering. Otherwise a truncated tool output
+could disappear from a filtered page while the client reports a complete read.
+Budget references preserve retrievable bodies and do not themselves imply a
+coverage gap.
+
 MCP history calls use independent requests or a single-call legacy batch.
 Multi-call batches containing history are rejected before execution because
 other results could exceed the complete response budget. A dedicated bounded
@@ -51,6 +57,10 @@ The [history specification](../../../../docs/spec/task-session-history.md) and
 **Reuse browser timeline results as original content.** Display placeholders can
 lose large bodies while retaining plausible entry identities. Separate raw
 reads preserve the display budget and make incomplete content explicit.
+
+**Infer coverage from returned page bodies.** A body reference or conversation
+filter can remove the evidence of a source gap. The source must retain that
+fact independently of which entries and bodies fit in the response.
 
 **Download an entire archive for client-side pagination.** This transfers and
 retains up to 64 MiB for one short query and exposes archive layout to clients.

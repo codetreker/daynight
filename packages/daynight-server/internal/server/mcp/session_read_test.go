@@ -210,6 +210,52 @@ func TestSessionReadErrorsPreserveReferencesWithoutWriteReceipts(t *testing.T) {
 	}
 }
 
+func TestSessionReadPagesPreserveCoverageInBothProtocols(t *testing.T) {
+	for _, version := range []string{"2025-11-25", "2026-07-28"} {
+		for _, reason := range []string{"", "entry_truncated", "resource_unavailable"} {
+			for _, conversation := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/reason=%s/conversation=%t", version, reason, conversation), func(t *testing.T) {
+					f := newSessionReadFixture(t)
+					page := sessionReadPage()
+					if reason != "" {
+						page.Coverage = sp.HistoryCoverage{State: "partial", Reason: &reason}
+					}
+					if !conversation {
+						page.Items = []sp.MessageItem{{EntryID: testTargetID, EntrySeq: "1", Revision: "1", Kind: "tool_call", Truncated: true, ContentRef: &sp.EntryContentRef{Cursor: "entry-start", SHA256: strings.Repeat("a", 64), ByteLength: "500000"}, Resources: []sp.InspectionResource{}}}
+					}
+					before := "older-page"
+					page.BeforeCursor, page.HasMoreBefore = &before, true
+					calls := 0
+					mock := sessionReadMock{t: t, read: func(_ context.Context, p model.Principal, project, task, id string, in ss.ReadRequest) (*ss.ReadResult[sp.MessagePage], error) {
+						calls++
+						if p.UserID != "alice" || project != testProjectID || task != testTargetID || id != testUserID || in.Conversation != conversation {
+							t.Errorf("read identity or filter changed: %+v %s %s %s %+v", p, project, task, id, in)
+						}
+						return ss.NewReadResult(page, nil), nil
+					}}
+					if err := RegisterSessionReadTools(f.entry, mock, mock); err != nil {
+						t.Fatal(err)
+					}
+					client := f.client(t, version, "alice")
+					args := sessionReadArgs()
+					args["conversation"] = conversation
+					result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_read", Arguments: args})
+					if err != nil || result.IsError || calls != 1 {
+						t.Fatalf("read: %+v %v calls=%d", result, err, calls)
+					}
+					validateDiscoveredResult(t, client, "task_session_read", result)
+					value := structured(t, result)
+					data, meta := object(t, value["data"]), object(t, value["meta"])
+					coverage := object(t, data["coverage"])
+					if coverage["state"] != page.Coverage.State || reason != "" && coverage["reason"] != reason || reason == "" && coverage["reason"] != nil || data["beforeCursor"] != before || meta["partial"] != (reason != "") || meta["observedAt"] != page.ObservedAt.Format(time.RFC3339Nano) {
+						t.Fatalf("coverage or continuation lost: %+v", value)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestSessionReadSchemasRejectMalformedHistory(t *testing.T) {
 	f := newSessionReadFixture(t)
 	mock := sessionReadMock{t: t}

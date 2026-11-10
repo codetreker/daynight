@@ -164,6 +164,32 @@ func TestHistoryLivePageFiltersOnlySelectedPageAndKeepsCursor(t *testing.T) {
 		t.Fatal("live cause lost", err)
 	}
 }
+
+func TestHistoryConversationFilterPreservesPartialCoverageOnEmptyPage(t *testing.T) {
+	for _, reason := range []string{"entry_truncated", "resource_unavailable"} {
+		t.Run(reason, func(t *testing.T) {
+			cursor := historyTestPosition("live", false).Cursor()
+			backend := rejectingHistoryBackend(t)
+			calls := 0
+			backend.live = func(context.Context, model.Principal, string, string, string, core.LiveHistoryRequest) (sp.MessagePage, error) {
+				calls++
+				return sp.MessagePage{Items: []sp.MessageItem{{Kind: "tool_call"}}, BeforeCursor: &cursor, HasMoreBefore: true, Coverage: sp.HistoryCoverage{State: "partial", Reason: &reason}}, nil
+			}
+			s := NewHistory(historyReadInspector(func(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error) {
+				return sp.TaskSessionInspection{Source: "live", ContentReadVersion: 1}, nil
+			}), backend)
+			out, err := s.Read(t.Context(), model.Principal{}, "p", "t", historyTestSession, ReadRequest{Conversation: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer out.Close()
+			page := out.Data
+			if calls != 1 || len(page.Items) != 0 || !page.HasMoreBefore || page.BeforeCursor == nil || *page.BeforeCursor != cursor || page.Coverage.State != "partial" || page.Coverage.Reason == nil || *page.Coverage.Reason != reason {
+				t.Fatalf("empty conversation page changed source coverage or boundary: %#v", page)
+			}
+		})
+	}
+}
 func TestHistoryLiveEntryPropagatesIdentityCancellationAndBudget(t *testing.T) {
 	for _, scenario := range []string{"success", "dependency", "cancel", "budget", "encoding"} {
 		t.Run(scenario, func(t *testing.T) {

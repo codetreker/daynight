@@ -39,6 +39,16 @@ type HistoryCoverage struct {
 	State  string  `json:"state"`
 	Reason *string `json:"reason"`
 }
+
+func inspectionCoverage(data json.RawMessage) bool {
+	if !validateObject(data, schema{"state": enum("complete", "partial"), "reason": optional(enum("entry_truncated", "resource_unavailable"))}) {
+		return false
+	}
+	var coverage HistoryCoverage
+	_ = json.Unmarshal(data, &coverage)
+	return (coverage.State == "complete") == (coverage.Reason == nil)
+}
+
 type MessagePage struct {
 	SessionID     string          `json:"sessionId"`
 	HistoryEpoch  string          `json:"historyEpoch"`

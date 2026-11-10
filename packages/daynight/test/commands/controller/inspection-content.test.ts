@@ -40,7 +40,7 @@ it("returns a real empty page and validates limits before reading", async () => 
   const f = await fixture(), store = f.open();
   try {
     const epoch = randomUUID();
-    expect(store.readInspection(query(epoch))).toMatchObject({ items: [], beforeCursor: null, hasMoreBefore: false });
+    expect(store.readInspection(query(epoch))).toMatchObject({ items: [], beforeCursor: null, hasMoreBefore: false, coverage: { state: "complete", reason: null } });
     for (const limit of [0, 201, 1.5]) expect(() => store.readInspection(query(epoch, null, limit))).toThrow();
     expect(() => store.readInspection({ ...query(epoch), responseOverhead: 262144 })).toThrow();
   } finally { store.close(); }
@@ -53,6 +53,7 @@ it("reassembles canonical original JSON with Unicode-safe chunks beyond the web 
     store.projectTimeline({ entryId, revision: "1", kind: "tool_call", callId: "tool", name: "shell", input: text, output: [{ type: "text", text: "工具输出" }], status: "completed", truncated: false });
     expect(store.readTimeline({ historyEpoch: epoch, direction: "tail", cursor: null, limit: 1 }).items[0]).toMatchObject({ kind: "error", code: "display_budget_exceeded" });
     const page = store.readInspection(query(epoch, null, 1)), item = page.items[0]!;
+    expect(page.coverage).toEqual({ state: "complete", reason: null });
     expect(item).toMatchObject({ entryId, kind: "tool_call", body: null, truncated: true });
     expect(responseBytes(page) + 4096).toBeLessThanOrEqual(262144);
     let cursor = item.contentRef!.cursor, original = "", offset = 0;
@@ -73,6 +74,47 @@ it("reassembles canonical original JSON with Unicode-safe chunks beyond the web 
     store.projectTimeline({ entryId, revision: "1", kind: "reasoning", text: "updated" });
     expect(() => store.readEntryChunk({ historyEpoch: epoch, cursor: item.contentRef!.cursor, limit: 32768 })).toThrow(expect.objectContaining({ code: "content_changed" }));
     expect(() => store.readEntryChunk({ historyEpoch: randomUUID(), cursor, limit: 32768 })).toThrow(expect.objectContaining({ code: "reset_required" }));
+  } finally { store.close(); }
+});
+
+it.each([32, 270000])("retains source truncation coverage before fitting a %i-byte tool input", async size => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID(), entryId = randomUUID(), resourceId = randomUUID();
+  try {
+    store.saveResource({ resourceId, status: "unavailable", name: "missing.txt", mediaType: null, byteLength: null, sha256: null, error: null });
+    store.projectTimeline({ entryId, revision: "1", kind: "tool_call", callId: "tool", name: "shell", input: "x".repeat(size), output: [{ type: "resource", resourceId, label: "Output" }], status: "completed", truncated: true });
+    const page = store.readInspection(query(epoch, null, 1));
+    expect(page.coverage).toEqual({ state: "partial", reason: "entry_truncated" });
+    expect(page.items[0]).toMatchObject({ entryId, truncated: size > 262144 });
+    expect(page.items[0]!.body === null).toBe(size > 262144);
+    expect(responseBytes(page) + 4096).toBeLessThanOrEqual(262144);
+    const newest = randomUUID();
+    store.projectTimeline({ entryId: newest, revision: "1", kind: "reasoning", text: "A complete newer entry" });
+    const tail = store.readInspection(query(epoch, null, 1));
+    expect(tail.items.map(item => item.entryId)).toEqual([newest]);
+    expect(tail.coverage).toEqual({ state: "partial", reason: "entry_truncated" });
+    expect(store.readInspection(query(epoch, page.beforeCursor, 1))).toMatchObject({ items: [], coverage: { state: "partial", reason: "entry_truncated" } });
+  } finally { store.close(); }
+});
+
+it.each(["missing", "pending", "failed", "unavailable", "available"] as const)("reports global %s referenced resource coverage outside the selected page", async status => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID(), resourceId = randomUUID();
+  try {
+    const bytes = Buffer.from("Available resource");
+    if (status !== "missing") store.saveResource({ resourceId, status, name: "output.txt", mediaType: status === "available" ? "text/plain" : null, byteLength: status === "available" ? String(bytes.length) : null, sha256: status === "available" ? createHash("sha256").update(bytes).digest("hex") : null, error: null }, status === "available" ? bytes : undefined);
+    store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "resource", resourceId, label: "Output" }] });
+    const newest = randomUUID();
+    store.projectTimeline({ entryId: newest, revision: "1", kind: "reasoning", text: "A complete newer entry" });
+    const page = store.readInspection(query(epoch, null, 1));
+    expect(page.items.map(item => item.entryId)).toEqual([newest]);
+    expect(page.coverage).toEqual(status === "available" ? { state: "complete", reason: null } : { state: "partial", reason: "resource_unavailable" });
+  } finally { store.close(); }
+});
+
+it("keeps known unreferenced unavailable resources in global coverage", async () => {
+  const f = await fixture(), store = f.open();
+  try {
+    store.saveResource({ resourceId: randomUUID(), status: "failed", name: "failed.txt", mediaType: null, byteLength: null, sha256: null, error: null });
+    expect(store.readInspection(query(randomUUID()))).toMatchObject({ items: [], coverage: { state: "partial", reason: "resource_unavailable" } });
   } finally { store.close(); }
 });
 

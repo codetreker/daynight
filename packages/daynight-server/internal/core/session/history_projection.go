@@ -85,16 +85,7 @@ func historyItem(id, epoch, source, version string, e sp.TimelineEntry, resource
 	if e.Kind == "assistant_message" {
 		item.Role = observationPointer("assistant")
 	}
-	refs := map[string]bool{}
-	for _, field := range []string{"content", "output"} {
-		var parts []struct{ Type, ResourceID string }
-		_ = json.Unmarshal(e.Data[field], &parts)
-		for _, part := range parts {
-			if part.Type == "resource" {
-				refs[part.ResourceID] = true
-			}
-		}
-	}
+	refs := historyResourceReferences(e)
 	for _, r := range resources {
 		if !refs[r.ResourceID] {
 			continue
@@ -111,6 +102,45 @@ func historyItem(id, epoch, source, version string, e sp.TimelineEntry, resource
 		item.Resources = append(item.Resources, sp.InspectionResource{ResourceID: r.ResourceID, Status: r.Status, Name: name, MediaType: r.MediaType, ByteLength: r.ByteLength, SHA256: r.SHA256})
 	}
 	return item, nil
+}
+
+func historyResourceReferences(e sp.TimelineEntry) map[string]bool {
+	refs := map[string]bool{}
+	for _, field := range []string{"content", "output"} {
+		var parts []struct{ Type, ResourceID string }
+		_ = json.Unmarshal(e.Data[field], &parts)
+		for _, part := range parts {
+			if part.Type == "resource" {
+				refs[part.ResourceID] = true
+			}
+		}
+	}
+	return refs
+}
+
+// Coverage describes the whole source before page selection, conversation
+// filtering, or replacement of a large body with a content reference.
+func historyCoverage(entries []sp.TimelineEntry, resources []sp.Resource) sp.HistoryCoverage {
+	for _, entry := range entries {
+		if entry.Kind == "tool_call" && string(entry.Data["truncated"]) == "true" {
+			return sp.HistoryCoverage{State: "partial", Reason: observationPointer("entry_truncated")}
+		}
+	}
+	present := make(map[string]bool, len(resources))
+	for _, resource := range resources {
+		if resource.Status != "available" {
+			return sp.HistoryCoverage{State: "partial", Reason: observationPointer("resource_unavailable")}
+		}
+		present[resource.ResourceID] = true
+	}
+	for _, entry := range entries {
+		for id := range historyResourceReferences(entry) {
+			if !present[id] {
+				return sp.HistoryCoverage{State: "partial", Reason: observationPointer("resource_unavailable")}
+			}
+		}
+	}
+	return sp.HistoryCoverage{State: "complete"}
 }
 func referenceHistoryItem(item sp.MessageItem, id, epoch, source, version string) sp.MessageItem {
 	hash := v2.HashBytes(item.Body)
@@ -138,17 +168,7 @@ func trimUTF8(value string, limit int) string {
 // BuildHistoryPage selects before filtering, then fits whole entries or explicit
 // body references. The cursor advances only across entries actually selected.
 func BuildHistoryPage(id, epoch, source, version string, entries []sp.TimelineEntry, resources []sp.Resource, token string, limit int, conversation bool, overhead int, now time.Time) (sp.MessagePage, error) {
-	out := sp.MessagePage{SessionID: id, HistoryEpoch: epoch, Source: source, Items: []sp.MessageItem{}, Coverage: sp.HistoryCoverage{State: "complete"}, ObservedAt: now.UTC()}
-	for _, entry := range entries {
-		if entry.Kind == "tool_call" && string(entry.Data["truncated"]) == "true" {
-			out.Coverage = sp.HistoryCoverage{State: "partial", Reason: observationPointer("entry_truncated")}
-		}
-	}
-	for _, resource := range resources {
-		if resource.Status != "available" && out.Coverage.State == "complete" {
-			out.Coverage = sp.HistoryCoverage{State: "partial", Reason: observationPointer("resource_unavailable")}
-		}
-	}
+	out := sp.MessagePage{SessionID: id, HistoryEpoch: epoch, Source: source, Items: []sp.MessageItem{}, Coverage: historyCoverage(entries, resources), ObservedAt: now.UTC()}
 	if limit < 1 || limit > 200 || overhead < 0 || overhead >= sp.MaxHistoryResponseBytes {
 		return out, fault("invalid_input", "Invalid history page limit or response budget.")
 	}
