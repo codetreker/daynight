@@ -288,7 +288,7 @@ describe("task commands over HTTP", () => {
     const title = "-Original=title\n\u001b[2J";
     const f = await fixture((request, response) => {
       const body = parseApiJson(request.body) as { title: string; description: string; dependsOn: string[] };
-      respond(response, { ...task, ...body, blockedBy: body.dependsOn, ready: false }, 201);
+      respond(response, { ...task, ...body, status: "proposed", blockedBy: body.dependsOn, ready: false }, 201);
     });
     await f.run(["create", `--title=${title}`, "--description=", "--depends-on", otherId]);
     const writes = f.requests.filter(({ method }) => method === "POST");
@@ -374,7 +374,7 @@ describe("task commands over HTTP", () => {
 
   it("renders complete graph data and exposes generic read failures", async () => {
     let failed = false;
-    const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [
+    const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, proposed: 0, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [
       { id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
       { id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
     ] };

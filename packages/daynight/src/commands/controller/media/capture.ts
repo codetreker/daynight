@@ -45,13 +45,16 @@ export const createControllerCaptureBridge = (options: {
       const key = `${captureId}:${attemptId}`, pending = retries.get(key); if (pending) return pending;
       const work = (async () => {
         if (options.retrySource && ["local", "external"].includes(request.locator.kind)) return options.retrySource(request, signal);
-        const source = await provider!.retryImageCapture!(request, signal);
-        signal.throwIfAborted();
-        if (!options.writable()) throw new Error("Image source retry target_changed.");
-        const validated = await journal.media().stageCapture({ ...source, captureId, attemptId, imageId: request.occurrence.imageId });
-        signal.throwIfAborted();
-        if (!options.writable()) throw new Error("Image source retry target_changed.");
-        return validated;
+        if (!provider?.retryImageCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
+        const source = await provider.retryImageCapture!(request, signal);
+        try {
+          signal.throwIfAborted();
+          if (!options.writable()) throw new Error("Image source retry target_changed.");
+          const validated = await journal.media().stageCapture({ ...source, captureId, attemptId, imageId: request.occurrence.imageId });
+          signal.throwIfAborted();
+          if (!options.writable()) throw new Error("Image source retry target_changed.");
+          return validated;
+        } finally { source.release?.(); }
       })();
       retries.set(key, work);
       try { return await work; } finally { if (retries.get(key) === work) retries.delete(key); }

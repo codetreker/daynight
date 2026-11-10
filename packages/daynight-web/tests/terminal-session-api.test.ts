@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTerminalSessionApi, parseTerminalSessionState, parseSessionHistory } from '../src/api/terminal-sessions';
 import { createSessionApi } from '../src/api/sessions';
@@ -10,6 +11,17 @@ const state = () => ({ status: 'registered', protocol: r.protocol, schemaVersion
 const response = (body: unknown, principal = owner.ownerUserId, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
 const api = () => createTerminalSessionApi(owner.projectId, owner.taskId, owner.ownerUserId, vi.fn(), owner.serverOrigin);
 const signal = () => new AbortController().signal;
+const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+function savedRecordFixture() {
+  const original = Buffer.from('saved original'), resourceId = '00000012-1111-4111-8111-111111111111';
+  const resource = { resourceId, status: 'available', name: 'saved.txt', mediaType: 'text/plain', byteLength: String(original.length), sha256: hash(original), error: null };
+  const entries = [{ kind: 'assistant_message', entryId: '00000013-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', content: [{ type: 'resource', resourceId, label: 'saved' }] }];
+  const timeline = JSON.stringify({ entries }), fence = { sessionId: r.sessionId, claimId: r.claimId, executionGeneration: '1' };
+  const manifest = { schemaVersion: 3, contentKind: 'native_timeline', recordId: r.sessionId, fence, provider: 'codex', nativeSessionId: null, controllerId: owner.workerId, controllerInstanceId: owner.worktreeId, timeline: { fileId: '00000014-1111-4111-8111-111111111111', byteLength: String(Buffer.byteLength(timeline)), sha256: hash(timeline) }, resources: [{ resource, blobId: '00000015-1111-4111-8111-111111111111' }], completeness: 'complete' };
+  const status = { state: 'ready', sha256: hash(JSON.stringify(manifest)), byteLength: String(Buffer.byteLength(JSON.stringify(manifest))), errorCode: null, schemaVersion: 3, completeness: 'complete' };
+  const item = { ...fence, agentControlMode: 'web' as const, archive: { state: 'ready' as const, sha256: status.sha256, byteLength: status.byteLength, completeness: 'complete' as const } };
+  return { original, resourceId, resource, entries, fence, manifest, status, item };
+}
 afterEach(() => vi.unstubAllGlobals());
 describe('terminal transport', () => {
   it('strictly admits the complete original task state and rejects substituted ownership', () => {
@@ -105,6 +117,44 @@ describe('terminal transport', () => {
     const fetch = vi.fn(async (url: string, _init?: RequestInit) => response({ archive: url.endsWith('/content') ? archive : status })); vi.stubGlobal('fetch', fetch);
     expect(await api().nativeArchive(item, signal())).toEqual({ status, archive }); expect(fetch.mock.calls[0]?.[1]?.headers).not.toHaveProperty('Daynight-Session-Protocol');
     await expect(api().nativeArchive({ ...item, claimId: owner.taskId }, signal())).rejects.toThrow();
+  });
+
+  it('uses the unified saved reader for schema3 fixed native records without live Session requests', async () => {
+    const { original, resourceId, resource, entries, fence, manifest, status, item } = savedRecordFixture();
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.method ?? 'GET').toBe('GET');
+      if (url.endsWith('/archive')) return response({ archive: status });
+      if (url.endsWith('/archive/content')) return response(manifest);
+      if (url.includes('/archive/files/')) return response({ entries });
+      if (url.includes(`/resources/${resourceId}/content?`)) return response({ resourceId, byteLength: resource.byteLength, sha256: resource.sha256, offset: '0', data: original.toString('base64'), eof: true });
+      throw new Error(`Unexpected fixed-record request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetch);
+    const target = api(), loaded = await target.nativeArchive(item, signal());
+    expect(loaded.archive).toMatchObject({ schemaVersion: 3, entries, resources: manifest.resources, completeness: 'complete' });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const reader = target.resources(fence, () => true);
+    try { expect(await reader.readResource(loaded.archive!.resources[0]!.resource, signal())).toEqual(new Uint8Array(original)); }
+    finally { await reader.close(); }
+    expect(fetch).toHaveBeenCalledTimes(4);
+    await expect(target.nativeArchive({ ...item, claimId: owner.taskId }, signal())).rejects.toThrow();
+    await expect(target.nativeArchive({ ...item, archive: { ...item.archive, completeness: 'partial' } }, signal())).rejects.toThrow();
+  });
+
+  it('rejects a manifest that changed after the selected fixed record status was verified', async () => {
+    const { manifest, status, entries, item } = savedRecordFixture();
+    const replacement = { ...manifest, controllerInstanceId: owner.taskId };
+    const replacementStatus = { ...status, sha256: hash(JSON.stringify(replacement)), byteLength: String(Buffer.byteLength(JSON.stringify(replacement))) };
+    let statusReads = 0;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/archive')) return response({ archive: ++statusReads === 1 ? status : replacementStatus });
+      if (url.endsWith('/archive/content')) return response(replacement);
+      if (url.includes('/archive/files/')) return response({ entries });
+      throw new Error(`Unexpected fixed-record request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(api().nativeArchive(item, signal())).rejects.toThrow();
+    expect(fetch.mock.calls.some(([url]) => url.includes('/archive/files/'))).toBe(false);
   });
 
   it('closes a socket that never supplies an authenticated state', async () => {

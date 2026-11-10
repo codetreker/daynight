@@ -11,9 +11,11 @@ that a confirmed acceptance actually joined.
 
 ## Decision
 
-The Team members and Project grants hosts manage their own invitation metadata,
-using their respective authorization and service routes. A creation receipt is
-the only source of the one-time link; the result dialog keeps it in memory until
+The Members & invitations section of Team settings and the Project grants host
+manage their own invitation metadata, using their respective authorization and
+service routes. The [settings sections decision](2026-11-10-team-settings-sections.md)
+owns Team invitation placement and retains its one-time result while switching
+settings sections. A creation receipt is the only source of the one-time link; the result dialog keeps it in memory until
 closed. Unconfirmed writes are not replayed, and a fresh list observes current
 metadata without proving the original outcome. Permission loss retains a confirmed one-time result or the
 unknown result without claiming a successful read or blocking an ordinary Team

@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createHash } from "node:crypto";
 import * as inputSessionModule from "../../../src/commands/worker/herdr/input-session.js";
 import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
@@ -1449,7 +1450,7 @@ it.each([[0, false], [0, undefined], [3, false], [3, undefined]] as const)("keep
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = {
     currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: [await f.readTask()], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () {}, readTask: f.readTask, update: f.readTask,
   };
-  const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit };
   const events: WorkerEvent[] = []; let settled = 0;
   const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
@@ -1478,7 +1479,7 @@ it("counts a first-frame task read failure against the coordinator recovery budg
   const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
   const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = { currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: [await f.readTask()], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () {}, readTask: f.readTask, update: f.readTask };
-  const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = [];
   const submit = vi.spyOn(f.facade.tasks, "submitPrompt"), sync = vi.spyOn(f.facade.tasks, "syncWorkspaceName");
   const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
@@ -1514,7 +1515,7 @@ it("keeps manual and suspended durable control as ordinary coordinator waits", a
   const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
   const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = { currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: [await f.readTask()], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () {}, readTask: f.readTask, update: f.readTask };
-  const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = []; let settled = 0;
   const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "submitPrompt").mockImplementation(async (...args) => { try { return await submit(...args); } finally { settled++; } });
@@ -1585,7 +1586,7 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
     },
   };
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 };
-  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { listWorktrees: async () => [], findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { scanWorktrees: scanFromList, listWorktrees: async () => [], findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
     workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false,
     emit: () => {}, buildPrompt: () => "managed", signal: cancellation.signal, onClaim: () => cancellation.abort(new Error("Stop this test after successor admission")) });
   try {
@@ -1710,4 +1711,16 @@ it("reconnects observation while preserving an unknown input result and preventi
     await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must remain blocked", operation())).rejects.toThrow();
     expect(f.inputs).toHaveLength(2); expect(f.launches).toHaveLength(1);
   } finally { store.close(); }
+});
+
+
+it("reads the original lifecycle worktree path without scanning archive contents", () => {
+  const f = fixture(false, true); f.register();
+  const resources = vi.spyOn(f.facade.lifecycle!.archive!, "resources").mockImplementation(() => { throw new Error("Archive contents must not be inspected"); });
+  try {
+    expect(f.facade.lifecycle!.worktreePath!(f.context)).toBe(f.context.cwd);
+    expect(f.facade.lifecycle!.worktreePath!({ ...f.context, claimId: uuid(992) })).toBeNull();
+    expect(() => f.facade.lifecycle!.worktreePath!({ ...f.context, worktreeId: uuid(991) })).toThrow();
+    expect(resources).not.toHaveBeenCalled();
+  } finally { resources.mockRestore(); }
 });

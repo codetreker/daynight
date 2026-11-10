@@ -28,7 +28,7 @@ const graph = (number: number, name: string, seeds: readonly TaskSeed[]): TaskGr
       settings: { version: 1n, executionWarningMinutes: 60 }, id: id(number), name,
       repoUrl: 'https://github.com/example/task-graph', createdAt: '2026-10-21T09:00:00Z', updatedAt: '2026-10-22T09:00:00Z',
     },
-    summary: {
+    summary: { proposed: tasks.filter((task) => task.status === "proposed").length,
       total: tasks.length,
       todo: tasks.filter((task) => task.status === 'todo').length,
       inProgress: tasks.filter((task) => task.status === 'in_progress').length,

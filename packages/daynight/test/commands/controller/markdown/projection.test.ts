@@ -82,6 +82,14 @@ test("a reasoning parse failure uses bindings null and never duplicates or loses
   expect(result.entry).toMatchObject({ text: "![a](one.png)", markdown: { bindings: null, textSha256: hash("![a](one.png)") }, imageProjectionError: { code: "source_unavailable" } }); valid(result.entry);
 });
 
+test("mixed native-image failures retain fixed slots and a protocol-valid adjacent failure envelope", async () => {
+  const projector = createMarkdownImageProjector({ parse: async () => { throw new Error("Controlled parse failure"); } });
+  const image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), label: "Native" };
+  const input: ProviderEntry = { ...entry("unused"), kind: "assistant_message", imageProjectionError: null, content: [{ type: "text", text: "![a](one.png)" }, image] };
+  const failed = await projector.complete(projector.prepare(input, meta(), null).state); valid(failed.entry);
+  expect(failed.entry).toMatchObject({ content: [{ type: "text", text: "![a](one.png)" }, image, { type: "text", text: "" }, { type: "markdown", text: "", bindings: [] }] });
+});
+
 test("native block identities survive reordering while array positions never become the image identities", async () => {
   const projector = createMarkdownImageProjector(), firstInput: ProviderEntry = { entryId: id, revision: "1", kind: "assistant_message", content: [{ type: "text", text: "![a](a.png)" }, { type: "text", text: "![b](b.png)" }] };
   const descriptors: MarkdownProjectionMetadata = { parts: [{ ...meta().parts[0]!, sourceKey: "native-a" }, { ...meta().parts[0]!, inputIndex: 1, sourceKey: "native-b" }] };

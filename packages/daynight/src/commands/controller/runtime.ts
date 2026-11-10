@@ -1,3 +1,4 @@
+import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
 import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
 import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
@@ -23,9 +24,10 @@ import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } fr
 import { NativeRpcError } from "./providers/native-rpc.js";
 import type { NativeInput } from "./providers/types.js";
 import type { NativeInputLease } from "./media/preparations.js";
+import type { NativeInputPublicationQuery, NativeInputPublicationResult } from "./media/native-publication-types.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
 import { syncControllerImageHistory } from "./media/history-sync.js";
-import type { NativeProvider, NativeReadPolicy, ProviderOptions } from "./providers/types.js";
+import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
 export const runController = async (options: { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string }): Promise<void> => {
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
@@ -34,6 +36,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
   let nativeReadPolicy: NativeReadPolicy | null = null;
+  let nativeImages: ProviderState["images"];
   let projectionFailure: string | null = null, providerFailure: string | null = null;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
@@ -60,7 +63,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
   };
   const readState = (): import("../../session/controller-protocol.js").ControllerState => {
     const s = journal.getSnapshot();
-    const providerImages = journal.providerImageCapabilities?.({ expectedNativeSessionId: s.nativeSessionId, modelId: ticket.configuration.model, controlsRevision: s.controls?.revision ?? null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } });
+    const qualified = !stopping && nativeImages?.expectedNativeSessionId === s.nativeSessionId && nativeImages.controlsRevision === (s.controls?.revision ?? null) ? nativeImages : undefined;
+    const providerImages = journal.providerImageCapabilities?.(qualified ?? { expectedNativeSessionId: s.nativeSessionId, modelId: ticket.configuration.model, controlsRevision: s.controls?.revision ?? null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } });
     return { ...(providerImages ? { providerImages } : {}), nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
   const fail = (error: unknown) => {
@@ -98,6 +102,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     onError: diagnostic,
     readState,
     onAcknowledged: () => {
+      provider?.acknowledgeImageOccurrences?.();
       if (historyTimer) clearTimeout(historyTimer);
       historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(String(error))); }, 250);
     },
@@ -202,7 +207,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     shutdownPromise = (async () => {
     try {
       await startup?.catch(() => {});
-      journal.patchSnapshot({ lifecycle: "stopping" });
+      try { journal.patchSnapshot({ lifecycle: "stopping" }); } catch (error) { fail(error); }
       await markdownCaptures.stop();
       await provider?.close(); await Promise.all(processCaptures);
       await markdownTimeline.stop();
@@ -216,7 +221,20 @@ export const runController = async (options: { homeDirectory: string; provider: 
       publishState(); await relay.flush().catch(fail);
     }
     catch (error) { fail(error); }
-    finally { await externalImagesClosed; await markdownCaptures.stop().catch(fail); await markdownTimeline.stop().catch(fail); historyAbort.abort(new Error("Controller history synchronization stopped.")); await historyWork?.catch(error => diagnostic(String(error))); await relay.close(); await journal.stopMedia?.(); for (const socket of sockets) socket.destroy(); server.close(); journal.close(); if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {}); complete(); }
+    finally {
+      await externalImagesClosed;
+      await markdownCaptures.stop().catch(fail);
+      await markdownTimeline.stop().catch(fail);
+      historyAbort.abort(new Error("Controller history synchronization stopped."));
+      await historyWork?.catch(error => diagnostic(String(error)));
+      try { await relay.close(); } catch (error) { fail(error); }
+      try { await journal.stopMedia?.(); } catch (error) { fail(error); }
+      for (const socket of sockets) socket.destroy();
+      server.close();
+      try { journal.close(); } catch (error) { fail(error); }
+      if (process.platform !== "win32") await unlink(ticket.ipcEndpoint).catch(() => {});
+      complete();
+    }
     })();
     return shutdownPromise;
   };
@@ -318,11 +336,30 @@ export const runController = async (options: { homeDirectory: string; provider: 
       if (provider) void shutdown();
     }
   };
+  const adoptNativePublication = <T extends NativeInputPublicationResult | NativeInputPublicationQuery>(result: T): T => {
+    let current = result;
+    nativeEvent(() => {
+      journal.assertUsable();
+      if (result.state !== "committed") return;
+      const { entrySeq: _entrySeq, ...entry } = result.view.entry, identity = result.receipt.identity;
+      const intent = journal.getInputIntent(identity.operationId);
+      const command = intent?.sha256 === identity.intentSha256 ? restoreCanonicalInputIntent(intent, identity.operationId) : null;
+      const text = command?.kind === "send_message" ? command.payload.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") : null;
+      const bodies = entry.content.flatMap(part => part.type === "text" || part.type === "markdown" && part.text.length > 0 ? [part.text] : []);
+      const complete = text !== null && bodies.length === 1 && bodies[0] === text;
+      markdownTimeline.adoptCommitted(entry, { complete, format: "markdown", truncated: !complete });
+      const displayed = journal.getTimelineEntry(entry.entryId);
+      if (!displayed || displayed.kind !== "user_message") throw new Error("Native publication lost its current committed message.");
+      current = { ...result, view: { ...result.view, entry: displayed } };
+    });
+    return current;
+  };
   const signal = () => { void shutdown(); };
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
     journal.patchSnapshot({ startup: { state: "starting", reasonCode: "initializing" } });
     journal.patchSnapshot({ controllerProcess: await captureControllerProcessProof(ticket.launchId) });
+    await journal.reconcileNativeIndexReservation();
     if (stopping) return;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { server.off("error", reject); resolve(); }); });
     if (process.platform !== "win32") await chmod(ticket.ipcEndpoint, 0o600);
@@ -355,13 +392,40 @@ export const runController = async (options: { homeDirectory: string; provider: 
       onImageOccurrence: (occurrence, source) => journal.registerImageOccurrence(occurrence, source).acknowledged,
       imageOccurrenceAcknowledged: imageId => journal.imageOccurrenceAcknowledged(imageId),
       ...captureBridge.providerOptions,
-      onInputObserved: observation => nativeEvent(() => {
+      imageRuntime: {
+        publishNativeInputAssociation: request => {
+          const result = journal.publishNativeInputAssociation(request);
+          return adoptNativePublication(result);
+        },
+        patchNativeImagePart: (occurrence, part) => {
+          const current = journal.patchNativeImagePart(occurrence, part), { entrySeq: _entrySeq, ...entry } = current;
+          nativeEvent(() => { markdownTimeline.adoptCommitted(entry); });
+          return current;
+        },
+        queryNativeInputAssociation: identity => adoptNativePublication(journal.queryNativeInputAssociation(identity)),
+        getIntent: operationId => {
+          const intent = journal.getInputIntent(operationId), operation = journal.getOperation(operationId);
+          return intent && operation ? { sha256: intent.sha256, command: restoreCanonicalInputIntent(intent, operationId), state: operation.state } : null;
+        },
+        readState: key => journal.readNativeImageState(key),
+        writeState: (key, value) => journal.writeNativeImageState(key, value),
+        createSpool: maximum => journal.media().createSpool(maximum),
+        indexDirectory: () => journal.media().nativeIndexDirectory(),
+        reserveIndex: additional => journal.media().reserveNativeIndex(additional),
+        acquireIndexReservation: (additional, owner) => journal.acquireNativeIndexReservation(additional, owner),
+      },
+      onInputObserved: observation => {
+        let accepted = false;
+        nativeEvent(() => {
         const operationId = typeof observation === "string" ? observation : observation.operationId;
         if (!observeNativeInput(journal, observation)) return;
+        accepted = true;
         publishState();
         const receipt = journal.getOperation(operationId);
         if (receipt?.kind === "send_message" || receipt?.kind === "execute_command") { try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); } }
-      }),
+        });
+        return accepted;
+      },
       onControlConfirmed: operationId => nativeEvent(() => {
         const operation = journal.getOperation(operationId);
         if (!operation || !["update_setting", "execute_command"].includes(operation.kind) || !["dispatching", "provider_accepted", "unknown"].includes(operation.state)) return;
@@ -385,8 +449,9 @@ export const runController = async (options: { homeDirectory: string; provider: 
           }
         }
       }),
-      onState: state => nativeEvent(() => { const { nativeSessionId, ...status } = state; journal.patchSnapshot({ ...status, ...(nativeSessionId !== null ? { nativeSessionId } : {}), lifecycle: state.activity === "idle" ? "ready" : state.activity === "stopped" ? "stopping" : "working" }); publishState(); }),
+      onState: state => nativeEvent(() => { const { nativeSessionId, images, ...status } = state; nativeImages = images; journal.patchSnapshot({ ...status, ...(nativeSessionId !== null ? { nativeSessionId } : {}), lifecycle: state.activity === "idle" ? "ready" : state.activity === "stopped" ? "stopping" : "working" }); publishState(); }),
       onSpawn: child => { if (!child.pid) throw new Error("Native process identity is unavailable."); const capture = captureProcessProof(child.pid).then(proof => { const s = journal.getSnapshot(); journal.patchSnapshot({ nativeProcesses: [...s.nativeProcesses, proof] }); }); processCaptures.push(capture); void capture.catch(fail); },
+      onNativeProcessProof: proof => { const s = journal.getSnapshot(); if (!s.nativeProcesses.some(saved => saved.pid === proof.pid && saved.startedAt === proof.startedAt && saved.commandHash === proof.commandHash)) journal.patchSnapshot({ nativeProcesses: [...s.nativeProcesses, proof] }); },
     };
     provider = await (ticket.provider === "codex" ? (await import("./providers/codex.js")).openCodexProvider(nativeOptions)
       : ticket.provider === "claude" ? (await import("./providers/claude.js")).openClaudeProvider(nativeOptions)

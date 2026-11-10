@@ -40,8 +40,8 @@ func freshHistoryDisclosure(t *testing.T, ctx context.Context, source *pgx.Conn,
 	return fingerprint
 }
 
-func TestHistoryDisclosureTracksCommittedSourceChangesWithoutSubscriptions(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryDisclosureTracksCommittedSourceChangesWithoutSubscriptions(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	owner := wm.Owner{Kind: "personal", ID: f.user}
@@ -114,8 +114,8 @@ func TestHistoryDisclosureTracksCommittedSourceChangesWithoutSubscriptions(t *te
 	}
 }
 
-func TestHistoryDisclosureIgnoresRetentionAndPostCutoffRecords(t *testing.T) {
-	f := newRetentionStorageFixture(t, 1, 1, 1)
+func testHistoryDisclosureIgnoresRetentionAndPostCutoffRecords(t *testing.T, conn *pgx.Conn) {
+	f := newRetentionStorageFixture(t, conn, 1, 1, 1)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	id := f.deliveries[0]

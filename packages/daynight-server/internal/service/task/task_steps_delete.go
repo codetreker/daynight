@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
@@ -24,7 +23,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 	projectLocked := false
 	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
 		projectLocked = true
-		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
+		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
 		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
@@ -35,7 +34,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 		if err != nil {
 			return err
 		}
-		mutation, err := tasksteps.AdmitDelete(header, current, stepID)
+		mutation, err := s.writeOperations.admitDelete(header, current, stepID)
 		if err != nil {
 			return err
 		}

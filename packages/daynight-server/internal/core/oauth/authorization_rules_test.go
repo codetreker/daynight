@@ -1,8 +1,10 @@
 package oauth
 
 import (
+	"bytes"
 	"errors"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -123,24 +125,33 @@ func TestCallbackURIEncodesResponseWithoutChangingRegisteredBytes(t *testing.T) 
 func TestAuthorizationRulesDecisionAndRedemption(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	binding := secret.Random(BindingPrefix)
-	request := AuthorizationRequest{ID: "request", Binding: binding, ClientID: "client", RedirectURI: "https://client.example/cb", Resource: "https://server.example/mcp", Scope: Scope, Challenge: "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA", State: "state"}
+	request := AuthorizationRequest{ID: "request", Binding: binding, ClientID: "client", RedirectURI: "https://client.example/cb", Resource: "https://server.example/mcp", Scope: Scope, Challenge: "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA", State: "s", StatePresent: true}
 	a := NewAuthorization(request, now)
 	if status, _ := AuthorizationStatus(a, a.ExpiresAt); status != "expired" {
 		t.Fatalf("expiry boundary: %s", status)
 	}
-	if _, err := DecideAuthorization(&a, secret.Random(BindingPrefix), "approve", "user", "https://server.example", now); !errors.Is(err, ErrInvalidAuthorization) || a.Status != "pending" {
-		t.Fatalf("wrong binding changed decision: %+v %v", a, err)
+	before := copyAuthorizationForComparison(a)
+	wrongBinding := secret.Random(BindingPrefix)
+	if !AuthorizationBound(a, binding) || AuthorizationBound(a, wrongBinding) {
+		t.Fatal("authorization binding identity changed")
 	}
-	if _, err := DecideAuthorization(&a, binding, "approve", "user", "https://server.example", a.ExpiresAt); !errors.Is(err, ErrInvalidAuthorization) || a.Status != "pending" {
-		t.Fatalf("expired decision: %+v %v", a, err)
+	if redirect, err := DecideAuthorization(&a, wrongBinding, "approve", "user", "https://server.example", now); redirect != "" || !errors.Is(err, ErrInvalidAuthorization) || !reflect.DeepEqual(a, before) {
+		t.Fatalf("wrong binding changed decision: %+v %q %v", a, redirect, err)
+	}
+	if redirect, err := DecideAuthorization(&a, binding, "approve", "user", "https://server.example", a.ExpiresAt); redirect != "" || !errors.Is(err, ErrInvalidAuthorization) || !reflect.DeepEqual(a, before) {
+		t.Fatalf("expired decision: %+v %q %v", a, redirect, err)
 	}
 	callback, err := DecideAuthorization(&a, binding, "approve", "user", "https://server.example", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	u, err := url.Parse(callback)
-	if err != nil || u.Query().Get("state") != "state" || u.Query().Get("code") == "" || a.State != "" || a.StatePresent || a.Status != "approved" {
+	if err != nil || u.Query().Get("state") != "s" || !secret.Valid(u.Query().Get("code"), CodePrefix) || !bytes.Equal(a.CodeHash, secret.Hash(u.Query().Get("code"))) || a.State != "" || a.StatePresent || a.Status != "approved" || a.UserID != "user" || a.CodeExpiresAt == nil || *a.CodeExpiresAt != now.Add(5*time.Minute) || a.RetainUntil != now.Add(24*time.Hour) {
 		t.Fatalf("approval: %+v %q %v", a, callback, err)
+	}
+	approved := copyAuthorizationForComparison(a)
+	if redirect, err := DecideAuthorization(&a, binding, "approve", "user", "https://server.example", now); redirect != "" || !errors.Is(err, ErrInvalidAuthorization) || !reflect.DeepEqual(a, approved) {
+		t.Fatalf("repeated decision changed approved record: %+v %q %v", a, redirect, err)
 	}
 	valid := CodeBinding{ClientID: request.ClientID, RedirectURI: request.RedirectURI, Resource: request.Resource, Verifier: strings.Repeat("a", 43)}
 	wrong := valid

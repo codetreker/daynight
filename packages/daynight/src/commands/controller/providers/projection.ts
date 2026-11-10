@@ -1,13 +1,10 @@
-import { createHash } from "node:crypto";
+import { nativeEntryId } from "../native-identity.js";
+export { nativeEntryId } from "../native-identity.js";
 import { record, string } from "./native-rpc.js";
 import type { MarkdownTimelineMetadata, ProviderEntry } from "./types.js";
 import { codexSubagentActivity } from "../../../session/codex-subagent-activity.js";
+import type { CodexImageProjection } from "./codex-image-projection.js";
 
-// Native item IDs survive reconnects; transport IDs must never create new timeline rows.
-export const nativeEntryId = (session: string, item: string): string => {
-  const h = createHash("sha256").update(session).update("\0").update(item).digest("hex");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
-};
 export const readable = (value: unknown): string => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "";
 export const limited = (value: string): string => {
   if (value.length <= 200_000) return value;
@@ -35,7 +32,7 @@ export const parseProviderArguments = (provider: "codex" | "claude" | "copilot",
 export class CodexProjection {
   private readonly content = new Map<string, string>();
   private readonly tools = new Map<string, Extract<ProviderEntry, {kind: "tool_call"}>>();
-  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry, metadata?: MarkdownTimelineMetadata) => void) {}
+  constructor(private readonly sessionId: string, private readonly emit: (entry: ProviderEntry, metadata?: MarkdownTimelineMetadata) => void, private readonly images?: CodexImageProjection) {}
   private base(id: string) { return { entryId: nativeEntryId(this.sessionId, id), revision: "1" }; }
   delta(id: string, delta: string, kind: "assistant_message" | "reasoning"): void {
     const value = (this.content.get(id) ?? "") + delta; this.content.set(id, value);
@@ -43,14 +40,16 @@ export class CodexProjection {
     this.emit(kind === "reasoning" ? { ...this.base(id), kind, text: limited(value) } : { ...this.base(id), kind, content: [{ type: "text", text: limited(value) }] }, markdownTimelineMetadata(value, false));
   }
   toolDelta(id: string, delta: string): void {
+    if (this.images?.toolDelta(id, delta)) return;
     const old = this.tools.get(id); if (!old) return;
     const prior = old.output.map(part => part.type === "text" ? part.text : "").join("");
     const output = prior + delta;
     const entry = { ...old, output: [{ type: "text" as const, text: limited(output) }], truncated: old.truncated || output.length > 200_000 };
     this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, false, "plain"));
   }
-  item(value: unknown, completed: boolean): void {
+  item(value: unknown, completed: boolean, turnId = ""): void {
     const item = record(value), id = string(item.id), type = string(item.type); if (!id) return;
+    if (this.images?.item(item, completed, turnId)) return;
     const base = this.base(id);
     if (type === "agentMessage") { const text = string(item.text); this.content.set(id, text); this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(text) }] }, markdownTimelineMetadata(text, completed)); }
     else if (type === "userMessage") {
@@ -86,6 +85,6 @@ export class CodexProjection {
       this.tools.set(id, entry); this.emit(entry, markdownTimelineMetadata(output, completed, "plain"));
     } else if (type === "contextCompaction") this.emit({ ...base, kind: "compaction", summary: "Native conversation context compacted." });
     else if (type === "plan") this.emit({ ...base, kind: "assistant_message", content: [{ type: "text", text: limited(string(item.text) || readable(item)) }] }, markdownTimelineMetadata(string(item.text) || readable(item), completed, typeof item.text === "string" ? "markdown" : "plain"));
-    else this.emit({ ...base, kind: "error", code: "unsupported_native_item", message: `Unsupported native timeline item: ${type || "unknown"}. ${limited(readable(item))}` });
+    else this.emit({ ...base, kind: "error", code: "unsupported_native_item", message: `Unsupported native timeline item: ${type || "unknown"}.` });
   }
 }

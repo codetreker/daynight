@@ -40,8 +40,9 @@ take precedence.
   Do not commit task-management files, including `*-tasks.md`, or add execution
   bookkeeping and task-tracking pointers to repository documents. Keep durable
   product requirements, architecture, decisions and validation methods in their
-  document owners. Load the `using-daynight` skill before executing any task and
-  follow its applicable workflow.
+  document owners. Use the `using-daynight` manual for Daynight product operations; follow the
+  [development workflow](.agents/skills/development-workflow/SKILL.md) for
+  repository work and its applicable task procedures.
 - For a Goal, first create or reuse only its requirements-discussion task and
   enter `in_progress` when the user requests that discussion. After the user
   confirms the complete uploaded `spec.md` and asks to proceed, create or reuse

@@ -19,8 +19,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
-	database := readerStore(t)
+func TestTaskReaderStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "TaskAssigneeStoreCatalogueAndBoundedResolution", testTaskAssigneeStoreCatalogueAndBoundedResolution)
+	suite.run(t, "TaskAssigneeStorePreservesMissingQualifiedProfileFacts/direct-grant", func(t *testing.T, database *postgres.Store) {
+		testTaskAssigneeStorePreservesMissingQualifiedProfileFacts(t, database, false)
+	})
+	suite.run(t, "TaskAssigneeStorePreservesMissingQualifiedProfileFacts/retained-task", func(t *testing.T, database *postgres.Store) {
+		testTaskAssigneeStorePreservesMissingQualifiedProfileFacts(t, database, true)
+	})
+	suite.run(t, "TaskAssigneeStoreQueryCancellation/catalogue", func(t *testing.T, database *postgres.Store) {
+		testTaskAssigneeStoreQueryCancellation(t, database, false)
+	})
+	suite.run(t, "TaskAssigneeStoreQueryCancellation/resolve", func(t *testing.T, database *postgres.Store) {
+		testTaskAssigneeStoreQueryCancellation(t, database, true)
+	})
+	suite.run(t, "TaskAssignmentStoreFiltersAndInvalidSelectors", testTaskAssignmentStoreFiltersAndInvalidSelectors)
+	suite.run(t, "TaskPlatformSpecificFiltersBeforePagination", testTaskPlatformSpecificFiltersBeforePagination)
+	suite.run(t, "WorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion", testWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion)
+	suite.run(t, "TaskPriorityListFiltersBeforeLimitAndFence", testTaskPriorityListFiltersBeforeLimitAndFence)
+	suite.run(t, "TaskPriorityListRejectsInvalidDAOInputs", testTaskPriorityListRejectsInvalidDAOInputs)
+	suite.run(t, "TaskSyncPropertyBatchReadHonorsCancellation", testTaskSyncPropertyBatchReadHonorsCancellation)
+	suite.run(t, "TaskSyncPropertiesBatchQueriesAndEmptyWindow", testTaskSyncPropertiesBatchQueriesAndEmptyWindow)
+}
+
+func testTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T, database *postgres.Store) {
 	project, other := readerProject(t, database, 1), readerProject(t, database, 2)
 	current := readerAssigneeUser(t, database, project.ID, 101, true)
 	named := readerAssigneeUser(t, database, project.ID, 102, true)
@@ -81,39 +104,36 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 	readerAssertAssignees(t, empty, map[string]bool{}, nil)
 }
 
-func TestTaskAssigneeStorePreservesMissingQualifiedProfileFacts(t *testing.T) {
-	for _, retained := range []bool{false, true} {
-		database := readerStore(t)
-		project := readerProject(t, database, 1)
-		readerAssigneeUser(t, database, project.ID, 101, true)
-		missing := readerAssigneeUser(t, database, project.ID, 102, true)
-		if retained {
-			readerTask(t, database, project.ID, 11, model.TaskDone)
-			readerExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, readerID(11), missing)
-			readerExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, missing)
-		}
-		readerExec(t, database, `DELETE FROM users WHERE id=$1`, missing)
-		resolved, err := readerAssigneeRead(t, database, project.ID, []string{readerID(101)})
+func testTaskAssigneeStorePreservesMissingQualifiedProfileFacts(t *testing.T, database *postgres.Store, retained bool) {
+	project := readerProject(t, database, 1)
+	readerAssigneeUser(t, database, project.ID, 101, true)
+	missing := readerAssigneeUser(t, database, project.ID, 102, true)
+	if retained {
+		readerTask(t, database, project.ID, 11, model.TaskDone)
+		readerExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, readerID(11), missing)
+		readerExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, missing)
+	}
+	readerExec(t, database, `DELETE FROM users WHERE id=$1`, missing)
+	resolved, err := readerAssigneeRead(t, database, project.ID, []string{readerID(101)})
+	if err != nil {
+		t.Fatalf("unrequested missing profile broke bounded resolution: %v", err)
+	}
+	readerAssertAssignees(t, resolved, map[string]bool{readerID(101): true}, nil)
+	for _, ids := range [][]string{nil, {readerID(101), missing}} {
+		result, err := readerAssigneeRead(t, database, project.ID, ids)
 		if err != nil {
-			t.Fatalf("unrequested missing profile broke bounded resolution: %v", err)
+			t.Fatal(err)
 		}
-		readerAssertAssignees(t, resolved, map[string]bool{readerID(101): true}, nil)
-		for _, ids := range [][]string{nil, {readerID(101), missing}} {
-			result, err := readerAssigneeRead(t, database, project.ID, ids)
-			if err != nil {
-				t.Fatal(err)
+		var absent *model.TaskAssigneeFact
+		for index := range result {
+			if result[index].UserID == missing {
+				absent = &result[index]
 			}
-			var absent *model.TaskAssigneeFact
-			for index := range result {
-				if result[index].UserID == missing {
-					absent = &result[index]
-				}
-			}
-			if absent == nil || absent.ProfileID != nil || absent.HasProjectAccess == retained || ids != nil && !absent.Qualified {
-				t.Fatalf("missing qualified profile facts lost: %#v", result)
-			}
+		}
+		if absent == nil || absent.ProfileID != nil || absent.HasProjectAccess == retained || ids != nil && !absent.Qualified {
+			t.Fatalf("missing qualified profile facts lost: %#v", result)
+		}
 
-		}
 	}
 }
 
@@ -159,39 +179,35 @@ func TestTaskAssigneeStoreQueryAndRowFailuresPreserveCauses(t *testing.T) {
 	}
 }
 
-func TestTaskAssigneeStoreQueryCancellation(t *testing.T) {
-	for _, resolve := range []bool{false, true} {
-		database := readerStore(t)
-		project := readerProject(t, database, 1)
-		readerAssigneeUser(t, database, project.ID, 101, true)
-		ctx, cancel := context.WithCancel(context.Background())
-		config := database.Pool.Config()
-		config.ConnConfig.Tracer = readerAssigneeCancelTracer{cancel: cancel}
-		pool, err := pgxpool.NewWithConfig(context.Background(), config)
-		if err != nil {
-			t.Fatal(err)
+func testTaskAssigneeStoreQueryCancellation(t *testing.T, database *postgres.Store, resolve bool) {
+	project := readerProject(t, database, 1)
+	readerAssigneeUser(t, database, project.ID, 101, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	config := database.Pool.Config()
+	config.ConnConfig.Tracer = readerAssigneeCancelTracer{cancel: cancel}
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traced := &postgres.Store{Pool: pool}
+	var result []model.TaskAssigneeFact
+	err = traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		var err error
+		if resolve {
+			result, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, project.ID, []string{readerID(101)})
+		} else {
+			result, err = snapshot.TaskDAO().TaskAssignees(ctx, project.ID)
 		}
-		traced := &postgres.Store{Pool: pool}
-		var result []model.TaskAssigneeFact
-		err = traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-			var err error
-			if resolve {
-				result, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, project.ID, []string{readerID(101)})
-			} else {
-				result, err = snapshot.TaskDAO().TaskAssignees(ctx, project.ID)
-			}
-			return err
-		})
-		cancel()
-		pool.Close()
-		if !errors.Is(err, context.Canceled) || len(result) != 0 {
-			t.Fatalf("directory cancellation lost cause or returned data: %#v %v", result, err)
-		}
+		return err
+	})
+	cancel()
+	pool.Close()
+	if !errors.Is(err, context.Canceled) || len(result) != 0 {
+		t.Fatalf("directory cancellation lost cause or returned data: %#v %v", result, err)
 	}
 }
 
-func TestTaskAssignmentStoreFiltersAndInvalidSelectors(t *testing.T) {
-	database := readerStore(t)
+func testTaskAssignmentStoreFiltersAndInvalidSelectors(t *testing.T, database *postgres.Store) {
 	project := readerProject(t, database, 1)
 	first := readerTask(t, database, project.ID, 11, model.TaskTodo)
 	second := readerTask(t, database, project.ID, 12, model.TaskTodo)
@@ -245,8 +261,7 @@ func (tracer readerAssigneeCancelTracer) TraceQueryStart(ctx context.Context, _ 
 
 func (readerAssigneeCancelTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-func TestTaskPlatformSpecificFiltersBeforePagination(t *testing.T) {
-	database := readerStore(t)
+func testTaskPlatformSpecificFiltersBeforePagination(t *testing.T, database *postgres.Store) {
 	project := readerProject(t, database, 1)
 	rows := []model.Task{}
 	for _, number := range []int{11, 12, 13, 14, 15} {
@@ -301,8 +316,7 @@ func TestTaskPlatformSpecificFiltersBeforePagination(t *testing.T) {
 	}
 }
 
-func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *testing.T) {
-	database := readerStore(t)
+func testWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *testing.T, database *postgres.Store) {
 	project := readerProject(t, database, 1)
 	owner, workerID := readerID(2), readerID(3)
 	for number := 10; number < 14; number++ {
@@ -339,8 +353,7 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	}
 }
 
-func TestTaskPriorityListFiltersBeforeLimitAndFence(t *testing.T) {
-	db := readerStore(t)
+func testTaskPriorityListFiltersBeforeLimitAndFence(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
 	project := readerProject(t, db, 1)
 	done := readerTask(t, db, project.ID, 10, model.TaskDone)
@@ -454,8 +467,7 @@ func readFence(t *testing.T, db *postgres.Store, project string) TaskListFence {
 	return fence
 }
 
-func TestTaskPriorityListRejectsInvalidDAOInputs(t *testing.T) {
-	db := readerStore(t)
+func testTaskPriorityListRejectsInvalidDAOInputs(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
 	project := readerProject(t, db, 1)
 	queries := []TaskPriorityQuery{
@@ -528,8 +540,7 @@ func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 	}
 }
 
-func TestTaskSyncPropertyBatchReadHonorsCancellation(t *testing.T) {
-	database := readerStore(t)
+func testTaskSyncPropertyBatchReadHonorsCancellation(t *testing.T, database *postgres.Store) {
 	project := readerProject(t, database, 1)
 	item := readerTask(t, database, project.ID, 10, model.TaskTodo)
 	readerExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, item.ID, `[{"url":"https://example.com/pr/1","title":"Change"}]`)
@@ -670,8 +681,7 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	}
 }
 
-func TestTaskSyncPropertiesBatchQueriesAndEmptyWindow(t *testing.T) {
-	database := readerStore(t)
+func testTaskSyncPropertiesBatchQueriesAndEmptyWindow(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := readerProject(t, database, 1)
 	other := readerProject(t, database, 2)

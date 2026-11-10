@@ -246,7 +246,7 @@ operation intent hash 覆盖原 envelope（不含可变传输 requestId）、tar
 
 NativeProvider 公共入口新增 `send(input, operationId, expectedTurnId)`，三 Provider 的文字发送也迁入该入口，不保留 text/sendInput 并行 API。NativeInput.content 是有序 TextPart 与 `{type:"image",imageId,resourceId,mediaType,byteLength,sha256,localPath}` 数组；localPath 是 Controller 生成的只读本地资源句柄路径，绝不接受浏览器/Markdown 原始路径。其 bytes 已验证且 operation 引用在原生读取期间保持存活。Provider 内部 lease 保留 path、长度与摘要，以及有界 read/close 能力；路径不作为公开资源引用。下文存储机制拥有资源解析和句柄生命周期；[Provider 设计](session-image-providers.md) 按原生协议将其转换为原生图片输入。该内部接口不序列化到浏览器，不把本地绝对路径写入公有回执。
 
-Codex、Claude、Copilot 各自证明纯图片、图文与顺序、接受回执及历史映射；不由共享接口猜测 Provider 的图片 steer、默认模型 vision、queued 语义。不满足结构化 send 或完整媒体 revision 的旧适配器明确要求升级。NativeProvider 返回沿用 ProviderReceipt，图片回显或本地 timeline 生成不是原生接受证据。
+当前支持范围内的 Codex、Copilot 各自证明纯图片、图文与顺序、接受回执及历史映射；保留 Claude 的协议身份和现有适配不代表开放其图片资格。不由共享接口猜测 Provider 的图片 steer、默认模型 vision、queued 语义。不满足结构化 send 或完整媒体 revision 的旧适配器明确要求升级。NativeProvider 返回沿用 ProviderReceipt，图片回显或本地 timeline 生成不是原生接受证据。
 
 ### 操作恢复
 
@@ -522,7 +522,8 @@ journal.sqlite.history-sync/
 journal.sqlite.pending-content/
   manifest.json
   index.json
-  timeline/
+  timeline/          # retained legacy migration source
+  entries/           # immutable entry candidates selected by SQLite
   resources/
   blobs/
   resource-pins.json
@@ -532,10 +533,13 @@ journal.sqlite.pending-content/
 
 根及已有父组件须可信，拒绝 symlink/reparse；exclusive create、禁跟随打开、fstat 核验 regular file 与登记身份。来源模块交付已授权打开的 stream，存储模块不能重新按不可信 path 打开。native 仅可硬链接已经复制、完整验证且由 Controller 私有持有的不可变原件，不能硬链接用户可变文件；native pin 保留该 inode 到准确的原生恢复引用解除。
 
-journal 格式迁移007与精确 schema 检查拥有以下表；状态和错误存于对应身份记录，不另建重复资源内核。
+journal 格式迁移007、008与精确 schema 检查拥有以下表；状态和错误存于对应身份记录，不另建重复资源内核。
 
 | 表 | 持久事实 |
 | --- | --- |
+| content_index | 当前 entry 的不可变候选文件、长度/摘要、真实 revision 与稳定 entrySeq；读取以同一 SQL 快照为准 |
+| native_input_publications | 原 operation/native identity 的不可变关联回执、实际 publication revision 与 source sequence |
+| native_input_publication_images | 原 operation+imageId 对应的稳定原件资源及槽位 |
 | input_intents | operationId 的完整规范 intent 与 SHA-256；旧 intent/hash 原样保留 |
 | input_observations | 原 operationId 的接受/未知观察 |
 | image_preparations | 原 uploadId、完整 spec/target、状态、offset、验证结果及错误 |
@@ -544,6 +548,10 @@ journal 格式迁移007与精确 schema 检查拥有以下表；状态和错误�
 | image_pins | operation/resource/native 的真实引用、私有路径及释放状态 |
 | image_runtime_state | 持久能力 revision、active_history_sync、active_history_checkpoint，以及 Markdown projection/source/context、来源请求计费和 capture-source 私有预留等运行状态 |
 | image_captures | captureId/attemptId/imageId 的私有文件及完整验证结果 |
+
+pending-content 的 timeline 候选先完成文件及适用平台的目录持久化，再在同一 SQLite 事务提交指针。未被指针引用的文件不得由目录扫描自动公开；SQL 回滚保留旧完整视图。所有 timeline、inspection、完整历史同步、归档及引用判断读取同一连接的提交快照。旧 WAL 快照可能仍引用旧候选，因此保守保留并计入真实元数据预算；没有跨 reader 生命周期证明时不在线删除旧文件。v8 迁移精确校验旧 SQL 与文件，不接纳超前或未知来源。缺失、损坏、路径或摘要不符明确失败。
+
+具名 `publishNativeInputAssociation` 验证已存在的原接受证据及完整 intent，基于当前 entry 保留原生槽并绑定或追加原件，在同一事务提交 alias、实际引用、occurrence、真实 revision 和确切 outbox 水位。`queryNativeInputAssociation` 返回原不可变回执与当前视图；后续 capture 可以推进当前 revision，不能改变 publication revision。未知结果只查原身份，不重发原生输入。若 COMMIT 与 ROLLBACK 都未确认且连接仍有事务，隔离该连接的所有业务读取和写入；同连接的未提交行不能充当 committed 查询结果。关闭连接不清除原 writer 身份，后续由独立生命周期恢复核对。原生来源采集继续遵守位置 ACK 后 register，不扩张为跨服务的分布式事务。Provider 接线由[Provider 设计](session-image-providers.md#copilot)拥有。存储的 canonical intent 不含传输 `requestId`；本地恢复仅补解析所需的该字段，再重核原 operationId、规范编码及 SHA，不改持久 intent，不把恢复对象当作新的发送请求。
 
 跨 execution 的准入账本位于 `stateDirectory/controller/media/budget.sqlite`，以 immediate transaction 更新 `allocations`。2200 MiB/execution、8 GiB/stateDirectory 包含实际原件、暂存、未知残留与预留；私有硬链接按 inode 只计一次。128 MiB 元数据和8 MiB结算余量计入真实 SQLite sidecars 与 pending metadata。关闭 Controller 不释放 native/resume 及未知引用；只有完整 execution 目录最终删除并刷盘后才退还该 allocation。
 

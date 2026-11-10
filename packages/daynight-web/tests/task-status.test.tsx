@@ -53,7 +53,7 @@ const graph = (): TaskGraph => {
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0, createdAt: time, updatedAt: task.updatedAt };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
-    summary: { total: tasks.length,
+    summary: { proposed: 0, total: tasks.length,
       todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, cancelled: 0,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length } };
 };
@@ -240,7 +240,7 @@ describe('status in shared production task details', () => {
       project: { ...graph().project, id: otherProject, name: 'Other project' },
       tasks: [{ assignedTo: other.assignedTo, requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
         dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time }],
-      summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
+      summary: { proposed: 0, total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
     };
     graphRequest.mockImplementation(async (projectId) => projectId === project ? graph() : otherGraph);
     vi.mocked(getTask).mockImplementation(async (projectId, taskId) => projectId === project ? records.get(taskId)! : other);

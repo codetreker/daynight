@@ -52,6 +52,107 @@ func inputValidationTask() model.Task {
 		DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true, CreatedAt: now, UpdatedAt: now}
 }
 
+func TestMutationPreparationPreservesDatabaseFailure(t *testing.T) {
+	const target = "55555555-5555-4555-8555-555555555555"
+	principal := model.Principal{UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222", Kind: model.SessionCredential}
+	for _, method := range []string{"create", "update", "status"} {
+		t.Run(method, func(t *testing.T) {
+			ctx := t.Context()
+			driver := errors.New("task query driver sentinel")
+			database := &store.Error{Phase: "query", DatabaseFailure: true, SQLState: "42P01", Cause: driver}
+			refusal := &model.Fault{Code: "invalid_input", Message: "joined domain refusal"}
+			failure := errors.Join(refusal, database)
+			reads := 0
+			dao := inputValidationDAO{}
+			if method == "create" {
+				dao.dependencies = func(actual context.Context, ids []string) ([]model.Task, error) {
+					reads++
+					if reads != 1 || actual != ctx || len(ids) != 0 {
+						t.Fatalf("unexpected dependency read: calls=%d ids=%v", reads, ids)
+					}
+					return nil, failure
+				}
+			} else {
+				dao.readTask = func(actual context.Context, id string) (model.Task, error) {
+					reads++
+					if reads != 1 || actual != ctx || id != target {
+						t.Fatalf("unexpected Task read: calls=%d id=%q", reads, id)
+					}
+					return model.Task{}, failure
+				}
+			}
+			var mutation Mutation
+			var err error
+			switch method {
+			case "create":
+				values, candidateErr := CreateCandidate(target, CreateTask{Title: "Unwritten task"})
+				if candidateErr != nil {
+					t.Fatalf("CreateCandidate: %v", candidateErr)
+				}
+				mutation, err = PrepareCreate(ctx, dao, target, values)
+			case "update":
+				title := "Unwritten update"
+				mutation, err = PrepareUpdate(ctx, dao, target, UpdateTask{Version: 1, Title: &title})
+			case "status":
+				mutation, err = PrepareStatus(ctx, dao, principal, target, SetTaskStatus{Version: 1, Status: model.TaskDone})
+			}
+			if reads != 1 || !reflect.DeepEqual(mutation, Mutation{}) || err != failure {
+				t.Fatalf("preparation changed failure, result or reads: mutation=%+v error=%v reads=%d", mutation, err, reads)
+			}
+			for _, cause := range []error{failure, driver, refusal, database} {
+				if !errors.Is(err, cause) {
+					t.Errorf("preparation lost error %v: %v", cause, err)
+				}
+			}
+			if isDatabase, state := store.DatabaseErrorFacts(err); !isDatabase || state != "42P01" {
+				t.Fatalf("database facts changed: database=%v state=%q", isDatabase, state)
+			}
+		})
+	}
+}
+
+func TestPrepareStatusPreservesUnsafeCompletionFailure(t *testing.T) {
+	const target = "55555555-5555-4555-8555-555555555555"
+	principal := model.Principal{UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222", Kind: model.SessionCredential}
+	for _, test := range []struct {
+		phase   string
+		outcome store.TransactionOutcome
+		cleanup bool
+	}{
+		{"commit", store.TransactionUnknown, false},
+		{"cleanup", store.TransactionNotCommitted, true},
+		{"operation", store.TransactionUnknown, false},
+	} {
+		t.Run(test.phase, func(t *testing.T) {
+			ctx := t.Context()
+			refusal := &model.Fault{Code: "invalid_input", Message: "business refusal sentinel"}
+			cause := errors.New("transaction completion sentinel")
+			failure := &store.TransactionError{Phase: test.phase, Outcome: test.outcome, CleanupFailed: test.cleanup, CommitAttempted: test.phase == "commit", Cause: errors.Join(refusal, context.Canceled, cause)}
+			reads := 0
+			dao := inputValidationDAO{readTask: func(actual context.Context, id string) (model.Task, error) {
+				reads++
+				if reads != 1 || actual != ctx || id != target {
+					t.Fatalf("unexpected Task read: calls=%d id=%q", reads, id)
+				}
+				return model.Task{}, failure
+			}}
+			mutation, err := PrepareStatus(ctx, dao, principal, target, SetTaskStatus{Version: 1, Status: model.TaskDone})
+			var transaction *store.TransactionError
+			if reads != 1 || !reflect.DeepEqual(mutation, Mutation{}) || err != failure || !errors.As(err, &transaction) || transaction != failure {
+				t.Fatalf("preparation changed failure, result or reads: mutation=%+v error=%v reads=%d", mutation, err, reads)
+			}
+			for _, expected := range []error{refusal, context.Canceled, cause} {
+				if !errors.Is(err, expected) {
+					t.Errorf("preparation lost error %v: %v", expected, err)
+				}
+			}
+			if transaction.Phase != test.phase || transaction.Outcome != test.outcome || transaction.CleanupFailed != test.cleanup || transaction.CommitAttempted != (test.phase == "commit") {
+				t.Fatalf("completion facts changed: %+v", transaction)
+			}
+		})
+	}
+}
+
 func TestPrepareUpdateRejectsInvalidCandidateValues(t *testing.T) {
 	for _, test := range []struct {
 		name  string

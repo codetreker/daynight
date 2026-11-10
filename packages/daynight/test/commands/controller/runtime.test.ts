@@ -24,7 +24,7 @@ afterEach(() => { externalRuntime.coordinatorOptions = null; externalRuntime.clo
 const setup = () => {
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
-  fixture.journal.mockReturnValue({ listOperations: () => [], patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; } });
+  fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; } });
   fixture.capture.mockResolvedValue({ pid: 1 });
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;

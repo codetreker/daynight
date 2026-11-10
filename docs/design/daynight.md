@@ -3,7 +3,7 @@
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
 命令工具包，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
-的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
+的原生补全脚本并安装启动配置；`--skill` 输出 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
 与默认预算验收已通过托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。
 [专属设计](daynight-project-task.md)拥有项目任务机制，[worker 设计](daynight-worker.md)拥有持续执行机制。行为归属见[客户端需求](../spec/daynight.md)及
@@ -18,7 +18,7 @@ CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成�
 daynight                            # 顶层帮助
 daynight --help                      # 同 -h
 daynight --version                   # 同 -v
-daynight --skill                    # 输出独立的 CLI 使用手册
+daynight --skill                    # 输出 CLI 使用手册
 daynight update
 daynight login [--no-browser]         # 浏览器设备授权
 daynight logout                      # 撤销并清除当前 CLI 凭据
@@ -119,17 +119,10 @@ src/
       targets.ts
       install.ts
       read.ts
-      usage.md
+      manual.ts
       skills/using-daynight/
         SKILL.md
-        references/handbook.md
-        references/run-task.md
-        references/autopilot-managed-task.md
-        references/task-execution.md
-        references/create-task.md
-        references/goal.md
-        references/task-content.md
-        references/handoff.md
+        references/manual.md
     task/
       definition.ts
       command.ts
@@ -217,7 +210,7 @@ src/
 登记 `dn`，供两种补全生成器使用。`cli/context.ts` 只描述客户端上下文：版本、包目录、输入输出，以及
 用户主目录和工作目录的惰性查询函数；不放入已解析的 review 路径、配置或运行函数。
 `cli/commands.ts` 组合各命令的轻量定义并保存异步执行入口；`cli/application.ts`
-只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取并以 fatal UTF-8 decoder 校验后，经 `stdoutBytes` 输出原始 Buffer。它不导入安装器、配置或 `using-daynight` bundle。`usage.md` 是独立英文 project/task 使用手册，覆盖项目选择、任务查询与写入、依赖、properties 和 attachments；其他能力引导查询 `daynight --help`，命令事实与所属轻量定义同步。
+只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取后通过共享 `validateManualContents` 校验 fatal UTF-8 和非空白正文，经 `stdoutBytes` 输出原始 Buffer。它不导入安装器或配置。`usage.md` 是从公共 bundle 的 `references/manual.md` 同源原字节复制的构建产物，覆盖产品操作及边界；参数以 `daynight --help` 和子命令帮助为准。
 
 `cli/schema.ts` 定义命令、别名、选项和值类型、位置
 参数及固定候选；选项元数据表达 required、allowEmpty、choices 和 repeatable，
@@ -237,7 +230,7 @@ credentials 拥有配置观察值核对，browser 拥有平台打开器。命令
 
 `worker` 的轻量 definition/index 先完成命令解析与帮助分派，再加载对应业务。setup 与 repo 入口拥有配置路径、读取/保存及 Project 选择；需要远端项目时使用 typed ApiClient，repo list 保持本地只读。setup 复用有界原生前置检查，环境诊断和配置确认不取得执行实例锁、不打开 SQLite 或启动 Herdr/native agent。attach 入口使用已有私有会话的客户端描述，不进入任务控制器。
 
-run 的 runtime 组合固定状态、实例排他、SQLite、Git 与 Herdr 的前台生命周期。人工管理入口要求停止 runner 后取得同一实例锁，同步处理一个指定 claim，不保存跨进程控制意图。coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；这些生命周期使用 worker 自己的状态所有权。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
+run 的 runtime 组合固定状态、实例排他、SQLite、Git 与 Herdr 的前台生命周期。人工管理入口要求停止 runner 后取得同一实例锁，同步处理一个指定 claim，不保存跨进程控制意图。coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；这些生命周期使用 worker 自己的状态所有权。`prompts.ts` 将随包编译的运行约束与经过校验的 assignment 组装为 managed prompt，并追加非空 user、project、worker prompt，不读取技能文件。产品操作由 `daynight --skill` 手册提供，交付规则由目标仓库和实际授权决定。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
 
 `config/` 拥有共享配置路径、严格 YAML 和保留注释的文件保存协议；未知字段在运行投影中
 忽略并在文档中保留。`files.ts` 的写入描述必须声明字段归属，锁内保存入口统一比较非归属
@@ -486,7 +479,7 @@ SQLite 使用 Node-API 10，实际运行需要 Node.js 22.14.0 或更新版本�
 开发工具与直接执行的 TypeScript 脚本有独立于发布产物的运行要求。构建先执行
 `node scripts/clean-dist.ts` 删除包的 `dist/`，再通过 `tsc -p tsconfig.build.json`
 生成产物，防止模块移动后保留旧的可执行文件。随后 `node scripts/copy-resources.ts` 明确复制 review 与
-公开 using-daynight 两个完整 skill bundle，以及五个数据库 owner 的 SQL 资源目录，到匹配的 dist 相对位置。
+公开 using-daynight 两个完整 skill bundle，以及五个数据库 owner 的 SQL 资源目录；公共 manual.md 同时原字节复制到 dist 的 usage.md。
 SQL 目录只复制 `.sql` 文件，skill bundle 保留完整资源树；脚本不扫描仓库来发现其他资源。既有 `dist` 发布
 规则将这些文件纳入安装包。清理和资源复制脚本从自身位置定位目录，调用者工作目录不会改变目标。
 SQL 资源与来源检查的关系由 [SQLite 升级设计](cli-sqlite-migrations.md#sql-资源与参考结构)拥有。
@@ -535,7 +528,7 @@ registry，发布子进程继承其配置与 GitHub OIDC 环境。公开仓库�
 
 ## 验证与交付
 
-安装入口须对实际 npm pack 与安装后的 `daynight`、`dn` 比较使用手册原始字节。CLI 模块验证仓库外、无配置、无 launcher 与非交互终端，以及额外参数先于文件读取拒绝、缺失、读取错误和非法 UTF-8 的原因链。当前安装入口保留双 launcher 和资源字节检查，模块现有覆盖尚需逐项核对。手册 frontmatter、独立内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/archived/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
+安装入口须对实际 npm pack 与安装后的 `daynight`、`dn` 比较使用手册原始字节。CLI 模块验证仓库外、无配置、无 launcher 与非交互终端，以及额外参数先于文件读取拒绝、缺失、读取错误和非法 UTF-8 的原因链。当前安装入口保留双 launcher 和资源字节检查，模块现有覆盖尚需逐项核对。手册 frontmatter、自包含内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/archived/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
 
 根入口与每个命令的参数验证需覆盖正常调用、裸组、帮助、版本、使用手册输出和错误结果；构建后入口
 必须保留 shebang、bin 路径和版本输出。依赖隔离验证通过不可用的 SQLite 加载、缺失的

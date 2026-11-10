@@ -1,4 +1,5 @@
 import { TaskPauseCount, usePausedTaskIds } from "../task-pause/TaskPause";
+import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { tabbable } from 'tabbable';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
@@ -25,7 +26,7 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNaviga
   const component = index.components.get(rootId)!;
   const progress = component.progress;
   const pausedTaskIds = usePausedTaskIds();
-  const pausedCount = [...component.memberIds].filter((id) => pausedTaskIds.has(id)).length;
+  const pausedCount = pausedSummaryTaskIds([...component.memberIds].map((id) => index.nodes.get(id)!), pausedTaskIds).size;
   const [fullscreen, setFullscreen] = useState(false);
   const dialog = useRef<HTMLElement>(null);
   const close = useRef<HTMLButtonElement>(null);

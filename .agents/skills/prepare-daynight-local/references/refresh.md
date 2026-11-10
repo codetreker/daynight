@@ -13,7 +13,9 @@ For a request for latest main, fetch `origin/main` once and record its full SHA.
 Use a dedicated, retained worktree at that commit. Reuse a suitable build worktree
 after checking its changes and process use; do not reset unrelated edits or move
 the primary checkout. For a specified revision, use that revision. Record dirty
-builds as such; they are not reproducible main builds.
+builds as such; they are not reproducible main builds. When the target branch
+moves during long work, refresh again with this procedure; an investigation
+rechecks its findings against the new revision under its own freshness rule.
 
 Use these names for resolved, absolute paths in the command examples:
 
@@ -42,6 +44,12 @@ Build before stopping a working environment. Keep the old binary/image and CLI
 snapshot. Read source changes affecting migrations and compatibility before
 cutover. If updating a nonempty database, use the existing paired-backup procedure
 and account for all writers; a saved executable alone is not a data rollback.
+When a native site's PostgreSQL runs in a container, take the dump with that
+container's `pg_dump` if the host client is older than the server; an older
+client refuses to dump a newer server. Pass the password through the environment
+without printing it, write a custom-format dump into the private backup
+directory, check its `PGDMP` header, and record file sizes and SHA-256 hashes
+alongside the matching storage and development-state copies.
 
 An old preview database may contain an unpublished migration whose number was
 later used differently on main. If startup rejects its ledger, compare the
@@ -78,8 +86,10 @@ accounts, tokens or task ownership.
 Do not overwrite an in-use executable, guess a command from a PID alone, or treat
 another Docker service such as UniAuth as the Daynight server.
 
-Inspect active development executions before stopping the exact old Worker and
-site. Use their normal shutdown paths within the authorized scope, preserving
+Inspect active development executions, and other agents using the environment
+under [shared use](shared-use.md#check-for-users-before-changing-the-environment),
+before stopping the exact old Worker and site. Use their normal shutdown paths
+within the authorized scope, preserving
 claims, journals and native sessions. If treatment of a running task is unresolved,
 finish preparing artifacts and leave cutover pending; do not force-withdraw it
 to make an upgrade appear complete. Start the new server through the selected
@@ -101,16 +111,26 @@ the message alone does not identify the proxy as its cause.
 
 When that setting is missing, an owned override can retain the source
 configuration and enable Upgrade handling. For a file at
-`$DN_SOURCE/.tmp/local-development/vite.config.mts`:
+`$DN_SOURCE/.tmp/local-development/vite.config.mts`, where the selected
+revision defines `/api` as an object:
 
 ```typescript
-import { mergeConfig } from '../../packages/daynight-web/node_modules/vite/dist/node/index.js';
 import base from '../../packages/daynight-web/vite.config.ts';
 
-export default mergeConfig(base, {
-  server: { proxy: { '/api': { ws: true, changeOrigin: false } } },
-});
+const proxy = base.server?.proxy ?? {};
+
+export default {
+  ...base,
+  server: {
+    ...base.server,
+    proxy: { ...proxy, '/api': { ...proxy['/api'], ws: true, changeOrigin: false } },
+  },
+};
 ```
+
+The override extends the source object instead of importing Vite. Vite bundles
+relative configuration imports, so importing its own distribution through
+`node_modules` emits unresolved-import warnings on every start.
 
 Start Vite with this explicit `--config` through the existing owned launcher and
 retain its public hostname and port. Keep `changeOrigin: false`; do not enable
@@ -301,9 +321,13 @@ state alone does not prove that the Agent resumed productive work.
 Ordinary Agent task execution does not require starting or upgrading a Worker.
 Use the scoped executable wrapper and development root for that Agent instead.
 An old Worker remains old after installation. Its managed startup prompt also
-uses the skill bundled in its own package. Existing Controller processes and
-Agent aliases can retain their original snapshot; use a new execution to verify
-the new chain, without deleting or silently retargeting old sessions.
+retains the behavior of its running package: a version that used a bundled
+managed skill continues to do so. Current Workers provide assignment and runtime
+constraints in the prompt assembled by their package; `daynight --skill` provides
+product operations, and repository rules govern delivery. Existing Controller
+processes and Agent aliases can retain their original snapshot; use a new
+execution to verify the new chain, without deleting or silently retargeting old
+sessions.
 
 ## Installed skill
 

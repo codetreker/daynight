@@ -5,18 +5,90 @@ import { openControllerLifecycleStore } from "../../../../src/commands/controlle
 import type { ControllerLaunchTicket } from "../../../../src/commands/controller/launch-ticket.js";
 import { randomUUID } from "node:crypto";
 import { createMarkdownTimelinePipeline } from "../../../../src/commands/controller/markdown/pipeline.js";
-import { createMarkdownImageProjector } from "../../../../src/commands/controller/markdown/projection.js";
+import { createMarkdownImageProjector, type MarkdownProjectionState } from "../../../../src/commands/controller/markdown/projection.js";
 import type { ProviderEntry } from "../../../../src/commands/controller/providers/types.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence } from "../../../../src/session/image-values.js";
 const id = randomUUID(), entry = (text: string): ProviderEntry => ({ entryId: id, revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
 function fixture() {
   const values = new Map<string, unknown>(), events: string[] = [], published: ProviderEntry[] = [], sources = new Map<string, ImageOccurrence>(), errors: unknown[] = [];
   const store = { get: <T>(kind: string, key: string) => values.get(`${kind}:${key}`) as T ?? null, put(kind: string, key: string, value: unknown) { values.set(`${kind}:${key}`, structuredClone(value)); events.push(`store:${kind}`); }, listIds(kind: string, page: { after?: string; limit: number }) { const prefix = kind + ":"; return [...values.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)).sort().filter(key => page.after === undefined || key > page.after).slice(0, page.limit); } };
-  const journal = { markdownStore: store, projectTimeline(value: ProviderEntry) { published.push(structuredClone(value)); events.push("timeline"); return null; }, markProjectionGap() { events.push("gap"); } };
+  const journal = { markdownStore: store, getTimelineEntry: (entryId: string) => published.findLast(value => value.entryId === entryId), publishMarkdownProjection(state: MarkdownProjectionState, value: ProviderEntry): void { store.put("projection", state.entryId, state); this.projectTimeline(value); }, projectTimeline(value: ProviderEntry) { published.push(structuredClone(value)); events.push("timeline"); return null; }, markProjectionGap() { events.push("gap"); } };
   const captures = { contextKey: () => "trusted-context", contextFor: (occurrence: ImageOccurrence) => ({ contextId: "trusted", partId: occurrence.partId }), enqueue(occurrence: ImageOccurrence) { sources.set(occurrence.imageId, occurrence); events.push("source"); }, get: (imageId: string) => sources.get(imageId) ?? null };
   return { values, events, published, sources, errors, journal, captures };
 }
 const complete = { complete: true, format: "markdown" as const, truncated: false };
+const nativeImage = () => ({ type: "image_unavailable" as const, imageId: randomUUID(), label: "Native image", error: { code: "capture_pending", message: "Pending" } });
+const message = (value: ProviderEntry) => { if (value.kind !== "user_message" && value.kind !== "assistant_message") throw new Error("Expected a message"); return { ...value, imageProjectionError: value.imageProjectionError ?? null }; };
+
+test("a committed native input starts Markdown analysis without replacing its native image position", async () => {
+  const f = fixture(), pipeline = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } });
+  const image = nativeImage(), input = { ...message(entry("![a](one.png)")), kind: "user_message" as const, content: [{ type: "text" as const, text: "![a](one.png)" }, image] };
+  f.journal.projectTimeline(input);
+  pipeline.adoptCommitted(input, complete); await pipeline.drain();
+  const displayed = message(f.published.at(-1)!);
+  expect(displayed.content[1]).toEqual(image); expect(displayed.content[0]).toMatchObject({ type: "markdown", bindings: [{ part: { type: "image_unavailable" } }] });
+  const ids = [...f.sources.keys()]; pipeline.adoptCommitted(displayed, complete); await pipeline.drain();
+  expect([...f.sources.keys()]).toEqual(ids); expect(f.errors).toEqual([]);
+});
+
+test("verified original input completion promotes the same streaming Markdown body after a native commit", async () => {
+  const f = fixture(), pipeline = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } }), image = nativeImage();
+  pipeline.accept({ ...message(entry("unused")), content: [{ type: "text", text: "![a](one.png)" }, image] }, { ...complete, complete: false }); await pipeline.drain();
+  const streaming = message(f.published.at(-1)!), saved = { type: "image" as const, imageId: image.imageId, resourceId: randomUUID(), label: image.label }, committed = { ...streaming, content: [streaming.content[0]!, saved] };
+  f.journal.projectTimeline(committed); pipeline.adoptCommitted(committed, complete); await pipeline.drain();
+  const displayed = message(f.published.at(-1)!); expect(displayed.content[1]).toEqual(saved); expect(f.sources.size).toBe(1);
+  expect(displayed.content[0]).toMatchObject({ type: "markdown", complete: true, bindings: [{ part: { type: "image_unavailable" } }] });
+  expect(displayed.content[0]).toHaveProperty("partId", "partId" in streaming.content[0]! ? streaming.content[0].partId : null); expect(f.errors).toEqual([]);
+});
+
+test("a native image commit invalidates an in-flight parser without losing its complete Markdown body", async () => {
+  const f = fixture(); let release!: () => void, begun!: () => void, first = true;
+  const gate = new Promise<void>(resolve => { release = resolve; }), began = new Promise<void>(resolve => { begun = resolve; });
+  const projector = createMarkdownImageProjector({ parse: async text => { if (first) { first = false; begun(); await gate; } return [{ start: 0, end: text.length, destination: "one.png", label: "a", linkHref: null }]; } });
+  const pipeline = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); }, projector });
+  const image = nativeImage(), input = { ...message(entry("![a](one.png)")), content: [{ type: "text" as const, text: "![a](one.png)" }, image] };
+  pipeline.accept(input, complete); const ticking = pipeline.tick(); await began;
+  const saved = { type: "image" as const, imageId: image.imageId, resourceId: randomUUID(), label: image.label }, current = message(f.published.at(-1)!);
+  const committed = { ...current, content: [current.content[0]!, saved] };
+  f.journal.projectTimeline(committed); pipeline.adoptCommitted(committed); release(); await ticking;
+  expect(f.sources.size).toBe(0); await pipeline.drain();
+  expect(message(f.published.at(-1)!).content[1]).toEqual(saved); expect(f.sources.size).toBe(1); expect(f.errors).toEqual([]);
+});
+
+test("recovery and late Markdown receipts preserve a native patch committed before pipeline adoption", async () => {
+  const f = fixture(), first = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } });
+  const image = nativeImage(); first.accept({ ...message(entry("![a](one.png)")), content: [{ type: "text", text: "![a](one.png)" }, image] }, complete); await first.drain(); await first.stop();
+  const occurrence = [...f.sources.values()][0]!, current = message(f.published.at(-1)!), saved = { type: "image" as const, imageId: image.imageId, resourceId: randomUUID(), label: image.label };
+  f.journal.projectTimeline({ ...current, content: [current.content[0]!, saved] }); f.sources.clear();
+  const recovered = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } });
+  await recovered.drain(); expect([...f.sources.keys()]).toEqual([occurrence.imageId]);
+  recovered.failure(occurrence, { code: "source_forbidden", message: "Denied" }); await recovered.stop();
+  expect(message(f.published.at(-1)!).content[1]).toEqual(saved); expect(f.errors).toEqual([]);
+});
+
+test("failed Markdown carriers keep native positions through a later appended original image and recovery", async () => {
+  const f = fixture(), projector = createMarkdownImageProjector({ parse: async () => { throw new Error("Controlled parser failure"); } });
+  const first = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); }, projector });
+  const image = nativeImage(); first.accept({ ...message(entry("![a](one.png)")), content: [{ type: "text", text: "![a](one.png)" }, image] }, complete); await first.drain();
+  const failed = message(f.published.at(-1)!); expect(failed.content[1]).toEqual(image);
+  const original = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), label: "Original" }, committed = { ...failed, content: [...failed.content, original] };
+  f.journal.projectTimeline(committed); first.adoptCommitted(committed); await first.stop();
+  const recovered = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } }); await recovered.drain(); await recovered.stop();
+  expect(message(f.published.at(-1)!).content).toEqual(committed.content); expect(f.errors).toEqual([]);
+});
+
+test.each(["plain", "removed"])("late retained-image receipts preserve native patches after a Markdown body becomes %s", async format => {
+  const f = fixture(), pipeline = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } }), image = nativeImage();
+  pipeline.accept({ ...message(entry("unused")), content: [{ type: "text", text: "![a](one.png)" }, image] }, complete); await pipeline.drain();
+  const occurrence = [...f.sources.values()][0]!;
+  pipeline.accept({ ...message(entry("unused")), content: [{ type: "text", text: "new body" }, image] }, { ...complete, format: "plain", ...(format === "removed" ? { parts: [] } : {}) }); await pipeline.drain();
+  const current = message(f.published.at(-1)!), saved = { type: "image" as const, imageId: image.imageId, resourceId: randomUUID(), label: image.label };
+  f.journal.projectTimeline({ ...current, content: current.content.map(part => "imageId" in part && part.imageId === image.imageId ? saved : part) });
+  const request: ImageCaptureRequest = { captureId: randomUUID(), attemptId: randomUUID(), occurrence, locator: { kind: "local", path: "one.png", contextId: randomUUID() }, nativeSource: null }, resourceId = randomUUID();
+  pipeline.receipt(request, { captureId: request.captureId, attemptId: request.attemptId, revision: "2", occurrence, state: "committed", resourceId, resource: { resourceId, status: "available", name: "saved.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64), error: null }, error: null }); await pipeline.stop();
+  const displayed = message(f.published.at(-1)!); expect(displayed.content[1]).toEqual(saved);
+  expect(displayed.content.at(-1)).toMatchObject({ type: "markdown", retainedImages: [{ imageId: occurrence.imageId, part: { type: "image", resourceId } }] }); expect(f.errors).toEqual([]);
+});
 
 test("timeline accepts body synchronously before parsing and only enqueues sources after the durable complete projection", async () => {
   const f = fixture(), pipeline = createMarkdownTimelinePipeline({ journal: f.journal, captures: f.captures, onError: error => { f.errors.push(error); } });

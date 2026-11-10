@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { parseLocalImageCheckpoint, type LocalImageCheckpoint } from "../markdown/local-source-proof.js";
 import { record } from "./native-rpc.js";
+import type { CodexRpc } from "./codex-rpc.js";
 import type { NativeReadPolicy } from "./types.js";
 
-type Request = (method: string, params: unknown) => Promise<unknown>;
+type Request = CodexRpc["request"];
 type AuthorityOptions = { cwd: string; request: Request; publish(policy: NativeReadPolicy | null): void; drain?(): Promise<void> };
 type Startup = { initialized: unknown; remoteControl: unknown; response: unknown; nativeSessionId: string; nativeCwd: string };
 const forbidden = () => Object.assign(new Error("Native Codex local Read authority is unavailable."), { code: "source_forbidden" });
@@ -104,14 +105,14 @@ export class CodexReadAuthority {
     this.options.publish(null);
   }
 
-  async request(method: string, params: unknown): Promise<unknown> {
+  async request(method: string, params: unknown, onLateResponse?: Parameters<Request>[2]): Promise<unknown> {
     const allowed = unchangedRequests[method], raw = record(params);
     const unchanged = readMethods.has(method) || allowed && raw.threadId === this.policy?.nativeSessionId && Object.keys(raw).every(key => allowed.includes(key));
     if (this.installed && !unchanged) {
       this.invalidate();
       await this.options.drain?.();
     }
-    return this.options.request(method, params);
+    return onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
   }
 
   observe(method: string, params: unknown): void {

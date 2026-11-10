@@ -1,3 +1,6 @@
+import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../../src/platform/sqlite-sql.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,16 +40,38 @@ afterEach(() => {
 });
 
 describe("minimal worker SQLite schema", () => {
+  it("retains archive repair scheduling across reopen without changing the owner or deadline", () => {
+    const f = fixture(); f.register();
+    const owner = { ...claim, worktreeId: uuid(4) };
+    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 3, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: "archive_incomplete" });
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getCleanupSchedule(owner)).toMatchObject({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 901000, archiveRepairCode: "archive_incomplete" });
+    expect(() => reopened.saveCleanupSchedule({ ...owner, worktreeId: uuid(5) }, reopened.getCleanupSchedule(owner)!)).toThrow("different worktree");
+    expect(() => reopened.saveCleanupSchedule(owner, { ...reopened.getCleanupSchedule(owner)!, deadline: 101 })).toThrow("deadline");
+  });
+
+  it("upgrades a version 12 cleanup schedule without inventing an archive blocker", () => {
+    const f = fixture(); f.register();
+    f.store.saveCleanupSchedule({ ...claim, worktreeId: uuid(4) }, { deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+    close(f.store);
+    const db = connect(f.file);
+    if ((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).some(row => row.name === "archive_repair_code")) db.exec("ALTER TABLE cleanup_schedules DROP COLUMN archive_repair_code");
+    db.exec("DROP TABLE IF EXISTS archive_backfill_schedules");
+    db.pragma("user_version=12"); db.close();
+    expect(open(f.file).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+  });
+
   it("creates the project mapping, task index and cleanup schedule with WAL/FULL", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const database = connect(file);
-    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat))!.filter(object => object.type === "table").map(({ name }) => ({ name })));
     expect((database.pragma("table_info(projects)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "repo_url", "local_path"]);
     expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
     expect((database.pragma("table_list") as { name: string; strict: number }[]).filter(({ name }) => name === "projects" || name === "tasks").every(({ strict }) => strict === 1)).toBe(true);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
-    expect(database.pragma("user_version", { simple: true })).toBe(12);
+    expect(database.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     expect(database.pragma("foreign_key_list(projects)")).toEqual([]);
     expect(database.pragma("foreign_key_list(tasks)")).toEqual([]);
@@ -168,11 +193,11 @@ it("rebuilds the unversioned six-column index and discards every project and cla
   const { file, db } = legacyFixture();
   const events: unknown[] = [];
   const rebuilt = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(12);
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect((db.pragma("table_info(tasks)") as { name: string }[]).map(row => row.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 12 }, { kind: "completed", fromVersion: 0, toVersion: 12 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: currentSqliteVersion(workerStoreFormat) }, { kind: "completed", fromVersion: 0, toVersion: currentSqliteVersion(workerStoreFormat) }]);
   close(rebuilt);
   events.length = 0;
   const reopened = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
@@ -199,11 +224,11 @@ it("restores the entire unversioned index when rebuilding the baseline fails", (
 it("rejects newer formats and altered constraints without mutating their records", () => {
   const { file, store, register } = fixture(); register(); close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM tasks").all();
-  db.pragma("user_version = 13");
+  db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat) + 1}`);
   expect(() => open(file)).toThrow("unsupported-version");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
-  expect(db.pragma("user_version", { simple: true })).toBe(13);
-  db.pragma("user_version = 12");
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat) + 1);
+  db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat)}`);
   db.exec("DROP INDEX tasks_one_active_per_task; CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id, task_id) WHERE status = 'pending'");
   expect(() => open(file)).toThrow("invalid-format");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
@@ -237,4 +262,24 @@ describe("worker cleanup schedules", () => {
     f.store.saveCleanupSchedule(owner, { ...schedule, failures: 3 });
     expect(f.store.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule, failures: 3 });
   });
+});
+
+
+it("persists only backfill conditions with generation and claim fencing, without creating cleanup responsibility", () => {
+  const f = fixture();
+  const identity = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(80), executionGeneration: "1", launchId: uuid(81) };
+  const state = { archiveRepairCode: "archive_incomplete" as const, nextAttemptAt: 900_000 };
+  f.store.saveArchiveBackfillSchedule(identity, state);
+  close(f.store);
+  const reopened = open(f.file);
+  expect(reopened.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, ...state });
+  expect(reopened.listCleanupSchedules()).toEqual([]);
+  expect(reopened.listTasks()).toEqual([]);
+  for (const patch of [{ claimId: uuid(82) }, { launchId: uuid(83) }, { executionGeneration: "2" }]) {
+    expect(() => reopened.saveArchiveBackfillSchedule({ ...identity, ...patch }, state)).toThrow("identity");
+    expect(() => reopened.deleteArchiveBackfillSchedule({ ...identity, ...patch })).toThrow("identity");
+  }
+  expect(reopened.getArchiveBackfillSchedule(identity)).toEqual({ ...identity, ...state });
+  reopened.deleteArchiveBackfillSchedule(identity);
+  expect(reopened.getArchiveBackfillSchedule(identity)).toBeNull();
 });

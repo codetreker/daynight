@@ -41,6 +41,23 @@ exclusive ownership. Do not reset it, overwrite files, change its branch, or use
 a stable Worker's checkout as the test checkout. Do not fetch dependencies or
 run the repository's scripts merely to perform the routing smoke test.
 
+## Account for agent instruction files
+
+Native Agents read instructions from more places than the test checkout. Claude
+Code loads the user's own `CLAUDE.md` and `CLAUDE.md` files in ancestor
+directories of its working directory; other Providers have their own user-level
+and repository instruction files. A checkout or Test Session workspace below a
+directory with unrelated instruction files inherits them, and user-level
+instructions apply everywhere. They can redirect an Agent's file writes, for
+example to a personal notes directory.
+
+Prefer a checkout location without unrelated instruction files in its ancestor
+directories. Check which files apply by name and location, without copying their
+contents into records. User-level instructions cannot be removed for a test:
+record their presence as an environment condition, write test prompts with
+explicit relative paths inside the workspace, and deny approvals that reach
+outside it.
+
 ## Isolate state and identify the local service
 
 Use the host user's home directory to resolve `DN_DEV_ROOT` to the absolute
@@ -162,9 +179,7 @@ Outside, use version checks without business writes to confirm ordinary routing.
 
 For an ordinary Agent, install the target bundle's `using-daynight` at Project
 scope when needed, following [skill refresh](refresh.md#installed-skill), preserve
-customized User copies and verify the loaded source after reload. Managed Agents
-already receive the skill from their Worker's package. In both cases keep its
-commands spelled `daynight`; no edited skill fork is required.
+customized User copies and verify the loaded source after reload. Managed Agents receive runtime constraints from their Worker and follow the target repository rules. The same product manual is available through `daynight --skill`; keep commands spelled `daynight` without editing a skill fork.
 
 The helper's isolated regression checks use only fake executables and temporary
 directories under the current Daynight worktree:

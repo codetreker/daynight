@@ -207,7 +207,7 @@ These fields answer different questions:
 
 | Field | What it expresses |
 | --- | --- |
-| `status` | The Task lifecycle: `todo`, `in_progress`, `done` or `cancelled`. |
+| `status` | The Task lifecycle: `proposed`, `todo`, `in_progress`, `done` or `cancelled`. |
 | `assignedTo` | The responsible account's user UUID, or `null` for no assignment. |
 | `allowAgents` | Whether the Task permits automatic agent execution under the scheduling rules. |
 | `requiredPlatform` | The execution platform requirement, or `null` when unrestricted. |

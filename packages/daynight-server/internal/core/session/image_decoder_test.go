@@ -139,15 +139,19 @@ func TestImageDecoderProcessBoundary(t *testing.T) {
 func TestImageDecoderOwnDeadlineDoesNotDeclareInvalidContent(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	c := decoderFixture(t, "cat >/dev/null\nprintf ready > '"+strings.ReplaceAll(marker, "'", "'\\''")+"'\nexec /bin/sleep 30\n")
-	decode, err := NewImageDecoder(c)
+	decoder, err := newImageDecoder(c)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if decoder.decodeTimeout != 15*time.Second {
+		t.Fatalf("constructed decoder timeout = %s, want 15s", decoder.decodeTimeout)
+	}
+	decoder.decodeTimeout = 200 * time.Millisecond
 	parent, cancel := context.WithTimeout(t.Context(), 25*time.Second)
 	defer cancel()
 	raw := []byte("png")
 	h := sha256.Sum256(raw)
-	_, err = decode(parent, bytes.NewReader(raw), 3, hex.EncodeToString(h[:]))
+	_, err = decoder.decode(parent, bytes.NewReader(raw), 3, hex.EncodeToString(h[:]))
 	if parent.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("decoder budget became an invalid-content verdict", parent.Err(), err)
 	}

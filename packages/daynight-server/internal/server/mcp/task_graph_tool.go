@@ -57,6 +57,7 @@ type graphData struct {
 
 type graphSummary struct {
 	Total      int64 `json:"total"`
+	Proposed   int64 `json:"proposed"`
 	Todo       int64 `json:"todo"`
 	InProgress int64 `json:"inProgress"`
 	Done       int64 `json:"done"`
@@ -90,7 +91,7 @@ func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader gr
 	}
 	s := graph.Summary
 	result := graphData{Projection: view, Project: MapProject(graph.Project), ObservedAt: graph.ObservedAt.UTC(),
-		Summary: graphSummary{Total: s.Total, Todo: s.Todo, InProgress: s.InProgress, Done: s.Done, Cancelled: s.Cancelled, Ready: s.Ready, Blocked: s.Blocked},
+		Summary: graphSummary{Total: s.Total, Proposed: s.Proposed, Todo: s.Todo, InProgress: s.InProgress, Done: s.Done, Cancelled: s.Cancelled, Ready: s.Ready, Blocked: s.Blocked},
 		Tasks:   make([]any, 0, len(graph.Tasks)), ReturnedNodes: len(graph.Tasks), TotalNodes: len(graph.Tasks)}
 	for _, task := range graph.Tasks {
 		deps := append([]string{}, task.DependsOn...)

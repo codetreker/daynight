@@ -1,4 +1,4 @@
-import type { TaskStatus } from "../task/status.js";
+import type { TaskCreationStatus, TaskStatus } from "../task/status.js";
 export type { TaskStatus } from "../task/status.js";
 
 export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
@@ -343,6 +343,7 @@ export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "vers
 
 export type TaskGraphSummary = {
   readonly total: number;
+  readonly proposed: number;
   readonly todo: number;
   readonly inProgress: number;
   readonly done: number;
@@ -363,6 +364,7 @@ export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: strin
 export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
+  readonly status?: TaskCreationStatus;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
   readonly description?: string;

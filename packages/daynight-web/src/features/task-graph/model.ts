@@ -58,7 +58,7 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
   for (const task of graph.tasks) {
     if (typeof task !== "object" || task === null || typeof task.id !== "string" || task.id === "" || nodes.has(task.id) ||
       !Array.isArray(task.dependsOn) || !Array.isArray(task.externalDependsOn) || !Array.isArray(task.blockedBy) ||
-      (task.status !== "todo" && task.status !== "in_progress" && task.status !== "done" && task.status !== "cancelled") || typeof task.ready !== "boolean") {
+      (task.status !== "proposed" && task.status !== "todo" && task.status !== "in_progress" && task.status !== "done" && task.status !== "cancelled") || typeof task.ready !== "boolean") {
       return rejectGraph();
     }
     const dependencies = new Set<string>(task.dependsOn);
@@ -75,7 +75,7 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
   }
 
   const actual: { -readonly [Key in keyof TaskGraphSummary]: number } = {
-    total: nodes.size, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0,
+    total: nodes.size, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0,
   };
   for (const task of nodes.values()) {
     const blocked = new Set<string>();
@@ -99,7 +99,8 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
       else actual.blocked++;
     } else if (task.status === "in_progress") actual.inProgress++;
     else if (task.status === "done") actual.done++;
-    else actual.cancelled++;
+    else if (task.status === "cancelled") actual.cancelled++;
+    else actual.proposed++;
   }
   for (const key of Object.keys(actual) as (keyof TaskGraphSummary)[]) {
     if (graph.summary[key] !== actual[key]) return rejectGraph();
@@ -114,6 +115,7 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
     let representative: string | undefined;
     let done = 0;
     let cancelled = 0;
+    let proposed = 0;
     let inProgress = false;
     for (let position = 0; position < members.length; position++) {
       const id = members[position]!;
@@ -122,6 +124,7 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
       if (status === "done") done++;
       else if (status === "cancelled") cancelled++;
       else if (status === "in_progress") inProgress = true;
+      else if (status === "proposed") proposed++;
       for (const neighbor of ordinaryNeighbors.get(id)!) {
         if (memberIds.has(neighbor)) continue;
         memberIds.add(neighbor);
@@ -129,7 +132,7 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
       }
     }
     if (representative === undefined) return rejectGraph();
-    const status = taskProgressStatus(done, cancelled, members.length, inProgress);
+    const status = taskProgressStatus(done, cancelled, members.length, inProgress, proposed);
     for (const id of memberIds) componentByTask.set(id, representative);
     discovered.set(representative, { memberIds, progress: { total: members.length, done, cancelled, ended: done + cancelled, status } });
   }

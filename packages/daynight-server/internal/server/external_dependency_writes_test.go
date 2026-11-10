@@ -20,7 +20,7 @@ func TestExternalDependencyHTTPWriteReplacementAndNoop(t *testing.T) {
 	current.DependsOn, current.ExternalDependsOn, current.BlockedBy, current.Ready = []string{a.ID, b.ID}, []string{b.ID}, []string{a.ID, b.ID}, false
 	values := externalHTTPWrite(current)
 	f.mutation(nil, &values, &current, []model.Task{a, b}, true)
-	target := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Classified target", "dependsOn": []string{b.ID, strings.ToUpper(a.ID)}, "externalDependsOn": []string{strings.ToUpper(b.ID)}})), http.StatusCreated)
+	target := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Classified target", "status": "todo", "dependsOn": []string{b.ID, strings.ToUpper(a.ID)}, "externalDependsOn": []string{strings.ToUpper(b.ID)}})), http.StatusCreated)
 	externalHTTPCheck(t, target, externalHTTPAPI(current))
 	if !slices.Equal(target.ExternalDependsOn, []string{b.ID}) || target.Version != 1 {
 		t.Fatalf("HTTP creation lost explicit classification: %#v", target)
@@ -106,7 +106,7 @@ func TestExternalDependencyHTTPWriteStrictBodies(t *testing.T) {
 	emptyRow := externalHTTPRecord(f.project.ID, "", "Explicit empty external set")
 	values := externalHTTPWrite(emptyRow)
 	f.mutation(nil, &values, &emptyRow, []model.Task{}, true)
-	empty := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Explicit empty external set","externalDependsOn":[]}`), http.StatusCreated)
+	empty := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Explicit empty external set","status":"todo","externalDependsOn":[]}`), http.StatusCreated)
 	externalHTTPCheck(t, empty, externalHTTPAPI(emptyRow))
 	if len(empty.DependsOn) != 0 || empty.ExternalDependsOn == nil || len(empty.ExternalDependsOn) != 0 {
 		t.Fatalf("empty external creation invented dependencies: %#v", empty)

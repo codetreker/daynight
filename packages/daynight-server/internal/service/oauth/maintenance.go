@@ -24,6 +24,12 @@ type Maintenance struct {
 	Authorizations AuthorizationPruner
 	Credentials    CredentialPruner
 	Now            func() time.Time
+	pruneClients   func(context.Context, store.OAuthClientWriter, int, time.Time) (int, error)
+}
+
+// NewMaintenance binds the cleanup operations to their production dependencies.
+func NewMaintenance(clients store.OAuthClientWriter, authorizations AuthorizationPruner, credentials CredentialPruner) Maintenance {
+	return Maintenance{Clients: clients, Authorizations: authorizations, Credentials: credentials, pruneClients: core.PruneClients}
 }
 
 func (m Maintenance) Maintain(ctx context.Context) error {
@@ -32,7 +38,7 @@ func (m Maintenance) Maintain(ctx context.Context) error {
 		now = m.Now().UTC()
 	}
 	// Attempt all three even if one fails; each retains responsibility for retry.
-	_, clients := core.PruneClients(ctx, m.Clients, 600, now)
+	_, clients := m.pruneClients(ctx, m.Clients, 600, now)
 	_, authorizations := m.Authorizations.PruneAuthorizations(ctx, 700)
 	_, credentials := m.Credentials.PruneCredentials(ctx, 700)
 	return errors.Join(clients, authorizations, credentials)

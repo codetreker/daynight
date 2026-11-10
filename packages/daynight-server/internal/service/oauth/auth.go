@@ -11,17 +11,20 @@ import (
 )
 
 // Authenticator admits access tokens for the specified resource.
-type Authenticator struct{ writer store.CredentialFamilyWriter }
+type Authenticator struct {
+	writer             store.CredentialFamilyWriter
+	authenticateAccess func(context.Context, store.CredentialFamilyDAO, string, string, time.Time) (store.OAuthAccessIdentity, error)
+}
 
 func NewAuthenticator(writer store.CredentialFamilyWriter) *Authenticator {
-	return &Authenticator{writer: writer}
+	return &Authenticator{writer: writer, authenticateAccess: core.AuthenticateAccess}
 }
 
 func (a *Authenticator) AuthenticateAccess(ctx context.Context, token, resource string) (store.OAuthAccessIdentity, error) {
 	var result store.OAuthAccessIdentity
 	completion, err := a.writer.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
 		var err error
-		result, err = core.AuthenticateAccess(ctx, scope.CredentialFamilyDAO(), token, resource, time.Now().UTC())
+		result, err = a.authenticateAccess(ctx, scope.CredentialFamilyDAO(), token, resource, time.Now().UTC())
 		return err
 	})
 	if err != nil {

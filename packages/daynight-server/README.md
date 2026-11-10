@@ -681,8 +681,13 @@ them retains text service and refuses new image uploads. A configured runtime,
 helper, engine or manifest that fails validation prevents startup; it does not
 silently enable a weaker decoder. The deployment image supplies all four paths.
 The service and Controller independently consume every decoded image frame and
-check original length and SHA-256. Decoder RSS is measured, not a hard OS memory
-sandbox. See the [media design](../../docs/design/session-image-contracts.md).
+check original length and SHA-256. Each service decoder has a fixed 15-second
+deadline; cancellation waits for the helper process to exit before releasing its
+private staging files. Decoder RSS is measured, not a hard OS memory sandbox.
+See the [media design](../../docs/design/session-image-contracts.md). Decoder
+deadline tests check the constructed production duration and use a shorter
+private instance interval while retaining the real process and timer, as recorded
+in the [instance timing decision](../../.agents/notes/implemented/testing/2026-11-07-integration-test-timing.md).
 
 The business listener rejects wildcard, non-loopback, hostname, scoped IPv6, and
 malformed addresses. The optional metrics address accepts literal IPv4 or IPv6,
@@ -898,6 +903,26 @@ module validation. The final gate requires actual success for both selected Go
 jobs. Their separate [coverage partitions](#coverage) retain all production code
 and the same numerical thresholds.
 
+### Project HTTP tests
+
+`internal/server/project` tests use strict direct Project and Membership operation
+callbacks and the real request-authentication parser. They retain HTTP routing,
+parsing, argument propagation, DTOs, error/log classification, cancellation and
+response-write failure mechanisms. Their ordinary test binary clears database
+and UniAuth fixture configuration; run the complete adapter suite independently:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/server/project
+```
+
+Business decisions remain with Core and Service tests. PostgreSQL COMMIT response
+loss, transaction effects and independent persisted readback belong to Store
+owners; retained files and reopen behavior belong to local storage tests. The
+explicit `acceptance`-tagged process-restart witness retains its real isolated
+infrastructure and is excluded from the ordinary test binary's environment reset.
+
 ### Application service tests
 
 The root `internal/service` suite owns application composition, startup,
@@ -942,8 +967,11 @@ physical work.
 The inner `internal/service/application` suite verifies the business-module
 construction shared by protocol adapters. It records Projects, Tasks and
 Attachments constructor arguments and returned module identities through the
-same production assembly body. The wrappers call real pure constructors; fixed
-business data does not require Project/Task/Attachment workflows or PostgreSQL.
+same production assembly body. Identity construction receives the original writer,
+client and callback, and its concrete result occupies the 18-method output used
+by Authentication and MCP. The wrappers call real pure constructors; fixed
+business data does not require Project/Task/Attachment or Identity workflows or
+PostgreSQL.
 Actual Session/Engine identity, origin propagation and operation/stop/close
 behavior remain real, with store and files borrowed from their external owners.
 
@@ -1094,7 +1122,7 @@ without database or UniAuth fixtures:
 source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
-  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
+  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors|AuthorityService)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
   ./internal/service/worker
 ```
 
@@ -1104,8 +1132,12 @@ revoked-Project policy execute in Core with controlled DAO facts; candidate
 admission and supplied read results execute in the service subset. The Store
 contract suite retains actual stored 65 values, grant revocation, JSONB args,
 committed repair and fresh readback. The [historical configuration decision](../../.agents/notes/implemented/testing/2026-11-09-worker-historical-configuration-test-owners.md)
-records these owners. Other bootstrap, CAS and report-budget cases keep their
-existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
+records these owners. Core tests own bootstrap, cloud authority, no-op, update
+and stale revision decisions; service tests coordinate supplied reads, writes
+and report receipts. Store tests verify legacy and configuration persistence
+across telemetry expiry and account isolation with real Reader and Writer
+queries. Concurrent bootstrap, independent CAS and report-budget cases retain
+their existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
 records these proof owners.
 
 ### Identity service tests
@@ -1138,16 +1170,52 @@ with `go test ./internal/core/store/postgres/identity ./internal/core/store/post
 
 The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
 
+### OAuth service tests
+
+The complete `internal/service/oauth` suite runs without PostgreSQL or UniAuth
+fixtures. Clients and Authorizations use instance-owned direct Core/business
+operation bindings; tests execute their actual construction, callbacks and
+orchestration with independently configured callback errors, transaction
+completion and final writer errors. Scope capability identity, exact arguments,
+ordering and result/secret suppression are checked without a storage model.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/oauth
+```
+
+Core tests own metadata projection and freezing, code binding/expiry and
+credential issuance rules. Registration HTTP tests retain real request/response
+handling with controlled operation results. PostgreSQL DAO and AuthorizationScope
+tests retain actual advisory/row locks, fresh time, client pinning and cleanup,
+large JSONB readback, rollback and single-connection release. The service tests
+retain session rechecks, DCR pin ordering, code retry/admission and transaction
+completion precedence. MetadataFetcher keeps its real TLS/HTTP, DNS, cache,
+concurrency and cancellation tests. The
+[operation-boundary decision](../../.agents/notes/implemented/testing/2026-11-10-oauth-service-operation-boundaries.md)
+records ownership, receiver migration and verification cost.
+
 ### Bot management service tests
 
 The `internal/service/bot` suite executes actual snapshot/write callbacks,
-normalization, native catalog transport, deletion stop-proof validation and
-Session/file cleanup. Private instance operations supply direct core creation,
-read and selection results and deletion decisions. Production constructors bind
-the real implementations and retain `time.Now`; strict unit expectations verify
-context, principal, identifiers, inputs, current-scope capabilities, call order,
-completion outcomes and error chains. Ordinary tests clear database and UniAuth
-fixture variables and do not simulate persisted state.
+normalization, model catalog protocol and request coordination, deletion
+stop-proof validation and Session/file cleanup. Private instance operations
+supply direct core creation, read and selection results and deletion decisions.
+Production constructors bind the real implementations and retain `time.Now`;
+strict unit expectations verify context, principal, identifiers, inputs,
+current-scope capabilities, call order, completion outcomes and error chains.
+Ordinary tests clear database and UniAuth fixture variables and do not simulate
+persisted state.
+
+Model catalog tests execute request encoding, response identity association,
+result validation and decoding, pagination, catalog consistency checks, bounded
+accumulation, the total native-discovery deadline and error propagation.
+`modelRequestFunc` supplies `modelRequester.Request` with controlled messages and
+errors. Production application wiring supplies the authenticated Worker requester
+through `NewWithNativeDiscovery`; these unit tests do not establish network or
+HTTP transport behavior.
 
 ```bash
 source scripts/env.sh
@@ -1172,12 +1240,12 @@ to their production implementations; unit tests supply independent operation
 results and errors without running core business rules or preparing a database.
 Opaque Operation and Access values preserve the identity passed to callbacks.
 
-The existing tests verify current and parent credential checks, Bot/Session
-ordering, prepare/check/work short-circuiting, exact context and scope propagation,
-error preservation and exactly one operation close. The Session service still
-owns transaction completion and `Operation.Finish`; its production consumer
-coverage verifies the default Runtime binding. Run the ordinary module without
-PostgreSQL or UniAuth fixtures:
+The tests verify current and parent credential checks, Bot/Session ordering,
+prepare/check/work short-circuiting, exact context and scope propagation, error
+preservation and exactly one operation close. A constructor test checks the
+production bindings, Engine receiver, writer and deferred operation lifetime.
+The Session service still owns transaction completion and `Operation.Finish`.
+Run the ordinary module without PostgreSQL or UniAuth fixtures:
 
 ```bash
 source scripts/env.sh
@@ -1334,6 +1402,14 @@ transaction completion separately selects `committed`, `not_committed` or
 `unknown`. Later reads and query decisions receive explicit scenario response
 facts; recording a write does not automatically change those responses.
 
+Bot registration checks its complete inserted identity, registration bytes and
+durable initial Snapshot independently from the returned initial Snapshot. Root
+Bot expiry HTTP tests supply direct operation outcomes while retaining routing,
+authentication, request parsing, response encoding and blocked-operation
+barriers. They do not prove a database lock or rollback. The
+[Bot expiry HTTP decision](../../.agents/notes/implemented/testing/2026-11-10-bot-expiry-http-test-owners.md)
+records the proof allocation.
+
 Session tests retain command admission and interaction-ID propagation,
 owner/credential/version rechecks, generation and fence transitions, archive
 and content identity, capacity boundaries, source ACK, cancellation and cleanup.
@@ -1477,6 +1553,12 @@ with all 360 combinations, complete returned Task data, pagination, Worker
 inventory, historical assignment and version-2 cursor scope. Shared platform and
 agent-permission service fixtures retain their DAO-based List scope.
 
+The Create, Update and SetStatus preparation-failure witnesses control project
+write authorization and the selected Task preparation operation inside the real
+write callback. They check input and scope capability identity, call order,
+error chains and completion facts. Core tests execute the preparation operations
+against controlled failing reads; neither fixture represents persistence.
+
 Run the service suite and receiving Core tests without database or UniAuth
 fixtures from the module:
 
@@ -1488,6 +1570,8 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 The [List test decision](../../.agents/notes/implemented/testing/2026-11-09-task-list-direct-operation-tests.md)
 records the direct-operation boundary and retained query/cursor proofs.
+The [write preparation test decision](../../.agents/notes/implemented/testing/2026-11-10-task-write-preparation-tests.md)
+records the selected failure witnesses and their Core recipients.
 
 PostgreSQL witnesses follow their implementation owners under
 `internal/core/store/postgres/`. Domain subpackages test direct DAO queries,
@@ -1618,9 +1702,12 @@ records why database clocks and lock observations are required together.
 ### HTTP scenario ownership
 
 Root `internal/server` unit tests assemble actual modules, routes and HTTP
-authentication over strict DAO/scope callbacks. Fixed domain records, query
-results, proposed writes, call counts and transaction completion are explicit
-test inputs. Callback writes do not determine future reads or simulate committed
+authentication over controlled collaborators. The MCP Step lifecycle supplies
+direct Identity and Step operations after application assembly and before Server
+construction; its Service, Core, Capturer and Store receivers retain lower
+coordination, rules and persistence proofs. Other DAO/scope fixtures supply fixed
+domain records, query results, proposed writes, call counts and transaction
+completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
 state. The complete ordinary root selection executes with
 `DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
 SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
@@ -1656,11 +1743,14 @@ records the direct Session binding and retained proofs.
 
 ### MCP transfer service tests
 
-The complete `internal/service/mcptransfer` suite controls the existing private
-transfer DAO and transaction boundaries. Reads, proposed writes and completion
-outcomes are explicit, independently constructed facts; recorded writes do not
-supply later reads or simulate persistence. Unconfigured calls fail, and the
-test binary clears database and UniAuth test variables.
+The `internal/service/mcptransfer` suite controls private transfer DAO and
+transaction boundaries. `Lifecycle` also controls its direct Core `Create`
+operation, while Core tests own its active-slot matrix and duplicate behavior.
+Other direct Lifecycle operations still execute Core through DAO expectations.
+Reads, proposed writes, operation results and completion outcomes are explicit,
+independently constructed facts; recorded writes do not supply later reads or
+simulate persistence. Unconfigured calls fail, and the test binary clears
+database and UniAuth test variables.
 
 Uploads control the directly invoked attachment operation through an
 instance-owned private admission adapter. `NewUploads` still binds that adapter
@@ -1689,7 +1779,8 @@ writer is killed. This is a process-mechanism witness in the existing lifecycle
 job. Normal assembled API flows retain their separate integration entry.
 
 The [MCP transfer ownership decision](../../.agents/notes/implemented/testing/2026-11-09-mcptransfer-test-ownership.md)
-records the proof allocation. Measurements include receiving Store, core and
+and [Create boundary decision](../../.agents/notes/implemented/testing/2026-11-10-mcptransfer-create-test-boundary.md)
+record the proof allocation. Measurements include receiving Store, core and
 process work; supplied receipts and completion outcomes are not evidence of
 physical persistence.
 
@@ -1700,6 +1791,11 @@ while executing the actual Entry, HTTP transport, SDK, schemas and tool response
 encoding. Principals and domain results are explicit facts; operations verify
 arguments, context, authority and calls. Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
+Task query registration accepts controlled list and graph observation operations;
+its Tasks dependency still serves ready and dependency reads. The Root Step
+lifecycle executes real application and Server construction with controlled
+Identity and Step outputs, retaining both protocol versions and per-request
+operation checks. Its lower receivers retain business and DAO responsibilities.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
 `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
 
@@ -1803,6 +1899,16 @@ records directory and consolidation choices. Selected error matrices reuse
 restored or read-only fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
 records their isolation and expiry guarantees.
 
+The Webhook DAO package groups schema-stable capture, delivery, history and
+retention cases under explicit parent-owned schemas and native connections.
+Case boundaries retain real commits and independent readers. Before reuse, the
+fixture checks connection and auxiliary-backend release, compares all preserved
+seed rows, truncates mutable tables and restores every sequence's captured state.
+The final case also runs release and seed checks. Historical schemas, permanent
+catalog faults and custom concurrent lifetimes keep their independent fixtures.
+The [Webhook grouping decision](../../.agents/notes/implemented/testing/2026-11-10-webhook-dao-group-fixtures.md)
+records reset ownership and failure behavior.
+
 Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:
 
 ```bash
@@ -1876,6 +1982,13 @@ require isolated PostgreSQL. Redis DAO fixtures use unique keys and remove them;
 preparation failures fail validation. Package concurrency stays limited to two:
 schema-isolated fixtures still share the database-wide migration advisory lock.
 Both entries clear cached test results before their coverage runs.
+
+Schema-stable Task DAO tests share one real Store per sequential parent test.
+Each independent case resets mutable tables and sequence state before executing
+its original transactions and persisted readbacks. Snapshot seeds and the
+migration ledger remain intact; catalog-changing cases retain separate schemas.
+The [Task fixture decision](../../.agents/notes/implemented/testing/2026-11-10-task-dao-group-fixtures.md)
+records reset ownership and isolation limits.
 
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
 module's `.tmp/`. The `verify-server` and `verify-server-startup-shutdown` jobs
@@ -2430,11 +2543,11 @@ version/status input. Every project member can write tasks; administrator role
 additionally manages members, invitations and project settings. Status PUT and
 method-refusal handlers authenticate, require exact Cookie Origin and use no-store.
 
-Creation uses todo, version 1, nullable execution/cancellation timestamps, allowAgents=false
+Creation defaults to proposed and accepts an optional proposed/todo status, version 1, nullable execution/cancellation timestamps, allowAgents=false
 and unrestricted requiredPlatform=null unless explicitly supplied. Its
 assignedTo defaults to null; an explicitly supplied UUID must identify a current
 project member in the creation transaction.
-It rejects caller-supplied status, timing and permission; platform creation accepts
+It rejects other creation states and caller-supplied timing and permission; platform creation accepts
 null or windows/linux/macos. PATCH retains field presence separately from nullable value. Properties/PRs and both
 dependency collections have explicit empty defaults. Updates require a positive
 expected int64 version and at least one mutable field; omitted pointers preserve
@@ -2443,10 +2556,10 @@ requiredPlatform and assignedTo accept null to clear; other JSON null input is
 rejected.
 Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
-candidates require all predecessors done or cancelled; todo and cancelled may have unfinished predecessors.
+candidates require all predecessors done or cancelled; proposed, todo and cancelled may have unfinished predecessors.
 
 Ordinary tasks without active/released worker ownership retain the original
-transitions across todo/in_progress/done and may enter irreversible cancelled. The project write
+direct transitions across proposed/todo/in_progress/done without a mandatory stage and may enter irreversible cancelled. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
@@ -2461,9 +2574,9 @@ explicit owner/admin resume, with fresh claim and worktree IDs. The
 old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
-uses statement_timestamp() after the lock and clears the end; return to todo
+uses statement_timestamp() after the lock and clears the end; return to proposed or todo
 clears both. In-progress to done preserves its nullable start and records an end;
-todo to done records an end with null start. Cancellation records `cancelledAt`
+proposed/todo to done records an end with null start. Cancellation records `cancelledAt`
 and preserves both execution endpoints; done-to-cancelled does not erase its
 completion time. Metadata and same-state preserve time.
 No missing historical start is inferred. State, timing, version and update time
@@ -2472,7 +2585,7 @@ commit atomically. Details are owned by the [status architecture](../../docs/des
 Migration 014 converts historical proposed rows to todo, advancing only their
 version/update time and preserving every other field, including timing. It
 atomically changes the default, rows, CHECK and ledger; restart does not rerun it.
-Applied historical migrations are immutable. Runtime input and readers reject proposed.
+Applied historical migrations are immutable. A subsequent migration admits proposed again and sets it as the creation default, preserving all existing task rows, revisions, timestamps and materials.
 
 Migration 028_task_assignment.sql adds nullable assigned_to and a partial
 project/assignee/keyset index for undeleted tasks. All existing and soft-deleted
@@ -2540,8 +2653,8 @@ dependents are not added. Tasks outside the component that externally depend on
 a member are not selected. A standalone task forms its own component.
 
 The response remains `{project, summary, tasks, observedAt}`. Each selected task
-counts once; the summary requires total, todo, inProgress, done, cancelled, ready and blocked,
-including zero values. `total = todo + inProgress + done + cancelled` and
+counts once; the summary requires total, proposed, todo, inProgress, done, cancelled, ready and blocked,
+including zero values. `total = proposed + todo + inProgress + done + cancelled` and
 `todo = ready + blocked`. Only todo contributes to ready/blocked; readiness still
 uses every original direct prerequisite, including prerequisites outside this
 projection. Graph reads do not change stored status, revisions or timestamps.
@@ -2727,7 +2840,19 @@ raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage
 append/anchors/defaults, atomic content and four-state changes, dense moves,
 self/missing anchors, current-record deletion, ID reuse, no-op/exhaustion,
 concurrency, parent and Session preservation, rollback and completion facts, and
-safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
+safe response diagnostics. Step read service tests control Project authorization
+and snapshot completion independently while exercising the actual parent gate,
+DAO queries, paging and encoding; PostgreSQL tests own physical snapshot proof.
+Step Add and content/status change service tests control Project write
+authorization and collection admission while exercising the locked parent gate,
+DAO writes, real encoding, capture and transaction completion. Core tests own
+the corresponding collection decisions; controlled completion does not prove a
+physical commit.
+Core Step tests encode the fitting 170-description collection and the
+overflowing 171-description Change candidate through the real codec. Service
+tests forward the complete collection to controlled admission and exercise a
+real encoding failure before writes; they do not measure capacity at that layer.
+The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
 `TestStepsHTTPDelete*`. Service Step cases run without a database:
@@ -2747,11 +2872,22 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts
 go test ./internal/core/store/postgres/... ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
-For the cross-process Step text admission check, build the CLI and set
-`DAYNIGHT_TEST_CLI_MAIN` to its absolute `dist/main.js` path. With the same
-database and UniAuth fixture, run `go test ./internal/server -run
-'^TestStepsCLITextAdmissionAcceptance$' -count=1 -timeout=5m`; use the normal
-unit overlay when the production Web bundle is unavailable.
+Step text boundaries are checked at their respective owners. From the repository
+root, `pnpm --filter @codetreker/daynight test test/cli/task-steps-text.test.ts`
+runs the built CLI's ten-process text sequence against controlled HTTP responses.
+From this module, the following commands exercise Core admission, Service
+coordination, HTTP parsing and physical Store readback and rollback. The Store
+commands require the isolated PostgreSQL database above; the other cases do not.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/core/task/steps ./internal/service/task ./internal/server/task -run '^(TestWriteReceiverRootTextSequence|TestTaskStepsTextLimitsOnAddAndChange|TestStepsHTTPTextAdmission)$' -count=1 -timeout=5m
+go test ./internal/core/store/postgres -run '^TestTaskSteps(ConfirmedRollbackAfterEachActualSQLWrite|PartialWritesAndSuppressedRowsRollBack)$' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/task -run '^TestTaskStepStore$' -count=1 -timeout=5m
+```
+
+Controlled CLI responses and Service completion do not establish physical
+persistence; the Store tests use actual SQL and read back the persisted state.
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:

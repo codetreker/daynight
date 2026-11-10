@@ -107,8 +107,14 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 	}
 }
 
-func TestTaskGraphPresenceKeepsProjectAndDeletionFacts(t *testing.T) {
-	database := readerStore(t)
+func TestTaskGraphStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "TaskGraphPresenceKeepsProjectAndDeletionFacts", testTaskGraphPresenceKeepsProjectAndDeletionFacts)
+	suite.run(t, "TaskGraphStoreSelectsOrdinaryComponentAndDirectExternalContext", testTaskGraphStoreSelectsOrdinaryComponentAndDirectExternalContext)
+	suite.run(t, "GraphSeedsPreserveOrderedEdgePrefixes", testGraphSeedsPreserveOrderedEdgePrefixes)
+}
+
+func testTaskGraphPresenceKeepsProjectAndDeletionFacts(t *testing.T, database *postgres.Store) {
 	ctx := t.Context()
 	project, other := readerProject(t, database, 1), readerProject(t, database, 2)
 	target := readerTask(t, database, project.ID, 11, model.TaskTodo)
@@ -143,8 +149,7 @@ func TestTaskGraphPresenceKeepsProjectAndDeletionFacts(t *testing.T) {
 	read(target.ID, true, true)
 }
 
-func TestTaskGraphStoreSelectsOrdinaryComponentAndDirectExternalContext(t *testing.T) {
-	database := readerStore(t)
+func testTaskGraphStoreSelectsOrdinaryComponentAndDirectExternalContext(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := readerProject(t, database, 1)
 	y := readerTask(t, database, project.ID, 10, model.TaskTodo)
@@ -237,8 +242,7 @@ func seedConnectedTaskGraph(t *testing.T, database *postgres.Store, projectID st
 	return rootID
 }
 
-func TestGraphSeedsPreserveOrderedEdgePrefixes(t *testing.T) {
-	database := readerStore(t)
+func testGraphSeedsPreserveOrderedEdgePrefixes(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	for index, test := range []struct {
 		nodes, edges int

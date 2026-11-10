@@ -78,28 +78,17 @@ func TestLifecycleOAuthGrantSurvivesAccessReplacement(t *testing.T) {
 	}
 }
 
-func TestLifecycleActiveSlotLimitAndIdempotency(t *testing.T) {
+func TestLifecycleExistingRecordsAreIdempotent(t *testing.T) {
 	f := newFixture(t)
-	for i := 1; i <= 5; i++ {
+	for i := 0; i < 4; i++ {
 		b := f.binding
 		b.ID = uuid.NewString()
 		f.binding = b
 		r := f.record()
-		f.expect(getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Insert", result: insertFact{cloneTransfer(r), true}, check: checkInitialRecord(t, r)}, method("LockLedger", nil, nil), method("CountActive", i, nil, r.UserID))
-		_, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, b)
-		if i == 5 {
-			var fault *model.Fault
-			if !errors.As(err, &fault) || fault.Code != "capacity_unavailable" || created {
-				t.Fatalf("fifth: %v %v", created, err)
-			}
-			break
-		}
-		if err != nil || !created {
-			t.Fatalf("open %d: %v", i, err)
-		}
 		f.expect(get(r), auth(f.actor, r, nil))
-		if _, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, b); err != nil || created {
-			t.Fatalf("repeat %d: %v %v", i, created, err)
+		got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, b)
+		if err != nil || created || !reflect.DeepEqual(got, r) {
+			t.Fatalf("repeat %d: %+v created=%v error=%v", i, got, created, err)
 		}
 	}
 }
@@ -826,7 +815,7 @@ func TestLifecycleUnconfirmedTransaction(t *testing.T) {
 				}
 			}
 			got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
-			if err == nil || got.ID != "" || created {
+			if err == nil || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created {
 				t.Fatalf("unconfirmed success: %+v %v %v", got, created, err)
 			}
 			if tc.err != nil && !errors.Is(err, failure) {
@@ -1062,4 +1051,136 @@ func TestLifecyclePermitRejectsTerminalAndCapsRenewal(t *testing.T) {
 func renewedRecordVersion(original, result model.PrivateTransfer) model.PrivateTransfer {
 	result.Version = original.Version
 	return result
+}
+
+func TestLifecycleCreateWiring(t *testing.T) {
+	f := newFixture(t)
+	l, err := New(f.db, f.files, f.files, 123, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close(context.Background())
+	if reflect.ValueOf(l.createRecord).Pointer() != reflect.ValueOf(transfer.Create).Pointer() || l.db != f.db || l.files != f.files || l.private != f.files || l.budget != 123 || l.reservedFree != 4 {
+		t.Fatal("constructor dependencies or Create binding changed")
+	}
+}
+
+func TestLifecycleCreateCoordination(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := newFixture(t)
+		r := f.record()
+		ctx := context.WithValue(t.Context(), struct{}{}, "original")
+		plan := f.db.expect(store.Completion{Outcome: store.TransactionCommitted}, nil,
+			getMissing(r.ID), auth(f.actor, r, nil), daoStep{
+				method: "Create", check: checkInitialRecord(t, r), result: insertFact{cloneTransfer(r), true},
+				ctx: func(actual context.Context) {
+					if actual != ctx {
+						t.Error("Create did not receive the original context")
+					}
+				},
+			})
+		plan.callbackCheck = func(err error) {
+			if err != nil {
+				t.Errorf("callback: %v", err)
+			}
+		}
+		got, created, err := f.lifecycle.OpenRecord(ctx, f.actor, f.binding)
+		if err != nil || !created || !reflect.DeepEqual(got, r) {
+			t.Fatalf("open: %+v created=%v error=%v", got, created, err)
+		}
+	})
+
+	t.Run("lookup and authorization failures", func(t *testing.T) {
+		f := newFixture(t)
+		r := f.record()
+		lookupFailure := errors.New("lookup failed")
+		f.expect(daoStep{method: "Get", key: r.ID, args: []any{r.ID}, err: lookupFailure})
+		got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
+		if !errors.Is(err, lookupFailure) || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created {
+			t.Fatalf("lookup: %+v created=%v error=%v", got, created, err)
+		}
+		authFailure := errors.New("authorization failed")
+		f.expect(getMissing(r.ID), auth(f.actor, r, authFailure))
+		got, created, err = f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
+		if !errors.Is(err, authFailure) || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created {
+			t.Fatalf("authorization: %+v created=%v error=%v", got, created, err)
+		}
+	})
+
+	t.Run("Create failures", func(t *testing.T) {
+		f := newFixture(t)
+		r := f.record()
+		failure := errors.New("Create failed")
+		for _, supplied := range []error{transfer.ErrCapacity, failure} {
+			f.expect(getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Create", check: checkInitialRecord(t, r), result: insertFact{cloneTransfer(r), true}, err: supplied})
+			got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
+			if !errors.Is(err, supplied) || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created {
+				t.Fatalf("Create refusal: %+v created=%v error=%v", got, created, err)
+			}
+		}
+	})
+
+	t.Run("callback and cleanup failures retain both causes", func(t *testing.T) {
+		f := newFixture(t)
+		r := f.record()
+		operationFailure := errors.New("operation failed")
+		cleanupFailure := errors.New("cleanup failed")
+		plan := f.db.expect(store.Completion{Outcome: store.TransactionNotCommitted}, cleanupFailure,
+			getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Create", check: checkInitialRecord(t, r), result: insertFact{cloneTransfer(r), true}, err: operationFailure})
+		plan.callbackCheck = func(err error) {
+			if !errors.Is(err, operationFailure) {
+				t.Errorf("callback failure: %v", err)
+			}
+		}
+		got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
+		if !errors.Is(err, operationFailure) || !errors.Is(err, cleanupFailure) || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created {
+			t.Fatalf("callback and cleanup: %+v created=%v error=%v", got, created, err)
+		}
+	})
+
+	t.Run("returned binding is rechecked", func(t *testing.T) {
+		f := newFixture(t)
+		r := f.record()
+		other := cloneTransfer(r)
+		other.Path = "different"
+		f.expect(getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Create", check: checkInitialRecord(t, r), result: insertFact{other, true}})
+		got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
+		if !errors.Is(err, ErrConflict) || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created {
+			t.Fatalf("returned binding: %+v created=%v error=%v", got, created, err)
+		}
+	})
+
+	t.Run("completion suppresses Create result", func(t *testing.T) {
+		f := newFixture(t)
+		r := f.record()
+		cleanupFailure := errors.New("cleanup failed")
+		for _, tc := range []struct {
+			name       string
+			completion store.Completion
+			err        error
+		}{
+			{"unknown", store.Completion{Outcome: store.TransactionUnknown}, nil},
+			{"not committed", store.Completion{Outcome: store.TransactionNotCommitted}, errors.New("storage failed")},
+			{"cleanup", store.Completion{Outcome: store.TransactionCommitted}, cleanupFailure},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				plan := f.db.expect(tc.completion, tc.err, getMissing(r.ID), auth(f.actor, r, nil), daoStep{method: "Create", check: checkInitialRecord(t, r), result: insertFact{cloneTransfer(r), true}})
+				plan.callbackCheck = func(err error) {
+					if err != nil {
+						t.Errorf("successful Create callback: %v", err)
+					}
+				}
+				got, created, err := f.lifecycle.OpenRecord(t.Context(), f.actor, f.binding)
+				if err == nil || !reflect.DeepEqual(got, model.PrivateTransfer{}) || created || tc.err != nil && !errors.Is(err, tc.err) {
+					t.Fatalf("completion: %+v created=%v error=%v", got, created, err)
+				}
+				if tc.completion.Outcome == store.TransactionUnknown {
+					var transaction *store.TransactionError
+					if !errors.As(err, &transaction) || transaction.Outcome != store.TransactionUnknown {
+						t.Fatalf("unknown completion: %v", err)
+					}
+				}
+			})
+		}
+	})
 }

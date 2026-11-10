@@ -63,7 +63,7 @@ test("source retries preserve the original locator, isolate attempt bytes and re
   const f = await fixture(), original = await f.source("blue"), replacement = await f.source("red"), attemptId = randomUUID();
   let current = f.receipt(); const calls: unknown[] = [];
   const capture: ReturnType<typeof createControllerRelay>["capture"] = async (action, body) => { calls.push({ action, body }); return current; };
-  const resolver = vi.fn(async () => replacement), send = vi.fn();
+  const release = vi.fn(), resolver = vi.fn(async () => ({ ...replacement, release })), send = vi.fn();
   const provider = { retryImageCapture: resolver, send } as unknown as NativeProvider;
   const consumer = bridge(f.journal, capture, provider);
   try {
@@ -75,7 +75,7 @@ test("source retries preserve the original locator, isolate attempt bytes and re
     expect(resolver).toHaveBeenCalledWith({ ...f.request, attemptId }, expect.any(AbortSignal));
     expect(validated.sha256).not.toBe(first.sha256);
     expect(await consumer.retry({ captureId: f.request.captureId, attemptId }, new AbortController().signal)).toEqual(validated);
-    expect(resolver).toHaveBeenCalledOnce(); expect(send).not.toHaveBeenCalled();
+    expect(resolver).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce(); expect(send).not.toHaveBeenCalled();
     await expect(consumer.providerOptions.commitImageCapture!(f.request.captureId, f.request.attemptId, first)).rejects.toThrow("attempt conflict");
     await expect(f.journal.media().readCapture({ captureId: f.request.captureId, attemptId: f.request.attemptId, sha256: first.sha256, byteLength: first.byteLength, offset: "0", limit: 524288 })).rejects.toThrow("attempt conflict");
     expect(await f.journal.media().readCapture({ captureId: f.request.captureId, attemptId, sha256: validated.sha256, byteLength: validated.byteLength, offset: "0", limit: 524288 }, policy)).toMatchObject({ preparationId: attemptId, data: replacement.bytes.toString("base64"), eof: true });
@@ -91,10 +91,10 @@ test("an unavailable resolver or cancelled source never starts native input or s
   try {
     await bridge(f.journal, capture).providerOptions.registerImageCapture!(f.request);
     await expect(bridge(f.journal, capture).retry({ captureId: f.request.captureId, attemptId: randomUUID() }, new AbortController().signal)).rejects.toThrow("component_unsupported");
-    const abort = new AbortController(), send = vi.fn(), resolver = vi.fn(async () => { abort.abort(); return source; });
+    const abort = new AbortController(), send = vi.fn(), release = vi.fn(), resolver = vi.fn(async () => { abort.abort(); return { ...source, release }; });
     const attemptId = randomUUID(), consumer = bridge(f.journal, capture, { retryImageCapture: resolver, send } as unknown as NativeProvider);
     await expect(consumer.retry({ captureId: f.request.captureId, attemptId }, abort.signal)).rejects.toThrow();
-    expect(f.journal.media().captureStatus(f.request.captureId, attemptId)).toBeNull(); expect(send).not.toHaveBeenCalled();
+    expect(f.journal.media().captureStatus(f.request.captureId, attemptId)).toBeNull(); expect(send).not.toHaveBeenCalled(); expect(release).toHaveBeenCalledOnce();
   } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 

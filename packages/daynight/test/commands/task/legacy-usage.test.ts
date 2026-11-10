@@ -8,7 +8,7 @@ const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 
 it.each([
   ...["approve", "unapprove", "claim", "complete"].map(action => [action, taskId]),
-  ["set-status", taskId, "proposed"], ["list", "--status", "proposed"],
+  ["set-status", taskId, "unknown"], ["list", "--status", "unknown"],
   ["create", "--title", "Rejected property flags", "--pull-request-url=https://example.test/retired"],
   ["update", taskId, "--pull-request-title", "Retired property title"],
   ["update", taskId, "--clear-pull-requests"], ["update", taskId, "--status", "done"],

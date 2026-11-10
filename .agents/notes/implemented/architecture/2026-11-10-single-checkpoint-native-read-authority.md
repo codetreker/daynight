@@ -87,6 +87,16 @@ is initialized only when absent and read back; unknown writes are not replayed
 or repaired by rotating it. Historical association does not depend on the
 current Session still qualifying for image reads.
 
+The SDK runs in its owned bridge worker. A worker-private random identity
+preserves the SDK's shared permission request object across serialization;
+the facade verifies Session, complete request content and identity before
+restoring that correspondence. Permission callbacks precede their events as
+they do in the SDK, avoiding a callback/event dependency cycle. Identity alone
+grants no native permission. A separate bounded permission-history scan
+authenticates complete refusal pairs before ordinary cursor-based projection;
+unknown or over-budget scans disable image authority and leave original
+interactions and text delivery available.
+
 An IPC deadline disables Copilot image authority without terminating a healthy
 text Session. At most one uncancellable native request may remain; late allows
 are ignored and its own late permission callback is still refused. Provider
@@ -151,8 +161,11 @@ authority does not reopen within the same execution. This does not claim that
 other configurations are inherently unsupported; adding one requires native
 semantics and observable coverage, not another permissive flag.
 
-Claude authority integration and real deployment egress validation remain
-separate incomplete conditions of the full source capability. The Copilot
+The original authority decision included Claude integration as an incomplete
+source condition. The [provider scope decision](2026-11-11-image-provider-scope.md)
+removes Claude from the current image delivery target while retaining its refusal
+behavior and existing compatibility. Real deployment egress validation remains
+a required condition. The Copilot
 profile adds an internal ABI and signed-history maintenance cost; unsupported
 versions and platforms fail closed. Native API shapes, controlled fixtures, OS
 handle tests and real Provider acceptance are distinct evidence. The

@@ -17,21 +17,21 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
+const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'proposed' || status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
   status, version: 9007199254740993n, properties: { pullRequests: [] }, dependsOn: [dependencyId], blockedBy: [], ready: status === 'todo', createdAt: time, updatedAt: time });
 const result = (detail: TaskDetail, status: TaskStatus): TaskDetail => detail.status === status ? detail : ({ ...detail, status, version: detail.version + 1n, ready: status === 'todo', updatedAt: later,
-  startedAt: status === 'cancelled' ? detail.startedAt : status === 'in_progress' ? later : status === 'todo' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'cancelled' ? detail.completedAt : status === 'done' ? later : null, cancelledAt: status === 'cancelled' ? later : null });
+  startedAt: status === 'cancelled' ? detail.startedAt : status === 'in_progress' ? later : status === 'proposed' || status === 'todo' || detail.status === 'proposed' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'cancelled' ? detail.completedAt : status === 'done' ? later : null, cancelledAt: status === 'cancelled' ? later : null });
 let world: ReturnType<typeof createTaskSessionWorld>;
 const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (detail: TaskDetail, revision = 1): GraphSnapshot => {
   const tasks = [detail, { ...source('done'), id: dependencyId, title: 'Prerequisite', dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false }];
   const graph: TaskGraph = { observedAt: time, project, tasks: tasks.map(({ version: _version, projectId: _project, title, description: _description, properties: _properties, ...task }) => ({ ...task, titlePreview: title, titleTruncated: false })),
-    summary: { total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, cancelled: tasks.filter((task) => task.status === 'cancelled').length, ready: detail.ready ? 1 : 0, blocked: 0 } };
+    summary: { proposed: tasks.filter((task) => task.status === "proposed").length, total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, cancelled: tasks.filter((task) => task.status === 'cancelled').length, ready: detail.ready ? 1 : 0, blocked: 0 } };
   const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, tasks);
   return result;
 };
-const labels = { todo: 'To do', in_progress: 'In progress', done: 'Done', cancelled: 'Cancelled' };
+const labels = { proposed: 'Proposed', todo: 'To do', in_progress: 'In progress', done: 'Done', cancelled: 'Cancelled' };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 let root: HTMLDivElement;
 beforeEach(() => { world = createTaskSessionWorld(); root = document.createElement('div'); root.id = 'root'; document.body.append(root); vi.mocked(getTask).mockReset(); vi.mocked(setTaskStatus).mockReset(); });
@@ -55,10 +55,10 @@ describe('status menu and reviewed confirmation', () => {
     confirmation = select(dialog, 'todo', 'in_progress'); const user = userEvent.setup(); await user.tab({ shift: true }); expect(confirmation.querySelector('.dialog-body')).toHaveFocus(); await user.tab({ shift: true }); expect(within(confirmation).getByRole('button', { name: 'Close confirmation' })).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(opener).toHaveFocus(); expect(props.onClose).not.toHaveBeenCalled(); expect(draft).toHaveValue('Retained review notes'); expect(setTaskStatus).not.toHaveBeenCalled();
   });
-  it('offers exactly four radio options and supports current selection, arrows, Home/End and Escape focus', async () => {
+  it('offers exactly five radio options and supports current selection, arrows, Home/End and Escape focus', async () => {
     const { dialog, props } = await open(source('in_progress')); const opener = within(dialog).getByRole('button', { name: 'In progress' }); opener.focus(); fireEvent.click(opener);
-    const menu = within(dialog).getByRole('menu', { name: 'Task status' }); const options = within(menu).getAllByRole('menuitemradio'); expect(options).toHaveLength(4); expect(options[1]).toHaveAttribute('aria-checked', 'true'); expect(options[1]).toHaveFocus();
-    fireEvent.keyDown(menu, { key: 'End' }); expect(options[3]).toHaveFocus(); fireEvent.keyDown(menu, { key: 'ArrowDown' }); expect(options[0]).toHaveFocus(); fireEvent.keyDown(menu, { key: 'ArrowUp' }); expect(options[3]).toHaveFocus(); fireEvent.keyDown(menu, { key: 'Home' }); expect(options[0]).toHaveFocus();
+    const menu = within(dialog).getByRole('menu', { name: 'Task status' }); const options = within(menu).getAllByRole('menuitemradio'); expect(options).toHaveLength(5); expect(options[2]).toHaveAttribute('aria-checked', 'true'); expect(options[2]).toHaveFocus();
+    fireEvent.keyDown(menu, { key: 'End' }); expect(options[4]).toHaveFocus(); fireEvent.keyDown(menu, { key: 'ArrowDown' }); expect(options[0]).toHaveFocus(); fireEvent.keyDown(menu, { key: 'ArrowUp' }); expect(options[4]).toHaveFocus(); fireEvent.keyDown(menu, { key: 'Home' }); expect(options[0]).toHaveFocus();
     fireEvent.keyDown(menu, { key: 'Escape' }); expect(screen.queryByRole('menu')).toBeNull(); expect(opener).toHaveFocus(); expect(props.onClose).not.toHaveBeenCalled();
     select(dialog, 'in_progress', 'in_progress'); expect(screen.getByText(/status and execution times will remain unchanged/)).toBeVisible(); fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); expect(setTaskStatus).not.toHaveBeenCalled();
   });
@@ -68,7 +68,7 @@ describe('status menu and reviewed confirmation', () => {
     await user.keyboard(' '); expect(screen.getByRole('alertdialog', { name: 'Set task status' })).toBeVisible(); expect(screen.getByText(/status and execution times will remain unchanged/)).toBeVisible();
     expect(setTaskStatus).not.toHaveBeenCalled();
   });
-  it.each((['todo', 'in_progress', 'done'] as const).flatMap((from) => (['todo', 'in_progress', 'done'] as const).map((to) => ({ from, to }))))('routes the reviewed $from → $to and version to the session', ({ from, to }) => {
+  it.each((['proposed', 'todo', 'in_progress', 'done'] as const).flatMap((from) => (['proposed', 'todo', 'in_progress', 'done'] as const).map((to) => ({ from, to }))))('routes the reviewed $from → $to and version to the session', ({ from, to }) => {
     const detail = source(from);
     const setStatus = vi.fn();
     const noOp = vi.fn();
@@ -96,6 +96,21 @@ describe('status menu and reviewed confirmation', () => {
     const confirmation = select(dialog, from, to); expect(confirmation.querySelector('.task-status-route')).toHaveTextContent(`${labels[from]}→${labels[to]}`); const confirm = within(confirmation).getByRole('button', { name: 'Confirm status' }); fireEvent.click(confirm); fireEvent.click(confirm);
     await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) })); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(within(dialog).getByRole('button', { name: labels[from] })).toBeDisabled();
     await act(async () => pending.resolve(saved)); await within(dialog).findByText('Task status confirmed.'); await sync(saved); await waitFor(() => expect(within(dialog).getByRole('button', { name: labels[to] })).toBeEnabled());
+  });
+  it.each([
+    { from: 'proposed', to: 'in_progress' }, { from: 'proposed', to: 'done' },
+    { from: 'in_progress', to: 'proposed' }, { from: 'done', to: 'proposed' },
+  ] as const)('confirms $from → $to through the real session without an intermediate state', async ({ from, to }) => {
+    const detail = source(from); const saved = result(detail, to);
+    vi.mocked(setTaskStatus).mockResolvedValueOnce(saved);
+    const { dialog, sync } = await open(detail);
+    const confirmation = select(dialog, from, to);
+    if (to === 'proposed') expect(confirmation).toHaveTextContent('Returning to Proposed clears both execution timestamps.');
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Confirm status' }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal), expect.any(Object)));
+    await within(dialog).findByText('Task status confirmed.');
+    await sync(saved);
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: labels[to] })).toBeEnabled());
   });
   it.each(['version', 'external classification', 'execution platform'] as const)('invalidates a confirmation after a fresh read changes %s', async (change) => {
     const detail = source(); const fresh = change === 'version' ? { ...detail, title: 'Revised task', version: detail.version + 1n, updatedAt: later } : change === 'execution platform' ? { ...detail, requiredPlatform: 'linux' as const, version: detail.version + 1n } : { ...detail, externalDependsOn: [dependencyId], version: detail.version + 1n };

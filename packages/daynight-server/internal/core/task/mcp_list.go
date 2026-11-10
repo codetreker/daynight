@@ -100,7 +100,7 @@ func SelectMCPList(projectID, principalUserID string, request MCPListRequest) (M
 	if err != nil {
 		return MCPListSelection{}, err
 	}
-	scope := mcpListScope{Version: 1, Kind: "task_list", Order: "priority_created_id", Actor: principalUserID, Project: projectID, All: request.All, Status: request.Status, AssignedTo: assignment, AssignmentSource: request.AssignedTo, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, View: request.View}
+	scope := mcpListScope{Version: 2, Kind: "task_list", Order: "priority_created_id", Actor: principalUserID, Project: projectID, All: request.All, Status: request.Status, AssignedTo: assignment, AssignmentSource: request.AssignedTo, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, View: request.View}
 	selection := MCPListSelection{scope: scope, query: store.TaskPriorityQuery{AssignedTo: assignment, Status: request.Status, ExcludeTerminal: !request.All && request.Status == nil, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}}
 	if request.Cursor != nil {
 		if len(*request.Cursor) > transport.MaxEncodedCursorBytes {
@@ -120,7 +120,7 @@ func SelectMCPList(projectID, principalUserID string, request MCPListRequest) (M
 		expected, _ := json.Marshal(scope)
 		actual, _ := json.Marshal(c.Scope)
 		id, err := model.CanonicalID(c.Position.ID)
-		if !bytes.Equal(raw, canonical) || !bytes.Equal(expected, actual) || err != nil || id != c.Position.ID || c.Position.CreatedAt.IsZero() || c.Position.Group < 0 || c.Position.Group > 3 || !mcpDecimal(c.Fence.Count) || !mcpDecimal(c.Fence.VersionSum) {
+		if !bytes.Equal(raw, canonical) || !bytes.Equal(expected, actual) || err != nil || id != c.Position.ID || c.Position.CreatedAt.IsZero() || c.Position.Group < 0 || c.Position.Group > 4 || !mcpDecimal(c.Fence.Count) || !mcpDecimal(c.Fence.VersionSum) {
 			return MCPListSelection{}, mcpInvalidCursor()
 		}
 		selection.prior = &c
@@ -163,7 +163,10 @@ func priority(task model.Task) int {
 	if task.Status == model.TaskTodo {
 		return 2
 	}
-	return 3
+	if task.Status == model.TaskProposed {
+		return 3
+	}
+	return 4
 }
 
 // CursorAfter uses the last actually returned item, including after byte-budget truncation.

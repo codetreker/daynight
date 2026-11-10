@@ -264,6 +264,10 @@ func TestAttachmentHTTPScopesConflictsAndFailures(t *testing.T) {
 		f.expectReadFailure(requested, accessErr, store.TaskPresence{Found: false})
 		assertProjectError(t, attachmentRequest(handler, http.MethodGet, taskPath(requested)+"/attachments", "", nil), http.StatusNotFound, "not_found")
 		f.verify()
+		f.expectReadFailure(requested, accessErr, store.TaskPresence{Found: false})
+		preview := strings.Replace(attachmentFilePath(requested, item.Path), "/attachments/files/", "/preview/", 1)
+		assertProjectError(t, attachmentRequest(handler, http.MethodGet, preview, "", nil), http.StatusNotFound, "not_found")
+		f.verify()
 	}
 	for _, target := range []string{strings.Replace(file, task.ProjectID, "bad-project", 1), strings.Replace(file, task.ID, "bad-task", 1), strings.Replace(taskPath(task)+"/attachments", task.ID, "bad-task", 1)} {
 		assertProjectError(t, attachmentRequest(handler, http.MethodGet, target, "", nil), http.StatusBadRequest, "invalid_input")

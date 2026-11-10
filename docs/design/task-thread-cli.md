@@ -154,6 +154,5 @@ PublicDiagnosticError 保留内部 cause 和安全 publicText/exitCode；最终 
 CLI 使用仓库现有 typecheck/test/build 和安装包检查，安装包 help 与 `daynight --skill`
 必须能发现 Thread。
 
-[CLI 指南](../../packages/daynight/README.md#task-discussion-threads)和独立 usage.md 手册
-拥有操作说明；using-daynight 源技能持有用途与写入安全规则。实际字节与调用数可以测量，
+[CLI 指南](../../packages/daynight/README.md#task-discussion-threads)和公共手册拥有操作说明、用途与写入安全规则；终端与安装 skill 使用同一来源。实际字节与调用数可以测量，
 token 数需标明具体编码器、版本与 fixture，不能由字节套用普遍比例。

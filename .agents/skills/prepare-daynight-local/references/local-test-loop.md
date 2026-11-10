@@ -38,7 +38,8 @@ If retained preview state requires a separate verification root, use the exact
 root selected by the repository reference throughout this loop. Do not revert to
 the launcher's default root between commands.
 
-Discover or register the selected repository on this local service:
+Discover or register the selected repository on this local service. Set
+`DN_REPO_URL` to the canonical `url` returned by the repository check:
 
 ```bash
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" project list --json
@@ -114,20 +115,21 @@ contents as one CLI argument. It must specify:
   source/version/root, actual command results and pass/fail judgments. Do not
   include tokens, full configuration or native account data.
 - Read back the attachment and complete the original claim using the managed
-  `using-daynight` workflow. Do not invent another task or report success from
-  simulated output. Report failures through that workflow.
+  assignment runtime contract and the task's acceptance criteria. Do not invent
+  another task or report success from simulated output. Report failures through
+  that contract.
 
 For example, from a shell with the description loaded into `DN_TEST_DESCRIPTION`:
 
 ```bash
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" task create \
-  --title "Local test $DN_RUN_ID" --description "$DN_TEST_DESCRIPTION" \
+  --title "Local test $DN_RUN_ID" --description "$DN_TEST_DESCRIPTION" --status todo \
   --project "$DN_PROJECT_ID"
 DN_CONFIG_DIR="$DN_DEV_ROOT" "$DN_DEV_CLI" task show "$DN_TASK_ID" \
   --project "$DN_PROJECT_ID" --json
 ```
 
-Creation defaults to the authenticated account, `todo` and `allowAgents=false`.
+Creation defaults to the authenticated account, `proposed` and `allowAgents=false`; this confirmed test-loop task explicitly selects todo.
 There is no create `--allow-agents` or `--json` option. Do not set `in_progress`;
 Worker must perform the real claim. Record the confirmed task ID immediately.
 
@@ -143,8 +145,10 @@ leg, and must be observed through the actual website.
 
 Monitor this fixture with bounded reads. Verify the observed claim's Worker
 matches the expected development Worker. The managed Agent's startup prompt
-supplies the authoritative original claim ID and bundled skill; the coordinator
-does not create a substitute ordinary session or complete the task for it.
+supplies the original assignment and self-contained runtime constraints; the
+coordinator does not create a substitute ordinary session or complete the task
+for it. The Agent uses `daynight --skill` for product operations and follows the
+target repository's applicable rules for delivery.
 
 Inside that actual Agent, the required canonical calls include:
 
@@ -156,10 +160,19 @@ daynight task show "$DN_TASK_ID" --project "$DN_PROJECT_ID" --json
 ```
 
 Agent variables must come from the supplied assignment and test inputs; do not
-assume coordinator shell variables are inherited. Completion follows the selected
-bundle's managed skill: read back evidence, reread the task, verify its original
-claim, and submit `done` with that original claim ID and observed version as the
-final task write. Never fall back to ordinary completion after a rejection.
+assume coordinator shell variables are inherited. Before business writes, the
+Agent verifies the current task, original active claim, Worker and actual worktree.
+After delivery and acceptance, it reads back evidence, rereads the task, verifies
+the original assignment, and submits `done` with the original claim ID and exact
+observed version as the final task mutation. A rejected or unknown write requires
+observation before another decision; never automatically replay it or fall back to
+ordinary completion. When necessary human intervention cannot be supplied within
+the assignment's authority, the Agent rereads the task, verifies the original
+assignment, and pauses its own task using that observation's exact version. It
+reads back the pause and assignment, then verifies resolution, authorization and
+the original assignment before clearing the pause with a newly observed version
+and reading it back. Pending review or CI remains an ordinary wait. Preserve the
+controller-owned worktree, branch and workspace throughout.
 
 From the coordinator, read the task and `acceptance/result.md` with the explicit
 development CLI/root. In the website, verify the same task is done and open the

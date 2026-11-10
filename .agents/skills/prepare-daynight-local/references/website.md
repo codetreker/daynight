@@ -102,8 +102,8 @@ geometry and label how it was generated. It is not a compositor screenshot and
 does not verify animation, frame stability, browser chrome or a real phone's
 soft keyboard. Desktop viewport emulation also cannot establish mobile
 `visualViewport` behavior during keyboard opening. Keep those checks unverified
-until a suitable browser or device is available. Follow
-[UI audit and handoff](ui-audit.md) for the coverage matrix and finding evidence.
+until a suitable browser or device is available. Topic skills such as
+`audit-daynight-ui` define coverage and finding evidence for investigations.
 
 ## Find the project and fixture
 
@@ -113,9 +113,9 @@ until a suitable browser or device is available. Follow
    address is `/projects/<projectId>`.
 3. Open Task list (`任务列表`), then Task chains (`任务链`) or Standalone tasks
    (`独立任务`). An acceptance task without ordinary dependencies is independent.
-4. Check the assignee filter if the task is absent. Completed independent tasks
-   can be hidden by the recent-completion filter; Show all (`显示所有`) reveals
-   them. A filtered list does not prove deletion.
+4. If the task is absent, check the assignee filter and the Status (`状态`)
+   filter; All statuses (`全部状态`) includes completed tasks. A filtered list
+   does not prove deletion.
 5. Open the task and check its unique run marker, description, assignee and
    status. A direct task URL is `/projects/<projectId>/tasks/<taskId>`.
 
@@ -136,7 +136,7 @@ Do not add steps or discussion posts merely to navigate the fixture.
 
 ## Enable the fixture through the website
 
-For the test loop, the CLI-created task begins as `todo`, assigned to the signed-in
+For the test loop, explicitly create the confirmed fixture with `--status todo`; it is assigned to the signed-in
 account, with `allowAgents=false`. Confirm these facts before enabling it. The
 Ready/Blocked indication describes dependency readiness, not a running Agent.
 
@@ -146,7 +146,8 @@ not a machine assignment; the isolated Worker selection in the test-loop
 procedure still applies. Platform changes have their own confirmation dialog.
 
 Click Automatic execution (`自动执行`), then confirm Enable automatic execution
-(`开启自动执行`). The successful setting notice proves the permission was saved,
+(`开启自动执行`) in its confirmation, which has the `alertdialog` role rather
+than `dialog`. The successful setting notice proves the permission was saved,
 not that a Worker has claimed the task. Read the same task with the CLI and
 confirm `allowAgents=true`. It may already be `in_progress`; do not require the
 version to increase by exactly one or the task to remain `todo`.
@@ -225,12 +226,14 @@ before resending. Enter sends; Shift+Enter inserts a newline.
 
 The separate `/test-sessions` page lists online test sessions. Its empty-state
 creation command is `daynight controller codex`; these sessions are not Worker
-claims and cannot replace the managed execution in the test loop.
+claims and cannot replace the managed execution in the test loop. Start, drive
+and stop them under [controller Test Sessions](test-sessions.md).
 
 ## Read the result attachment in both clients
 
 Open Attachments (`附件`), use Refresh attachments (`刷新附件`) when needed, then
-select `acceptance/result.md` from the file tree. Check the run marker and actual
+expand the `acceptance` folder, which the file tree shows collapsed, and select
+`result.md`. Check the run marker and actual
 routing/build evidence against the same task's CLI output:
 
 ```bash

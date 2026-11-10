@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 import { CodexReadAuthority } from "../../../src/commands/controller/providers/codex-read-authority.js";
 import type { NativeReadPolicy } from "../../../src/commands/controller/providers/types.js";
 import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
+import type { CodexRpc } from "../../../src/commands/controller/providers/codex-rpc.js";
 
 const cwd = "/work", nativeSessionId = "native-thread";
 const startup = () => ({
@@ -117,6 +118,23 @@ test("safe model controls and input keep authority while injected per-turn permi
   expect(policy.verify()).toBeUndefined(); expect(drain).not.toHaveBeenCalled();
   await authority.request("turn/start", { threadId: nativeSessionId, input: [], sandboxPolicy: { type: "readOnly" } });
   expect(() => policy.verify()).toThrow(); expect(drain).toHaveBeenCalledTimes(1);
+});
+
+test.each([false, true])("image receipt observers survive the authority adapter with permission mutation=%s", async mutation => {
+  let drained!: () => void, observed: Parameters<CodexRpc["request"]>[2];
+  const published: (NativeReadPolicy | null)[] = [], late = vi.fn(), timeout = new Error("native response deadline");
+  const request = vi.fn(async (_method: string, _params: unknown, observer?: Parameters<CodexRpc["request"]>[2]) => { observed = observer; throw timeout; });
+  const drain = vi.fn(() => new Promise<void>(resolve => { drained = resolve; }));
+  const authority = new CodexReadAuthority({ cwd, request, drain, publish: policy => published.push(policy) });
+  authority.install(startup()); const policy = published.at(-1)!;
+  const params = { threadId: nativeSessionId, clientUserMessageId: "image-input", input: [{ type: "localImage", path: "/work/image.png" }], ...(mutation ? { sandboxPolicy: { type: "readOnly" } } : {}) };
+  const pending = authority.request("turn/start", params, late), rejected = expect(pending).rejects.toBe(timeout);
+  if (mutation) { expect(() => policy.verify()).toThrow(); expect(request).not.toHaveBeenCalled(); drained(); }
+  else { expect(policy.verify()).toBeUndefined(); expect(drain).not.toHaveBeenCalled(); }
+  await rejected;
+  expect(request).toHaveBeenCalledWith("turn/start", params, late);
+  observed?.({ result: { turn: { id: "late-turn" } } });
+  expect(late).toHaveBeenCalledWith({ result: { turn: { id: "late-turn" } } });
 });
 
 test.each([

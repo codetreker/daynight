@@ -2,187 +2,192 @@ package server
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 )
 
-type botExpiryScope struct{ dao *botExpiryDAO }
+type botExpiryContextKey struct{}
 
-func (s botExpiryScope) SessionDAO() store.SessionDAO { return s.dao }
-func (s botExpiryScope) BotDAO() store.BotWriteDAO    { return s.dao }
-
-type botExpiryDAO struct {
-	store.SessionDAO
-	store.BotWriteDAO
-	t                   *testing.T
-	mu                  sync.Mutex
-	want, seen          []string
-	principal           model.Principal
-	bot                 model.Bot
-	expired             bool
-	credentialCalls     int
-	firstCredentialTime time.Time
-	blocked, release    chan struct{}
-	registration        *store.SessionRegistration
-	InsertCall          func(store.SessionRegistration) (bool, error)
-	BindCall            func(string, int64, string, model.BotRoleConfiguration) (model.Bot, error)
-	StartupCall         func(string, int64, model.BotStartupResult) (model.Bot, error)
-	SessionCall         func(string) (store.SessionRecord, error)
-	SessionsCall        func(string) ([]store.BotSession, error)
-	RevokeCall          func(string) error
-	DeletionCall        func(string, *model.BotDeletion) (model.Bot, error)
+type botExpiryCall struct {
+	method           string
+	contentType      string
+	worker, bot      string
+	input            any
+	result           any
+	err              error
+	calls            int
+	entered, release chan struct{}
 }
 
-func (d *botExpiryDAO) call(name string) {
-	d.mu.Lock()
-	i := len(d.seen)
-	d.seen = append(d.seen, name)
-	ok := i < len(d.want) && d.want[i] == name
-	d.mu.Unlock()
-	if !ok {
-		unexpectedHTTPCall(d.t, name)
-	}
+type botExpiryFixture struct {
+	t              *testing.T
+	principal      model.Principal
+	handler        http.Handler
+	requestContext context.Context
+	sourceContext  context.Context
+	authCalls      int
+	call           *botExpiryCall
 }
 
-func (d *botExpiryDAO) check(ok bool, name string) {
-	if !ok {
-		unexpectedHTTPCall(d.t, "Bot expiry "+name+" arguments")
-	}
-}
-
-func (d *botExpiryDAO) LockCredential(_ context.Context, principal model.Principal, now time.Time) error {
-	d.call("LockCredential")
-	d.check(principal == d.principal && !now.IsZero(), "LockCredential")
-	d.credentialCalls++
-	if d.credentialCalls == 1 {
-		d.firstCredentialTime = now
-	} else {
-		d.check(!now.Before(d.firstCredentialTime), "credential recheck time")
-		if d.expired {
-			return model.ErrNotFound
-		}
-	}
-	return nil
-}
-
-func (d *botExpiryDAO) Bot(ctx context.Context, id string) (model.Bot, error) {
-	d.call("Bot")
-	d.check(id == d.bot.ID && d.credentialCalls == 1, "Bot")
-	if d.blocked != nil {
-		close(d.blocked)
-		select {
-		case <-d.release:
-		case <-ctx.Done():
-			return model.Bot{}, ctx.Err()
-		}
-	}
-	return botExpiryCloneBot(d.bot), nil
-}
-
-func (d *botExpiryDAO) InsertBotSession(_ context.Context, input store.SessionRegistration) (bool, error) {
-	d.call("InsertBotSession")
-	if d.InsertCall == nil {
-		unexpectedHTTPCall(d.t, "InsertBotSession")
-	}
-	return d.InsertCall(input)
-}
-
-func (d *botExpiryDAO) BindBotSession(_ context.Context, id string, version int64, sessionID string, role model.BotRoleConfiguration) (model.Bot, error) {
-	d.call("BindBotSession")
-	if d.BindCall == nil {
-		unexpectedHTTPCall(d.t, "BindBotSession")
-	}
-	value, err := d.BindCall(id, version, sessionID, role)
-	return botExpiryCloneBot(value), err
-}
-
-func (d *botExpiryDAO) SetBotStartup(_ context.Context, id string, version int64, result model.BotStartupResult) (model.Bot, error) {
-	d.call("SetBotStartup")
-	if d.StartupCall == nil {
-		unexpectedHTTPCall(d.t, "SetBotStartup")
-	}
-	value, err := d.StartupCall(id, version, result)
-	return botExpiryCloneBot(value), err
-}
-
-func (d *botExpiryDAO) LockSession(_ context.Context, id string) (store.SessionRecord, error) {
-	d.call("LockSession")
-	if d.SessionCall == nil {
-		unexpectedHTTPCall(d.t, "LockSession")
-	}
-	value, err := d.SessionCall(id)
-	return botExpiryCloneRecord(value), err
-}
-
-func (d *botExpiryDAO) LockBotSessions(_ context.Context, id string) ([]store.BotSession, error) {
-	d.call("LockBotSessions")
-	if d.SessionsCall == nil {
-		unexpectedHTTPCall(d.t, "LockBotSessions")
-	}
-	value, err := d.SessionsCall(id)
-	return botExpiryCloneSlice(value), err
-}
-
-func (d *botExpiryDAO) RevokeBotSessions(_ context.Context, id string) error {
-	d.call("RevokeBotSessions")
-	if d.RevokeCall == nil {
-		unexpectedHTTPCall(d.t, "RevokeBotSessions")
-	}
-	return d.RevokeCall(id)
-}
-
-func (d *botExpiryDAO) SaveBotDeletion(_ context.Context, id string, input *model.BotDeletion) (model.Bot, error) {
-	d.call("SaveBotDeletion")
-	if d.DeletionCall == nil {
-		unexpectedHTTPCall(d.t, "SaveBotDeletion")
-	}
-	value, err := d.DeletionCall(id, input)
-	return botExpiryCloneBot(value), err
-}
-
-func newBotExpiryPhase(t *testing.T, tx *httpTestStore, principal model.Principal, bot model.Bot, calls []string, outcome store.TransactionOutcome) *botExpiryDAO {
+func newBotExpiryFixture(t *testing.T, principal model.Principal) *botExpiryFixture {
 	t.Helper()
-	d := &botExpiryDAO{t: t, principal: principal, bot: botExpiryCloneBot(bot), want: append([]string{"WriteSession"}, calls...)}
-	original, err := json.Marshal(bot)
+	f := &botExpiryFixture{t: t, principal: principal}
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	requestAuth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+		f.authCalls++
+		if f.authCalls != 1 || !f.sameContext(ctx) || kind != principal.Kind || token != httpTestToken(principal.Kind) {
+			t.Errorf("unexpected Bot credential identity, context, or call count")
+			return model.Principal{}, authhttp.Failure()
+		}
+		return principal, nil
+	}, config.AuthSettings{PublicOrigin: configuredTestConfig().PublicOrigin}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		if !reflect.DeepEqual(d.seen, d.want) {
-			t.Errorf("Bot operation calls = %v, want %v", d.seen, d.want)
-		}
-		actual, err := json.Marshal(d.bot)
-		if err != nil || string(actual) != string(original) {
-			t.Errorf("operation mutated supplied Bot facts: %v", err)
-		}
-	})
-	tx.WriteSessionCall = func(ctx context.Context, operation func(store.SessionScope) error) (store.Completion, error) {
-		d.call("WriteSession")
-		err := operation(botExpiryScope{dao: d})
-		if err != nil {
-			return store.Completion{Outcome: outcome}, &store.TransactionError{Phase: "operation", Cause: err, Outcome: outcome}
-		}
-		return store.Completion{Outcome: outcome}, nil
-	}
-	return d
+	auth := &authhttp.Authentication{RequestAuthentication: requestAuth}
+	mux := http.NewServeMux()
+	bothttp.RegisterRoutes(mux, f, f, auth, logger)
+	bothttp.RegisterRuntimeRoutes(mux, f, f, auth, sessionhttp.NewRoutes(nil, auth, logger), logger)
+	f.handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requestContext = r.Context()
+		mux.ServeHTTP(w, r)
+	}))
+	return f
 }
 
-func blockedBotExpiryResponse(t *testing.T, ctx context.Context, cancel context.CancelFunc, dao *botExpiryDAO, request func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+func (f *botExpiryFixture) unexpected(method string) error {
+	f.t.Errorf("unconfigured or extra Bot operation: %s", method)
+	return errors.New("unconfigured or extra Bot operation: " + method)
+}
+
+func (f *botExpiryFixture) sameContext(ctx context.Context) bool {
+	actualDeadline, actualHasDeadline := ctx.Deadline()
+	wantDeadline, wantHasDeadline := f.sourceContext.Deadline()
+	return ctx == f.requestContext && ctx.Done() == f.sourceContext.Done() && actualHasDeadline == wantHasDeadline && actualDeadline.Equal(wantDeadline) && ctx.Value(botExpiryContextKey{}) == "request" && ctx.Err() == nil
+}
+
+func (f *botExpiryFixture) invoke(ctx context.Context, p model.Principal, method, worker, bot string, input any) (any, error) {
+	c := f.call
+	if c == nil || c.method != method || c.calls != 0 {
+		return nil, f.unexpected(method)
+	}
+	c.calls++
+	if !f.sameContext(ctx) || p != f.principal || worker != c.worker || bot != c.bot || !reflect.DeepEqual(input, c.input) {
+		f.t.Errorf("%s context, principal, identity, or input differs", method)
+	}
+	if c.entered != nil {
+		close(c.entered)
+		select {
+		case <-c.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return c.result, c.err
+}
+
+func (f *botExpiryFixture) RegisterBot(ctx context.Context, p model.Principal, worker, bot string, input sessioncore.BotRegistration) (sessioncore.BotRegistrationResult, error) {
+	v, err := f.invoke(ctx, p, "RegisterBot", worker, bot, input)
+	if err != nil {
+		return sessioncore.BotRegistrationResult{}, err
+	}
+	return v.(sessioncore.BotRegistrationResult), nil
+}
+func (f *botExpiryFixture) ReportBot(ctx context.Context, p model.Principal, worker, bot string, input sessioncore.BotReport) (model.Bot, error) {
+	v, err := f.invoke(ctx, p, "ReportBot", worker, bot, input)
+	if err != nil {
+		return model.Bot{}, err
+	}
+	return v.(model.Bot), nil
+}
+func (f *botExpiryFixture) DeleteBot(ctx context.Context, p model.Principal, bot string, input store.DeleteBot) (model.Bot, error) {
+	v, err := f.invoke(ctx, p, "DeleteBot", "", bot, input)
+	if err != nil {
+		return model.Bot{}, err
+	}
+	return v.(model.Bot), nil
+}
+func (f *botExpiryFixture) GrantBot(context.Context, model.Principal, string, string, sessioncore.BotGrant) (sessioncore.GrantResult, error) {
+	return sessioncore.GrantResult{}, f.unexpected("GrantBot")
+}
+func (f *botExpiryFixture) CompleteBotDeletion(context.Context, model.Principal, string, string, botservice.BotDeletionReceipt) (model.Bot, error) {
+	return model.Bot{}, f.unexpected("CompleteBotDeletion")
+}
+func (f *botExpiryFixture) CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error) {
+	return model.Bot{}, f.unexpected("CreateResolved")
+}
+func (f *botExpiryFixture) Defaults(context.Context, model.Principal, *string) (botcore.BotDefaults, error) {
+	return botcore.BotDefaults{}, f.unexpected("Defaults")
+}
+func (f *botExpiryFixture) List(context.Context, model.Principal, model.PageRequest) (botcore.BotPage, error) {
+	return botcore.BotPage{}, f.unexpected("List")
+}
+func (f *botExpiryFixture) ListWorker(context.Context, model.Principal, string, model.PageRequest) (botcore.BotPage, error) {
+	return botcore.BotPage{}, f.unexpected("ListWorker")
+}
+func (f *botExpiryFixture) Get(context.Context, model.Principal, string) (model.Bot, error) {
+	return model.Bot{}, f.unexpected("Get")
+}
+
+func (f *botExpiryFixture) dispatch(ctx context.Context, method, path, body string, c *botExpiryCall) *httptest.ResponseRecorder {
+	f.t.Helper()
+	if f.call != nil {
+		f.t.Fatal("Bot operation already configured")
+	}
+	f.call, f.authCalls, f.sourceContext = c, 0, ctx
+	defer func() { f.call = nil }()
+	r := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+	contentType := c.contentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	r.Header.Set("Content-Type", contentType)
+	r.Header.Set("X-Request-ID", "project-test")
+	if method == http.MethodDelete {
+		r.Header.Set("Origin", configuredTestConfig().PublicOrigin)
+	}
+	if f.principal.Kind == model.PATCredential {
+		r.Header.Set("Authorization", "Bearer "+httpTestToken(f.principal.Kind))
+	} else {
+		r.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: httpTestToken(f.principal.Kind)})
+	}
+	response := httptest.NewRecorder()
+	f.handler.ServeHTTP(response, r)
+	if c.calls != 1 || f.authCalls != 1 {
+		f.t.Errorf("%s calls=%d, authentication calls=%d; want one each", c.method, c.calls, f.authCalls)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != f.principal.UserID {
+		f.t.Errorf("Bot private headers: %v", response.Header())
+	}
+	return response
+}
+
+func blockedBotExpiryResponse(t *testing.T, ctx context.Context, cancel context.CancelFunc, call *botExpiryCall, request func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
-	dao.blocked, dao.release = make(chan struct{}), make(chan struct{})
+	call.entered, call.release = make(chan struct{}), make(chan struct{})
 	result, finished := make(chan *httptest.ResponseRecorder, 1), make(chan struct{})
 	var once sync.Once
-	release := func() { once.Do(func() { close(dao.release) }) }
+	release := func() { once.Do(func() { close(call.release) }) }
 	t.Cleanup(func() {
 		release()
 		cancel()
@@ -192,23 +197,20 @@ func blockedBotExpiryResponse(t *testing.T, ctx context.Context, cancel context.
 			t.Error("Bot HTTP operation did not stop during cleanup")
 		}
 	})
-	go func() {
-		defer close(finished)
-		result <- request()
-	}()
+	go func() { defer close(finished); result <- request() }()
 	select {
-	case <-dao.blocked:
+	case <-call.entered:
 	case <-finished:
-		t.Fatal("Bot request completed before its admitted Bot observation")
+		t.Fatal("Bot request completed before its operation")
 	case <-ctx.Done():
-		t.Fatal("Bot request did not reach its admitted Bot observation")
+		t.Fatal("Bot request did not reach its operation")
 	}
 	release()
 	select {
 	case response := <-result:
 		return response
 	case <-ctx.Done():
-		t.Fatal("Bot request did not finish after its Bot observation")
+		t.Fatal("Bot request did not finish after its operation")
 		return nil
 	}
 }
@@ -220,7 +222,6 @@ func botExpiryClonePointer[T any](value *T) *T {
 	copy := *value
 	return &copy
 }
-
 func botExpiryCloneSlice[T any](value []T) []T {
 	if value == nil {
 		return nil
@@ -229,7 +230,6 @@ func botExpiryCloneSlice[T any](value []T) []T {
 	copy(cloned, value)
 	return cloned
 }
-
 func botExpiryCloneBot(value model.Bot) model.Bot {
 	value.RequestedOverrides.WorkerID = botExpiryClonePointer(value.RequestedOverrides.WorkerID)
 	value.RequestedOverrides.Cwd = botExpiryClonePointer(value.RequestedOverrides.Cwd)
@@ -251,7 +251,6 @@ func botExpiryCloneBot(value model.Bot) model.Bot {
 	}
 	return value
 }
-
 func botExpiryCloneSnapshot(value sp.Snapshot) sp.Snapshot {
 	value.Identity.NativeSessionID = botExpiryClonePointer(value.Identity.NativeSessionID)
 	value.TurnStartedAt = botExpiryClonePointer(value.TurnStartedAt)
@@ -263,40 +262,15 @@ func botExpiryCloneSnapshot(value sp.Snapshot) sp.Snapshot {
 		value.Controls.CommandsError = botExpiryClonePointer(value.Controls.CommandsError)
 		value.Controls.Settings = botExpiryCloneSlice(value.Controls.Settings)
 		for i := range value.Controls.Settings {
-			setting := &value.Controls.Settings[i]
-			setting.Description = botExpiryClonePointer(setting.Description)
-			setting.Value = botExpiryClonePointer(setting.Value)
-			setting.Options = botExpiryCloneSlice(setting.Options)
+			s := &value.Controls.Settings[i]
+			s.Description = botExpiryClonePointer(s.Description)
+			s.Value = botExpiryClonePointer(s.Value)
+			s.Options = botExpiryCloneSlice(s.Options)
 		}
 		value.Controls.Commands = botExpiryCloneSlice(value.Controls.Commands)
 		for i := range value.Controls.Commands {
-			command := &value.Controls.Commands[i]
-			command.ArgumentHint = botExpiryClonePointer(command.ArgumentHint)
+			value.Controls.Commands[i].ArgumentHint = botExpiryClonePointer(value.Controls.Commands[i].ArgumentHint)
 		}
 	}
-	return value
-}
-
-func botExpiryCloneRegistration(value store.SessionRegistration) store.SessionRegistration {
-	value.BotID = botExpiryClonePointer(value.BotID)
-	value.Registration = botExpiryCloneSlice(value.Registration)
-	value.Snapshot = botExpiryCloneSnapshot(value.Snapshot)
-	return value
-}
-
-func botExpiryCloneRecord(value store.SessionRecord) store.SessionRecord {
-	value.BotID = botExpiryClonePointer(value.BotID)
-	value.ServerInstance = botExpiryClonePointer(value.ServerInstance)
-	value.DrainTimelineSeq = botExpiryClonePointer(value.DrainTimelineSeq)
-	value.SourceEpoch = botExpiryClonePointer(value.SourceEpoch)
-	value.SourceEpochs = botExpiryCloneSlice(value.SourceEpochs)
-	value.Registration = botExpiryCloneSlice(value.Registration)
-	value.StopProof = botExpiryCloneSlice(value.StopProof)
-	value.GrantHash = botExpiryCloneSlice(value.GrantHash)
-	value.GrantExpiry = botExpiryClonePointer(value.GrantExpiry)
-	value.ConnectionExpiry = botExpiryClonePointer(value.ConnectionExpiry)
-	value.LastSeen = botExpiryClonePointer(value.LastSeen)
-	value.DrainUntil = botExpiryClonePointer(value.DrainUntil)
-	value.Snapshot = botExpiryCloneSnapshot(value.Snapshot)
 	return value
 }

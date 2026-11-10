@@ -21,12 +21,18 @@
 
 [runtime.ts](../../packages/daynight/src/commands/controller/runtime.ts) 将 Provider 的正文和完成元数据交给 pipeline，以 250 ms 周期分别推进解析与采集；原生回调不等待媒体工作。断线使活动来源失效；停止先取消并等待来源工作，再关闭 Provider、完成已有正文的投影结算和关闭媒体存储。停止后不启动来源请求或后台 query。已持久的 unknown、validated 和 retained 仍属于原执行的恢复与归档闭包。
 
-当前能力有以下未完成条件，不能据此缩小[验收规格](../spec/session-image-acceptance.md)：
+原生图片 projector 逐 entry 保留当前正文的完成元数据；正文相同但 complete 改变仍须发布，迟到图片回执沿用当前元数据，缺失元数据的新正文不能继承旧允许。原生输入的原子 publication 或查询仅在 committed 后进入 Markdown 管线；初次完整性以及已有 streaming 正文的完成提升，必须由持久原始 intent 的文本与当前唯一正文精确一致证明，publication 的 seed 或图片回执本身不证明 Markdown 完整。
 
-- Codex 与 Copilot 的真实 runtime 仅为下述精确版本和能力子集提供 `nativeReadPolicy`；不支持的版本、权限配置或 hooks 状态返回 `policy_restricted`。Claude 的完整原生授权适配尚未交付。来源证明、`permissionMode`、启动时的 sandbox/profile 文案、同用户可读或一次工具读取均不能替代有效原生判定。
+`publishMarkdownProjection` 在 journal 的同一个 SQLite 事务中保存 Markdown projection state、不可变正文候选的可见指针及 source outbox，避免 state 已完成而时间线仍为旧正文的恢复窗口。失败回滚保持上一份完整可见状态；事务结果未确认时沿 journal 隔离规则处理，不能用本连接的未提交状态恢复。
+
+Markdown 状态在解析、回执与停止结算前读取 journal 的当前 committed entry，仅校准同位置、同 imageId 的原生图片更新及追加的原始图片，更新 parser token 使旧异步结果失效。这样即使进程在原生 patch 提交后、Markdown 同步前退出，恢复也不会写回旧图片状态。校准不重新登记原生 occurrence，不改变已接受 publication 的不可变回执或原生图片 index。解析失败的补充 Markdown carrier 位于原始正文之后，并保留协议要求的 text 前驱，避免插入到原生图片之前而移动已提交位置。
+
+当前图片范围为 Codex、Copilot；Claude 不属于交付和验收目标，其本地来源继续返回 `policy_restricted`，已保存原件按现有读取权限访问。[范围决策](../../.agents/notes/implemented/architecture/2026-11-11-image-provider-scope.md)保留此调整的理由和后续接入成本。其余支持条件继续遵循[验收规格](../spec/session-image-acceptance.md)：
+
+- Codex 与 Copilot 的真实 runtime 仅为下述精确版本和能力子集提供 `nativeReadPolicy`；不支持的版本、权限配置或 hooks 状态返回 `policy_restricted`。Claude 不发布本地图片 Read authority，也不触发图片权限审批。来源证明、`permissionMode`、启动时的 sandbox/profile 文案、同用户可读或一次工具读取均不能替代有效原生判定。
 - 真实 runtime 提供本地出口策略 producer；有效 profile 仍依赖部署所有者提供完整受保护目标和出口条件。缺失或未知条件返回 `policy_restricted`。配置解析、真实本机接口和受控 transport 测试分别证明对应机制，不能证明尚未配置的真实部署已阻断透明路由到本机、内网和元数据。
 
-这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此声明真实 Provider 或端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
+Codex/Copilot 适用 profile 的原生权限保证、平台句柄验证和真实部署出口验收仍是交付要求。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此声明真实 Provider 或端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
 
 ### 原生单次读取准入
 
@@ -38,7 +44,7 @@ Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd �
 
 进程使用 0.167.0 的 `CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED` 关闭独立控制面，并读回真实状态。每个 checkpoint 再调用线程绑定的 `hooks/list`，只接受完整已知结构、同 cwd、没有 warnings/errors 且没有 enabled `PreToolUse` 的结果；不解释用户 hook 的脚本或 matcher，也不关闭它。后台新增 hook 不能被启动时的空列表掩盖，下一次查询必须重新判断。未知版本、格式、相关限制、协议失败或无法确认的变化均关闭本次 authority；关闭后同一 execution 不自动重开，原生进程重建须重新取得完整事实。RPC 设置变化、native 生命周期及同步 transport failure 走同一失效入口。
 
-[Copilot authority](../../packages/daynight/src/commands/controller/providers/copilot-read-authority.ts) 固定为 SDK 1.0.11、CLI 1.0.105、macOS ARM64。它核验安装的 SEA executable 以及私有有界解包得到的 `index.js`、`cli-main.js`、`runtime.node` 摘要，再由 Node 运行未修改的发行入口并加载 Daynight preload。父进程仍使用原 SDK/TCP 连接；preload 从同一真实 Session registry 调用固定 N-API 判定，不创建第二个授权 Session。未知版本、平台或摘要不匹配保留普通 Provider 路径，不发布图片来源策略。
+[Copilot authority](../../packages/daynight/src/commands/controller/providers/copilot-read-authority.ts) 固定为 SDK 1.0.11、CLI 1.0.105、macOS ARM64。它核验安装的 SEA executable 以及私有有界解包得到的 `index.js`、`cli-main.js`、`runtime.node` 摘要，再由 Node 运行未修改的发行入口并加载 Daynight preload。独占 bridge worker 使用原 SDK/TCP 连接；preload 从同一真实 Session registry 调用固定 N-API 判定，不创建第二个授权 Session。未知版本、平台或摘要不匹配保留普通 Provider 路径，不发布图片来源策略。
 
 每个 checkpoint 核对真实 Session/cwd、账户身份、当前原生模式、完整 hooks snapshot、SDK callback registry 和 strict content-exclusion 结果，再调用该 Session 的原生 Read permission route；只有明确 `result + approved` 可以继续。来源只接受与 held proof 对应的普通组件链；alias、symlink、目录链接、parent 折返，以及显式 `.` 或空组件均拒绝；`./image.png` 不属于该 Copilot profile 的路径子集。内容排除结果按固定发行物的完整路径策略合同消费，不把路径判断说成 inode 或内容权限。未知、不可用和相关 hook 状态拒绝，既不实现自己的 permission matcher，也不关闭用户 hooks。
 
@@ -47,6 +53,8 @@ Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd �
 需要询问的图片请求由既有 SDK callback 精确拒绝，图片功能从不批准请求。每个请求预登记并签名绑定 native Session、execution、sequence、来源证明摘要及路径；live callback 还必须匹配 SDK context，且 request 与 `event.data.permissionRequest` 必须是同一个对象。拒绝 receipt 另签实际 native requestId。固定自有 ClientMetadata namespace 保存关联密钥，缺失时才初始化并读回，恢复保留原值，畸形或不确定状态不能覆盖、轮换或继续采集。密钥不进入 intention、事件、诊断或模型输入。历史只隐藏经两份签名验证的完整请求/拒绝对；未完成记录保留既有 expired/unknown 语义，不伪造完成，也不恢复为可批准的新请求。普通工具审批保持原流程，历史关联与当前图片模式资格分开。
 
 Copilot IPC 每次只允许一个在途判定。15 秒 deadline 或未知 IPC 状态关闭图片 authority、拒绝队列并丢弃迟到允许结果；仍可能到达的本图片权限 callback 继续拒绝。原生 N-API 无法取消时最多保留一条在途调用，不能为了普通图片超时终止整个文字 Session。真正的 Provider close 才负责关闭其拥有的 runtime 并回收正常解包资源；强制终止进程不能保证执行用户态临时目录清理。
+
+SDK callback 与 permission event 的共享对象跨进程时，由 worker 对真实同对象分配仅桥内部的随机 identity；facade 核对同 Session、完整序列化请求及 identity 后恢复对象对应。permission callback 保持 SDK 的 callback-before-event 次序，identity 不授予权限；普通审批仍沿原交互流程。历史先按 permission 类型以 max=1 分页扫描，最多 100,000 页和 16 MiB 元数据，完成后才认证双签名 pair，再按原 durable cursor 投影普通历史。expired 仅允许从头重扫一次；未知、超限或关联失败关闭图片 authority并保留原交互与文字 Session，不能提前隐藏不完整的拒绝对。
 
 ## 来源与出现的职责
 

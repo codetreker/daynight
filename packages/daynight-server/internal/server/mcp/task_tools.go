@@ -185,6 +185,9 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 			assigned = &actor.Principal.UserID
 		}
 		input := taskcore.CreateTask{Title: *in.Title, AssignedTo: assigned, RequiredPlatform: in.RequiredPlatform}
+		if _, exists := fields["status"]; exists {
+			input.Status = &in.Status
+		}
 		if in.Description != nil {
 			input.Description = *in.Description
 		}

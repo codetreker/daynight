@@ -3,6 +3,7 @@ import type { BotSessionBinding, SessionApi } from '../../src/api/sessions';
 import type { SessionSnapshot } from '../../src/api/types';
 import type { SessionArchive } from '../../../daynight/src/session/archive';
 import { sessionFence } from '../../../daynight/src/session/protocol';
+import { sessionImageBytes } from '../helpers/sessionImages';
 
 export type BotViewportOptions = {
   readonly scenario: 'empty' | 'long' | 'error' | 'archive' | 'hot-switch' | 'persistent';
@@ -26,7 +27,8 @@ window.addEventListener('storage', event => {
   metrics.snapshotEvents.push(event.newValue);
   metrics.snapshotChanges.push({ at: Date.now(), writes: metrics.snapshotWrites, oldValue: event.oldValue, newValue: event.newValue });
 });
-const image = { resourceId: '40000000-0000-4000-8000-000000000001', status: 'available' as const, name: 'accepted-image.png', mediaType: 'image/png', byteLength: '68', sha256: 'd126d616641d42ac8b0a07ec302c9fa1ec049f86200931a0a60c8f3080284b77', error: null };
+const imageBytes = sessionImageBytes('png');
+const image = { resourceId: '40000000-0000-4000-8000-000000000001', status: 'available' as const, name: 'accepted-image.png', mediaType: 'image/png', byteLength: String(imageBytes.length), sha256: 'bdc9537320ea88ca351b0cd5675bef8a24c5da9b2da14b2cf2254e9f85413f7c', error: null };
 let releaseCurrent = () => {}, releaseHistory = () => {}, releaseBefore = () => {};
 const currentGate = new Promise<void>(resolve => { releaseCurrent = resolve; });
 const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
@@ -122,6 +124,6 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
       if (!archived) throw new Error('No archive is expected.');
       return archive();
     },
-    resource: async () => { metrics.resourceReads++; return options?.scenario === 'persistent' ? new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII='), char => char.charCodeAt(0))], { type: 'image/png' }) : new Blob(); }, resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused',
+    resource: async () => { metrics.resourceReads++; return options?.scenario === 'persistent' ? new Blob([imageBytes], { type: 'image/png' }) : new Blob(); }, resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused',
   };
 }

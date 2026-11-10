@@ -114,6 +114,7 @@ export const createSessionResourceClient = (options: Options) => {
     parse: (v: unknown) => T,
     init: RequestInit = {},
     statuses: readonly number[] = [200],
+    onProgress?: () => void,
   ): Promise<T> => {
     const r = await response(path, signal, init);
     const reader = r.body?.getReader();
@@ -128,6 +129,7 @@ export const createSessionResourceClient = (options: Options) => {
         length += value.byteLength;
         if (length > 1_048_576)
           throw new Error("Session resource response exceeds its limit.");
+        if (value.byteLength > 0) onProgress?.();
         chunks.push(new Uint8Array(value));
       }
       if (!statuses.includes(r.status))
@@ -277,6 +279,7 @@ export const createSessionResourceClient = (options: Options) => {
     readResource: (
       descriptor: SessionResource,
       signal: AbortSignal,
+      onProgress?: () => void,
     ): Promise<Uint8Array<ArrayBuffer>> =>
       run(signal, async (s) => {
         const resource = parseSessionResource(descriptor);
@@ -295,6 +298,9 @@ export const createSessionResourceClient = (options: Options) => {
             `/resources/${imageId(resource.resourceId)}/content?offset=${offset}&limit=${IMAGE_LIMITS.chunkBytes}`,
             s,
             parseImageReadChunk,
+            {},
+            [200],
+            onProgress,
           );
           if (
             chunk.resourceId !== resource.resourceId ||

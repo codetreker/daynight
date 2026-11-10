@@ -1,10 +1,14 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { Blob as NodeBlob } from 'node:buffer';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { FixedSessionRecording, ManagedSessionRecords, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
 import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import { createSessionApi } from '../src/api/sessions';
+import type { LoadedSessionArchive } from '../src/api/sessions';
+import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
+import { sessionImageBytes, sessionImageSamples } from './helpers/sessionImages';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import type { SessionHistoryItem } from '../src/api/terminal-sessions';
 import { ApiError } from '../src/api/client';
@@ -34,7 +38,44 @@ function fixture() {
   const api = { history: vi.fn(async () => ({ items: [record], nextCursor: null })), archive: vi.fn(async () => ({ status: { payload: { state: 'pending' } }, archive: null })), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never); return api;
 }
+async function imageRecording(schemaVersion: 1 | 3 = 3) {
+  const bytes = sessionImageBytes('png');
+  const sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const resource = { resourceId: '00000012-1111-4111-8111-111111111111', revision: '1', name: 'Saved image.png', status: 'available', mediaType: 'image/png', byteLength: String(bytes.length), sha256, width: 3, height: 2, frameCount: 1, error: null } as const;
+  const base = { sessionId: record.sessionId, claimId, executionGeneration: '1', controllerId: projectId, controllerInstanceId: taskId, provider: 'codex' as const, nativeSessionId: null,
+    entries: [{ entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message' as const, content: [{ type: 'text' as const, text: 'Saved image record.' }, { type: 'image' as const, imageId: '00000013-1111-4111-8111-111111111111', resourceId: resource.resourceId, label: resource.name }] }] };
+  const archive: LoadedSessionArchive = schemaVersion === 1 ? { ...base, schemaVersion, resources: [{ resource, data: sessionImageSamples.png }] } : { ...base, schemaVersion, completeness: 'complete', resources: [{ resource, blobId: '00000014-1111-4111-8111-111111111111' }] };
+  const status = { state: 'ready' as const, sha256: 'a'.repeat(64), byteLength: '1024', errorCode: null, ...(schemaVersion === 3 ? { schemaVersion: 3 as const, completeness: 'complete' as const } : {}) };
+  const item = { ...record, agentControlMode: 'web' as const, contentKind: 'native_timeline' as const, archive: { ...status, completeness: 'complete' as const } };
+  const blob = await new Response(bytes, { headers: { 'Content-Type': 'image/png' } }).blob();
+  const reader = { readResource: vi.fn(async (_resource: unknown, _signal: AbortSignal, _onProgress?: () => void) => bytes), close: vi.fn(async () => {}) };
+  const api = { ...fixture(), nativeArchive: vi.fn(async () => ({ status, archive })), resources: vi.fn(() => reader) };
+  // The host owns scope wiring; the browser suite owns pixel decoding.
+  vi.stubGlobal('Blob', NodeBlob);
+  vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 3, height: 2, close: vi.fn() })));
+  return { api, item, archive, resource, reader, blob, bytes };
+}
 describe('unified Session and managed records', () => {
+  it('rechecks invalid recorded Markdown once without retrying its source or looping on the immutable manifest', async () => {
+    const f = await imageRecording();
+    const id = '00000007-1111-4111-8111-111111111111', text = 'Saved ![image](https://example.com/image.png)';
+    const archive: LoadedSessionArchive = { ...f.archive, entries: [{ kind: 'assistant_message', entryId: id, entrySeq: '1', revision: '1', imageProjectionError: null,
+      content: [{ type: 'markdown', text, partId: id, revision: '1', textSha256: '0'.repeat(64), complete: true, truncated: false, bindings: [], retainedImages: [] }] }] };
+    const result = await f.api.nativeArchive();
+    f.api.nativeArchive.mockClear().mockResolvedValue({ ...result, archive });
+    const view = render(<FixedSessionRecording projectId={projectId} api={f.api as never} item={f.item} active />);
+    await screen.findByText('Image references could not be verified.');
+    await waitFor(() => expect(f.api.nativeArchive).toHaveBeenCalledTimes(2));
+    const settled = f.api.nativeArchive.mock.results[1]!.value;
+    await act(async () => { await settled; });
+    expect(screen.getByText('Image references could not be verified.')).toBeVisible();
+    view.rerender(<FixedSessionRecording projectId={projectId} api={f.api as never} item={{ ...f.item }} active />);
+    expect(f.api.nativeArchive).toHaveBeenCalledTimes(2);
+    expect(f.api.resources).not.toHaveBeenCalled();
+    expect(f.api.current).not.toHaveBeenCalled();
+    expect(f.api.channel).not.toHaveBeenCalled();
+    expect(f.api.command).not.toHaveBeenCalled();
+  });
   it('hides only a confirmed empty inventory and retains loading, failure and retry', async () => {
     const api = fixture();
     let finish!: (value: { items: never[]; nextCursor: null }) => void;
@@ -266,7 +307,7 @@ describe('unified Session and managed records', () => {
   it('automatically follows draining Web with no archive row to a ready archive', async () => {
     const api = fixture();
     const archive = { schemaVersion: 1, sessionId: record.sessionId, claimId, executionGeneration: '1', controllerId: projectId, controllerInstanceId: taskId, provider: 'codex', nativeSessionId: null, entries: [{ entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Final draining result.' }] }], resources: [] };
-    const nativeArchive = vi.fn().mockResolvedValueOnce({ status: { state: 'unavailable' }, archive: null }).mockResolvedValue({ status: { state: 'ready' }, archive });
+    const nativeArchive = vi.fn().mockResolvedValueOnce({ status: { state: 'unavailable' }, archive: null }).mockResolvedValue({ status: { state: 'ready', sha256: 'a'.repeat(64), byteLength: '1024', errorCode: null }, archive });
     Object.assign(api, { nativeArchive });
     const snapshot = { sessionId: record.sessionId, claimId, executionGeneration: '1', identity: { projectId, taskId } };
     const current = vi.fn().mockResolvedValueOnce({ status: 'registered', session: { ...snapshot, lifecycle: 'draining' } }).mockResolvedValue({ status: 'registered', session: { ...snapshot, lifecycle: 'archived' } });
@@ -295,7 +336,7 @@ describe('unified Session and managed records', () => {
     const api = fixture();
     const item = { ...record, agentControlMode: 'web' as const, contentKind: 'native_timeline' as const };
     const archive = { schemaVersion: 1, sessionId: record.sessionId, claimId, executionGeneration: '1', controllerId: projectId, controllerInstanceId: taskId, provider: 'codex', nativeSessionId: null, entries: [{ entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'A saved result.' }] }], resources: [] };
-    const result = { status: { state: 'ready' }, archive };
+    const result = { status: { state: 'ready', sha256: 'a'.repeat(64), byteLength: '1024', errorCode: null }, archive };
     const nativeArchive = vi.fn(async () => result);
     Object.assign(api, { nativeArchive });
     const content = (current: boolean) => <FixedSessionRecording api={api as never} item={item} active current={current} projectId={projectId} />;
@@ -323,7 +364,7 @@ describe('unified Session and managed records', () => {
     const api = fixture();
     const item = { ...record, agentControlMode: 'web' as const, contentKind: 'native_timeline' as const };
     const archive = { schemaVersion: 1, sessionId: record.sessionId, claimId, executionGeneration: '1', controllerId: projectId, controllerInstanceId: taskId, provider: 'codex', nativeSessionId: null, entries: [{ entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Private saved result.' }] }], resources: [] };
-    const nativeArchive = vi.fn().mockResolvedValueOnce({ status: { state: 'ready' }, archive }).mockRejectedValueOnce(new ApiError('server', 403)).mockResolvedValueOnce({ status: { state: 'ready' }, archive });
+    const nativeArchive = vi.fn().mockResolvedValueOnce({ status: { state: 'ready', sha256: 'a'.repeat(64), byteLength: '1024', errorCode: null }, archive }).mockRejectedValueOnce(new ApiError('server', 403)).mockResolvedValueOnce({ status: { state: 'ready', sha256: 'a'.repeat(64), byteLength: '1024', errorCode: null }, archive });
     Object.assign(api, { nativeArchive });
     render(<FixedSessionRecording api={api as never} item={item} active projectId={projectId} />);
     await screen.findByText('Private saved result.');
@@ -333,6 +374,68 @@ describe('unified Session and managed records', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByText('Private saved result.')).toBeVisible();
     expect(nativeArchive).toHaveBeenLastCalledWith(item, expect.any(AbortSignal));
+  });
+  it.each([1, 3] as const)('shows schema %s saved images inside the record and retains them during an admission check', async schemaVersion => {
+    const f = await imageRecording(schemaVersion), scopes = vi.spyOn(pageImageStore, 'createScope');
+    const content = (current: boolean) => <FixedSessionRecording api={f.api as never} item={f.item} active current={current} projectId={projectId} />;
+    const view = render(content(true));
+    const image = await screen.findByRole('img', { name: f.resource.name });
+    const scope = scopes.mock.results[0]!.value;
+    expect(scope.identity).toMatchObject({ serverOrigin: window.location.origin, actorUserId: TEST_VIEWER_ID, owner: { kind: 'record', recordId: record.sessionId, revision: f.item.archive.sha256 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+    fireEvent.click(screen.getByRole('button', { name: `View image: ${f.resource.name}` }));
+    const dialog = screen.getByRole('dialog', { name: f.resource.name });
+    await within(dialog).findByRole('img');
+    expect(image.closest('.task-agent-session')).toContainElement(dialog);
+    expect(image.closest('.task-agent-session')).toHaveClass('session-fullscreen');
+    const reads = f.reader.readResource.mock.calls.length;
+    view.rerender(content(false));
+    expect(screen.getAllByRole('img')).toContain(image);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(scope.valid).toBe(true); expect(scope.canRead()).toBe(false);
+    expect(within(dialog).getByRole('button', { name: `Download image: ${f.resource.name}` })).toBeDisabled();
+    view.rerender(content(true));
+    await waitFor(() => expect(f.api.nativeArchive).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByRole('img')).toContain(image); expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(scopes).toHaveBeenCalledOnce(); expect(f.reader.readResource).toHaveBeenCalledTimes(reads);
+    if (schemaVersion === 3) {
+      expect(f.api.resources).toHaveBeenCalledWith({ sessionId: record.sessionId, claimId, executionGeneration: '1' }, expect.any(Function));
+      expect(f.reader.readResource).toHaveBeenCalledWith(f.resource, expect.any(AbortSignal), expect.any(Function));
+    } else expect(f.api.resources).not.toHaveBeenCalled();
+    expect(f.api.current).not.toHaveBeenCalled(); expect(f.api.channel).not.toHaveBeenCalled(); expect(f.api.command).not.toHaveBeenCalled();
+    view.unmount();
+    expect(scope.valid).toBe(false);
+    if (schemaVersion === 3) await waitFor(() => expect(f.reader.close).toHaveBeenCalledOnce());
+  });
+  it('invalidates the image scope before closing a revoked reader and ignores its late bytes', async () => {
+    const f = await imageRecording(), scopes = vi.spyOn(pageImageStore, 'createScope');
+    let finish!: (value: Uint8Array<ArrayBuffer>) => void;
+    f.reader.readResource.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const authority = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<FixedSessionRecording api={f.api as never} item={f.item} active projectId={projectId} />, { taskCache: { scope: authority } });
+    try {
+      await waitFor(() => expect(f.reader.readResource).toHaveBeenCalledOnce());
+      const scope = scopes.mock.results[0]!.value;
+      f.reader.close.mockImplementation(async () => { expect(scope.valid).toBe(false); });
+      act(() => authority.suspendProject(projectId));
+      expect(scope.valid).toBe(false);
+      expect(f.reader.readResource.mock.calls[0]![1].aborted).toBe(true);
+      expect(f.reader.close).toHaveBeenCalledOnce();
+      expect(screen.queryByText('Saved image record.')).toBeNull();
+      await act(async () => finish(f.bytes));
+      expect(screen.queryByRole('img')).toBeNull(); expect(screen.queryByRole('dialog')).toBeNull();
+      await scope.invalidate();
+    } finally { view.unmount(); authority.dispose(); }
+  });
+  it.each([401, 403, 404, 410])('withdraws the record when its image reader rejects access with %s', async status => {
+    const f = await imageRecording(), scopes = vi.spyOn(pageImageStore, 'createScope');
+    f.reader.readResource.mockRejectedValue(new ApiError('server', status));
+    render(<FixedSessionRecording api={f.api as never} item={f.item} active projectId={projectId} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('permission');
+    expect(screen.queryByText('Saved image record.')).toBeNull();
+    expect(scopes.mock.results[0]!.value.valid).toBe(false);
+    expect(f.reader.close).toHaveBeenCalledOnce();
+    expect(f.api.command).not.toHaveBeenCalled();
   });
   it.each(['not_registered', 'not_applicable'] as const)('keeps completed %s recoverable without consulting old history', async status => {
     const api = fixture();

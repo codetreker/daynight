@@ -1,3 +1,4 @@
+import { restoreCanonicalInputIntent } from "../../../src/commands/controller/media/input-intent.js";
 import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -54,6 +55,44 @@ test("image unknown requires an exact structured native observation, never a leg
   } finally { store.close(); }
 });
 
+test.each(["provider_accepted", "confirmed"] as const)("reopened %s images revalidate the original observation without changing the operation", async state => {
+  const { filename, ticket, command } = await fixture();
+  const { observeNativeInput } = await import("../../../src/commands/controller/recovery.js");
+  let store = openControllerLifecycleStore(filename, ticket);
+  const op = store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
+  store.patchSnapshot({ nativeSessionId: "native" }); store.markDispatching(op.operationId);
+  const observation = { operationId: op.operationId, nativeSessionId: "native", intentSha256: op.payloadHash, nativeMessageId: "exact-message", provider: "codex" as const };
+  expect(observeNativeInput(store, observation)).toBe(true);
+  if (state === "confirmed") store.recordOperation(op.operationId, "confirmed", { disposition: "started", turnId: "original-turn" });
+  const accepted = store.getOperation(op.operationId); store.close();
+  store = openControllerLifecycleStore(filename, ticket);
+  try {
+    expect(observeNativeInput(store, observation)).toBe(true);
+    expect(store.getOperation(op.operationId)).toEqual(accepted);
+    expect(observeNativeInput(store, op.operationId)).toBe(false);
+    expect(observeNativeInput(store, { ...observation, intentSha256: "b".repeat(64) })).toBe(false);
+    expect(observeNativeInput(store, { ...observation, nativeSessionId: "other" })).toBe(false);
+    expect(() => observeNativeInput(store, { ...observation, nativeMessageId: "other" })).toThrow("conflicts");
+    expect(store.getOperation(op.operationId)).toEqual(accepted);
+  } finally { store.close(); }
+});
+
+test("a terminal image operation cannot gain its first native receipt during recovery", async () => {
+  const { filename, ticket, command } = await fixture();
+  const { observeNativeInput } = await import("../../../src/commands/controller/recovery.js");
+  const store = openControllerLifecycleStore(filename, ticket);
+  try {
+    const op = store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
+    store.patchSnapshot({ nativeSessionId: "native" }); store.markDispatching(op.operationId);
+    store.recordOperation(op.operationId, "confirmed", { disposition: "started", turnId: "original-turn" });
+    const confirmed = store.getOperation(op.operationId);
+    const observation = { operationId: op.operationId, nativeSessionId: "native", intentSha256: op.payloadHash, nativeMessageId: "new-message", provider: "codex" as const };
+    expect(observeNativeInput(store, observation)).toBe(false);
+    expect(store.recordInputObservation(observation)).toBe(false);
+    expect(store.getOperation(op.operationId)).toEqual(confirmed);
+  } finally { store.close(); }
+});
+
 test("final history evidence uses the exact durable epoch and acknowledged source cutoff", async () => {
   const { filename, ticket } = await fixture(); let store = openControllerLifecycleStore(filename, ticket); const historyEpoch = randomUUID();
   try {
@@ -68,5 +107,25 @@ test("final history evidence uses the exact durable epoch and acknowledged sourc
     expect(store.getHistoryCheckpoint()).toEqual({ historyEpoch, sourceThrough: event.sequence });
     store.markProjectionGap("Native projection is incomplete.");
     expect(() => store.recordHistoryCheckpoint({ historyEpoch, sourceThrough: event.sequence })).toThrow();
+  } finally { store.close(); }
+});
+
+
+test("provider restoration reads the exact persisted image intent without a transport request ID", async () => {
+  const { filename, ticket, command } = await fixture();
+  let store = openControllerLifecycleStore(filename, ticket);
+  store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
+  store.markDispatching(command.operationId); store.recordOperation(command.operationId, "unknown"); store.close();
+  store = openControllerLifecycleStore(filename, ticket);
+  try {
+    const intent = store.getInputIntent(command.operationId)!;
+    expect(JSON.parse(intent.canonical)).not.toHaveProperty("requestId");
+    const restored = restoreCanonicalInputIntent(intent, command.operationId);
+    expect(restored).toEqual({ ...command, requestId: command.operationId });
+    expect(() => restoreCanonicalInputIntent(intent, randomUUID())).toThrow(/original operation/);
+    expect(() => restoreCanonicalInputIntent({ ...intent, sha256: "b".repeat(64) }, command.operationId)).toThrow(/original operation/);
+    expect(() => restoreCanonicalInputIntent({ ...intent, canonical: intent.canonical + " " }, command.operationId)).toThrow(/original operation/);
+    expect(store.getInputIntent(command.operationId)).toEqual(intent);
+    expect(store.getOperation(command.operationId)?.state).toBe("unknown");
   } finally { store.close(); }
 });

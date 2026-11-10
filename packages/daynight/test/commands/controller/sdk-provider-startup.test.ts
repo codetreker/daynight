@@ -3,11 +3,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { openClaudeProvider } from "../../../src/commands/controller/providers/claude.js";
-import { openCopilotProvider } from "../../../src/commands/controller/providers/copilot.js";
-import { startupFailure } from "../../../src/commands/controller/startup.js";
 import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
 import { captureStartupDeadline, stopStartupChildren } from "../../helpers/startup-deadline.js";
+
+// SDK providers own packaged helper processes, so these mechanism tests use built adapters.
+const { openClaudeProvider } = await import(new URL("../../../dist/commands/controller/providers/claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude.js");
+const { startupFailure } = await import(new URL("../../../dist/commands/controller/startup.js", import.meta.url).href) as typeof import("../../../src/commands/controller/startup.js");
+const { openCopilotProvider } = await import(new URL("../../../dist/commands/controller/providers/copilot.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/copilot.js");
+const { startupFailure: copilotStartupFailure } = await import(new URL("../../../dist/commands/controller/startup.js", import.meta.url).href) as typeof import("../../../src/commands/controller/startup.js");
 
 const roots: string[] = [], children: ChildProcess[] = [];
 afterEach(async () => {
@@ -35,7 +38,7 @@ for (const provider of ["copilot", "claude"] as const) {
       if (deadline) await deadline.expireAfterRequest(log, requests => requests.includes(provider === "claude" ? "control_request:initialize" : "session.create"));
       const error: unknown = await opening;
       expect(error).toBeInstanceOf(Error);
-      expect(startupFailure(error)).toEqual(mode.startsWith("reject") ? { state: "failed", reasonCode: "native_rejected" }
+      expect((provider === "copilot" ? copilotStartupFailure : startupFailure)(error)).toEqual(mode.startsWith("reject") ? { state: "failed", reasonCode: "native_rejected" }
         : { state: "unknown", reasonCode: mode === "timeout" ? "native_timeout" : "native_transport_unknown" });
       const requests = (await readFile(log, "utf8")).trim().split("\n");
       expect(requests).toContain(provider === "claude" ? "control_request:initialize" : mode === "reject-connect" ? "connect" : mode === "reject-resume" ? "session.resume" : "session.create");

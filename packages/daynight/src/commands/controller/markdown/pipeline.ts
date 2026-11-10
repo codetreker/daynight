@@ -9,7 +9,7 @@ type ProjectionStore = {
   put(kind: MarkdownSourceStoreKind, id: string, value: unknown): void;
   listIds(kind: MarkdownSourceStoreKind, page: { after?: string; limit: number }): string[];
 };
-type Journal = { markdownStore: ProjectionStore; projectTimeline(entry: ProviderEntry): unknown; markProjectionGap?(reason: string): void };
+type Journal = { markdownStore: ProjectionStore; getTimelineEntry?(entryId: string): ProviderEntry | undefined; publishMarkdownProjection(state: MarkdownProjectionState, entry: ProviderEntry): unknown; projectTimeline(entry: ProviderEntry): unknown; markProjectionGap?(reason: string): void };
 type CaptureHooks<Context> = {
   contextKey(): string;
   contextFor(occurrence: ImageOccurrence): Context;
@@ -29,15 +29,25 @@ export function createMarkdownTimelinePipeline<Context>(options: {
 }) {
   const { journal, captures } = options, store = journal.markdownStore, projector = options.projector ?? createMarkdownImageProjector();
   let stopped = false, broken = false, scanComplete = false, cursor: string | undefined, active: Promise<void> | null = null;
-  const get = (entryId: string) => store.get<MarkdownProjectionState>("projection", entryId);
+  const synchronize = (state: MarkdownProjectionState, entry: ProviderEntry): MarkdownProjectionState => {
+    const current = projector.adoptCommitted(state, entry);
+    if (current !== state) {
+      store.put("projection", current.entryId, current);
+      if (current.pending) { scanComplete = false; cursor = undefined; }
+    }
+    return current;
+  };
+  const get = (entryId: string) => {
+    const state = store.get<MarkdownProjectionState>("projection", entryId), committed = state && journal.getTimelineEntry?.(entryId);
+    return state && committed ? synchronize(state, committed) : state;
+  };
   const report = (): void => {
     broken = true;
     try { journal.markProjectionGap?.("Markdown timeline persistence is incomplete."); } catch { /* The owning runtime also receives the durable failure. */ }
     options.onError(new Error("Markdown timeline persistence is incomplete."));
   };
   const publish = (state: MarkdownProjectionState, entry: ProviderEntry): void => {
-    store.put("projection", state.entryId, state);
-    journal.projectTimeline(entry);
+    journal.publishMarkdownProjection(state, entry);
   };
   const update = (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart): void => {
     const state = get(occurrence.entryId); if (!state) return;
@@ -94,6 +104,23 @@ export function createMarkdownTimelinePipeline<Context>(options: {
       return true;
     } catch { report(); return false; }
   };
+  const adoptCommitted = (entry: ProviderEntry, metadata?: MarkdownPipelineMetadata): boolean => {
+    if (stopped || broken) return false;
+    try {
+      const previous = store.get<MarkdownProjectionState>("projection", entry.entryId);
+      if (previous) {
+        const current = synchronize(previous, entry), activeParts = current.parts.filter(part => part.inputIndex !== null), part = activeParts.length === 1 ? activeParts[0] : undefined;
+        if (metadata?.format === "markdown" && metadata.complete && !metadata.truncated && part?.status === "streaming" && part.format === "markdown") {
+          const prepared = projector.prepare(current.input, { parts: [{ inputIndex: part.inputIndex!, sourceKey: part.sourceKey, contextKey: part.contextKey, complete: true, truncated: false, format: "markdown" }] }, current);
+          publish(prepared.state, prepared.entry); scanComplete = false; cursor = undefined;
+        }
+        return true;
+      }
+      // Only a trusted complete-body descriptor can start a new projection.
+      // Native image-only patches have no authority to infer Markdown sources.
+      return metadata ? accept(entry, metadata) : true;
+    } catch { report(); return false; }
+  };
   const tick = async (): Promise<void> => {
     if (stopped || broken || scanComplete) return;
     if (active) return active;
@@ -129,7 +156,7 @@ export function createMarkdownTimelinePipeline<Context>(options: {
       // Reserved/copying/unknown do not invent an available resource or a descriptor.
     } catch { report(); }
   };
-  return { accept, tick, drain, hasPending, receipt, failure,
+  return { accept, adoptCommitted, tick, drain, hasPending, receipt, failure,
     async stop(): Promise<void> {
       stopped = true; if (active) await active;
       if (broken) throw new Error("Markdown timeline persistence is incomplete.");

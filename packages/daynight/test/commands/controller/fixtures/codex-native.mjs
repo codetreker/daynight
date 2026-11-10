@@ -44,7 +44,7 @@ for await (const line of createInterface({input:process.stdin})) {
    let data=['missing-user','history-delayed'].includes(interruptCase)||interruptCase==='paged-history'&&m.params.turnId==='first-turn'?[]:[user];
    let nextCursor=null;
    if(interruptCase==='large-history') {
-    if(!m.params.turnId || m.params.limit!==100){out({id:m.id,error:{code:-32602,message:'Expected bounded turn item query'}});continue;}
+    if(!m.params.turnId || m.params.limit!==1){out({id:m.id,error:{code:-32602,message:'Expected bounded turn item query'}});continue;}
     data=m.params.cursor?[{type:'agentMessage',id:'answer',text:'last page'}]:[user];nextCursor=m.params.cursor?null:'item-page-two';
    }
    const result={data:data.map(item=>({turnId:m.params.turnId,item,startedAtMs:null,completedAtMs:null})),nextCursor,backwardsCursor:null};
@@ -81,7 +81,7 @@ for await (const line of createInterface({input:process.stdin})) {
  }
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
- if(m.method==='skills/list')out({id:m.id,result:{data:[]}});
+ if(m.method==='skills/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_SKILLS ?? '[]')}});
  if(m.method==='turn/steer') {if(interruptCase?.startsWith('race:')){pendingSteer=m.id;continue;}if(interruptCase==='steer-rejected'){out({id:m.id,error:{code:-32602,message:'Steer rejected'}});continue;}out({id:m.id,result:{turnId:m.params.expectedTurnId}});continue;}
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;

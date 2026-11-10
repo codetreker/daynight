@@ -14,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestDeliveryQueueOrderDoesNotRewindOnRollback(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testDeliveryQueueOrderDoesNotRewindOnRollback(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.Begin(ctx)
 	if err != nil {
@@ -66,8 +66,8 @@ func TestDeliveryQueueOrderDoesNotRewindOnRollback(t *testing.T) {
 	}
 }
 
-func TestCurrentDestinationFollowsRevisionAndTombstone(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testCurrentDestinationFollowsRevisionAndTombstone(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	owner := wm.Owner{Kind: "personal", ID: f.user}
 	tx, err := f.conn.Begin(ctx)
@@ -128,8 +128,8 @@ func TestCurrentDestinationFollowsRevisionAndTombstone(t *testing.T) {
 	}
 }
 
-func TestAttemptManualIdentityRoundTripAndDuplicateRefusal(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testAttemptManualIdentityRoundTripAndDuplicateRefusal(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.Begin(ctx)
 	if err != nil {
@@ -168,8 +168,8 @@ func TestAttemptManualIdentityRoundTripAndDuplicateRefusal(t *testing.T) {
 	}
 }
 
-func TestHistoryKeysetCursorSelectsOnlyFollowingDelivery(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryKeysetCursorSelectsOnlyFollowingDelivery(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.Begin(ctx)
 	if err != nil {
@@ -210,8 +210,8 @@ func TestHistoryKeysetCursorSelectsOnlyFollowingDelivery(t *testing.T) {
 	}
 }
 
-func TestHistorySourcesDistinguishTombstonesMissingFactsAndStorageFailures(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistorySourcesDistinguishTombstonesMissingFactsAndStorageFailures(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.Begin(ctx)
 	if err != nil {
@@ -276,8 +276,8 @@ func TestHistorySourcesDistinguishTombstonesMissingFactsAndStorageFailures(t *te
 	}
 }
 
-func TestRetentionPolicyRequiresStoredVersion(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testRetentionPolicyRequiresStoredVersion(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.Begin(ctx)
 	if err != nil {

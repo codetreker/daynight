@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
@@ -34,7 +33,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 	projectLocked := false
 	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
 		projectLocked = true
-		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
+		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
 		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
@@ -45,7 +44,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 		if err != nil {
 			return err
 		}
-		mutation, err := tasksteps.AdmitMove(header, current, stepID, placement)
+		mutation, err := s.writeOperations.admitMove(header, current, stepID, placement)
 		if err != nil {
 			return err
 		}

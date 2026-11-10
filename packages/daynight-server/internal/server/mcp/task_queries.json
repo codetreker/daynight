@@ -1,7 +1,7 @@
 [
   {
     "name": "task_list",
-    "description": "Read a page ordered in-progress, ready todo, blocked todo, then done or cancelled; default excludes both terminal statuses. Summary is default; request full list resources explicitly. Includes ephemeral Session observation, freshness and send eligibility; partial observations retain Task data.",
+    "description": "Read a page ordered in-progress, ready todo, blocked todo, then proposed and terminal tasks; default excludes both terminal statuses. Summary is default; request full list resources explicitly. Includes ephemeral Session observation, freshness and send eligibility; partial observations retain Task data.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -24,6 +24,7 @@
         "status": {
           "type": "string",
           "enum": [
+            "proposed",
             "todo",
             "in_progress",
             "done",
@@ -110,6 +111,7 @@
                       },
                       "status": {
                         "enum": [
+                          "proposed",
                           "todo",
                           "in_progress",
                           "done",
@@ -462,6 +464,7 @@
                       },
                       "status": {
                         "enum": [
+                          "proposed",
                           "todo",
                           "in_progress",
                           "done",
@@ -1252,6 +1255,10 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "proposed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
                     "todo": {
                       "type": "integer",
                       "minimum": 0
@@ -1279,6 +1286,7 @@
                   },
                   "required": [
                     "total",
+                    "proposed",
                     "todo",
                     "inProgress",
                     "done",
@@ -1307,6 +1315,7 @@
                       },
                       "status": {
                         "enum": [
+                          "proposed",
                           "todo",
                           "in_progress",
                           "done",
@@ -1864,6 +1873,10 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "proposed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
                     "todo": {
                       "type": "integer",
                       "minimum": 0
@@ -1891,6 +1904,7 @@
                   },
                   "required": [
                     "total",
+                    "proposed",
                     "todo",
                     "inProgress",
                     "done",

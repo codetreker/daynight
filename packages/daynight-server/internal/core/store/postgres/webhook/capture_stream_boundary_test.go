@@ -76,8 +76,8 @@ func (c *audienceFrameConn) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestAudiencePartialStreamFailureDiscardsSourceTransaction(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testAudiencePartialStreamFailureDiscardsSourceTransaction(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	if f.conn.Config().TLSConfig != nil {
@@ -155,8 +155,8 @@ func TestAudiencePartialStreamFailureDiscardsSourceTransaction(t *testing.T) {
 	}
 }
 
-func TestCapturedAuthorizationEpochDoesNotBecomeContinuousOnRegrant(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testCapturedAuthorizationEpochDoesNotBecomeContinuousOnRegrant(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	for _, state := range []struct {
 		authorization string

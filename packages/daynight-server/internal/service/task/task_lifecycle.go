@@ -25,7 +25,7 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 		return model.Task{}, err
 	}
 	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
-		mutation, err := taskcore.PrepareStatus(ctx, tx.TaskDAO(), principal, id, input)
+		mutation, err := s.writeOperations.prepareStatus(ctx, tx.TaskDAO(), principal, id, input)
 		return mutation, err
 	})
 }

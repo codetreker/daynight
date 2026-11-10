@@ -1,6 +1,8 @@
 # Session 图片验收与容量规格
 
-本文定义待实现图片能力的容量保证、验收追溯和证据边界，不表示任何图片功能或平台已通过验收。[输入与草稿规格](session-image-input.md)拥有 R1–R3/R7，[显示与归档规格](session-image-history.md)拥有 R4–R6/R8；本页引用这些规范，不另设竞争行为。
+本文定义图片能力的容量保证、验收追溯和证据边界，不表示整条图片输入、采集及归档链或任何平台已通过验收。[输入与草稿规格](session-image-input.md)拥有 R1–R3/R7，[显示与归档规格](session-image-history.md)拥有 R4–R6/R8；本页引用这些规范，不另设竞争行为。
+
+当前 Provider 图片矩阵覆盖 Codex、Copilot。Claude 不属于当前图片交付与验收范围；已有适配与历史数据保留兼容、权限和拒绝语义。此范围不豁免原生权限、平台证据、来源保存或外部网络验收，具体理由见[Provider 范围决策](../../.agents/notes/implemented/architecture/2026-11-11-image-provider-scope.md)。
 
 ## 容量与兼容要求
 
@@ -52,7 +54,7 @@
 | 编号 | 验收场景 | 可观察结果 |
 | --- | --- | --- |
 | A1 | 选择、粘贴、拖拽单图与多图 | 草稿顺序正确，可预览和移除；纯文本粘贴、输入法和快捷键不退化 |
-| A2 | 纯图片与文字加图片分别发送到三个 Provider | 原生输入确有图片，Agent 能依据测试图回答；消息回显对应同一输入且只发送一次 |
+| A2 | 纯图片与文字加图片分别发送到 Codex、Copilot | 原生输入确有图片，Agent 能依据测试图回答；消息回显对应同一输入且只发送一次 |
 | A3 | 8 张、10 MiB 单图、20 MiB 总量及各边界超限 | 边界内全链路可用；超限明确拒绝，不截断或隐式只发文字 |
 | A4 | 不支持图片的模型、模型变化、回合中输入 | 能力判断一致，拒绝时保留草稿；不伪造原生图片能力 |
 | A5 | 上传失败、断线、发送回执丢失、刷新后恢复 | 可重试准备图片，发送未知结果仅恢复原操作；无重复原生回合或跨会话误投 |
@@ -64,7 +66,7 @@
 | A11 | 账户切换、权限撤销、会话执行代次变化、删除和资源清理 | 旧草稿与回执不误投，图片访问不跨账户或越权，仍有效的历史资源不误删 |
 | A12 | 旧文本记录、旧归档、图片功能不支持的组件版本 | 保持既有文本读取和操作；图片不支持状态明确 |
 
-Provider 验收应分别注明原生版本、模型和运行平台；受控测试只能证明其测试范围。桌面与窄屏浏览器检查不能替代三种真实 Provider 输入和归档读取验证。
+Provider 验收应分别注明原生版本、模型和运行平台；受控测试只能证明其测试范围。桌面与窄屏浏览器检查不能替代Codex、Copilot 的真实 Provider 输入和归档读取验证。
 
 ## 必需失败与恢复观察
 
@@ -73,7 +75,7 @@ Provider 验收应分别注明原生版本、模型和运行平台；受控测�
 | 验收范围 | 必须覆盖的失败与恢复 |
 | --- | --- |
 | A1/A3 输入 | 三种添加入口、同文件重选、异步验证乱序、长名称及超限；普通粘贴、选区、撤销、IME 和菜单行为保持。拒绝的第九张不能刷新后消失而偷偷发送其余图片。 |
-| A2/A4 原生 | 三 Provider 分别测试纯图、混合、不同图顺序与重复同图；第二图不可读时零次原生调用，派发后丢回执时最多一次调用且仅查询原操作。无图片模型、能力 unknown、模型/权限/上下文变化及回合中输入保持一致拒绝。 |
+| A2/A4 原生 | Codex、Copilot 分别测试纯图、混合、不同图顺序与重复同图；第二图不可读时零次原生调用，派发后丢回执时最多一次调用且仅查询原操作。无图片模型、能力 unknown、模型/权限/上下文变化及回合中输入保持一致拒绝。 |
 | A5 草稿与上传 | 上传各阶段响应丢失、连续块确认与精确重传、100% 仍验证中、事务 abort、缺 Blob、quota、多标签竞争、冻结/派发/接受/清理间崩溃。接受仅清原版本；后继草稿保留，unknown 不重发、不被新 draftId 绕过。 |
 | A6/A7 来源与显示 | 用户、Agent、工具、Markdown 本地与外部图及五种显示格式；真实 AST 节点、引用式和链接图片，代码/raw JSON/HTML 不触发读取。路径越界、符号链接替换、损坏图、重定向、DNS 变化、私网和凭据隔离须观察源打开/HTTP 请求与字节数。 |
 | A8 历史 | 原图 A 保存后路径/URL 改为 B 或删除、Controller 停止，历史、预览及下载仍为 A 的完整摘要，源请求为零。完整分页、原生恢复、正文撤回与迟到关联、归档提交丢回执、备份恢复、已保存原件损坏分别验证；unknown 或损坏不能冒充 partial。 |
@@ -92,13 +94,13 @@ Provider 验收应分别注明原生版本、模型和运行平台；受控测�
 
 每个 Provider 的样本须独立覆盖纯图、图文、两张不同图顺序及重复同图身份。图片内含随机颜色、几何位置、短码或任务；答案不能泄露在文件名、prompt、displayName 或之前的会话文本。证据同时包含真实 native payload 形状、逐图摘要、唯一调用数、精确接受关联和模型答案；“看到了图片”或缺少 payload/身份链的正确答案均不足。
 
-Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的精确 expectedTurnId；clientUserMessageId 不提供自动重发幂等性。Claude 须有已证明原生 profile 下 root user_message_uuid/command_uuid 的精确投递关联；SDK 消费、user 落盘、hook-blocked 或下一条 assistant 的位置关系不能代替。Copilot 须持久保存唯一 send Promise 返回的非空 messageId 与原 operation/有序图片关联，不猜测其恒等于 user event ID。历史可展示与原生已接受是不同事实。
+Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的精确 expectedTurnId；clientUserMessageId 不提供自动重发幂等性。Claude 不在当前图片验收矩阵内；若将来开放其图片资格，须先有已证明原生 profile 下 root user_message_uuid/command_uuid 的精确投递关联；SDK 消费、user 落盘、hook-blocked 或下一条 assistant 的位置关系不能代替。Copilot 须持久保存唯一 send Promise 返回的非空 messageId 与原 operation/有序图片关联，不猜测其恒等于 user event ID。历史可展示与原生已接受是不同事实。
 
-实际支持平台按[开发与验证说明](../development.md)及各组件发布要求核验 macOS arm64、Linux、Windows。三个 Provider 分别记录每个平台的 native/SDK/backend/model/profile 结果；其他平台通过不能填补未测组合，Intel macOS 不计作已支持平台。Task/Test/Bot 三种原生输入 host 至少各有一个真实 L3 路径，其余入口核对同一原生身份与 L2 接线；不能据此声称每个 Provider×入口均真实运行。
+实际支持平台按[开发与验证说明](../development.md)及各组件发布要求核验 macOS arm64、Linux、Windows。Codex、Copilot 分别记录每个平台的 native/SDK/backend/model/profile 结果；其他平台通过不能填补未测组合，Intel macOS 不计作已支持平台。Task/Test/Bot 三种原生输入 host 至少各有一个真实 L3 路径，其余入口核对同一原生身份与 L2 接线；不能据此声称每个 Provider×入口均真实运行。
 
 浏览器证据记录产品版本、OS/arch、viewport、DPR 和输入方式。390px 桌面模拟只证明窄屏布局，不能代替真实触屏、软键盘、移动浏览器解码或原生平台文件句柄与进程终止。原型仅为内存交互输入，其上传、回显和恢复模拟不得成为生产 oracle。
 
-每例结果为 `passed`、`failed`、`not_run` 或 `native_not_produced` 并附原因。缺必需环境、凭据或平台为 not_run，必需项 not_run/failed 不能通过验收。native_not_produced 仅适用于真实版本确未产生的特定输出形态，仍需 L1 解析覆盖；不得豁免三个 Provider 的 A2 输入。
+每例结果为 `passed`、`failed`、`not_run` 或 `native_not_produced` 并附原因。缺必需环境、凭据或平台为 not_run，必需项 not_run/failed 不能通过验收。native_not_produced 仅适用于真实版本确未产生的特定输出形态，仍需 L1 解析覆盖；不得豁免 Codex、Copilot 的 A2 输入。
 
 ## 性能、证据记录与完成条件
 

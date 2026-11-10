@@ -3,7 +3,10 @@ package oauth_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,4 +245,56 @@ func TestClientCapacityPinningAndExpiry(t *testing.T) {
 	missing(t, err)
 	_, err = dao.PinClient(ctx, "missing", now)
 	missing(t, err)
+}
+
+func TestClientMetadataJSONBRoundTripBeyondWireLimit(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	const wireLimit = 65536
+	uri := "https://client.example/" + strings.Repeat("a", wireLimit-100)
+	request, err := json.Marshal(map[string]any{"redirect_uris": []string{uri}})
+	check(t, err)
+	id := "dnoac_" + strings.Repeat("A", 43)
+	metadata := map[string]any{"client_id": id, "redirect_uris": []any{uri}, "token_endpoint_auth_method": "none"}
+	encoded, err := json.Marshal(metadata)
+	check(t, err)
+	if len(uri) != 65459 || len(request) != 65481 || len(encoded) != 65581 || len(request) >= wireLimit || len(encoded) <= wireLimit {
+		t.Fatalf("metadata boundary fixture: URI=%d request=%d stored=%d", len(uri), len(request), len(encoded))
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	client := store.OAuthClient{ID: id, Metadata: encoded, CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	tx, err := db.Pool.Begin(ctx)
+	check(t, err)
+	defer tx.Rollback(context.Background())
+	inserted, err := oauth.NewDAO(tx).InsertClient(ctx, client, 10000, now)
+	check(t, err)
+	if !inserted {
+		t.Fatal("large metadata client was not inserted")
+	}
+	check(t, tx.Commit(ctx))
+
+	tx, err = db.Pool.Begin(ctx)
+	check(t, err)
+	defer tx.Rollback(context.Background())
+	dao := oauth.NewDAO(tx)
+	stored, err := dao.Client(ctx, client.ID, false)
+	check(t, err)
+	var actual map[string]any
+	check(t, json.Unmarshal(stored.Metadata, &actual))
+	if stored.ID != client.ID || !stored.CreatedAt.Equal(client.CreatedAt) || !stored.LastUsedAt.Equal(client.LastUsedAt) || !stored.ExpiresAt.Equal(client.ExpiresAt) || len(stored.Metadata) <= wireLimit || !reflect.DeepEqual(actual, metadata) {
+		t.Fatalf("large JSONB metadata roundtrip: bytes=%d metadataEqual=%t client=%s created=%s last=%s expiry=%s", len(stored.Metadata), reflect.DeepEqual(actual, metadata), stored.ID, stored.CreatedAt, stored.LastUsedAt, stored.ExpiresAt)
+	}
+	pinAt := now.Add(time.Minute)
+	pinned, err := dao.PinClient(ctx, client.ID, pinAt)
+	check(t, err)
+	check(t, tx.Commit(ctx))
+	var raw []byte
+	var lastUsed, expires time.Time
+	check(t, db.Pool.QueryRow(ctx, `SELECT metadata,last_used_at,expires_at FROM oauth_clients WHERE id=$1`, client.ID).Scan(&raw, &lastUsed, &expires))
+	var persisted map[string]any
+	check(t, json.Unmarshal(raw, &persisted))
+	if !lastUsed.Equal(pinAt) || !expires.Equal(pinAt.Add(7*24*time.Hour)) || !pinned.LastUsedAt.Equal(lastUsed) || !pinned.ExpiresAt.Equal(expires) || !reflect.DeepEqual(persisted, metadata) {
+		t.Fatalf("large metadata pin persistence: metadataEqual=%t last=%s expiry=%s", reflect.DeepEqual(persisted, metadata), lastUsed, expires)
+	}
 }

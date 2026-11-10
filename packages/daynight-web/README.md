@@ -30,8 +30,9 @@ projects, member and invitation management, CLI device authorization, and person
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
 shows the public introduction, `/setup` selects the zero-API guide, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
-the project index; `/teams/{teamId}/settings` opens Team settings. Business APIs require a browser session or PAT; project
-resources also require current membership, while Worker resources belong to the
+the project index. Team settings share one page shell: `/teams/{teamId}/settings`
+opens General, and `/teams/{teamId}/members` opens Members & invitations. Business
+APIs require a browser session or PAT; project resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
 and keyboard behavior remain unchanged.
@@ -282,10 +283,11 @@ verified missing Team clears that choice and restores Personal. Background
 checks retain the confirmed Team and all loaded selector pages until a complete
 refreshed prefix is available; actual changes and recoverable errors remain
 visible. Explicit refresh still reads the directory. When the confirmed selection
-is Personal, Team members and settings entries are omitted from the sidebar in
-all layouts; ordinary Teams retain links to their own member and settings pages
-regardless of their names. Direct Personal member and settings URLs remain
-available under their existing access rules. The
+is Personal, the Team settings entry is omitted from the sidebar in all layouts.
+Ordinary Teams have one Team settings link that opens General and stays selected
+in both settings sections, regardless of the Team name. Ordinary members retain
+this entry to read the roster and leave their Team. Direct Personal settings and
+member URLs remain available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
 [browser Team preference decision](../../.agents/notes/archived/feature/2026-11-04-browser-team-preference.md) records the rationale for storage, identity and recovery behavior. Shared projects stay outside the
@@ -393,12 +395,33 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
-Team settings display the selectable Team ID with an adjacent copy button for every
-viewer. Clipboard success and failure are reported locally; failure leaves the ID
-selectable and retryable. Pending copies are guarded and results are discarded when
-the Team or identity context changes. Team settings, members and invitations retain loaded content, the invitation area, drafts and open
-confirmations throughout ordinary identity checks and same-account background reads, without loading rows or disabling local editing. Initial reads and actual errors retain their own feedback. Writes require fresh Team, membership and invitation admission;
-explicit reconciliation retains the original operation result and never replays a write or infers its success from a read.
+Team settings share a heading, the current Team name, and horizontal General and
+Members & invitations links. Native links preserve direct access, reload and browser
+history; the navigation wraps on narrow screens. General displays the saved name
+with its rename action, the selectable Team ID with an adjacent copy button for every
+viewer, and a separate deletion panel at the bottom. Members & invitations contains
+the roster and its existing role, removal and self-departure actions, followed by
+admin-only invitation management. The
+[settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
+records the grouping and lifetime choices.
+
+Clipboard success and failure are reported locally; failure leaves the ID selectable
+and retryable. Pending copies are guarded and results are discarded when
+the Team or identity context changes. A stable Team-bound owner mounts each section
+on first visit and retains visited sections while either is current. Section changes
+suspend hidden content without losing drafts, confirmations, pending or unknown
+writes, or one-time invitation links. Off-route owners remain only as required by
+protected operations and receipts; inactive completion cannot focus hidden content.
+Leaving or deleting a Team returns to Personal only when the live browser location
+still shows either settings section for that Team, preserving unrelated destinations
+and later Team choices.
+
+Team settings and invitations retain loaded content, the invitation area, drafts
+and open confirmations throughout ordinary identity checks and same-account
+background reads, without loading rows or disabling local editing. Initial reads
+and actual errors retain their own feedback. Writes require fresh Team, membership
+and invitation admission; explicit reconciliation retains the original operation
+result and never replays a write or infers its success from a read.
 A changed selected member role or version invalidates its confirmation. Project
 settings, membership and transfer results retain their original scope and wait for
 admission before publication. Current access is rechecked where required; a
@@ -1425,13 +1448,13 @@ unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done an
 cancelled prerequisites are satisfied. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
-ordinary-component member exactly once, with `in_progress` first, then `todo`,
+ordinary-component member exactly once, with `in_progress` first, then `todo`, then `proposed`,
 then terminal outcomes. Terminal children use exact completedAt for done or
 cancelledAt for cancelled in descending order, with unknown times last. Equal
 terminal times and unknown-time ties retain snapshot order, as do children in
 other status groups. Fresh snapshots recalculate this order. Top-level Goal
 ordering remains independent. Other starting tasks in a merge are included,
-while external prerequisite context is excluded. The list retains all four
+while external prerequisite context is excluded. The list retains all five
 statuses; filters determine whole-chain visibility and never remove children.
 Child rows show their own status, applicable ready/blocked markers and known
 execution duration after the title, and open the shared task dialog. Cancelled
@@ -1464,18 +1487,18 @@ The [task view decision](../../.agents/notes/archived/feature/2026-10-22-project
 and [chain status decision](../../.agents/notes/archived/bug-fix/2026-10-22-task-chain-status.md)
 record their current rules and original rationale.
 
-The runtime accepts todo, in_progress, done and cancelled. The graph summary
-has seven counts: total, todo, inProgress, done, cancelled, ready and blocked.
-They satisfy `total = todo + inProgress + done + cancelled` and
-`todo = ready + blocked`. Creation uses todo. All-done Goals have the done
+The runtime accepts proposed, todo, in_progress, done and cancelled. The graph summary
+has eight counts: total, proposed, todo, inProgress, done, cancelled, ready and blocked.
+They satisfy `total = proposed + todo + inProgress + done + cancelled` and
+`todo = ready + blocked`. Creation defaults to proposed and accepts explicit todo for confirmed work. Proposed is unfinished, never ready and does not satisfy dependencies. All-proposed Goals aggregate as proposed; unstarted proposed/todo mixtures aggregate as todo. All-done Goals have the done
 aggregate outcome, all-cancelled Goals have cancelled, and mixed terminal Goals
-have the UI-only ended outcome. Ended is not a fifth TaskStatus. Progress counts
+have the UI-only ended outcome. Ended is not a TaskStatus. Progress counts
 done + cancelled while preserving each result count. External context does not
 affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
 copy icon immediately to its right. The ID and its copy control belong to Overview.
-The four-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
+The five-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on every content tab, marks the current
@@ -1995,7 +2018,7 @@ state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
 
 `TaskDetailSurface` shares the full content and existing actions between dialog
-and page: description, status, relationships, PRs, metadata, three-state setting,
+and page: description, status, relationships, PRs, metadata, five-state setting,
 automatic-execution permission, execution platform, assignee and attachment management.
 `TaskDetailDialog` retains the modal portal, inertness, scroll lock, focus loop
 and focus restoration. `TaskDetailPage` provides an ordinary full-page container,
@@ -2215,9 +2238,12 @@ Webhook page tests independently observe request preparation, dispatch and the
 resulting UI. Native SHA-256 preparation is held by explicit promise gates in the
 restrictive cleanup case; each release retains the real digest computation.
 Exact write counts and distinct operation IDs identify sequential mutations.
-Team selection waits for its current named option. Malformed owner-list response
-cases release their initial endpoint detail within async React `act` before
-revealing a secret, so endpoint effects settle before the read begins. Controlled
+The personal-page mount waits for its initial detail request and releases the
+response within async React `act` before returning; initial list failures and
+empty lists keep their separate readiness predicates. Team selection waits for
+its current named option, and the shared Team-selection helper also settles its
+initial detail response within async `act`. Endpoint effects therefore settle
+before secret reads and subsequent responsive or Back interactions. Controlled
 management and receipt responses settle within React `act` before authorization,
 draft, secret, original-operation and no-replay assertions. Late-denial tests complete the newer
 Team membership refresh or owner selection before releasing the old response.

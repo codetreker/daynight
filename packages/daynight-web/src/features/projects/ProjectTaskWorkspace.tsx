@@ -1,5 +1,6 @@
 import { TaskSessionSummaryProvider } from "../task-session-summary/TaskSessionSummaryProvider";
 import { TaskPauseCount, TaskPauseProvider } from "../task-pause/TaskPause";
+import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import type { ComponentProps, ReactNode } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
@@ -25,7 +26,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, sessionStore, active
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
   return <>
-    <div className="project-section-heading"><h2>{sections.tasks}</h2><TaskPauseCount count={snapshot.pausedTaskIds.size} /></div>
+    <div className="project-section-heading"><h2>{sections.tasks}</h2><TaskPauseCount count={pausedSummaryTaskIds(snapshot.graph.tasks, snapshot.pausedTaskIds).size} /></div>
     {snapshot.graph.summary.total === 0 ? <section className="state-box"><h2>{m.empty}</h2><p>{m.emptyDetail}</p></section> : (
       <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}

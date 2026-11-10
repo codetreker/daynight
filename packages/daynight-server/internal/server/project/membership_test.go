@@ -1,385 +1,521 @@
 package project
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
-	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
-
-type membershipHarness struct {
-	*authHarness
-	admin    *http.Cookie
-	member   *http.Cookie
-	outsider *http.Cookie
-	project  model.Project
-	adminID  string
-	memberID string
-}
-
-func membershipTestHarness(t *testing.T) *membershipHarness {
-	t.Helper()
-	h := &membershipHarness{authHarness: authTestHarness(t)}
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	NewMembershipRoutes(projectservice.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
-	h.Handler = httpx.RequestLogging(logger, mux)
-	h.admin = h.Login(t, "membership-admin")
-	h.member = h.Login(t, "membership-member")
-	h.outsider = h.Login(t, "membership-outsider")
-	principal, err := h.Identity.Authenticate(context.Background(), model.SessionCredential, h.admin.Value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.adminID = principal.UserID
-	h.project, err = projectservice.NewProjects(h.Database).Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Shared project", RepoURL: "https://example.com/shared.git"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.memberID = decodeResponse[api.User](t, h.call("GET", "/api/v1/me", "", h.member), 200).ID
-	return h
-}
-
-func (h *membershipHarness) call(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
-	var cookies []*http.Cookie
-	if cookie != nil {
-		cookies = []*http.Cookie{cookie}
-	}
-	return h.Request(method, path, body, cookies, nil, h.Origin)
-}
-
-func (h *membershipHarness) invitation(t *testing.T) (api.CreatedProjectInvitation, string) {
-	t.Helper()
-	response := h.call("POST", "/api/v1/projects/"+h.project.ID+"/invitations", invitationActorBody(h.adminID), h.admin)
-	invitation := decodeResponse[api.CreatedProjectInvitation](t, response, 201)
-	link, err := url.Parse(invitation.Link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.Header().Get("Cache-Control") != "no-store" || link.Scheme+"://"+link.Host != h.Origin || link.Path != "/invitations" || link.RawQuery != "" || link.Fragment == "" || response.Header().Get("Location") != "/api/v1/projects/"+h.project.ID+"/invitations/"+invitation.ID {
-		t.Fatalf("invitation disclosure: %d %+v", response.Code, invitation)
-	}
-	if invitation.CreatedBy != h.adminID || invitation.ExpiresAt.Sub(invitation.CreatedAt) != 7*24*time.Hour || invitation.ConsumedAt != nil || invitation.RevokedAt != nil {
-		t.Fatalf("invitation metadata: %+v", invitation)
-	}
-	var stored []byte
-	if err := h.Database.Pool.QueryRow(context.Background(), `SELECT token_hash FROM project_invitations WHERE id=$1`, invitation.ID).Scan(&stored); err != nil {
-		t.Fatal(err)
-	}
-	want := sha256.Sum256([]byte(link.Fragment))
-	if !bytes.Equal(stored, want[:]) {
-		t.Fatal("invitation secret was not stored as its digest")
-	}
-	return invitation, link.Fragment
-}
 
 func invitationBody(token string) string {
 	encoded, _ := json.Marshal(api.InspectProjectInvitationRequest{Token: token})
 	return string(encoded)
 }
-
 func invitationActorBody(userID string) string {
 	encoded, _ := json.Marshal(api.ProjectInvitationMutationRequest{ExpectedUserID: userID})
 	return string(encoded)
 }
-
 func invitationAcceptBody(token, userID string) string {
 	encoded, _ := json.Marshal(api.AcceptProjectInvitationRequest{Token: token, ExpectedUserID: userID})
 	return string(encoded)
 }
-
 func memberRoleBody(t *testing.T, version int64, role, expectedUserID string) string {
 	t.Helper()
 	return jsonBody(t, api.SetProjectMemberRoleRequest{Version: version, Role: role, ExpectedUserID: expectedUserID})
 }
-
 func memberRemovalBody(t *testing.T, version int64, expectedUserID string) string {
 	t.Helper()
 	return jsonBody(t, api.RemoveProjectMemberRequest{Version: version, ExpectedUserID: expectedUserID})
 }
 
-func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
-	h := membershipTestHarness(t)
-	base := "/api/v1/projects/" + h.project.ID
-	assertProjectError(t, h.call("GET", base+"/members", "", nil), 401, "unauthenticated")
-	assertProjectError(t, h.call("GET", base+"/members", "", h.member), 404, "not_found")
-	assertProjectError(t, h.call("GET", "/api/v1/projects/00000000-0000-0000-0000-000000000000/members", "", h.admin), 404, "not_found")
-	empty := decodeResponse[api.ProjectInvitationList](t, h.call("GET", base+"/invitations", "", h.admin), 200)
-	if empty.Items == nil || len(empty.Items) != 0 {
-		t.Fatal("empty invitation list must contain an array")
-	}
-	_, token := h.invitation(t)
-	acceptance := decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200)
-	member := acceptance.DirectGrant
-	if member.Role != "member" || member.Version < 1 || member.UserID != h.memberID {
-		t.Fatalf("new member response: %+v", member)
-	}
-	listResponse := h.call("GET", base+"/members", "", h.member)
-	list := decodeResponse[api.ProjectParticipantList](t, listResponse, 200)
-	if len(list.Items) != 2 || listResponse.Header().Get("Cache-Control") != "no-store" || strings.Contains(listResponse.Body.String(), "github:") || strings.Contains(listResponse.Body.String(), "uniAuth") {
-		t.Fatalf("member list: %s", listResponse.Body)
-	}
-	memberPath := base + "/members/" + h.memberID
-	var adminVersion int64
-	for _, item := range list.Items {
-		if item.UserID == h.adminID {
-			adminVersion = item.DirectGrant.Version
+type membershipContextKey struct{}
+
+func membershipCall(t *testing.T, h *httpHarness, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := h.request(method, path, body)
+	request = request.WithContext(context.WithValue(request.Context(), membershipContextKey{}, t))
+	response := httptest.NewRecorder()
+	h.Handler.ServeHTTP(response, request)
+	return response
+}
+
+func membershipExpectation(t *testing.T, h *httpHarness, wantProject string) func(context.Context, model.Principal, string) {
+	t.Helper()
+	calls := 0
+	t.Cleanup(func() {
+		if calls != 1 {
+			t.Errorf("business calls = %d, want 1", calls)
 		}
-	}
-	memberBody := func(role string) string { return memberRoleBody(t, member.Version, role, h.adminID) }
-	adminBody := func(role, expectedUserID string) string { return memberRoleBody(t, adminVersion, role, expectedUserID) }
-	outsider := decodeResponse[api.User](t, h.call("GET", "/api/v1/me", "", h.outsider), 200)
-	for _, actor := range []struct {
-		cookie *http.Cookie
-		userID string
-		status int
-		code   string
-	}{{h.member, h.memberID, 403, "forbidden"}, {h.outsider, outsider.ID, 404, "not_found"}} {
-		for _, call := range []struct{ method, path, body string }{
-			{"GET", base + "/invitations", ""}, {"POST", base + "/invitations", invitationActorBody(actor.userID)},
-			{"PATCH", memberPath, memberRoleBody(t, 1, "admin", actor.userID)}, {"DELETE", memberPath, memberRemovalBody(t, 1, actor.userID)},
-			{"DELETE", base + "/invitations/00000000-0000-0000-0000-000000000000", invitationActorBody(actor.userID)},
-		} {
-			assertProjectError(t, h.call(call.method, call.path, call.body, actor.cookie), actor.status, actor.code)
+	})
+	return func(ctx context.Context, p model.Principal, project string) {
+		t.Helper()
+		calls++
+		if ctx.Value(membershipContextKey{}) != t || p != h.Principal || project != wantProject {
+			t.Fatalf("business propagation: principal=%+v project=%q context=%v", p, project, ctx.Value(membershipContextKey{}))
 		}
-	}
-	unchanged := decodeResponse[api.ProjectGrant](t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 200)
-	if unchanged.Version != member.Version {
-		t.Fatal("no-op role change advanced the observed version")
-	}
-	promoted := decodeResponse[api.ProjectGrant](t, h.call("PATCH", memberPath, memberBody("admin"), h.admin), 200)
-	if promoted.Version <= member.Version || promoted.Role != "admin" {
-		t.Fatalf("promotion: %+v", promoted)
-	}
-	assertProjectError(t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 409, "version_conflict")
-	assertProjectError(t, h.call("DELETE", memberPath, memberRemovalBody(t, member.Version, h.adminID), h.admin), 409, "version_conflict")
-	pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.call("POST", "/api/v1/me/tokens", `{"name":"project administrator","expiresAt":null}`, h.member), 201)
-	if response := h.Request("GET", base+"/members", "", nil, []string{"Bearer " + pat.Token}, ""); response.Code != 200 {
-		t.Fatalf("PAT membership access: %d %s", response.Code, response.Body)
-	}
-	demotion := h.Request("PATCH", base+"/members/"+h.adminID, adminBody("member", h.memberID), nil, []string{"Bearer " + pat.Token}, "https://foreign.test")
-	if demotion.Code != 200 {
-		t.Fatalf("PAT project administration: %d %s", demotion.Code, demotion.Body)
-	}
-	demoted := decodeResponse[api.ProjectGrant](t, demotion, 200)
-	if response := h.call("DELETE", base+"/members/"+h.adminID, memberRemovalBody(t, demoted.Version, h.memberID), h.member); response.Code != 204 {
-		t.Fatalf("remove member: %d %s", response.Code, response.Body)
-	}
-	inherited := decodeResponse[api.ProjectParticipantList](t, h.call("GET", base+"/members", "", h.admin), 200)
-	if len(inherited.Items) != 2 {
-		t.Fatalf("owner disappeared after direct grant removal: %#v", inherited)
-	}
-	for _, participant := range inherited.Items {
-		if participant.UserID == h.adminID && (participant.EffectiveRole != "admin" || participant.DirectGrant != nil) {
-			t.Fatalf("owner access does not reflect independent sources: %#v", participant)
-		}
-	}
-	assertProjectError(t, h.Request("GET", base+"/members", "", []*http.Cookie{h.member}, []string{"Bearer invalid"}, ""), 401, "unauthenticated")
-	for _, origin := range []string{"", "null", "https://foreign.test"} {
-		assertProjectError(t, h.Request("POST", base+"/invitations", `{}`, []*http.Cookie{h.member}, nil, origin), 403, "forbidden")
-	}
-	for _, secret := range []string{token, pat.Token, h.admin.Value, h.member.Value} {
-		if strings.Contains(h.Logs.String(), secret) {
-			t.Fatal("membership request logged a credential")
-		}
-	}
-	if !strings.Contains(h.Logs.String(), `"component":"membership"`) || !strings.Contains(h.Logs.String(), `"project_id":"`+h.project.ID+`"`) || !strings.Contains(h.Logs.String(), `"user_id":"`+h.memberID+`"`) {
-		t.Fatal("membership logs lost user or project correlation")
 	}
 }
 
-func TestMembershipHTTPInvitationLifecycle(t *testing.T) {
-	h := membershipTestHarness(t)
-	base := "/api/v1/projects/" + h.project.ID + "/invitations"
-	outsiderID := decodeResponse[api.User](t, h.call("GET", "/api/v1/me", "", h.outsider), 200).ID
-	invitation, token := h.invitation(t)
-	for _, method := range []string{"GET", "HEAD"} {
-		for _, path := range []string{"/api/v1/invitations/inspect", "/api/v1/invitations/accept"} {
-			response := h.call(method, path, invitationBody(token), h.member)
-			if response.Code != 405 || response.Header().Get("Allow") != "POST" {
-				t.Fatalf("navigation consumed an invitation: %s %s %d", method, path, response.Code)
+func membershipGrant(h *httpHarness, version int64, role model.ProjectRole) model.ProjectGrant {
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("fixture", 3600))
+	return model.ProjectGrant{ProjectID: h.Project.ID, UserID: h.Principal.UserID, Role: role, Version: version, CreatedAt: at, UpdatedAt: at.Add(time.Hour)}
+}
+
+func membershipAccess(h *httpHarness, grant *model.ProjectGrant) model.ProjectAccess {
+	return model.ProjectAccess{ProjectID: h.Project.ID, UserID: h.Principal.UserID, Role: model.ProjectAdmin, DirectGrant: grant, Ownership: h.Project.Ownership, OwnerTeam: model.TeamRef{ID: h.Project.Ownership.TeamID, Kind: "personal"}, CanTransfer: true}
+}
+
+type membershipHTTPCase struct {
+	name, method, path, body string
+	configure                func(*testing.T, *httpHarness, error)
+}
+
+func membershipCases(h *httpHarness) []membershipHTTPCase {
+	base := "/api/v1/projects/" + h.Project.ID
+	grant := membershipGrant(h, 7, model.ProjectMemberRole)
+	access := membershipAccess(h, &grant)
+	invitation := model.ProjectInvitation{ID: "00000000-0000-4000-8000-000000000057", ProjectID: h.Project.ID, CreatedBy: h.Principal.UserID, CreatedAt: grant.CreatedAt, ExpiresAt: grant.CreatedAt.Add(7 * 24 * time.Hour), TokenHash: []byte("private-hash")}
+	const token = "dninvite_private-invitation-secret"
+	return []membershipHTTPCase{
+		{"list", "GET", base + "/members", "", func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, h.Project.ID)
+			h.Memberships.ListWithAccessFunc = func(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error) {
+				check(ctx, p, id)
+				return coreproject.ProjectParticipants{Items: []model.ProjectParticipant{{UserID: p.UserID, EffectiveRole: model.ProjectMemberRole, DirectGrant: &grant}}, ActorAccess: access}, failure
 			}
-		}
-	}
-	for range 2 {
-		response := h.call("POST", "/api/v1/invitations/inspect", invitationBody(token), h.member)
-		inspection := decodeResponse[api.ProjectInvitationInspection](t, response, 200)
-		if inspection.ProjectID != h.project.ID || inspection.ProjectName != h.project.Name || inspection.DirectGrant != nil || strings.Contains(response.Body.String(), "repoUrl") || strings.Contains(response.Body.String(), token) || response.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("minimal inspection: %s", response.Body)
-		}
-	}
-	inspection := decodeResponse[api.ProjectInvitationInspection](t, h.call("POST", "/api/v1/invitations/inspect", invitationBody(token), h.admin), 200)
-	if inspection.DirectGrant == nil || inspection.DirectGrant.Role != "admin" {
-		t.Fatal("existing member was not identified")
-	}
-	decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.adminID), h.admin), 200)
-	listResponse := h.call("GET", base, "", h.admin)
-	list := decodeResponse[api.ProjectInvitationList](t, listResponse, 200)
-	if len(list.Items) != 1 || list.Items[0].ConsumedAt != nil || listResponse.Header().Get("Cache-Control") != "no-store" || strings.Contains(listResponse.Body.String(), token) || strings.Contains(listResponse.Body.String(), "link") || strings.Contains(listResponse.Body.String(), "hash") {
-		t.Fatalf("existing member consumed invitation or leaked secret: %s", listResponse.Body)
-	}
-	decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200)
-	for _, action := range []string{"inspect", "accept"} {
-		body := invitationBody(token)
-		if action == "accept" {
-			body = invitationAcceptBody(token, outsiderID)
-		}
-		assertProjectError(t, h.call("POST", "/api/v1/invitations/"+action, body, h.outsider), 404, "invitation_unavailable")
-	}
-	list = decodeResponse[api.ProjectInvitationList](t, h.call("GET", base, "", h.admin), 200)
-	if list.Items == nil || len(list.Items) != 0 {
-		t.Fatal("consumed invitation remained available in the invitation list")
-	}
-	invitation, revoked := h.invitation(t)
-	for range 2 {
-		if response := h.call("DELETE", base+"/"+invitation.ID, invitationActorBody(h.adminID), h.admin); response.Code != 204 {
-			t.Fatalf("revocation: %d %s", response.Code, response.Body)
-		}
-	}
-	assertProjectError(t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(revoked, outsiderID), h.outsider), 404, "invitation_unavailable")
-	invitation, expired := h.invitation(t)
-	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE project_invitations SET created_at=now()-interval '8 days',expires_at=now()-interval '1 second' WHERE id=$1`, invitation.ID); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, h.call("POST", "/api/v1/invitations/inspect", invitationBody(expired), h.outsider), 404, "invitation_unavailable")
-	assertProjectError(t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(expired, outsiderID), h.outsider), 404, "invitation_unavailable")
-	for _, secret := range []string{token, revoked, expired} {
-		if strings.Contains(h.Logs.String(), secret) {
-			t.Fatal("invitation secret entered logs")
-		}
-	}
-}
-
-func TestMembershipHTTPDatabaseFailuresAreVisible(t *testing.T) {
-	h := membershipTestHarness(t)
-	invitation, token := h.invitation(t)
-	base := "/api/v1/projects/" + h.project.ID
-	if _, err := h.Database.Pool.Exec(context.Background(), `DROP TABLE project_invitations`); err != nil {
-		t.Fatal(err)
-	}
-	for _, call := range []struct{ method, path, body string }{
-		{"GET", base + "/invitations", ""},
-		{"POST", base + "/invitations", invitationActorBody(h.adminID)},
-		{"DELETE", base + "/invitations/" + invitation.ID, invitationActorBody(h.adminID)},
-		{"POST", "/api/v1/invitations/inspect", invitationBody(token)},
-		{"POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.adminID)},
-	} {
-		response := h.call(call.method, call.path, call.body, h.admin)
-		assertProjectError(t, response, 500, "internal_error")
-		if strings.Contains(response.Body.String(), token) || strings.Contains(response.Body.String(), "project_invitations") {
-			t.Fatal("database failure disclosed internal details")
-		}
-	}
-	if _, err := h.Database.Pool.Exec(context.Background(), `DROP TABLE project_grants`); err != nil {
-		t.Fatal(err)
-	}
-	for _, call := range []struct{ method, path, body string }{
-		{"GET", base + "/members", ""},
-		{"PATCH", base + "/members/" + h.adminID, memberRoleBody(t, 1, "admin", h.adminID)},
-		{"DELETE", base + "/members/" + h.adminID, memberRemovalBody(t, 1, h.adminID)},
-	} {
-		assertProjectError(t, h.call(call.method, call.path, call.body, h.admin), 500, "internal_error")
-	}
-	if strings.Contains(h.Logs.String(), token) || !strings.Contains(h.Logs.String(), `"cause":"database"`) {
-		t.Fatal("database failure lost safe diagnostics")
+		}},
+		{"set_role", "PATCH", base + "/members/" + h.Principal.UserID, fmt.Sprintf(`{"version":7,"role":"admin","expectedUserId":%q}`, h.Principal.UserID), func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, h.Project.ID)
+			h.Memberships.SetRoleFunc = func(ctx context.Context, p model.Principal, id, user string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error) {
+				check(ctx, p, id)
+				if user != p.UserID || input != (coreproject.SetProjectMemberRole{Version: 7, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}) {
+					t.Fatalf("role input: %q %+v", user, input)
+				}
+				return grant, failure
+			}
+		}},
+		{"remove", "DELETE", base + "/members/" + h.Principal.UserID, fmt.Sprintf(`{"version":7,"expectedUserId":%q}`, h.Principal.UserID), func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, h.Project.ID)
+			h.Memberships.RemoveFunc = func(ctx context.Context, p model.Principal, id, user string, input coreproject.RemoveProjectMember) error {
+				check(ctx, p, id)
+				if user != p.UserID || input != (coreproject.RemoveProjectMember{Version: 7, ExpectedUserID: p.UserID}) {
+					t.Fatalf("remove input: %q %+v", user, input)
+				}
+				return failure
+			}
+		}},
+		{"list_invitations", "GET", base + "/invitations", "", func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, h.Project.ID)
+			h.Memberships.ListInvitationsFunc = func(ctx context.Context, p model.Principal, id string) ([]model.ProjectInvitation, error) {
+				check(ctx, p, id)
+				return []model.ProjectInvitation{invitation}, failure
+			}
+		}},
+		{"create_invitation", "POST", base + "/invitations", invitationActorBody(h.Principal.UserID), func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, h.Project.ID)
+			h.Memberships.CreateInvitationFunc = func(ctx context.Context, p model.Principal, id, expected string) (coreproject.MintedInvitation, error) {
+				check(ctx, p, id)
+				if expected != p.UserID {
+					t.Fatalf("expected actor = %q", expected)
+				}
+				return coreproject.MintedInvitation{Invitation: invitation, Secret: token}, failure
+			}
+		}},
+		{"revoke_invitation", "DELETE", base + "/invitations/" + invitation.ID, invitationActorBody(h.Principal.UserID), func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, h.Project.ID)
+			h.Memberships.RevokeInvitationFunc = func(ctx context.Context, p model.Principal, id, invite, expected string) error {
+				check(ctx, p, id)
+				if invite != invitation.ID || expected != p.UserID {
+					t.Fatalf("revoke: %q %q", invite, expected)
+				}
+				return failure
+			}
+		}},
+		{"inspect_invitation", "POST", "/api/v1/invitations/inspect", invitationBody(token), func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, "")
+			h.Memberships.InspectInvitationFunc = func(ctx context.Context, p model.Principal, secret string) (coreproject.InvitationInspection, error) {
+				check(ctx, p, "")
+				if secret != token {
+					t.Fatalf("token = %q", secret)
+				}
+				return coreproject.InvitationInspection{ProjectID: h.Project.ID, ProjectName: h.Project.Name}, failure
+			}
+		}},
+		{"accept_invitation", "POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.Principal.UserID), func(t *testing.T, h *httpHarness, failure error) {
+			check := membershipExpectation(t, h, "")
+			h.Memberships.AcceptInvitationFunc = func(ctx context.Context, p model.Principal, secret, expected string) (coreproject.InvitationAcceptance, error) {
+				check(ctx, p, "")
+				if secret != token || expected != p.UserID {
+					t.Fatalf("accept: %q %q", secret, expected)
+				}
+				return coreproject.InvitationAcceptance{ProjectID: h.Project.ID, DirectGrant: grant, Access: access, Joined: true, Consumed: true}, failure
+			}
+		}},
 	}
 }
 
-func TestInvitationWritesRejectChangedIdentityWithoutDomainChanges(t *testing.T) {
-	h := membershipTestHarness(t)
-	invitation, token := h.invitation(t)
-	base := "/api/v1/projects/" + h.project.ID + "/invitations"
-	for _, call := range []struct{ method, path, body string }{
-		{"POST", base, invitationActorBody(h.memberID)},
-		{"DELETE", base + "/" + invitation.ID, invitationActorBody(h.memberID)},
-		{"POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID)},
-	} {
-		response := h.call(call.method, call.path, call.body, h.admin)
-		assertProjectError(t, response, 409, "identity_mismatch")
-		if response.Header().Get("Daynight-User-ID") != h.adminID {
-			t.Fatal("response principal missing")
+func TestMembershipHTTPResultsAndPropagation(t *testing.T) {
+	template := newHTTPHarness(t)
+	for index, entry := range membershipCases(template) {
+		t.Run(entry.name, func(t *testing.T) {
+			h := newHTTPHarness(t)
+			entry = membershipCases(h)[index]
+			entry.configure(t, h, nil)
+			response := membershipCall(t, h, entry.method, entry.path, entry.body)
+			want := 200
+			if entry.name == "remove" || entry.name == "revoke_invitation" {
+				want = 204
+			}
+			if entry.name == "create_invitation" {
+				want = 201
+			}
+			if response.Code != want || response.Header().Get("Daynight-User-ID") != h.Principal.UserID || response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("response: %d %s %v", response.Code, response.Body, response.Header())
+			}
+			switch entry.name {
+			case "list":
+				value := decodeResponse[api.ProjectParticipantList](t, response, want)
+				if len(value.Items) != 1 || value.Items[0].UserID != h.Principal.UserID || value.Items[0].DirectGrant.Version != 7 || value.ActorAccess.EffectiveRole != "admin" {
+					t.Fatalf("participants: %+v", value)
+				}
+			case "set_role":
+				value := decodeResponse[api.ProjectGrant](t, response, want)
+				if value.Version != 7 || value.ProjectID != h.Project.ID || value.UserID != h.Principal.UserID || value.Role != "member" || value.CreatedAt.Location() != time.UTC || value.UpdatedAt.Location() != time.UTC {
+					t.Fatalf("grant: %+v", value)
+				}
+			case "list_invitations":
+				value := decodeResponse[api.ProjectInvitationList](t, response, want)
+				if len(value.Items) != 1 || value.Items[0].ProjectID != h.Project.ID || value.Items[0].ConsumedAt != nil || value.Items[0].RevokedAt != nil || value.Items[0].CreatedBy != h.Principal.UserID || value.Items[0].ExpiresAt.Sub(value.Items[0].CreatedAt) != 7*24*time.Hour {
+					t.Fatalf("invitations: %+v", value)
+				}
+				for _, private := range []string{"private-hash", "dninvite_", "tokenHash", "link"} {
+					if strings.Contains(response.Body.String(), private) {
+						t.Fatalf("invitation list disclosed %q", private)
+					}
+				}
+			case "create_invitation":
+				value := decodeResponse[api.CreatedProjectInvitation](t, response, want)
+				link, err := url.Parse(value.Link)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if link.Scheme+"://"+link.Host != h.Auth.Origin() || link.Path != "/invitations" || link.RawQuery != "" || link.Fragment != "dninvite_private-invitation-secret" || response.Header().Get("Location") != "/api/v1/projects/"+h.Project.ID+"/invitations/"+value.ID || value.CreatedBy != h.Principal.UserID || value.ExpiresAt.Sub(value.CreatedAt) != 7*24*time.Hour || value.ConsumedAt != nil || value.RevokedAt != nil {
+					t.Fatalf("created invitation: %+v %v", value, response.Header())
+				}
+			case "inspect_invitation":
+				value := decodeResponse[api.ProjectInvitationInspection](t, response, want)
+				if value.ProjectID != h.Project.ID || value.ProjectName != h.Project.Name || value.DirectGrant != nil || value.Access != nil || strings.Contains(response.Body.String(), "repoUrl") || strings.Contains(response.Body.String(), "dninvite_") {
+					t.Fatalf("inspection: %s", response.Body)
+				}
+			case "accept_invitation":
+				value := decodeResponse[api.ProjectInvitationAcceptance](t, response, want)
+				if value.ProjectID != h.Project.ID || value.DirectGrant.Version != 7 || value.DirectGrant.Role != "member" || !value.Joined || !value.Consumed || value.Access.EffectiveRole != "admin" {
+					t.Fatalf("acceptance: %+v", value)
+				}
+			}
+			if strings.Contains(h.Logs.String(), "dninvite_private-invitation-secret") || !strings.Contains(h.Logs.String(), `"component":"membership"`) || !strings.Contains(h.Logs.String(), `"user_id":"`+h.Principal.UserID+`"`) || !strings.Contains(h.Logs.String(), `"project_id":"`+h.Project.ID+`"`) {
+				t.Fatalf("membership correlation or redaction: %s", &h.Logs)
+			}
+		})
+	}
+}
+
+func TestMembershipHTTPDomainFailuresAndRedaction(t *testing.T) {
+	template := newHTTPHarness(t)
+	for index, entry := range membershipCases(template) {
+		for _, failure := range []struct {
+			name   string
+			err    error
+			status int
+			code   string
+		}{
+			{"forbidden", &model.Fault{Code: "forbidden", Message: "Project administration is required."}, 403, "forbidden"},
+			{"not_found", &model.Fault{Code: "not_found", Message: "Project member was not found."}, 404, "not_found"},
+			{"identity_mismatch", &model.Fault{Code: "identity_mismatch", Message: "The signed-in account changed."}, 409, "identity_mismatch"},
+			{"version_conflict", &model.Fault{Code: "version_conflict", Message: "Member version does not match."}, 409, "version_conflict"},
+			{"invalid_input", &model.Fault{Code: "invalid_input", Message: "Invalid project mutation."}, 400, "invalid_input"},
+			{"database", &store.Error{Phase: "query", SQLState: "42P01", DatabaseFailure: true, Cause: errors.New("relation project_invitations missing dninvite_private-invitation-secret")}, 500, "internal_error"},
+		} {
+			relevant := map[string][]string{
+				"list":               {"not_found", "database"},
+				"set_role":           {"forbidden", "not_found", "identity_mismatch", "version_conflict", "invalid_input", "database"},
+				"remove":             {"forbidden", "not_found", "identity_mismatch", "version_conflict", "invalid_input", "database"},
+				"list_invitations":   {"forbidden", "not_found", "database"},
+				"create_invitation":  {"forbidden", "not_found", "identity_mismatch", "database"},
+				"revoke_invitation":  {"forbidden", "not_found", "identity_mismatch", "database"},
+				"inspect_invitation": {"database"},
+				"accept_invitation":  {"identity_mismatch", "database"},
+			}
+			selected := false
+			for _, name := range relevant[entry.name] {
+				selected = selected || name == failure.name
+			}
+			if !selected {
+				continue
+			}
+			t.Run(entry.name+"/"+failure.name, func(t *testing.T) {
+				h := newHTTPHarness(t)
+				entry := membershipCases(h)[index]
+				entry.configure(t, h, failure.err)
+				response := membershipCall(t, h, entry.method, entry.path, entry.body)
+				assertProjectError(t, response, failure.status, failure.code)
+				if response.Header().Get("Daynight-User-ID") != h.Principal.UserID || strings.Contains(response.Body.String(), "project_invitations") || strings.Contains(response.Body.String(), "dninvite_") || strings.Contains(h.Logs.String(), "dninvite_") {
+					t.Fatalf("unsafe failure: %s logs=%s", response.Body, &h.Logs)
+				}
+				if entry.name == "list" && failure.name == "database" && (strings.Contains(response.Body.String(), `"items"`) || strings.Contains(response.Body.String(), h.Principal.UserID)) {
+					t.Fatalf("integrity failure returned a partial roster: %s", response.Body)
+				}
+				if failure.name == "database" && !strings.Contains(h.Logs.String(), `"cause":"database"`) {
+					t.Fatalf("database classification: %s", &h.Logs)
+				}
+			})
 		}
-	}
-	var count int
-	var consumed, revoked *time.Time
-	if err := h.Database.Pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM project_invitations WHERE project_id=$1),consumed_at,revoked_at FROM project_invitations WHERE id=$2`, h.project.ID, invitation.ID).Scan(&count, &consumed, &revoked); err != nil || count != 1 || consumed != nil || revoked != nil {
-		t.Fatalf("identity mismatch changed invitations: %d %v %v %v", count, consumed, revoked, err)
-	}
-	if err := h.Database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("identity mismatch changed grants: %d %v", count, err)
 	}
 }
 
 func TestMembershipHTTPStrictInputAndErrorMapping(t *testing.T) {
-	h := membershipTestHarness(t)
-	base := "/api/v1/projects/" + h.project.ID
-	member := base + "/members/" + h.adminID
+	h := newHTTPHarness(t)
+	t.Cleanup(func() { h.assertCalls(map[string]int{}) })
+	base := "/api/v1/projects/" + h.Project.ID
+	member := base + "/members/" + h.Principal.UserID
 	for _, call := range []struct{ method, path, body string }{
-		{"GET", "/api/v1/projects/bad/members", ""}, {"GET", base + "/members?extra=true", ""},
-		{"GET", "/api/v1/projects/bad/invitations", ""}, {"GET", base + "/invitations?limit=1", ""},
-		{"PATCH", "/api/v1/projects/bad/members/" + h.adminID, `{}`}, {"DELETE", "/api/v1/projects/bad/members/" + h.adminID, `{}`},
-		{"POST", "/api/v1/projects/bad/invitations", `{}`}, {"DELETE", "/api/v1/projects/bad/invitations/" + h.adminID, ""},
-		{"PATCH", member, `{"role":"member"}`}, {"PATCH", member, `{"version":1}`},
-		{"PATCH", member, `{"version":1,"role":null}`}, {"PATCH", member, `{"version":1,"role":"owner"}`},
-		{"PATCH", member, `{"version":1,"role":"admin","userId":"fake"}`},
-		{"PATCH", base + "/members/bad", `{"version":1,"role":"admin"}`},
-		{"DELETE", member, `{}`}, {"DELETE", member, `{"version":1,"role":"member"}`},
-		{"DELETE", base + "/members/bad", `{"version":1}`},
-		{"POST", base + "/invitations", `{"days":30}`}, {"POST", base + "/invitations", ""},
-		{"DELETE", base + "/invitations/bad", ""},
-		{"POST", "/api/v1/invitations/inspect", `{}`}, {"POST", "/api/v1/invitations/inspect", `{"token":null}`},
-		{"POST", "/api/v1/invitations/accept", `{"token":12}`}, {"POST", "/api/v1/invitations/accept", `{"token":"a","token":"b"}`},
+		{"GET", "/api/v1/projects/bad/members", ""}, {"GET", base + "/members?extra=true", ""}, {"GET", "/api/v1/projects/bad/invitations", ""}, {"GET", base + "/invitations?limit=1", ""},
+		{"PATCH", "/api/v1/projects/bad/members/" + h.Principal.UserID, `{}`}, {"DELETE", "/api/v1/projects/bad/members/" + h.Principal.UserID, `{}`}, {"POST", "/api/v1/projects/bad/invitations", `{}`}, {"DELETE", "/api/v1/projects/bad/invitations/" + h.Principal.UserID, ""},
+		{"PATCH", member, `{"role":"member"}`}, {"PATCH", member, `{"version":1}`}, {"PATCH", member, `{"version":1,"role":null}`}, {"PATCH", member, `{"version":1,"role":"owner"}`}, {"PATCH", member, `{"version":1,"role":"admin","userId":"fake"}`}, {"PATCH", base + "/members/bad", `{"version":1,"role":"admin"}`},
+		{"DELETE", member, `{}`}, {"DELETE", member, `{"version":1,"role":"member"}`}, {"DELETE", base + "/members/bad", `{"version":1}`}, {"POST", base + "/invitations", `{"days":30}`}, {"POST", base + "/invitations", ""}, {"DELETE", base + "/invitations/bad", ""},
+		{"POST", "/api/v1/invitations/inspect", `{}`}, {"POST", "/api/v1/invitations/inspect", `{"token":null}`}, {"POST", "/api/v1/invitations/accept", `{"token":12}`}, {"POST", "/api/v1/invitations/accept", `{"token":"a","token":"b"}`},
 	} {
-		t.Run(fmt.Sprintf("%s %s %s", call.method, call.path, call.body), func(t *testing.T) {
-			assertProjectError(t, h.call(call.method, call.path, call.body, h.admin), 400, "invalid_input")
+		t.Run(call.method+" "+call.path+" "+call.body, func(t *testing.T) {
+			assertProjectError(t, membershipCall(t, h, call.method, call.path, call.body), 400, "invalid_input")
 		})
 	}
 	for _, version := range []string{"null", "0", "-1", "1.5", `"1"`, "9223372036854775808", "1e0"} {
-		assertProjectError(t, h.call("PATCH", member, `{"version":`+version+`,"role":"admin"}`, h.admin), 400, "invalid_input")
-		assertProjectError(t, h.call("DELETE", member, `{"version":`+version+`}`, h.admin), 400, "invalid_input")
+		assertProjectError(t, membershipCall(t, h, "PATCH", member, `{"version":`+version+`,"role":"admin"}`), 400, "invalid_input")
+		assertProjectError(t, membershipCall(t, h, "DELETE", member, `{"version":`+version+`}`), 400, "invalid_input")
 	}
-	request := httptest.NewRequest("POST", base+"/invitations", strings.NewReader(`{}`))
-	request.Header.Set("X-Request-ID", "project-test")
-	request.Header.Set("Origin", h.Origin)
+	for _, body := range []string{`{"version":1,"role":"member"}`, `{"version":1,"role":"member","expectedUserId":null}`, `{"version":1,"role":"member","expectedUserId":42}`} {
+		assertProjectError(t, membershipCall(t, h, "PATCH", member, body), 400, "invalid_input")
+	}
+	for _, body := range []string{`{"version":1}`, `{"version":1,"expectedUserId":null}`, `{"version":1,"expectedUserId":42}`} {
+		assertProjectError(t, membershipCall(t, h, "DELETE", member, body), 400, "invalid_input")
+	}
+	request := h.request("POST", base+"/invitations", `{}`)
 	request.Header.Set("Content-Type", "text/plain")
-	request.AddCookie(h.admin)
 	response := httptest.NewRecorder()
 	h.Handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	request = httptest.NewRequest("POST", base+"/invitations", strings.NewReader(`{}`))
-	request.Header.Set("X-Request-ID", "project-test")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header["Origin"] = []string{h.Origin, h.Origin}
-	request.AddCookie(h.admin)
+}
+
+func TestMembershipHTTPAuthenticationAndMethodRefusals(t *testing.T) {
+	h := newHTTPHarness(t)
+	t.Cleanup(func() { h.assertCalls(map[string]int{}) })
+	base := "/api/v1/projects/" + h.Project.ID
+	for _, path := range []string{"/api/v1/invitations/inspect", "/api/v1/invitations/accept"} {
+		for _, method := range []string{"GET", "HEAD"} {
+			response := membershipCall(t, h, method, path, invitationBody("secret"))
+			if response.Code != 405 || response.Header().Get("Allow") != "POST" {
+				t.Fatalf("method refusal: %d %v", response.Code, response.Header())
+			}
+		}
+	}
+	for _, origin := range [][]string{{}, {""}, {"null"}, {"https://foreign.test"}, {h.Auth.Origin(), h.Auth.Origin()}} {
+		request := h.request("POST", base+"/invitations", `{}`)
+		request.Header.Del("Origin")
+		if len(origin) > 0 {
+			request.Header["Origin"] = origin
+		}
+		response := httptest.NewRecorder()
+		h.Handler.ServeHTTP(response, request)
+		assertProjectError(t, response, 403, "forbidden")
+	}
+	request := h.request("GET", base+"/members", "")
+	request.Header.Del("Cookie")
+	response := httptest.NewRecorder()
+	h.Handler.ServeHTTP(response, request)
+	assertProjectError(t, response, 401, "unauthenticated")
+	request = h.request("GET", base+"/members", "")
+	request.Header.Set("Authorization", "Bearer invalid")
 	response = httptest.NewRecorder()
 	h.Handler.ServeHTTP(response, request)
-	assertProjectError(t, response, 403, "forbidden")
-	assertProjectError(t, h.call("DELETE", base+"/members/00000000-0000-0000-0000-000000000000", memberRemovalBody(t, 1, h.adminID), h.admin), 404, "not_found")
-	assertProjectError(t, h.call("PATCH", base+"/members/00000000-0000-0000-0000-000000000000", memberRoleBody(t, 1, "member", h.adminID), h.admin), 404, "not_found")
-	if got := h.call("DELETE", base+"/invitations/00000000-0000-0000-0000-000000000000", invitationActorBody(h.adminID), h.admin); got.Code != 204 {
-		t.Fatal("revocation must be idempotent")
+	assertProjectError(t, response, 401, "unauthenticated")
+}
+
+func TestMembershipHTTPEmptyListsAndExistingInspection(t *testing.T) {
+	for _, invitations := range []bool{false, true} {
+		t.Run(fmt.Sprint(invitations), func(t *testing.T) {
+			h := newHTTPHarness(t)
+			check := membershipExpectation(t, h, h.Project.ID)
+			path := "/api/v1/projects/" + h.Project.ID
+			if invitations {
+				path += "/invitations"
+				h.Memberships.ListInvitationsFunc = func(ctx context.Context, p model.Principal, id string) ([]model.ProjectInvitation, error) {
+					check(ctx, p, id)
+					return nil, nil
+				}
+			} else {
+				path += "/members"
+				h.Memberships.ListWithAccessFunc = func(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error) {
+					check(ctx, p, id)
+					return coreproject.ProjectParticipants{ActorAccess: membershipAccess(h, nil)}, nil
+				}
+			}
+			response := membershipCall(t, h, "GET", path, "")
+			if response.Code != 200 || !strings.Contains(response.Body.String(), `"items":[]`) {
+				t.Fatalf("empty list: %d %s", response.Code, response.Body)
+			}
+		})
 	}
-	for _, action := range []string{"inspect", "accept"} {
-		body := invitationBody("bad")
-		if action == "accept" {
-			body = invitationAcceptBody("bad", h.adminID)
+	h := newHTTPHarness(t)
+	check := membershipExpectation(t, h, "")
+	grant := membershipGrant(h, 8, model.ProjectAdmin)
+	access := membershipAccess(h, &grant)
+	h.Memberships.InspectInvitationFunc = func(ctx context.Context, p model.Principal, token string) (coreproject.InvitationInspection, error) {
+		check(ctx, p, "")
+		if token != "existing" {
+			t.Fatalf("token=%q", token)
 		}
-		assertProjectError(t, h.call("POST", "/api/v1/invitations/"+action, body, h.admin), 404, "invitation_unavailable")
+		return coreproject.InvitationInspection{ProjectID: h.Project.ID, ProjectName: h.Project.Name, DirectGrant: &grant, Access: &access}, nil
+	}
+	response := membershipCall(t, h, "POST", "/api/v1/invitations/inspect", invitationBody("existing"))
+	value := decodeResponse[api.ProjectInvitationInspection](t, response, 200)
+	if value.DirectGrant == nil || value.DirectGrant.Role != "admin" || value.Access == nil || value.Access.EffectiveRole != "admin" {
+		t.Fatalf("existing inspection: %+v", value)
+	}
+}
+
+func TestMembershipHTTPInvitationUnavailable(t *testing.T) {
+	for _, action := range []string{"inspect", "accept"} {
+		t.Run(action, func(t *testing.T) {
+			h := newHTTPHarness(t)
+			check := membershipExpectation(t, h, "")
+			failure := model.InvitationUnavailable(errors.New("private invitation lookup"))
+			body := invitationBody("bad")
+			if action == "inspect" {
+				h.Memberships.InspectInvitationFunc = func(ctx context.Context, p model.Principal, token string) (coreproject.InvitationInspection, error) {
+					check(ctx, p, "")
+					if token != "bad" {
+						t.Fatalf("token=%q", token)
+					}
+					return coreproject.InvitationInspection{}, failure
+				}
+			} else {
+				body = invitationAcceptBody("bad", h.Principal.UserID)
+				h.Memberships.AcceptInvitationFunc = func(ctx context.Context, p model.Principal, token, expected string) (coreproject.InvitationAcceptance, error) {
+					check(ctx, p, "")
+					if token != "bad" || expected != p.UserID {
+						t.Fatalf("accept=%q %q", token, expected)
+					}
+					return coreproject.InvitationAcceptance{}, failure
+				}
+			}
+			assertProjectError(t, membershipCall(t, h, "POST", "/api/v1/invitations/"+action, body), 404, "invitation_unavailable")
+		})
+	}
+}
+
+func TestMembershipHTTPBearerReadsAndWrites(t *testing.T) {
+	for _, method := range []string{"GET", "PATCH"} {
+		t.Run(method, func(t *testing.T) {
+			h := newHTTPHarness(t)
+			check := membershipExpectation(t, h, h.Project.ID)
+			authCalls := 0
+			h.AuthenticateFunc = func(ctx context.Context, kind model.CredentialKind, secret string) (model.Principal, error) {
+				authCalls++
+				if kind != model.PATCredential || secret != "private-pat-credential" || ctx.Value(membershipContextKey{}) != t {
+					t.Fatalf("credential: %q %q", kind, secret)
+				}
+				return h.Principal, nil
+			}
+			path := "/api/v1/projects/" + h.Project.ID + "/members"
+			body := ""
+			if method == "GET" {
+				h.Memberships.ListWithAccessFunc = func(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error) {
+					check(ctx, p, id)
+					return coreproject.ProjectParticipants{ActorAccess: membershipAccess(h, nil)}, nil
+				}
+			} else {
+				path += "/" + h.Principal.UserID
+				body = memberRoleBody(t, 12, "member", h.Principal.UserID)
+				h.Memberships.SetRoleFunc = func(ctx context.Context, p model.Principal, id, user string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error) {
+					check(ctx, p, id)
+					if user != p.UserID || input != (coreproject.SetProjectMemberRole{Version: 12, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}) {
+						t.Fatalf("PAT mutation: %q %+v", user, input)
+					}
+					return membershipGrant(h, 12, model.ProjectMemberRole), nil
+				}
+			}
+			request := h.request(method, path, body)
+			request = request.WithContext(context.WithValue(request.Context(), membershipContextKey{}, t))
+			request.Header.Del("Cookie")
+			request.Header.Set("Origin", "https://foreign.test")
+			request.Header.Set("Authorization", "Bearer private-pat-credential")
+			response := httptest.NewRecorder()
+			h.Handler.ServeHTTP(response, request)
+			if response.Code != 200 || authCalls != 1 || response.Header().Get("Daynight-User-ID") != h.Principal.UserID || strings.Contains(h.Logs.String(), "private-pat-credential") {
+				t.Fatalf("PAT response: %d %s authCalls=%d logs=%s", response.Code, response.Body, authCalls, &h.Logs)
+			}
+		})
+	}
+}
+
+func TestMembershipHTTPForwardsBusinessValidationInputs(t *testing.T) {
+	for _, entry := range []struct {
+		name, method, target, role, expected, code string
+		status                                     int
+	}{
+		{"role_identity", "PATCH", "", "admin", "00000000-0000-4000-8000-000000000075", "identity_mismatch", 409},
+		{"remove_identity", "DELETE", "", "", "00000000-0000-4000-8000-000000000075", "identity_mismatch", 409},
+		{"role_actor_format", "PATCH", "", "member", "invalid", "invalid_input", 400},
+		{"remove_actor_format", "DELETE", "", "", "invalid", "invalid_input", 400},
+		{"role_target_format", "PATCH", "bad", "admin", "", "invalid_input", 400},
+		{"remove_target_format", "DELETE", "bad", "", "", "invalid_input", 400},
+		{"unknown_role", "PATCH", "", "owner", "", "invalid_input", 400},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			h := newHTTPHarness(t)
+			check := membershipExpectation(t, h, h.Project.ID)
+			target, expected := entry.target, entry.expected
+			if target == "" {
+				target = h.Principal.UserID
+			}
+			if expected == "" {
+				expected = h.Principal.UserID
+			}
+			failure := &model.Fault{Code: entry.code, Message: "Invalid project member operation."}
+			body := memberRemovalBody(t, 17, expected)
+			if entry.method == "PATCH" {
+				body = memberRoleBody(t, 17, entry.role, expected)
+				h.Memberships.SetRoleFunc = func(ctx context.Context, p model.Principal, project, user string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error) {
+					check(ctx, p, project)
+					if user != target || input != (coreproject.SetProjectMemberRole{Version: 17, Role: model.ProjectRole(entry.role), ExpectedUserID: expected}) {
+						t.Fatalf("business input: %q %+v", user, input)
+					}
+					return model.ProjectGrant{}, failure
+				}
+			} else {
+				h.Memberships.RemoveFunc = func(ctx context.Context, p model.Principal, project, user string, input coreproject.RemoveProjectMember) error {
+					check(ctx, p, project)
+					if user != target || input != (coreproject.RemoveProjectMember{Version: 17, ExpectedUserID: expected}) {
+						t.Fatalf("business input: %q %+v", user, input)
+					}
+					return failure
+				}
+			}
+			response := membershipCall(t, h, entry.method, "/api/v1/projects/"+h.Project.ID+"/members/"+target, body)
+			assertProjectError(t, response, entry.status, entry.code)
+			if response.Header().Get("Daynight-User-ID") != h.Principal.UserID {
+				t.Fatal("business refusal lost authenticated principal")
+			}
+		})
 	}
 }

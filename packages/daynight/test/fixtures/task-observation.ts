@@ -41,7 +41,7 @@ export const workGroup = {
 export const workPage = { groups: [workGroup], nextCursor: null, observedAt: time, partial: false } as const;
 export const observedGraph = (() => {
   const { projectId: _project, title, description: _description, version: _version, properties: _properties, ...node } = task;
-  return { project, observedAt: time, summary: { total: 1, todo: 0, inProgress: 1, done: 0, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false, session: observation, relation: "member" }], sessionSummary: aggregation, partial: false } as const;
+  return { project, observedAt: time, summary: { total: 1, proposed: 0, todo: 0, inProgress: 1, done: 0, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false, session: observation, relation: "member" }], sessionSummary: aggregation, partial: false } as const;
 })();
 
 export const withTaskObservation = <T>(value: T) => ({ ...value, session: notApplicableObservation });

@@ -51,6 +51,18 @@ capture; an interrupted source writer is never restarted by recovery. A source
 intent becomes settled only after committed-byte adoption and its original
 position projection both succeed.
 
+Native image publication and Markdown projection share the current committed
+entry. The named Markdown publication operation commits projection state with
+the timeline candidate pointer and outbox in one SQLite transaction, following
+the [atomic publication decision](2026-11-10-atomic-content-publication.md).
+Before parsing, receipt updates or stop settlement, Markdown state adopts
+same-position native image updates and invalidates stale parser tokens. This
+also closes the crash window between a native patch and Markdown state repair.
+Only an exact durable original-input text match establishes completion for an
+accepted mixed input. Publication adoption does not repeat native occurrences
+or change the original receipt and image indexes; failure carriers follow the
+native body with the text predecessor required by the timeline protocol.
+
 The current local context uses the verified execution cwd as one export root.
 Its device/inode identity is captured before Provider output and persisted with
 the context. `createLocalImageContext` passes that identity as `expectedRoot` to
@@ -187,9 +199,11 @@ stat identity is insufficient to identify ReFS files uniquely. Sharing conflicts
 remain observable. Its real-handle tests include an attribute-only junction
 mutation with unchanged file ID. Handle validation must execute on each supported
 platform; another platform's result or a source branch does not qualify it.
-Intel macOS is outside the current supported platform set. Unsupported native
-profiles and unverified deployment facts remain unmet conditions, not approved
-deferrals. The source consumers and configured policy producers do not by
+Intel macOS is outside the current supported platform set. The
+[provider scope decision](2026-11-11-image-provider-scope.md) partially supersedes
+the original all-provider target: Claude source support is outside the current
+image scope and stays denied. Unsupported Codex/Copilot profiles and unverified
+deployment facts do not relax the remaining acceptance requirements. The source consumers and configured policy producers do not by
 themselves establish complete automatic source capture or end-to-end availability.
 
 Permission is checked throughout preparation and exported-block delivery, but

@@ -115,7 +115,7 @@ it.each(["<", "\u2028", "x"])("keeps %s tool content local and uses identical bo
     expect(store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", text: "following event" })).toMatchObject({ sequence: "2" });
     expect(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('projection','resources')").all()).toEqual([]);
     const { openPendingContent } = await import("../../../src/commands/controller/pending-content.js");
-    expect(openPendingContent(filename, ticket.sessionId).entries.get(entry.entryId)).toMatchObject({ input: text, output: entry.output });
+    expect(openPendingContent(filename, ticket.sessionId, database).entries.get(entry.entryId)).toMatchObject({ input: text, output: entry.output });
   } finally { store.close(); }
 });
 

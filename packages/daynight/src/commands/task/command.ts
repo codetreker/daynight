@@ -19,7 +19,7 @@ const defaultDependencies: TaskCommandDependencies = {
   resolveProject: async (...args) => (await import("../../repository/index.js")).resolveProject(...args),
 };
 
-const taskPriority = (task: Task): number => task.status === "in_progress" ? 0 : task.ready ? 1 : task.status === "todo" ? 2 : 3;
+const taskPriority = (task: Task): number => task.status === "in_progress" ? 0 : task.ready ? 1 : task.status === "todo" ? 2 : task.status === "proposed" ? 3 : 4;
 
 const compileDependencies = async (
   ordinary: readonly string[] | undefined,
@@ -192,7 +192,7 @@ export const runTaskCommand = async (
     if (command.command.name === "create") {
       const createAssignedTo = assignedTo === undefined ? (await api.getCurrentUser()).id : assignedTo;
       operation.check();
-      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), assignedTo: createAssignedTo, ...platformFields, ...dependencyFields };
+      const input: CreateTaskInput = { title: title!, ...(status === undefined ? {} : { status: status as NonNullable<CreateTaskInput["status"]> }), ...(description === undefined ? {} : { description }), assignedTo: createAssignedTo, ...platformFields, ...dependencyFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;

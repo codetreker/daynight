@@ -59,8 +59,8 @@ func insertHistoryAttempt(t *testing.T, conn *pgx.Conn, delivery string, sequenc
 	return id
 }
 
-func TestHistoryBatchJoinsFactsAndGroupsBothCollections(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryBatchJoinsFactsAndGroupsBothCollections(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	second := cloneHistoryDelivery(t, f)
 	firstAttempt := insertHistoryAttempt(t, f.conn, f.delivery, 1)
 	secondAttempt := insertHistoryAttempt(t, f.conn, second, 1)
@@ -116,8 +116,8 @@ func TestHistoryBatchJoinsFactsAndGroupsBothCollections(t *testing.T) {
 	}
 }
 
-func TestHistoryBatchKeepsMissingEventsAndCurrentTombstones(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryBatchKeepsMissingEventsAndCurrentTombstones(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	tx, err := f.conn.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -155,8 +155,8 @@ func TestHistoryBatchKeepsMissingEventsAndCurrentTombstones(t *testing.T) {
 	}
 }
 
-func TestHistoryBatchReadsOneRepeatableReadSnapshot(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryBatchReadsOneRepeatableReadSnapshot(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	ctx := t.Context()
 	tx, err := f.conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -211,8 +211,8 @@ func TestHistoryBatchReadsOneRepeatableReadSnapshot(t *testing.T) {
 	}
 }
 
-func TestHistoryBatchPropagatesActualRowsAndQueryFailures(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryBatchPropagatesActualRowsAndQueryFailures(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	owner := wm.Owner{Kind: "personal", ID: f.user}
 	failure := errors.New("batch partial read failed")
 	for _, read := range []struct {
@@ -259,8 +259,8 @@ func TestHistoryBatchPropagatesActualRowsAndQueryFailures(t *testing.T) {
 	}
 }
 
-func TestHistoryBatchDistinguishesReclaimedFactsFromMissingRequiredFields(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryBatchDistinguishesReclaimedFactsFromMissingRequiredFields(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	tx, err := f.conn.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -303,8 +303,8 @@ func TestHistoryBatchDistinguishesReclaimedFactsFromMissingRequiredFields(t *tes
 	}
 }
 
-func TestHistoryBatchCancellationReleasesThePoolConnection(t *testing.T) {
-	f := newDeliveryFailureFixture(t)
+func testHistoryBatchCancellationReleasesThePoolConnection(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
 	owner := wm.Owner{Kind: "personal", ID: f.user}
 	config, err := pgxpool.ParseConfig(f.conn.Config().ConnString())
 	if err != nil {

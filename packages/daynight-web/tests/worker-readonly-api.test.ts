@@ -18,6 +18,76 @@ const parse = (value: unknown) => parseWorkerReadonlyResponse(value, 'directory.
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('Worker read-only directory client', () => {
+  it('receives near-limit pages with exact remote names and identities', async () => {
+    const encoder = new TextEncoder(), base = `/${'r'.repeat(197)}`;
+    const cases = [
+      { id: 'a', characters: '&'.repeat(240), requestIds: ['60000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000002'] },
+      { id: 'b', characters: '<>'.repeat(120), requestIds: ['60000000-0000-4000-8000-000000000003', '60000000-0000-4000-8000-000000000004'] },
+      { id: 'c', characters: '\u2028\u2029'.repeat(40), requestIds: ['60000000-0000-4000-8000-000000000005', '60000000-0000-4000-8000-000000000006'] },
+    ];
+    const plans = cases.map(({ id, characters, requestIds }) => {
+      const path = `${base}/${id}`;
+      const names = Array.from({ length: 100 }, (_, index) => String(index).padStart(3, '0') + characters);
+      expect(encoder.encode(path).byteLength).toBe(200);
+      const pages = [names.slice(0, 90), names.slice(90)].map((pageNames, index) => {
+        const input = index === 0 ? { path, limit: 100 } : { path, limit: 100, cursor: `cursor-${id}` };
+        const result = { path, parentPath: base, entries: pageNames.map(name => ({ name, path: `${path}/${name}` })), nextCursor: index === 0 ? `cursor-${id}` : null };
+        const expected = { type: 'result', protocol: 'daynight.worker-readonly.v1', ...binding, requestId: requestIds[index]!, result };
+        const body = JSON.stringify(expected), bytes = encoder.encode(body);
+        const resultBytes = encoder.encode(JSON.stringify(result)).byteLength;
+        const legacyBytes = encoder.encode(body.replace(/[&<>\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)).byteLength;
+        expect(resultBytes).toBeLessThanOrEqual(65_536);
+        expect(bytes.byteLength).toBeLessThanOrEqual(256 * 1024);
+        return { input, expected, bytes, resultBytes, legacyBytes, id };
+      });
+      return { path, names, pages };
+    });
+    const pages = plans.flatMap(plan => plan.pages);
+    expect(pages.some(page => page.resultBytes >= 60 * 1024 && page.legacyBytes > 256 * 1024)).toBe(true);
+    let consumed = 0, streamsClosed = 0;
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      const page = pages[consumed++];
+      expect(page).toBeDefined();
+      if (page === undefined) throw new Error('Unexpected directory request');
+      expect(url).toBe(`/api/v1/me/workers/${workerId}/readonly/requests`);
+      expect(init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+      const headers = new Headers(init.headers);
+      expect(headers.get('Content-Type')).toBe('application/json');
+      expect(headers.get('Accept')).toBe('application/json');
+      expect(JSON.parse(String(init.body))).toEqual({ requestId: page.expected.requestId, operation: 'directory.list', input: page.input });
+      const separator = page.id === 'c' ? page.bytes.indexOf(0xe2) + 1 : Math.floor(page.bytes.length / 3);
+      expect(separator).toBeGreaterThan(1);
+      const chunks = [page.bytes.slice(0, separator), page.bytes.slice(separator, separator + 1), page.bytes.slice(separator + 1)];
+      let chunk = 0;
+      const body = new ReadableStream<Uint8Array>({ pull(stream) {
+        if (chunk < chunks.length) stream.enqueue(chunks[chunk++]!);
+        else { streamsClosed++; stream.close(); }
+      } }, { highWaterMark: 0 });
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': ownerUserId } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const gate = admission();
+    let pageCount = 0;
+    for (const plan of plans) {
+      const names: string[] = [];
+      let cursor: string | null = null;
+      do {
+        expect(++pageCount).toBeLessThanOrEqual(12);
+        const page = plan.pages[names.length === 0 ? 0 : 1]!;
+        const input = cursor === null ? { path: plan.path, limit: 100 } : { path: plan.path, limit: 100, cursor };
+        const actual = await browseWorkerDirectory(workerId, input, signal(), gate, { requestId: page.expected.requestId, binding: { connectionId, capabilityGeneration } });
+        expect(actual).toEqual(page.expected);
+        names.push(...actual.result.entries.map(entry => entry.name));
+        cursor = actual.result.nextCursor;
+      } while (cursor !== null);
+      expect(names).toEqual(plan.names);
+    }
+    expect(pageCount).toBe(6);
+    expect(consumed).toBe(6);
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(streamsClosed).toBe(6);
+    expect(gate.onPrincipalMismatch).not.toHaveBeenCalled();
+  });
   it('sends only the bound Worker query and retains its connection identity', async () => {
     const fetch = vi.fn().mockResolvedValue(response(envelope()));
     vi.stubGlobal('fetch', fetch);

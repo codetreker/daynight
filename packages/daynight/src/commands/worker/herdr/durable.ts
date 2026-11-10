@@ -851,6 +851,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,
       responsibilities: () => retainedResources().map(resource => resource.owner),
+      worktreePath: owner => {
+        const record = store.get(owner);
+        if (record === null) return null;
+        if (record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) throw new Error("The original Herdr worktree path belongs to another execution owner.");
+        return record.cwd;
+      },
       hasPreparedRun: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.runs.at(-1)?.phase === "prepared"; },
       pendingInitialPrompt: owner => {
         const record = need(owner), input = inputStore.get(record.sessionId);

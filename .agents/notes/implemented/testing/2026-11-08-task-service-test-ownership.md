@@ -26,7 +26,17 @@ interfaces retain their different signatures. The
 [Task List direct-operation decision](2026-11-09-task-list-direct-operation-tests.md)
 partially supersedes that DAO boundary for List coordination and moves the three
 assignment selection functions to their Core owner. Shared platform and
-agent-permission List fixtures retain their current scope.
+agent-permission List fixtures retain their current scope. The
+[Task write preparation decision](2026-11-10-task-write-preparation-tests.md)
+also replaces the DAO boundary for selected preparation-failure witnesses.
+The [Step read coordination decision](2026-11-10-step-read-coordination-tests.md)
+likewise isolates the Project read operation while retaining the Step service's
+own snapshot, parent gate, DAO calls and encoding. The [Step content write
+decision](2026-11-10-step-content-write-coordination-tests.md) isolates Project
+write authorization and Add/Change admission while retaining the service's locked
+parent gate, DAO coordination, encoding and completion handling. The
+[Step order write decision](2026-11-10-step-order-write-coordination-tests.md)
+extends that separation to Move and Delete.
 
 Callback execution and transaction completion remain separate. Service tests
 control `committed`, `not_committed` and `unknown` outcomes and retain original
@@ -45,9 +55,10 @@ transaction and shared-snapshot witnesses. The
 [test-writing rules](../../../../docs/writing_tests.md) own dependency isolation
 and the separate normal-flow scope of API integration and product E2E tests.
 
-Step write tests encode the fitting 170-description collection and overflowing
-171-description candidate through the production 64 MiB codec, then verify Add
-and Update reject before any write. The
+The [Step limits decision](2026-11-10-step-limits-test-ownership.md) assigns the
+real 170/171 collection encoding and admission rules to Core, while Service
+tests retain complete input forwarding and real encoding-failure coordination.
+The
 [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
 removes Graph/Sync stored-size admission and their count-only matrices. Real
 ordinary Store graphs retain selection, dependency arrays, snapshots and

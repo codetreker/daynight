@@ -30,7 +30,7 @@ const indexOf = (items = seeds): GraphIndex => {
     observedAt: time,
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
     tasks,
-    summary: {
+    summary: { proposed: 0,
       total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
       inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: 0,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length,

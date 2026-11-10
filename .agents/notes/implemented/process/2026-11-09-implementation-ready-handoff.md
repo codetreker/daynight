@@ -21,17 +21,17 @@ every delivery assignment to have completed implementation design.
 
 ## Decision
 
-The [task content standard](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md)
+The [task content standard](../../../skills/development-workflow/references/task-content.md)
 owns delivery readiness. Before handoff, the assignment defines the concrete
 problem and outcome, selected solution and rationale, detailed design, ordered
 implementation steps, and observable acceptance with verification methods and
 expected results. The author resolves research and design questions needed to
 define that work; the implementer executes the selected solution.
 
-[Handoff](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/handoff.md)
+[Handoff](../../../skills/development-workflow/references/handoff.md)
 applies this threshold to standalone and Goal delivery tasks before approving
 content. Creation and repository dispatch workflows prepare the same material.
-The [Goal brief](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#delivery-task-brief)
+The [Goal brief](../../../skills/development-workflow/references/goal.md#delivery-task-brief)
 retains its four-part structure; its implementation approach includes the selected
 solution, detailed design and implementation sequence, together with the task's
 contribution and boundaries within the confirmed Goal.

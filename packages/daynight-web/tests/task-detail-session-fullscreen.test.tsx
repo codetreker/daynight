@@ -120,16 +120,17 @@ describe('Session fullscreen inside task details', () => {
     vi.spyOn(resources, 'getTaskObservation').mockResolvedValue({ detail, epoch: fixtureTaskEpoch(detail.projectId) });
     const current = vi.fn(async () => ({ status: 'registered' as const, session: snapshot }));
     const command = vi.fn();
-    vi.spyOn(sessions, 'createSessionApi').mockReturnValue({ current, channel: vi.fn(), timeline: vi.fn(), command } as unknown as SessionApi);
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => resourceResponse(String(input).endsWith('/archive')
-      ? { archive: { state: 'pending', sha256: null, byteLength: null, errorCode: null } }
-      : { items: [], nextCursor: null }, TEST_VIEWER_ID)));
+    const archive = vi.fn(async () => ({ state: 'pending' as const, sha256: null, byteLength: null, errorCode: null })), archiveContent = vi.fn(), channel = vi.fn();
+    vi.spyOn(sessions, 'createSessionApi').mockReturnValue({ current, channel, timeline: vi.fn(), command, archive, archiveContent } as unknown as SessionApi);
+    vi.stubGlobal('fetch', vi.fn(async () => resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID)));
     await world.sync([detail]);
     renderWithLocale(<Host detail={detail} modal={false} onClose={() => {}} />, { locale: 'en', container: root, taskCache: { scope: world.scope } });
     expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
     expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
     expect(command).not.toHaveBeenCalled();
     expect(current).toHaveBeenCalled();
+    expect(archive).toHaveBeenCalledWith(snapshot.sessionId, expect.any(AbortSignal));
+    expect(archiveContent).not.toHaveBeenCalled(); expect(channel).not.toHaveBeenCalled();
   });
 
   it.each([{ modal: true, outer: false }, { modal: true, outer: true }, { modal: false, outer: false }, { modal: false, outer: true }])('restores the original task surface (modal=$modal, fullscreen=$outer)', async ({ modal, outer }) => {

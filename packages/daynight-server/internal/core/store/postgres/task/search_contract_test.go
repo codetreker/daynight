@@ -21,10 +21,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestTaskSearchRejectsInvalidDAOInputs(t *testing.T) {
+func TestTaskSearchStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "TaskSearchRejectsInvalidDAOInputs", testTaskSearchRejectsInvalidDAOInputs)
+	suite.run(t, "TaskSearchReadFailuresDoNotBecomeResults", testTaskSearchReadFailuresDoNotBecomeResults)
+	suite.run(t, "TaskSearchSQLMatchesEvidenceAndPaginates", testTaskSearchSQLMatchesEvidenceAndPaginates)
+	suite.run(t, "TaskSearchContextAndFence", testTaskSearchContextAndFence)
+	suite.run(t, "TaskSearchIDOrderingAndPagination", testTaskSearchIDOrderingAndPagination)
+	suite.run(t, "TaskSearchFenceTracksCommittedDAOMutations", testTaskSearchFenceTracksCommittedDAOMutations)
+}
+
+func testTaskSearchRejectsInvalidDAOInputs(t *testing.T, db *postgres.Store) {
 	valid := &tasksearch.Node{Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: tasksearch.AnyField, Term: "word"}}
 	invalid := []*tasksearch.Node{nil, {Kind: tasksearch.Leaf}, {Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: tasksearch.Field(255), Term: "word"}}, {Kind: tasksearch.Kind(255)}, {Kind: tasksearch.And, Left: nil, Right: valid}, {Kind: tasksearch.Or, Left: valid, Right: nil}}
-	db := readerStore(t)
 	err := postgres.NewTaskSearch(db.Pool).ReadTaskSearch(context.Background(), func(s store.TaskSearchSnapshot) error {
 		for _, node := range invalid {
 			if _, err := s.Matches(context.Background(), uuid.NewString(), store.TaskSearchQuery{Expression: node, Limit: 1}); err == nil {
@@ -44,8 +53,7 @@ func TestTaskSearchRejectsInvalidDAOInputs(t *testing.T) {
 	}
 }
 
-func TestTaskSearchReadFailuresDoNotBecomeResults(t *testing.T) {
-	db := readerStore(t)
+func testTaskSearchReadFailuresDoNotBecomeResults(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
 	project, a, b := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'search','example')`, project); err != nil {
@@ -146,8 +154,7 @@ func (r *readerFaultQueryRows) Err() error {
 	return r.Rows.Err()
 }
 
-func TestTaskSearchSQLMatchesEvidenceAndPaginates(t *testing.T) {
-	db := readerStore(t)
+func testTaskSearchSQLMatchesEvidenceAndPaginates(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
 	project := uuid.NewString()
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'search','example')`, project); err != nil {
@@ -233,8 +240,7 @@ func TestTaskSearchSQLMatchesEvidenceAndPaginates(t *testing.T) {
 	}
 }
 
-func TestTaskSearchContextAndFence(t *testing.T) {
-	db := readerStore(t)
+func testTaskSearchContextAndFence(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
 	project := uuid.NewString()
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
@@ -280,8 +286,7 @@ func TestTaskSearchContextAndFence(t *testing.T) {
 	}
 }
 
-func TestTaskSearchIDOrderingAndPagination(t *testing.T) {
-	db := readerStore(t)
+func testTaskSearchIDOrderingAndPagination(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
 	project := uuid.NewString()
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'search','example')`, project); err != nil {
@@ -389,8 +394,7 @@ func TestTaskSearchIDOrderingAndPagination(t *testing.T) {
 
 }
 
-func TestTaskSearchFenceTracksCommittedDAOMutations(t *testing.T) {
-	database := readerStore(t)
+func testTaskSearchFenceTracksCommittedDAOMutations(t *testing.T, database *postgres.Store) {
 	project := readerProject(t, database, 1)
 	target := readerTask(t, database, project.ID, 11, model.TaskTodo)
 	predecessor := readerTask(t, database, project.ID, 12, model.TaskTodo)

@@ -381,9 +381,10 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 		t.Fatalf("queue default %q: %v", defaultExpr, err)
 	}
 	tasks := taskservice.NewTasks(upgraded, &webhook.Capturer{})
+	status := model.TaskTodo
 	var previous int64
 	for n := 0; n < 2; n++ {
-		created, err := tasks.Create(ctx, principal, project, taskcore.CreateTask{Title: fmt.Sprintf("after upgrade %d", n)})
+		created, err := tasks.Create(ctx, principal, project, taskcore.CreateTask{Title: fmt.Sprintf("after upgrade %d", n), Status: &status})
 		if err != nil {
 			t.Fatal(err)
 		}

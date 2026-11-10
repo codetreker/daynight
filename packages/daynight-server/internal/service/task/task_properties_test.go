@@ -89,7 +89,7 @@ func TestTaskPropertiesCandidateFailureAndWriteErrorPropagation(t *testing.T) {
 		}
 		f.dao.CreateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
 			f.writes++
-			if ctx != f.ctx || values.Title != "Rejected" || values.Status != model.TaskTodo || !propertyPropertiesEqual(t, values.Properties, properties) || !slices.Equal(values.DependsOn, []string{prerequisite.ID}) {
+			if ctx != f.ctx || values.Title != "Rejected" || values.Status != model.TaskProposed || !propertyPropertiesEqual(t, values.Properties, properties) || !slices.Equal(values.DependsOn, []string{prerequisite.ID}) {
 				t.Fatalf("create candidate: %#v", values)
 			}
 			return model.Task{}, failure

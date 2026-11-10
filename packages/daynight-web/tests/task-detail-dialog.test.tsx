@@ -43,7 +43,7 @@ const node = (task: TaskDetail): GraphTask => ({ assignedTo: task.assignedTo, re
 });
 const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
   const graph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
-    project, tasks: tasks.map(node), summary: {
+    project, tasks: tasks.map(node), summary: { proposed: 0,
       total: tasks.length, todo: tasks.filter((task) => task.status === 'todo').length,
       inProgress: tasks.filter((task) => task.status === 'in_progress').length,
       done: tasks.filter((task) => task.status === 'done').length, cancelled: 0,

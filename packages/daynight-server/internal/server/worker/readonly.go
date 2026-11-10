@@ -18,8 +18,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
+type readOnlyOperations interface {
+	Request(context.Context, model.Principal, string, ro.Request) (ro.Message, error)
+	Connect(context.Context, model.Principal, string, ro.Hello) (*ro.Connection, error)
+	Disconnect(*ro.Connection)
+	Deliver(context.Context, *ro.Connection, ro.Message) error
+	Check(context.Context, *ro.Connection) error
+	Close()
+}
+
 type ReadOnlyRoutes struct {
-	broker            *ro.Broker
+	broker            readOnlyOperations
 	auth              *authhttp.Authentication
 	logger            *slog.Logger
 	mu                sync.Mutex
