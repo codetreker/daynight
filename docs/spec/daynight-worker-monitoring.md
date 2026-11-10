@@ -178,7 +178,7 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 1. 已知远端变更结果未确认（包括 `ApiError.outcomeUnconfirmed=true`）先归 `outcome-unknown`，即使底层是超时或取消；既有读回和重试策略不变。
 2. 实际观测的 `OperationError.kind`：`cancelled` 为 `cancelled`，`deadline`/`request_timeout` 为 `timeout`，`request_limit`/`response_limit`/`total_limit` 为 `limit-exceeded`；`disposed` 使用 `unknown`。
 3. 已确认的 API 拒绝仅按确定的状态分类：401 为 `authentication-required`，403 为 `permission-denied`，404 为 `not-found-or-inaccessible`，409 为 `conflict`，413 为 `limit-exceeded`，429 为 `rate-limited`，503 为 `unavailable`；其他状态为 `unknown`。响应解析或分页失败且无未确认写入时为 `invalid-response`。不能复制服务端错误正文或 code。
-4. 本地 `WorktreePreconditionError.code` 的 `branch_mismatch` 和 `validation_failed` 分别为 `branch-mismatch` 和 `worktree-validation-failed`；受控 `RecoveryState.reasonCode` 的 `native_identity_missing`、`recovery_limit`、`recovery_blocked` 分别为 `native-identity-missing`、`recovery-limit`、`recovery-blocked`。明确的受控命令失败为 `command-failed`，已知输出解析失败为 `invalid-output`；只在可信 I/O 边界确知 I/O 失败时为 `io-error`，不能把任意未知异常当作 I/O 故障。
+4. 本地 `WorktreePreconditionError.code` 的 `branch_mismatch` 和 `validation_failed` 分别为 `branch-mismatch` 和 `worktree-validation-failed`；受控 `RecoveryState.reasonCode` 的 `native_identity_missing`、`recovery_limit`、`recovery_blocked` 分别为 `native-identity-missing`、`recovery-limit`、`recovery-blocked`。实际 `HerdrCommandError` 或 `RepositoryGitError` 的退出码为明确非零安全整数时归 `command-failed`；启动失败、仅信号退出、无明确退出码或不合法退出码不能据此归类。已知输出解析失败为 `invalid-output`；只在可信 I/O 边界确知 I/O 失败时为 `io-error`，不能把任意未知异常当作 I/O 故障。
 5. 其他情形为 `unknown`。对聚合错误不猜测其中哪一条代表整体原因；确知结果未确认时仍按第 1 条，否则用 `unknown`。`WorkerCleanupError.stage` 仅选择阶段；可在受控包装关系内检查其已知类型 cause，但不递归采用任意对象、消息或未经验证的属性。
 
 任何其他表项仅由明确的对应操作事实构造；若捕获点没有可靠证据，则不选择它。

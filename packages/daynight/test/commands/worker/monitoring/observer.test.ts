@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../../src/api/client.js";
 import { OperationError } from "../../../../src/api/operation.js";
 import { ProtocolError } from "../../../../src/api/parse.js";
+import { RepositoryGitError } from "../../../../src/repository/git.js";
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
 import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
@@ -260,6 +261,35 @@ describe("safe monitoring diagnostics", () => {
       observer.fail({ operationId, component: "configuration", phase: "configuration", scope, error });
     }
     expect(JSON.stringify(observer.capture("1"))).not.toContain(secret);
+  });
+
+  it("classifies trusted Git exits through cleanup wrappers without exposing repository diagnostics", () => {
+    const statuses: readonly [number | null, NodeJS.Signals | null, DiagnosticCode][] = [
+      [23, null, "command-failed"], [null, null, "unknown"], [null, "SIGTERM", "unknown"],
+      [0, null, "unknown"], [1.5, null, "unknown"], [NaN, null, "unknown"],
+      [Infinity, null, "unknown"], [Number.MAX_SAFE_INTEGER + 1, null, "unknown"],
+    ];
+    const observer = createMonitoringObserver({ runId });
+    const scope = { kind: "claim", ...identity(1) } as const;
+    for (const [exitCode, signal, code] of statuses) {
+      const command = new RepositoryGitError(secret, exitCode, signal, secret, { cause: new Error(secret) });
+      for (const error of [command, new WorkerCleanupError("worktree-removal", command)]) {
+        expect(classifyFailure(error)).toEqual(diagnostic(code));
+        const operationId = observer.startActivity({ kind: "cleanup", phase: "worktree-removal", scope });
+        observer.fail({ operationId, component: "cleanup", phase: "worktree-removal", scope, error });
+      }
+    }
+    const command = new RepositoryGitError(secret, 23, null, secret);
+    for (const error of [
+      { name: "RepositoryGitError", exitCode: 23, stderr: secret },
+      new Error(secret, { cause: command }), new AggregateError([command], secret),
+    ]) expect(classifyFailure(error)).toEqual(diagnostic("unknown"));
+    expect(classifyFailure(command, true)).toEqual(diagnostic("outcome-unknown"));
+    expect(classifyFailure(new ApiError({ operation: "write" }, "request", { cause: command, outcomeUnconfirmed: true }))).toEqual(diagnostic("outcome-unknown"));
+    expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 403, cause: command }))).toEqual(diagnostic("permission-denied"));
+    const snapshot = observer.capture("1");
+    expect(snapshot.currentFailures).toContainEqual(expect.objectContaining({ error: diagnostic("command-failed") }));
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
   });
 
   it("never copies secrets, paths, prompts or command output from error chains into snapshots", () => {
