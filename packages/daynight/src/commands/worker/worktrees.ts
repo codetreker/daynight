@@ -8,6 +8,7 @@ import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
+import { bootstrapWorktreeIdentity, inspectWorktreeIdentity, verifyWorktreeIdentityMetadata } from "./worktree-identity.js";
 
 type GitRunner = typeof runRepositoryGit;
 export class WorktreePreconditionError extends Error {
@@ -137,17 +138,18 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     const registration = matches[0] ?? null;
     if (registration === null) {
       if (leaf !== null && (!terminal || (await readdir(binding.worktreePath)).length > 0)) throw new Error("An existing task worktree path has no matching ownership registration; it was retained.");
-      return { binding, leaf, registration };
+      return { binding, leaf, registration, identityEvidence: null };
     }
     if (registration.marker === null) throw new Error("The task worktree has no ownership marker; it was retained.");
     const owner = markerOwner(registration.marker);
-    if (!sameCoordinates(owner, identity) || owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity || await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
+    if (!sameCoordinates(owner, identity) || await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
+    let verifyLeaf = false;
     if (leaf !== null) {
       const pointer = await ordinaryFile(path.join(binding.worktreePath, ".git"));
       if (pointer === null) {
         if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new Error("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
       } else {
-        if (owner.leaf !== leaf) throw new Error("The original task worktree directory was replaced; it was retained.");
+        verifyLeaf = true;
         if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new Error("The original worktree Git pointer has changed.");
         const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
         if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
@@ -156,7 +158,23 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     }
     const branch = await git(repository.root, [`--git-dir=${registration.directory}`, "symbolic-ref", "--quiet", "HEAD"], operation);
     if (branch !== `refs/heads/${binding.branch}`) throw new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch.");
-    return { binding, leaf, registration };
+    const identityEvidence = await inspectWorktreeIdentity({ owner: identity,
+      paths: { root: repository.root, common: repository.commonDirectory, admin: registration.directory, leaf: binding.worktreePath },
+      runtime: { root: repository.rootIdentity, common: repository.commonIdentity, leaf }, marker: registration.marker, verifyLeaf,
+    }, operation);
+    if (identityEvidence.sidecar === null) {
+      if (owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
+      if (verifyLeaf && owner.leaf !== leaf) throw new Error("The original task worktree directory was replaced; it was retained. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
+    }
+    return { binding, leaf, registration, identityEvidence };
+  };
+  const ensureStableIdentity = async (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository, operation: Operation, result: Awaited<ReturnType<typeof inspectWorktree>>, terminal = false): Promise<void> => {
+    if (result.registration === null || result.identityEvidence?.candidate == null) return;
+    await bootstrapWorktreeIdentity(result.registration.directory, result.identityEvidence.candidate, operation, async () => {
+      const current = await inspectWorktree(project, owner, repository, operation, terminal);
+      if (current.registration?.directory !== result.registration!.directory || current.identityEvidence === null) throw new Error("Worktree registration changed before stable identity publication.");
+      return current.identityEvidence;
+    });
   };
   const removeEmptyDirectory = async (target: string, operation: Operation): Promise<void> => {
     operation.check();
@@ -217,6 +235,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const before = await inspectWorktree(project, owner, repository, operation, false);
       if (before.registration !== null) {
         if (before.leaf === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
+        await ensureStableIdentity(project, owner, repository, operation, before);
         return before.binding;
       }
       const names = (await git(repository.root, ["for-each-ref", "--format=%(refname)", `refs/heads/${before.binding.branch}`], operation)).split("\n");
@@ -247,6 +266,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         await git(repository.root, ["worktree", "add", "--lock", "--reason", marker, ...branchArgs], operation);
         const after = await inspectWorktree(project, owner, repository, operation, false);
         if (after.leaf === null || after.registration === null) throw new Error("Git did not create the expected owned task worktree.");
+        await ensureStableIdentity(project, owner, repository, operation, after);
         binding = after.binding;
       } catch (error) {
         if (fetchedRef !== undefined) {
@@ -265,6 +285,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const repository = await inspectRepository(project, operation);
       const result = await inspectWorktree(project, owner, repository, operation, false);
       if (result.leaf === null || result.registration === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
+      return result.binding;
+    },
+    enrollWorktreeIdentity: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
+      const repository = await inspectRepository(project, operation);
+      const result = await inspectWorktree(project, owner, repository, operation, true);
+      if (result.registration === null) return null;
+      await ensureStableIdentity(project, owner, repository, operation, result, true);
       return result.binding;
     },
     findWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
@@ -328,6 +355,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         if (result.registration === null) return;
         if (result.leaf !== null) {
           const { registration, binding, leaf } = result;
+          const identityEvidence = result.identityEvidence!;
           const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
           for (const target of [path.join(repository.root, ".worktrees"), path.dirname(binding.worktreePath), path.dirname(registration.directory), registration.directory]) {
             const identity = await directory(target);
@@ -349,6 +377,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
             for (const [target, contents] of metadata) {
               if (await ordinaryFile(target) !== contents) throw new Error(`Worktree ownership metadata ${target} changed during cleanup.`);
             }
+            await verifyWorktreeIdentityMetadata(registration.directory, identityEvidence);
             operation.check();
           };
           // Bind the lightweight mutation guards to a second complete ownership inspection.
