@@ -247,6 +247,11 @@ const capture = async (name, args, targetBase) => {
     const info = await stat(etl);
     phase.etlBytes = info.size;
     await must(systemTool("tracerpt"), [etl, "-o", xml, "-of", "XML", "-summary", path.join(folder, "summary.txt"), "-y"], { timeoutMs: 60_000 });
+    if (name === "control") {
+      const observedSchema = path.join(resultDirectory, "observed-schema.json");
+      await must("python.exe", [filter, "--validate-control-events", xml, "--file-schema", path.join(results, "file-schema.json"), "--thread-schema", path.join(results, "thread-schema.json"), "--output", observedSchema]);
+      phase.decodedSchema = JSON.parse(await readFile(observedSchema, "utf8"));
+    }
     const vitestResult = JSON.parse(await readFile(path.join(folder, "vitest.json"), "utf8"));
     phase.tests = (await readFile(path.join(folder, "cases.jsonl"), "utf8")).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
     phase.failedTargets = vitestResult.testResults.flatMap(file => file.assertionResults).flatMap(test => test.failureMessages).flatMap(message => [...message.matchAll(/EBUSY[^\n]*?rmdir '([^']+)'/g)].map(match => match[1])).filter(target => {
@@ -259,7 +264,7 @@ const capture = async (name, args, targetBase) => {
     const filtered = JSON.parse(await readFile(path.join(resultDirectory, "events.json"), "utf8"));
     phase.expectedCaseCount = name === "control" ? 1 : 5;
     phase.caseCountValid = phase.tests.length === phase.expectedCaseCount;
-    phase.complete = phase.caseCountValid && phase.command?.descendantsStopped === true && phase.command.forcedTermination === false && phase.errors.length === 0 && phase.statistics !== null && phase.statistics.eventsLost === 0 && phase.statistics.logBuffersLost === 0 && phase.statistics.realTimeBuffersLost === 0
+    phase.complete = (name !== "control" || phase.decodedSchema?.valid === true) && phase.caseCountValid && phase.command?.descendantsStopped === true && phase.command.forcedTermination === false && phase.errors.length === 0 && phase.statistics !== null && phase.statistics.eventsLost === 0 && phase.statistics.logBuffersLost === 0 && phase.statistics.realTimeBuffersLost === 0
       && info.size < 64 * 1024 * 1024 && filtered.coverage.begin.seen && filtered.coverage.end.seen && filtered.ordering.complete;
     await save(path.join(resultDirectory, "tests.json"), phase.tests);
     return { phase, filtered, stdout: await readFile(path.join(folder, "stdout.log"), "utf8") };
@@ -277,7 +282,7 @@ try {
     const schemaFile = path.join(results, `${label}-schema.json`);
     await must("python.exe", [filter, "--manifest", manifest, "--output", schemaFile]);
     const schema = JSON.parse(await readFile(schemaFile, "utf8"));
-    if (schema.valid !== true) throw new Error(`The ${label} ETW schema is unsupported: ${JSON.stringify(schema.errors).slice(0, 2048)}`);
+    if (schema.descriptorsValid !== true) throw new Error(`The ${label} ETW provider descriptors are unsupported: ${JSON.stringify(schema.descriptorErrors).slice(0, 2048)}`);
   }
   await writeFile(path.join(privateDirectory, "providers.txt"), "{edd08927-9cc4-4e65-b970-c2560fb5c289} 0x4f0 5\n{22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716} 0x20 5\n");
   const control = await capture("control", ["test/commands/worker/bot-process-directory-lock.windows.test.ts"], path.join(repository, ".tmp/bot-directory-lock"));
@@ -294,7 +299,7 @@ try {
     related.push(event);
     if (event.eventId === 14) break;
   }
-  const validation = { knownHolder: known, create: create ?? null, cleanupSeen: related.some(event => event.eventId === 13), closeSeen: related.some(event => event.eventId === 14), lifetimeUnambiguous, complete: control.phase.complete };
+  const validation = { knownHolder: known, create: create ?? null, cleanupSeen: related.some(event => event.eventId === 13), closeSeen: related.some(event => event.eventId === 14), lifetimeUnambiguous, complete: control.phase.complete, decodedSchemaValid: control.phase.decodedSchema?.valid === true };
   await save(path.join(results, "control-validation.json"), validation);
   if (control.phase.command?.code !== 0 || !known?.blockedBeforeTrace || !known?.blockedAfterTrace || !known?.removedAfterRelease || create === undefined || !validation.cleanupSeen || !validation.closeSeen || !validation.lifetimeUnambiguous || !validation.complete) throw new Error("Native ETW control did not establish the known holder's sharing and lifetime; original-case attribution is not admitted.");
   const original = await must("git.exe", ["show", `${base}:${fixturePath}`]);

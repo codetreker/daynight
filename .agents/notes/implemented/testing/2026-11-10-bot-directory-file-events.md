@@ -19,6 +19,12 @@ open-to-cleanup/close history before original-case rounds are admitted. Raw
 header PID and issuing thread fields remain observations when attribution is
 unresolved; an execution-context PID is not automatically a lock holder.
 
+Publisher metadata can expose event IDs and versions without payload templates.
+That descriptor preflight admits only the known-holder control. Its actual
+decoded records must verify the required payload fields and declared versions
+before the original fixture can run; missing templates do not become a claim
+that the payload schema is valid.
+
 The runner temporarily replays the PR base's Bot fixture, retaining its exact
 assertions and teardown. It records both source identities and restores the
 checked-out bytes on every path. Fresh Vitest processes execute the original

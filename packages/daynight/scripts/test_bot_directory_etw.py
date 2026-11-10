@@ -136,6 +136,58 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(all(value["seen"] for value in result["coverage"].values()))
         self.assertNotIn("begin\\", json.dumps(result))
 
+    def test_descriptor_only_native_manifest_does_not_claim_payload_validation(self):
+        # wevtutil emits these empty descriptors even when /ge:true /gm:true is
+        # requested. Their presence authorizes collection of a control only.
+        text = """<provider name="Microsoft-Windows-Kernel-File"
+          guid="edd08927-9cc4-4e65-b970-c2560fb5c289"
+          xmlns="http://schemas.microsoft.com/win/2004/08/events"><events>
+          <event value="12" version="0" opcode="0" channel="16" level="4" task="12" keywords="0x80000000000000a0" message=""></event>
+          <event value="12" version="1" opcode="0" channel="16" level="4" task="12" keywords="0x80000000000000a0" message=""></event>
+          <event value="13" version="0" opcode="0" channel="16" level="4" task="13" keywords="0x8000000000000020" message=""></event>
+          <event value="14" version="0" opcode="0" channel="16" level="4" task="14" keywords="0x8000000000000020" message=""></event>
+          <event value="24" version="0" opcode="0" channel="16" level="4" task="24" keywords="0x8000000000000040" message=""></event>
+          </events></provider>"""
+        filename = Path(self.directory.name) / "descriptor.xml"
+        filename.write_text(text)
+        result = etw.manifest(filename)
+        self.assertTrue(result["descriptorsValid"])
+        self.assertFalse(result["payloadMetadataAvailable"])
+        self.assertFalse(result["valid"])
+        filename.write_text(text.replace('version="0"', 'version="bad"'))
+        self.assertFalse(etw.manifest(filename)["descriptorsValid"])
+
+    def test_decoded_control_schema_requires_declared_versions_and_complete_payloads(self):
+        rows = [event(12, 2, {"FileName": TARGET, "FileObject": "10", "Irp": "20", "ShareAccess": "3", "IssuingThreadId": "42"}),
+                event(13, 3, {"FileObject": "10", "Irp": "21", "IssuingThreadId": "42"}), event(14, 4, {"FileObject": "10", "Irp": "22", "IssuingThreadId": "42"}),
+                event(24, 4, {"Irp": "20", "Status": "0"}),
+                event(3, 2, {"ProcessID": "100", "ThreadID": "42"}, etw.THREAD_PROVIDER),
+                event(4, 4, {"ProcessID": "100", "ThreadID": "42"}, etw.THREAD_PROVIDER)]
+        schemas = {provider: {"providerGuid": provider, "descriptorsValid": True,
+                              "events": [{"eventId": event_id, "version": 1} for event_id in definitions]}
+                   for provider, definitions in etw.REQUIRED_FIELDS.items()}
+        filename = Path(self.directory.name) / "decoded.xml"
+
+        def validate():
+            root = ET.Element("Events")
+            root.extend(rows)
+            ET.ElementTree(root).write(filename)
+            return etw.validate_control_events(filename, schemas)
+
+        result = validate()
+        self.assertTrue(result["valid"])
+        self.assertNotIn(TARGET, json.dumps(result))
+        rows[0].find("System/Version").text = "2"
+        self.assertFalse(validate()["valid"])
+        rows[0].find("System/Version").text = "1"
+        rows[0].find("EventData/Data[@Name='ShareAccess']").text = "not-a-number"
+        self.assertFalse(validate()["valid"])
+        rows[0].find("EventData/Data[@Name='ShareAccess']").text = "3"
+        rows[0].find("EventData").remove(rows[0].find("EventData/Data[@Name='FileObject']"))
+        self.assertFalse(validate()["valid"])
+        rows.pop()
+        self.assertFalse(validate()["valid"])
+
     def test_manifest_resolves_templates_and_rejects_missing_schema(self):
         root = ET.Element("provider", guid="{" + etw.THREAD_PROVIDER + "}")
         templates = ET.SubElement(root, "templates")

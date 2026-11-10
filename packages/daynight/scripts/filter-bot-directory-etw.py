@@ -10,6 +10,11 @@ from pathlib import Path
 
 FILE_PROVIDER = "edd08927-9cc4-4e65-b970-c2560fb5c289"
 THREAD_PROVIDER = "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
+REQUIRED_FIELDS = {FILE_PROVIDER: {12: [("FileObject",), ("Irp", "IrpPtr"), ("ShareAccess",), ("FileName", "OpenPath"), ("ThreadId", "TTID", "IssuingThreadId")],
+                               13: [("FileObject",), ("Irp", "IrpPtr"), ("ThreadId", "TTID", "IssuingThreadId")],
+                               14: [("FileObject",), ("Irp", "IrpPtr"), ("ThreadId", "TTID", "IssuingThreadId")], 24: [("Irp", "IrpPtr"), ("NtStatus", "Status")]},
+                THREAD_PROVIDER: {3: [("ProcessID",), ("ThreadID",)], 4: [("ProcessID",), ("ThreadID",)]}}
+
 SAFE_FIELDS = ("FileObject", "Irp", "IrpPtr", "TTID", "IssuingThreadId", "ThreadId", "ShareAccess", "CreateOptions", "CreateDisposition", "CreateAttributes", "FileAttributes", "NtStatus", "Status", "ExtraInfo", "ExtraInformation")
 
 
@@ -113,19 +118,69 @@ def manifest(filename):
         result.append({"eventId": number(event.get("value")), "version": number(event.get("version", "0")),
                        "task": event.get("task"), "opcode": event.get("opcode"), "fields": fields})
     provider = next(iter(providers)) if len(providers) == 1 else None
-    required = {FILE_PROVIDER: {12: [("FileObject",), ("ShareAccess",), ("FileName", "OpenPath"), ("ThreadId", "TTID", "IssuingThreadId")],
-                               13: [("FileObject",)], 14: [("FileObject",)], 24: [("Irp", "IrpPtr"), ("NtStatus", "Status")]},
-                THREAD_PROVIDER: {3: [("ProcessID",), ("ThreadID",)], 4: [("ProcessID",), ("ThreadID",)]}}
-    if provider not in required:
-        errors.append("Missing or unsupported provider GUID")
+    descriptor_errors = []
+    if provider not in REQUIRED_FIELDS:
+        descriptor_errors.append("Missing or unsupported provider GUID")
     else:
-        for event_id, groups in required[provider].items():
+        for event_id, groups in REQUIRED_FIELDS[provider].items():
             definitions = [event for event in result if event["eventId"] == event_id]
+            if not definitions:
+                descriptor_errors.append("Missing event descriptor " + str(event_id))
             if not definitions or any(not all(any(field in event["fields"] for field in group) for group in groups) for event in definitions):
                 errors.append("Unverified payload for event " + str(event_id))
+    descriptors = [(event["eventId"], event["version"]) for event in result]
+    if any(event_id is None or version is None or version < 0 for event_id, version in descriptors):
+        descriptor_errors.append("Invalid event ID or version")
+    if len(set(descriptors)) != len(descriptors):
+        descriptor_errors.append("Duplicate event ID/version descriptor")
     if not result:
-        errors.append("No event definitions")
-    return {"providerGuid": provider, "events": result, "eventCount": len(result), "valid": not errors, "errors": errors}
+        descriptor_errors.append("No event definitions")
+    errors = descriptor_errors + errors
+    return {"providerGuid": provider, "events": result, "eventCount": len(result),
+            "descriptorsValid": not descriptor_errors, "descriptorErrors": descriptor_errors,
+            "payloadMetadataAvailable": any(event["fields"] for event in result), "valid": not errors, "errors": errors}
+
+
+def validate_control_events(filename, schemas):
+    errors, observed = [], {}
+    declared = {}
+    for provider in REQUIRED_FIELDS:
+        schema = schemas.get(provider, {})
+        if schema.get("providerGuid") != provider or not schema.get("descriptorsValid"):
+            errors.append("Unverified provider descriptors " + provider)
+        declared[provider] = {(event["eventId"], event["version"]) for event in schema.get("events", [])}
+    for event in events(filename):
+        provider, event_id, version = event["providerGuid"], event["eventId"], event["version"]
+        if provider not in REQUIRED_FIELDS or event_id not in REQUIRED_FIELDS[provider]:
+            continue
+        key = (provider, event_id, version)
+        sample = observed.setdefault(key, {"providerGuid": provider, "eventId": event_id, "version": version,
+                                           "fields": sorted(event["fields"]), "count": 0, "valid": True})
+        sample["count"] += 1
+        fields = event["fields"]
+        valid = (event_id, version) in declared[provider] and version is not None
+        for alternatives in REQUIRED_FIELDS[provider][event_id]:
+            present = [field for field in alternatives if field in fields]
+            if not present:
+                valid = False
+            for field in present:
+                if field in ("FileName", "OpenPath"):
+                    valid = valid and bool(fields[field])
+                else:
+                    value = number(fields[field])
+                    valid = valid and value is not None and value >= 0
+        if provider == THREAD_PROVIDER:
+            valid = valid and number(fields.get("ProcessID")) not in (None, 0) and number(fields.get("ThreadID")) not in (None, 0)
+        sample["valid"] = sample["valid"] and valid and sample["fields"] == sorted(fields)
+    for provider, definitions in REQUIRED_FIELDS.items():
+        for event_id in definitions:
+            samples = [sample for key, sample in observed.items() if key[:2] == (provider, event_id)]
+            if not samples:
+                errors.append("Missing decoded event " + provider + ":" + str(event_id))
+            if any(not sample["valid"] for sample in samples):
+                errors.append("Unverified decoded payload " + provider + ":" + str(event_id))
+    return {"valid": not errors, "errors": errors,
+            "events": sorted(observed.values(), key=lambda event: (event["providerGuid"], event["eventId"], event["version"] if event["version"] is not None else -1))}
 
 
 def issuing_tid(fields):
@@ -308,9 +363,19 @@ def main():
     parser.add_argument("--manifest")
     parser.add_argument("--events")
     parser.add_argument("--request")
+    parser.add_argument("--validate-control-events")
+    parser.add_argument("--file-schema")
+    parser.add_argument("--thread-schema")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    result = manifest(args.manifest) if args.manifest else filter_events(args.events, json.loads(Path(args.request).read_text(encoding="utf-8")))
+    if args.manifest:
+        result = manifest(args.manifest)
+    elif args.validate_control_events:
+        schemas = {FILE_PROVIDER: json.loads(Path(args.file_schema).read_text(encoding="utf-8")),
+                   THREAD_PROVIDER: json.loads(Path(args.thread_schema).read_text(encoding="utf-8"))}
+        result = validate_control_events(args.validate_control_events, schemas)
+    else:
+        result = filter_events(args.events, json.loads(Path(args.request).read_text(encoding="utf-8")))
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
