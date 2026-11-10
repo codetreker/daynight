@@ -1,3 +1,4 @@
+import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
@@ -106,7 +107,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
-    listWorktrees: vi.fn(async (source: WorkerProject, _operation: Operation, _allowMissing = false, includeOtherProjects = false) => [...worktrees.values()].filter(({ owner, binding }) => binding.repositoryPath === source.localPath && (includeOtherProjects || owner.projectId === source.projectId))),
+    scanWorktrees: scanFromList, listWorktrees: vi.fn(async (source: WorkerProject, _operation: Operation, _allowMissing = false, includeOtherProjects = false) => [...worktrees.values()].filter(({ owner, binding }) => binding.repositoryPath === source.localPath && (includeOtherProjects || owner.projectId === source.projectId))),
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
   } as unknown as WorkerGitManager;
   const tasks = {

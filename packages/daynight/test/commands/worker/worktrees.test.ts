@@ -240,11 +240,12 @@ describe("worker repositories and task worktrees", () => {
     let prepared: Awaited<ReturnType<typeof prepare>>;
     beforeEach(async () => { prepared = await prepare(); });
 
-    it("ignores unrecognized markers while still reporting moved recognized registrations", async () => {
+    it("preserves unrecognized markers and rejects moved recognized registrations", async () => {
       const { f, adapter, binding, healthyOwner, healthyBinding, admin, locked, original } = prepared;
       for (const marker of ["human", "daynight-worker:{", "daynight-worker:{}", `daynight-worker:${JSON.stringify({ ...JSON.parse(original.slice("daynight-worker:".length)), serverOrigin: "https://example.com" })}`]) {
         await writeFile(locked, `${marker}\n`);
-        expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthyBinding }]);
+        if (marker !== "human" && "scanWorktrees" in adapter) await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
+        else expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthyBinding }]);
         expect(await readFile(locked, "utf8")).toBe(`${marker}\n`);
         await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
       }
