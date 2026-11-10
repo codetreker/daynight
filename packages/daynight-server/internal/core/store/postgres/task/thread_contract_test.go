@@ -104,8 +104,17 @@ func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
 	}
 }
 
-func TestThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T) {
-	database := writerStore(t)
+func TestTaskThreadStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "ThreadFirstHeadConcurrencyPublishesStrictPositions", testThreadFirstHeadConcurrencyPublishesStrictPositions)
+	suite.run(t, "ThreadSamplesDatabaseClockAfterHeadLockWait", testThreadSamplesDatabaseClockAfterHeadLockWait)
+	suite.run(t, "ThreadRoundTripAuthorizationAndTaskInvariants", testThreadRoundTripAuthorizationAndTaskInvariants)
+	suite.run(t, "ThreadCredentialKindsAndExpiry", testThreadCredentialKindsAndExpiry)
+	suite.run(t, "ThreadSourceReadsOnlyWorkerAttribution", testThreadSourceReadsOnlyWorkerAttribution)
+	suite.run(t, "ThreadIDPaginationTraversesSameMillisecondInBothDirections", testThreadIDPaginationTraversesSameMillisecondInBothDirections)
+}
+
+func testThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T, database *postgres.Store) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	const total = 24
@@ -173,8 +182,7 @@ func TestThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T) {
 	}
 }
 
-func TestThreadSamplesDatabaseClockAfterHeadLockWait(t *testing.T) {
-	database := writerStore(t)
+func testThreadSamplesDatabaseClockAfterHeadLockWait(t *testing.T, database *postgres.Store) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	testutil.MustExec(t, database.Pool, `INSERT INTO task_threads(task_id) VALUES($1)`, testutil.QueryID(1))
@@ -219,8 +227,7 @@ func TestThreadSamplesDatabaseClockAfterHeadLockWait(t *testing.T) {
 	}
 }
 
-func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
-	database := writerStore(t)
+func testThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T, database *postgres.Store) {
 	principal, _, project := testutil.ProjectMembershipFixture(t, database)
 	ctx := context.Background()
 	task := writerTask(t, database, project.ID, 10, model.TaskDone)
@@ -351,8 +358,7 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 	}
 }
 
-func TestThreadCredentialKindsAndExpiry(t *testing.T) {
-	database := writerStore(t)
+func testThreadCredentialKindsAndExpiry(t *testing.T, database *postgres.Store) {
 	_, principal, session := testutil.AuthRecords(t, database)
 	ctx := context.Background()
 	pat := model.PersonalAccessToken{ID: testutil.QueryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
@@ -391,8 +397,7 @@ func TestThreadCredentialKindsAndExpiry(t *testing.T) {
 	}
 }
 
-func TestThreadSourceReadsOnlyWorkerAttribution(t *testing.T) {
-	database := writerStore(t)
+func testThreadSourceReadsOnlyWorkerAttribution(t *testing.T, database *postgres.Store) {
 	principal, _, project := testutil.ProjectMembershipFixture(t, database)
 	ctx := context.Background()
 	ordinary := writerTask(t, database, project.ID, 10, model.TaskTodo)
@@ -423,8 +428,7 @@ func TestThreadSourceReadsOnlyWorkerAttribution(t *testing.T) {
 	}
 }
 
-func TestThreadIDPaginationTraversesSameMillisecondInBothDirections(t *testing.T) {
-	database := writerStore(t)
+func testThreadIDPaginationTraversesSameMillisecondInBothDirections(t *testing.T, database *postgres.Store) {
 	principal, _, project := testutil.ProjectMembershipFixture(t, database)
 	task := writerTask(t, database, project.ID, 10, model.TaskTodo)
 	other := writerTask(t, database, project.ID, 11, model.TaskTodo)

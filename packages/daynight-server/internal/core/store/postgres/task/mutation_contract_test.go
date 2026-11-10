@@ -38,8 +38,24 @@ func cancelledMaterialWrite(t *testing.T, database *postgres.Store, current mode
 	return result
 }
 
-func TestCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing.T) {
-	database := writerStore(t)
+func TestTaskMutationStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "CancelledTaskStoragePreservesMaterialsAndTerminalProjections", testCancelledTaskStoragePreservesMaterialsAndTerminalProjections)
+	suite.run(t, "CancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker", testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker)
+	suite.run(t, "TaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts", testTaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts)
+	suite.run(t, "TaskCompletionCommitsAtMaximumRevision", testTaskCompletionCommitsAtMaximumRevision)
+	suite.run(t, "TaskDeleteAndDependentLookupFailuresPreserveCauses", testTaskDeleteAndDependentLookupFailuresPreserveCauses)
+	suite.run(t, "TaskDeleteRemoveDependsUpdatesOnlyIncomingSources", testTaskDeleteRemoveDependsUpdatesOnlyIncomingSources)
+	suite.run(t, "TaskDeletionPreservesCompletedWorkerHistory", testTaskDeletionPreservesCompletedWorkerHistory)
+	suite.run(t, "TaskTodoGetPaginationAndReadiness", testTaskTodoGetPaginationAndReadiness)
+	suite.run(t, "TaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser", testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser)
+	suite.run(t, "TaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges", testTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges)
+	suite.run(t, "TaskWorkerInventoryPreservesJSONDecodeFailure", testTaskWorkerInventoryPreservesJSONDecodeFailure)
+	suite.run(t, "TaskTimingReplacesTheLatestIntervalAndPreservesEdits", testTaskTimingReplacesTheLatestIntervalAndPreservesEdits)
+	suite.run(t, "TaskDependencyWritesRetainExactCountsAndClassification", testTaskDependencyWritesRetainExactCountsAndClassification)
+}
+
+func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing.T, database *postgres.Store) {
 	owner, _, project := testutil.ProjectMembershipFixture(t, database)
 	ctx := t.Context()
 	predecessor := writerTask(t, database, project.ID, 10, model.TaskTodo)
@@ -177,8 +193,7 @@ func TestCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 	}
 }
 
-func TestCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *testing.T) {
-	database := writerStore(t)
+func testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *testing.T, database *postgres.Store) {
 	owner, _, project := testutil.ProjectMembershipFixture(t, database)
 	target := writerTask(t, database, project.ID, 11, model.TaskTodo)
 	started := cancelledMaterialWrite(t, database, target, func(values *store.TaskWrite) { values.Status = model.TaskInProgress })
@@ -208,8 +223,7 @@ func TestCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *test
 	}
 }
 
-func TestTaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts(t *testing.T) {
-	database := writerStore(t)
+func testTaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts(t *testing.T, database *postgres.Store) {
 	ctx := t.Context()
 	project := writerProject(t, database, 1)
 	task := writerTask(t, database, project.ID, 11, model.TaskTodo)
@@ -238,8 +252,7 @@ func TestTaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts(t *testing.T)
 	}
 }
 
-func TestTaskCompletionCommitsAtMaximumRevision(t *testing.T) {
-	database := writerStore(t)
+func testTaskCompletionCommitsAtMaximumRevision(t *testing.T, database *postgres.Store) {
 	ctx := t.Context()
 	project := writerProject(t, database, 1)
 	task := writerTask(t, database, project.ID, 11, model.TaskTodo)
@@ -275,8 +288,7 @@ func TestTaskCompletionCommitsAtMaximumRevision(t *testing.T) {
 	}
 }
 
-func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
-	database := writerStore(t)
+func testTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
 	pre := writerTask(t, database, project.ID, 11, model.TaskDone)
@@ -330,8 +342,7 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	}
 }
 
-func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
-	database := writerStore(t)
+func testTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T, database *postgres.Store) {
 	ctx := t.Context()
 	project, other := writerProject(t, database, 1), writerProject(t, database, 2)
 	root := writerTask(t, database, project.ID, 10, model.TaskDone)
@@ -480,8 +491,7 @@ func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 	}
 }
 
-func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
-	database := writerStore(t)
+func testTaskDeletionPreservesCompletedWorkerHistory(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
 	owner := testutil.QueryID(51)
@@ -514,8 +524,7 @@ func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 	}
 }
 
-func TestTaskTodoGetPaginationAndReadiness(t *testing.T) {
-	database := writerStore(t)
+func testTaskTodoGetPaginationAndReadiness(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
 	pending := writerTask(t, database, project.ID, 10, model.TaskTodo)
@@ -591,8 +600,7 @@ func writerWorkerPage(t *testing.T, database *postgres.Store, projectID string, 
 	return page
 }
 
-func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T) {
-	database := writerStore(t)
+func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	owner, other, workerID := testutil.QueryID(2), testutil.QueryID(3), testutil.QueryID(5)
 	writerTask(t, database, project.ID, 10, model.TaskTodo)
@@ -649,8 +657,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	}
 }
 
-func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.T) {
-	database := writerStore(t)
+func testTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	owner, workerID := testutil.QueryID(2), testutil.QueryID(3)
 	claim := testutil.WorkerClaim(10, owner, workerID, model.WorkerActive)
@@ -703,8 +710,7 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 	check(nil)
 }
 
-func TestTaskWorkerInventoryPreservesJSONDecodeFailure(t *testing.T) {
-	database := writerStore(t)
+func testTaskWorkerInventoryPreservesJSONDecodeFailure(t *testing.T, database *postgres.Store) {
 	project := writerProject(t, database, 1)
 	target := writerTask(t, database, project.ID, 2, model.TaskTodo)
 	testutil.PutTaskProperty(t, database.Pool, target.ID, "worker", []byte(`{"workerId":123}`))
@@ -721,8 +727,7 @@ func TestTaskWorkerInventoryPreservesJSONDecodeFailure(t *testing.T) {
 	}
 }
 
-func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
-	database := writerStore(t)
+func testTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
 	first := writerTask(t, database, project.ID, 9, model.TaskDone)
@@ -835,8 +840,7 @@ func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
 	}
 }
 
-func TestTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T) {
-	database := writerStore(t)
+func testTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
 	ids := make([]string, 16)

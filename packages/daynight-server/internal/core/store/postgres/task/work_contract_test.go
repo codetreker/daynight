@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"slices"
 	"testing"
 	"time"
@@ -9,8 +10,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func TestWorkComponentsIncludeDoneRootsAndExcludeExternalExpansion(t *testing.T) {
-	db := readerStore(t)
+func TestTaskWorkStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "WorkComponentsIncludeDoneRootsAndExcludeExternalExpansion", testWorkComponentsIncludeDoneRootsAndExcludeExternalExpansion)
+	suite.run(t, "WorkRootPreviewAndMultipleMatchingMembers", testWorkRootPreviewAndMultipleMatchingMembers)
+	suite.run(t, "WorkTargetsContinueBeyondTwentyWithoutMissingOrDuplicateMembers", testWorkTargetsContinueBeyondTwentyWithoutMissingOrDuplicateMembers)
+}
+
+func testWorkComponentsIncludeDoneRootsAndExcludeExternalExpansion(t *testing.T, db *postgres.Store) {
 	project := readerProject(t, db, 1)
 	actor := readerAssigneeUser(t, db, project.ID, 2, true)
 	other := readerAssigneeUser(t, db, project.ID, 3, true)
@@ -62,8 +69,7 @@ func TestWorkComponentsIncludeDoneRootsAndExcludeExternalExpansion(t *testing.T)
 	}
 }
 
-func TestWorkRootPreviewAndMultipleMatchingMembers(t *testing.T) {
-	db := readerStore(t)
+func testWorkRootPreviewAndMultipleMatchingMembers(t *testing.T, db *postgres.Store) {
 	project := readerProject(t, db, 1)
 	actor := readerAssigneeUser(t, db, project.ID, 2, true)
 	roots := make([]string, 7)
@@ -90,8 +96,7 @@ func TestWorkRootPreviewAndMultipleMatchingMembers(t *testing.T) {
 	}
 }
 
-func TestWorkTargetsContinueBeyondTwentyWithoutMissingOrDuplicateMembers(t *testing.T) {
-	db := readerStore(t)
+func testWorkTargetsContinueBeyondTwentyWithoutMissingOrDuplicateMembers(t *testing.T, db *postgres.Store) {
 	project := readerProject(t, db, 1)
 	actor := readerAssigneeUser(t, db, project.ID, 2, true)
 	root := readerTask(t, db, project.ID, 10, model.TaskDone)

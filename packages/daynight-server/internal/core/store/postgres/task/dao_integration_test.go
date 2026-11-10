@@ -31,6 +31,11 @@ func newFixture(t *testing.T) fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
+	return newFixtureWithStore(t, db)
+}
+
+func newFixtureWithStore(t *testing.T, db *postgres.Store) fixture {
+	t.Helper()
 	f := fixture{db: db, project: uuid.NewString(), other: uuid.NewString(), user: uuid.NewString()}
 	for _, p := range []string{f.project, f.other} {
 		if _, err := db.Pool.Exec(t.Context(), `INSERT INTO projects(id,name,repo_url) VALUES($1,'DAO test','repo')`, p); err != nil {
@@ -48,11 +53,18 @@ func newFixture(t *testing.T) fixture {
 	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, f.project, f.user); err != nil {
 		t.Fatal(err)
 	}
+	var err error
 	f.tx, err = db.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = f.tx.Rollback(context.Background()) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := f.tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback DAO fixture: %v", err)
+		}
+	})
 	return f
 }
 func mustTask(t *testing.T, w store.TaskWriteDAO, v store.TaskWrite) model.Task {
@@ -80,8 +92,16 @@ func taskIDs(v []model.Task) []string {
 	return r
 }
 
-func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
-	f := newFixture(t)
+func TestTaskDAOStore(t *testing.T) {
+	suite := newTaskStoreSuite(t)
+	suite.run(t, "WriterPersistenceDependenciesAndDeletion", testWriterPersistenceDependenciesAndDeletion)
+	suite.run(t, "ReaderListsGraphsSyncAndAssignees", testReaderListsGraphsSyncAndAssignees)
+	suite.run(t, "StepDAOWritesReadbackAndMissingErrors", testStepDAOWritesReadbackAndMissingErrors)
+	suite.run(t, "WorkerInventoryFilteringAndThreadSource", testWorkerInventoryFilteringAndThreadSource)
+}
+
+func testWriterPersistenceDependenciesAndDeletion(t *testing.T, database *postgres.Store) {
+	f := newFixtureWithStore(t, database)
 	ctx := t.Context()
 	w := task.NewWriter(f.tx, f.project)
 	r := task.NewReader(f.tx)
@@ -166,8 +186,8 @@ func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
 	}
 }
 
-func TestReaderListsGraphsSyncAndAssignees(t *testing.T) {
-	f := newFixture(t)
+func testReaderListsGraphsSyncAndAssignees(t *testing.T, database *postgres.Store) {
+	f := newFixtureWithStore(t, database)
 	ctx := t.Context()
 	w := task.NewWriter(f.tx, f.project)
 	r := task.NewReader(f.tx)
@@ -282,8 +302,8 @@ func TestReaderListsGraphsSyncAndAssignees(t *testing.T) {
 	}
 }
 
-func TestStepDAOWritesReadbackAndMissingErrors(t *testing.T) {
-	f := newFixture(t)
+func testStepDAOWritesReadbackAndMissingErrors(t *testing.T, database *postgres.Store) {
+	f := newFixtureWithStore(t, database)
 	ctx := t.Context()
 	w := task.NewWriter(f.tx, f.project)
 	r := task.NewReader(f.tx)
@@ -368,8 +388,8 @@ func TestStepDAOWritesReadbackAndMissingErrors(t *testing.T) {
 	}
 }
 
-func TestWorkerInventoryFilteringAndThreadSource(t *testing.T) {
-	f := newFixture(t)
+func testWorkerInventoryFilteringAndThreadSource(t *testing.T, database *postgres.Store) {
+	f := newFixtureWithStore(t, database)
 	ctx := t.Context()
 	w := task.NewWriter(f.tx, f.project)
 	r := task.NewReader(f.tx)
