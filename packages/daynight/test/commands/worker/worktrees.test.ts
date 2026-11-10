@@ -313,6 +313,26 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(await readFile(path.join(retained, "locked"), "utf8")).toBe(marker);
     });
 
+    it.each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
+      const f = await fixture(), adapter = manager(f.root);
+      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888" };
+      await adapter.prepareWorktree(f.project, siblingOwner, operation());
+      const admin = administrativeDirectory(binding.worktreePath), pointer = path.join(admin, "gitdir");
+      if (marker === "manual") await writeFile(path.join(admin, "locked"), "human");
+      else await rm(path.join(admin, "locked"));
+      const original = await readFile(pointer, "utf8"), retained = path.join(f.root, "retained-gitdir");
+      await writeFile(retained, original); await rm(pointer); await symlink(retained, pointer);
+      const scan = await adapter.scanWorktrees(f.project, operation());
+      expect(scan.unknown.length).toBeGreaterThan(0);
+      expect(scan.quarantined).toEqual([]);
+      await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
+      // Its target is unknown, so a duplicate of the healthy registration
+      // cannot be excluded. Strict execution must retain that uncertainty.
+      await expect(adapter.verifyWorktree(f.project, siblingOwner, operation())).rejects.toThrow();
+      expect(await readFile(retained, "utf8")).toBe(original);
+    });
+
     it("does not inventory ordinary unregistered paths or manual worktrees", async () => {
       const f = await fixture(), adapter = manager(f.root);
       await mkdir(path.join(f.repository, ".worktrees", "daynight", f.owner.taskId), { recursive: true });
