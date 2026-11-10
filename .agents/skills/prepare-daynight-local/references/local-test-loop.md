@@ -115,8 +115,9 @@ contents as one CLI argument. It must specify:
   source/version/root, actual command results and pass/fail judgments. Do not
   include tokens, full configuration or native account data.
 - Read back the attachment and complete the original claim using the managed
-  assignment runtime contract and the task’s acceptance criteria. Do not invent another task or report success from
-  simulated output. Report failures through that workflow.
+  assignment runtime contract and the task's acceptance criteria. Do not invent
+  another task or report success from simulated output. Report failures through
+  that contract.
 
 For example, from a shell with the description loaded into `DN_TEST_DESCRIPTION`:
 
@@ -144,8 +145,10 @@ leg, and must be observed through the actual website.
 
 Monitor this fixture with bounded reads. Verify the observed claim's Worker
 matches the expected development Worker. The managed Agent's startup prompt
-supplies the authoritative original claim ID and bundled skill; the coordinator
-does not create a substitute ordinary session or complete the task for it.
+supplies the original assignment and self-contained runtime constraints; the
+coordinator does not create a substitute ordinary session or complete the task
+for it. The Agent uses `daynight --skill` for product operations and follows the
+target repository's applicable rules for delivery.
 
 Inside that actual Agent, the required canonical calls include:
 
@@ -157,10 +160,17 @@ daynight task show "$DN_TASK_ID" --project "$DN_PROJECT_ID" --json
 ```
 
 Agent variables must come from the supplied assignment and test inputs; do not
-assume coordinator shell variables are inherited. Completion follows the selected
-bundle's managed skill: read back evidence, reread the task, verify its original
-claim, and submit `done` with that original claim ID and observed version as the
-final task write. Never fall back to ordinary completion after a rejection.
+assume coordinator shell variables are inherited. Before business writes, the
+Agent verifies the current task, original active claim, Worker and actual worktree.
+After delivery and acceptance, it reads back evidence, rereads the task, verifies
+the original assignment, and submits `done` with the original claim ID and exact
+observed version as the final task mutation. A rejected or unknown write requires
+observation before another decision; never automatically replay it or fall back to
+ordinary completion. When necessary human intervention cannot be supplied within
+the assignment's authority, the Agent pauses its own task and confirms the pause;
+it verifies resolution and authorization before clearing the pause and reading it
+back. Pending review or CI remains an ordinary wait. Preserve the controller-owned
+worktree, branch and workspace throughout.
 
 From the coordinator, read the task and `acceptance/result.md` with the explicit
 development CLI/root. In the website, verify the same task is done and open the

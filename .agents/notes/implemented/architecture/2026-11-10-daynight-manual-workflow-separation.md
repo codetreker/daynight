@@ -21,6 +21,11 @@ preserves the assigned identity and runtime boundaries without reading either
 workflow or manual files. The target repository and actual authorization govern
 its delivery policy.
 
+Local test guidance uses the assignment and its runtime constraints to verify
+the original claim and completion, while the Worker architecture describes setup
+probes and prompt assembly against the implementation. A running older Worker
+retains its own package behavior across installation of a newer snapshot.
+
 The manual is validated as a nonblank UTF-8 regular file before installation
 replaces any target. Existing whole-directory replacement removes obsolete files.
 This decision replaces the distribution and routing assumptions in the archived
