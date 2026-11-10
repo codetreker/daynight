@@ -178,8 +178,15 @@ ticket paths while retaining original errors and unknown process ownership. The
 [Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
 owns this isolation and budget rationale. A post-stop directory-removal failure
 also records the original Controller's `exit`/`close`, retained identity and Job
-observations. Its bounded Windows `EBUSY` probe records removal after child close
-without suppressing the original error. Windows process-proof acquisition
+observations. Windows fixtures prepare a separate native handle-observation
+child before launch and trigger it immediately on removal failure, before
+asynchronous process rechecks. Exact target-path matches identify open-handle
+candidates; incomplete access is not proof of absence. Native queries are bounded
+outside the test process, and all duplicated handles and the child close before
+the after-Controller-close removal probe. A real Windows directory-handle
+regression verifies the candidate PID and release-before-delete transition.
+The original error remains observable even if the later removal succeeds.
+Windows process-proof acquisition
 uses the existing Koffi dependency to query birth, parent identity and the full
 command line through one retained process handle. It retains the proof's field
 shape and birth precision, and hashes full Unicode text without PowerShell

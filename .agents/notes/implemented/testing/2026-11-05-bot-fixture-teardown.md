@@ -47,14 +47,33 @@ and parent/child ticket paths are diagnosed. Log reads are bounded and marked
 when truncated. Startup and cleanup failures remain failures; unknown process
 ownership retains the fixture's evidence instead of authorizing deletion.
 
-Directory-removal failures additionally record the original Controller's native
-`exit` and `close` observations, retained process identities and Windows Job
-membership after the stop gate. A fixture-local observer forwards the actual
-spawn unchanged and matches its PID to the durable Controller proof. On Windows
-`EBUSY`, a bounded diagnostic waits for that original child's `close` and tries
-removal once more, recording the result while preserving the original failure.
-An observed process exit or a successful second removal does not identify the
-original filesystem lock holder or establish a production process defect.
+Directory-removal failures record the original Controller's native `exit` and
+`close` observations, retained process identities and Windows Job membership
+after the stop gate. A fixture-local observer forwards the actual spawn
+unchanged and matches its PID to the durable Controller proof.
+
+A Windows handle-observation child starts before the Controller, with its cwd
+outside the private fixture directory. The first removal failure triggers its
+snapshot before asynchronous identity or Job rechecks can let a brief handle
+disappear. It observes file handles across Windows processes, including the
+Vitest process, and emits only exact target-path matches with access, handle
+race and query-error counts. The implementation follows Microsoft's
+[File Locksmith handle enumeration](https://github.com/microsoft/PowerToys/blob/ccd0473af8b8ab266c1b9861f928d4b85dffa291/src/modules/FileLocksmith/FileLocksmithLibInterop/NtdllExtensions.cpp#L351-L436).
+
+Native name queries can block, so they run in that separate child under a hard
+deadline with termination and joined closure. Duplicated handles can retain the
+file object's sharing reservation; every copy and the trace child must close
+before the subsequent after-Controller-close removal probe. The original removal
+failure remains a failure even if that probe succeeds.
+
+A matching PID and handle identifies an open-handle candidate. The snapshot
+does not reveal `FILE_SHARE_DELETE`, and inaccessible or raced handles prevent
+an absence conclusion. A focused Windows regression establishes the causal
+control: another process opens the real directory without delete sharing,
+removal fails with `EBUSY`, the trace identifies that process, and removal remains
+blocked until the holder explicitly releases its handle. This validates the
+observation mechanism without attributing an earlier CI failure to that fixture
+holder or to a production process defect.
 
 The isolation regression uses a 100-millisecond fallback deadline only while
 registering this hook, whose explicit budget remains 180 seconds. This is the
@@ -83,6 +102,11 @@ limits and makes the resource owner responsible for its longer cleanup.
 was observed, but the missing first child journal did not establish its startup
 cause. Altering product deadlines would not repair teardown isolation. Original
 startup diagnostics preserve the evidence needed to reconsider that policy.
+
+**Use Restart Manager to identify a directory holder.** Its
+[`RmGetList` contract](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmgetlist)
+rejects registered directories. Native handle enumeration can observe the
+directory itself while keeping query failures and partial access explicit.
 
 **Keep the original eleven-second cleanup and 1.5-second observation.** Those
 waits originally crossed the ordinary ten-second hook limit and exposed late

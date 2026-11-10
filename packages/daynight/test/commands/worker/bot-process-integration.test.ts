@@ -30,6 +30,7 @@ import { inspectControllerJob } from "../../../src/commands/controller/windows-j
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
+import { startWindowsDirectoryTrace } from "./windows-directory-handles.fixtures.js";
 
 const spawnedControllers = vi.hoisted(() => new Map<string, (child: ChildProcess) => void>());
 vi.mock("node:child_process", async original => {
@@ -260,6 +261,8 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       parentJournal: summarize(saved), expectedJournal: summarize(expectedJournal), logs }));
   };
   failureDiagnostics.push(collectEvidence);
+  let directoryTrace: Awaited<ReturnType<typeof startWindowsDirectoryTrace>> | null = null;
+  cleanups.push(async () => { if (directoryTrace !== null) await directoryTrace.close(); });
   cleanups.push(async () => {
     let stopped = true;
     let stoppedProcesses: { controller: ProcessProof; native: ProcessProof[] } | null = null;
@@ -316,10 +319,16 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         const beforeRemoval = observations();
         try { await rm(home, { recursive: true, force: true }); }
         catch (error) {
+          const traceStarted = Date.now();
+          // Snapshot candidates before awaited process rechecks can outlive a short lock.
+          const tracing = directoryTrace?.trace(cwd, [process.pid, ...(stoppedProcesses === null ? [] : [stoppedProcesses.controller.pid, ...stoppedProcesses.native.map(proof => proof.pid)])]).then(value => ({ state: "observed" as const, ...value }), failure => {
+            diagnostic("trace-fixture-directory-handles", Date.now() - traceStarted, failure);
+            return { state: "failed" as const };
+          });
           const afterRemoval = observations();
           const identities = stoppedProcesses === null ? null : await Promise.all([stoppedProcesses.controller, ...stoppedProcesses.native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
           const jobMembers = stoppedProcesses?.controller.jobObjectName === undefined ? null : await inspectControllerJob(stoppedProcesses.controller.jobObjectName).catch(() => "unconfirmed");
-          console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "fixture-directory-removal-failed", home, cwd, stopped, beforeRemoval, afterRemoval, identities, jobMembers }));
+          console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "fixture-directory-removal-failed", home, cwd, stopped, beforeRemoval, afterRemoval, identities, jobMembers, directoryHandles: await tracing ?? null }));
           diagnostic("remove-fixture-directory", 0, error);
           if (process.platform === "win32" && error instanceof Error && "code" in error && error.code === "EBUSY" && controllers.length > 0) {
             let timer: ReturnType<typeof setTimeout> | undefined;
@@ -338,6 +347,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       }
     }
   });
+  if (process.platform === "win32") directoryTrace = await startWindowsDirectoryTrace();
   const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
   return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, spawnedPids: () => controllers.map(({ child }) => child.pid), frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
