@@ -297,7 +297,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     if (item.value.state === "applied" || item.value.state === "applying" || item.value.nextAttemptAt !== null && Date.parse(item.value.nextAttemptAt) > now()) return false;
     const key = item.value.key;
     if (key.kind === "agentControlMode") return false;
-    if (key.kind === "projectNative" && (projectMode(cache) !== intendedMode(cache) || cache.desired?.value.agentControlMode != null && !equal(validatedNative.get("native:"), { mode: intendedMode(cache), native: findItem(cache, { kind: "native" })?.value.appliedValue }))) return false;
+    if (key.kind === "projectNative") {
+      const effectiveMode = projectMode(cache), global = findItem(cache, { kind: "native" });
+      if (cache.desired?.value.agentControlMode != null && !equal(validatedNative.get("native:"), { mode: effectiveMode, native: global?.value.appliedValue })) return false;
+      if (effectiveMode !== intendedMode(cache) && (global?.value.state !== "error" || item.value.appliedValue === null || (cache.nativeModes[keyOf(key)] ?? localMode) !== effectiveMode || equal(validatedNative.get(keyOf(key)), { mode: effectiveMode, native: item.value.appliedValue }))) return false;
+    }
     if (deferredDesired !== null && key.kind !== "projectRemoval") return false;
     if (deferred.has(`${keyOf(key)}:${item.value.targetRevision}`)) return false;
     if (key.kind === "projectRemoval") return adapters.remove !== undefined && (item.started || !cache.desired?.value.projects.some(project => project.projectId === key.projectId) && !deferredDesired?.value.projects.some(project => project.projectId === key.projectId));
@@ -308,7 +312,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   const run = async (original: StoredItem, controller: AbortController): Promise<void> => {
     const key = original.value.key, revision = original.value.targetRevision;
     const prepare = adapters.prepare, remove = adapters.remove;
-    let intended = target(cache, key), mode = intendedMode(cache), began = false;
+    let intended = target(cache, key), mode = intendedMode(cache), effectiveProjectMode = projectMode(cache), began = false;
+    let modeFailure: WorkerCloudFailure | null = null;
     const resetCancelled = async (): Promise<void> => {
       if (stopped) return;
       await commit(current => {
@@ -319,7 +324,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     await commit(current => {
       const item = findItem(current, key);
       if (stopped || controller.signal.aborted || item === undefined || item.value.targetRevision !== revision || !runnable(item)) return current;
-      intended = target(current, key); mode = intendedMode(current); began = true;
+      intended = target(current, key); mode = intendedMode(current); effectiveProjectMode = projectMode(current); began = true;
+      if (key.kind === "projectNative" && effectiveProjectMode !== mode) modeFailure = findItem(current, { kind: "native" })!.value.error;
       let next = replaceItem(current, { ...item, started: key.kind === "projectRemoval" || item.started, value: { ...item.value, state: "applying", error: null, nextAttemptAt: null } });
       const modeItem = findItem(current, { kind: "agentControlMode" });
       if (key.kind === "native" && current.desired?.value.agentControlMode != null && modeItem !== undefined) next = replaceItem(next, { ...modeItem, value: { ...modeItem.value, state: "applying", error: null, nextAttemptAt: null } });
@@ -336,6 +342,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     let validated: NativeProof | undefined;
     try {
       if (key.kind === "native" || key.kind === "projectNative") {
+        // A failed global mode transition permits only history in the proven effective mode.
+        if (modeFailure !== null) throw new WorkerConfigurationApplicationError(modeFailure);
         await options.applyNative(intended as WorkerCloudNative, controller.signal, mode);
         validated = { mode, native: intended as WorkerCloudNative };
       }
@@ -367,7 +375,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     let accepted = false, retryAt: string | null = null;
     try { await commit(current => {
       const item = findItem(current, key);
-      if (item === undefined || item.value.targetRevision !== revision || item.value.state !== "applying" || key.kind !== "projectRemoval" && !equal(target(current, key), intended) || nativeKey !== null && intendedMode(current) !== mode || key.kind === "projectNative" && projectMode(current) !== mode) return current;
+      if (item === undefined || item.value.targetRevision !== revision || item.value.state !== "applying" || key.kind !== "projectRemoval" && !equal(target(current, key), intended) || nativeKey !== null && intendedMode(current) !== mode || key.kind === "projectNative" && projectMode(current) !== effectiveProjectMode) return current;
       accepted = true;
       const withModeResult = (next: Cache, result: StoredItem): Cache => {
         if (validated !== undefined) next = { ...next, nativeModes: { ...next.nativeModes, [keyOf(key)]: validated.mode } };

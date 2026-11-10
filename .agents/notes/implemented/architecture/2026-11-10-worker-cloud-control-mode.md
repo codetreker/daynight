@@ -41,6 +41,14 @@ it. Failure retains the prior effective pair. Project native validation records
 bind the mode and tuple together; a mode change invalidates their old qualification
 without discarding repository preparation or unfinished removal obligations.
 
+Restarts rebuild native validation proofs. If the current global mode target
+fails and the previous global pair is validated in this process, historical
+Project tuples can be revalidated under that restored mode. Waiting for the
+failed target mode would make otherwise usable Projects unavailable indefinitely.
+The existing application owner retains the target failure and retry policy;
+historical recovery grants only a current-process proof for the matching mode,
+never an applied result for the failed target or authority from cached success.
+
 New claims consume the applied mode. Existing claims retain their frozen mode,
 native configuration, session and worktree through advancement, retry, recovery
 and cleanup. Their frozen configuration is consulted before new-mode Project
