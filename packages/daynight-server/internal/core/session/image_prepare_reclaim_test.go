@@ -106,6 +106,26 @@ func TestFailedControllerPrepareCanReleaseOriginalStorage(t *testing.T) {
 	}
 }
 
+type observedPrepareDAO struct {
+	*imageRuleDAO
+	request  string
+	reads    int
+	observed chan struct{}
+}
+
+func (d *observedPrepareDAO) SessionMediaRequest(ctx context.Context, session, request string) (store.SessionMediaRequest, error) {
+	row, err := d.imageRuleDAO.SessionMediaRequest(ctx, session, request)
+	if request == d.request && err == nil && !row.Complete {
+		d.reads++
+		// The first read finds the original spec for cleanup. The second is
+		// controllerMedia observing the original unresolved prepare itself.
+		if d.reads == 2 {
+			close(d.observed)
+		}
+	}
+	return row, err
+}
+
 func TestUnknownControllerPrepareRetainsOriginalStorage(t *testing.T) {
 	f, _ := failedPrepareFixture(t)
 	request := mediaIdentity(f.spec.UploadID, "prepare")
@@ -116,10 +136,42 @@ func TestUnknownControllerPrepareRetainsOriginalStorage(t *testing.T) {
 		t.Errorf("unknown prepare created another request: %+v", row)
 		return row
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
-	defer cancel()
-	if _, err := f.s.ReleaseUpload(ctx, f.p, "", "", f.r.Snapshot.SessionID, f.spec.UploadID); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal("unknown prepare did not retain its outcome", err)
+	dao := &observedPrepareDAO{imageRuleDAO: f.d, request: request, observed: make(chan struct{})}
+	bindImageBoundary(f, dao, true)
+	ctx, cancel := context.WithCancel(t.Context())
+	finished := make(chan error, 1)
+	go func() {
+		_, err := f.s.ReleaseUpload(ctx, f.p, "", "", f.r.Snapshot.SessionID, f.spec.UploadID)
+		finished <- err
+	}()
+	drained := false
+	t.Cleanup(func() {
+		cancel()
+		if !drained {
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Error("canceled release did not exit before fixture cleanup")
+			}
+		}
+	})
+	select {
+	case <-dao.observed:
+	case err := <-finished:
+		drained = true
+		t.Fatal("release exited before observing the unknown prepare", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("release never observed the original unknown prepare")
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		drained = true
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("unknown prepare did not retain cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("release did not drain after cancellation")
 	}
 	if f.d.uploads[f.spec.UploadID].StorageReleased || len(f.d.media) != 1 {
 		t.Fatal("unknown prepare released quota or changed identity", f.d.uploads, f.d.media)

@@ -2,6 +2,8 @@ package session_test
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -9,6 +11,46 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+func TestPendingMediaOffersRejectCorruptCandidateWithoutPartialResults(t *testing.T) {
+	db, sessionID, _ := imageLedgerSession(t)
+	ctx := t.Context()
+	current := sp.Fence{SessionID: sessionID, ClaimID: uuid.NewString(), ExecutionGeneration: "1"}
+	validID := "00000000-0000-4000-8000-000000000001"
+	corruptID := "00000000-0000-4000-8000-000000000002"
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		for _, id := range []string{validID, corruptID} {
+			if err := base.(store.SessionMediaDAO).SaveSessionMediaRequest(ctx, store.SessionMediaRequest{
+				SessionID: sessionID, RequestID: id, Action: "prepare",
+				Fence: sp.ControllerFence{Fence: current, ConnectionEpoch: "1"}, Body: []byte(`{}`),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if _, err := db.Pool.Exec(ctx, `UPDATE session_media_requests SET error='{"code":3}'::jsonb WHERE session_id=$1 AND request_id=$2`, sessionID, corruptID); err != nil {
+		t.Fatal(err)
+	}
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		pending, err := base.(store.SessionMediaDAO).PendingSessionMediaRequests(ctx, current)
+		var decodeError *json.UnmarshalTypeError
+		if !errors.As(err, &decodeError) {
+			t.Fatal("corrupt candidate lost its persisted metadata decoding error", err)
+		}
+		if len(pending) != 0 {
+			t.Fatal("corrupt candidate allowed a partial media offer", pending)
+		}
+		return nil
+	})
+	var pending, unchanged bool
+	if err := db.Pool.QueryRow(ctx, `SELECT NOT complete,error='{"code":3}'::jsonb FROM session_media_requests WHERE session_id=$1 AND request_id=$2`, sessionID, corruptID).Scan(&pending, &unchanged); err != nil {
+		t.Fatal(err)
+	}
+	if !pending || !unchanged {
+		t.Fatal("failed offer selection changed the corrupt pending request", pending, unchanged)
+	}
+}
 
 func TestPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t *testing.T) {
 	for _, kind := range []string{"task", "test execution"} {
