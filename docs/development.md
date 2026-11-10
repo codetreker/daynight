@@ -159,6 +159,12 @@ Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
 the [coordinator polling decision](../.agents/notes/archived/testing/2026-11-04-coordinator-test-polling.md) records the rationale for that test boundary.
+Worker reconciliation deadline fixtures observe the stalled GET before advancing
+the controlled timer and monotonic clock. Startup inventory publication can
+trigger reporting before the periodic interval, so elapsed time is measured
+from that request's observed start. The
+[reporter deadline decision](../.agents/notes/implemented/testing/2026-11-10-worker-reconciliation-deadline.md)
+records the trigger, single-flight and cancellation checks.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
