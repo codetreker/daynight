@@ -20,7 +20,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
 
 const mocks = vi.hoisted(() => ({ git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), backend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
@@ -40,7 +40,7 @@ const cancellations = new Set<AbortController>();
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  mocks.prompt.mockResolvedValue(() => "prompt"); mocks.verify.mockResolvedValue(undefined); mocks.probe.mockResolvedValue("0.164.0");
+  mocks.prompt.mockReturnValue("prompt"); mocks.verify.mockResolvedValue(undefined); mocks.probe.mockResolvedValue("0.164.0");
   mocks.telemetry.mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
 });
 afterEach(async () => {

@@ -33,10 +33,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   complete messages and explicit pagination, including verified Agent attribution
   when an Agent explicitly supplies its current claim.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
-  Copilot CLI or Claude Code to register work, discuss designs, execute specified
-  tasks and review handoffs. Ordinary execution handles one specified task.
-  Worker-started agents use an explicitly assigned managed mode; task readiness
-  and agent permission remain separate from delivery authorization.
+  Copilot CLI or Claude Code for the Daynight product manual. Repository rules
+  and actual authorization govern development and delivery.
 - **Control access and execution settings.** Use private projects, memberships,
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.
@@ -133,7 +131,7 @@ Select the detected agents and User or Project scope, then follow the installer'
 reload instructions. For example, ask your agent: “Use using-daynight to register
 a task for this project: improve the installation instructions.” The
 [skill guide](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-explains task creation, handoff, execution and Goal workflows.
+explains Daynight product operations.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
@@ -482,9 +480,9 @@ result scope and evidence limits.
 ## Working in the repository
 
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
-delivery. This repository manages concrete work in Daynight; load
-[`using-daynight`](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-before executing a task. Use
+delivery. This repository manages concrete work in Daynight; use the
+[`using-daynight` manual](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
+for product operations and follow the [development workflow](.agents/skills/development-workflow/SKILL.md). Use
 [`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
 a bounded change request into a clear task, choose its required operating
 system, and hand it off to a Worker. Use

@@ -22,6 +22,7 @@ const sqlDirectories = [
 ] as const;
 const resources = [...bundles, ...sqlDirectories];
 const standaloneManual = "commands/skill/usage.md" as const;
+const canonicalManual = "commands/skill/skills/using-daynight/references/manual.md";
 const allResources = [...resources, standaloneManual];
 type Resource = typeof allResources[number];
 const directories: string[] = [];
@@ -45,17 +46,14 @@ const fixture = (missing?: Resource) => {
   mkdirSync(media, { recursive: true });
   for (const file of ["image-validation-helper.js", "image-validation.js"]) writeFileSync(path.join(media, file), `// Compiled ${file}\n`);
   cpSync(path.join(packageDirectory, "scripts/copy-resources.ts"), path.join(scripts, "copy-resources.ts"));
-  const source = (resource: Resource) => path.join(directory, "src", resource);
+  const source = (resource: Resource) => path.join(directory, "src", resource === standaloneManual ? canonicalManual : resource);
   const destination = (resource: Resource) => path.join(directory, "dist", resource);
   for (const bundle of bundles) {
     if (bundle === missing) continue;
     mkdirSync(path.dirname(source(bundle)), { recursive: true });
     cpSync(path.join(packageDirectory, "src", bundle), source(bundle), { recursive: true });
   }
-  if (missing !== standaloneManual) {
-    mkdirSync(path.dirname(source(standaloneManual)), { recursive: true });
-    cpSync(path.join(packageDirectory, "src", standaloneManual), source(standaloneManual));
-  }
+  if (missing === standaloneManual) rmSync(source(standaloneManual));
   for (const resource of sqlDirectories) {
     if (resource === missing) continue;
     mkdirSync(source(resource), { recursive: true });
@@ -110,7 +108,7 @@ describe("packaged resource copy", () => {
     mkdirSync(f.source(standaloneManual), { recursive: true });
     const result = f.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("Resource source is not a file: commands/skill/usage.md");
+    expect(result.stderr).toContain("Resource source is not a file: commands/skill/skills/using-daynight/references/manual.md");
     for (const resource of allResources) expect(existsSync(f.destination(resource))).toBe(false);
   });
 
@@ -155,7 +153,7 @@ describe("packaged resource copy", () => {
     writeFileSync(path.join(source, "references/execute-task-in-managed.md"), "Obsolete managed entrypoint.\n");
     const copied = f.run();
     expect(copied.status, copied.stderr).toBe(0);
-    await expect(inspectInstalledSkill(f.destination(bundles[1]))).rejects.toThrow("The renamed managed entrypoint is not packaged under its old name");
+    await expect(inspectInstalledSkill(f.destination(bundles[1]))).rejects.toThrow("The bundle contains only the entrypoint and manual");
   });
 
   it("copies allowlisted resources from an unrelated cwd and excludes non-SQL source files", () => {

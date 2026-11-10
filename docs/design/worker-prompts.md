@@ -16,6 +16,8 @@ HTTP 层在原报告调用前验证协议和有限 selector；service 先执行�
 
 ## Worker 同步与输入
 
+Builtin 由编译进 CLI 的纯 builder 组装原 assignment 和运行约束，不读取公共手册或仓库流程文件。
+
 Worker 在确认服务、用户和 Worker 身份后建立仅驻留内存的 source。每个实际需要输入的项目与公共 user、worker 层有各自版本、可用状态和代际。配置 reporter 复用原有 30 秒 timer、单飞请求和 pending，按每批最多三个 selector 有限地遍历当前需求；新需求有限优先，旧需求保持 FIFO。成功后仅补未服务项；网络、完整响应或批次失败终止本轮补齐，等待下一正常周期。重启从 null 版本重新同步，不写入原生配置或本地存储。
 
 回执先验证身份与完整 JSON，再分别处理原生三字段和 prompt 子树。原生结果先应用项目选择，随后按捕获的代际接纳 prompt，避免移除项目的迟到响应恢复其值。`unchanged` 必须对应仍存在的已确认正文；`unavailable` 撤销可用性，临时错误保留最近成功值。同步停止并排空后清除内存。

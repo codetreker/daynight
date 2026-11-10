@@ -12,7 +12,7 @@ runner capacity.
 ## Decision
 
 The [repository instructions](../../../../AGENTS.md#validation-and-delivery) and
-[managed delivery reference](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#sustain-complete-delivery)
+[managed delivery reference](../../../skills/development-workflow/references/delivery.md#pr-delivery)
 permit at most two additional runs of each failed check on the same commit after
 its failure logs are inspected. The initial run is excluded; sessions, restarts
 and workflow reruns share the same retry count. Proof of transient infrastructure

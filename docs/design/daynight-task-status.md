@@ -99,7 +99,7 @@ ended = done + cancelled
 
 取消的数据保全和资源清理采用删除已有边界，但资料可见性保持正常。assignedTo、allowAgents、requiredPlatform、全部 properties、描述、Steps、Thread、执行历史和附件字节均保留。状态本身阻止执行；保留 allowAgents 不产生恢复许可。
 
-## CLI、MCP 与随包技能
+## CLI、MCP 与仓库流程
 
 CLI 通过既有 set-status 提交 cancelled，继续支持 daynight/dn、项目发现、lossless int64、精确审阅版本和无自动重放。--claim-id 仅选择 done 完成，不从环境或 Task 推断，也不在拒绝后回退普通完成。
 
@@ -107,7 +107,7 @@ MCP 创建 schema 接受 proposed/todo，task_list/task_set_status schema 和描
 
 CLI/Web 解析器接受 released+cancelled 并拒绝 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
 
-随包技能默认登记 proposed；内部已确认的方案后继和交付拆分显式创建 todo。明确授权的普通执行可从 proposed 直接进入 in_progress，不要求先确认到 todo；自动调度仍只选择 ready todo。随包技能把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
+仓库流程默认登记 proposed；内部已确认的方案后继和交付拆分显式创建 todo。明确授权的普通执行可从 proposed 直接进入 in_progress，不要求先确认到 todo；自动调度仍只选择 ready todo。仓库流程把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
 
 ## Web 读取、缓存与进度
 

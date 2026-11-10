@@ -9,7 +9,7 @@ Follow the target repository's documentation and language rules.
 Task descriptions and attachments store effective requirements, solutions and formal results.
 Thread stores durable participant discussion; Session stores execution content, tool activity and operating context.
 Apply these responsibilities to descriptions, attachments and referenced material.
-Use [Thread commands](task-management.md#discussion-threads) to read, post and reply without changing task metadata or triggering execution.
+Use [Thread commands](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#threads) to read, post and reply without changing task metadata or triggering execution.
 An accepted conclusion in discussion must be incorporated into its effective content owner; a message alone does not replace the required task material or grant operational permission.
 
 | Store in the task | Store in the session or relevant platform |
@@ -59,7 +59,7 @@ These content requirements do not mandate a separate plan file, line-by-line cod
 When attachment delivery is not specified, complete inline content needs no primary attachment; references or a mix of inline content and references are also valid.
 Do not duplicate complete documents.
 The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment for the requirements stage even when its description is complete. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
-The [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard) governs managed tasks' attachment and separate review-file requirements; the general inline-content rule cannot waive them.
+The [complete delivery standard](delivery.md#worker-delivery-results) governs managed tasks' attachment and separate review-file requirements; the general inline-content rule cannot waive them.
 Generic questions, unexplained links, unreadable sources, or "see the previous discussion" are insufficient.
 
 Save stage results promptly: current reviewable artifacts, accepted content and its effective status, actual deliverables, acceptance conclusions, and important limitations.
@@ -71,7 +71,7 @@ Do not present future prerequisite outputs as existing inputs. See the [Goal pro
 
 Task details contain neither an attachment listing nor attachment bytes; use `task attachment list/read` separately.
 Uploading to the same path replaces the file.
-See [write safety](write-safety.md#attachments-and-multi-step-operations) for content concurrency limits.
+See [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#materials-and-files) for content concurrency limits.
 
 Relative links and images in a description resolve from this task's attachment root; references inside a Markdown attachment resolve from the file's directory.
 Preserve case and actual resource paths, and do not escape the task root.
@@ -96,7 +96,7 @@ Preserve newlines, code, syntax, and valid references when replacing the full co
 Describe only exchanges that actually exist, specifying fields, types, requiredness, formats or versions, examples, units, statuses, errors, and null semantics as needed.
 APIs, CLI output, files, databases, attachments, and design conclusions can all form contracts.
 Verify consistent producer and consumer responsibilities; do not invent interfaces to fill a template.
-Citing sources does not create execution dependencies; see [task management](task-management.md#dependency-classification) for relationship rules.
+Citing sources does not create execution dependencies; see [task management](dependencies.md#dependency-reduction) for relationship rules.
 
 ## Content sufficiency
 
@@ -106,7 +106,7 @@ A solution direction, a broad architecture link, or an instruction to investigat
 
 Unknown requirements, interface decisions, design choices, implementation steps, and acceptance thresholds are specific gaps, not details to invent. A required architecture or implementation approach, including the Goal delivery brief, is task content and cannot be omitted on the grounds that "session plans do not belong in tasks"; actual session work schedules still follow the content boundary.
 Normal code reading, local coding choices, debugging and verification remain implementation work; they cannot supply missing requirements, select the solution, or resolve substantive design or contract decisions.
-Handle input gaps in managed tasks through the [user interaction workflow](autopilot-managed-task.md#request-user-interaction).
+When a managed task lacks necessary inputs, follow the assignment runtime contract for user intervention and preserve its original claim and workspace.
 
 Organize confirmed information only within the authorized scope; substantive scope or behavior changes require user confirmation.
 This standard does not authorize bulk rewrites of historical tasks or automatic changes to permissions, statuses, or records.

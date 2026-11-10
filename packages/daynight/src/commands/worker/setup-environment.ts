@@ -7,7 +7,6 @@ import { resolveHerdrInstancePaths } from "./herdr/instance.js";
 import { createNativePrerequisiteChecks, hasNativePrerequisiteCleanupFailure, nativeHookRuntimeChecks } from "./herdr/preflight.js";
 import type { NativePrerequisiteCheck, NativePrerequisiteCommandRunner } from "./herdr/preflight.js";
 import type { WorkerPaths } from "./paths.js";
-import { createWorkerPromptBuilder } from "./prompts.js";
 
 export type WorkerEnvironmentCheck = {
   label: string;
@@ -22,7 +21,6 @@ export type WorkerEnvironmentOptions = {
   workingDirectory: string;
   paths: WorkerPaths;
   signal: AbortSignal;
-  packageDirectory?: string;
   agentControlMode?: AgentControlMode;
   configuration?: { agent: WorkerAgent; model: string | null; args: readonly string[] };
 };
@@ -32,7 +30,6 @@ export type WorkerEnvironmentDependencies = {
   platform?: NodeJS.Platform;
   nodeVersion?: string;
   runCommand?: NativePrerequisiteCommandRunner;
-  verifySkill?: typeof createWorkerPromptBuilder;
 };
 
 type Probe = Pick<NativePrerequisiteCheck, "label" | "remedy" | "verify"> & { agent?: WorkerAgent };
@@ -139,16 +136,7 @@ export const inspectWorkerEnvironment = async (
     }, {
       label: "Private Herdr endpoint", remedy: "Use an OS account whose home path fits the private Herdr socket or named-pipe limit.",
       verify: async () => { const paths = resolveHerdrInstancePaths(options.paths, platform); return paths.apiEndpoint; },
-    }, ...nativeHookRuntimeChecks({ environment, cwd: options.workingDirectory, platform, runCommand }), {
-      label: "Bundled using-daynight skill", remedy: "Reinstall or update the Daynight npm package to restore its complete bundled skill.",
-      verify: async (scope) => {
-        if (options.packageDirectory === undefined) throw new Error("The installed package directory is unavailable for skill inspection.");
-        const verify = dependencies.verifySkill === undefined ? createWorkerPromptBuilder : dependencies.verifySkill;
-        await verify(options.packageDirectory);
-        scope.check();
-        return "The installed bundle includes the managed execution references.";
-      },
-    }];
+    }, ...nativeHookRuntimeChecks({ environment, cwd: options.workingDirectory, platform, runCommand })];
     for (const agent of ["codex", "copilot", "claude"] as const) {
       const [, version] = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
         context: { cwd: options.workingDirectory }, configuration: { agent, model: null, args: [] },
@@ -159,13 +147,10 @@ export const inspectWorkerEnvironment = async (
         verify: async (scope) => integrationState(await readIntegrations(scope), agent),
       });
     }
-    const selected = options.agentControlMode === "web" ? probes.filter(probe => ["Operating system", "Node.js", "Git", "Bundled using-daynight skill"].includes(probe.label)) : probes;
+    const selected = options.agentControlMode === "web" ? probes.filter(probe => ["Operating system", "Node.js", "Git"].includes(probe.label)) : probes;
     const checks = await inspectProbes(selected, operation);
     operation.check();
-    const bundleChecks = options.packageDirectory === undefined
-      ? checks.map((check) => check.label === "Bundled using-daynight skill" ? { ...check, status: "unverified" as const } : check)
-      : checks;
-    return [...bundleChecks, {
+    return [...checks, {
       label: "Task tools and Git transport", status: "unverified",
       detail: "Project Git access and task-specific tools are checked when the actual task uses them.",
       remedy: "Prepare Git credentials and task tools, including an authenticated GitHub CLI when PR delivery requires it.",

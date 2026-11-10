@@ -37,7 +37,7 @@ selector 为 `{key,knownRevision}`，key 为 `{scope:"user"}`、`{scope:"worker"
 
 ## Worker 输入
 
-Worker 在每次新组装 startup、恢复或周期 ping 时，按 user、project、worker 的顺序在完整 builtin 后追加最近确认的正文。空字符串跳过；其余原文和空白不变，每层以 `----- begin <scope> prompt -----` 和 `----- end <scope> prompt -----` 标记。已经进入既有投递流程的正文不因配置变化而改写或重发。
+Worker 在每次新组装 startup、恢复或周期 ping 时，按 user、project、worker 的顺序在完整 builtin（包含 Worker 自带的 assignment 和运行约束）后追加最近确认的正文。空字符串跳过；其余原文和空白不变，每层以 `----- begin <scope> prompt -----` 和 `----- end <scope> prompt -----` 标记。已经进入既有投递流程的正文不因配置变化而改写或重发。
 
 三层只保存在当前 Worker 进程的内存中，不进入本地配置文件、数据库或 claim；重启后重新同步。首次未知或明确失权时，新输入等待配置，已有观察、心跳、停止和清理继续；临时读取失败保留最近成功值。输入等待不消耗恢复次数，不改变暂停状态、claim 或槽位。配置更新在下一次合法组装时生效。
 

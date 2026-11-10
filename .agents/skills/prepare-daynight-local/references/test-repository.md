@@ -179,9 +179,7 @@ Outside, use version checks without business writes to confirm ordinary routing.
 
 For an ordinary Agent, install the target bundle's `using-daynight` at Project
 scope when needed, following [skill refresh](refresh.md#installed-skill), preserve
-customized User copies and verify the loaded source after reload. Managed Agents
-already receive the skill from their Worker's package. In both cases keep its
-commands spelled `daynight`; no edited skill fork is required.
+customized User copies and verify the loaded source after reload. Managed Agents receive runtime constraints from their Worker and follow the target repository rules. The same product manual is available through `daynight --skill`; keep commands spelled `daynight` without editing a skill fork.
 
 The helper's isolated regression checks use only fake executables and temporary
 directories under the current Daynight worktree:

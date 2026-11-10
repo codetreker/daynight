@@ -12,9 +12,10 @@ const manual = (): string => path.join(path.dirname(installed.receipt.entryPath)
 
 it("reads the packed standalone manual through both aliases without configuration, Git, installed skills or agent execution", async () => {
   const fixture = await createSkillFixture(path.join(installed.receipt.root, "CLI usage reading 中文"), []);
-  const source = path.resolve(import.meta.dirname, "../../src/commands/skill/usage.md");
+  const source = path.resolve(import.meta.dirname, "../../src/commands/skill/skills/using-daynight/references/manual.md");
   const contents = await readFile(source);
   expect(await readFile(manual())).toEqual(contents);
+  expect(await readFile(path.join(path.dirname(installed.receipt.entryPath), "commands/skill/skills/using-daynight/references/manual.md"))).toEqual(contents);
   expect(contents.toString("utf8")).toContain("--assigned-to");
   expect(contents.toString("utf8")).toContain("--clear-assigned-to");
   const alias = path.join(path.dirname(installed.receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn");

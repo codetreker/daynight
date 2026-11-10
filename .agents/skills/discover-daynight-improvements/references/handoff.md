@@ -2,8 +2,8 @@
 
 Register and hand off each confirmed finding as its own Daynight task. Apply the
 `dispatch-small-change` skill for task content, platform selection, registration
-and handoff, and `using-daynight` for write safety, task content and the Goal
-protocol. This reference adds what an investigation needs on top of them: a
+and handoff, `development-workflow` for task content and the Goal protocol,
+and `daynight --skill` for product operations and write safety. This reference adds what an investigation needs on top of them: a
 separate production context, duplicate checks across a busy project, package
 attachments, review against the local package and reconciliation of uncertain
 writes.
@@ -55,7 +55,7 @@ settings remain separate tasks, even on the same page or in the same component
 file. Do not create an umbrella "optimization" task. Shared CSS is not a
 dependency. A prerequisite from another task chain, such as a delivery task of an
 unrelated Goal, is external: classify it with the CLI's external dependency
-option under `using-daynight`'s dependency rules, then read back the dependency
+option under the [dependency strategy](../../development-workflow/references/dependencies.md), then read back the dependency
 graph.
 
 ## Register one package
@@ -70,7 +70,9 @@ sequence to each task separately:
    proof by itself. Keep the create payload available until reconciliation is
    complete.
 2. Create the task in the verified production project with automatic execution
-   disabled. Preserve the returned ID immediately and read the full task back.
+   disabled. For a confirmed finding authorized for automatic handoff, pass
+   `--status todo`; registration-only requests retain the selected status,
+   `proposed` by default. Preserve the returned ID immediately and read the full task back.
    Initial inline content must identify the problem and scope without references
    to attachments that are not yet present. The final description with local
    images removed and local links reduced to their labels meets this requirement.
@@ -85,7 +87,7 @@ sequence to each task separately:
    version; reread mutable required sources rather than trusting unchanged
    metadata.
 5. Review the task against the package with the read-only script below, then
-   apply the `using-daynight` content and authenticated-responsibility review to
+   apply the `development-workflow` content and authenticated-responsibility review to
    this specific task. Confirm its non-null `assignedTo` equals the independently
    known current user UUID; inspect platform and Worker requirements and real
    prerequisites without changing them as part of handoff. Resolve material
@@ -105,8 +107,7 @@ task and attachment can succeed independently; never loop retries or continue
 past an unknown outcome.
 
 If only registration was requested, stop after readback with automatic execution
-disabled. If a task is already active or enabled, follow `using-daynight`'s
-state-specific read-only handoff rules; do not reset it to replay this sequence.
+disabled. If a task is already active or enabled, follow the [state-specific read-only handoff rules](../../development-workflow/references/handoff.md); do not reset it to replay this sequence.
 Handoff does not authorize executing the task in this session, altering its
 assignment or starting another Worker.
 

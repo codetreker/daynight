@@ -18,7 +18,7 @@ For a Goal delivery task, check its [delivery brief and task boundary](goal.md#d
 Read cited source tasks and upstream or downstream contracts only as genuinely needed to assess the selected task. Report concrete content or contract gaps; this review does not authorize repartitioning tasks or changing dependencies.
 Whole-breakdown coverage follows the Goal breakdown checks; handoff does not discover additional work or reconstruct the entire Goal for a selected task.
 
-Compare the selected task's non-null assignedTo with the current authenticated account's local user UUID, independently confirmed during [setup](setup.md) or in the current session. A display name, email, the task's own assignedTo or a worker record cannot establish that identity.
+Compare the selected task's non-null assignedTo with the current authenticated account's local user UUID, independently confirmed during [setup](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#setup) or in the current session. A display name, email, the task's own assignedTo or a worker record cannot establish that identity.
 Do not enumerate project or account task collections to check ownership. A null or different assignment, unknown account UUID, or unreadable task prevents a passing handoff; report the actual assignment or verification error without assigning the task yourself or enabling permission. Recheck the selected task and reassess changes before the exact-version update.
 CLI creation defaults to the authenticated account; existing tasks and other clients may still create unassigned or other-user tasks.
 
@@ -45,7 +45,7 @@ New claims, workspaces, or native sessions for released tasks require an authori
 ## Update and reconcile
 
 1. Finish authorized content organization, read back and compare required mutable sources again, not just metadata. Confirm current authenticated responsibility against the final reviewed task and its exact version.
-2. Use `task update` to enable `allowAgents` under [write safety](write-safety.md); write the final description in the same operation if needed, omitting unrelated options. An assignment or version change requires a fresh review decision, not a replay with a newer version.
+2. Use `task update` to enable `allowAgents` under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes); write the final description in the same operation if needed, omitting unrelated options. An assignment or version change requires a fresh review decision, not a replay with a newer version.
 3. Check the response and read back the complete task and required sources, including assignedTo.
    A worker may claim the task immediately after permission is enabled; a higher final version or a transition to in-progress with a worker is not a failure and must not trigger a retry.
 

@@ -33,7 +33,7 @@ vi.mock("../../../src/commands/controller/launch-ticket.js", async original => (
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
@@ -108,7 +108,7 @@ beforeEach(async () => {
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
-  mocks.prompt.mockResolvedValue(() => "prompt");
+  mocks.prompt.mockReturnValue("prompt");
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
 });
 afterEach(async () => {
@@ -665,12 +665,10 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it("reports an unavailable native tuple while independent scalar settings remain applied", async () => {
-    const f = await fixture(), backend = deferred<() => string>();
+    const f = await fixture();
     target = { ...target, value: { ...target.value, maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 8 } };
-    mocks.prompt.mockImplementation(() => backend.promise);
     mocks.probe.mockRejectedValue(new Error("private-native-probe-output"));
     const running = start(f);
-    await eventually(() => expect(mocks.prompt).toHaveBeenCalledOnce());
     await eventually(() => expect(configurationTransitions()).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: { kind: "maxConcurrent" }, state: "applied" }),
       expect.objectContaining({ key: { kind: "pollIntervalMs" }, state: "applied" }),
@@ -692,8 +690,6 @@ describe("worker runtime configuration reporting", () => {
     });
     expect(JSON.stringify(report.mock.calls.map(([, , configuration]) => configuration))).not.toContain("private-native-probe-output");
     expect(JSON.stringify(configurationTransitions())).not.toContain("private-native-probe-output");
-    expect(mocks.coordinator).not.toHaveBeenCalled();
-    backend.resolve(() => "prompt");
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
     expect(mocks.coordinator.mock.calls[0]![0]).toMatchObject({ globalConfiguration: null, repositories: [], maxConcurrent: 4 });
     await eventually(() => expect(mocks.coordinator.mock.results[0]!.value.tick).toHaveBeenCalledOnce());

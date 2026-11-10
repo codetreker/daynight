@@ -1,27 +1,19 @@
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { appendWorkerPrompts, createWorkerPromptBuilder, workerCleanupPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
+import { describe, expect, it } from "vitest";
+import { appendWorkerPrompts, buildWorkerPrompt, workerCleanupPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 
-const directories: string[] = [];
 const uuid = (number: number) => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
-const fixture = async () => {
-  const root = path.resolve("../../.tmp/worker-prompt-tests");
-  await mkdir(root, { recursive: true });
-  const directory = await mkdtemp(path.join(root, "p-")); directories.push(directory);
-  const packageDirectory = path.join(directory, "package");
-  await cp(path.resolve("src/commands/skill/skills/using-daynight"), path.join(packageDirectory, "dist/commands/skill/skills/using-daynight"), { recursive: true });
-  const repositoryPath = path.join(directory, "repository");
+const fixture = () => {
+  const repositoryPath = path.resolve("isolated-project-without-repository-skills");
   const task: ManagedAssignment = {
     projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), status: "active", agent: "codex", sessionId: null,
     serverOrigin: "https://daynight.example", workerId: uuid(4), worktreeId: uuid(5),
     configuration: { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 },
     worktree: { repositoryPath, commonDirectory: path.join(repositoryPath, ".git"), worktreePath: path.join(repositoryPath, ".worktrees", "daynight", uuid(2)), branch: `daynight/${uuid(2)}` },
   };
-  return { packageDirectory, task, build: await createWorkerPromptBuilder(packageDirectory) };
+  return { task, build: buildWorkerPrompt };
 };
-afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("worker managed prompts", () => {
   it("appends complete personal text in scope order while preserving empty and whitespace values", () => {
@@ -34,54 +26,72 @@ describe("worker managed prompts", () => {
     expect(builtin.endsWith("</system remider>")).toBe(true);
   });
   it("passes the explicit managed entry and current assignment", async () => {
-    const { task, build, packageDirectory } = await fixture(); const prompt = build(task, "linux");
+    const { task, build } = fixture(); const prompt = build(task, "linux");
     expect(prompt).toContain("environment is worker-managed");
-    expect(prompt).toContain("using-daynight skill in autopilot-managed-task mode");
+    expect(prompt).toContain("Use daynight --skill for product operations");
+    expect(prompt).not.toContain("autopilot-managed-task");
     expect(prompt).toContain("This is a background task.");
     expect(prompt).toContain("Make decisions autonomously within this assignment and its existing authorization.");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
-    expect(prompt).toContain(JSON.stringify(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/autopilot-managed-task.md")));
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).toEqual({ serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform: "linux", nativeSessionId: null, configuration: task.configuration });
   });
   it("identifies a known native conversation when resuming", async () => {
-    const { task, build } = await fixture(); task.sessionId = uuid(6);
+    const { task, build } = fixture(); task.sessionId = uuid(6);
     const prompt = build(task, "windows"); expect(prompt).toContain("original native conversation");
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!).nativeSessionId).toBe(uuid(6));
   });
   it("does not serialize unrelated credential fields from the caller into the assignment", async () => {
-    const { task, build } = await fixture();
-    const withCredential = { ...task, serverToken: "fixture-private-token" };
+    const { task, build } = fixture();
+    const withCredential = { ...task, serverToken: "fixture-private-token", configuration: { ...task.configuration, privateField: "nested-private-token" } };
     const prompt = build(withCredential, "linux");
     expect(prompt).not.toContain("fixture-private-token");
+    expect(prompt).not.toContain("nested-private-token");
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).not.toHaveProperty("serverToken");
   });
-  it.each(["agent", "branch", "claim", "status"])("rejects mismatched %s before input", async (field) => {
-    const { task, build } = await fixture();
+  it.each(["agent", "branch", "claim", "status", "platform", "session", "worktree"])("rejects mismatched %s before input", async (field) => {
+    const { task, build } = fixture();
     if (field === "agent") task.configuration.agent = "copilot";
     if (field === "branch") task.worktree.branch = "main";
     if (field === "claim") task.claimId = "wrong";
     if (field === "status") task.status = "pending";
-    expect(() => build(task, "linux")).toThrow();
+    if (field === "session") task.sessionId = "bad";
+    if (field === "worktree") task.worktree.worktreePath = path.resolve("elsewhere");
+    expect(() => build(task, field === "platform" ? "invalid" as never : "linux")).toThrow();
   });
-  it("requires the installed managed reference", async () => {
-    const { packageDirectory } = await fixture();
-    await rm(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/autopilot-managed-task.md"));
-    await expect(createWorkerPromptBuilder(packageDirectory)).rejects.toThrow("missing references/autopilot-managed-task.md");
+  it.each(["startup", "resume", "periodic"])("keeps claim, pause, recovery and completion obligations in the %s prompt", (kind) => {
+    const { task, build } = fixture();
+    if (kind === "resume") task.sessionId = uuid(6);
+    const prompt = kind === "periodic" ? workerPingPrompt(task) : build(task, "macos");
+    expect(prompt).toContain("verify the original active claim, Worker and worktree");
+    expect(prompt).toContain("--if-version <observed-version>");
+    expect(prompt).toContain("paused false --project <project-id>");
+    expect(prompt).toContain("if the user already cleared it, verify the state without writing again");
+    expect(prompt).toContain("Honor independent pauses and revocations");
+    expect(prompt).toContain("--claim-id <original-claim-id>");
+    expect(prompt).toContain("final task mutation");
+    expect(prompt).toContain("properties.worker.state=completed");
+    expect(prompt).toContain("do not automatically replay it, use ordinary completion to bypass the claim");
+    if (kind !== "periodic") {
+      expect(prompt).toContain("If allowAgents is false, stop immediately");
+      expect(prompt).toContain("stop task-related writes");
+      expect(prompt).toContain("The controller owns scheduling and its worktree, branch and workspace");
+      expect(prompt).not.toContain("development-workflow");
+    }
   });
   it("uses the current cleanup attempt deadline", async () => {
-    const { task } = await fixture(); const deadline = 601_000; const prompt = workerCleanupPrompt(task, deadline);
+    const { task } = fixture(); const deadline = 601_000; const prompt = workerCleanupPrompt(task, deadline);
     expect(prompt).toContain(task.claimId); expect(prompt).toContain(new Date(deadline).toISOString());
     expect(prompt).toContain("outside the worktree"); expect(prompt).toContain("Preserve the controller-managed worktree");
   });
   it.each(["startup", "resume", "periodic"])("keeps review and CI waits inside the background assignment in the %s prompt", async (kind) => {
-    const { task, build } = await fixture();
+    const { task, build } = fixture();
     if (kind === "resume") task.sessionId = uuid(6);
     const prompt = kind === "periodic" ? workerPingPrompt(task) : build(task, "linux");
     expect(prompt).toContain(task.projectId); expect(prompt).toContain(task.taskId); expect(prompt).toContain(task.claimId);
     expect(prompt).toContain(kind === "periodic" ? "Make decisions autonomously within that scope and authorization" : "Make decisions autonomously within this assignment and its existing authorization");
     if (kind === "periodic") {
       expect(prompt).toContain("original native conversation and worktree");
-      expect(prompt).toContain("Reconcile unconfirmed writes");
+      expect(prompt).toContain("result is unknown");
     }
     expect(prompt).toContain("wait and check it periodically yourself");
     expect(prompt).toContain("Pending PR review, required reviewer approval, CI results and polling timeouts are not reasons to set properties.paused=true or request user intervention");
@@ -90,13 +100,13 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain("all required delivery, acceptance and evidence");
   });
   it.each(["startup", "periodic"])("requires its own task to be paused before necessary human intervention in the %s prompt", async (kind) => {
-    const { task, build } = await fixture();
+    const { task, build } = fixture();
     const prompt = kind === "startup" ? build(task, "linux") : workerPingPrompt(task);
-    expect(prompt).toContain("When human intervention is necessary to complete this assignment");
-    expect(prompt).toContain("must set properties.paused=true on your own assigned task before waiting");
-    expect(prompt).toContain("specific information, a decision, authorization or an action that you cannot supply within the task scope and existing authority");
-    expect(prompt).toContain("Follow the using-daynight managed skill's Request user interaction workflow");
-    expect(prompt).toContain("Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment");
+    expect(prompt).toContain("When completing this assignment requires specific information");
+    expect(prompt).toContain("set properties.paused=true on your own assigned task using the exact version observed");
+    expect(prompt).toContain("a decision, authorization or an action that you cannot supply within its scope and existing authority");
+    expect(prompt).toContain("Read the task back to confirm the pause and original assignment");
+    expect(prompt).toContain("Clear your pause only when resuming is permitted");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
   });
 });

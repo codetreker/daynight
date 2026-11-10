@@ -45,11 +45,10 @@ const fixture = async () => {
     else throw new Error(`Unexpected command: ${command.file}`);
     return { stdout, stderr: "" };
   });
-  const verifySkill = vi.fn(async () => () => "prompt");
   const paths = { ...resolveWorkerPaths(homeDirectory), herdrDirectory: "/w/h", logsDirectory: "/w/log" };
-  const options = { homeDirectory, workingDirectory: cwd, paths, packageDirectory: root, signal: new AbortController().signal };
-  const dependencies = { environment: {}, platform: "linux" as const, nodeVersion: "24.19.0", runCommand, verifySkill };
-  return { root, homeDirectory, codex, copilot, cwd, hooks, options, dependencies, runCommand, verifySkill };
+  const options = { homeDirectory, workingDirectory: cwd, paths, signal: new AbortController().signal };
+  const dependencies = { environment: {}, platform: "linux" as const, nodeVersion: "24.19.0", runCommand };
+  return { root, homeDirectory, codex, copilot, cwd, hooks, options, dependencies, runCommand };
 };
 
 afterEach(async () => {
@@ -72,7 +71,7 @@ describe("worker setup environment inspection", () => {
     ]);
     expect(f.runCommand.mock.calls.filter(([command]) => command.file === "herdr").map(([command]) => command.args)).toEqual([["--version"], ["integration", "status"]]);
     expect(f.runCommand.mock.calls.some(([command]) => command.args.some((argument) => ["start", "install", "login", "run"].includes(argument)))).toBe(false);
-    expect(f.verifySkill).toHaveBeenCalledWith(f.root);
+    expect(checks.some(({ label }) => label.includes("using-daynight"))).toBe(false);
     expect(await readFile(path.join(f.codex, "hooks.json"), "utf8")).toBe(before);
     await expect(readFile(f.options.paths.configFile)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(f.options.paths.databaseFile)).rejects.toMatchObject({ code: "ENOENT" });
@@ -160,7 +159,6 @@ describe("worker setup environment inspection", () => {
     const f = await fixture(); const controller = new AbortController(); const reason = new Error("stop setup"); controller.abort(reason);
     await expect(inspectWorkerEnvironment({ ...f.options, signal: controller.signal }, f.dependencies)).rejects.toBe(reason);
     expect(f.runCommand).not.toHaveBeenCalled();
-    expect(f.verifySkill).not.toHaveBeenCalled();
   });
 
   it.each(["git", "python3"])("preserves %s process-cleanup failures instead of treating them as a missing executable", async (file) => {

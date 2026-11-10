@@ -70,7 +70,7 @@ Each layout or presentation finding states a concrete design, not only the defec
 Provide an interactive prototype that follows [the prototype standard](references/prototypes.md),
 and run its checker before packaging. Frontend delivery requires this prototype
 even when the layout is unchanged, for example a focus, keyboard or text change
-in a menu, as [task creation](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/create-task.md)
+in a menu, as [task creation](../development-workflow/references/create-task.md)
 requires. Only a finding whose change lies outside the frontend, such as CLI
 output or a backend Provider projection, may show the expected text or output in
 `task.md` instead; a raw-data finding of that kind shows the readable form the

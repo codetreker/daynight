@@ -20,6 +20,7 @@ const fixture = async () => {
   await fs.mkdir(path.join(source, "references"), { recursive: true });
   await fs.writeFile(path.join(source, "SKILL.md"), "---\nname: using-daynight\ndescription: Track project work\n---\nRead references/commands.md\n");
   await fs.writeFile(path.join(source, "references/commands.md"), "Current commands\n");
+  await fs.writeFile(path.join(source, "references/manual.md"), "Manual\n");
   await fs.writeFile(path.join(source, "resource.bin"), Buffer.from([0, 255, 128]));
   const base = path.join(directory, "home");
   await fs.mkdir(base);
@@ -237,6 +238,28 @@ describe("installed bundle validation", () => {
     await fs.writeFile(path.join(source, "SKILL.md"), contents);
     await expect(captureInstalledSkill(packageDirectory)).rejects.toThrow("Cannot capture installed using-daynight skill bundle");
     expect(await fs.readdir(base)).toEqual([]);
+  });
+
+  it.each(["missing", "directory", "whitespace", "invalid UTF-8"])("rejects %s manual before replacing any target", async (damage) => {
+    const { packageDirectory, source, base } = await fixture();
+    const targets = await planSkillTargets(base, [codex, claude]);
+    for (const target of targets) {
+      await fs.mkdir(target.path, { recursive: true });
+      await fs.writeFile(path.join(target.path, "old"), `keep ${target.path}`);
+      await fs.mkdir(target.legacyPath, { recursive: true });
+      await fs.writeFile(path.join(target.legacyPath, "old"), "legacy");
+    }
+    const manual = path.join(source, "references/manual.md");
+    if (damage === "missing" || damage === "directory") {
+      await fs.rm(manual);
+      if (damage === "directory") await fs.mkdir(manual);
+    } else await fs.writeFile(manual, damage === "whitespace" ? " \n\t" : Buffer.from([0xff]));
+    await expect(captureInstalledSkill(packageDirectory)).rejects.toThrow("Cannot capture installed using-daynight skill bundle");
+    for (const target of targets) {
+      expect(await fs.readdir(target.path)).toEqual(["old"]);
+      expect(await fs.readFile(path.join(target.path, "old"), "utf8")).toBe(`keep ${target.path}`);
+      expect(await fs.readFile(path.join(target.legacyPath, "old"), "utf8")).toBe("legacy");
+    }
   });
 
   it("rejects a source link without following its external content", async () => {
