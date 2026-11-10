@@ -26,7 +26,8 @@ const mount = async (tab: "configuration" | "subscriptions") => {
   vi.stubGlobal("crypto", { subtle: webcrypto.subtle, randomUUID });
   const lifetime = new AbortController();
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
-  const denied = barrier<Response>(), directory = barrier<Response>();
+  const denied = barrier<Response>(), directory = barrier<Response>(), initialDetail = barrier<Response>();
+  let holdInitialDetail = true;
   let current = endpoint, holdDirectory = false, directoryReads = 0, endpointReads = 0, projectReads = 0, movedProjectTeamId = teamId;
   const writes: Record<string, unknown>[] = [];
   const fetch = vi.fn((url: string, init: RequestInit = {}) => {
@@ -42,7 +43,7 @@ const mount = async (tab: "configuration" | "subscriptions") => {
     }
     if (path.endsWith("/signing-secret")) return Promise.resolve(response({ endpointId, configVersion: "1", keyId, scheme: "standard-webhooks-v1", secret: `whsec_${Buffer.alloc(32, 7).toString("base64")}` }));
     if ((init.method ?? "GET") === "GET") {
-      if (path === `${base}/${current.id}`) { endpointReads++; return Promise.resolve(response(current)); }
+      if (path === `${base}/${current.id}`) { endpointReads++; if (holdInitialDetail) { holdInitialDetail = false; return initialDetail.promise; } return Promise.resolve(response(current)); }
       if (path === base) return Promise.resolve(response({ items: [{ id: current.id, owner, name: current.name, enabled: true, configVersion: current.configVersion, destination: current.destination, projectCount: current.subscriptions.length, eventTypeCount: current.subscriptions.length, lastAttemptAt: null, lastResult: null }], nextCursor: null }));
       throw new Error(`Unexpected read: ${path}`);
     }
@@ -57,6 +58,8 @@ const mount = async (tab: "configuration" | "subscriptions") => {
   act(() => navigate(`/webhooks?owner=team&teamId=${teamId}&endpointId=${endpointId}&tab=${tab}`));
   const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active route={route} catalog={catalog}/> : null; };
   renderWithLocale(<View/>, { locale: "en" });
+  await waitFor(() => expect(endpointReads).toBe(1));
+  await act(async () => { initialDetail.resolve(response(current)); });
   await screen.findByRole("heading", { name: "Existing endpoint", level: 2 });
   return { writes, deny: (code: string) => denied.resolve(refusal(code)), endpointReads: () => endpointReads, directoryReads: () => directoryReads, projectReads: () => projectReads, moveProject: () => { movedProjectTeamId = id(20); }, holdDirectory: () => { holdDirectory = true; }, redact: () => { current = { ...current, destination: { ...current.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } }; } };
 };
