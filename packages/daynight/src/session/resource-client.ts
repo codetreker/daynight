@@ -284,13 +284,13 @@ export const createSessionResourceClient = (options: Options) => {
           resource.status !== "available" ||
           resource.byteLength === null ||
           resource.sha256 === null ||
-          BigInt(resource.byteLength) > BigInt(IMAGE_LIMITS.imageBytes) ||
-          BigInt(resource.byteLength) < 1n
+          BigInt(resource.byteLength) > BigInt(IMAGE_LIMITS.imageBytes)
         )
           throw new Error("Session resource is unavailable.");
         const bytes = new Uint8Array(Number(resource.byteLength));
         let offset = 0;
-        while (offset < bytes.length) {
+        // Empty legacy originals still require an authorized read of the saved file.
+        do {
           const chunk = await json(
             `/resources/${imageId(resource.resourceId)}/content?offset=${offset}&limit=${IMAGE_LIMITS.chunkBytes}`,
             s,
@@ -309,7 +309,7 @@ export const createSessionResourceClient = (options: Options) => {
             offset,
           );
           offset += raw.length;
-        }
+        } while (offset < bytes.length);
         live(s);
         if (
           hex(await crypto.subtle.digest("SHA-256", bytes)) !== resource.sha256

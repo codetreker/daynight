@@ -1,4 +1,5 @@
 import type { ImageCaptureReceipt, ValidatedImage } from "../../session/image-values.js";
+import { ImageReleaseStorageError } from "./media/release-error.js";
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import { sessionFence, sessionBinding } from "../../session/protocol.js";
 import { readFile, lstat } from "node:fs/promises";
@@ -80,7 +81,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         respond(result, null);
       } catch (error) {
         const description = String(error);
-        const code = description.includes("component_unsupported") ? "component_unsupported" : description.includes("target_changed") ? "target_changed" : description.includes("budget") || description.includes("capacity") ? "budget_exceeded" : description.includes("conflict") ? "upload_conflict" : description.includes("in_use") ? "upload_in_use" : "image_unavailable";
+        const code = request.action === "release" && error instanceof ImageReleaseStorageError ? "release_storage_unavailable" : description.includes("component_unsupported") ? "component_unsupported" : description.includes("target_changed") ? "target_changed" : description.includes("budget") || description.includes("capacity") ? "budget_exceeded" : description.includes("conflict") ? "upload_conflict" : description.includes("in_use") ? "upload_in_use" : "image_unavailable";
         respond(null, { code, message: "The Controller could not complete this image request." });
       } finally { if (acquired) { if (decode) releaseDecoder(); else mediaBlocks--; } mediaRequests.delete(requestKey); }
     })();

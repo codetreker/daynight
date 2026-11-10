@@ -213,6 +213,8 @@ Poll 先按当前 Session、claim/test execution 与 generation 筛选持久媒�
 
 旧账本中的完整 body/result 在 core 计算无 bytes 的等价元数据，并由 DAO 按读到的原 fence/body/result/error/complete 做精确 Expected CAS；冲突或 unknown 保留原身份与占用，不覆盖较新的结果。取消只结束该次 I/O 并等待执行单元退出；准备、unknown 和未完成清理继续保留其 reservation。
 
+Controller 释放原准备时，以类型化错误区分可恢复的文件访问/flush、SQLite busy/存储或元数据容量不足，以及身份、格式和安全拒绝。前者在 `action=release` 的响应中返回 `release_storage_unavailable`；短暂本地 reader 占用也使用该错误，真正 operation/native 引用仍拒绝为 `upload_in_use`。服务仅对 release 的该专用错误及既有 `rate_limited` 保持原持久请求 pending，沿同 requestId/action/body/fence 再次 offer；已经完成的成功或确定错误不被迟到暂拒改写，SQL 终态保护不放宽。未知、取消和重复暂拒期间仍保留原文件计量与 reservation；只有原远端 release 成功、本地文件删除及元数据提交全部确认才返还配额。`budget_exceeded`、`image_unavailable` 等通用错误不推断为可重试清理，其他 action 不因该专用 code 获得重放许可。
+
 ## 图片发送与 NativeProvider 入口
 
 ```ts
@@ -353,6 +355,8 @@ type ImageReadChunk = {
 ```
 
 在线/归档图片均按已授权 owner+resourceId 读取；不接受客户端选择本地路径或对象存储 key。HTTP 为 `GET {base}/resources/{resourceId}/content?offset=<Decimal>&limit=<integer>`，携带内容 revision header 后返回200 ImageReadChunk；limit 为1..524288，offset≤byteLength。data 使用标准、规范填充的 Base64（重新编码应完全相等），最多699052字符；offset=length 仅返回空 data、eof=true。其他块非空、decode长度≤limit，eof 当且仅当 offset+decode长度=byteLength。每块摘要与长度是完整文件的期望身份，不是块摘要。读取端验证连续偏移、相同 resourceId/hash/length，最终 SHA 匹配后才显示/下载。HTTP 失败沿现有服务错误 envelope，不在 data 内夹带错误文字。
+
+统一 reader 同时保留旧资源的零字节原件。该描述符必须没有图片扩展、byteLength="0" 且 sha256 为规范空 SHA-256；客户端仍发送 offset="0" 的已授权读取，服务打开并核验实际持久原件，返回同 resourceId/hash/length、空 data 和 eof=true。客户端核验该响应及空字节摘要后才能提供下载，不能仅按描述符合成空 Blob。新图片、图片准备、history 和 timeline 仍要求正长度。
 
 archive reader 以 recordId 所属授权解析 resourceId；在线 Session 的新 generation 不修改旧记录的图片归属。服务可直接从已保存 blob 读取，不依赖 Controller；仅尚在采集的资源由 Controller 通道读取。跨连接 chunk 要验证同一不可变身份，旧请求响应不得混入新请求。浏览器按 origin/account/owner/resourceId/hash 缓存，先验证当前授权再用缓存；图片 URL 不是 bearer 公开地址，响应 `Cache-Control: private, no-store`。访问撤销/账户切换/记录删除后立即撤销当前 Blob URL、敏感预览和下载资格，保留阅读位置的普通权限复核不能重挂图片。
 

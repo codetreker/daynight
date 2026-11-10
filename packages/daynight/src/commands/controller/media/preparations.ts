@@ -1,5 +1,6 @@
 import { createImageCaptureSource } from "./capture-source.js";
-import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
+import { controllerMetadataBudget, ControllerMetadataBudgetError, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
+import { ImageReleaseStorageError } from "./release-error.js";
 import { openMediaBudgetLedger } from "./budget-ledger.js";
 import { controllerMediaDiskBytes } from "./disk-budget.js";
 import type Database from "better-sqlite3";
@@ -28,6 +29,13 @@ const checkedDirectory = (directory: string) => {
   if (!stat.isDirectory() || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Media directory must be private.");
 };
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+const releaseStorageFailure = (error: unknown, depth = 0): boolean => {
+  if (depth > 6) return false;
+  if (error instanceof ControllerMetadataBudgetError) return true;
+  if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every((cause: unknown) => releaseStorageFailure(cause, depth + 1));
+  if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "string") return false;
+  return /^(SQLITE_(BUSY|LOCKED|FULL|IOERR|CANTOPEN|PROTOCOL)(_|$)|EPERM$|EACCES$|EROFS$|EINTR$|EBUSY$|EAGAIN$|ENOSPC$|EDQUOT$|EIO$|ENFILE$|EMFILE$|ETIMEDOUT$|ESTALE$|ENOENT$)/.test(error.code);
+};
 const snapshotTarget = (ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot) => ({ serverOrigin: ticket.serverOrigin, fence: { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: snapshot.nativeSessionId });
 
 /** Local validation never publishes a service-owned available resource receipt. */
@@ -160,29 +168,37 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     inFlight.set(input.uploadId, { controller, promise }); return promise;
   };
   const release = async ({ uploadId, spec: original }: { uploadId: string; spec?: ImageUploadSpec }): Promise<LocalImagePreparation> => {
-    checkOpen(); imageId(uploadId);
-    const spec = original === undefined ? undefined : parseImageUploadSpec(original);
-    if (spec && spec.uploadId !== uploadId) throw new Error("Image preparation upload_conflict.");
-    const row = transactions.read(() => db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(uploadId) as { value: string } | undefined);
-    let p: Preparation;
-    if (row) {
-      p = JSON.parse(row.value) as Preparation;
-      if (spec && canonicalImageJson(spec) !== canonicalImageJson(p.spec)) throw new Error("Image preparation upload_conflict.");
-    } else {
-      if (!spec) throw new Error("Image preparation is unavailable.");
-      assertTarget(spec);
-      p = { spec, filename: `${randomUUID()}.part`, decoding: false, receipt: { uploadId, imageId: spec.imageId, target: spec.target, state: "released", acceptedOffset: "0", validated: null, error: null } };
+    try {
+      checkOpen(); imageId(uploadId);
+      const spec = original === undefined ? undefined : parseImageUploadSpec(original);
+      if (spec && spec.uploadId !== uploadId) throw new Error("Image preparation upload_conflict.");
+      const row = transactions.read(() => db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(uploadId) as { value: string } | undefined);
+      let p: Preparation;
+      if (row) {
+        p = JSON.parse(row.value) as Preparation;
+        if (spec && canonicalImageJson(spec) !== canonicalImageJson(p.spec)) throw new Error("Image preparation upload_conflict.");
+      } else {
+        if (!spec) throw new Error("Image preparation is unavailable.");
+        assertTarget(spec);
+        p = { spec, filename: `${randomUUID()}.part`, decoding: false, receipt: { uploadId, imageId: spec.imageId, target: spec.target, state: "released", acceptedOffset: "0", validated: null, error: null } };
+      }
+      const running = inFlight.get(uploadId);
+      if (running) { running.controller.abort(new Error("Image preparation was released.")); await running.promise; p = get(uploadId); }
+      const used = transactions.read(() => db.prepare("SELECT i.canonical FROM input_intents i JOIN operations o ON i.operation_id=o.id WHERE json_extract(o.value,'$.state') NOT IN ('rejected','expired','failed')").all() as { canonical: string }[]).some(row => { const command = JSON.parse(row.canonical) as { payload?: { content?: { uploadId?: string }[] } }; return command.payload?.content?.some(part => part.uploadId === uploadId); });
+      if (used) throw new Error("Image preparation upload_in_use.");
+      if ((reads.get(uploadId) ?? 0) > 0) throw new ImageReleaseStorageError(new Error("An original preparation read is still active."));
+      // A missing preparation still needs a durable tombstone so a delayed
+      // replay of the original prepare cannot create new staging after release.
+      if (!row) { put(p); return p.receipt; }
+      if (p.receipt.state === "released") return p.receipt;
+      if (existsSync(path.join(root, p.filename))) unlinkSync(path.join(root, p.filename)); syncDirectory(root);
+      p.receipt = { ...p.receipt, state: "released", validated: null, error: null }; put(p); return p.receipt;
+    } catch (error) {
+      // Only storage/busy failures permit repeating cleanup. Identity, format
+      // and safety refusals must retain their definitive result.
+      if (releaseStorageFailure(error)) throw new ImageReleaseStorageError(error);
+      throw error;
     }
-    const running = inFlight.get(uploadId);
-    if (running) { running.controller.abort(new Error("Image preparation was released.")); await running.promise; p = get(uploadId); }
-    const used = transactions.read(() => db.prepare("SELECT i.canonical FROM input_intents i JOIN operations o ON i.operation_id=o.id WHERE json_extract(o.value,'$.state') NOT IN ('rejected','expired','failed')").all() as { canonical: string }[]).some(row => { const command = JSON.parse(row.canonical) as { payload?: { content?: { uploadId?: string }[] } }; return command.payload?.content?.some(part => part.uploadId === uploadId); });
-    if (used || (reads.get(uploadId) ?? 0) > 0) throw new Error("Image preparation upload_in_use.");
-    // A missing preparation still needs a durable tombstone so a delayed
-    // replay of the original prepare cannot create new staging after release.
-    if (!row) { put(p); return p.receipt; }
-    if (p.receipt.state === "released") return p.receipt;
-    if (existsSync(path.join(root, p.filename))) unlinkSync(path.join(root, p.filename)); syncDirectory(root);
-    p.receipt = { ...p.receipt, state: "released", validated: null, error: null }; put(p); return p.receipt;
   };
   const readPrepared = async (input: { preparationId: string; offset: string; limit: number }): Promise<PreparedImageChunk> => {
     checkOpen(); const p = get(input.preparationId); imageDecimal(input.offset, true);

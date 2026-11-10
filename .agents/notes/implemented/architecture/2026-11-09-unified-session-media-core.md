@@ -62,6 +62,12 @@ when no preparation exists, preventing delayed prepare replay. A successful
 prepare keeps its original release body; an unknown prepare must first finish.
 Preparation records name their random private path before creating or flushing
 the file, so an error leaves a reclaimable identity rather than a rowless file.
+Controller release reports typed temporary storage, metadata-capacity and local
+reader-busy failures separately from identity, format, safety and native-use
+refusals. Only that release-specific response keeps the original durable service
+request pending for cleanup under the same request ID, body and fence. Existing
+terminal results remain immutable. Files and quota stay charged through unknown,
+cancelled and failed cleanup until all release barriers confirm completion.
 Fixed upload expiry follows the same mechanism;
 stopped archive preparation and sealing reconcile abandoned uploads without the
 original client. Occupied operation, unknown, message, record and native-resume
@@ -129,6 +135,10 @@ A zero-byte legacy resource retains its original ID, zero length and the empty
 SHA-256. Its migration uses offset zero and an empty block, publishes an actual
 durable empty original, and preserves that identity on exact retries. This narrow
 legacy exception does not admit empty history or timeline files.
+The unified resource reader also retrieves that original after migration. It
+performs an authorized offset-zero read and verifies the returned identity,
+empty bytes, EOF and digest. A descriptor alone cannot establish that an empty
+original still exists or that the caller retains access to it.
 Existing resources are reused only after descriptor and storage-identity checks
 at migration preparation and commit. Sealing checks unavailable descriptors,
 inline-content presence, blob fields and GC state. An exact stopped reset removes preparation

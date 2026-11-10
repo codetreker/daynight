@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, open, symlink } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -8,22 +8,33 @@ import { openControllerLifecycleStore } from "../../../src/commands/controller/l
 import { parseImageRequest } from "../../../src/session/controller-protocol.js";
 import type { ImageUploadSpec } from "../../../src/session/image-values.js";
 
-const faults = vi.hoisted(() => ({ lowSpace: false, stagingFlush: false }));
+const faults = vi.hoisted(() => ({ lowSpace: false, stagingFlush: false, unlink: null as string | null, directoryFlush: false }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs,
     statfsSync: (...args: unknown[]) => faults.lowSpace ? { bavail: 0n, bsize: 4096n } : Reflect.apply(fs.statfsSync, fs, args),
     fsyncSync: (fd: number) => {
+      if (faults.directoryFlush && fs.fstatSync(fd).isDirectory()) {
+        faults.directoryFlush = false;
+        throw Object.assign(new Error("Directory flush failed"), { code: "EIO" });
+      }
       if (faults.stagingFlush && fs.fstatSync(fd).isFile()) {
         faults.stagingFlush = false;
         throw Object.assign(new Error("No space left on device"), { code: "ENOSPC" });
       }
       fs.fsyncSync(fd);
     },
+    unlinkSync: (filename: string) => {
+      if (faults.unlink && filename.endsWith(".part")) {
+        const code = faults.unlink; faults.unlink = null;
+        throw Object.assign(new Error("File cleanup unavailable"), { code });
+      }
+      fs.unlinkSync(filename);
+    },
   };
 });
 const roots: string[] = [];
-afterEach(async () => { faults.lowSpace = false; faults.stagingFlush = false; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.lowSpace = false; faults.stagingFlush = false; faults.unlink = null; faults.directoryFlush = false; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-prepare-reclaim-tests");
   await mkdir(base, { recursive: true });
@@ -108,10 +119,57 @@ test("metadata insertion failure cannot leave an unowned preparation file", asyn
     expect(db.prepare("SELECT upload_id FROM image_preparations").all()).toEqual([]);
     expect((await readdir(`${f.file}.media-staging`)).filter(name => name.endsWith(".part"))).toEqual([]);
     const request = { uploadId: f.spec.uploadId, spec: f.spec };
-    await expect(media.release(request)).rejects.toThrow("metadata capacity");
+    await expect(media.release(request)).rejects.toMatchObject({ code: "SQLITE_CONSTRAINT_TRIGGER" });
     await expect(media.status({ uploadId: f.spec.uploadId })).rejects.toThrow("unavailable");
     db.exec("DROP TRIGGER reject_preparation");
     expect(await media.release(request)).toMatchObject({ state: "released", imageId: f.spec.imageId });
     expect(await media.prepare(f.spec)).toMatchObject({ state: "released" });
   } finally { db.close(); await media.close(); f.store.close(); }
+});
+
+test.each(["unlink", "directoryFlush", "receipt"] as const)("release retains its original identity after a %s storage failure", async phase => {
+  const f = await fixture(); const media = f.store.media(); const db = new Database(f.file);
+  try {
+    await media.prepare(f.spec);
+    const request = { uploadId: f.spec.uploadId, spec: f.spec };
+    if (phase === "receipt") db.exec("BEGIN IMMEDIATE");
+    else if (phase === "unlink") faults.unlink = "EBUSY";
+    else faults.directoryFlush = true;
+    await expect(media.release(request)).rejects.toMatchObject({ name: "ImageReleaseStorageError", cause: expect.any(Error) });
+    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving", imageId: f.spec.imageId });
+    if (phase === "receipt") db.exec("ROLLBACK");
+    const released = await media.release(request);
+    expect(released).toMatchObject({ state: "released", imageId: f.spec.imageId });
+    expect(await media.prepare(f.spec)).toEqual(released);
+    expect((await readdir(`${f.file}.media-staging`)).filter(name => name.endsWith(".part"))).toEqual([]);
+  } finally { if (db.inTransaction) db.exec("ROLLBACK"); db.close(); await media.close(); f.store.close(); }
+}, 15_000);
+
+test.each(["EPERM", "EACCES", "EROFS"])("release can reconcile an original filesystem %s refusal", async code => {
+  const f = await fixture(); const media = f.store.media();
+  try {
+    await media.prepare(f.spec); faults.unlink = code;
+    await expect(media.release({ uploadId: f.spec.uploadId })).rejects.toMatchObject({ name: "ImageReleaseStorageError", cause: expect.objectContaining({ code }) });
+    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving" });
+    expect(await media.release({ uploadId: f.spec.uploadId })).toMatchObject({ state: "released" });
+  } finally { await media.close(); f.store.close(); }
+});
+
+test("release can resume after metadata capacity returns without classifying an unsafe path as transient", async () => {
+  const f = await fixture(); const media = f.store.media();
+  const history = `${f.file}.history-sync`, retained = path.join(history, "retained.json");
+  try {
+    await media.prepare(f.spec);
+    await mkdir(history, { mode: 0o700 }); const file = await open(retained, "wx");
+    try { await file.truncate(136 * 1048576); } finally { await file.close(); }
+    await expect(media.release({ uploadId: f.spec.uploadId })).rejects.toMatchObject({ name: "ImageReleaseStorageError" });
+    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving" });
+    await rm(retained);
+    if (process.platform !== "win32") {
+      await symlink(f.file, retained);
+      await expect(media.release({ uploadId: f.spec.uploadId })).rejects.toThrow("regular file");
+      await rm(retained);
+    }
+    expect(await media.release({ uploadId: f.spec.uploadId })).toMatchObject({ state: "released" });
+  } finally { await media.close(); f.store.close(); }
 });

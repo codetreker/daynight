@@ -367,6 +367,8 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 
 已有同 resourceId 的资源须在迁移准备和提交时核对完整描述符及原存储、迁移身份。Store 用 `HasInlineContent` 只报告旧 content 列是否非 NULL（空 bytea 也算存在），不加载原字节或判断资源状态；unavailable 的冲突拒绝由 core 拥有。seal 同时核对 unavailable 描述符、inline 内容存在性、blob 字段及 GC 状态：exact stopped reset 只撤本次 archive 引用，可以保留原 unavailable 资源行及完整历史；再次 seal 复用完全匹配且没有 blob/GC 冲突的原行，只有缺失时才 INSERT，不能用重置后重复插入或覆盖描述符消除冲突。已外置的 available 原件保持原 blobId/path，先核验原对象，再复用同一行；已存在的 unavailable 行保持原身份。旧 inline available 行只在原件已外置耐久、原描述符与迁移身份仍匹配且 blobId/path 均为空时原子转换，并清除数据库 content，不保留长期双份原件。只有尚不存在的资源可 INSERT；描述符、外置对象或并发转换身份变化均拒绝，不能覆盖已有资源消除冲突。
 
+零字节旧原件在迁移后仍通过统一资源 reader 下载。读取必须经过实际已授权 HTTP 请求、服务对原对象的存在性和摘要核验，以及客户端对原身份、空数据、eof 和空摘要的完整校验；缺件、撤权和不匹配不能被本地合成空文件掩盖。
+
 新写入仅生成schema3的manifest、timeline及统一资源引用，不生成schema1文字兼容副本或长期双投影。旧客户端/Worker缺所需revision时明确升级；旧文字和原operation查询保留。Controller journal迁移需原writer已经停止，保留完整旧intent/hash/未决身份，转换只发生在入口边界。
 
 回滚只能关闭新媒体写入并保留统一reader、已有原件、原receipt/operation查询和失败协调。最低reader与数据库迁移守卫拒绝旧二进制覆盖新存储。备份包含DB引用/commit/迁移账本、manifest/timeline和同切点资源原件，恢复后校验全闭包；缺件或损坏明确失败，不能重新抓取URL填补历史。

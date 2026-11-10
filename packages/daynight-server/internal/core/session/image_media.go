@@ -263,9 +263,10 @@ func (s *Execution) acceptMediaResponse(ctx context.Context, tx *operationTx, r 
 	if e != nil {
 		return nil, e
 	}
-	// Controller rate admission rejects before executing media work. Keep the
-	// original request pending so a later offer can use the same durable identity.
-	if m.MediaError != nil && m.MediaError.Code == "rate_limited" {
+	// Admission refusals and transient release storage failures do not establish
+	// a terminal outcome. Reoffer only the original durable request; an existing
+	// terminal result and its identity remain unchanged.
+	if m.MediaError != nil && (m.MediaError.Code == "rate_limited" || row.Action == "release" && m.MediaError.Code == "release_storage_unavailable") {
 		return nil, nil
 	}
 	if row.Complete && mediaRead(row.Action) && row.Error == nil {

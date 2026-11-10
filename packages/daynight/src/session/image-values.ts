@@ -621,7 +621,7 @@ export const parseImageReadChunk = (v: unknown): ImageReadChunk => {
     "data",
     "eof",
   ]);
-  const byteLength = imageDecimal(o.byteLength),
+  const byteLength = imageDecimal(o.byteLength, true),
     offset = imageDecimal(o.offset, true);
   if (
     typeof o.data !== "string" ||
@@ -1036,6 +1036,7 @@ export const parsePreparedImageChunk = (v: unknown): PreparedImageChunk => {
     "data",
     "eof",
   ]);
+  imageDecimal(o.byteLength);
   const { preparationId, ...rest } = o;
   const { resourceId, ...chunk } = parseImageReadChunk({
     ...rest,

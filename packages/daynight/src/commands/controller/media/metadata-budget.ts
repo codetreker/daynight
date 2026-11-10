@@ -3,6 +3,9 @@ import { lstatSync, readdirSync } from "node:fs";
 import path from "node:path";
 export const CONTROLLER_METADATA_BYTES = 128 * 1048576;
 export const CONTROLLER_SETTLEMENT_BYTES = 8 * 1048576;
+export class ControllerMetadataBudgetError extends Error {
+  constructor() { super("Controller metadata budget exceeded."); }
+}
 /** Count real SQLite sidecars and the pending archive's metadata, excluding blobs. */
 export const controllerMetadataBudget = (file: string, db: Database.Database) => {
   const bytes = (): number => {
@@ -26,7 +29,8 @@ export const controllerMetadataBudget = (file: string, db: Database.Database) =>
     return total;
   };
   const assert = (additional = 0, settlement = false): void => {
-    if (!Number.isSafeInteger(additional) || additional < 0 || bytes() + additional > CONTROLLER_METADATA_BYTES + (settlement ? CONTROLLER_SETTLEMENT_BYTES : 0)) throw new Error("Controller metadata budget exceeded.");
+    if (!Number.isSafeInteger(additional) || additional < 0) throw new Error("Controller metadata budget exceeded.");
+    if (bytes() + additional > CONTROLLER_METADATA_BYTES + (settlement ? CONTROLLER_SETTLEMENT_BYTES : 0)) throw new ControllerMetadataBudgetError();
   };
   return { bytes, assert };
 };

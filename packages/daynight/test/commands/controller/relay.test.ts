@@ -16,6 +16,7 @@ vi.mock("ws", () => ({ default: class extends EventEmitter {
 } }));
 import { createControllerRelay, publicOperation } from "../../../src/commands/controller/relay.js";
 import { RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
+import { ImageReleaseStorageError } from "../../../src/commands/controller/media/release-error.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(close => close()); transport.sockets.length = 0; vi.clearAllMocks(); });
 const setup = async (operations: ControllerOperation[] = [], live = false, images = false) => {
@@ -218,6 +219,26 @@ test("media capacity is bounded independently while authorization remains respon
   for (const complete of pending) complete(); await new Promise(resolve => setImmediate(resolve));
   expect(socket.sent).toHaveLength(count);
   expect(socket.sent[0]).toMatchObject({ type: "hello", contentRevision: 2 });
+});
+
+test.each([
+  ["release", new ImageReleaseStorageError(Object.assign(new Error("Disk unavailable"), { code: "EIO" })), "release_storage_unavailable"],
+  ["status", new ImageReleaseStorageError(new Error("Storage unavailable")), "image_unavailable"],
+  ["release", new Error("Image preparation upload_conflict."), "upload_conflict"],
+  ["release", new Error("Image preparation upload_in_use."), "upload_in_use"],
+  ["release", new Error("Image preparation is unavailable."), "image_unavailable"],
+  ["release", new Error("Image preparation target_changed."), "target_changed"],
+] as const)("%s preserves the release error classification %s as %s", async (action, error, code) => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  Object.assign(journal, { media: () => ({ [action]: async () => { throw error; } }) });
+  const requestId = randomUUID(), body = { uploadId: randomUUID() };
+  emit(frame("image_request", { requestId, action, body }));
+  await vi.waitFor(() => expect(socket.sent.filter(value => value.type === "image_response")).toEqual([
+    expect.objectContaining({ requestId, action, result: null, error: { code, message: "The Controller could not complete this image request." } }),
+  ]));
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  await relay.close();
 });
 
 test("concurrent completions retain their original identities while one decoder drains a bounded queue", async () => {

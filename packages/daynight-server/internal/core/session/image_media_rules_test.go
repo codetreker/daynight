@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -16,6 +17,52 @@ type mediaFailureDAO struct {
 	point string
 	cause error
 	saved func()
+}
+
+func TestImageMediaReleaseStorageRefusalRetainsOnlyOriginalPendingRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name, action, code string
+		terminal           string
+		pending            bool
+	}{
+		{name: "release storage", action: "release", code: "release_storage_unavailable", pending: true},
+		{name: "release admission", action: "release", code: "rate_limited", pending: true},
+		{name: "other action", action: "prepare", code: "release_storage_unavailable"},
+		{name: "identity conflict", action: "release", code: "resource_conflict"},
+		{name: "missing original", action: "release", code: "image_unavailable"},
+		{name: "legacy budget error", action: "release", code: "budget_exceeded"},
+		{name: "completed success", action: "release", code: "release_storage_unavailable", terminal: "success"},
+		{name: "completed failure", action: "release", code: "release_storage_unavailable", terminal: "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := mediaStorageRuleRecord()
+			original := store.SessionMediaRequest{SessionID: r.Snapshot.SessionID, RequestID: uuid.NewString(), Action: tc.action, Fence: r.Snapshot.ControllerFence, Body: []byte(`{"uploadId":"original"}`)}
+			if tc.terminal != "" {
+				original.Complete = true
+				if tc.terminal == "success" {
+					original.Result = []byte(`{"state":"released"}`)
+				} else {
+					original.Error = &sp.ImageError{Code: "resource_conflict", Message: "Original identity differs."}
+				}
+			}
+			d := &mediaStorageRuleDAO{found: true, row: original}
+			s := &Execution{Engine: NewEngine(nil)}
+			m := sp.ControllerMessage{ControllerFence: original.Fence, RequestID: original.RequestID, Action: original.Action, MediaError: &sp.ImageError{Code: tc.code, Message: "Controller refused the request."}}
+			_, err := s.acceptMediaResponse(t.Context(), &operationTx{dao: d}, r, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.pending || tc.terminal != "" {
+				if len(d.saved) != 0 || d.row.Complete != original.Complete || !bytes.Equal(d.row.Result, original.Result) || d.row.Error != original.Error || !bytes.Equal(d.row.Body, original.Body) || d.row.Fence != original.Fence {
+					t.Fatal("retryable refusal changed the original ledger entry", d.row, len(d.saved))
+				}
+				return
+			}
+			if len(d.saved) != 1 || !d.row.Complete || d.row.Error == nil || d.row.Error.Code != tc.code {
+				t.Fatal("definitive refusal was not retained", d.row, len(d.saved))
+			}
+		})
+	}
 }
 
 func (d *mediaFailureDAO) SessionMediaRequest(ctx context.Context, session, id string) (store.SessionMediaRequest, error) {
