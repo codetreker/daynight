@@ -1744,6 +1744,9 @@ while executing the actual Entry, HTTP transport, SDK, schemas and tool response
 encoding. Principals and domain results are explicit facts; operations verify
 arguments, context, authority and calls. Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
+Task query registration accepts controlled list and graph observation operations;
+its Tasks dependency still serves ready and dependency reads. Root application
+fixture and business/DAO tests retain their existing responsibilities.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
 `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
 

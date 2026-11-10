@@ -47,6 +47,13 @@ Team ID, failure propagation and registration binding without executing Identity
 business rules. Other Identity and application assembly tests retain their own
 responsibilities.
 
+Task query registration accepts the two observation operations directly while
+retaining the concrete Tasks service for ready and dependency reads. SDK/HTTP
+tests supply list and graph observations through the production registration
+point and verify the service request context, principal, arguments, encoded
+results and refusals. This boundary does not isolate the Root application fixture
+or replace its business and DAO proofs.
+
 Team protocol tests configure ordinary `List`, `Get`, `MembersPage` and scoped
 Project list operations through strict direct mocks. Service tests verify one
 snapshot and DAO batch per page, access before member reads, scoped cursors and
