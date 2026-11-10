@@ -49,7 +49,7 @@ export const readRegistrationIndex = async (repository: WorkerRepository, reader
       const pointer = await readers.ordinaryFile(path.join(entry.directory, "gitdir"));
       entry.pointer = pointer === null ? null : path.resolve(entry.directory, pointer);
       if (entry.pointer === null && entry.managed) throw new Error("The owned task worktree registration has no Git pointer.");
-    } catch (error) { operation.check(); if (entry.managed) entry.errors.push(error); }
+    } catch (error) { operation.check(); entry.errors.push(error); }
     if (entry.managed) {
       if (entry.marker !== null) try { entry.owner = readers.markerOwner(entry.marker); } catch (error) { entry.errors.push(error); }
       try {
@@ -91,8 +91,8 @@ export const scanRepositoryWorktrees = async (
   const physicalNamespace = path.join(physical.ancestorPath, ...physical.missingComponents);
   for (const entry of index.entries) {
     operation.check();
-    if (!entry.managed) continue;
     if (entry.errors.length > 0) { result.unknown.push(...entry.errors.map(error => ({ error }))); continue; }
+    if (!entry.managed) continue;
     const owner = entry.owner;
     if (owner === null) { result.unknown.push({ error: new Error("The owned registration has no recognized owner.") }); continue; }
     try {
