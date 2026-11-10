@@ -22,8 +22,9 @@ assembly body. Private construction bindings cover the three collaborators in
 the original shared dependency proof: Projects, Tasks and Attachments. Default
 bindings invoke their production constructors; small closures adapt private or
 variadic constructor parameters to the borrowed capabilities at this boundary.
-Identity also has a private constructor binding with the exact production signature,
-directly bound to `identity.New`. Other pure constructors remain real.
+Identity and TaskSteps also have private constructor bindings with their exact
+production signatures, directly bound to `identity.New` and `task.NewTaskSteps`.
+Other pure constructors remain real.
 
 Recording construction wrappers observe the supplied store, files, Engine and
 Capturer and return the real objects built by the child constructors. Tests
@@ -36,7 +37,12 @@ output satisfies the [Authentication consumer](2026-11-10-auth-identity-consumer
 and the [MCP Personal Team resolver](2026-11-09-mcp-use-case-test-ownership.md)
 structurally, allowing controlled output after real assembly. The production test
 checks the concrete Identity and callback; it does not prove Identity business
-behavior. Store and files remain borrowed from their external owners.
+behavior. The nine-method `TaskStepsOperations` output satisfies the HTTP and
+MCP Step consumers structurally. Its factory receives the same store and selected
+Capturer as Tasks, including when assembly selects a default Capturer, and its
+actual concrete result occupies the output. The production test checks the
+concrete TaskSteps output; neither assembly test proves Step business behavior.
+Store and files remain borrowed from their external owners.
 
 The existing normal API attachment flow retains Project and Task creation,
 complete attachment-byte readback and the final same-Project identity read.
@@ -62,7 +68,7 @@ observation uses the dependency capabilities that assembly actually supplies.
 
 **Add a factory registry for every Application field.** The original dependency
 proof concerned three constructors. Identity now has a specific output and
-construction proof as well; extending every future module through a registry
+construction proof as well, as does TaskSteps; extending every future module through a registry
 would introduce maintenance unrelated to those proofs. Pure construction needs
 no substitute when it does not run business operations.
 

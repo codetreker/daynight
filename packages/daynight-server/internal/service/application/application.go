@@ -51,6 +51,19 @@ type IdentityOperations interface {
 	PersonalTeamID(context.Context, model.Principal) (string, error)
 }
 
+// TaskStepsOperations is the task step output consumed by protocol adapters.
+type TaskStepsOperations interface {
+	ListPage(context.Context, model.Principal, string, string, int64, int, *int64, bool) (task.StepsPage, error)
+	GetSummary(context.Context, model.Principal, string, string, string) (task.StepSummary, error)
+	List(context.Context, model.Principal, string, string) (task.StepsDocument, error)
+	Get(context.Context, model.Principal, string, string, string) (task.StepDocument, error)
+	Add(context.Context, model.Principal, string, string, task.AddTaskStep) (task.StepsWriteResult, error)
+	Update(context.Context, model.Principal, string, string, string, task.UpdateTaskStep) (task.StepsWriteResult, error)
+	SetStatus(context.Context, model.Principal, string, string, string, task.SetTaskStepStatus) (task.StepsWriteResult, error)
+	Move(context.Context, model.Principal, string, string, string, task.MoveTaskStep) (task.StepsWriteResult, error)
+	Delete(context.Context, model.Principal, string, string, string, task.DeleteTaskStep) (task.StepsWriteResult, error)
+}
+
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
@@ -70,7 +83,7 @@ type Application struct {
 	TaskInspection   *session.Inspection
 	TaskHistory      *session.History
 	TaskSearch       store.TaskSearchReader
-	TaskSteps        *task.TaskSteps
+	TaskSteps        TaskStepsOperations
 	TaskThreads      *task.TaskThreads
 	TaskSync         *task.TaskSync
 	Attachments      *attachment.Attachments
@@ -85,6 +98,7 @@ type constructors struct {
 	identity    func(store.IdentityWriter, *uniauth.Client, string) *identity.Identity
 	projects    func(store.Transactions, *sessioncore.Engine) *project.Projects
 	tasks       func(store.Transactions, task.Capturer) *task.Tasks
+	taskSteps   func(task.StepsStore, ...task.Capturer) *task.TaskSteps
 	attachments func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
 }
 
@@ -97,6 +111,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		tasks: func(database store.Transactions, capturer task.Capturer) *task.Tasks {
 			return task.NewTasks(database, capturer)
 		},
+		taskSteps:   task.NewTaskSteps,
 		attachments: attachment.NewAttachments,
 	}, capture...)
 }
@@ -127,7 +142,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		TaskInspection:   inspection,
 		TaskHistory:      session.NewHistory(inspection, sessions),
 		TaskSearch:       database,
-		TaskSteps:        task.NewTaskSteps(database, capturer),
+		TaskSteps:        construct.taskSteps(database, capturer),
 		TaskThreads:      task.NewTaskThreads(database, capturer),
 		TaskSync:         task.NewTaskSync(database, engine, overlap),
 		Attachments:      construct.attachments(database, database, files),
