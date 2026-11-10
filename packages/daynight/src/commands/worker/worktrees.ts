@@ -11,8 +11,10 @@ import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
 import { bootstrapWorktreeIdentity, inspectWorktreeIdentity, verifyWorktreeIdentityMetadata } from "./worktree-identity.js";
 
+import { WorktreeValidationError } from "./worktree-errors.js";
+
 type GitRunner = typeof runRepositoryGit;
-export class WorktreePreconditionError extends Error {
+export class WorktreePreconditionError extends WorktreeValidationError {
   constructor(readonly code: "branch_mismatch" | "validation_failed", message: string, options?: ErrorOptions) { super(message, options); this.name = "WorktreePreconditionError"; }
 }
 type Owner = ResourceOwner & { leaf: string; root: string; common: string };
@@ -121,25 +123,25 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     }
     const leaf = await directory(binding.worktreePath);
     const matches = await registrations(repository, binding.worktreePath, operation, index);
-    if (matches.length > 1) throw new Error("The task worktree registration is ambiguous.");
+    if (matches.length > 1) throw new WorktreeValidationError("The task worktree registration is ambiguous.");
     const registration = matches[0] ?? null;
     if (registration === null) {
-      if (leaf !== null && (!terminal || (await readdir(binding.worktreePath)).length > 0)) throw new Error("An existing task worktree path has no matching ownership registration; it was retained.");
+      if (leaf !== null && (!terminal || (await readdir(binding.worktreePath)).length > 0)) throw new WorktreeValidationError("An existing task worktree path has no matching ownership registration; it was retained.");
       return { binding, leaf, registration, identityEvidence: null };
     }
-    if (registration.marker === null) throw new Error("The task worktree has no ownership marker; it was retained.");
+    if (registration.marker === null) throw new WorktreeValidationError("The task worktree has no ownership marker; it was retained.");
     const owner = markerOwner(registration.marker);
-    if (!sameCoordinates(owner, identity) || await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
+    if (!sameCoordinates(owner, identity) || await directory(registration.common) !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree ownership marker or repository identity does not match this claim.");
     let verifyLeaf = false;
     if (leaf !== null) {
       const pointer = await ordinaryFile(path.join(binding.worktreePath, ".git"));
       if (pointer === null) {
-        if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new Error("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
+        if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new WorktreeValidationError("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
       } else {
         verifyLeaf = true;
-        if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new Error("The original worktree Git pointer has changed.");
+        if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new WorktreeValidationError("The original worktree Git pointer has changed.");
         const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
-        if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
+        if (await directory(common) !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree belongs to another Git repository.");
         if (!terminal) await validateOrigin(binding.worktreePath, project.repoUrl, operation);
       }
     }
@@ -150,8 +152,8 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       runtime: { root: repository.rootIdentity, common: repository.commonIdentity, leaf }, marker: registration.marker, verifyLeaf,
     }, operation);
     if (identityEvidence.sidecar === null) {
-      if (owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
-      if (verifyLeaf && owner.leaf !== leaf) throw new Error("The original task worktree directory was replaced; it was retained. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
+      if (owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree ownership marker or repository identity does not match this claim. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
+      if (verifyLeaf && owner.leaf !== leaf) throw new WorktreeValidationError("The original task worktree directory was replaced; it was retained. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
     }
     return { binding, leaf, registration, identityEvidence };
   };
