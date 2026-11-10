@@ -2,7 +2,9 @@ package mcptransfer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/google/uuid"
 )
 
 var storageFailure = errors.New("storage failure")
@@ -116,6 +119,152 @@ func TestCreateSlotsAndFailures(t *testing.T) {
 		t.Fatal("invalid initial state")
 	}
 }
+
+// createReader supplies only the facts used by Create and checks the exact
+// operation sequence without modeling persistence.
+type createReader struct {
+	store.PrivateTransferDAO
+	t       *testing.T
+	ctx     context.Context
+	want    model.PrivateTransfer
+	result  model.PrivateTransfer
+	created bool
+	active  int
+	steps   []string
+}
+
+func (d *createReader) call(ctx context.Context, name string) {
+	d.t.Helper()
+	if ctx != d.ctx {
+		d.t.Fatalf("%s replaced the original context", name)
+	}
+	if len(d.steps) == 0 || d.steps[0] != name {
+		d.t.Fatalf("unexpected %s call; remaining: %v", name, d.steps)
+	}
+	d.steps = d.steps[1:]
+}
+
+func (d *createReader) Insert(ctx context.Context, record model.PrivateTransfer) (model.PrivateTransfer, bool, error) {
+	d.call(ctx, "Insert")
+	if !reflect.DeepEqual(record, d.want) {
+		d.t.Fatalf("Insert record: got %+v, want %+v", record, d.want)
+	}
+	return d.result, d.created, nil
+}
+
+func (d *createReader) LockLedger(ctx context.Context) error {
+	d.call(ctx, "LockLedger")
+	return nil
+}
+
+func (d *createReader) CountActive(ctx context.Context, userID string) (int, error) {
+	d.call(ctx, "CountActive")
+	if userID != d.want.UserID {
+		d.t.Fatalf("CountActive user: got %q, want %q", userID, d.want.UserID)
+	}
+	return d.active, nil
+}
+
+func (d *createReader) verify() {
+	d.t.Helper()
+	if len(d.steps) != 0 {
+		d.t.Errorf("unconsumed Create calls: %v", d.steps)
+	}
+}
+
+func TestCreateActiveSlotMatrix(t *testing.T) {
+	userID, credentialID := uuid.NewString(), uuid.NewString()
+	projectID, taskID := uuid.NewString(), uuid.NewString()
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for active := 1; active <= 5; active++ {
+		t.Run(fmt.Sprintf("active_%d", active), func(t *testing.T) {
+			id := uuid.NewString()
+			input := model.PrivateTransfer{
+				ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+				Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+				Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving",
+				CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+			}
+			wantInput := model.PrivateTransfer{
+				ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+				Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+				Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving",
+				CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+			}
+			result := model.PrivateTransfer{
+				ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+				Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+				Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving", Version: 1,
+				CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+			}
+			wantResult := model.PrivateTransfer{
+				ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+				Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+				Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving", Version: 1,
+				CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+			}
+			ctx := t.Context()
+			d := &createReader{t: t, ctx: ctx, want: wantInput, result: result, created: true, active: active,
+				steps: []string{"Insert", "LockLedger", "CountActive"}}
+			defer d.verify()
+			got, created, err := Create(ctx, d, input)
+			if !reflect.DeepEqual(input, wantInput) {
+				t.Fatalf("Create changed input: got %+v, want %+v", input, wantInput)
+			}
+			if active == 5 {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "capacity_unavailable" || created || !reflect.DeepEqual(got, model.PrivateTransfer{}) {
+					t.Fatalf("fifth slot: %+v %v %v", got, created, err)
+				}
+				return
+			}
+			if err != nil || !created || !reflect.DeepEqual(got, wantResult) {
+				t.Fatalf("slot %d: %+v %v %v", active, got, created, err)
+			}
+		})
+	}
+}
+
+func TestCreateDuplicateSkipsLedger(t *testing.T) {
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	id, userID, credentialID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	projectID, taskID := uuid.NewString(), uuid.NewString()
+	input := model.PrivateTransfer{
+		ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+		Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+		Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving",
+		CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+	}
+	wantInput := model.PrivateTransfer{
+		ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+		Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+		Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving",
+		CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+	}
+	existing := model.PrivateTransfer{
+		ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+		Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+		Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving", Version: 1,
+		CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+	}
+	wantExisting := model.PrivateTransfer{
+		ID: id, UserID: userID, AuthorityKind: "pat", AuthorityID: credentialID,
+		Direction: "upload", ProjectID: projectID, TaskID: taskID, Path: "file", ContentType: "text/plain",
+		Binding: json.RawMessage(`{"length":3}`), Data: json.RawMessage(`{}`), State: "receiving", Version: 1,
+		CreatedAt: at, UpdatedAt: at, ExpiresAt: at.Add(time.Hour), HardExpiresAt: at.Add(24 * time.Hour),
+	}
+	ctx := t.Context()
+	d := &createReader{t: t, ctx: ctx, want: wantInput, result: existing, active: 5, steps: []string{"Insert"}}
+	defer d.verify()
+	got, created, err := Create(ctx, d, input)
+	if err != nil || created || !reflect.DeepEqual(got, wantExisting) {
+		t.Fatalf("duplicate: %+v %v %v", got, created, err)
+	}
+	if !reflect.DeepEqual(input, wantInput) {
+		t.Fatalf("Create changed input: got %+v, want %+v", input, wantInput)
+	}
+}
+
 func TestReservationAccountingAndFailures(t *testing.T) {
 	ctx := context.Background()
 	r := model.PrivateTransfer{ID: "id", State: "receiving", Version: 3, ReservedBytes: 20, OutstandingBytes: 10}

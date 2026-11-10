@@ -377,7 +377,7 @@ func (h uploadHarness) begin(a Actor, r model.PrivateTransfer, existing bool) {
 	}
 	input := cloneTransfer(r)
 	input.Data = []byte(`{}`)
-	h.expect(getMissing(r.ID), auth(a, r, nil), daoStep{method: "Insert", check: checkInitialRecord(h.t, input), result: insertFact{record: cloneTransfer(r), created: true}}, method("LockLedger", nil, nil), method("CountActive", 1, nil, a.Principal.UserID))
+	h.expect(getMissing(r.ID), auth(a, r, nil), daoStep{method: "Create", check: checkInitialRecord(h.t, input), result: insertFact{record: cloneTransfer(r), created: true}})
 }
 func dynamicGet(r func() model.PrivateTransfer) daoStep {
 	first := r()

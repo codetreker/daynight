@@ -1700,11 +1700,14 @@ records the direct Session binding and retained proofs.
 
 ### MCP transfer service tests
 
-The complete `internal/service/mcptransfer` suite controls the existing private
-transfer DAO and transaction boundaries. Reads, proposed writes and completion
-outcomes are explicit, independently constructed facts; recorded writes do not
-supply later reads or simulate persistence. Unconfigured calls fail, and the
-test binary clears database and UniAuth test variables.
+The `internal/service/mcptransfer` suite controls private transfer DAO and
+transaction boundaries. `Lifecycle` also controls its direct Core `Create`
+operation, while Core tests own its active-slot matrix and duplicate behavior.
+Other direct Lifecycle operations still execute Core through DAO expectations.
+Reads, proposed writes, operation results and completion outcomes are explicit,
+independently constructed facts; recorded writes do not supply later reads or
+simulate persistence. Unconfigured calls fail, and the test binary clears
+database and UniAuth test variables.
 
 Uploads control the directly invoked attachment operation through an
 instance-owned private admission adapter. `NewUploads` still binds that adapter
@@ -1733,7 +1736,8 @@ writer is killed. This is a process-mechanism witness in the existing lifecycle
 job. Normal assembled API flows retain their separate integration entry.
 
 The [MCP transfer ownership decision](../../.agents/notes/implemented/testing/2026-11-09-mcptransfer-test-ownership.md)
-records the proof allocation. Measurements include receiving Store, core and
+and [Create boundary decision](../../.agents/notes/implemented/testing/2026-11-10-mcptransfer-create-test-boundary.md)
+record the proof allocation. Measurements include receiving Store, core and
 process work; supplied receipts and completion outcomes are not evidence of
 physical persistence.
 
