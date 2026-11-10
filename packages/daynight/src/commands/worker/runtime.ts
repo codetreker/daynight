@@ -1,4 +1,6 @@
-import { uploadStoppedControllerArchive } from "../controller/archive-upload.js";
+import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
+import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS } from "./cleanup-schedule.js";
+import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
 import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
@@ -31,7 +33,7 @@ import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
-import type { WorkerProject } from "./types.js";
+import type { ArchiveBackfillIdentity, WorkerProject } from "./types.js";
 import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
@@ -173,8 +175,47 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl) throw new Error("Archive server identity changed.");
       await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal });
     };
+    const probeArchive: NonNullable<import("./backends/web.js").WebBackendOptions["probeArchive"]> = async (task, journalPath, signal) => {
+      signal.throwIfAborted();
+      if (!task.webExecution) throw new Error("Original controller execution is missing.");
+      const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
+      if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
+        || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
+        || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
+      return probeStoppedControllerArchive({ journalPath, ticket, signal });
+    };
     const backfilled = new Set<string>();
     const archiveRetryAt = new Map<string, number>();
+    const archiveRepairs = new Map<string, ArchiveRepairCode>();
+    const archiveFailures = new Map<string, string>();
+    const archiveObservations = new Map<string, string>();
+    const archiveActivities = new Map<string, string>();
+    const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown): void => {
+      const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
+      const next = new Date(nextAttemptAt).toISOString();
+      try {
+        const operationId = archiveFailures.get(identity.executionId) ?? randomUUID();
+        if (!archiveFailures.has(identity.executionId) || error !== undefined) {
+          monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, error: repairCode === undefined ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
+          archiveFailures.set(identity.executionId, operationId);
+        }
+        if (repairCode !== undefined) {
+          const activity = archiveActivities.get(identity.executionId);
+          if (activity === undefined) {
+            const id = monitoring?.startActivity({ kind: "maintenance", phase: "archive-backfill", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: next });
+            if (id !== undefined) archiveActivities.set(identity.executionId, id);
+          } else monitoring?.updateActivity(activity, { nextAttemptAt: next });
+          if (error !== undefined && !(error instanceof ArchiveRepairRequiredError)) {
+            const observationId = archiveObservations.get(identity.executionId) ?? randomUUID();
+            archiveObservations.set(identity.executionId, observationId);
+            monitoring?.fail({ operationId: observationId, component: "archive", phase: "archive-backfill", scope, error, retryState: "scheduled", nextAttemptAt: next });
+          }
+        } else {
+          const activity = archiveActivities.get(identity.executionId);
+          if (activity !== undefined) monitoring?.updateActivity(activity, { waitReason: "retry-backoff", nextAttemptAt: next });
+        }
+      } catch { /* Monitoring cannot change archival. */ }
+    };
     let lastArchiveAttempt: string | null = null;
     const backfillArchives = async (signal: AbortSignal) => {
       const tasks = webStore.listCompletedTasks();
@@ -186,16 +227,55 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
         // Advance on failure as well as success so a damaged source cannot monopolize catch-up.
         lastArchiveAttempt = execution.executionId;
+        const identity = { serverOrigin: serverUrl, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
+          executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
         try {
-          await archive(task, path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), signal);
+          const retained = store.getArchiveBackfillSchedule(identity);
+          if (retained !== null) {
+            archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
+            archiveRetryAt.set(execution.executionId, retained.nextAttemptAt);
+            observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode);
+            if (retained.nextAttemptAt > Date.now()) continue;
+          }
+          const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
+          const admission = await probeArchive(task, journalPath, signal);
+          if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
+          if (admission.kind === "complete") {
+            // Receipt admission alone does not establish that the source was repaired.
+            store.deleteArchiveBackfillSchedule(identity);
+            archiveRepairs.delete(execution.executionId);
+          }
+          await archive(task, journalPath, signal);
+          signal.throwIfAborted();
+          store.deleteArchiveBackfillSchedule(identity);
           backfilled.add(execution.executionId);
+          archiveRepairs.delete(execution.executionId);
+          archiveRetryAt.delete(execution.executionId);
+          const failure = archiveFailures.get(execution.executionId);
+          if (failure) { try { monitoring?.recover(failure); } catch { /* Monitoring cannot change archival. */ } archiveFailures.delete(execution.executionId); }
+          const observation = archiveObservations.get(execution.executionId), activity = archiveActivities.get(execution.executionId);
+          try { if (observation) monitoring?.recover(observation); if (activity) monitoring?.endActivity(activity); } catch { /* Monitoring cannot change archival. */ }
+          archiveObservations.delete(execution.executionId); archiveActivities.delete(execution.executionId);
           emit({ kind: "session-archive-ready", message: `Completed session ${execution.sessionId} history is archived.` });
-        } catch { archiveRetryAt.set(execution.executionId, Date.now() + 60_000); emit({ kind: "session-archive-retry", message: `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` }); }
+        } catch (error) {
+          signal.throwIfAborted();
+          if (error instanceof ArchiveRepairRequiredError) archiveRepairs.set(execution.executionId, error.code);
+          const repairCode = archiveRepairs.get(execution.executionId);
+          const nextAttemptAt = Date.now() + (repairCode === undefined ? 60_000 : ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
+          archiveRetryAt.set(execution.executionId, nextAttemptAt);
+          let reportedError = error;
+          if (repairCode !== undefined) {
+            try { store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: repairCode, nextAttemptAt }); }
+            catch (persistenceError) { reportedError = new AggregateError([error, persistenceError], "Archive backfill schedule was not persisted; in-memory condition backoff remains active."); }
+          }
+          observeBackfill(identity, nextAttemptAt, repairCode, reportedError);
+          emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
+        }
         // Bound historical catch-up per reconciliation round.
         break;
       }
     };
-    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
+    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, probeArchive, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
