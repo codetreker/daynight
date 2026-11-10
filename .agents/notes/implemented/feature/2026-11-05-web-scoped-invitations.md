@@ -18,7 +18,7 @@ closed. Unconfirmed writes are not replayed, and a fresh list observes current
 metadata without proving the original outcome. Permission loss retains a confirmed one-time result or the
 unknown result without claiming a successful read or blocking an ordinary Team
 member from leaving. The existing
-[Team receiver](../architecture/2026-11-04-team-invitations.md) retains its
+[Team receiver](../../archived/architecture/2026-11-04-team-invitations.md) retains its
 login and acceptance lifecycle. Its confirmed receipt links to the real Team
 route, where the existing account-scoped Team preference validates and saves the
 selection. Project acceptance continues to enter the original Project.

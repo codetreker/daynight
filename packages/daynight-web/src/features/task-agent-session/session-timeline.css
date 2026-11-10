@@ -33,3 +33,11 @@
 .session-diagnostic-details > div { padding-top: 4px; }
 .session-diagnostic-details pre { max-height: 280px; max-width: 100%; margin: 6px 0 0; padding: 10px; overflow: auto; border-radius: 5px; background: #f0f2f6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .session-diagnostic-details > summary:focus-visible, .session-diagnostic-details pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
+
+.session-timeline-navigation { position: absolute; bottom: 12px; left: 12px; right: 12px; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
+.session-timeline-navigation .button { max-width: 100%; pointer-events: auto; box-shadow: 0 3px 12px #24304a22; }
+.session-timeline-navigation .session-latest { position: static; transform: none; }
+.session-pending-request { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
+.session-pending-request > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-pending-request > span:last-child { flex: none; }
+.session-interaction:focus { outline: 2px solid #6262ba; outline-offset: 2px; }

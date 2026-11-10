@@ -1,0 +1,247 @@
+package bot
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/google/uuid"
+)
+
+func TestBotCreationForwardsNormalizedRequestAndFrozenResult(t *testing.T) {
+	for _, resolved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "explicit", true: "resolved replay"}[resolved], func(t *testing.T) {
+			names := []string{"write", "create", "write_done"}
+			if resolved {
+				names = []string{"snapshot", "get", "read_done", "write", "create", "write_done"}
+			}
+			f := newBotFixture(t, names...)
+			in := botInput(uuid.NewString())
+			in.ID = strings.ToUpper(in.ID)
+			in.Name = "  助手  "
+			upper := strings.ToUpper(in.ResolvedConfiguration.WorkerID)
+			in.Overrides.WorkerID = &upper
+			normalized, fp, e := botcore.NormalizeBotRequest(in)
+			if e != nil {
+				t.Fatal(e)
+			}
+			want := frozenBot(f.p, normalized)
+			f.service.operations.get = func(ctx context.Context, s store.SnapshotScope, p model.Principal, id string) (model.Bot, error) {
+				f.plan.call("get")
+				identical(t, ctx, f.ctx)
+				identical(t, s, f.snapshot)
+				same(t, p, f.p)
+				same(t, id, normalized.ID)
+				return want, nil
+			}
+			f.service.operations.create = func(ctx context.Context, d store.BotWriteDAO, p model.Principal, v botcore.CreateBot, fingerprint string, r bool) (model.Bot, error) {
+				f.plan.call("create")
+				identical(t, ctx, f.ctx)
+				identical(t, d, f.write.dao)
+				same(t, p, f.p)
+				same(t, v, normalized)
+				same(t, fingerprint, fp)
+				same(t, r, resolved)
+				return want, nil
+			}
+			var got model.Bot
+			var err error
+			if resolved {
+				got, err = f.service.CreateResolved(f.ctx, f.p, in)
+			} else {
+				got, err = f.service.Create(f.ctx, f.p, in)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			same(t, got, want)
+		})
+	}
+}
+func TestBotWriteCompletionControlsVisibleResults(t *testing.T) {
+	refusal := &model.Fault{Code: "forbidden", Message: "lower refusal"}
+	cleanup := errors.New("cleanup failed")
+	commit := errors.New("commit outcome unknown")
+	for _, tc := range []struct {
+		name          string
+		outcome       store.TransactionOutcome
+		lower, finish error
+		fault         bool
+	}{
+		{"committed", store.TransactionCommitted, nil, nil, false}, {"missing outcome", "", nil, nil, false}, {"unknown without error", store.TransactionUnknown, nil, nil, false}, {"not committed without error", store.TransactionNotCommitted, nil, nil, false},
+		{"commit failure", store.TransactionUnknown, nil, &store.TransactionError{Phase: "commit", Cause: commit, Outcome: store.TransactionUnknown, CommitAttempted: true}, false},
+		{"confirmed refusal", store.TransactionNotCommitted, refusal, nil, true},
+		{"refusal with cleanup failure", store.TransactionUnknown, refusal, &store.TransactionError{Phase: "operation", Cause: errors.Join(refusal, cleanup), Outcome: store.TransactionUnknown, CleanupFailed: true}, false},
+		{"refusal with unknown outcome", store.TransactionUnknown, refusal, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBotFixture(t, "write", "create", "write_done")
+			in := botInput(uuid.NewString())
+			want := frozenBot(f.p, in)
+			f.completion = tc.outcome
+			f.writeCallbackError = tc.lower
+			f.writeFinishError = tc.finish
+			f.service.operations.create = func(ctx context.Context, d store.BotWriteDAO, p model.Principal, v botcore.CreateBot, fp string, r bool) (model.Bot, error) {
+				f.plan.call("create")
+				identical(t, ctx, f.ctx)
+				identical(t, d, f.write.dao)
+				same(t, p, f.p)
+				same(t, v, in)
+				same(t, r, false)
+				return want, tc.lower
+			}
+			got, err := f.service.Create(f.ctx, f.p, in)
+			if tc.outcome == store.TransactionCommitted && tc.finish == nil && tc.lower == nil {
+				if err != nil {
+					t.Fatal(err)
+				}
+				same(t, got, want)
+				return
+			}
+			same(t, got, model.Bot{})
+			if tc.fault {
+				same(t, err, refusal)
+			} else {
+				var op *model.BotOperationError
+				if !errors.As(err, &op) || op.Operation != "create" {
+					t.Fatalf("operational failure lost: %v", err)
+				}
+			}
+			for _, cause := range []error{tc.lower, tc.finish} {
+				if cause != nil && !errors.Is(err, cause) {
+					t.Fatalf("lost cause %v: %v", cause, err)
+				}
+			}
+		})
+	}
+}
+func TestBotReadsForwardScopeAndSuppressResultsOnFailure(t *testing.T) {
+	for _, op := range []string{"get", "list", "worker"} {
+		for _, phase := range []string{"success", "lower", "completion", "snapshot"} {
+			t.Run(op+"/"+phase, func(t *testing.T) {
+				names := []string{"snapshot", op, "read_done"}
+				if phase == "snapshot" {
+					names = []string{"snapshot"}
+				}
+				f := newBotFixture(t, names...)
+				id := uuid.NewString()
+				in := botInput(id)
+				want := frozenBot(f.p, in)
+				cause := errors.New("read failed")
+				if phase == "lower" {
+					f.readCallbackError = cause
+				}
+				if phase == "completion" {
+					f.readFinishError = &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: context.Canceled}
+				}
+				if phase == "snapshot" {
+					f.readBeginError = cause
+				}
+				f.service.operations.get = func(ctx context.Context, s store.SnapshotScope, p model.Principal, key string) (model.Bot, error) {
+					f.plan.call("get")
+					identical(t, ctx, f.ctx)
+					identical(t, s, f.snapshot)
+					same(t, p, f.p)
+					same(t, key, in.ID)
+					return want, f.readCallbackError
+				}
+				f.service.operations.list = func(ctx context.Context, s store.SnapshotScope, p model.Principal, w *string, page store.Page) (store.BotPage, error) {
+					f.plan.call(op)
+					identical(t, ctx, f.ctx)
+					identical(t, s, f.snapshot)
+					same(t, p, f.p)
+					same(t, page, store.Page{Limit: 2})
+					if op == "worker" {
+						same(t, w, &id)
+					} else {
+						same(t, w, (*string)(nil))
+					}
+					return store.BotPage{Items: []model.Bot{want}, HasMore: true}, f.readCallbackError
+				}
+				var got any
+				var err error
+				if op == "get" {
+					got, err = f.service.Get(f.ctx, f.p, strings.ToUpper(in.ID))
+				} else if op == "list" {
+					got, err = f.service.List(f.ctx, f.p, model.PageRequest{Limit: 2})
+				} else {
+					got, err = f.service.ListWorker(f.ctx, f.p, strings.ToUpper(id), model.PageRequest{Limit: 2})
+				}
+				if phase == "success" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if op == "get" {
+						same(t, got, want)
+					} else {
+						page := got.(botcore.BotPage)
+						same(t, page.Items, []model.Bot{want})
+						if page.NextCursor == nil {
+							t.Fatal("missing cursor")
+						}
+						_, e := botcore.ListPage(testPrincipal(), nil, model.PageRequest{Limit: 2, Cursor: page.NextCursor})
+						requireFault(t, e, "invalid_input")
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("failure became success")
+				}
+				if op == "get" {
+					same(t, got, model.Bot{})
+				} else {
+					same(t, got, botcore.BotPage{})
+				}
+				expected := cause
+				if phase == "completion" {
+					expected = f.readFinishError
+				}
+				if !errors.Is(err, expected) {
+					t.Fatalf("lost cause: %v", err)
+				}
+			})
+		}
+	}
+}
+func TestBotAdmissionRejectsBeforeOpeningScope(t *testing.T) {
+	f := newBotFixture(t)
+	in := botInput(uuid.NewString())
+	for _, fn := range []func() error{
+		func() error { _, e := f.service.Create(f.ctx, model.Principal{}, in); return e }, func() error { _, e := f.service.Get(f.ctx, model.Principal{}, in.ID); return e }, func() error { _, e := f.service.List(f.ctx, model.Principal{}, model.PageRequest{Limit: 10}); return e }, func() error { _, e := f.service.Defaults(f.ctx, model.Principal{}, nil); return e },
+	} {
+		requireFault(t, fn(), "unauthenticated")
+	}
+	for _, fn := range []func() error{
+		func() error { _, e := f.service.Get(f.ctx, f.p, "bad"); return e }, func() error { _, e := f.service.ListWorker(f.ctx, f.p, "bad", model.PageRequest{Limit: 10}); return e }, func() error { _, e := f.service.List(f.ctx, f.p, model.PageRequest{Limit: 0}); return e }, func() error {
+			_, e := f.service.List(f.ctx, f.p, model.PageRequest{Limit: 10, Cursor: pointer("broken")})
+			return e
+		}, func() error { _, e := f.service.Defaults(f.ctx, f.p, pointer("bad")); return e },
+	} {
+		requireFault(t, fn(), "invalid_input")
+	}
+	for _, o := range []model.BotOverrides{{Model: pointer(" ")}, {ReasoningEffort: pointer("\n")}} {
+		_, e := f.service.DefaultsFor(f.ctx, f.p, o)
+		requireFault(t, e, "invalid_input")
+	}
+	for _, change := range []func(*botcore.CreateBot){func(v *botcore.CreateBot) { v.ID = "bad" }, func(v *botcore.CreateBot) { v.Name = "   " }, func(v *botcore.CreateBot) { v.Name = strings.Repeat("界", 41) }, func(v *botcore.CreateBot) { v.Name = "\tName" }, func(v *botcore.CreateBot) { v.Name = string([]byte{0xff}) }, func(v *botcore.CreateBot) { v.Overrides.WorkerID = pointer("invalid") }, func(v *botcore.CreateBot) { v.Overrides.Cwd = pointer("relative") }, func(v *botcore.CreateBot) { v.Overrides.Provider = pointer("unsupported") }} {
+		v := in
+		change(&v)
+		_, e := f.service.Create(f.ctx, f.p, v)
+		requireFault(t, e, "invalid_input")
+	}
+}
+func TestBotOperationErrorsPreserveUncertainAndJoinedFailures(t *testing.T) {
+	refusal := &model.Fault{Code: "forbidden", Message: "lower refusal"}
+	for _, tx := range []*store.TransactionError{{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true}, {Phase: "cleanup", Cause: refusal, Outcome: store.TransactionUnknown, CleanupFailed: true}, {Phase: "operation", Cause: errors.Join(refusal, errors.New("another failure")), Outcome: store.TransactionNotCommitted}} {
+		e := botcore.ResultError("create", tx)
+		var op *model.BotOperationError
+		if !errors.As(e, &op) || !errors.Is(e, tx) || reflect.DeepEqual(e, refusal) {
+			t.Fatalf("lost operational failure: %v", e)
+		}
+	}
+}

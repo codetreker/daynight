@@ -5,20 +5,63 @@ import (
 	"encoding/base64"
 	"errors"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 type readerProbe struct {
 	store.AttachmentReader
-	query    store.AttachmentConflictQuery
-	conflict bool
-	err      error
+	query         store.AttachmentConflictQuery
+	context       context.Context
+	project, task string
+	calls         int
+	conflict      bool
+	err           error
 }
 
-func (r *readerProbe) AttachmentPathConflict(_ context.Context, _, _ string, query store.AttachmentConflictQuery) (bool, error) {
+func TestCursorEncodedBoundBeforeDecode(t *testing.T) {
+	path := strings.Repeat("😀", MaxPathCharacters)
+	page, err := MakePage(store.AttachmentPage{Items: []model.Attachment{{Path: path}}, HasMore: true}, "project", "task")
+	if err != nil || page.NextCursor == nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if query, err := ListQuery(model.PageRequest{Limit: 1, Cursor: page.NextCursor}, "project", "task"); err != nil || query.After == nil || *query.After != path {
+		t.Fatalf("max path cursor: %v", err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(*page.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, []byte(strings.Repeat(" ", transport.MaxEncodedCursorBytes*3/4-len(raw)))...)
+	boundary := base64.RawURLEncoding.EncodeToString(raw)
+	if len(boundary) != transport.MaxEncodedCursorBytes {
+		t.Fatal("bad fixture")
+	}
+	if _, err := ListQuery(model.PageRequest{Limit: 1, Cursor: &boundary}, "project", "task"); err != nil {
+		t.Fatalf("boundary rejected: %v", err)
+	}
+	tooLong := boundary + "A"
+	if _, err := ListQuery(model.PageRequest{Limit: 1, Cursor: &tooLong}, "project", "task"); err == nil {
+		t.Fatal("accepted oversized cursor")
+	}
+	oversized := strings.Repeat("A", 1<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _ = ListQuery(model.PageRequest{Limit: 1, Cursor: &oversized}, "project", "task")
+	runtime.ReadMemStats(&after)
+	if used := after.TotalAlloc - before.TotalAlloc; used > 64<<10 {
+		t.Fatalf("oversized cursor allocated %d bytes", used)
+	}
+}
+
+func (r *readerProbe) AttachmentPathConflict(ctx context.Context, project, task string, query store.AttachmentConflictQuery) (bool, error) {
+	r.context, r.project, r.task = ctx, project, task
+	r.calls++
 	r.query = query
 	return r.conflict, r.err
 }
@@ -36,8 +79,8 @@ func TestAddressAndConflictQuery(t *testing.T) {
 		t.Fatalf("conflict = %v", err)
 	}
 	want := store.AttachmentConflictQuery{Ancestors: []string{"文档", "文档/a%_"}, DescendantPrefix: "文档/a%_/file/"}
-	if !reflect.DeepEqual(probe.query, want) {
-		t.Fatalf("query = %#v, want %#v", probe.query, want)
+	if !reflect.DeepEqual(probe.query, want) || probe.context != t.Context() || probe.project != address.ProjectID || probe.task != address.TaskID || probe.calls != 1 {
+		t.Fatalf("conflict delegation: query=%#v context=%v project=%q task=%q calls=%d; want query=%#v address=%#v", probe.query, probe.context, probe.project, probe.task, probe.calls, want, address)
 	}
 	if _, err := NewAddress(project, task, "../file"); err == nil {
 		t.Fatal("accepted invalid path")
@@ -81,19 +124,25 @@ func (r *metadataReader) Attachment(_ context.Context, project, task, path strin
 }
 
 type metadataWriter struct {
-	input               model.Attachment
-	project, task, path string
-	result              model.Attachment
-	created             bool
-	err                 error
+	putContext, deleteContext context.Context
+	putCalls, deleteCalls     int
+	input                     model.Attachment
+	project, task, path       string
+	result                    model.Attachment
+	created                   bool
+	err                       error
 }
 
-func (w *metadataWriter) PutAttachment(_ context.Context, input model.Attachment) (model.Attachment, bool, error) {
+func (w *metadataWriter) PutAttachment(ctx context.Context, input model.Attachment) (model.Attachment, bool, error) {
+	w.putContext = ctx
+	w.putCalls++
 	w.input = input
 	return w.result, w.created, w.err
 }
 
-func (w *metadataWriter) DeleteAttachment(_ context.Context, project, task, path string) error {
+func (w *metadataWriter) DeleteAttachment(ctx context.Context, project, task, path string) error {
+	w.deleteContext = ctx
+	w.deleteCalls++
 	w.project, w.task, w.path = project, task, path
 	return w.err
 }
@@ -108,10 +157,10 @@ func TestMetadataDelegationAndErrors(t *testing.T) {
 	}
 	writer := &metadataWriter{result: want, created: true}
 	got, created, err := PutMetadata(t.Context(), writer, address, want.ContentType, want.SizeBytes)
-	if err != nil || got != want || !created || writer.input != want {
+	if err != nil || got != want || !created || writer.input != want || writer.putContext != t.Context() || writer.putCalls != 1 {
 		t.Fatalf("put = %#v, %t, %v; input = %#v", got, created, err, writer.input)
 	}
-	if err := DeleteMetadata(t.Context(), writer, address); err != nil || writer.project != address.ProjectID || writer.task != address.TaskID || writer.path != address.RelativePath {
+	if err := DeleteMetadata(t.Context(), writer, address); err != nil || writer.project != address.ProjectID || writer.task != address.TaskID || writer.path != address.RelativePath || writer.deleteContext != t.Context() || writer.deleteCalls != 1 {
 		t.Fatalf("delete = %v; query = %#v", err, writer)
 	}
 
@@ -134,6 +183,18 @@ func TestMetadataDelegationAndErrors(t *testing.T) {
 				t.Fatalf("database failure converted to fault: %v", gotErr)
 			}
 		}
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	writer = &metadataWriter{err: context.Canceled}
+	got, created, err = PutMetadata(ctx, writer, address, want.ContentType, want.SizeBytes)
+	if !errors.Is(err, context.Canceled) || got != (model.Attachment{}) || created || writer.putContext != ctx || writer.putContext.Err() != context.Canceled || writer.putCalls != 1 || writer.input != want {
+		t.Fatalf("canceled metadata put: result=%#v created=%v error=%v context=%v calls=%d input=%#v", got, created, err, writer.putContext, writer.putCalls, writer.input)
+	}
+	err = DeleteMetadata(ctx, writer, address)
+	if !errors.Is(err, context.Canceled) || writer.deleteContext != ctx || writer.deleteContext.Err() != context.Canceled || writer.deleteCalls != 1 || writer.project != address.ProjectID || writer.task != address.TaskID || writer.path != address.RelativePath {
+		t.Fatalf("canceled metadata delete: error=%v context=%v calls=%d address=%s/%s/%s", err, writer.deleteContext, writer.deleteCalls, writer.project, writer.task, writer.path)
 	}
 }
 
@@ -200,5 +261,35 @@ func TestCursorBoundsAndInvalidEncodings(t *testing.T) {
 	page, err := MakePage(store.AttachmentPage{Items: items}, "project", "task")
 	if err != nil || page.NextCursor != nil || !reflect.DeepEqual(page.Items, items) {
 		t.Fatalf("final page = %#v, %v", page, err)
+	}
+}
+
+func TestContentTypeByteLimit(t *testing.T) {
+	prefix, suffix := `text/plain; name="`, `"`
+	for _, tc := range []struct {
+		name, value string
+		valid       bool
+	}{
+		{"ascii boundary", prefix + strings.Repeat("a", 2048-len(prefix)-len(suffix)) + suffix, true},
+		{"ascii over", prefix + strings.Repeat("a", 2049-len(prefix)-len(suffix)) + suffix, false},
+		{"utf8 boundary", prefix + strings.Repeat("界", 676) + strings.Repeat("a", 2048-len(prefix)-len(suffix)-676*3) + suffix, true},
+		{"utf8 over", prefix + strings.Repeat("界", 676) + strings.Repeat("a", 2049-len(prefix)-len(suffix)-676*3) + suffix, false},
+		{"invalid syntax", "text/plain; charset", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateContentType(tc.value)
+			if tc.valid && err != nil {
+				t.Fatalf("rejected %d bytes: %v", len(tc.value), err)
+			}
+			if !tc.valid {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "invalid_input" {
+					t.Fatalf("accepted or wrong error for %d bytes: %v", len(tc.value), err)
+				}
+				if len(tc.value) > MaxContentTypeBytes && fault.Message != "Attachment content type must not exceed 2048 bytes." {
+					t.Fatalf("unexpected message: %s", fault.Message)
+				}
+			}
+		})
 	}
 }

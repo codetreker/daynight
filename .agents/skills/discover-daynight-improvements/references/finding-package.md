@@ -2,7 +2,8 @@
 
 Prepare one directory for each independently actionable improvement before
 [the production handoff](handoff.md). `task.md` owns the Chinese requirements,
-observed behavior, bounded solution and acceptance criteria. The JSON manifest
+observed behavior, selected solution, detailed design, ordered implementation
+steps and acceptance criteria. The JSON manifest
 lists its files; it does not duplicate the task definition.
 
 ## Files and local validation
@@ -102,8 +103,10 @@ cannot certify the new upload.
 
 ## Task description template
 
-Adapt the detail to the finding; preserve unknowns instead of filling them with
-guesses. This example is task material, so its prose is Chinese.
+Adapt the detail to the finding under the [task content standard](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md).
+Resolve the investigation and design questions needed to select and implement the
+solution before delivery handoff. Preserve verification limitations accurately.
+This example is task material, so its prose is Chinese.
 
 ```markdown
 # 窄屏项目标题被操作区挤压，影响识别项目
@@ -123,15 +126,22 @@ guesses. This example is task material, so its prose is Chinese.
 - [同状态采集](evidence/before/evidence.json)、[交互记录](evidence/interaction.md)。
 - 说明未验证的真机、软键盘、动画或辅助技术行为。
 
-## 原因定位线索（待实现者确认）
+## 原因与实现位置
 
-列出已核实的源码位置（固定 commit 的永久链接）与尚待确认的推测，二者分开写。
+列出已核实的原因和负责的源码位置（固定 commit 的永久链接）。移交前解决影响方案选择
+或实现设计的定位问题，不把调查留给实现者。
 
 ## 预期行为与方案
 
-窄屏仍能识别标题并触达所有操作。写清分组、各宽度区间的排列、换行与截断规则；
-需要视觉取舍时使用[交互原型](prototype.html)。非界面问题给出期望的文字或输出示例。
-说明为何值得调整，不以单个尺寸或个人偏好代替影响判断。
+窄屏仍能识别标题并触达所有操作。写清已选定的分组、各宽度区间的排列、换行与截断规则
+及理由；[交互原型](prototype.html) 展现确定的视觉与交互。非界面问题给出期望的文字或
+输出示例。详细设计明确负责标题与操作区布局的组件、尺寸和状态规则及必要交互，使接手者
+可直接按材料落实。说明为何值得调整，不以单个尺寸或个人偏好代替影响判断。
+
+## 实施步骤
+
+按依赖顺序说明具体变更目标及每步预期结果，包括组件布局和状态规则的修改、必要交互
+衔接，以及原复现场景和相关状态的产品页面验证。
 
 ## 约束与非目标
 

@@ -20,6 +20,25 @@ import (
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+func TestWriteJSONEncodesBeforeCommittingHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	w := httptest.NewRecorder()
+	WriteCreated(w, req, quietLogger(), "/created", make(chan int))
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Location") != "" {
+		t.Fatalf("status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+	var response api.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Error.Code != "internal_error" {
+		t.Fatalf("body=%q err=%v", w.Body.String(), err)
+	}
+
+	w = httptest.NewRecorder()
+	WriteJSON(w, req, quietLogger(), http.StatusOK, map[string]string{"value": "<"})
+	if w.Code != http.StatusOK || w.Body.String() != "{\"value\":\"\\u003c\"}\n" {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
 func TestDecodeObjectContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, contentType, body string
@@ -45,6 +64,13 @@ func TestDecodeObjectContract(t *testing.T) {
 					t.Fatalf("fields=%v err=%v", fields, err)
 				}
 			} else {
+				if tc.name == "oversize" {
+					var bodyErr *BodyReadError
+					if !errors.As(err, &bodyErr) || bodyErr.Status != http.StatusRequestEntityTooLarge {
+						t.Fatalf("err=%v", err)
+					}
+					return
+				}
 				var fault *model.Fault
 				if !errors.As(err, &fault) || fault.Code != "invalid_input" {
 					t.Fatalf("err=%v", err)
@@ -140,8 +166,12 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 		status int
 	}{
 		{"unauthenticated", 401}, {"forbidden", 403}, {"invalid_input", 400}, {"payload_too_large", 413}, {"controller_offline", 503},
-		{"content_unavailable", 502}, {"rate_limited", 429}, {"task_deleted", 410}, {"not_found", 404}, {"write_outcome_unknown", 503},
-		{"configuration_not_initialized", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
+		{"unsupported_native_selection", 409}, {"unsupported_selection", 409}, {"unknown_default", 409}, {"stale_configuration", 409},
+		{"capability_error", 503}, {"cleanup_unknown", 503}, {"io_error", 503}, {"offline", 503}, {"unsupported", 501}, {"timeout", 504}, {"cancelled", 409}, {"busy", 429}, {"limit_exceeded", 413}, {"invalid_cursor", 400}, {"invalid_path", 400},
+		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"write_outcome_unknown", 503},
+		{"archive_conflict", 409}, {"archive_incomplete", 409},
+		{"invalid_image", 400}, {"image_integrity", 400}, {"image_decode_failed", 400}, {"component_unsupported", 409}, {"quota_exceeded", 409}, {"resource_in_use", 409}, {"capability_changed", 409}, {"media_outcome_unknown", 503}, {"resource_busy", 429},
+		{"configuration_not_initialized", 409}, {"active_worker_limit_exceeded", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -152,7 +182,7 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 				wantCode = "internal_error"
 			}
 			assertHTTPError(t, w, tc.status, wantCode)
-			if tc.code == "rate_limited" && w.Header().Get("Retry-After") != "60" {
+			if (tc.code == "rate_limited" || tc.code == "capacity_exhausted") && w.Header().Get("Retry-After") != "60" {
 				t.Fatalf("Retry-After=%q", w.Header().Get("Retry-After"))
 			}
 		})
@@ -171,7 +201,6 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	}{
 		{&model.Fault{Code: "version_conflict", Message: "conflict", TaskIDs: []string{"task"}}, `{"taskIds":["task"]}`},
 		{&model.Fault{Code: "steps_limit_exceeded", Message: "limit", StepsLimit: &model.StepsLimitDetails{EncodedBytes: 123, MaxEncodedBytes: 100}}, `{"encodedBytes":123,"maxEncodedBytes":100}`},
-		{&model.Fault{Code: "graph_limit_exceeded", Message: "limit", GraphLimit: &model.GraphLimitDetails{NodeCount: 1, EdgeCount: 2, MaxNodes: 3, MaxEdges: 4}}, `{"nodeCount":1,"edgeCount":2,"maxNodes":3,"maxEdges":4}`},
 	} {
 		w := httptest.NewRecorder()
 		WriteError(w, httptest.NewRequest("GET", "/", nil), quietLogger(), "test", "write", tc.fault)
@@ -219,7 +248,7 @@ func TestResponseAndMutationFailures(t *testing.T) {
 	var encodingLogs bytes.Buffer
 	w = httptest.NewRecorder()
 	WriteJSON(w, req, slog.New(slog.NewJSONHandler(&encodingLogs, nil)), 200, make(chan int))
-	if w.Code != 200 || w.Body.Len() != 0 || !strings.Contains(encodingLogs.String(), `"phase":"response"`) {
+	if w.Code != 500 || !strings.Contains(w.Body.String(), `"code":"internal_error"`) || !strings.Contains(encodingLogs.String(), `"phase":"response encoding"`) {
 		t.Fatalf("encoding failure: %d %s %s", w.Code, w.Body, &encodingLogs)
 	}
 	w = httptest.NewRecorder()
@@ -260,5 +289,54 @@ func TestResponseAndMutationFailures(t *testing.T) {
 	ref := TeamRefResponse(model.TeamRef{ID: "id", Kind: "ordinary", Name: &name})
 	if ref.ID != "id" || ref.Kind != "ordinary" || ref.Name == nil || *ref.Name != name {
 		t.Fatalf("team=%+v", ref)
+	}
+}
+
+func TestJSONBodyLimitAndReadFailure(t *testing.T) {
+	for _, extra := range []int{0, 1} {
+		body := `{}` + strings.Repeat(" ", MaxJSONBody-2+extra)
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		_, err := DecodeObject(w, r)
+		if extra == 0 && err != nil {
+			t.Fatalf("exact limit: %v", err)
+		}
+		if extra == 1 {
+			var failure *BodyReadError
+			if !errors.As(err, &failure) || failure.Status != http.StatusRequestEntityTooLarge {
+				t.Fatalf("limit + 1: %v", err)
+			}
+			WriteError(w, r, quietLogger(), "test", "read", err)
+			if w.Code != http.StatusRequestEntityTooLarge || strings.Contains(w.Body.String(), body) {
+				t.Fatalf("response %d %s", w.Code, w.Body.String())
+			}
+		}
+	}
+}
+
+func TestBodyFailureDoesNotHideTransactionOutcome(t *testing.T) {
+	body := &BodyReadError{Cause: errors.New("read failed"), Status: http.StatusRequestEntityTooLarge, Code: "payload_too_large", Message: "request body exceeds its input limit"}
+	timeout := &BodyReadError{Cause: errors.New("socket timeout"), Status: http.StatusRequestTimeout, Code: "request_timeout", Message: "request body read timed out"}
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{
+		{body, 413},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: body}, 413},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: body}, 500},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CommitAttempted: true, Cause: body}, 500},
+		{&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: body}, 500},
+		{errors.Join(body, errors.New("cleanup failed")), 500},
+		{errors.Join(errors.Join(timeout, context.Canceled)), 408},
+		{errors.Join(body, context.Canceled), 500},
+		{errors.Join(timeout, context.Canceled, errors.New("cleanup failed")), 500},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		w := httptest.NewRecorder()
+		WriteError(w, r, quietLogger(), "test", "read", tc.err)
+		if w.Code != tc.status {
+			t.Fatalf("%T: got %d want %d", tc.err, w.Code, tc.status)
+		}
 	}
 }

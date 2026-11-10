@@ -14,15 +14,15 @@ const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-20T12:34:56.123456Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
-const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, titlePreview: "A task", titleTruncated: false, status: "todo",
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const summary = { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 };
+const summary = { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 };
 const graph = { observedAt: "2026-10-20T12:00:00Z", project, summary, tasks: [graphTask] };
 const sync = taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
 const parsedSync = taskSyncFromGraph(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
@@ -234,19 +234,13 @@ describe("response parsing", () => {
   it("validates error metadata while discarding raw messages and unneeded details", () => {
     expect(parseServerError({ error: { code: "not_found", message: "secret SQL", requestId: "Request_1.2-3", details: { taskIds: [taskId] } } }))
       .toEqual({ code: "not_found", requestId: "Request_1.2-3" });
-    expect(parseServerError({ error: { code: "graph_limit_exceeded", message: "secret", requestId: "r1", details: {
-      nodeCount: 1001, edgeCount: 3, maxNodes: 1000, maxEdges: 5000,
-    } } })).toEqual({ code: "graph_limit_exceeded", requestId: "r1", graphLimit: {
-      nodeCount: 1001, edgeCount: 3, maxNodes: 1000, maxEdges: 5000,
-    } });
+
   });
 
   it.each([
     {}, { error: null }, { error: { code: "Bad Code", message: "x", requestId: "r1" } },
     { error: { code: "not_found", message: "x", requestId: "\nsecret" } },
     { error: { code: "not_found", requestId: "r1" } },
-    { error: { code: "graph_limit_exceeded", message: "x", requestId: "r1" } },
-    { error: { code: "graph_limit_exceeded", message: "x", requestId: "r1", details: { nodeCount: 1, edgeCount: 2, maxNodes: 1000, maxEdges: null } } },
   ])("rejects malformed error envelopes %#", (value) => {
     expect(() => parseServerError(value)).toThrow("invalid response");
   });
@@ -320,7 +314,7 @@ describe("API requests", () => {
     fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
-    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).project.settings.version).toBe(version);
+    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).sync.project.settings.version).toBe(version);
   });
   it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
     const fetchMock = mockResponse({ items: [project], nextCursor: "next" });
@@ -335,7 +329,7 @@ describe("API requests", () => {
 
   it("normalizes requested IDs and binds resource responses to requests", async () => {
     const fetchMock = mockResponse(sync);
-    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual(parsedSync);
+    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual({ sync: parsedSync, receivedMonotonic: expect.any(Number) });
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/task-sync`);
     fetchMock.mockResolvedValue(response(task));
     await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal(), admission)).resolves.toMatchObject({ id: taskId, projectId });
@@ -383,11 +377,10 @@ describe("API requests", () => {
     await expect(listProjects({}, signal())).rejects.toMatchObject({ kind: "server", status, code, requestId: "req-1", message });
   });
 
-  it("preserves graph-limit details for a useful refusal", async () => {
-    const graphLimit = { nodeCount: 1001, edgeCount: 5, maxNodes: 1000, maxEdges: 5000 };
-    mockResponse({ error: { code: "graph_limit_exceeded", message: "raw text", requestId: "req2", details: graphLimit } }, 409);
-    await expect(getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "server", status: 409, graphLimit,
-      message: "This project's task graph exceeds the supported size." });
+  it("keeps unknown sync errors on the generic server-error path", async () => {
+    mockResponse({ error: { code: "unrecognized_code", message: "raw text", requestId: "req2", details: { ignored: true } } }, 409);
+    await expect(getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "server", status: 409, code: "unrecognized_code", requestId: "req2",
+      message: "Unable to load the requested data. Please try again." });
   });
 
   it("does not fetch for pre-aborted signals, preserving the abort reason", async () => {

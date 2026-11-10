@@ -16,21 +16,22 @@ vi.mock("ws", () => ({ default: class extends EventEmitter {
 } }));
 import { createControllerRelay, publicOperation } from "../../../src/commands/controller/relay.js";
 import { RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
+import { ImageReleaseStorageError } from "../../../src/commands/controller/media/release-error.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(close => close()); transport.sockets.length = 0; vi.clearAllMocks(); });
-const setup = async (operations: ControllerOperation[] = [], live = false) => {
+const setup = async (operations: ControllerOperation[] = [], live = false, images = false) => {
   const historyEpoch = live ? randomUUID() : snapshot.historyEpoch;
   const ticket = { ...snapshot.identity, ...snapshot, provider: "codex", controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId, executionId: randomUUID(), credentialFile: "/private/grant", serverOrigin: "http://127.0.0.1:19000" } as unknown as ControllerLaunchTicket;
   files.lstat.mockResolvedValue({ isFile: () => true, isSymbolicLink: () => false, size: 100, mode: 0o600 });
   files.readFile.mockResolvedValue(JSON.stringify({ token: "private-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }));
   const journal = { acknowledgeEvents: vi.fn(), drainProjectionGap: vi.fn(), getLastAcknowledgedSequence: () => "8", pendingEvents: () => [], markOperationAcknowledged: vi.fn(), listUnacknowledgedOperations: (limit: number, after?: string) => operations.slice(after ? operations.findIndex(o => o.operationId === after) + 1 : 0, (after ? operations.findIndex(o => o.operationId === after) + 1 : 0) + limit) } as unknown as ControllerLifecycleStore;
-  const callbacks = { onConnection: vi.fn(), onCommand: vi.fn().mockResolvedValue(undefined), onError: vi.fn() };
+  const callbacks = { onConnection: vi.fn(), onCommand: vi.fn().mockResolvedValue(undefined), onError: vi.fn(), onRetryCapture: vi.fn<({ captureId, attemptId }: { captureId: string; attemptId: string }, signal: AbortSignal) => Promise<import("../../../src/session/image-values.js").ValidatedImage>>() };
   const relay = createControllerRelay(ticket, journal, callbacks); cleanup.push(relay.close);
   await vi.waitFor(() => expect(transport.sockets.length).toBe(1));
   const socket = transport.sockets[0]! as EventEmitter & { sent: Record<string, unknown>[]; close(): void };
   const frame = (type: string, extra = {}) => ({ protocol: snapshot.protocol, sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, connectionEpoch: "3", type, ...extra });
   const emit = (value: unknown) => socket.emit("message", Buffer.from(JSON.stringify(value)));
-  emit({ type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: { ...snapshot, historyEpoch }, lastAckedSourceSeq: "8", limits: RELAY_LIMITS, ...(live ? { requiresLiveSync: true } : {}) });
+  emit({ type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: { ...snapshot, historyEpoch, ...(images ? { contentRevision: 2, imageBudget: { revision: "1", maxBytes: "0", committedBytes: "0", reservedBytes: "0", maxResources: 0, committedResources: 0, reservedResources: 0 }, capabilities: { ...snapshot.capabilities, images: { revision: "1", providerRevision: "1", expectedNativeSessionId: null, modelId: null, controlsRevision: null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: "0", maxMessageImageBytes: "0", maxImagesPerMessage: 0, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } } } } : {}) }, lastAckedSourceSeq: "8", limits: RELAY_LIMITS, ...(live ? { requiresLiveSync: true } : {}) });
   return { relay, journal, callbacks, ticket, socket, emit, frame, historyEpoch };
 };
 
@@ -202,4 +203,158 @@ test("does not HTML-expand or replace pending approval content in live sync", as
   emit(frame("sync_ack"));
   expect(relay.connected()).toBe(true);
   expect(callbacks.onError).not.toHaveBeenCalled();
+});
+
+test("media capacity is bounded independently while authorization remains responsive", async () => {
+  const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
+  const pending: (() => void)[] = [];
+  const status = vi.fn(() => new Promise<null>(resolve => { pending.push(() => resolve(null)); }));
+  Object.assign(journal, { media: () => ({ status }) });
+  for (let i = 0; i < 3; i++) emit(frame("image_request", { requestId: randomUUID(), action: "status", body: { uploadId: randomUUID() } }));
+  await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+  expect(socket.sent.filter(value => value.type === "image_response")).toEqual([expect.objectContaining({ action: "status", result: null, error: expect.objectContaining({ code: "rate_limited" }) })]);
+  const operationId = randomUUID(), authorized = relay.authorize(operationId);
+  emit(frame("operation_authorized", { operationId })); await authorized;
+  socket.close(); const count = socket.sent.length;
+  for (const complete of pending) complete(); await new Promise(resolve => setImmediate(resolve));
+  expect(socket.sent).toHaveLength(count);
+  expect(socket.sent[0]).toMatchObject({ type: "hello", contentRevision: 2 });
+});
+
+test.each([
+  ["release", new ImageReleaseStorageError(Object.assign(new Error("Disk unavailable"), { code: "EIO" })), "release_storage_unavailable"],
+  ["status", new ImageReleaseStorageError(new Error("Storage unavailable")), "image_unavailable"],
+  ["release", new Error("Image preparation upload_conflict."), "upload_conflict"],
+  ["release", new Error("Image preparation upload_in_use."), "upload_in_use"],
+  ["release", new Error("Image preparation is unavailable."), "image_unavailable"],
+  ["release", new Error("Image preparation target_changed."), "target_changed"],
+] as const)("%s preserves the release error classification %s as %s", async (action, error, code) => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  Object.assign(journal, { media: () => ({ [action]: async () => { throw error; } }) });
+  const requestId = randomUUID(), body = { uploadId: randomUUID() };
+  emit(frame("image_request", { requestId, action, body }));
+  await vi.waitFor(() => expect(socket.sent.filter(value => value.type === "image_response")).toEqual([
+    expect.objectContaining({ requestId, action, result: null, error: { code, message: "The Controller could not complete this image request." } }),
+  ]));
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  await relay.close();
+});
+
+test.each([
+  ["EIO", Object.assign(new Error("Private media initialization failed."), { code: "EIO" })],
+  ["SQLITE_BUSY", Object.assign(new Error("Private media initialization failed."), { code: "SQLITE_BUSY" })],
+  ["storage-only AggregateError", new AggregateError([Object.assign(new Error("Directory sync failed."), { code: "EIO" }), Object.assign(new Error("Media ledger is locked."), { code: "SQLITE_BUSY" })], "Private media initialization failed.")],
+] as const)("reoffers the original release after %s prevents lazy media initialization", async (_name, error) => {
+  const { relay, journal, socket, emit, frame, callbacks, ticket } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const spec = { uploadId: randomUUID(), imageId: randomUUID(), target: { serverOrigin: ticket.serverOrigin, actorUserId: randomUUID(), fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: null }, name: "original.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) };
+  const released = { uploadId: spec.uploadId, imageId: spec.imageId, target: spec.target, state: "released", acceptedOffset: "0", validated: null, error: null };
+  let storageAvailable = false;
+  const release = vi.fn(async () => released);
+  Object.assign(journal, { media: () => {
+    if (!storageAvailable) throw error;
+    return { release };
+  } });
+  const prepareId = randomUUID(), releaseId = randomUUID();
+  const responses = () => socket.sent.filter(value => value.type === "image_response");
+  emit(frame("image_request", { requestId: prepareId, action: "prepare", body: spec }));
+  await vi.waitFor(() => expect(responses()).toHaveLength(1));
+  expect(responses()[0]).toMatchObject({ requestId: prepareId, action: "prepare", result: null, error: { code: "image_unavailable" } });
+  const request = frame("image_request", { requestId: releaseId, action: "release", body: { uploadId: spec.uploadId, spec } });
+  emit(request);
+  await vi.waitFor(() => expect(responses()).toHaveLength(2));
+  expect.soft(responses()[1]).toMatchObject({ requestId: releaseId, action: "release", result: null, error: { code: "release_storage_unavailable" } });
+  expect(release).not.toHaveBeenCalled();
+  storageAvailable = true;
+  emit(request);
+  await vi.waitFor(() => expect(responses()).toHaveLength(3));
+  expect(responses()[2]).toMatchObject({ requestId: releaseId, action: "release", result: released, error: null });
+  expect(release).toHaveBeenCalledExactlyOnceWith({ uploadId: spec.uploadId, spec });
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  await relay.close();
+});
+
+test.each([
+  ["owner mismatch", "release", new Error("Media preparation owner identity differs.")],
+  ["private symbolic link", "release", new Error("Media directory contains an untrusted symbolic link.")],
+  ["corrupt SQLite", "release", Object.assign(new Error("Media ledger is corrupt."), { code: "SQLITE_CORRUPT" })],
+  ["invalid SQLite", "release", Object.assign(new Error("Media ledger is not a database."), { code: "SQLITE_NOTADB" })],
+  ["symbolic link loop", "release", Object.assign(new Error("Too many symbolic links."), { code: "ELOOP" })],
+  ["mixed storage and safety AggregateError", "release", new AggregateError([Object.assign(new Error("Directory sync failed."), { code: "EIO" }), new Error("Media preparation owner identity differs.")], "Private media initialization failed.")],
+  ["non-release storage failure", "status", Object.assign(new Error("Private media initialization failed."), { code: "EIO" })],
+] as const)("lazy media initialization preserves the terminal response for %s", async (_name, action, error) => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  Object.assign(journal, { media: () => { throw error; } });
+  const requestId = randomUUID();
+  emit(frame("image_request", { requestId, action, body: { uploadId: randomUUID() } }));
+  await vi.waitFor(() => expect(socket.sent.filter(value => value.type === "image_response")).toEqual([
+    expect.objectContaining({ requestId, action, result: null, error: { code: "image_unavailable", message: "The Controller could not complete this image request." } }),
+  ]));
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  await relay.close();
+});
+
+test("concurrent completions retain their original identities while one decoder drains a bounded queue", async () => {
+  const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
+  const pending: (() => void)[] = [];
+  const complete = vi.fn(() => new Promise<null>(resolve => { pending.push(() => resolve(null)); }));
+  Object.assign(journal, { media: () => ({ complete }) });
+  const bodies = Array.from({ length: 34 }, () => ({ uploadId: randomUUID(), sha256: "a".repeat(64), byteLength: "1" })), ids = bodies.map(() => randomUUID());
+  bodies.forEach((body, index) => emit(frame("image_request", { requestId: ids[index], action: "complete", body })));
+  await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+  expect(socket.sent.filter(value => value.type === "image_response")).toEqual([expect.objectContaining({ requestId: ids[33], error: expect.objectContaining({ code: "rate_limited" }) })]);
+  emit(frame("image_request", { requestId: ids[1], action: "complete", body: bodies[1] }));
+  const operationId = randomUUID(), authorization = relay.authorize(operationId);
+  emit(frame("operation_authorized", { operationId })); await authorization;
+  pending.shift()!();
+  await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+  expect(complete.mock.calls[0]).toEqual([bodies[0]]); expect(complete.mock.calls[1]).toEqual([bodies[1]]);
+  socket.close(); pending.shift()!(); await relay.close();
+  expect(complete).toHaveBeenCalledTimes(2);
+});
+
+test("disconnect removes queued decoders before their preparation can be read", async () => {
+  const { relay, journal, socket, emit, frame } = await setup(); emit(frame("reconcile_result", { operations: [] }));
+  let release!: () => void;
+  const complete = vi.fn(() => new Promise<null>(resolve => { release = () => resolve(null); }));
+  Object.assign(journal, { media: () => ({ complete }) });
+  for (let i = 0; i < 2; i++) emit(frame("image_request", { requestId: randomUUID(), action: "complete", body: { uploadId: randomUUID(), sha256: "a".repeat(64), byteLength: "1" } }));
+  await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+  socket.close(); release(); await relay.close();
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+
+
+test("capture RPC binds request, action, attempt and current connection while disconnect remains unknown", async () => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup([], false, true);
+  emit(frame("reconcile_result", { operations: [] }));
+  const captureId = randomUUID(), attemptId = randomUUID(), occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-part" };
+  const request = { captureId, attemptId, occurrence, nativeSource: null, locator: { kind: "external", url: "https://example.test/original.png" } } as const;
+  const registered = relay.capture("register", request);
+  const wire = socket.sent.find(m => m.type === "image_capture")!;
+  expect(wire).toMatchObject({ action: "register", body: request });
+  const receipt = { captureId, attemptId, revision: "1", occurrence, state: "reserved", resourceId: randomUUID(), resource: null, error: null };
+  emit(frame("image_capture_result", { requestId: wire.requestId, action: "register", result: receipt, error: null }));
+  expect(await registered).toEqual(receipt);
+  const unknown = relay.capture("query", { captureId }), assertion = expect(unknown).rejects.toThrow("unknown");
+  socket.close(); await assertion;
+  expect(callbacks.onCommand).not.toHaveBeenCalled(); expect(journal.markOperationAcknowledged).not.toHaveBeenCalled();
+});
+
+test("retry_capture consumes the source hook separately from native commands and aborts on connection loss", async () => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup([], false, true);
+  Object.assign(journal, { media: () => ({}) }); emit(frame("reconcile_result", { operations: [] }));
+  let finish!: () => void, signal!: AbortSignal;
+  const validated = { mediaType: "image/png" as const, byteLength: "1", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 };
+  callbacks.onRetryCapture.mockImplementation(async (_body, currentSignal) => { signal = currentSignal; await new Promise<void>(resolve => { finish = resolve; }); return validated; });
+  const body = { captureId: randomUUID(), attemptId: randomUUID() };
+  emit(frame("image_request", { requestId: randomUUID(), action: "retry_capture", body }));
+  await vi.waitFor(() => expect(callbacks.onRetryCapture).toHaveBeenCalledOnce());
+  expect(callbacks.onRetryCapture).toHaveBeenCalledWith(body, expect.any(AbortSignal));
+  socket.close(); expect(signal.aborted).toBe(true); const count = socket.sent.length;
+  finish(); await relay.close(); expect(socket.sent).toHaveLength(count); expect(callbacks.onCommand).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,6 +6,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { JsonValue, Task } from "../../../src/api/types.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
+import { appendWorkerPrompts, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { createHerdrAgentManager, HerdrInputBlockedError, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
@@ -33,7 +35,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const cwd = path.join(project.localPath, ".worktrees", "daynight", owner.taskId); await mkdir(cwd, { recursive: true });
   const worktree: WorktreeBinding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: cwd, branch: `daynight/${owner.taskId}` };
   const configuration: ExecutionConfiguration = { agent, model: "current-model", args: [], recoveryLimit: 2 };
-  const store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); store.registerProject(project);
+  const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   store.registerPending({ ...owner, agent, sessionId }); const task = store.activateTask(owner);
   const context: HerdrExecutionContext = { ...owner, cwd, agent };
   const nativeEnvironment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };
@@ -104,7 +106,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = {
-    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null,
+    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: owner.claimId, state: "active", userId: uuid(6), workerId: uuid(5), machine: { id: uuid(7), name: "fixture" }, platform: "linux", agent, agentControlMode: "herdr", worktreeId: owner.worktreeId, phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-10-27T00:00:00Z" } },
   };
@@ -116,6 +118,199 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
 };
 
 describe("execution from current Herdr resources", () => {
+  it("reports native progress only when its observed state changes", async () => {
+    const f = await fixture("codex", staleId);
+    const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
+    f.agents.push(current);
+    const observe = vi.fn(), success = vi.fn();
+    f.dependencies.observePhase = observe; f.dependencies.observeSuccess = success;
+    await f.driver.advance(f.input);
+    expect(observe).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    observe.mockClear(); success.mockClear();
+    await f.driver.advance(f.input);
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" });
+    expect(observe).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+    expect(observe).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" }, true, undefined);
+    current.state_change_seq = 11;
+    await f.driver.advance(f.input);
+    expect(observe).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+  });
+
+  it("records successful start and input submission without allowing callback failure to change execution", async () => {
+    const f = await fixture("codex", null);
+    const phases: string[] = [];
+    f.dependencies.observeSuccess = (_identity, phase) => { phases.push(phase.phase); throw new Error("monitoring callback"); };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(phases).toEqual(expect.arrayContaining(["observation", "worktree-preparation", "agent-start", "input-submission"]));
+  });
+
+  it("labels an observation failure after confirmed input and recovers at the same operation", async () => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const observePhase = vi.fn(), observeSuccess = vi.fn();
+    f.dependencies.observePhase = observePhase; f.dependencies.observeSuccess = observeSuccess;
+    const originalObserve = f.manager.observe.bind(f.manager);
+    const failure = new Error("post-submission observation failed");
+    vi.spyOn(f.manager, "observe").mockImplementationOnce(originalObserve).mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(observeSuccess).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "input-submission" });
+    expect(observePhase).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "agent-observation" }, false, undefined);
+    observeSuccess.mockClear();
+    await f.driver.advance(f.input);
+    expect(observeSuccess).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it("labels a failed fallback observation after startup input waits and reconnects without restarting", async () => {
+    const f = await fixture("copilot", savedId);
+    f.blockOnLaunch();
+    const observePhase = vi.fn(), observeSuccess = vi.fn();
+    f.dependencies.observePhase = observePhase; f.dependencies.observeSuccess = observeSuccess;
+    const failure = new Error("fallback observation failed");
+    vi.spyOn(f.manager, "observe").mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(0);
+    expect(observePhase).toHaveBeenLastCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, false, undefined);
+    observeSuccess.mockClear();
+    const result = await f.driver.advance(f.input);
+    expect(result.observation?.status).toBe("blocked");
+    expect(observeSuccess).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(0);
+  });
+
+  it("tracks cold resource stop separately from the ordinary observation", async () => {
+    const f = await fixture("copilot", savedId);
+    const phases = vi.fn(), successes = vi.fn();
+    f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
+    const failure = new Error("original workspace stop failed");
+    vi.spyOn(f.manager, "stopAndClose").mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" });
+    expect(successes).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" }, "resource-stop");
+    expect(phases).toHaveBeenLastCalledWith(f.input.owner, { kind: "execution", phase: "observation" }, false, undefined, "resource-stop");
+    await f.driver.advance(f.input);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" }, "resource-stop");
+  });
+
+  it("labels an unconfirmed startup input without resending the assignment", async () => {
+    const f = await fixture("copilot", savedId);
+    const phases = vi.fn(); f.dependencies.observePhase = phases;
+    const original = f.rpc.request;
+    let rejectReceipt = true;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      const result = await original(method, params, operation);
+      if (method === "agent.prompt" && rejectReceipt) { rejectReceipt = false; throw new Error("receipt lost"); }
+      return result;
+    });
+    await expect(f.driver.advance(f.input)).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "unknown" });
+    expect(phases).toHaveBeenLastCalledWith(f.input.owner, { kind: "execution", phase: "input-submission" }, false, undefined, "startup-input");
+    const attempts = f.calls.filter(call => call.method === "agent.prompt").length;
+    f.agents[0]!.agent_status = "working";
+    await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(attempts);
+  });
+
+  it("separates prompt source failures from successful agent observations", async () => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const phases = vi.fn(), successes = vi.fn(); f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
+    const failure = new Error("prompt source unavailable");
+    f.dependencies.preparePromptSource = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "preparing" }, false, undefined, "prompt-source");
+    expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, "prompt-source");
+    await f.driver.advance(f.input);
+    expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "preparing" }, "prompt-source");
+  });
+
+  it("preserves the original execution failure when monitoring throws", async () => {
+    const f = await fixture("codex", null);
+    const failure = new Error("original worktree failure");
+    f.dependencies.observePhase = () => { throw new Error("monitoring failure"); };
+    f.dependencies.observeSuccess = () => { throw new Error("monitoring failure"); };
+    vi.mocked(f.dependencies.git.prepareWorktree).mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+  });
+
+  it("waits for the initial tuple and captures the value received during workspace preparation", async () => {
+    const f = await fixture("codex", null);
+    const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });
+    let tuple: ReturnType<NonNullable<ExecutionDependencies["promptSource"]>["current"]> = null;
+    f.dependencies.promptSource = { current: () => tuple };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_unknown", observation: null });
+    expect(f.calls.filter(call => call.method === "agent.start" || call.method === "agent.prompt")).toEqual([]);
+    tuple = { user: resource("user", "old"), project: resource("project", ""), worker: resource("worker", "worker") };
+    const prepare = f.manager.prepareWorkspace.bind(f.manager);
+    vi.spyOn(f.manager, "prepareWorkspace").mockImplementation(async (...args) => {
+      const binding = await prepare(...args);
+      tuple = { user: resource("user", "new"), project: resource("project", "project"), worker: resource("worker", "worker") };
+      return binding;
+    });
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    const prompt = String(f.calls.find(call => call.method === "agent.prompt")!.params.text);
+    expect(prompt).toContain("----- begin user prompt -----\nnew\n----- end user prompt -----");
+    expect(prompt).toContain("----- begin project prompt -----\nproject\n----- end project prompt -----");
+    expect(prompt).not.toContain("\nold\n");
+  });
+
+  it("rejects an oversized complete request before native launch and retries after a revision changes", async () => {
+    const f = await fixture("codex", null);
+    const resource = (scope: "user" | "project" | "worker", revision: string, text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision, text, updatedAt: "2026-11-09T00:00:00Z" });
+    let tuple = { user: resource("user", "1", "x".repeat(1_100_000)), project: resource("project", "1", ""), worker: resource("worker", "1", "") };
+    f.dependencies.promptSource = { current: () => tuple };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(f.calls.filter(call => call.method === "agent.start" || call.method === "agent.prompt")).toEqual([]);
+    expect(f.events.filter(event => event.kind === "waiting")).toHaveLength(1);
+    tuple = { ...tuple, user: resource("user", "2", "small") };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it("revalidates the same revisions when an oversized ping is followed by a shorter startup", async () => {
+    const f = await fixture("codex", null);
+    const resource = (scope: "user" | "project" | "worker", revision: string, text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision, text, updatedAt: "2026-11-09T00:00:00Z" });
+    let tuple = { user: resource("user", "1", ""), project: resource("project", "1", ""), worker: resource("worker", "1", "") };
+    f.dependencies.promptSource = { current: () => tuple };
+    const initial = await f.driver.advance(f.input);
+    const pane = f.agents.find(value => value.pane_id === initial.observation!.binding.paneId)!;
+    pane.agent_status = "idle"; pane.state_change_seq = 7;
+    const base = { ...tuple, user: resource("user", "2", "x") };
+    const size = Buffer.byteLength(JSON.stringify({ id: uuid(0), method: "agent.prompt", params: { target: "new-pane-2", text: appendWorkerPrompts("managed assignment", base) } }));
+    tuple = { ...base, user: resource("user", "2", "x".repeat(1 + 1_048_576 - size - 100)) };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    f.agents.splice(0);
+    const exited = f.panes.find(value => value.pane_id === initial.observation!.binding.paneId)!;
+    exited.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: freshId };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(2);
+  });
+
+  it("revalidates the same ping revisions when the actual target changes", async () => {
+    const f = await fixture("codex", staleId);
+    const longTarget = "p".repeat(500);
+    f.panes[0]!.pane_id = longTarget;
+    const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
+    f.agents.push(current);
+    const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });
+    const tuple = { user: resource("user", "x"), project: resource("project", ""), worker: resource("worker", "") };
+    const shortTarget = "p";
+    const size = Buffer.byteLength(JSON.stringify({ id: uuid(0), method: "agent.prompt", params: { target: shortTarget, text: appendWorkerPrompts(workerPingPrompt(f.input.task), tuple) } }));
+    tuple.user = resource("user", "x".repeat(1 + 1_048_576 - size - 100));
+    f.dependencies.promptSource = { current: () => tuple };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    current.pane_id = shortTarget; f.panes[0]!.pane_id = shortTarget;
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
   it("refuses worktree and native mutations when durable launch provenance is unknown", async () => {
     const f = await fixture("codex", null);
     Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { throw new Error("Original run is stop_unknown"); } } });
@@ -143,7 +338,7 @@ describe("execution from current Herdr resources", () => {
     const stop = vi.fn(async () => { throw new Error("A prepared run has not launched an agent"); });
     Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => {}, hasPreparedRun: () => true, stop } });
     const result = await f.driver.advance(f.input);
-    expect(result.binding).toEqual(f.binding);
+    expect(result.observation!.binding).toEqual(f.binding);
     expect(f.launches).toHaveLength(1);
     expect(stop).not.toHaveBeenCalled();
     expect(f.calls.some(call => call.method === "workspace.close")).toBe(false);
@@ -152,7 +347,7 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("replaces a cold inactive %s pane before a NULL-session fresh launch", async (agent) => {
     const f = await fixture(agent, null);
     const result = await f.driver.advance(f.input);
-    expect(result.binding.workspaceId).not.toBe(f.binding.workspaceId);
+    expect(result.observation!.binding.workspaceId).not.toBe(f.binding.workspaceId);
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
     expect(f.launches).toHaveLength(1); expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.workerEnvironment.COPILOT_ALLOW_ALL).toBe("false"); expect(f.workerEnvironment.COPILOT_ASSISTED_APPROVAL).toBe("true");
@@ -168,7 +363,7 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("recreates a cold inactive %s workspace and resumes the saved ID", async (agent) => {
     const f = await fixture(agent, savedId);
     const result = await f.driver.advance(f.input);
-    expect(result.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
+    expect(result.observation!.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
     expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
     if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
@@ -181,7 +376,7 @@ describe("execution from current Herdr resources", () => {
     const f = await fixture(agent, staleId);
     f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     const result = await f.driver.advance(f.input);
-    expect(result.nativeSession?.sessionId).toBe(staleId);
+    expect(result.observation!.nativeSession?.sessionId).toBe(staleId);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
@@ -190,7 +385,7 @@ describe("execution from current Herdr resources", () => {
     const first = await f.driver.advance(f.input);
     const originalTask = f.store.getTask(f.input.task);
     f.agents.splice(0);
-    const exitedPane = f.panes.find((pane) => pane.pane_id === first.binding.paneId)!;
+    const exitedPane = f.panes.find((pane) => pane.pane_id === first.observation!.binding.paneId)!;
     exitedPane.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: savedId };
     const request = f.rpc.request;
     const busy = new HerdrRpcError("replacement shell is initializing", { method: "agent.start", requestId: "restart", submission: "unknown", code: "agent_pane_busy" });
@@ -203,8 +398,8 @@ describe("execution from current Herdr resources", () => {
 
     const recovered = await f.driver.advance(f.input);
     expect(attempts).toBe(2);
-    expect(recovered.binding.workspaceId).not.toBe(first.binding.workspaceId);
-    expect(recovered.nativeSession?.sessionId).toBe(savedId);
+    expect(recovered.observation!.binding.workspaceId).not.toBe(first.observation!.binding.workspaceId);
+    expect(recovered.observation!.nativeSession?.sessionId).toBe(savedId);
     expect(f.store.getTask(f.input.task)).toEqual(originalTask);
     expect(f.launches).toHaveLength(2);
     expect(f.launches[1]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
@@ -532,8 +727,8 @@ describe("execution from current Herdr resources", () => {
       const f = await fixture(agent, sessionId);
       f.finishFirstTurnBeforeDiscovery(status);
       const first = await f.driver.advance(f.input);
-      expect(first.status).toBe(status); expect(first.completionSeq).toBe(1);
-      expect(first.nativeSession?.sessionId).toBe(sessionId === null ? freshId : savedId);
+      expect(first.observation!.status).toBe(status); expect(first.observation!.completionSeq).toBe(1);
+      expect(first.observation!.nativeSession?.sessionId).toBe(sessionId === null ? freshId : savedId);
       expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
       await f.driver.advance(f.input);
       await f.driver.advance(f.input);
@@ -547,6 +742,7 @@ describe("execution from current Herdr resources", () => {
 
   it("pings the idle agent that appeared before serialized startup without submitting an assignment", async () => {
     const f = await fixture("copilot", savedId);
+    const phases = vi.fn(), successes = vi.fn(); f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
     const start = f.manager.start;
     vi.spyOn(f.manager, "start").mockImplementationOnce(async (context, binding, input, operation) => {
       const pane = f.panes.find((candidate) => candidate.pane_id === binding.paneId)!;
@@ -555,6 +751,9 @@ describe("execution from current Herdr resources", () => {
     });
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => ["agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+    expect(successes).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-start" });
+    expect(phases).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-start" }, true, undefined);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
     await f.driver.advance(f.input);
     await f.driver.advance(f.input);
     const prompts = f.calls.filter((call) => call.method === "agent.prompt");
@@ -571,6 +770,7 @@ describe("execution from current Herdr resources", () => {
     } else if (inputKind === "ping") {
       f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     }
+    const phases = vi.fn(), successes = vi.fn(); f.dependencies.observePhase = phases; f.dependencies.observeSuccess = successes;
     const request = f.rpc.request;
     let failSnapshot = false;
     let firstPrompt = true;
@@ -585,7 +785,10 @@ describe("execution from current Herdr resources", () => {
       return result;
     });
     await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "agent-observation" }, false, undefined);
+    successes.mockClear();
     await f.driver.advance(f.input);
+    expect(successes).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
     await f.driver.advance(f.input);
     const prompts = f.calls.filter((call) => call.method === "agent.prompt");
     expect(prompts).toHaveLength(2);
@@ -687,7 +890,7 @@ describe("execution from current Herdr resources", () => {
     expect(scheduled[0]!.panes[0]!.kind).toBeNull();
     f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     const result = await f.driver.advance(f.input);
-    expect(result.binding).toEqual(f.binding);
+    expect(result.observation!.binding).toEqual(f.binding);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
@@ -704,7 +907,7 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("rejects a mismatched live %s session before sending a deferred first prompt", async (agent) => {
     const f = await fixture(agent, savedId); f.blockOnLaunch();
     const blocked = await f.driver.advance(f.input);
-    expect(blocked.status).toBe("blocked"); expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(blocked.observation!.status).toBe("blocked"); expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
     f.agents[0]!.agent_status = "idle";
     f.agents[0]!.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: staleId };
     await expect(f.driver.advance(f.input)).rejects.toThrow(/native session/);

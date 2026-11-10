@@ -1,0 +1,369 @@
+[
+  {
+    "name": "mixed-controls",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "request-1",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740993",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "text",
+            "text": "真实\n换行，字面\\n，<>&，中文\t结束"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740993"
+          },
+          "expectedNativeSessionId": null
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "1"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740993\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"text\":\"真实\\u000a换行，字面\\\\n，<>&，中文\\u0009结束\",\"type\":\"text\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"1\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":null,\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740993\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "e9b7b466d89ac438bd5d684e2c474c9719858f46b8bf3a6ddaadab1ae77c3205"
+  },
+  {
+    "name": "same-intent-new-request",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "another",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740993",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "text",
+            "text": "真实\n换行，字面\\n，<>&，中文\t结束"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740993"
+          },
+          "expectedNativeSessionId": null
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "1"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740993\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"text\":\"真实\\u000a换行，字面\\\\n，<>&，中文\\u0009结束\",\"type\":\"text\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"1\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":null,\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740993\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "e9b7b466d89ac438bd5d684e2c474c9719858f46b8bf3a6ddaadab1ae77c3205"
+  },
+  {
+    "name": "reordered-images",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "request-1",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740993",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "text",
+            "text": "真实\n换行，字面\\n，<>&，中文\t结束"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740993"
+          },
+          "expectedNativeSessionId": null
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "1"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740993\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"text\":\"真实\\u000a换行，字面\\\\n，<>&，中文\\u0009结束\",\"type\":\"text\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"1\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":null,\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740993\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "241662e310724a7c4146fbc4294d4b8d2a9c139e70acc26fd7f331e504f7bee3"
+  },
+  {
+    "name": "pure-image",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "request-1",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740993",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740993"
+          },
+          "expectedNativeSessionId": null
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "1"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740993\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"1\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":null,\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740993\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "87ea965f19b4e279879cba2c3dac53cf095c0f1ddb27d19457ea41dee875a4ad"
+  },
+  {
+    "name": "known-native",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "request-1",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740993",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "text",
+            "text": "真实\n换行，字面\\n，<>&，中文\t结束"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740993"
+          },
+          "expectedNativeSessionId": "native:原身份"
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "1"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740993\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"text\":\"真实\\u000a换行，字面\\\\n，<>&，中文\\u0009结束\",\"type\":\"text\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"1\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":\"native:原身份\",\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740993\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "e579c8386e41f50ff8d61a1d9ab902aeb8eadbdd321488f4f697597ac240b74f"
+  },
+  {
+    "name": "new-draft-revision",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "request-1",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740993",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "text",
+            "text": "真实\n换行，字面\\n，<>&，中文\t结束"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740993"
+          },
+          "expectedNativeSessionId": null
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "2"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740993\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"text\":\"真实\\u000a换行，字面\\\\n，<>&，中文\\u0009结束\",\"type\":\"text\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"2\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":null,\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740993\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "03f900052c20efeaca6f8b56c40e0037b29ff4ae0ccf59aeb3cd9effe3c50432"
+  },
+  {
+    "name": "new-execution-generation",
+    "command": {
+      "protocol": "daynight.session.v1",
+      "contentRevision": 2,
+      "requestId": "request-1",
+      "operationId": "00000000-0000-4000-8000-000000000003",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "claimId": "00000000-0000-4000-8000-000000000002",
+      "executionGeneration": "9007199254740994",
+      "kind": "send_message",
+      "payload": {
+        "content": [
+          {
+            "type": "text",
+            "text": "真实\n换行，字面\\n，<>&，中文\t结束"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000004",
+            "uploadId": "00000000-0000-4000-8000-000000000014",
+            "resourceId": "00000000-0000-4000-8000-000000000024",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          },
+          {
+            "type": "image",
+            "imageId": "00000000-0000-4000-8000-000000000005",
+            "uploadId": "00000000-0000-4000-8000-000000000015",
+            "resourceId": "00000000-0000-4000-8000-000000000025",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byteLength": "10"
+          }
+        ],
+        "expectedTurnId": null,
+        "target": {
+          "serverOrigin": "https://daynight.cc",
+          "actorUserId": "00000000-0000-4000-8000-000000000006",
+          "fence": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "claimId": "00000000-0000-4000-8000-000000000002",
+            "executionGeneration": "9007199254740994"
+          },
+          "expectedNativeSessionId": null
+        },
+        "expectedImageCapabilityRevision": "1",
+        "draftId": "00000000-0000-4000-8000-000000000007",
+        "draftRevision": "1"
+      }
+    },
+    "canonical": "{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"contentRevision\":2,\"executionGeneration\":\"9007199254740994\",\"kind\":\"send_message\",\"operationId\":\"00000000-0000-4000-8000-000000000003\",\"payload\":{\"content\":[{\"text\":\"真实\\u000a换行，字面\\\\n，<>&，中文\\u0009结束\",\"type\":\"text\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000004\",\"resourceId\":\"00000000-0000-4000-8000-000000000024\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000014\"},{\"byteLength\":\"10\",\"imageId\":\"00000000-0000-4000-8000-000000000005\",\"resourceId\":\"00000000-0000-4000-8000-000000000025\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"image\",\"uploadId\":\"00000000-0000-4000-8000-000000000015\"}],\"draftId\":\"00000000-0000-4000-8000-000000000007\",\"draftRevision\":\"1\",\"expectedImageCapabilityRevision\":\"1\",\"expectedTurnId\":null,\"target\":{\"actorUserId\":\"00000000-0000-4000-8000-000000000006\",\"expectedNativeSessionId\":null,\"fence\":{\"claimId\":\"00000000-0000-4000-8000-000000000002\",\"executionGeneration\":\"9007199254740994\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"},\"serverOrigin\":\"https://daynight.cc\"}},\"protocol\":\"daynight.session.v1\",\"sessionId\":\"00000000-0000-4000-8000-000000000001\"}",
+    "sha256": "f755eafb5ed6831abf1603a0aa43e4959e2c0bf4b3ddd3c495c25723867aaa74"
+  }
+]

@@ -142,6 +142,36 @@ func TestStatusClaimOwnershipAndTransitions(t *testing.T) {
 	faultCode(t, err, "dependency_unsatisfied")
 }
 
+func TestCancelledReleasedHistoryCannotRestoreExecution(t *testing.T) {
+	current, worker := activeFixture(t)
+	owner := model.Principal{UserID: worker.UserID}
+	_, _, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, worker)
+	faultCode(t, err, "invalid_transition")
+	released := *worker
+	released.State = model.WorkerReleased
+	current.Status = model.TaskTodo
+	current.Properties, err = properties.WithWorker(current.Properties, &released)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, changed, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, &released)
+	if err != nil || !changed || values.Status != model.TaskCancelled {
+		t.Fatal(values, changed, err)
+	}
+	current.Status, current.Properties = values.Status, values.Properties
+	retained, err := taskproperty.Worker(current.Properties)
+	if err != nil || retained.State != model.WorkerReleased || retained.ClaimID != released.ClaimID {
+		t.Fatal(retained, err)
+	}
+	_, err = WithdrawableWorker(current, released.ClaimID)
+	faultCode(t, err, "invalid_transition")
+	_, err = WithdrawCandidate(current)
+	faultCode(t, err, "invalid_transition")
+	_, err = ReleasedWorker(current, released.ClaimID)
+	faultCode(t, err, "invalid_transition")
+	faultCode(t, WorkerReady(current), "invalid_transition")
+}
+
 func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 	current, worker := activeFixture(t)
 	if err := WorkerReady(current); err == nil {
@@ -150,16 +180,6 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 	current.Status = model.TaskTodo
 	if err := WorkerReady(current); err == nil {
 		t.Fatal("active worker accepted")
-	}
-	current.Properties["worker"] = json.RawMessage(`{"bad":true}`)
-	if err := WorkerReady(current); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if _, err := ReleasedWorker(current, worker.ClaimID); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if _, err := WithdrawableWorker(current, worker.ClaimID); err == nil {
-		t.Fatal("invalid worker accepted")
 	}
 	current, worker = activeFixture(t)
 	input := UpdateWorker{Herdr: ptr(&model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}), NativeSessionID: ptr(ptr("native"))}

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import type { CacheEvent } from '../src/features/task-cache/project-cache';
+import { TaskCacheError } from '../src/features/task-cache/database';
 import { useWorker } from '../src/features/workers/useWorker';
 import { useWorkers } from '../src/features/workers/useWorkers';
 import { WorkersPage } from '../src/features/workers/WorkersPage';
@@ -10,11 +12,17 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { isWorkerOnline, isWorkerRecent, sortWorkers, workerServerMilliseconds } from '../src/features/workers/observation';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerPage, workerResponse, workerSummary } from './helpers/workers';
 
+vi.mock('../src/features/workers/useWorkerMonitoring', () => ({
+  useWorkerMonitoringSummaries: () => ({ snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh: () => {} }),
+}));
+
 const scopes: TaskCacheScope[] = [];
 let monotonic: number;
 let visibility: DocumentVisibilityState;
 const makeScope = (userId = WORKER_USER, onIdentityMismatch = vi.fn()) => {
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch }); scopes.push(scope); return scope;
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch });
+  vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map());
+  scopes.push(scope); return scope;
 };
 const wrapper = (scope: TaskCacheScope) => ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={scope}>{children}</TaskCacheProvider>;
 const flush = () => act(async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); });
@@ -39,6 +47,15 @@ beforeEach(() => {
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
 describe('Worker observation time', () => {
+  it.each([
+    ['2026-11-04T10:00:00.001Z', false],
+    ['2026-11-04T10:00:00.000Z', true],
+    ['2026-11-04T09:58:00.001Z', true],
+    ['2026-11-04T09:58:00.000Z', false],
+    ['2026-11-04T09:57:59.999Z', false],
+  ])('classifies a report at %s relative to server observation', (lastReportedAt, online) => {
+    expect(isWorkerOnline({ lastReportedAt }, Date.parse('2026-11-04T10:00:00.000Z'))).toBe(online);
+  });
   it('uses server and monotonic time for119/120 seconds and72-hour visibility without mutating input', () => {
     const now = Date.parse(WORKER_TIME), current = workerSummary(1), old = workerSummary(2);
     current.lastReportedAt = new Date(now - 119_000).toISOString();
@@ -75,7 +92,8 @@ describe('Worker observation time', () => {
     expect(result.current.serverMilliseconds).toBe(now + 1_000);
     expect(isWorkerOnline(recent, result.current.serverMilliseconds!)).toBe(false);
     expect(isWorkerRecent(old, result.current.serverMilliseconds!)).toBe(false);
-    await advance(19_000); expect(fetch).toHaveBeenCalledTimes(2);
+    await advance(28_999); expect(fetch).toHaveBeenCalledOnce();
+    await advance(1); expect(fetch).toHaveBeenCalledTimes(2);
     unmount(); expect(vi.getTimerCount()).toBe(0);
     pending.resolve(workerResponse(workerPage([]))); await flush();
   });
@@ -163,9 +181,163 @@ describe('complete Worker list reads', () => {
     expect(fetch).toHaveBeenCalledOnce(); expect(result.current.refreshing).toBe(true);
     pending.resolve(workerResponse(workerPage([]))); await flush(); expect(result.current.status).toBe('ready'); expect(result.current.snapshot?.items).toEqual([]);
   });
+  it('keeps the refresh button focused and unchanged during a background read, then coalesces an explicit click', async () => {
+    const pending = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const view = renderWithLocale(<TaskCacheProvider scope={makeScope()}><WorkersPage readEnabled /></TaskCacheProvider>, { locale: 'en' });
+    await flush();
+    const button = screen.getByRole('button', { name: 'Refresh' }); button.focus();
+    await advance(30_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(button).toHaveFocus(); expect(button).toBeEnabled(); expect(button).toHaveTextContent('Refresh');
+    fireEvent.click(button); await flush();
+    expect(button).toBeDisabled(); expect(button).toHaveTextContent('Refreshing'); expect(fetch).toHaveBeenCalledTimes(2);
+    pending.resolve(workerResponse(workerPage())); await flush();
+    expect(button).toBeEnabled(); expect(button).toHaveTextContent('Refresh'); expect(fetch).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+  it('queues one explicit refresh while identity admission is closed and performs it only after reopening', async () => {
+    const pending = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender, unmount } = renderHook(({ enabled }) => useWorkers({ readEnabled: enabled }), { wrapper: wrapper(makeScope()), initialProps: { enabled: true } });
+    await flush(); expect(fetch).toHaveBeenCalledOnce();
+    rerender({ enabled: false });
+    act(() => { result.current.refresh(); result.current.refresh(); }); await flush();
+    expect(fetch).toHaveBeenCalledOnce(); expect(result.current.refreshing).toBe(true);
+    rerender({ enabled: true }); await flush();
+    expect(fetch).toHaveBeenCalledTimes(2); expect(result.current.refreshing).toBe(true);
+    pending.resolve(workerResponse(workerPage())); await flush();
+    expect(result.current.refreshing).toBe(false); expect(fetch).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+  it('does not carry a queued refresh into a different account scope', async () => {
+    const first = makeScope(), nextUser = workerId(999), next = makeScope(nextUser);
+    const fetch = vi.fn(async () => workerResponse(workerPage(), nextUser)); vi.stubGlobal('fetch', fetch);
+    const view = renderWithLocale(<TaskCacheProvider scope={first}><WorkersPage readEnabled={false} /></TaskCacheProvider>, { locale: 'en' });
+    await flush(); fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush();
+    expect(fetch).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+    view.rerender(<TaskCacheProvider scope={next}><WorkersPage readEnabled /></TaskCacheProvider>); await flush();
+    expect(fetch).toHaveBeenCalledOnce(); expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    view.unmount();
+  });
+  it('schedules the next automatic read 30 seconds after manual refresh', async () => {
+    const fetch = vi.fn(async () => workerResponse(workerPage())); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkers({ readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); await advance(29_000);
+    act(() => result.current.refresh()); await flush(); expect(fetch).toHaveBeenCalledTimes(2);
+    await advance(29_999); expect(fetch).toHaveBeenCalledTimes(2);
+    await advance(1); expect(fetch).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('Worker read lifetimes', () => {
+  it('withdraws a suspended Project and resumes only from a new Worker read', async () => {
+    const scope = makeScope(), target = workerId(301), healthy = workerId(302), old = deferred<Response>(), suspended = deferred<Response>();
+    const initial = workerDetail(), other = { ...initial.worker.tasks[0]!, projectId: healthy, taskId: workerId(501), title: 'Other task' };
+    initial.worker.tasks.push(other); initial.worker.activeTaskCount = 2;
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(initial)).mockImplementationOnce(() => old.promise)
+      .mockResolvedValueOnce(workerResponse(initial)).mockImplementationOnce(() => suspended.promise).mockResolvedValueOnce(workerResponse(initial));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorker(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    act(() => result.current.refresh()); await flush();
+    act(() => scope.suspendProject(target)); await flush();
+    expect(result.current.snapshot?.worker.tasks.map(task => task.title)).toEqual(['Other task']); expect(result.current.snapshot?.worker.activeTaskCount).toBe(1);
+    old.resolve(workerResponse(initial)); await flush(); expect(result.current.snapshot?.worker.tasks.map(task => task.title)).toEqual(['Other task']);
+    act(() => result.current.refresh()); await flush();
+    act(() => scope.resumeProject(target)); await flush(); expect(result.current.snapshot?.worker.tasks).toHaveLength(2);
+    suspended.resolve(workerResponse(initial)); await flush(); expect(result.current.snapshot?.worker.tasks).toHaveLength(2); expect(fetch).toHaveBeenCalledTimes(5);
+  });
+  it('makes list counts unknown during suspension until an authorized reread', async () => {
+    const scope = makeScope(), target = workerId(301), suspended = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => suspended.promise).mockResolvedValueOnce(workerResponse(workerPage()));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkers({ readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    act(() => scope.suspendProject(target)); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBeNull();
+    act(() => scope.resumeProject(target)); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBe(1);
+    suspended.resolve(workerResponse(workerPage())); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBe(1);
+  });
+  it('withdraws detail rows and fences a late poll while preserving telemetry and unrelated tasks', async () => {
+    const scope = makeScope(), project = workerId(301), other = workerId(302), old = deferred<Response>(), fresh = deferred<Response>();
+    let publish!: (event: CacheEvent) => void;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.mocked(scope.prepareProjection).mockResolvedValue(new Map([[project, 'generation-a']]));
+    const initial = workerDetail(), secondTask = { ...initial.worker.tasks[0]!, projectId: other, taskId: workerId(501), title: 'Other task' };
+    initial.worker.tasks.push(secondTask); initial.worker.activeTaskCount = 2;
+    const filtered = workerDetail(); filtered.worker.tasks = [secondTask]; filtered.worker.activeTaskCount = 1;
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(initial)).mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorker(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) });
+    await flush(); act(() => result.current.refresh()); await flush();
+    act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'generation-a' })); await flush();
+    expect(result.current.snapshot?.worker.tasks.map(task => task.title)).toEqual(['Other task']);
+    expect(result.current.snapshot?.worker.activeTaskCount).toBe(1); expect(result.current.snapshot?.worker.telemetry).toEqual(initial.worker.telemetry);
+    old.resolve(workerResponse(initial)); await flush(); expect(result.current.snapshot?.worker.tasks.map(task => task.title)).toEqual(['Other task']);
+    fresh.resolve(workerResponse(filtered)); await flush(); expect(result.current.snapshot?.worker.tasks).toEqual([secondTask]);
+    vi.mocked(scope.prepareProjection).mockResolvedValue(new Map([[project, 'generation-b']]));
+    fetch.mockResolvedValueOnce(workerResponse(initial)); act(() => result.current.refresh()); await flush();
+    act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'generation-a' }));
+    expect(result.current.snapshot?.worker.tasks).toHaveLength(2);
+  });
+  it('invalidates opaque list counts until a fresh complete observation arrives', async () => {
+    const scope = makeScope(), project = workerId(301), old = deferred<Response>(), fresh = deferred<Response>();
+    let publish!: (event: CacheEvent) => void;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.mocked(scope.prepareProjection).mockResolvedValue(new Map([[project, 'generation-a']]));
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage([workerSummary(1)]))).mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkers({ readEnabled: true }), { wrapper: wrapper(scope) });
+    await flush(); act(() => result.current.refresh()); await flush();
+    act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'generation-a' })); await flush();
+    expect(result.current.snapshot?.items[0]).toMatchObject({ machine: { name: 'Worker 1' }, taskObservationState: 'unavailable', activeTaskCount: null });
+    old.resolve(workerResponse(workerPage([workerSummary(1)]))); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBeNull();
+    const updated = { ...workerSummary(1), taskObservationState: 'observed' as const, taskObservedAt: WORKER_TIME, activeTaskCount: 0 };
+    fresh.resolve(workerResponse(workerPage([updated]))); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBe(0);
+  });
+  it('keeps task counts unavailable and reports a failed purge across a fresh read', async () => {
+    const scope = makeScope(), project = workerId(301), error = new TaskCacheError('storage'); let denied = true;
+    let publish!: (event: CacheEvent) => void;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.spyOn(scope, 'hasProjectionDenials', 'get').mockImplementation(() => denied);
+    vi.spyOn(scope, 'isProjectionDenied').mockImplementation(id => denied && id === project);
+    vi.stubGlobal('fetch', vi.fn(async () => workerResponse(workerPage([workerSummary(1)]))));
+    const { result } = renderHook(() => useWorkers({ readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    act(() => publish({ projectId: project, accessRevoked: true, error }));
+    expect(result.current.snapshot?.items[0]?.activeTaskCount).toBeNull(); expect(result.current.error).toBe(error);
+    act(() => result.current.refresh()); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBeNull(); expect(result.current.error).toBe(error);
+    denied = false; act(() => result.current.refresh()); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBe(1); expect(result.current.error).toBeNull();
+  });
+  it('retains Worker identity and telemetry without private tasks when projection storage is unavailable', async () => {
+    const scope = makeScope(), failure = new TaskCacheError('storage'), pending = deferred<Response>(); let failed = false;
+    vi.spyOn(scope, 'projectionError', 'get').mockImplementation(() => failed ? failure : null);
+    vi.spyOn(scope, 'hasGlobalProjectionFailure', 'get').mockImplementation(() => failed);
+    vi.spyOn(scope, 'hasProjectionDenials', 'get').mockImplementation(() => failed);
+    vi.spyOn(scope, 'isProjectionDenied').mockImplementation(() => failed);
+    const detail = workerDetail(); vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(workerResponse(detail)).mockImplementationOnce(() => pending.promise));
+    const { result } = renderHook(() => useWorker(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    expect(result.current.snapshot?.worker.tasks).toHaveLength(1);
+    failed = true; act(() => result.current.refresh()); await flush();
+    expect(result.current.snapshot?.worker.tasks).toEqual([]); expect(result.current.snapshot?.worker.activeTaskCount).toBeNull();
+    expect(result.current.snapshot?.worker.telemetry).toEqual(detail.worker.telemetry); expect(result.current.error).toBe(failure);
+    pending.resolve(workerResponse(detail)); await flush(); expect(result.current.snapshot?.worker.tasks).toEqual([]); expect(result.current.error).toBe(failure);
+  });
+  it('does not publish private tasks from a failed fence after another read recovers storage', async () => {
+    const scope = makeScope(), failure = new TaskCacheError('storage'), failedFence = new Map<string, string>(), recoveredFence = new Map<string, string>(), pending = deferred<Response>();
+    vi.mocked(scope.prepareProjection).mockResolvedValueOnce(failedFence).mockResolvedValueOnce(recoveredFence);
+    vi.spyOn(scope, 'projectionSnapshotFailed').mockImplementation(fence => fence === failedFence);
+    vi.spyOn(scope, 'projectionSnapshotHasDenials').mockImplementation(fence => fence === failedFence);
+    vi.spyOn(scope, 'projectionSnapshotDenied').mockImplementation(fence => fence === failedFence);
+    vi.spyOn(scope, 'projectionSnapshotError').mockImplementation(fence => fence === failedFence ? failure : null);
+    const first = workerDetail(1), second = workerDetail(2);
+    vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(workerResponse(second)));
+    const old = renderHook(() => useWorker(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    const current = renderHook(() => useWorker(workerId(2), { readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    expect(current.result.current.snapshot?.worker.tasks).toHaveLength(1);
+    pending.resolve(workerResponse(first)); await flush();
+    expect(old.result.current.snapshot?.worker.tasks).toEqual([]); expect(old.result.current.snapshot?.worker.activeTaskCount).toBeNull();
+    expect(old.result.current.snapshot?.worker.telemetry).toEqual(first.worker.telemetry); expect(old.result.current.error).toBe(failure);
+  });
   it('freezes hidden observations and refreshes before reusing a post-sleep clock', async () => {
     const pending = deferred<Response>(), freshTime = '2026-10-29T13:00:00Z';
     const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => pending.promise); vi.stubGlobal('fetch', fetch);

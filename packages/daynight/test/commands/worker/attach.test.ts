@@ -7,7 +7,7 @@ import { attachWorker } from "../../../src/commands/worker/attach.js";
 
 const mocks = vi.hoisted(() => ({ connect: vi.fn(), instance: vi.fn(), spawn: vi.fn(), stat: vi.fn(), records: vi.fn(), peer: vi.fn(), observe: vi.fn(), select: vi.fn() }));
 vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrInstance: mocks.instance }));
-vi.mock("../../../src/commands/worker/herdr/command.js", () => ({ spawnHerdrProcess: mocks.spawn }));
+vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ...await original<object>(), spawnHerdrProcess: mocks.spawn }));
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>(), statSync: mocks.stat }));
 vi.mock("../../../src/commands/worker/herdr/lifecycle-store.js", () => ({ readHerdrLifecycleRecords: mocks.records }));
 vi.mock("../../../src/commands/worker/herdr/native-macos.js", () => ({ createMacProcessControl: () => ({ peer: mocks.peer, observe: mocks.observe }) }));

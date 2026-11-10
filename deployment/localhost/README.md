@@ -1,8 +1,9 @@
 # Localhost deployment
 
 This Docker Compose stack builds and runs the authenticated task dashboard,
-project/task HTTP API and PostgreSQL together. Docker Engine 28 or newer, Linux
-containers and Docker Compose 2.20 or newer are required. Linux hosts and macOS
+project/task HTTP API, PostgreSQL and temporary Redis monitoring storage together.
+Docker Engine 28 or newer, Linux containers and Docker Compose 2.20 or newer
+are required. Linux hosts and macOS
 with Docker Desktop using Linux containers can run this stack. The first build
 accesses Docker Hub, the npm registry and the Go module registry. No host Go,
 Node.js or PostgreSQL installation is needed. A registered UniAuth application
@@ -25,6 +26,15 @@ Set the following values in `deployment/localhost/.env` before starting:
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth application ID |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Registered UniAuth application secret; keep this file private |
 | `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Registered callback URL on the exact public origin, for example `http://127.0.0.1:8787/auth/callback` |
+| `DAYNIGHT_REDIS_URL` | Server connection URL for monitoring; the template uses `redis://redis:6379/0` on the Compose network |
+| `DAYNIGHT_REDIS_MAXMEMORY` | Positive Redis memory budget, such as the template's `128mb` |
+
+Redis uses `noeviction`: when the budget is exhausted, monitoring writes fail
+instead of silently evicting current states. Size the budget for the deployment's
+actual workload and Redis overhead; the template does not guarantee capacity for
+an arbitrary number of accounts. An invalid Redis setting causes a visible
+configuration or Redis startup error. The URL must address the intended Redis
+instance from the server's network namespace.
 
 The callback must have a canonical non-root path and no query or fragment. The
 server registers that path and rejects collisions with application API, page,
@@ -70,12 +80,20 @@ The default is `https://registry.npmjs.org/`. A host `.npmrc` does not configure
 Docker build steps. The same variable is supported by `deployment/dev-ci/run.sh`.
 
 The script requires the `.env` file and works from any working directory when
-invoked with its path. It builds the frontend with Node.js 24 and pnpm 11.28.6,
-embeds its generated assets in the Go 1.27.2 binary, recreates all three service
-containers while preserving the PostgreSQL and attachment volumes, and waits up
-to 120 seconds for their health checks. Build time is separate from that
-readiness timeout. The final nonroot runtime image contains the server binary
-and does not need Node.js. It prepares the required writable
+invoked with its path. It builds the frontend with Node.js 24 and pnpm 11.28.6.
+The production TypeScript configuration checks application sources and the Vite
+configuration; tests and acceptance tooling use the separate full-workspace
+`pnpm web:typecheck` command. The image includes the CLI source tree required by
+shared protocols and their transitive imports. The script embeds generated assets
+in the Go 1.27.2 binary, recreates the service containers while preserving the
+PostgreSQL and attachment volumes, and waits up to 120 seconds for their health
+checks. Redis is required to start but has no health gate on Server. Build time
+is separate from that readiness timeout. The final nonroot runtime image contains
+the server binary, Node.js 24 and the lockfile-selected sharp dependency closure.
+The pinned image-validation helper and its build manifest live under
+`/opt/daynight/image-validation`; service validation runs independently from
+Controller validation. Provider image profiles remain disabled until their full
+native evidence exists. It prepares the required writable
 `DAYNIGHT_STORAGE_ROOT` for UID/GID `10001:10001`. The Compose-managed
 `attachment-data` volume mounts at that root. Docker initializes a fresh volume
 from the image directory with its ownership, so the server writes as UID 10001
@@ -91,6 +109,16 @@ source/target and timing consequences; Cancel and Escape send no request.
 The automatic-execution switch shares the same per-task write gate. Details also
 manage attachments. Use the CLI or API to create tasks and edit metadata. The
 HTTP API uses the same origin at `/api/v1`.
+
+The stack also exposes Prometheus metrics at
+`http://127.0.0.1:8788/metrics`. Set `DAYNIGHT_METRICS_PORT` in `.env` to
+change this host port; it must differ from `DAYNIGHT_PORT`. The gateway forwards
+metrics over a separate TCP stream to the server's loopback metrics listener.
+Both published ports bind host loopback only. The metrics endpoint has no
+application authentication; protect access to the host and its network
+namespace. The business port does not expose `/metrics`. See the
+[server metrics configuration](../../packages/daynight-server/README.md#metrics)
+for the endpoint and collector behavior.
 
 Users see only member projects; a new project's creator becomes its administrator.
 All members can read/write tasks and set status; administrators additionally
@@ -190,9 +218,9 @@ dependency rules and the complete HTTP contract.
 
 ## Operate and update
 
-The containers are named `daynight-postgres`, `daynight-gateway` and
-`daynight-server`. These fixed names allow one localhost stack per Docker
-daemon, including when a different Compose project name is selected.
+The containers are named `daynight-postgres`, `daynight-gateway`,
+`daynight-server` and `daynight-redis`. These fixed names allow one localhost
+stack per Docker daemon, including when a different Compose project name is selected.
 
 Check health and follow logs:
 
@@ -204,6 +232,15 @@ docker compose logs --follow
 `/healthz` and `/readyz` are public database probes. They do not require a login
 and do not call UniAuth; a ready server can still report a UniAuth login failure.
 Both the gateway and server health checks use `/readyz`.
+Redis does not participate in `/readyz`, and stopping or restarting Redis does
+not restart Server. Monitoring requests return `503` when Redis is unavailable;
+capacity rejection returns `503` for writes. PostgreSQL-backed business operations
+continue independently.
+Each accepted current Worker state expires after one hour; reads and duplicate
+writes do not renew it. Redis has no persistent volume and RDB and AOF are
+disabled. Recreating or restarting Redis loses its states; Workers with monitoring
+reporting subsequently collect and submit their current state, without replaying
+history. Redis data is excluded from the database and attachment backup pair.
 
 Use Compose to restart the stack:
 
@@ -241,7 +278,11 @@ Two Compose-managed named volumes hold application data:
 | `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and new Session archive bodies under the project/user and Session UUID shards described in the [Session design](../../docs/design/task-session-protocol.md#服务端归档布局) |
 
 Names are scoped to the Compose project. Server startup applies its embedded
-migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
+migrations. Before upgrading to the login scope schema, stop old servers from
+starting new logins while allowing existing callbacks to complete, or wait for
+pending logins to expire (10 minutes). The migration fails without deleting
+valid pending transactions; retry after they are consumed or expired. Do not run
+old login writers after migration. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
 Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
 the epoch and both volumes. Retain the private deployment configuration and the
 corresponding UniAuth application registration separately from the application
@@ -336,139 +377,11 @@ owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)
 exercises this procedure with disposable data and confirms scoped cleanup.
 
-## Attachment layout upgrade
-
-Task attachment storage uses project directories, then the first two canonical
-task UUID characters, then the complete task UUID. Public API/CLI paths and
-relative preview resources remain task-relative. The old
-`task-attachments/<taskId>/<relativePath>` layout requires the explicit offline
-maintenance command; ordinary HTTP startup and requests do not move files or
-select an old location.
-
-Stop every server instance and all direct database/file writers for the entire
-upgrade. Keep an independently tagged old image and a matching pre-migration
-`pg_dump`/storage archive. The [normal backup](#persistence-and-backup) resumes
-the stack after archival; for a layout upgrade, keep it stopped through planning,
-application and verification. Maintenance uses only the database/root settings
-and the image's normal UID/GID `10001:10001`; it does not need UniAuth to run.
-
-From `deployment/localhost/`, capture the old image identity and backup pair,
-then build the new server image without starting it:
-
-```bash
-(
-  set -eu
-  MIGRATION_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-  MIGRATION_DIR="../../.tmp/daynight-attachment-layout-$MIGRATION_STAMP"
-  mkdir -p "$MIGRATION_DIR"
-  OLD_SERVER_IMAGE="$(docker inspect --format '{{.Image}}' "$(docker compose ps --all -q server)")"
-  OLD_SERVER_TAG="daynight-attachment-layout-before:$MIGRATION_STAMP"
-  docker image tag "$OLD_SERVER_IMAGE" "$OLD_SERVER_TAG"
-  printf '%s\n' "$OLD_SERVER_TAG" > "$MIGRATION_DIR/old-server-image"
-  docker compose stop server
-  docker compose exec -T postgres pg_dump --no-owner --no-acl \
-    -U daynight -d daynight > "$MIGRATION_DIR/postgres.sql"
-  docker compose run --rm --no-deps -T --entrypoint tar server \
-    -C /var/lib/daynight/storage -cpf - . > "$MIGRATION_DIR/attachments.tar"
-  docker compose build server
-  docker compose run --rm --no-deps -T server \
-    migrate-attachment-layout plan > "$MIGRATION_DIR/plan.json"
-  cat "$MIGRATION_DIR/plan.json"
-  printf 'Migration artifacts: %s\n' "$MIGRATION_DIR"
-)
-```
-
-The JSON summary supplies the operationId and storage-root-relative manifestPath.
-An official `.attachment-layout-<operationId>/` directory appears only after the
-manifest and initial planned state have both been prepared and synchronized in
-`.attachment-plan-<operationId>/`, then promoted atomically. Plan preparation does
-not move attachment bytes. Ordinary errors before promotion clean only their own
-private attempt; a terminated process can leave an unpublished directory of plan
-records, which does not block another plan and is not automatically swept.
-
-If plan fails or terminates before an official operation is published, keep
-writers stopped and rerun plan. If publication occurred but its success summary
-was lost, the next plan reports `resume_required` with the official operationId;
-use that ID for explicit continuation. Post-publication failures retain the full
-initial record pair and require the same operation, even if no attachments have
-yet moved. Do not remove an official operation to bypass this check.
-Review the counts and any unregistered known-task files reported by the manifest.
-Registered missing files, size or ownership mismatches, unknown task roots,
-symlinks/special files and conflicts stop the operation; they are not repaired or
-silently skipped. A genuinely empty store still yields a zero-count plan and
-operation ID. Existing unfinished operations reject a new plan with
-`category=resume_required` and their operationId. Existing completed operations
-reject a new plan with `category=already_migrated` and their operationId; use
-apply/resume with that same ID for verification. Do not remove a completed
-operation to make plan run again: its record prevents reinterpreting the new
-tree as legacy data, including zero-metadata project/task UUID collisions.
-The server remains stopped after a failed command.
-
-Set these values to the retained directory and the operationId from that plan:
-
-```bash
-(
-  set -eu
-  MIGRATION_DIR=../../.tmp/daynight-attachment-layout-YYYYMMDDTHHMMSSZ
-  OPERATION_ID=UUID_FROM_PLAN
-  docker compose run --rm --no-deps -T server \
-    migrate-attachment-layout apply --operation-id "$OPERATION_ID" \
-    > "$MIGRATION_DIR/receipt.json"
-  cat "$MIGRATION_DIR/receipt.json"
-)
-```
-
-Only a successful `phase=complete` result means the new bucket passed content and
-fresh-snapshot metadata verification. The command first stages the old bucket,
-then moves whole task subtrees and finally publishes the verified target. It
-preserves all business rows and task_cache_epoch. The database advisory lock
-only serializes maintenance commands; operator-established quiescence is still
-required. The three full hash passes and backup read determine the stopped-write
-window, so estimate it from actual bytes and storage throughput.
-
-Once the official operation exists, a stopped process or failed move requires
-its existing ID. Retain the operation directory and staged data, keep writers
-stopped and resume rather than issuing another plan:
-
-```bash
-docker compose run --rm --no-deps -T server \
-  migrate-attachment-layout resume --operation-id OPERATION_UUID
-```
-
-Resume accepts only positions and contents explained by that manifest. An old
-bucket already moved to source is not an empty installation. Publication before
-the completion receipt can be verified and completed; the same completed
-operation can be verified again without moving files. Conflicting or unexplained
-states remain failures. Source symlinks are rejected by maintenance even though
-the generic local adapter retains its existing root-confined symlink behavior.
-
-After the command succeeds, start the new image while business clients and other
-writers remain paused:
-
-```bash
-docker compose up --no-build --detach --wait --wait-timeout 120
-```
-
-Check the original attachment lists, downloads and relative previews, including
-HTML/Markdown resources, before resuming those writers. Archive the manifest,
-completion receipt, JSON diagnostics and backup pair with the old image tag.
-
-For rollback, keep writers stopped and use the matching pre-migration SQL/file
-pair plus the retained old server image in the [fresh-volume restore](#persistence-and-backup)
-procedure. Restoring historical content is distinct from layout migration:
-rotate affected task_cache_epoch values where that schema supports task-sync
-before reopening its server. A retained version that predates task-cache epochs
-must use its matching schema and restore procedure, not current-version SQL.
-Before new writes resume, this restores the captured state. After writers resume,
-restoring that backup would discard subsequent changes and requires a separate
-data-preservation decision. Maintenance is not a backup system or general
-filesystem/PG reconciliation service.
-
 ## Exposure
 
 The authenticated dashboard and API are published only on host `127.0.0.1`.
-PostgreSQL has no published host port. The stack uses fixed development-only
-database credentials (`daynight` / `daynight-local`, database `daynight`). The
+PostgreSQL and Redis have no published host port. The stack uses fixed
+development-only database credentials (`daynight` / `daynight-local`, database `daynight`). The
 gateway forwards TCP to the server's strict `127.0.0.1:8787` listener inside
 their shared container network namespace, preserving the server's HTTP handling.
 TLS termination for an HTTPS public origin belongs to the deployment's external

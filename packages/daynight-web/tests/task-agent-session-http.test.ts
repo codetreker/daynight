@@ -1,9 +1,10 @@
 import type { TaskSessionSnapshot } from './helpers/session';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSessionApi } from '../src/api/sessions';
-import type { SessionSnapshot } from '../src/api/types';
+import { createSessionApi, createTestSessionApi } from '../src/api/sessions';
+import type { SessionOperation } from '../src/api/types';
 const s: TaskSessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
+const originalOperation: SessionOperation = JSON.parse(readFileSync('../daynight/test/session/fixtures/operation.json', 'utf8'));
 const userId = '00000009-1111-4111-8111-111111111111';
 const response = (body: unknown, principal = userId, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
 afterEach(() => vi.unstubAllGlobals());
@@ -26,6 +27,35 @@ describe('task session HTTP boundary', () => {
     const api = createSessionApi(s.identity.projectId, s.identity.taskId, userId, vi.fn());
     await expect(api.command(s.sessionId, { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: s.executionGeneration, operationId: operation.operationId, requestId: 'request', kind: 'send_message', payload: { content: [{ type: 'text', text: 'hello' }], expectedTurnId: null } }, new AbortController().signal)).resolves.toEqual(operation);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])('reads the original Task receipt when currentBinding is %s', async currentBinding => {
+    const operation = { ...originalOperation, executionGeneration: '1' };
+    const fetch = vi.fn(async (_url: string) => response({ operation, currentBinding })); vi.stubGlobal('fetch', fetch);
+    const api = createSessionApi(s.identity.projectId, s.identity.taskId, userId, vi.fn());
+    await expect(api.operation(operation.sessionId, operation.operationId, new AbortController().signal)).resolves.toEqual(operation);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${s.identity.projectId}/tasks/${s.identity.taskId}/sessions/${operation.sessionId}/operations/${operation.operationId}`);
+  });
+  it.each([
+    ['missing currentBinding', { operation: originalOperation }],
+    ['non-boolean currentBinding', { operation: originalOperation, currentBinding: 'false' }],
+    ['unknown envelope field', { operation: originalOperation, currentBinding: true, extra: true }],
+    ['different session', { operation: { ...originalOperation, sessionId: userId }, currentBinding: true }],
+    ['different operation', { operation: { ...originalOperation, operationId: '00000011-1111-4111-8111-111111111111' }, currentBinding: true }],
+  ])('rejects a Task receipt with %s', async (_name, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => response(body)));
+    const api = createSessionApi(s.identity.projectId, s.identity.taskId, userId, vi.fn());
+    await expect(api.operation(originalOperation.sessionId, originalOperation.operationId, new AbortController().signal)).rejects.toMatchObject({ code: 'protocol' });
+  });
+  it('keeps the Test Session operation envelope independent from Task currentBinding', async () => {
+    const { claimId: _claim, ...original } = originalOperation;
+    const operation = { ...original, testExecutionId: '00000010-1111-4111-8111-111111111111' };
+    const fetch = vi.fn(async (_url: string) => response({ operation })); vi.stubGlobal('fetch', fetch);
+    const api = createTestSessionApi(operation.sessionId, userId, vi.fn());
+    await expect(api.operation(operation.sessionId, operation.operationId, new AbortController().signal)).resolves.toEqual(operation);
+    expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/test-sessions/${operation.sessionId}/operations/${operation.operationId}`);
+    fetch.mockResolvedValue(response({ operation, currentBinding: true }));
+    await expect(api.operation(operation.sessionId, operation.operationId, new AbortController().signal)).rejects.toMatchObject({ code: 'protocol' });
   });
   it('fetches resource bytes through an authenticated principal-checked request', async () => {
     const fetch = vi.fn(async () => new Response('resource', { headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': userId } })); vi.stubGlobal('fetch', fetch);
@@ -67,7 +97,7 @@ describe('browser session channel', () => {
   });
   it('constructs exact same-origin history and receipt queries', async () => {
     const operation = { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: s.executionGeneration, operationId: '00000011-1111-4111-8111-111111111111', kind: 'cancel', state: 'confirmed', providerResult: 'handled', error: null };
-    const fetch = vi.fn(async (url: string) => response(url.includes('/timeline') ? { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' } : { operation })); vi.stubGlobal('fetch', fetch);
+    const fetch = vi.fn(async (url: string) => response(url.includes('/timeline') ? { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' } : { operation, currentBinding: true })); vi.stubGlobal('fetch', fetch);
     const api = createSessionApi(s.identity.projectId, s.identity.taskId, userId, vi.fn()); const signal = new AbortController().signal;
     await api.timeline(s.sessionId, 'before', 'opaque&cursor', signal); await api.operation(s.sessionId, operation.operationId, signal);
     expect(fetch.mock.calls[0]?.[0]).toContain('cursor=opaque%26cursor');

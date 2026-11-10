@@ -174,7 +174,7 @@ describe("worker command", () => {
     const deps = dependencies();
     deps.manage.mockImplementation(async ({ log }) => { log?.(`claim=${claimId} waiting\n`); });
     await runWorkerCommand([kind, taskId.toUpperCase(), `--claim-id=${claimId.toUpperCase()}`, "--project", projectId.toUpperCase(), ...(kind === "retry" ? [] : ["--if-version", "9223372036854775807"])], cli, deps);
-    expect(deps.manage).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), request: { kind, taskId, claimId, projectId, ...(kind === "retry" ? {} : { version: 9_223_372_036_854_775_807n }) } });
+    expect(deps.manage).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, version: cli.version, log: expect.any(Function), request: { kind, taskId, claimId, projectId, ...(kind === "retry" ? {} : { version: 9_223_372_036_854_775_807n }) } });
     expect(deps.run).not.toHaveBeenCalled();
     expect(errors).toEqual([`claim=${claimId} waiting\n`]);
   });

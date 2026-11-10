@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -7,9 +8,11 @@ import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/p
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 const roots: string[] = [];
+const socketDirectories = new Set<string>();
 afterEach(async () => {
+  for (const directory of socketDirectories) await rm(directory, { recursive: true, force: true });
+  socketDirectories.clear();
   for (const root of roots.splice(0)) {
-    if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, randomUUID())), { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
   vi.unstubAllEnvs();
@@ -18,9 +21,10 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "cp-")); roots.push(home);
   vi.stubEnv("DN_CONFIG_DIR", explicit ? path.join(home, "dev-state") : undefined);
+  if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(home, randomUUID())));
   vi.stubEnv("COPILOT_HOME", explicit ? path.join(home, "native") : undefined);
   vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(home, "other-provider"));
-  const store = openWebExecutionStore(path.join(home, "worker.sqlite"));
+  const store = openWebExecutionStore(createMemoryDatabase());
   try {
     const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
 
@@ -44,7 +48,7 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
 it("renews before two default polling cycles and serializes concurrent credential refresh", async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "gr-")); roots.push(home);
-  const store = openWebExecutionStore(path.join(home, "worker.sqlite")), now = Date.now();
+  const store = openWebExecutionStore(createMemoryDatabase()), now = Date.now();
   try {
     const project = { projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
     const identity = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), serverOrigin: "https://daynight.example" };
@@ -56,8 +60,64 @@ it("renews before two default polling cycles and serializes concurrent credentia
     const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => now });
     const ticket = await launcher.prepare(task, "managed task", new AbortController().signal);
     const active = store.updateWebExecution(task, { launchSubmission: "acknowledged" }, now);
-    await Promise.all([launcher.refreshGrant(active, ticket, new AbortController().signal), launcher.refreshGrant(active, ticket, new AbortController().signal)]);
-    expect(grant).toHaveBeenCalledTimes(2);
+    const refreshed = vi.fn(), sharedObserver = vi.fn(), failed = vi.fn(), started = vi.fn(), settled = vi.fn(), identityUnknown = vi.fn(), identityResolved = vi.fn(), failure = new Error("grant unavailable");
+    launcher.setGrantObserver({ refreshed: sharedObserver, failed, started, settled, checked: vi.fn(), ticketFailed: vi.fn(), ticketVerified: vi.fn(), identityUnknown, identityResolved, identityLost: vi.fn() });
+    const lookupError = new Error("sqlite read failed");
+    const lookup = vi.spyOn(store, "getTask");
+    lookup.mockImplementationOnce(() => { throw lookupError; }).mockReturnValueOnce(null);
+    await expect(launcher.refreshGrant(active, ticket, new AbortController().signal)).rejects.toBe(lookupError);
+    expect(identityUnknown).toHaveBeenCalledExactlyOnceWith(active);
+    await expect(launcher.refreshGrant(active, ticket, new AbortController().signal)).rejects.toThrow("identity disappeared");
+    expect(identityUnknown).toHaveBeenCalledOnce(); expect(identityResolved).toHaveBeenCalledExactlyOnceWith(active);
+    expect(failed).not.toHaveBeenCalled();
+    lookup.mockRestore();
+    grant.mockRejectedValueOnce(failure);
+    await expect(launcher.refreshGrant(active, ticket, new AbortController().signal)).rejects.toBe(failure);
+    expect(failed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ claimId: active.claimId }), failure, true);
+    const cancellation = new AbortController(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), cancelled = new Error("cancelled");
+    grant.mockImplementationOnce(async () => { entered.resolve(); await gate.promise; throw cancelled; });
+    const running = launcher.refreshGrant(active, ticket, cancellation.signal);
+    await entered.promise; cancellation.abort(cancelled); gate.resolve(); await expect(running).rejects.toBe(cancelled);
+    expect(failed).toHaveBeenCalledOnce(); expect(started).toHaveBeenCalledTimes(2); expect(settled).toHaveBeenCalledTimes(2);
+    await Promise.all([launcher.refreshGrant(active, ticket, new AbortController().signal, refreshed), launcher.refreshGrant(active, ticket, new AbortController().signal, refreshed)]);
+    expect(refreshed).toHaveBeenCalledOnce(); expect(sharedObserver).toHaveBeenCalledOnce();
+    expect(sharedObserver).toHaveBeenCalledWith(expect.objectContaining({ claimId: active.claimId }));
+    await launcher.refreshGrant(active, ticket, new AbortController().signal, refreshed);
+    expect(refreshed).toHaveBeenCalledOnce(); expect(sharedObserver).toHaveBeenCalledOnce();
+    const resolvedBefore = identityResolved.mock.calls.length, alreadyCancelled = new AbortController(); alreadyCancelled.abort();
+    await launcher.refreshGrant(active, ticket, alreadyCancelled.signal);
+    expect(identityResolved).toHaveBeenCalledTimes(resolvedBefore);
+    expect(started).toHaveBeenCalledTimes(3); expect(settled).toHaveBeenCalledTimes(3);
+    expect(grant).toHaveBeenCalledTimes(4);
     expect(JSON.parse(await readFile(ticket.credentialFile, "utf8"))).toEqual({ token: "renewed", expiresAt: new Date(now + 900_000).toISOString() });
+  } finally { store.close(); }
+});
+
+it.each([
+  ["raw", "x".repeat(4 * 1024 * 1024 + 1), 4 * 1024 * 1024],
+  ["encoded", "x" + "\n".repeat(3 * 1024 * 1024), 6 * 1024 * 1024],
+] as const)("does not freeze a %s oversized prompt and uses the latest value on retry", async (_kind, large, limit) => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, "prompt-")); roots.push(home);
+  vi.stubEnv("DN_CONFIG_DIR", path.join(home, "state"));
+  if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(home, randomUUID())));
+  const store = openWebExecutionStore(createMemoryDatabase());
+  try {
+    const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
+    const claim = { ...project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID() };
+    store.register({ ...claim, project, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, 1);
+    store.bindWorktree(claim, { repositoryPath: home, commonDirectory: path.join(home, ".git"), worktreePath: home, branch: "task" }, 3);
+    const task = store.initializeWebExecution(claim, 4);
+    let latest = "before preparation";
+    const sessionApi = { register: vi.fn(async () => ({ sessionId: randomUUID() })), grant: vi.fn(async () => { latest = large; return {}; }), verifySupport: vi.fn() } as unknown as WorkerSessionApi;
+    const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => 5 });
+    await expect(launcher.prepare(task, () => latest, new AbortController().signal)).rejects.toMatchObject({ name: "PromptInputLimitError", inputPath: "web_ticket", maxBytes: limit, submission: "not-submitted" });
+    expect(store.getTask(claim)?.webExecution).toMatchObject({ initialPrompt: null, ticketPath: null, launchSubmission: "not-submitted" });
+    vi.mocked(sessionApi.grant).mockResolvedValue({} as never);
+    latest = "revised after rejection";
+    const ticket = await launcher.prepare(store.getTask(claim)!, () => latest, new AbortController().signal);
+    expect(ticket.initialPrompt).toBe(latest);
+    expect(store.getTask(claim)?.webExecution?.initialPrompt).toBe(latest);
+    expect(JSON.parse(await readFile(store.getTask(claim)!.webExecution!.ticketPath!, "utf8")).initialPrompt).toBe(latest);
   } finally { store.close(); }
 });

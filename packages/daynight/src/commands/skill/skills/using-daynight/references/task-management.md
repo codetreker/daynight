@@ -10,22 +10,103 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | Read operation | Scope and limits |
 | --- | --- |
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
-| `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
+| `task list` | Traverse all matching pages. Excludes `done` and `cancelled` by default; explicitly include terminal tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
+| `task list --status in_progress --group-by chain` | One page of ordinary chains and independent tasks containing the selected user's in-progress work; defaults to `me`. |
+| `task search <expression>` | Search Task IDs, full titles and Markdown descriptions in one project, including done and cancelled tasks. Traverses all pages in server relevance order; returns a compact match and chain context, not complete tasks. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
 | `task thread read <task-id>` | One bounded page of durable discussion, independent of task metadata and execution. |
 | `task graph <task-id>` | The target's full bidirectionally connected component of ordinary dependencies, plus one layer of external prerequisites for those tasks. Includes all statuses without recursively expanding external tasks. |
 
-Human-readable lists are summaries; JSON lists omit only `description`.
-Ready results, task details, and write results that return tasks contain complete tasks.
+For search, pass the complete expression as one argument; `--` supports a leading dash.
+Use uppercase `AND`, `OR`, `NOT`, parentheses, quoted phrases, and `title:` or
+`description:` or `id:` fields. Adjacent terms imply `AND`; matching is literal substring
+with ASCII case folding. Search accepts the list filters `--status`, `--assigned-to`,
+`--ready`, `--allow-agents`, and `--compatible-platform`, but not `--all`.
+Its text and JSON omit assignee and update time; JSON entries contain only
+`id`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. A failure, including
+`search_changed`, leaves stdout empty; rerun the search after a change.
+
+Human-readable ordinary lists are summaries; their JSON entries omit only `description`.
+Ordinary list and show results include Session observations. Ready results and
+write results that return tasks retain their complete Task data without a live
+Session query.
 Dependency graphs provide compact relationship context without full descriptions, PR properties, or versions and cannot replace task details. `--depends-only --json` returns only `id`, the full `dependsOn` set, and its `externalDependsOn` subset.
 Graph nodes retain complete dependency references, which may point outside the graph; read the relevant tasks or their dependency graphs when those paths need assessment.
 Reaching the graph limit fails the command rather than returning a truncated graph.
 A candidate page or a single task cannot replace complete relationship verification.
 
-Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, done.
+Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, terminal tasks. Done and cancelled remain distinct results.
 These groups are not relevance rankings. See command help for filter syntax.
+
+### Session observations
+
+Ordinary `task list`, `task show` and `task graph` include a versioned `session`
+object. Use its platform `sessionId` with the owning Task and Project to identify
+the observed Session. `nativeSessionId` is a separate Provider identity and
+cannot replace it. Registration, execution generation, connection epoch, mode,
+activity, connection and lifecycle remain separate facts. Herdr observations
+describe terminal execution and do not promise Web message support. These
+queries neither read conversation history nor send input.
+
+Task status describes work progress. Session `indicator` describes activity:
+`working`, `notice` or `warning`, with a specific `reason`; unknown facts remain
+null or explicitly unavailable. An idle warning can allow its owner to start a
+turn, and a working Session can allow steering. Read `send.allowed`, `send.mode`
+and `send.reason` independently. An assignee is not necessarily the Session
+owner, and ordinary input cannot answer an approval request. The observation
+does not grant authorization or guarantee later sending eligibility; follow
+[authorization and scope](authorization.md).
+
+Inspect `observedAt`, `lastSeenAt` and `freshUntil` before relying on activity.
+An ordinary list retrieves all Task pages before output; each page has its own
+observation time and can be stale by then. Refresh with the same query.
+Unavailable observations preserve Task data and give a reason/error; partial
+results exit 3 with stdout still containing the result and stderr containing
+the diagnostic. Old services report `unsupported` with an upgrade instruction.
+Malformed responses, authorization and transport failures exit 1; invalid
+arguments exit 2. Do not treat unknown or stale activity as healthy.
+
+Graph nodes distinguish ordinary `member` tasks from `external` context.
+`sessionSummary` aggregates in-progress members only; unknown contributors set
+`complete=false` without erasing a known warning, notice or working indicator.
+Its observation time is independent of the graph snapshot time. Use
+`graph --depends-only` for dependency verification without Session observations.
+
+### Grouped work
+
+```bash
+daynight task list --status in_progress --group-by chain --assigned-to me --json --project <project-id>
+daynight task list --status in_progress --group-by chain --assigned-to me --cursor <nextCursor> --json --project <project-id>
+daynight task list --status in_progress --group-by chain --assigned-to me --group-id <groupId> --targets-cursor <contributorCursor> --json --project <project-id>
+daynight task graph <displayTaskId> --json --project <project-id>
+daynight task show <task-id> --json --project <project-id>
+```
+
+The grouped query includes a chain when any matching ordinary member is in
+progress, even if its root is done. It does not expand external prerequisites.
+Use a user UUID or `me`; `unassigned`, `--all`, readiness, permission and platform
+filters are unavailable in this mode. It requires explicit `--status in_progress`.
+
+JSON is `{groups,nextCursor,observedAt,partial}`. One invocation reads one page,
+with at most 20 groups by default and a `--limit` range of 1 through 50. Each
+group previews up to five roots and 20 in-progress targets. A target retains
+its Task/Session identity, assignee, `matchesAssignee`, indicator and independent
+send eligibility. Summaries cover all accessible in-progress ordinary members,
+including other assignees; counts and `aggregationScope` describe that scope.
+A group has no single Session ID or send permission.
+
+Continue group pages with `nextCursor`. Continue a group's targets with its
+`groupId` and `contributorCursor` together; this pair cannot combine with the
+group-page `--cursor`. Target pages remain capped at 20 regardless of `--limit`.
+The complete encoded response is bounded to 256 KiB and preserves continuation
+when more results remain. Use `task graph` for complete membership.
+
+Pass cursors unchanged. Task graph changes return `reset_required`; restart
+the grouped query. Session changes do not alter pagination membership, but
+each page observes activity separately and its summary may change. Do not
+interpret one page or its root/target previews as the complete work inventory.
 
 ## Task Steps
 
@@ -157,12 +238,21 @@ Do not replace either failure with empty properties or silently drop a key.
 ## Status and timing
 
 New tasks are `todo`, have no approval status, and do not execute automatically.
-Use `task set-status` to set `todo`, `in_progress`, or `done`.
+Use `task set-status` to set `todo`, `in_progress`, `done`, or `cancelled`.
+Done means successful delivery; cancelled means no further execution is required.
+Cancellation is irreversible and does not establish that requirements were delivered.
+Cancel only within an explicit authorization to cancel the selected task; missing
+delivery or failed acceptance alone is not cancellation authority.
 Ordinary operations carry no claim; completion of a worker assignment must use [original-claim completion](autopilot-managed-task.md#complete-the-original-claim).
 If either path is rejected, do not fall back to the other.
 
-All direct prerequisites must be done before entering `in_progress` or `done`.
-A completed prerequisite cannot be reopened while a direct successor is `in_progress` or `done`; successors are not modified automatically.
+All direct prerequisites must be done or cancelled before entering `in_progress` or `done`.
+Cancelling a task does not require its own prerequisites to be satisfied and does not
+remove dependency edges or modify successors. A cancelled prerequisite can make a
+successor ready, subject to every remaining prerequisite and execution condition.
+A done prerequisite cannot be reopened while a direct successor is `in_progress` or `done`; successors are not modified automatically.
+Cancelled successors do not add this restriction. Done may become cancelled without
+revoking dependency satisfaction; cancelled cannot return to another state.
 
 | Transition | Timing result |
 | --- | --- |
@@ -170,10 +260,22 @@ A completed prerequisite cannot be reopened while a direct successor is `in_prog
 | Return to `todo` | Clear the start and completion times. |
 | `in_progress` -> `done` | Preserve the nullable start time and record the completion time. |
 | `todo` -> `done` | Record only the completion time; elapsed time is unknown. |
+| Enter `cancelled` | Record cancelledAt and preserve the execution start/completion times. |
 
 An actual status change increments the version once; a same-status operation with the current version changes no fields.
 Metadata updates and same-status operations preserve timing.
 Ordinary status changes have no process ownership, release, withdrawal, stop, or lease semantics.
+An active worker claim must first be released or otherwise removed through an
+authorized management operation before cancellation. Released history may be
+retained on a cancelled task, but cannot authorize resume or withdrawal to todo.
+
+Cancellation preserves task records, properties, Steps, Thread, execution history,
+and attachment bytes. All materials remain readable under current access checks;
+it does not set a deletion marker, rotate the project epoch, or close PRs/branches.
+Existing resource cleanup retains its stop, archive, ownership and retry rules.
+`cancelledAt` is required and nullable in time-bearing task projections: it is
+non-null only for cancelled tasks. Current terminal time is `completedAt` for
+done and `cancelledAt` for cancelled; original execution times are not rewritten.
 
 ## Dependency classification
 
@@ -181,7 +283,10 @@ Ordinary status changes have no process ownership, release, withdrawal, stop, or
 These are normalized UUID sets without duplicates or ordering semantics.
 
 Ordinary dependencies belong to the same task chain; external dependencies are verified cross-chain prerequisites within the same project, not cross-project references.
-Both kinds block starting and completion and participate in cycle and access checks.
+Both kinds require done or cancelled prerequisites for starting and completion,
+and participate in cycle and access checks. Cancellation itself has no unmet-input
+prerequisite gate. Stage content and confirmation requirements remain independent
+of a dependency being terminal.
 Verify actual content and ownership; do not infer classification from done status, similar titles, graph roots, or connected components.
 
 ### CLI relationship replacement
@@ -226,7 +331,10 @@ Consult `daynight task graph --help` for command arguments.
 ## Task deletion
 
 `task delete` soft-deletes a task, removing it from ordinary lists, dependency graphs, ready results, and detail access while retaining stored data, its own prerequisite references, and attachments.
-Deletion is independent of status and is not completion.
+Deletion is independent of status and is not completion. Cancellation is a
+readable business terminal state; it preserves dependencies and satisfies them
+as done does, without claiming delivery. Neither operation grants execution or
+acceptance authorization.
 
 Deletion is strict by default: it is rejected if any undeleted task has a dependency pointing to the target.
 When `--remove-depends` is explicitly authorized, the same transaction deletes the target and removes other tasks' ordinary and external dependencies on it, including references added before the transaction; this may make successors ready.

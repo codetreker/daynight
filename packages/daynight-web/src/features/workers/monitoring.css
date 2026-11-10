@@ -1,0 +1,30 @@
+.monitoring-content { margin: 20px 0 24px; }
+.monitoring-notice { margin-bottom: 20px; }
+.monitoring-time, .monitoring-projection { color: #68758b; font-size: 12px; line-height: 1.7; margin: 8px 0 16px; overflow-wrap: anywhere; }
+.monitoring-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+.monitoring-card { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 9px; background: #fff; box-shadow: var(--shadow); color: #68758b; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.monitoring-card h2 { font-size: 12px; font-weight: 500; margin: 0 0 12px; }
+.monitoring-value { color: #344258; font-size: 22px; font-weight: 600; }
+.monitoring-value small { font-size: 12px; font-weight: 400; }
+.monitoring-card ul { margin: 8px 0 0; padding-left: 18px; }
+.monitoring-card dl, .monitoring-delivery, .monitoring-activities dl, .monitoring-issue dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 12px 0 0; font-size: 11px; }
+.monitoring-card dd, .monitoring-delivery dd, .monitoring-activities dd, .monitoring-issue dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.monitoring-panel { margin-bottom: 24px; }
+.monitoring-empty { padding: 22px; margin: 20px 0 24px; color: #68758b; }
+.monitoring-empty h2 { font-size: 14px; }
+.monitoring-empty p { margin-top: 8px; }
+.monitoring-empty-text { padding: 22px; color: #68758b; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.monitoring-activities { padding: 0 22px; margin: 0; list-style: none; }
+.monitoring-activities li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, .5fr) minmax(160px, .8fr); gap: 18px; padding: 16px 0; border-bottom: 1px solid #eef0f4; font-size: 12px; color: #59667d; overflow-wrap: anywhere; }
+.monitoring-activities li:last-child, .monitoring-issue:last-child { border-bottom: 0; }
+.monitoring-activities dl { margin: 0; }
+.monitoring-chip { display: inline-block; padding: 3px 7px; border-radius: 5px; background: #eff0fc; color: #6462ba; }
+.monitoring-issue { padding: 18px 22px; border-bottom: 1px solid #eef0f4; color: #59667d; font-size: 12px; overflow-wrap: anywhere; }
+.monitoring-issue summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.monitoring-issue dl { padding: 15px; background: #fafbfd; border: 1px solid #edf0f5; border-radius: 7px; }
+.monitoring-delivery { padding: 0 22px 22px; color: #59667d; }
+.monitoring-card-state { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; color: #68758b; font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 850px) { .monitoring-grid { grid-template-columns: 1fr; } .monitoring-activities li { grid-template-columns: minmax(0, 1fr) minmax(100px, .6fr); } .monitoring-activities dl { grid-column: 1 / -1; } }
+@media (max-width: 600px) { .monitoring-card { padding: 16px; } .monitoring-activities { padding: 0 16px; } .monitoring-activities li { grid-template-columns: 1fr; gap: 8px; } .monitoring-activities dl { grid-column: auto; } .monitoring-issue { padding: 16px; } }
+
+.monitoring-reservations { margin: 0; padding: 8px 22px 18px 40px; color: #59667d; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }

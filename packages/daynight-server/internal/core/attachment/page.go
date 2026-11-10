@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 type cursor struct {
@@ -36,6 +37,9 @@ func ListQuery(request model.PageRequest, projectID, taskID string) (store.Attac
 	if request.Cursor == nil {
 		return query, nil
 	}
+	if len(*request.Cursor) > transport.MaxEncodedCursorBytes {
+		return store.AttachmentQuery{}, invalidInput("Cursor is invalid for this list.")
+	}
 	data, err := base64.RawURLEncoding.Strict().DecodeString(*request.Cursor)
 	if err != nil {
 		return store.AttachmentQuery{}, invalidInput("Cursor is invalid for this list.")
@@ -59,13 +63,16 @@ func ListQuery(request model.PageRequest, projectID, taskID string) (store.Attac
 
 func MakePage(result store.AttachmentPage, projectID, taskID string) (Page, error) {
 	response := Page{Items: result.Items}
-	if result.HasMore {
-		data, err := json.Marshal(cursor{Version: 1, Kind: "attachments", ProjectID: projectID,
+	if result.HasMore && len(result.Items) > 0 {
+		var data bytes.Buffer
+		encoder := json.NewEncoder(&data)
+		encoder.SetEscapeHTML(false)
+		err := encoder.Encode(cursor{Version: 1, Kind: "attachments", ProjectID: projectID,
 			TaskID: taskID, Path: result.Items[len(result.Items)-1].Path})
 		if err != nil {
 			return Page{}, err
 		}
-		encoded := base64.RawURLEncoding.EncodeToString(data)
+		encoded := base64.RawURLEncoding.EncodeToString(bytes.TrimSuffix(data.Bytes(), []byte("\n")))
 		response.NextCursor = &encoded
 	}
 	return response, nil

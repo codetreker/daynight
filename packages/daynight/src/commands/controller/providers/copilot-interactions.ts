@@ -4,6 +4,7 @@ import { formInteraction, validateResponse } from "./interactions.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
 import { limited, nativeEntryId } from "./projection.js";
 import type { ProviderEntry, ProviderReceipt } from "./types.js";
+import { copilotPermissionDetail } from "./copilot-permission-detail.js";
 
 type Question = Parameters<NonNullable<SessionConfig["onUserInputRequest"]>>[0];
 type QuestionReply = { answer: string; wasFreeform: boolean };
@@ -120,7 +121,7 @@ export class CopilotInteractions {
       const base = { interactionId: nativeEntryId(this.options.sessionId, `interaction:${nativeId}`), revision: "1", state: "pending" as const };
       if (kind === "permission") {
         const prompt = record(data.promptRequest); grant = sessionDecision(prompt);
-        interaction = { ...base, kind: "approval", title: string(prompt.intention) || "Copilot permission", detail: JSON.stringify({ permission: data.permissionRequest, prompt: data.promptRequest }, null, 2), actions: grant ? ["allow_once", "allow_session", "reject"] : ["allow_once", "reject"] };
+        interaction = { ...base, kind: "approval", title: string(prompt.intention) || "Copilot permission", detail: copilotPermissionDetail(data.permissionRequest, data.promptRequest), actions: grant ? ["allow_once", "allow_session", "reject"] : ["allow_once", "reject"] };
       } else if (kind === "user_input") {
         const q = data as unknown as Question; signature = questionSignature(q);
         interaction = { ...base, kind: "question", title: "Copilot question", canDismiss: false, questions: [{ questionId: "answer", label: q.question, options: (q.choices ?? []).map(v => ({ id: v, label: v })), multiple: false, allowCustom: q.allowFreeform !== false, required: true, sensitive: false }] };

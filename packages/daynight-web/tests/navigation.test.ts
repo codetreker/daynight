@@ -26,6 +26,43 @@ describe('window navigation admission', () => {
     expect(history.length).toBe(length + 1);
   });
 
+  it('keeps URL validation in memory and replaces a consumed fragment without losing its index', () => {
+    owner.navigate('/invitations#synthetic-invitation');
+    const marker = history.state.__daynightNavigation;
+    expect(Object.keys(marker).sort()).toEqual(['index', 'session']);
+    const length = history.length;
+    owner.clearFragment();
+    expect(location.hash).toBe('');
+    expect(owner.snapshot()).toEqual({ pathname: '/invitations', search: '', hash: '' });
+    expect(history.state.__daynightNavigation).toEqual(marker);
+    expect(history.length).toBe(length);
+    const replace = vi.spyOn(history, 'replaceState');
+    owner.clearFragment();
+    expect(replace).not.toHaveBeenCalled();
+    owner.register(draft());
+    arrival(marker, '/invitations');
+    expect(owner.decision()).toBeNull();
+    arrival(marker, '/invitations#synthetic-invitation');
+    expect(owner.decision()).toBeNull();
+    expect(owner.snapshot().hash).toBe('#synthetic-invitation');
+  });
+
+  it.each([null, { reader: { offset: 7 } }])('keeps native fragment cleanup unindexed and preserves foreign state %j', (state) => {
+    owner.navigate('/invitations');
+    const previous = history.state.__daynightNavigation;
+    const copied = state === null ? null : { ...state, __daynightNavigation: previous };
+    owner.register(draft());
+    arrival(copied, '/invitations#synthetic-native-invitation');
+    owner.clearFragment();
+    expect(owner.snapshot().hash).toBe('');
+    expect(history.state).toEqual(state);
+    owner.navigate('/account');
+    expect(owner.decision()).not.toBeNull();
+    owner.confirm();
+    expect(history.state.__daynightNavigation.session).not.toBe(previous.session);
+    expect(history.state.__daynightNavigation.index).toBe(0);
+  });
+
   it('cancels before changing URL or history and reads current dirty state', () => {
     let dirty = true;
     const registration = draft({ isDirty: () => dirty });
@@ -137,8 +174,11 @@ describe('window navigation admission', () => {
     arrival(initial, '/projects#native');
     expect(owner.decision()).toBeNull();
     expect(history.state).toBe(initial);
-    arrival({ __daynightNavigation: { ...initial.__daynightNavigation, href: location.origin + '/account', index: 1.5 } }, '/account');
+    arrival({ __daynightNavigation: { ...initial.__daynightNavigation, index: 1.5 } }, '/account');
     expect(owner.snapshot().pathname).toBe('/account');
+    arrival({ __daynightNavigation: { ...initial.__daynightNavigation, index: 99 } }, '/projects');
+    expect(owner.decision()).toBeNull();
+    expect(owner.snapshot().pathname).toBe('/projects');
   });
 
   it('unregisters without discarding, revokes the precise identity and never executes a retired action', () => {
@@ -153,6 +193,21 @@ describe('window navigation admission', () => {
     expect(second.discard).toHaveBeenCalledOnce();
     expect(action).not.toHaveBeenCalled();
     expect(owner.decision()).toBeNull();
+  });
+
+  it('retires only the addressed Worker configuration in the same authenticated identity', () => {
+    const identity = {};
+    const first = draft({ scope: { kind: 'worker-configuration', identity, workerId: 'first' } });
+    const second = draft({ scope: { kind: 'worker-configuration', identity, workerId: 'second' } });
+    const task = draft({ scope: { identity, projectId: 'first', taskId: 'first' } });
+    owner.register(first); owner.register(second); owner.register(task);
+    owner.retireScope({ kind: 'worker-configuration', identity: {}, workerId: 'first' });
+    expect(first.discard).not.toHaveBeenCalled();
+    owner.retireScope(first.scope);
+    expect(first.discard).toHaveBeenCalledOnce(); expect(second.discard).not.toHaveBeenCalled(); expect(task.discard).not.toHaveBeenCalled();
+    owner.retireScope(task.scope);
+    expect(task.discard).toHaveBeenCalledOnce(); expect(second.discard).not.toHaveBeenCalled();
+    owner.navigate('/account'); owner.confirm(); expect(second.discard).toHaveBeenCalledOnce();
   });
 
   it('retires synchronously on abort and refuses already retired registrations', () => {

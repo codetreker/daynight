@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -44,6 +45,9 @@ func TestBootstrapPersonalTeamValidatesExistingOwner(t *testing.T) {
 			f := &personalTeamFixture{facts: store.PersonalTeamFacts{ID: test.id, MemberCount: test.members, OwnerAdminCount: test.owners}}
 			team, err := BootstrapPersonalTeam(context.Background(), f, "user", time.Now())
 			if test.want != "" {
+				if f.ownerCalls != 0 || team != (model.TeamRef{}) {
+					t.Fatalf("invalid existing ownership was repaired: %#v %#v", team, f)
+				}
 				if err == nil || err.Error() != test.want {
 					t.Fatalf("integrity error = %v", err)
 				}

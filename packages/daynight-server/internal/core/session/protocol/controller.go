@@ -20,7 +20,8 @@ func DecodeGrant(data []byte) (Grant, error) {
 }
 
 var stateSchema = schema{
-	"controls": nested(controlsSchema), "turnStartedAt": optional(turnStartedAt),
+	"providerImages": validateProviderImages,
+	"controls":       nested(controlsSchema), "turnStartedAt": optional(turnStartedAt),
 	"cleanupInteractionIds": many(identifier, 0, 1000, "$"), "nativeSessionId": optional(key), "initialInputState": initialState, "synchronized": boolean, "activity": activity, "currentTurnId": optional(key), "capabilities": nested(capabilitiesSchema),
 }
 
@@ -60,9 +61,17 @@ func DecodeController(data []byte) (ControllerMessage, error) {
 	if json.Unmarshal(data, &kind) != nil {
 		return ControllerMessage{}, errInvalid
 	}
+	if kind.Type == "image_response" || kind.Type == "image_capture" {
+		media, e := DecodeImageMedia(data)
+		if e != nil {
+			return ControllerMessage{}, e
+		}
+		return ControllerMessage{ControllerFence: media.ControllerFence, Type: media.Type, Protocol: media.Protocol, RequestID: media.RequestID, Action: media.Action, MediaBody: media.Body, MediaResult: media.Result, MediaError: media.Error, Raw: append(json.RawMessage(nil), data...)}, nil
+	}
 	var fields schema
 	if kind.Type == "hello" {
 		fields = extend(fenceSchema, schema{"type": enum("hello"), "protocol": enum(Protocol), "schemaVersion": version, "projectionVersion": version, "controllerId": identifier, "controllerInstanceId": identifier, "provider": enum("codex", "claude", "copilot"), "sourceEpoch": identifier, "lastAckedSourceSeq": zeroSequence})
+		fields["contentRevision"] = integerRange(1, ContentRevision)
 	} else {
 		extras := map[string]schema{
 			"events":            {"batchId": identifier, "sourceEpoch": identifier, "events": many(func(data json.RawMessage) bool { _, err := DecodeSourceEvent(data); return err == nil }, 1, MaxBatchEvents, "")},

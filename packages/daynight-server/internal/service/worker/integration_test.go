@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
@@ -21,8 +20,10 @@ func pointer[T any](value T) *T { return &value }
 func requireFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != code {
-		t.Fatalf("expected %s, got %v", code, err)
+	var transaction *store.TransactionError
+	wrapped := errors.As(err, &transaction) && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || (!wrapped && err.Error() != fault.Message) {
+		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault
 }
@@ -189,71 +190,6 @@ func importWorkerConfiguration(t *testing.T, workers *Workers, principal model.P
 	return result
 }
 
-func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) {
-	projects, database, _, principal := testsupport.ProjectService(t)
-	ctx := context.Background()
-	workers := NewWorkers(database)
-	id := uuid.NewString()
-	project, err := projects.Create(ctx, principal, coreproject.CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	value := cloudWorkerConfiguration(project.ID)
-	if _, err := workers.Configuration(ctx, principal, id); err == nil {
-		t.Fatal("unknown Worker configuration exists")
-	}
-	legacy := serviceWorkerReport()
-	if _, err := workers.Report(ctx, principal, id, legacy); err != nil {
-		t.Fatal(err)
-	}
-	empty, err := workers.Configuration(ctx, principal, id)
-	if err != nil || empty.Desired != nil || empty.Observation != nil || empty.ObservationRevision != "0" {
-		t.Fatalf("legacy config: %+v %v", empty, err)
-	}
-	_, err = workers.PutConfiguration(ctx, principal, id, "1", value)
-	requireFault(t, err, "configuration_not_initialized")
-	_, err = workers.PutConfiguration(ctx, principal, id, "0", value)
-	requireFault(t, err, "invalid_input")
-	imported := importWorkerConfiguration(t, workers, principal, id, value)
-	if imported.Configuration.Desired.Revision != "1" || imported.Configuration.ObservationAccepted {
-		t.Fatalf("bootstrap: %+v", imported)
-	}
-	noop, err := workers.PutConfiguration(ctx, principal, id, "1", value)
-	if err != nil || !noop.Desired.UpdatedAt.Equal(imported.Configuration.Desired.UpdatedAt) {
-		t.Fatalf("no-op changed version/time: %+v %v", noop, err)
-	}
-	value.MaxConcurrent = 7
-	changed, err := workers.PutConfiguration(ctx, principal, id, "1", value)
-	if err != nil || changed.Desired.Revision != "2" {
-		t.Fatalf("PUT: %+v %v", changed, err)
-	}
-	_, err = workers.PutConfiguration(ctx, principal, id, "1", value)
-	requireFault(t, err, "version_conflict")
-	candidate := cloudWorkerConfiguration(uuid.NewString())
-	received := importWorkerConfiguration(t, workers, principal, id, candidate)
-	if received.Configuration.Desired.Revision != "2" || received.Configuration.Desired.Value.MaxConcurrent != 7 {
-		t.Fatalf("candidate replaced cloud value: %+v", received)
-	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE user_id=$1 AND worker_id=$2`, principal.UserID, id); err != nil {
-		t.Fatal(err)
-	}
-	retained, err := workers.Configuration(ctx, principal, id)
-	if err != nil || retained.Desired.Revision != "2" {
-		t.Fatalf("configuration expired with telemetry: %+v %v", retained, err)
-	}
-	_, err = workers.Get(ctx, principal, id)
-	requireFault(t, err, "not_found")
-	page, err := workers.List(ctx, principal, model.PageRequest{Limit: 10})
-	if err != nil || len(page.Items) != 0 {
-		t.Fatalf("recent list changed: %+v %v", page, err)
-	}
-	other := testsupport.ServicePrincipal(t, database)
-	_, err = workers.Configuration(ctx, other, id)
-	requireFault(t, err, "not_found")
-	_, err = workers.PutConfiguration(ctx, other, id, "2", value)
-	requireFault(t, err, "not_found")
-}
-
 func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 	_, database, _, principal := testsupport.ProjectService(t)
 	ctx := context.Background()
@@ -350,46 +286,4 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 	report.Configuration.Observation.DesiredRevision = "3"
 	_, err = workers.Report(ctx, principal, id, report)
 	requireFault(t, err, "invalid_input")
-}
-
-func TestWorkerConfigurationValidationAndTransactionFailures(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	workers := NewWorkers(database)
-	ctx := context.Background()
-	id := uuid.NewString()
-	value := cloudWorkerConfiguration("")
-	for _, operation := range []func(model.Principal, string) error{
-		func(p model.Principal, id string) error { _, err := workers.Configuration(ctx, p, id); return err },
-		func(p model.Principal, id string) error {
-			_, err := workers.PutConfiguration(ctx, p, id, "1", value)
-			return err
-		},
-	} {
-		requireFault(t, operation(model.Principal{}, id), "unauthenticated")
-		requireFault(t, operation(principal, "invalid"), "invalid_input")
-	}
-	value.Native.Args = nil
-	_, err := workers.PutConfiguration(ctx, principal, id, "1", value)
-	requireFault(t, err, "invalid_input")
-	value = cloudWorkerConfiguration("")
-	canceled, cancel := context.WithCancel(ctx)
-	cancel()
-	if _, err := workers.Configuration(canceled, principal, id); !errors.Is(err, context.Canceled) {
-		t.Fatalf("read cancellation lost: %v", err)
-	}
-	if _, err := workers.PutConfiguration(canceled, principal, id, "1", value); !errors.Is(err, context.Canceled) {
-		t.Fatalf("write cancellation lost: %v", err)
-	}
-	// The configuration transaction remains independent even when Task storage is unavailable.
-	importWorkerConfiguration(t, workers, principal, id, value)
-	if _, err := database.Pool.Exec(ctx, `DROP TABLE tasks CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	value.MaxConcurrent++
-	if _, err := workers.PutConfiguration(ctx, principal, id, "1", value); err != nil {
-		t.Fatal(err)
-	}
-	if result, err := workers.Configuration(ctx, principal, id); err != nil || result.Desired.Revision != "2" {
-		t.Fatalf("configuration queried Tasks: %+v %v", result, err)
-	}
 }

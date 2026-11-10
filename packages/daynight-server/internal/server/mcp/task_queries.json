@@ -1,0 +1,2057 @@
+[
+  {
+    "name": "task_list",
+    "description": "Read a page ordered in-progress, ready todo, blocked todo, then done or cancelled; default excludes both terminal statuses. Summary is default; request full list resources explicitly. Includes ephemeral Session observation, freshness and send eligibility; partial observations retain Task data.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "in_progress",
+            "done",
+            "cancelled"
+          ]
+        },
+        "assignedTo": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "enum": [
+                "me",
+                "unassigned"
+              ]
+            }
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "allowAgents": {
+          "type": "boolean"
+        },
+        "compatiblePlatform": {
+          "type": "string",
+          "enum": [
+            "windows",
+            "linux",
+            "macos"
+          ]
+        },
+        "view": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "default": "summary"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false,
+      "not": {
+        "required": [
+          "all",
+          "status"
+        ],
+        "properties": {
+          "all": {
+            "const": true
+          }
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "projectId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "status": {
+                        "enum": [
+                          "todo",
+                          "in_progress",
+                          "done",
+                          "cancelled"
+                        ]
+                      },
+                      "version": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,18}$"
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "requiredPlatform": {
+                        "enum": [
+                          "macos",
+                          "linux",
+                          "windows",
+                          null
+                        ]
+                      },
+                      "assignedTo": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "allowAgents": {
+                        "type": "boolean"
+                      },
+                      "session": {
+                        "type": "object",
+                        "properties": {
+                          "schemaVersion": {
+                            "const": 1
+                          },
+                          "observation": {
+                            "enum": [
+                              "observed",
+                              "unavailable",
+                              "unsupported"
+                            ]
+                          },
+                          "registration": {
+                            "enum": [
+                              "registered",
+                              "not_registered",
+                              "not_applicable",
+                              "unknown"
+                            ]
+                          },
+                          "sessionId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "nativeSessionId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "claimId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "executionGeneration": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "connectionEpoch": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "agentControlMode": {
+                            "enum": [
+                              "web",
+                              "herdr",
+                              null
+                            ]
+                          },
+                          "contentKind": {
+                            "enum": [
+                              "native_timeline",
+                              "terminal_recording",
+                              null
+                            ]
+                          },
+                          "provider": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "indicator": {
+                            "enum": [
+                              "working",
+                              "notice",
+                              "warning",
+                              null
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "activity": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "connectionState": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "lifecycle": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "currentTurnId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "needsAttention": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "send": {
+                            "type": "object",
+                            "properties": {
+                              "allowed": {
+                                "anyOf": [
+                                  {
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "mode": {
+                                "enum": [
+                                  "start",
+                                  "steer",
+                                  null
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "allowed",
+                              "mode",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "observedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "freshUntil": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "error": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "code": {
+                                    "type": "string"
+                                  },
+                                  "message": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "code",
+                                  "message"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "observation",
+                          "registration",
+                          "sessionId",
+                          "nativeSessionId",
+                          "claimId",
+                          "executionGeneration",
+                          "connectionEpoch",
+                          "agentControlMode",
+                          "contentKind",
+                          "provider",
+                          "indicator",
+                          "reason",
+                          "activity",
+                          "connectionState",
+                          "lifecycle",
+                          "currentTurnId",
+                          "needsAttention",
+                          "send",
+                          "observedAt",
+                          "lastSeenAt",
+                          "freshUntil",
+                          "error"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "projection": {
+                        "const": "summary"
+                      },
+                      "titlePreview": {
+                        "type": "string"
+                      },
+                      "titleTruncated": {
+                        "type": "boolean"
+                      },
+                      "blockedByCount": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "projectId",
+                      "status",
+                      "version",
+                      "ready",
+                      "requiredPlatform",
+                      "assignedTo",
+                      "allowAgents",
+                      "session",
+                      "projection",
+                      "titlePreview",
+                      "titleTruncated",
+                      "blockedByCount"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "projectId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "status": {
+                        "enum": [
+                          "todo",
+                          "in_progress",
+                          "done",
+                          "cancelled"
+                        ]
+                      },
+                      "version": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,18}$"
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "requiredPlatform": {
+                        "enum": [
+                          "macos",
+                          "linux",
+                          "windows",
+                          null
+                        ]
+                      },
+                      "assignedTo": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "allowAgents": {
+                        "type": "boolean"
+                      },
+                      "session": {
+                        "type": "object",
+                        "properties": {
+                          "schemaVersion": {
+                            "const": 1
+                          },
+                          "observation": {
+                            "enum": [
+                              "observed",
+                              "unavailable",
+                              "unsupported"
+                            ]
+                          },
+                          "registration": {
+                            "enum": [
+                              "registered",
+                              "not_registered",
+                              "not_applicable",
+                              "unknown"
+                            ]
+                          },
+                          "sessionId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "nativeSessionId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "claimId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "executionGeneration": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "connectionEpoch": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "agentControlMode": {
+                            "enum": [
+                              "web",
+                              "herdr",
+                              null
+                            ]
+                          },
+                          "contentKind": {
+                            "enum": [
+                              "native_timeline",
+                              "terminal_recording",
+                              null
+                            ]
+                          },
+                          "provider": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "indicator": {
+                            "enum": [
+                              "working",
+                              "notice",
+                              "warning",
+                              null
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "activity": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "connectionState": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "lifecycle": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "currentTurnId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "needsAttention": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "send": {
+                            "type": "object",
+                            "properties": {
+                              "allowed": {
+                                "anyOf": [
+                                  {
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "mode": {
+                                "enum": [
+                                  "start",
+                                  "steer",
+                                  null
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "allowed",
+                              "mode",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "observedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "freshUntil": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "error": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "code": {
+                                    "type": "string"
+                                  },
+                                  "message": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "code",
+                                  "message"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "observation",
+                          "registration",
+                          "sessionId",
+                          "nativeSessionId",
+                          "claimId",
+                          "executionGeneration",
+                          "connectionEpoch",
+                          "agentControlMode",
+                          "contentKind",
+                          "provider",
+                          "indicator",
+                          "reason",
+                          "activity",
+                          "connectionState",
+                          "lifecycle",
+                          "currentTurnId",
+                          "needsAttention",
+                          "send",
+                          "observedAt",
+                          "lastSeenAt",
+                          "freshUntil",
+                          "error"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "projection": {
+                        "const": "full"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "properties": {
+                        "type": "object"
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "startedAt": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "completedAt": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "cancelledAt": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "dependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "externalDependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "blockedBy": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "projectId",
+                      "status",
+                      "version",
+                      "ready",
+                      "requiredPlatform",
+                      "assignedTo",
+                      "allowAgents",
+                      "session",
+                      "projection",
+                      "title",
+                      "properties",
+                      "createdAt",
+                      "updatedAt",
+                      "startedAt",
+                      "completedAt",
+                      "cancelledAt",
+                      "dependsOn",
+                      "externalDependsOn",
+                      "blockedBy"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "nextCursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "projection": {
+              "enum": [
+                "summary",
+                "full"
+              ]
+            }
+          },
+          "required": [
+            "items",
+            "nextCursor",
+            "projection"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "observedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "partial": {
+              "type": "boolean"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId",
+            "observedAt",
+            "partial",
+            "refs"
+          ],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "task_ready",
+    "description": "Read at most limit ready Tasks ordered by creation time and UUID; default 5, maximum 20, without pagination. Summary is default; full includes complete Task descriptions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 5
+        },
+        "allowAgents": {
+          "type": "boolean"
+        },
+        "compatiblePlatform": {
+          "type": "string",
+          "enum": [
+            "windows",
+            "linux",
+            "macos"
+          ]
+        },
+        "view": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "default": "summary"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "projection": {
+              "enum": [
+                "summary",
+                "full"
+              ]
+            }
+          },
+          "required": [
+            "items",
+            "projection"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "task_graph",
+    "description": "Read the complete dependency graph or its dependency-only projection. Includes Session observations and the ordinary-member summary unless dependsOnly is true; external nodes do not contribute.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "taskId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "dependsOnly": {
+          "type": "boolean"
+        },
+        "view": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "default": "summary"
+        }
+      },
+      "required": [
+        "projectId",
+        "taskId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "projection": {
+                  "enum": [
+                    "summary",
+                    "full"
+                  ]
+                },
+                "project": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "repoUrl": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "settings": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string"
+                        },
+                        "executionWarningMinutes": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "executionWarningMinutes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "ownership": {
+                      "type": "object",
+                      "properties": {
+                        "teamId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "teamId",
+                        "version",
+                        "updatedAt"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "repoUrl",
+                    "createdAt",
+                    "updatedAt",
+                    "settings",
+                    "ownership"
+                  ],
+                  "additionalProperties": false
+                },
+                "observedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "summary": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "todo": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "inProgress": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "done": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cancelled": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "ready": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "blocked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "todo",
+                    "inProgress",
+                    "done",
+                    "cancelled",
+                    "ready",
+                    "blocked"
+                  ],
+                  "additionalProperties": false
+                },
+                "returnedNodes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "totalNodes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tasks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "status": {
+                        "enum": [
+                          "todo",
+                          "in_progress",
+                          "done",
+                          "cancelled"
+                        ]
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "requiredPlatform": {
+                        "enum": [
+                          "macos",
+                          "linux",
+                          "windows",
+                          null
+                        ]
+                      },
+                      "assignedTo": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "allowAgents": {
+                        "type": "boolean"
+                      },
+                      "session": {
+                        "type": "object",
+                        "properties": {
+                          "schemaVersion": {
+                            "const": 1
+                          },
+                          "observation": {
+                            "enum": [
+                              "observed",
+                              "unavailable",
+                              "unsupported"
+                            ]
+                          },
+                          "registration": {
+                            "enum": [
+                              "registered",
+                              "not_registered",
+                              "not_applicable",
+                              "unknown"
+                            ]
+                          },
+                          "sessionId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "nativeSessionId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "claimId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "executionGeneration": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "connectionEpoch": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "agentControlMode": {
+                            "enum": [
+                              "web",
+                              "herdr",
+                              null
+                            ]
+                          },
+                          "contentKind": {
+                            "enum": [
+                              "native_timeline",
+                              "terminal_recording",
+                              null
+                            ]
+                          },
+                          "provider": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "indicator": {
+                            "enum": [
+                              "working",
+                              "notice",
+                              "warning",
+                              null
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "activity": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "connectionState": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "lifecycle": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "currentTurnId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "needsAttention": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "send": {
+                            "type": "object",
+                            "properties": {
+                              "allowed": {
+                                "anyOf": [
+                                  {
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "mode": {
+                                "enum": [
+                                  "start",
+                                  "steer",
+                                  null
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "allowed",
+                              "mode",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "observedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "freshUntil": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "error": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "code": {
+                                    "type": "string"
+                                  },
+                                  "message": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "code",
+                                  "message"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "observation",
+                          "registration",
+                          "sessionId",
+                          "nativeSessionId",
+                          "claimId",
+                          "executionGeneration",
+                          "connectionEpoch",
+                          "agentControlMode",
+                          "contentKind",
+                          "provider",
+                          "indicator",
+                          "reason",
+                          "activity",
+                          "connectionState",
+                          "lifecycle",
+                          "currentTurnId",
+                          "needsAttention",
+                          "send",
+                          "observedAt",
+                          "lastSeenAt",
+                          "freshUntil",
+                          "error"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "titlePreview": {
+                        "type": "string"
+                      },
+                      "titleTruncated": {
+                        "type": "boolean"
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "startedAt": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "completedAt": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "cancelledAt": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "dependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "externalDependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "blockedBy": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "relation": {
+                        "enum": [
+                          "member",
+                          "external"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "status",
+                      "ready",
+                      "requiredPlatform",
+                      "assignedTo",
+                      "allowAgents",
+                      "session",
+                      "titlePreview",
+                      "titleTruncated",
+                      "createdAt",
+                      "updatedAt",
+                      "startedAt",
+                      "completedAt",
+                      "cancelledAt",
+                      "dependsOn",
+                      "externalDependsOn",
+                      "blockedBy",
+                      "relation"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "sessionSummary": {
+                  "type": "object",
+                  "properties": {
+                    "indicator": {
+                      "enum": [
+                        "working",
+                        "notice",
+                        "warning",
+                        null
+                      ]
+                    },
+                    "workingCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "noticeCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "warningCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "unknownCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "complete": {
+                      "type": "boolean"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "indicator",
+                    "workingCount",
+                    "noticeCount",
+                    "warningCount",
+                    "unknownCount",
+                    "complete",
+                    "observedAt"
+                  ],
+                  "additionalProperties": false
+                },
+                "partial": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "projection",
+                "project",
+                "observedAt",
+                "summary",
+                "returnedNodes",
+                "totalNodes",
+                "tasks",
+                "sessionSummary",
+                "partial"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "projection": {
+                  "enum": [
+                    "summary",
+                    "full"
+                  ]
+                },
+                "project": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "repoUrl": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "settings": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string"
+                        },
+                        "executionWarningMinutes": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "executionWarningMinutes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "ownership": {
+                      "type": "object",
+                      "properties": {
+                        "teamId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "teamId",
+                        "version",
+                        "updatedAt"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "repoUrl",
+                    "createdAt",
+                    "updatedAt",
+                    "settings",
+                    "ownership"
+                  ],
+                  "additionalProperties": false
+                },
+                "observedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "summary": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "todo": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "inProgress": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "done": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cancelled": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "ready": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "blocked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "todo",
+                    "inProgress",
+                    "done",
+                    "cancelled",
+                    "ready",
+                    "blocked"
+                  ],
+                  "additionalProperties": false
+                },
+                "returnedNodes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "totalNodes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tasks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "dependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "externalDependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "dependsOn",
+                      "externalDependsOn"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "projection",
+                "project",
+                "observedAt",
+                "summary",
+                "returnedNodes",
+                "totalNodes",
+                "tasks"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "meta": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "requestId": {
+                  "type": "string"
+                },
+                "observedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "partial": {
+                  "type": "boolean"
+                },
+                "refs": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "requestId",
+                "observedAt",
+                "partial",
+                "refs"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "requestId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestId"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+]

@@ -17,11 +17,17 @@ outcomes and the causes of operation and cleanup failures.
 readers and a database observation time. The existing PostgreSQL implementation
 binds every reader to the same read-only Repeatable Read transaction. Consumers
 use the reader required by each helper, and retain the established ordering of
-staged business refusals and transaction completion failures.
+staged business refusals and transaction completion failures. The read-only
+`SessionReader` supplies current Task binding and persisted Session scalars for
+TaskSync without exposing Session mutation or content-locking capabilities. The
+[Session projection decision](2026-11-08-task-sync-session-projection.md) owns its
+query and committed-live projection; its database inputs retain this same
+callback-scoped transaction.
 
 `Completion` and `TransactionOutcome` describe durable outcome facts, while the
 existing error types retain their phase, cause chains and cleanup facts. The
-current concrete implementation and SQL remain in the store root. Identity writes
+[PostgreSQL backend decision](2026-11-05-server-postgres-ownership.md) places the
+concrete implementation and SQL under `store/postgres`. Identity writes
 use the [identity boundary](2026-11-05-server-identity-boundaries.md);
 Team writes use the [Team boundary](2026-11-05-server-team-boundaries.md),
 and Project writes use the [Project boundary](2026-11-05-server-project-boundaries.md).
@@ -41,6 +47,6 @@ the boundary that later domain writers must preserve.
 
 Authorization and data from different readers retain a single snapshot, and a
 failed completion remains visible ahead of a staged refusal. The readers are
-valid only during their callback. The store root still contains PostgreSQL
-implementation details; separating that implementation and introducing the
-remaining domain write capabilities require their respective later work.
+valid only during their callback. The store root defines neutral data-access
+contracts. The PostgreSQL backend binds the readers and writers to their shared
+transaction.

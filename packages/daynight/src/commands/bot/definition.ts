@@ -15,6 +15,8 @@ export const botDefinition: CommandDefinition = {
       { names: ["--worker"], description: "Explicit hosting Worker UUID", value: { name: "worker-id", kind: "text" } },
       { names: ["--cwd"], description: "Absolute directory on the hosting Worker", value: { name: "path", kind: "directory" } },
       { names: ["--agent"], description: "Explicit provider", value: { name: "provider", kind: "text", choices: ["codex", "claude", "copilot"] } },
+      { names: ["--model"], description: "Explicit native model on the hosting Worker", value: { name: "model", kind: "text" } },
+      { names: ["--reasoning-effort"], description: "Explicit reasoning effort supported by the selected native model", value: { name: "effort", kind: "text" } },
       request, json, help,
     ], details: "Only --name is required. --request-id is the Bot ID. Omitted overrides remain omitted.\nA persisted pending definition is not a running Bot. On an unconfirmed response, query the original ID with bot show; this command never automatically repeats POST." },
     { name: "delete", description: "Request version-protected Bot deletion and report actual cleanup state", arguments: target, options: [

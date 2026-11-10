@@ -2,6 +2,7 @@ package team
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -34,9 +35,19 @@ func TestTeamInvitationHTTP(t *testing.T) {
 	if err != nil || link.Path != "/team-invitations" || link.RawQuery != "" || !strings.HasPrefix(link.Fragment, "dnteam_") || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Location") != path+"/"+invitation.ID {
 		t.Fatalf("link %#v %v", link, err)
 	}
-	list := decodeResponse[api.TeamInvitationList](t, h.Request("GET", path, "", adminCookies, nil, ""), 200)
+	listResponse := h.Request("GET", path, "", adminCookies, nil, "")
+	list := decodeResponse[api.TeamInvitationList](t, listResponse, 200)
 	if len(list.Items) != 1 || list.Items[0].ID != invitation.ID {
 		t.Fatal("list", list)
+	}
+	var raw struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &raw); err != nil || len(raw.Items) != 1 {
+		t.Fatalf("invalid invitation list: %v", err)
+	}
+	if _, exists := raw.Items[0]["link"]; exists || strings.Contains(listResponse.Body.String(), link.Fragment) {
+		t.Fatal("invitation list exposed the one-time link or token")
 	}
 	tokenBody := jsonBody(t, api.InspectProjectInvitationRequest{Token: link.Fragment})
 	previewResponse := h.Request("POST", "/api/v1/team-invitations/inspect", tokenBody, memberCookies, nil, h.Origin)

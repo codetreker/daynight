@@ -2,41 +2,45 @@ import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
-type Module = "cli" | "server" | "web";
+type Module = "cli" | "server" | "api" | "web" | "e2e";
 export type ModuleSelection = Record<Module, boolean>;
 
-const allModules: ModuleSelection = { cli: true, server: true, web: true };
-const sharedInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
+const allModules: ModuleSelection = { cli: true, server: true, api: true, web: true, e2e: true };
+const nodeInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
 const cliManifestPath = "packages/daynight/package.json";
-const lazyCliCommands = ["worker", "controller", "review", "skill", "update", "completion"]
-  .map((command) => `packages/daynight/src/commands/${command}/`);
-const serverCliInputs = new Set([
+const cliBuildInputs = new Set([
   cliManifestPath,
-  "packages/daynight/tsconfig.json",
-  "packages/daynight/tsconfig.build.json",
   "packages/daynight/config.example.yml",
   "packages/daynight/scripts/clean-dist.ts",
   "packages/daynight/scripts/copy-resources.ts",
-  "packages/daynight/scripts/project-task-acceptance.ts",
-  "packages/daynight/scripts/project-task-budgets.ts",
-  "packages/daynight/test/fixtures/installed-operation-limits.ts",
 ]);
-const webPatches = new Set([
-  "patches/@dagrejs__dagre@3.1.1.patch",
-  "patches/@xyflow__system@0.0.83.patch",
+const webBuildInputs = new Set([
+  "packages/daynight-web/package.json",
+  "packages/daynight-web/index.html",
+  "packages/daynight-web/vite.config.ts",
+  "packages/daynight-web/scripts/publish-assets.mts",
 ]);
+const webProductionInput = (path: string): boolean =>
+  path.startsWith("packages/daynight-web/src/") || path.startsWith("packages/daynight-web/public/") ||
+  webBuildInputs.has(path) || /^packages\/daynight-web\/tsconfig(?:\.[^/]+)?\.json$/.test(path);
+const serverBuildInputs = new Set(["packages/daynight-server/go.mod", "packages/daynight-server/go.sum"]);
+const serverRuntimeInput = (path: string): boolean =>
+  /^(?:packages\/daynight-server\/(?:api|cmd|internal)\/)/.test(path) &&
+  !path.endsWith("_test.go") && !path.includes("/testdata/");
 
-export const selectModules = (paths: readonly string[], cliManifestRequiresServer = true): ModuleSelection => {
-  const selected = { cli: false, server: false, web: false };
+export const selectModules = (paths: readonly string[]): ModuleSelection => {
+  const selected: ModuleSelection = { cli: false, server: false, api: false, web: false, e2e: false };
   for (const path of paths) {
-    if (sharedInputs.has(path)) return { ...allModules };
-    if (path === "packages/daynight/test/fixtures/installed-cli.ts") return { ...allModules };
+    if (nodeInputs.has(path)) {
+      selected.cli = true;
+      selected.web = true;
+      selected.api = true;
+      selected.e2e = true;
+      continue;
+    }
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
-      // Command definitions load at startup; their implementations load only when selected.
-      if (path.endsWith("/definition.ts") || !lazyCliCommands.some((prefix) => path.startsWith(prefix))) selected.server = true;
-      if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
-        path === "packages/daynight/src/platform/text.ts") selected.web = true;
+      selected.e2e = true;
       continue;
     }
     if (
@@ -44,12 +48,24 @@ export const selectModules = (paths: readonly string[], cliManifestRequiresServe
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
-    if (serverCliInputs.has(path) && (path !== cliManifestPath || cliManifestRequiresServer)) selected.server = true;
-    if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
-    else if (path.startsWith("packages/daynight-server/")) selected.server = true;
-    else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) {
+    if (path.startsWith("packages/e2e_tests/")) selected.e2e = true;
+    else if (path.startsWith("patches/")) {
+      selected.cli = true;
       selected.web = true;
+      selected.api = true;
+      selected.e2e = true;
+    } else if (path.startsWith("packages/daynight/")) {
+      selected.cli = true;
+      selected.e2e ||= cliBuildInputs.has(path) || /^packages\/daynight\/tsconfig(?:\.[^/]+)?\.json$/.test(path);
+    } else if (path.startsWith("scripts/")) selected.cli = true;
+    else if (path.startsWith("packages/daynight-server/")) {
       selected.server = true;
+      selected.api = true;
+      selected.e2e ||= serverBuildInputs.has(path) || serverRuntimeInput(path);
+    } else if (path.startsWith("packages/daynight-web/")) {
+      selected.web = true;
+      selected.api ||= webProductionInput(path);
+      selected.e2e ||= webProductionInput(path);
     } else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
@@ -108,7 +124,6 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
   if (cwd === undefined) throw new Error("PR change detection requires a repository directory.");
   const diff = await pullRequestDiff(cwd, base, head);
   const manifestChange = diff.changes.find(({ path }) => path === cliManifestPath);
-  let cliManifestRequiresServer = true;
   if (manifestChange?.status === "M") {
     const [beforeSource, afterSource, beforeMode, afterMode] = await Promise.all([
       git(cwd, ["show", `${diff.comparisonBase}:${cliManifestPath}`]),
@@ -120,13 +135,12 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
     if (regularFile(beforeMode) && regularFile(afterMode)) {
       const before = parseManifest(beforeSource);
       const after = parseManifest(afterSource);
-      cliManifestRequiresServer = beforeMode !== afterMode || !isDeepStrictEqual(before.inputs, after.inputs);
-      if (diff.changes.length === 1 && !cliManifestRequiresServer && before.version !== after.version) {
-        return { cli: false, server: false, web: false };
+      if (diff.changes.length === 1 && beforeMode === afterMode && isDeepStrictEqual(before.inputs, after.inputs) && before.version !== after.version) {
+        return { cli: false, server: false, api: false, web: false, e2e: false };
       }
     }
   }
-  return selectModules(diff.changes.map(({ path }) => path), cliManifestRequiresServer);
+  return selectModules(diff.changes.map(({ path }) => path));
 };
 
 if (import.meta.main) {

@@ -1,17 +1,29 @@
-import { decodeWorkerCloudJsonSource, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "./worker-configuration.js";
-import { jsonObjectSources } from "./json-source.js";
+import { decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
+import { parseObservedTask, parseObservedTaskGraph, parseTaskSessionObservation, taskObservationPartial, unsupportedSessionObservation } from "./task-observation.js";
+import type { ObservedTask, ObservedTaskGraph, TaskObservationList } from "./task-observation.js";
+import { createTaskSessionClient } from "./task-session.js";
+import type { TaskSessionClient } from "./task-session.js";
+import { parseTaskWorkPage } from "./task-work.js";
+import type { TaskWorkPage, TaskWorkQuery } from "./task-work.js";
+import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp } from "./validation.js";
+import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
+import { workerReportBody } from "./worker-report.js";
+import { parseMonitoringRead, parseMonitoringReceipt } from "./worker-monitoring.js";
+import type { MonitoringRead, MonitoringReceipt } from "./worker-monitoring.js";
+import type { Observation } from "../commands/worker/monitoring/types.js";
+import { jsonContainerSources, jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
 import { sameStartupReport } from "../session/startup.js";
-import { parseBot, botName, botVersion } from "../commands/bot/api.js";
+import { parseBot, botName, botOverrides, botVersion } from "../commands/bot/api.js";
 import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
 import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { isTaskStatus } from "../task/status.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
-import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
+import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "./thread.js";
 import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
@@ -19,11 +31,11 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { ProjectTransferPreview, ProjectTransferReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
+import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseProjectDeletionPreview, parseProjectDeletionReceipt, parseProjectDeletionError, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
+import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true; readonly promptSelectors?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
 export class ApiError extends Error {
@@ -131,7 +143,9 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
   });
 };
 
-export type ApiClient = {
+export type ApiClient = TaskSessionClient & {
+  withExpectedUserId(userId: string): ApiClient;
+  webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
   listBots(): Promise<readonly Bot[]>;
   getBot(botId: string): Promise<Bot>;
   createBot(input: CreateBotInput): Promise<Bot>;
@@ -165,9 +179,13 @@ export type ApiClient = {
   revokeTeamInvitation(userId: string, teamId: string, invitationId: string, requestId: string): Promise<TeamInvitationRevokeReceipt>;
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
+  previewProjectDeletion(userId: string, projectId: string): Promise<ProjectDeletionPreview>;
+  deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
+  readWorkerMonitoring(workerId: string, requestId: string): Promise<MonitoringRead>;
+  writeWorkerMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, requestId: string): Promise<MonitoringReceipt>;
   getWorkerConfiguration(workerId: string): Promise<WorkerCloudResource>;
-  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport): Promise<WorkerCloudReportReceipt>;
+  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
   getProject(projectId: string, userId?: string): Promise<Project>;
   getProjectAccess(projectId: string): Promise<ProjectAccess>;
@@ -175,11 +193,16 @@ export type ApiClient = {
   listProjectMembers(projectId: string): Promise<readonly ProjectParticipant[]>;
   createTask(projectId: string, input: CreateTaskInput): Promise<Task>;
   getTask(projectId: string, taskId: string): Promise<Task>;
+  getObservedTask(projectId: string, taskId: string): Promise<ObservedTask>;
+  listObservedTasks(projectId: string, filters?: TaskFilters): Promise<TaskObservationList>;
+  getObservedTaskGraph(projectId: string, taskId: string): Promise<ObservedTaskGraph>;
+  listTaskWork(projectId: string, query?: TaskWorkQuery): Promise<TaskWorkPage>;
   getTaskPropertySchema(): Promise<TaskPropertySchema>;
   getTaskProperties(projectId: string, taskId: string): Promise<TaskPropertyResource>;
   setTaskProperty(projectId: string, taskId: string, name: string, input: SetTaskPropertyInput): Promise<TaskPropertyResource>;
   removeTaskProperty(projectId: string, taskId: string, name: string, input: RemoveTaskPropertyInput): Promise<TaskPropertyResource>;
   listTasks(projectId: string, filters?: TaskFilters): Promise<readonly Task[]>;
+  searchTasks(projectId: string, input: TaskSearchInput): Promise<readonly TaskSearchItem[]>;
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput): Promise<Task>;
@@ -253,11 +276,11 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly requirePrincipalOnUnauthorized?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
-  const exchange = async <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", mode: ResponseMode<T>, statuses: readonly number[], body?: RequestBody, mutable = false): Promise<T> => {
+  const exchange = async <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", mode: ResponseMode<T>, statuses: readonly number[], body?: RequestBody, mutable = false, requestMs?: number): Promise<T> => {
     const secret = mode.kind === "json" ? mode.secret : undefined;
     const mutation = method !== "GET" && !(mode.kind === "json" && mode.readOnly === true);
     let phase: ApiPhase = "prepare";
@@ -320,10 +343,20 @@ export const createApiClient = (options: {
       const contentType = body === undefined ? undefined : body.kind === "json" ? "application/json" : body.contentType;
       const url = new URL(`/api/v1${path}`, origin);
       const remaining = operation.remainingMs();
-      const timeout = Math.min(operation.limits.requestMs, remaining);
-      totalBudgetCapped = remaining <= operation.limits.requestMs;
+      const timeout = Math.min(operation.limits.requestMs, remaining, requestMs ?? Infinity);
+      totalBudgetCapped = remaining <= timeout;
       requestDeadline = performance.now() + timeout;
-      timer = setTimeout(() => controller.abort(new OperationError(totalBudgetCapped ? "deadline" : "request_timeout")), Math.ceil(timeout));
+      const expireRequest = (): void => {
+        if (controller.signal.aborted) return;
+        const remaining = requestDeadline - performance.now();
+        if (remaining > 0) {
+          timer = setTimeout(expireRequest, Math.ceil(remaining));
+          timer.unref();
+          return;
+        }
+        controller.abort(new OperationError(totalBudgetCapped ? "deadline" : "request_timeout"));
+      };
+      timer = setTimeout(expireRequest, Math.ceil(timeout));
       timer.unref();
       const cancel = (): void => controller.abort(operation.signal.reason);
       operation.signal.addEventListener("abort", cancel, { once: true });
@@ -342,7 +375,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -370,7 +403,7 @@ export const createApiClient = (options: {
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
       }
       const expectsPrincipal = expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true;
-      if (success && expectsPrincipal || !success && mode.kind === "json" && (status !== 401 && mode.checkFailurePrincipal === true || expectsPrincipal && (context.workerConfiguration === true && status === 404 || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true))) {
+      if (success && expectsPrincipal || !success && mode.kind === "json" && ((status !== 401 || mode.requirePrincipalOnUnauthorized === true) && mode.checkFailurePrincipal === true || expectsPrincipal && (context.workerConfiguration === true && status === 404 || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true))) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
         if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal) throw new ProtocolError("The authenticated response principal does not match the expected user.");
@@ -380,7 +413,7 @@ export const createApiClient = (options: {
           else throw new ProtocolError("The authenticated response principal does not match the expected user.");
         }
         if (mode.kind === "json") {
-          try { mode.onPrincipal?.(principalId); }
+          try { mode.onPrincipal?.(principalId, success); }
           catch (error) {
             if (error instanceof ProtocolError && (secret !== undefined || mode.allowIdentityMismatchRefusal === true) && !success && status === 409) invitationIdentityMismatch = true;
             else throw error;
@@ -428,13 +461,13 @@ export const createApiClient = (options: {
       checkRequest();
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
-        serverError = parseServerError(value);
+        serverError = mode.kind === "json" && mode.parseError !== undefined ? mode.parseError(value) : parseServerError(value);
         if (invitationIdentityMismatch && serverError.code !== "identity_mismatch") { serverError = undefined; throw new ProtocolError("The authenticated response principal changed during the operation."); }
         if (secret !== undefined) {
           const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
           serverError = { code: safeCodes.includes(serverError.code) ? serverError.code : "server_error", message: "Invitation request failed.", requestId: canonicalId(serverError.requestId) === serverError.requestId ? serverError.requestId : "unavailable" };
         }
-        const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
+        const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
@@ -541,9 +574,10 @@ export const createApiClient = (options: {
   };
   const taskAssignmentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
-    if (filters.status !== undefined && filters.status !== "todo" && filters.status !== "in_progress" && filters.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
+    if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
+    if (filters.platformSpecific !== undefined && typeof filters.platformSpecific !== "boolean") throw new Error("Platform-specific filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
     let workerId: string | undefined;
     if (filters.workerId !== undefined) {
@@ -553,7 +587,7 @@ export const createApiClient = (options: {
       workerId = parsed;
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
-    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -564,6 +598,7 @@ export const createApiClient = (options: {
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
       || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
+      || (filters.platformSpecific !== undefined && (task.requiredPlatform !== null) !== filters.platformSpecific)
       || (filters.workerId !== undefined && (worker === undefined || worker.state !== "active" || worker.workerId !== canonicalId(filters.workerId)))
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
@@ -585,6 +620,10 @@ export const createApiClient = (options: {
   const taskVersion = (version: bigint): void => {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
   };
+  const observationUnsupported = (error: unknown): boolean => error instanceof ApiError && (
+    (error.code === "unsupported" || error.code === "upgrade_required") && (error.status === 400 || error.status === 404 || error.status === 501)
+    || error.code === "invalid_input" && error.status === 400 && /unknown.*(?:query|parameter)|(?:query|parameter).*unknown|include.*(?:unsupported|not supported)/i.test(error.serverMessage ?? "")
+  );
   const herdrMatches = (actual: WorkerHerdr | null, expected: WorkerHerdr | null): boolean => actual === null || expected === null ? actual === expected : actual.session === expected.session && actual.workspaceId === expected.workspaceId && actual.paneId === expected.paneId;
   const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.worktreeId === canonicalId(descriptor.worktreeId);
   const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | undefined) => boolean, sameValue = false): Promise<Task> => {
@@ -648,6 +687,31 @@ export const createApiClient = (options: {
   };
 
   return {
+    withExpectedUserId: userId => createApiClient({ ...options, expectedUserId: userId }),
+    ...createTaskSessionClient(
+      (input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }), ...(expectedUserId === undefined ? {} : { requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }) }, [200], undefined, true, input.timeoutMs),
+      (input, body, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId, sentRequestId: body.requestId }, input.path, "POST", { kind: "json", parse: (value, metadata) => parse(value, metadata.locationHeader), requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }, [202], { kind: "json", value: body, maxBytes: 2 * 1_048_576 }, true),
+    ),
+    webhookRequest: async <T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T> => {
+      const user = resourceId(input.userId);
+      if (user !== input.userId || !/^\/(?:webhook-event-types|me\/webhooks|teams\/[0-9a-f-]{36}\/webhooks)(?:[/?]|$)/.test(input.path)) throw new Error("Invalid webhook request scope.");
+      const context = { operation: "webhook.request" };
+      try {
+        return await exchange(context, input.path, input.method, {
+          kind: "json", requirePrincipal: true, checkFailurePrincipal: true, requirePrincipalOnUnauthorized: true, checkPrincipalOnError: true, responseBytes: 1_048_576,
+          onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+          decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+          parse: (value) => input.parse(value),
+          ...(input.confirmedOperationId === undefined ? {} : { confirmMutation: () => input.confirmedOperationId! }),
+        }, input.statuses ?? [200], input.body === undefined ? undefined : { kind: "json", value: input.body, maxBytes: 262_144 }, true);
+      } catch (error) {
+        if (!(error instanceof ApiError)) throw new ApiError(context, "protocol", { cause: safeInvitationCause(error) });
+        const code = error.code;
+        const allowed = ["invalid_input", "invalid_cursor", "invalid_operation_time", "unauthenticated", "forbidden", "permission_denied", "webhook_project_ineligible", "not_found", "identity_mismatch", "version_conflict", "operation_conflict", "version_exhausted", "destination_unsupported", "generation_conflict", "delivery_busy", "target_changed", "delivery_stopped", "operation_expired", "payload_expired", "content_too_large", "webhooks_unavailable", "dependency_unavailable", "write_outcome_unknown", "internal_error"];
+        const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
+        throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
+      }
+    },
     listBots: () => {
       const principal = accountPrincipal();
       return list({ operation: "bot.list" }, "/me/bots", (value, metadata) => {
@@ -662,15 +726,16 @@ export const createApiClient = (options: {
     createBot: (input) => {
       const target = resourceId(input.id), principal = accountPrincipal();
       const name = botName(input.name);
+      const overrides = input.overrides === undefined ? undefined : botOverrides(input.overrides);
       return exchange({ operation: "bot.create" }, "/me/bots", "POST", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
         const bot = parseBot(value, target, principal(metadata));
-        if (input.overrides?.workerId !== undefined && bot.workerId !== input.overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
-        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider"].some((key) => {
+        if (overrides?.workerId !== undefined && bot.workerId !== overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
+        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider", "model", "reasoningEffort"].some((key) => {
           const field = key as keyof NonNullable<CreateBotInput["overrides"]>;
-          return bot.requestedOverrides[field] !== input.overrides?.[field];
+          return bot.requestedOverrides[field] !== overrides?.[field];
         }))) throw new ProtocolError("Bot creation response does not match the submitted request.");
         return bot;
-      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { ...input, id: target, name } });
+      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { id: target, name, ...(overrides === undefined ? {} : { overrides }) } });
     },
     deleteBot: (botId, input) => {
       const target = resourceId(botId), principal = accountPrincipal();
@@ -815,8 +880,8 @@ export const createApiClient = (options: {
       const normalized = { count: query.count, details: query.details, ...(query.beforeId === undefined ? {} : { beforeId: resourceId(query.beforeId) }), ...(query.afterId === undefined ? {} : { afterId: resourceId(query.afterId) }) };
       const params = new URLSearchParams({ count: String(normalized.count), details: String(normalized.details), ...(normalized.beforeId === undefined ? {} : { beforeId: normalized.beforeId }), ...(normalized.afterId === undefined ? {} : { afterId: normalized.afterId }) });
       return exchange({ operation: "task.thread.read", projectId: project, taskId: task }, `${resourcePath("projects", project, "tasks", task, "thread", "messages")}?${params}`, "GET", {
-        kind: "json", requirePrincipal: true, responseBytes: THREAD_PAGE_BYTES,
-        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "page" : "error"),
+        kind: "json", requirePrincipal: true,
+        decodeJsonSource: decodeThreadJsonSource,
         parse: (value) => parseThreadPage(value, normalized),
       }, [200], undefined, true);
     },
@@ -825,8 +890,8 @@ export const createApiClient = (options: {
       if (!isNonemptyText(input.body) || Buffer.byteLength(input.body, "utf8") > THREAD_MESSAGE_BYTES) throw new Error("Thread body must be nonempty text of at most 65536 UTF-8 bytes.");
       const normalized = { body: input.body, ...(input.replyTo === undefined ? {} : { replyTo: resourceId(input.replyTo) }), ...(input.claimId === undefined ? {} : { claimId: resourceId(input.claimId) }) };
       return exchange({ operation: "task.thread.post", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "thread", "messages"), "POST", {
-        kind: "json", requirePrincipal: true, responseBytes: THREAD_MESSAGE_BYTES,
-        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "message" : "error"),
+        kind: "json", requirePrincipal: true,
+        decodeJsonSource: decodeThreadJsonSource,
         parse: (value, response) => {
           const message = parseThreadMessage(value, false);
           if (message.author.userId !== response.principalId || message.body !== normalized.body || message.replyTo !== normalized.replyTo || message.author.Agent !== (normalized.claimId !== undefined)) throw new ProtocolError("Thread message does not match the submitted content or authenticated author.");
@@ -1006,9 +1071,61 @@ export const createApiClient = (options: {
         parse: (value) => parseProjectTransferReceipt(value, project, user, preview), confirmMutation: (result) => result.projectId,
       }, [200], { kind: "json", value: { ownership: { teamId: source, version: preview.ownership.version }, targetTeam: { id: target, version: preview.targetTeam.version }, expectedUserId: user } }, true);
     },
+    previewProjectDeletion: async (userId, projectId) => {
+      const user = resourceId(userId), project = resourceId(projectId), claims: ProjectDeletionPreview["activeClaims"][number][] = [];
+      const cursors = new Set<string>();
+      let cursor: string | null = null, preview: ProjectDeletionPreview | undefined;
+      do {
+        operation.check();
+        const query = new URLSearchParams({ limit: "100", ...(cursor === null ? {} : { cursor }) });
+        preview = await exchange({ operation: "project.deletion-preview", projectId: project }, `/projects/${encodeURIComponent(project)}/deletion-preview?${query}`, "GET", {
+          kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+          onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+          decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+          parse: (value) => parseProjectDeletionPreview(value, project),
+        }, [200]);
+        for (const claim of preview.activeClaims) {
+          if (claims.length > 0 && claims[claims.length - 1]!.taskId >= claim.taskId) throw new ProtocolError("Invalid claim ordering across preview pages.");
+          claims.push(claim);
+        }
+        cursor = preview.nextCursor;
+        if (cursor !== null) { if (cursors.has(cursor)) throw new ProtocolError("Repeated pagination cursor."); cursors.add(cursor); }
+      } while (cursor !== null);
+      operation.check();
+      return { ...preview!, activeClaims: claims };
+    },
+    deleteProject: (userId, projectId, requestId) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
+        kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+        onPrincipal: (actual, success) => { if (!success && actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectDeletionReceipt(value, project), parseError: parseProjectDeletionError, confirmMutation: (result) => result.projectId,
+        classifyRefusal: (status, error, responseId) => {
+          if (responseId !== requestId || error.requestId !== requestId) return false;
+          return status === 401 && error.code === "unauthenticated" || status === 400 && error.code === "invalid_input" || status === 403 && error.code === "forbidden" || status === 404 && error.code === "not_found" || status === 409 && error.code === "active_worker_claims" || status === 500 && error.code === "internal_error" && error.details?.writeOutcome === "not_committed";
+        },
+      }, [200], undefined, true);
+    },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);
+      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], workerReportBody(input), true);
+    },
+    readWorkerMonitoring: (workerId, requestId) => {
+      const worker = resourceId(workerId);
+      if (canonicalId(requestId) !== requestId) throw new Error("Monitoring request ID must be a canonical UUID.");
+      return exchange({ operation: "worker.monitoring.read", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "GET", {
+        kind: "json", requirePrincipal: true, checkPrincipalOnError: true, responseBytes: 512 * 1024,
+        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: parseMonitoringRead,
+      }, [200], undefined, true);
+    },
+    writeWorkerMonitoring: (workerId, expectedRevision, observation, requestId) => {
+      const worker = resourceId(workerId);
+      if (canonicalId(requestId) !== requestId || expectedRevision !== null && canonicalId(expectedRevision) !== expectedRevision) throw new Error("Monitoring request and revision IDs must be canonical UUIDs.");
+      return exchange({ operation: "worker.monitoring.write", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "PUT", {
+        kind: "json", requirePrincipal: true, checkPrincipalOnError: true, responseBytes: 512 * 1024,
+        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: value => parseMonitoringReceipt(value, observation),
+      }, [200], { kind: "json", value: { expectedRevision, observation }, maxBytes: 256 * 1024 }, true);
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
@@ -1021,18 +1138,28 @@ export const createApiClient = (options: {
         },
       }, [200], undefined, true);
     },
-    reportWorkerConfiguration: (workerId, input, configuration) => {
+    reportWorkerConfiguration: (workerId, input, configuration, selectors) => {
       const worker = resourceId(workerId), parsed = parseWorkerCloudReport(configuration);
-      return exchange({ operation: "worker.configuration.report", workerConfiguration: true }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
+      const promptSelectors = selectors === undefined ? undefined : parseWorkerPromptSelectors(selectors);
+      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
-        decodeJsonSource: (source, response) => response.success ? decodeWorkerCloudJsonSource(source) : parseApiJson(source),
+        ...(promptSelectors === undefined ? {} : { responseBytes: 48 * 1_048_576 }),
+        decodeJsonSource: (source, response) => !response.success ? parseApiJson(source) : promptSelectors === undefined ? decodeWorkerCloudJsonSource(source) : decodeWorkerCloudSyncSource(source),
         parse: (value, response) => {
-          if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
-          const receipt = parseWorkerCloudReportReceipt(value);
+          if (response.configurationHeader !== (promptSelectors === undefined ? "1" : "2")) throw new ProtocolError("The server does not support the requested Worker configuration exchange version.");
+          const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
+          const receipt = parseWorkerCloudReportReceipt(sync === undefined ? value : sync.native);
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
-          return receipt;
+          if (sync === undefined || promptSelectors === undefined) return receipt;
+          let prompts: WorkerPromptResults;
+          try {
+            if (sync.promptSource === undefined || response.principalId === undefined) throw new ProtocolError();
+            jsonContainerSources(sync.promptSource);
+            prompts = { ok: true, results: parseWorkerPromptResults(JSON.parse(sync.promptSource) as unknown, promptSelectors, response.principalId, worker) };
+          } catch { prompts = { ok: false }; }
+          return { ...receipt, prompts };
         },
-      }, [200], { kind: "json", value: { ...input, configuration: parsed }, maxBytes: 1_048_576 }, true);
+      }, [200], workerReportBody({ ...input, configuration: parsed }), true);
     },
     createProject: (input, requestId) => {
       const expected = resourceId(input.expectedUserId);
@@ -1057,7 +1184,7 @@ export const createApiClient = (options: {
           parse: (value) => parseProject(value, project),
         }, [200], undefined, true);
       }
-      return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
+      return exchange({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", { kind: "json", checkPrincipalOnError: true, parse: (value) => parseProject(value, project) }, [200]);
     },
     listProjects: (userId) => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id, {}, userId !== undefined, userId === undefined ? undefined : resourceId(userId)),
     getProjectAccess: (projectId) => {
@@ -1089,6 +1216,66 @@ export const createApiClient = (options: {
       const project = resourceId(projectId), task = resourceId(taskId);
       return request({ operation: "task.show", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "GET", (value) => parseTask(value, project, task));
     },
+    getObservedTask: async (projectId, taskId) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      const context = { operation: "task.show", projectId: project, taskId: task };
+      const path = resourcePath("projects", project, "tasks", task);
+      try { return await request(context, `${path}?include=session`, "GET", value => parseObservedTask(value, project, task)); }
+      catch (error) {
+        if (!observationUnsupported(error)) throw error;
+        return request(context, path, "GET", value => ({ ...parseTask(value, project, task), session: unsupportedSessionObservation() }));
+      }
+    },
+    listObservedTasks: async (projectId, filters = {}) => {
+      const project = resourceId(projectId);
+      const context = { operation: "task.list", projectId: project };
+      const path = resourcePath("projects", project, "tasks");
+      const query = taskFilterQuery(filters);
+      let partial = false;
+      let unsupported = false;
+      const baseParse = taskPageParser(project, filters);
+      const parse: JsonParser<Page<ObservedTask>> = (value, metadata) => {
+        const page = baseParse(value, metadata), raw = observationRecord(value);
+        const rawItems = observationArray(raw.items, observationRecord);
+        const hasObservation = Object.hasOwn(raw, "partial") || Object.hasOwn(raw, "observedAt") || rawItems.some(item => Object.hasOwn(item, "session"));
+        if (hasObservation) {
+          observationTimestamp(raw.observedAt);
+          partial = observationBool(raw.partial) || partial;
+        } else { partial = true; unsupported = true; }
+        const items = page.items.map((task, index) => {
+          const item = rawItems[index]!;
+          const session = Object.hasOwn(item, "session") ? parseTaskSessionObservation(item.session) : unsupportedSessionObservation();
+          partial ||= taskObservationPartial(session);
+          unsupported ||= session.observation === "unsupported";
+          return { ...task, session };
+        });
+        return { items, nextCursor: page.nextCursor };
+      };
+      try {
+        const items = await list(context, path, parse, task => task.id, { ...query, include: "session" });
+        return { items, partial, unsupported };
+      } catch (error) {
+        if (!observationUnsupported(error)) throw error;
+        const items = await list(context, path, taskPageParser(project, filters), task => task.id, query);
+        return { items: items.map(task => ({ ...task, session: unsupportedSessionObservation() })), partial: true, unsupported: true };
+      }
+    },
+    listTaskWork: async (projectId, input = {}) => {
+      const project = resourceId(projectId), assignedTo = taskAssignmentFilter(input.assignedTo ?? "me")!;
+      if (assignedTo === "unassigned") throw new Error("Work overview requires an assigned user or me.");
+      const limit = input.limit ?? 20;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Work overview limit must be an integer from 1 to 50.");
+      if ((input.groupId === undefined) !== (input.targetsCursor === undefined)) throw new Error("Group ID and targets cursor must be supplied together.");
+      if (input.groupId !== undefined && input.cursor !== undefined) throw new Error("Group cursor and target cursor are mutually exclusive.");
+      for (const cursor of [input.cursor, input.targetsCursor]) if (cursor !== undefined && (typeof cursor !== "string" || cursor === "")) throw new Error("Work overview cursor must be nonempty.");
+      const groupId = input.groupId === undefined ? undefined : resourceId(input.groupId);
+      const query = new URLSearchParams({ assignedTo, ...(input.limit === undefined ? {} : { limit: String(limit) }), ...(input.cursor === undefined ? {} : { cursor: input.cursor }), ...(groupId === undefined ? {} : { groupId, targetsCursor: input.targetsCursor! }) });
+      return exchange({ operation: "task.work", projectId: project }, `/projects/${project}/task-work?${query}`, "GET", { kind: "json", responseBytes: 256 * 1024, checkPrincipalOnError: true, parse: (value, metadata) => {
+        const principal = metadata.principalHeader === null ? null : canonicalId(metadata.principalHeader);
+        if (assignedTo === "me" && (principal === null || principal !== metadata.principalHeader)) throw new ProtocolError("The work overview has no valid authenticated response principal.");
+        return parseTaskWorkPage(value, assignedTo === "me" ? principal! : assignedTo, limit, groupId);
+      } }, [200]);
+    },
     getTaskPropertySchema: () => exchange({ operation: "task.properties.schema" }, "/task-properties/schema", "GET", { kind: "json", parse: parseTaskPropertySchema }, [200], undefined, true),
     getTaskProperties: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -1114,6 +1301,85 @@ export const createApiClient = (options: {
         return result;
       } }, [200], { kind: "json", value: { version: input.version } }, true);
     },
+    searchTasks: async (projectId, input) => {
+      const project = resourceId(projectId);
+      if (!isNonemptyText(input.query)) throw new Error("Search query must be nonempty text without NUL characters.");
+      const normalized = taskFilterQuery(input);
+      const filters = {
+        ...(normalized.assignedTo === undefined ? {} : { assignedTo: normalized.assignedTo }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.ready === undefined ? {} : { ready: input.ready }),
+        ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
+        ...(input.compatiblePlatform === undefined ? {} : { compatiblePlatform: input.compatiblePlatform }),
+      };
+      const context: Context = { operation: "task.search", projectId: project };
+      const items: TaskSearchItem[] = [];
+      const seen = new Set<string>(), cursors = new Set<string>();
+      let cursor: string | null = null, total: number | undefined, principal: string | undefined;
+      try {
+        do {
+          operation.check();
+          const page: TaskSearchPage = await exchange(context, resourcePath("projects", project, "tasks", "search"), "POST", {
+            kind: "json", readOnly: true, requirePrincipal: true, checkPrincipalOnError: true,
+            onPrincipal: (actual) => {
+              if (principal !== undefined && principal !== actual) throw new ProtocolError("The authenticated response principal changed during the operation.");
+              principal = actual;
+            },
+            decodeJsonSource: (source, metadata) => {
+              const sources = jsonObjectSources(source);
+              const value = parseApiJson(source);
+              if (metadata.success) {
+                if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get("total") ?? "")) throw new ProtocolError("Search total must be an integer.");
+              } else {
+                const error = parseServerError(value);
+                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
+                if (expectedStatus[error.code] !== undefined && expectedStatus[error.code] !== metadata.status) throw new ProtocolError("Search error status is invalid.");
+                // Search-specific refusals originate after authentication. Generic
+                // authentication failures can precede the principal header.
+                if (expectedStatus[error.code] !== undefined && metadata.principalId === undefined) throw new ProtocolError("Search error principal is missing.");
+                if (error.code === "invalid_search_expression") {
+                  const errorSources = jsonObjectSources(sources.get("error") ?? "");
+                  const detailsSources = jsonObjectSources(errorSources.get("details") ?? "");
+                  const integerFields = ["position", "length"];
+                  const allowedFields = ["reason", ...integerFields];
+                  if (detailsSources.size !== allowedFields.length || [...detailsSources.keys()].some((field) => !allowedFields.includes(field))) throw new ProtocolError("Search error details contain unexpected fields.");
+                  if (integerFields.some((field) => !/^(?:0|[1-9][0-9]*)$/.test(detailsSources.get(field) ?? ""))) throw new ProtocolError("Search error details must use integers.");
+                }
+                if (error.code === "invalid_search_expression") {
+                  const position = error.details!.position!, length = error.details!.length!, queryLength = Array.from(input.query).length;
+                  if (position > queryLength + 1 || position - 1 + length > queryLength) throw new ProtocolError("Search error position is invalid.");
+                }
+              }
+              return value;
+            },
+            parse: (value) => {
+              const parsed = parseTaskSearchPage(value, project);
+              const raw = value as { items: { assignedTo: string | null }[] };
+              const assignment = filters.assignedTo === "me" ? principal : filters.assignedTo === "unassigned" ? null : filters.assignedTo;
+              if (parsed.items.some((item, index) => filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
+              return parsed;
+            },
+          }, [200], { kind: "json", value: { query: input.query, ...filters, limit: 100, ...(cursor === null ? {} : { cursor }) } }, true);
+          if (total !== undefined && page.total !== total) throw new ProtocolError("Search total changed across pages.");
+          total = page.total;
+          for (const item of page.items) {
+            if (seen.has(item.id)) throw new ProtocolError("Duplicate task identity across search pages.");
+            seen.add(item.id); items.push(item);
+          }
+          cursor = page.nextCursor;
+          if (items.length > page.total || cursor !== null && items.length >= page.total || cursor === null && items.length !== page.total) throw new ProtocolError("Search page count does not match total.");
+          if (cursor !== null) {
+            if (cursors.has(cursor)) throw new ProtocolError("Repeated search cursor.");
+            cursors.add(cursor);
+          }
+        } while (cursor !== null);
+        operation.check();
+        return items;
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "pagination", { cause });
+      }
+    },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);
       return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, taskPageParser(project, filters), (task) => task.id, taskFilterQuery(filters));
@@ -1124,11 +1390,11 @@ export const createApiClient = (options: {
       if (query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor === "")) throw new Error("Task page cursor must be a nonempty string.");
       const search = new URLSearchParams({ ...taskFilterQuery(query), limit: String(query.limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
       const parse = taskPageParser(project, query);
-      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value, metadata) => {
+      return exchange({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", { kind: "json", checkPrincipalOnError: true, parse: (value, metadata) => {
         const page = parse(value, metadata);
         if (page.items.length > query.limit) throw new ProtocolError("Task page exceeds the requested limit.");
         return page;
-      });
+      } }, [200]);
     },
     listReadyTasks: (projectId, limit, filters = {}) => {
       const project = resourceId(projectId);
@@ -1172,7 +1438,7 @@ export const createApiClient = (options: {
     },
     setTaskStatus: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      if (input.status !== "todo" && input.status !== "in_progress" && input.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
+      if (!isTaskStatus(input.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
       taskVersion(input.version);
       return exchange({ operation: "task.set-status", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/status`, "PUT", { kind: "json", parse: (value) => {
         const result = parseTask(value, project, task);
@@ -1208,6 +1474,16 @@ export const createApiClient = (options: {
     getTaskGraph: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       return request({ operation: "task.graph", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`, "GET", (value) => parseTaskGraph(value, project, task));
+    },
+    getObservedTaskGraph: async (projectId, taskId) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      const context = { operation: "task.graph", projectId: project, taskId: task };
+      const path = `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`;
+      try { return await request(context, `${path}&include=session`, "GET", value => parseObservedTaskGraph(value, project, task)); }
+      catch (error) {
+        if (!observationUnsupported(error)) throw error;
+        return request(context, path, "GET", value => parseObservedTaskGraph(value, project, task));
+      }
     },
   };
 };

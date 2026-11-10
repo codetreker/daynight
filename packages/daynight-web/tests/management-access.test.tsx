@@ -1,5 +1,5 @@
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { pauseAuthRequests } from '../src/api/client';
@@ -30,13 +30,16 @@ const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', v
 const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
 const failure = (status: number) => json({ error: { code: status === 404 ? 'not_found' : 'internal_error', message: 'Failure', requestId: 'management-access' } }, status);
 const mount = (kind: 'members' | 'settings', handler: (url: string, init?: RequestInit) => Response | Promise<Response>) => {
-  const fetcher = vi.fn(async (url: string, init?: RequestInit) => handler(url, init));
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (kind === 'settings' && url === `/api/v1/me/projects/${projectId}/worker-prompt`) return json({ scope: 'project', scopeId: projectId, revision: '0', text: '', updatedAt: null });
+    return kind === "members" && url === root ? json(project) : handler(url, init);
+  });
   vi.stubGlobal('fetch', fetcher);
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   let access!: ProjectAccessSession;
   const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
   const view = renderWithLocale(<ProjectAccessBoundary projectId={projectId}><CaptureAccess />{kind === 'members'
-    ? <MembersPanel projectId={projectId} projectName="Private directory" user={user} onRemoved={vi.fn()} onUnavailable={vi.fn()} />
+    ? <MembersPanel projectId={projectId} user={user} onRemoved={vi.fn()} onUnavailable={vi.fn()} />
     : <ProjectSettingsPanel projectId={projectId} user={user} />}</ProjectAccessBoundary>, { locale: 'en', taskCache: { scope } });
   return { view, scope, fetcher, access: () => access };
 };
@@ -87,13 +90,13 @@ it.each([
       expect(mounted.access().snapshot()).toMatchObject({ status: 'ready', access: { effectiveRole: role } });
     } else {
       await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'error', refreshing: false }));
-      await screen.findByRole('alert');
+      expect(await screen.findByText('management-access')).toBeVisible();
       await focus(mounted.access());
     }
     expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
     if (kind === 'settings') expect(await screen.findByLabelText('Alert threshold')).toHaveValue(60);
     else await screen.findByText(oldEmail);
-    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    await waitFor(() => kind === 'settings' ? expect(screen.queryByText('management-access')).toBeNull() : expect(screen.queryByRole('alert')).toBeNull());
     if (kind === 'members' && role === 'admin') await waitFor(() => expect(invitationReads).toBeGreaterThan(0));
     else expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
@@ -186,9 +189,10 @@ it('retries an access-only failure without replacing a valid unsaved settings dr
     expect(field).toHaveValue(95);
     expect(field).toBeDisabled();
     accessFails = false;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    const alert = screen.getByText('management-access').closest('[role="alert"]') as HTMLElement;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'ready', refreshing: false }));
-    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('management-access')).toBeNull());
     expect(screen.getByLabelText('Alert threshold')).toHaveValue(95);
     expect(screen.getByLabelText('Alert threshold')).not.toBeDisabled();
     expect(resourceReads).toBe(1);

@@ -1,7 +1,7 @@
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkerPromptBuilder, workerCleanupPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
+import { appendWorkerPrompts, createWorkerPromptBuilder, workerCleanupPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 
 const directories: string[] = [];
@@ -24,6 +24,15 @@ const fixture = async () => {
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("worker managed prompts", () => {
+  it("appends complete personal text in scope order while preserving empty and whitespace values", () => {
+    const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: uuid(1), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });
+    const empty = { user: resource("user", ""), project: resource("project", ""), worker: resource("worker", "") };
+    expect(appendWorkerPrompts("builtin\n", empty)).toBe("builtin\n");
+    const tuple = { user: resource("user", "first\n"), project: resource("project", " \t"), worker: resource("worker", "----- end user prompt -----\nlast") };
+    const builtin = workerPingPrompt({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3) });
+    expect(appendWorkerPrompts(builtin, tuple)).toBe(`${builtin}\n\n----- begin user prompt -----\nfirst\n\n----- end user prompt -----\n\n----- begin project prompt -----\n \t\n----- end project prompt -----\n\n----- begin worker prompt -----\n----- end user prompt -----\nlast\n----- end worker prompt -----`);
+    expect(builtin.endsWith("</system remider>")).toBe(true);
+  });
   it("passes the explicit managed entry and current assignment", async () => {
     const { task, build, packageDirectory } = await fixture(); const prompt = build(task, "linux");
     expect(prompt).toContain("environment is worker-managed");
@@ -38,6 +47,13 @@ describe("worker managed prompts", () => {
     const { task, build } = await fixture(); task.sessionId = uuid(6);
     const prompt = build(task, "windows"); expect(prompt).toContain("original native conversation");
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!).nativeSessionId).toBe(uuid(6));
+  });
+  it("does not serialize unrelated credential fields from the caller into the assignment", async () => {
+    const { task, build } = await fixture();
+    const withCredential = { ...task, serverToken: "fixture-private-token" };
+    const prompt = build(withCredential, "linux");
+    expect(prompt).not.toContain("fixture-private-token");
+    expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).not.toHaveProperty("serverToken");
   });
   it.each(["agent", "branch", "claim", "status"])("rejects mismatched %s before input", async (field) => {
     const { task, build } = await fixture();

@@ -17,7 +17,7 @@ func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 		ObservedAt: graph.ObservedAt.UTC(),
 		Summary: api.TaskGraphSummary{
 			Total: graph.Summary.Total, Todo: graph.Summary.Todo, InProgress: graph.Summary.InProgress,
-			Done: graph.Summary.Done, Ready: graph.Summary.Ready, Blocked: graph.Summary.Blocked,
+			Done: graph.Summary.Done, Cancelled: graph.Summary.Cancelled, Ready: graph.Summary.Ready, Blocked: graph.Summary.Blocked,
 		},
 		Tasks: make([]api.GraphTask, 0, len(graph.Tasks)),
 	}
@@ -26,7 +26,7 @@ func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 			ID: task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status),
 			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo,
 			CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
-			StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
+			StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt), CancelledAt: timestampResponse(task.CancelledAt),
 		})
 	}
 	return response
@@ -40,7 +40,7 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	values, err := httpx.QueryValues(request, "taskId")
+	values, err := httpx.QueryValues(request, "taskId", "include")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
@@ -50,11 +50,18 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 		httpx.WriteError(w, request, logger, "task_graph", "get", httpx.InvalidInput("task graph requires taskId"))
 		return
 	}
+	included, err := sessionIncluded(request)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "task_graph", "get", err)
+		return
+	}
+	if included {
+		h.observedGraph(w, request, principal, projectID, taskID)
+		return
+	}
 	graph, err := h.tasks.Graph(request.Context(), principal, projectID, taskID)
 	if err != nil {
-		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
-			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)
-		}
+
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}

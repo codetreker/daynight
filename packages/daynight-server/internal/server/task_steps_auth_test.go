@@ -1,114 +1,136 @@
 package server
 
 import (
-	"net/http"
-	"net/url"
-	"testing"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"io"
+	"net/http"
+	"testing"
+	"time"
 )
 
 func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
-	integration := newIdentityIntegration(t)
-	admin, member, outsider, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t), identityBrowser(t)
-	adminUser := integration.login(t, admin, "alice")
-	memberUser := integration.login(t, member, "bob")
-	integration.login(t, outsider, "nullable")
-	origin := map[string]string{"Origin": integration.server.URL}
-	_, data := identityRequest(t, admin, "POST", integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Steps auth", RepoURL: "https://example.com/steps", ExpectedUserID: adminUser.ID}), origin, 201)
-	project := identityDecode[api.Project](t, data)
-	base := "/api/v1/projects/" + project.ID
-	_, data = identityRequest(t, admin, "POST", integration.server.URL+base+"/invitations", invitationActorBody(adminUser.ID), origin, 201)
-	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
-	link, err := url.Parse(invitation.Link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identityRequest(t, member, "POST", integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, 200)
-	_, data = identityRequest(t, admin, "POST", integration.server.URL+base+"/tasks", `{"title":"Steps without Session"}`, origin, 201)
-	task := identityDecode[api.Task](t, data)
-	path := base + "/tasks/" + task.ID + "/steps"
-	for _, browser := range []*http.Client{admin, member} {
-		response, data := identityRequest(t, browser, "GET", integration.server.URL+path, "", nil, 200)
-		resource := identityDecode[api.StepsResource](t, data)
-		if response.Header.Get("Cache-Control") != "no-store" || resource.Steps == nil || len(resource.Steps) != 0 {
+	f, _, task := stepsHTTPFixture(t, io.Discard)
+	admin := defaultHTTPPrincipal()
+	admin.Kind = model.SessionCredential
+	member := model.Principal{UserID: "b6666666-6666-4666-8666-666666666666", CredentialID: "c7777777-7777-4777-8777-777777777777", Kind: model.SessionCredential}
+	outsider := model.Principal{UserID: "d8888888-8888-4888-8888-888888888888", CredentialID: "e9999999-9999-4999-8999-999999999999", Kind: model.SessionCredential}
+	anonymous := model.Principal{}
+	origin := configuredTestConfig().PublicOrigin
+	path := taskPath(task) + "/steps"
+	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
+	current := []model.TaskStep{}
+	for index, actor := range []model.Principal{admin, member} {
+		f.principal = actor
+		f.role = []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole}[index]
+		f.expectStepsRead(header, current)
+		response := f.authenticatedRequest(actor, "GET", path, "", "", 200, "")
+		resource := decodeResponse[api.StepsResource](t, response, 200)
+		if resource.Steps == nil || len(resource.Steps) != 0 {
 			t.Fatal("admin/member read failed")
 		}
 	}
 	for _, suffix := range []string{"", "/00000000"} {
 		for _, method := range []string{"GET", "HEAD", "POST"} {
-			response, data := identityRequest(t, anonymous, method, integration.server.URL+path+suffix, "", nil, 401)
-			if response.Header.Get("Cache-Control") != "no-store" || method == "HEAD" && len(data) != 0 {
-				t.Fatal("anonymous response metadata/body invalid")
+			f.store.ReadSnapshotCall, f.store.WriteProjectCall = nil, nil
+			response := f.authenticatedRequest(anonymous, method, path+suffix, "", "", 401, "")
+			if method == "HEAD" && response.Body.Len() != 0 {
+				t.Fatal("anonymous HEAD returned body")
 			}
 		}
-		_, data := identityRequest(t, outsider, "GET", integration.server.URL+path+suffix, "", nil, 404)
-		if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
-			t.Fatal("nonmember resource leaked")
-		}
+		f.expectStepAccessError(false)
+		f.authenticatedRequest(outsider, "GET", path+suffix, "", origin, 404, "not_found")
 	}
-	response, data := identityRequest(t, member, "HEAD", integration.server.URL+path, "", nil, 200)
-	if len(data) != 0 || response.Header.Get("Content-Type") != "application/json" || response.Header.Get("Daynight-User-ID") != memberUser.ID {
+	f.principal = member
+	f.role = model.ProjectMemberRole
+	f.expectStepsRead(header, current)
+	response := f.authenticatedRequest(member, "HEAD", path, "", "", 200, "")
+	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Daynight-User-ID") != member.UserID {
 		t.Fatal("HEAD lost identity/type or returned body")
 	}
-	body := `{"version":1,"id":"00000000","title":"Member add"}`
-	identityRequest(t, member, "POST", integration.server.URL+path, body, nil, 403)
-	identityRequest(t, member, "POST", integration.server.URL+path, body, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
-	_, data = identityRequest(t, outsider, "POST", integration.server.URL+path, body, origin, 404)
-	if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
-		t.Fatal("nonmember write leaked task")
+	deny := func(method, suffix, body string, anonymousCheck bool) {
+		f.store.ReadSnapshotCall, f.store.WriteProjectCall = nil, nil
+		if anonymousCheck {
+			f.authenticatedRequest(anonymous, method, path+suffix, body, "", 401, "unauthenticated")
+		}
+		f.authenticatedRequest(member, method, path+suffix, body, "", 403, "forbidden")
+		f.authenticatedRequest(member, method, path+suffix, body, "https://unrelated.invalid", 403, "forbidden")
+		f.expectStepAccessError(true)
+		f.authenticatedRequest(outsider, method, path+suffix, body, origin, 404, "not_found")
 	}
-	response, data = identityRequest(t, member, "POST", integration.server.URL+path, body, origin, 201)
-	added := identityDecode[api.StepsResource](t, data)
-	if added.Version != 2 || len(added.Steps) != 1 || response.Header.Get("Location") != path+"/00000000" {
+	body := `{"version":1,"id":"00000000","title":"Member add"}`
+	deny("POST", "", body, false)
+	at := f.observed
+	candidate := model.TaskStep{ID: "00000000", Position: 0, Title: "Member add", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
+	f.principal = member
+	f.role = model.ProjectMemberRole
+	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "add", Candidate: candidate, Observed: at})
+	response = f.authenticatedRequest(member, "POST", path, body, origin, 201, "")
+	added := decodeResponse[api.StepsResource](t, response, 201)
+	if added.Version != 2 || len(added.Steps) != 1 || response.Header().Get("Location") != path+"/00000000" {
 		t.Fatal("member could not add")
 	}
-	_, data = identityRequest(t, admin, "POST", integration.server.URL+path, `{"version":2,"id":"abcdef01","title":"Admin add"}`, origin, 201)
-	if identityDecode[api.StepsResource](t, data).Version != 3 {
+	current = []model.TaskStep{candidate}
+	header.Version = 2
+	at = at.Add(time.Minute)
+	candidate = model.TaskStep{ID: "abcdef01", Position: 1, Title: "Admin add", Status: model.TaskStepTodo, CreatedAt: at, UpdatedAt: at}
+	f.principal = admin
+	f.role = model.ProjectAdmin
+	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "add", Candidate: candidate, Observed: at})
+	if decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":2,"id":"abcdef01","title":"Admin add"}`, origin, 201, ""), 201).Version != 3 {
 		t.Fatal("admin could not add")
 	}
+	current = append(current, candidate)
+	header.Version = 3
 	for _, change := range []struct{ method, suffix, body string }{{"PATCH", "/00000000", `{"version":3,"description":"edited"}`}, {"PUT", "/00000000/status", `{"version":4,"status":"in_progress"}`}} {
-		identityRequest(t, anonymous, change.method, integration.server.URL+path+change.suffix, change.body, nil, 401)
-		identityRequest(t, member, change.method, integration.server.URL+path+change.suffix, change.body, nil, 403)
-		identityRequest(t, member, change.method, integration.server.URL+path+change.suffix, change.body, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
-		_, data = identityRequest(t, outsider, change.method, integration.server.URL+path+change.suffix, change.body, origin, 404)
-		if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
-			t.Fatal("nonmember change leaked task")
+		deny(change.method, change.suffix, change.body, true)
+		at = at.Add(time.Minute)
+		candidate = current[0]
+		candidate.UpdatedAt = at
+		if change.method == "PATCH" {
+			candidate.Description = "edited"
+		} else {
+			candidate.Status = model.TaskStepInProgress
 		}
-		_, data = identityRequest(t, member, change.method, integration.server.URL+path+change.suffix, change.body, origin, 200)
-		if len(identityDecode[api.StepsResource](t, data).Steps) != 2 {
+		f.principal = member
+		f.role = model.ProjectMemberRole
+		f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "change", Candidate: candidate, Observed: at})
+		changed := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, change.method, path+change.suffix, change.body, origin, 200, ""), 200)
+		if len(changed.Steps) != 2 {
 			t.Fatal("member change lost collection")
 		}
+		current[0] = candidate
+		header.Version++
 	}
 	moveBody := `{"version":5,"after":"ABCDEF01"}`
-	movePath := integration.server.URL + path + "/00000000/position"
-	identityRequest(t, anonymous, "PUT", movePath, moveBody, nil, 401)
-	identityRequest(t, member, "PUT", movePath, moveBody, nil, 403)
-	identityRequest(t, member, "PUT", movePath, moveBody, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
-	_, data = identityRequest(t, outsider, "PUT", movePath, moveBody, origin, 404)
-	if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
-		t.Fatal("nonmember move leaked task")
-	}
-	_, data = identityRequest(t, member, "PUT", movePath, moveBody, origin, 200)
-	moved := identityDecode[api.StepsResource](t, data)
+	deny("PUT", "/00000000/position", moveBody, true)
+	f.principal = member
+	f.role = model.ProjectMemberRole
+	at = at.Add(time.Minute)
+	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "move", ID: "00000000", From: 0, To: 1, Observed: at})
+	moved := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "PUT", path+"/00000000/position", moveBody, origin, 200, ""), 200)
 	if moved.Version != 6 || moved.Steps[1].ID != "00000000" {
-		t.Fatal("member could not move step")
+		t.Fatal("member could not move")
 	}
+	current = []model.TaskStep{current[1], current[0]}
+	current[0].Position = 0
+	current[1].Position = 1
+	header.Version = 6
 	deleteBody := `{"version":6}`
-	deletePath := integration.server.URL + path + "/ABCDEF01"
-	identityRequest(t, anonymous, "DELETE", deletePath, deleteBody, nil, 401)
-	identityRequest(t, member, "DELETE", deletePath, deleteBody, nil, 403)
-	identityRequest(t, member, "DELETE", deletePath, deleteBody, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
-	_, data = identityRequest(t, outsider, "DELETE", deletePath, deleteBody, origin, 404)
-	if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
-		t.Fatal("nonmember delete leaked task")
-	}
-	_, data = identityRequest(t, member, "DELETE", deletePath, deleteBody, origin, 200)
-	deleted := identityDecode[api.StepsResource](t, data)
+	deny("DELETE", "/ABCDEF01", deleteBody, true)
+	f.principal = member
+	f.role = model.ProjectMemberRole
+	at = at.Add(time.Minute)
+	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: current, Operation: "delete", ID: "abcdef01", From: 0, To: 1, Observed: at})
+	deleted := decodeResponse[api.StepsResource](t, f.authenticatedRequest(member, "DELETE", path+"/ABCDEF01", deleteBody, origin, 200, ""), 200)
 	if deleted.Version != 7 || len(deleted.Steps) != 1 || deleted.Steps[0].ID != "00000000" {
-		t.Fatal("member could not delete Step")
+		t.Fatal("member could not delete")
 	}
-	_, data = identityRequest(t, member, "POST", integration.server.URL+"/api/v1/me/tokens", `{"name":"Steps PAT","expiresAt":null}`, origin, 201)
-	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
-	identityRequest(t, anonymous, "GET", integration.server.URL+path, "", map[string]string{"Authorization": "Bearer " + token.Token}, 200)
+	current = []model.TaskStep{current[1]}
+	current[0].Position = 0
+	header.Version = 7
+	member.Kind = model.PATCredential
+	f.principal = member
+	f.expectStepsRead(header, current)
+	f.authenticatedRequest(member, http.MethodGet, path, "", "", 200, "")
 }

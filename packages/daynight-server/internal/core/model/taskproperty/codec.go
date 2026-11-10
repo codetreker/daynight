@@ -64,11 +64,11 @@ func Worker(properties model.TaskProperties) (*model.WorkerClaim, error) {
 	if !exists {
 		return nil, nil
 	}
-	value, err := NormalizeValue("worker", raw)
-	if err != nil {
+	var worker *model.WorkerClaim
+	if err := json.Unmarshal(raw, &worker); err != nil {
 		return nil, err
 	}
-	return decodeWorker(value)
+	return worker, nil
 }
 
 // EncodeWorker encodes a worker claim for normalization and storage.
@@ -81,11 +81,11 @@ func PullRequests(properties model.TaskProperties) ([]model.PullRequestProperty,
 	if !exists {
 		return nil, nil
 	}
-	value, err := NormalizeValue("pullRequests", raw)
-	if err != nil {
+	var values []model.PullRequestProperty
+	if err := json.Unmarshal(raw, &values); err != nil {
 		return nil, err
 	}
-	return decodePullRequests(value)
+	return values, nil
 }
 
 func decodePullRequests(raw []byte) ([]model.PullRequestProperty, error) {

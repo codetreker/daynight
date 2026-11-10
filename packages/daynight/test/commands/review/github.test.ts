@@ -8,6 +8,7 @@ import {
   type CommandExecutor, type CommandOptions, type CommandResult, type GitHubRepository,
 } from "../../../src/commands/review/adapters/github.js";
 import { openStore, type Store } from "../../../src/commands/review/store.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 
 const configuration: RepositoryConfiguration = {
   coordinate: "github.com/owner/repo", host: "github.com", owner: "owner", name: "repo",
@@ -64,7 +65,7 @@ const fixtures: { directory: string; store: Store }[] = [];
 const fixture = () => {
   mkdirSync(fixtureRoot, { recursive: true });
   const directory = mkdtempSync(path.join(fixtureRoot, "GitHub 状态 "));
-  const store = openStore(path.join(directory, "state.sqlite"));
+  const store = openStore(createMemoryDatabase());
   fixtures.push({ directory, store });
   const initialize = (cutoff = 10) => {
     store.registerRepository({ ...repository, remote: configuration.remote, localPath: configuration.path });

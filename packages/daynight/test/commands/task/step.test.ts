@@ -42,6 +42,7 @@ describe("Steps read command", () => {
     await runTaskCommand(args, f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenCalledOnce();
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Usage: daynight task step");
+    if (args[1] === "list" || args[1] === "show") expect(f.context.stdout.mock.calls[0]![0]).not.toContain("--if-version");
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
   });
@@ -63,6 +64,18 @@ describe("Steps read command", () => {
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
     expect(f.context.stderr.mock.calls[0]![0]).toMatch(/^Invalid Step command arguments\./);
     expect(f.context.stderr.mock.calls[0]![0]).not.toContain("private");
+  });
+
+  it.each([
+    { args: ["list", "bad"], diagnostic: "task-id must be a hyphenated UUID" },
+    { args: ["show", taskId, "abc"], diagnostic: "step-id must contain exactly eight hexadecimal characters" },
+    { args: ["list", taskId, "--project", "bad"], diagnostic: "project-id must be a hyphenated UUID" },
+  ])("rejects malformed read identity at the CLI boundary without I/O: $args", async ({ args, diagnostic }) => {
+    const f = fixture();
+    expect(await runCli(["task", "step", ...args], f.context)).toBe(2);
+    expect(f.context.stderr.mock.calls[0]![0]).toContain(diagnostic);
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
+    expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
   });
 
   it("reads one complete explicit-project collection outside a repository without parent pre-reads", async () => {
@@ -90,6 +103,30 @@ describe("Steps read command", () => {
     expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(resource);
   });
 
+  it("prints the complete empty Steps resource as JSON", async () => {
+    const f = fixture();
+    const empty = { ...resource, steps: [] };
+    f.fetch.mockResolvedValue(json(empty));
+    await runTaskCommand(["step", "list", taskId, "--project", projectId, "--json"], f.context, f.dependencies);
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(empty);
+  });
+
+  it("prints complete list and show details with escaped terminal controls", async () => {
+    const f = fixture();
+    const title = `${"long-title-".repeat(40)}\u001b[31m\nInjected label`;
+    const description = `完整 Markdown\n${"Markdown-line-中文-".repeat(256)}end-of-markdown\u001b[32m\r\u2028\u2029`;
+    const detailed = { ...step, title, description };
+    f.fetch.mockResolvedValueOnce(json({ ...resource, steps: [detailed, resource.steps[1]!] })).mockResolvedValueOnce(json({ projectId, taskId, version: resource.version, step: detailed }));
+    await runTaskCommand(["step", "list", taskId, "--project", projectId], f.context, f.dependencies);
+    await runTaskCommand(["step", "show", taskId, detailed.id, "--project", projectId], f.context, f.dependencies);
+    const [list, show] = f.context.stdout.mock.calls.map(([output]) => output);
+    for (const field of [taskId, "9007199254740993", "Steps: 2", "1. 00abcdef", "2. 00000000", "long-title-".repeat(40), "\\u001b[31m", "\\nInjected label"]) expect(list).toContain(field);
+    for (const field of [taskId, "9007199254740993", "00abcdef", "long-title-".repeat(40), "完整 Markdown", "Markdown-line-中文-".repeat(256), "end-of-markdown", "\\u001b[32m", detailed.createdAt, detailed.updatedAt]) expect(show).toContain(field);
+    for (const text of [list!, show!]) expect(text).not.toMatch(/[\u001b\r\u2028\u2029]/);
+    expect(f.fetch.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${detailed.id}`]);
+  });
+
   it("preserves escaped public service diagnostics and login guidance without dumping internal causes", async () => {
     const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: "unauthenticated", message: "Sign in\nwith a fresh credential\u001b[31m\u202e", requestId: "steps-read-401", details: { taskIds: [taskId] } } }, 401));
     const error = await runTaskCommand(["step", "show", taskId, "00abcdef", `--project=${projectId}`], f.context, f.dependencies).catch((cause: unknown) => cause);
@@ -99,9 +136,36 @@ describe("Steps read command", () => {
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledOnce();
   });
 
-  it.each([401, 404, 405, 410, 500])("never replaces HTTP%s with an empty resource or a replay", async (status) => {
-    const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: status === 410 ? "task_deleted" : "not_found", message: "Resource is unavailable.", requestId: "steps-error" } }, status));
-    await expect(runTaskCommand(["step", "list", taskId, `--project=${projectId}`, "--json"], f.context, f.dependencies)).rejects.toMatchObject({ exitCode: 1 });
+  it.each([401, 404, 405, 410, 500, 501])("never replaces HTTP%s with an empty resource or a replay", async (status) => {
+    const f = fixture(); const code = status === 410 ? "task_deleted" : status === 501 ? "not_implemented" : "not_found";
+    f.fetch.mockResolvedValue(json({ error: { code, message: "Resource is unavailable.", requestId: "steps-error" } }, status));
+    const error = await runTaskCommand(["step", "list", taskId, `--project=${projectId}`, "--json"], f.context, f.dependencies).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ exitCode: 1 }); expect(formatError(error)).toContain(code); expect(formatError(error)).toContain("steps-error");
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { action: ["show", taskId, "22222222"], status: 404, code: "not_found" },
+    { action: ["list", taskId], status: 404, code: "not_found" },
+    { action: ["list", taskId], status: 410, code: "task_deleted" },
+    { action: ["list", taskId], status: 401, code: "unauthenticated" },
+  ])("exposes $code for a read at the CLI boundary without output or replay", async ({ action, status, code }) => {
+    const f = fixture();
+    f.fetch.mockResolvedValue(json({ error: { code, message: "Resource unavailable.", requestId: "read-refusal" } }, status));
+    const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    expect(await runCli(["task", "step", ...action, "--project", projectId, "--json"], f.context, registry)).toBe(1);
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
+    const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+    expect(diagnostic).toContain(`code=${code}`); expect(diagnostic).not.toContain("Caused by:");
+    if (status === 401) { expect(diagnostic).toContain("daynight login"); expect(diagnostic).toContain("status=401"); }
+    expect(f.fetch).toHaveBeenCalledOnce(); expect(f.fetch.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it.each([{ ...resource, projectId: taskId }, { ...resource, version: "1" }])("reports an invalid collection as a protocol failure without output or replay %#", async (value) => {
+    const f = fixture(); f.fetch.mockResolvedValue(json(value));
+    const error = await runTaskCommand(["step", "list", taskId, `--project=${projectId}`, "--json"], f.context, f.dependencies).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ exitCode: 1 }); expect(formatError(error)).toContain("phase=protocol");
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledOnce();
   });
 

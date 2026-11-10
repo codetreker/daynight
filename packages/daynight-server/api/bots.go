@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Bot omits the entire definition once only deletion responsibility is visible.
 type Bot struct {
@@ -26,17 +29,21 @@ type BotDefinition struct {
 }
 
 type BotOverrides struct {
-	WorkerID *string `json:"workerId,omitempty"`
-	Cwd      *string `json:"cwd,omitempty"`
-	Provider *string `json:"provider,omitempty"`
+	WorkerID        *string `json:"workerId,omitempty"`
+	Cwd             *string `json:"cwd,omitempty"`
+	Provider        *string `json:"provider,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
 }
 
 type BotConfiguration struct {
-	WorkerID string   `json:"workerId"`
-	Cwd      string   `json:"cwd"`
-	Provider string   `json:"provider"`
-	Model    *string  `json:"model"`
-	Args     []string `json:"args"`
+	WorkerID        string        `json:"workerId"`
+	Cwd             string        `json:"cwd"`
+	Provider        string        `json:"provider"`
+	Model           *string       `json:"model"`
+	Args            []string      `json:"args"`
+	ReasoningEffort *string       `json:"reasoningEffort,omitempty"`
+	Selection       *BotSelection `json:"selection,omitempty"`
 }
 
 type BotRoleConfiguration struct {
@@ -79,4 +86,24 @@ type BotWorkerDefaults struct {
 	Reason        *string                   `json:"reason"`
 	Configuration *BotConfiguration         `json:"configuration"`
 	Providers     []WorkerAssistantProvider `json:"providers"`
+}
+
+type BotSelection struct {
+	SchemaVersion           int    `json:"schemaVersion"`
+	ModelSource             string `json:"modelSource"`
+	ReasoningEffortSource   string `json:"reasoningEffortSource"`
+	ConfigurationGeneration string `json:"configurationGeneration,omitempty"`
+	CatalogGeneration       string `json:"catalogGeneration,omitempty"`
+}
+
+// MarshalJSON retains the old wire shape while making native effort explicit in v1 snapshots.
+func (c BotConfiguration) MarshalJSON() ([]byte, error) {
+	type plain BotConfiguration
+	if c.Selection == nil {
+		return json.Marshal(plain(c))
+	}
+	return json.Marshal(struct {
+		plain
+		ReasoningEffort *string `json:"reasoningEffort"`
+	}{plain(c), c.ReasoningEffort})
 }

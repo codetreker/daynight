@@ -39,13 +39,13 @@ func (h *taskStepsHandler) change(w http.ResponseWriter, request *http.Request, 
 		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, allowed...)
-	if request.Context().Err() != nil {
-		refuse(request.Context().Err())
-		return
-	}
+	fields, err := h.decodeObject(w, request, allowed...)
 	if err != nil {
 		refuse(err)
+		return
+	}
+	if request.Context().Err() != nil {
+		refuse(request.Context().Err())
 		return
 	}
 	var result taskservice.StepsWriteResult

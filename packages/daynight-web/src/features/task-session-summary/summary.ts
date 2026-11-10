@@ -2,8 +2,6 @@ import type { SessionSnapshot } from '../../api/types';
 
 export type SessionIndicator = 'working' | 'notice' | 'warning';
 export type TaskSessionSummary = {
-  readonly sessionId: string;
-  readonly claimId: string;
   readonly indicator: SessionIndicator | null;
 };
 

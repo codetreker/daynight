@@ -1,7 +1,6 @@
 import type {
   Attachment,
   AttachmentPage,
-  GraphLimitDetails,
   GraphTask,
   Project,
   ProjectPage,
@@ -13,7 +12,7 @@ import { parseProjectOwnership } from "./team-parse";
 import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
-import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
+import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, taskStatusFields, string, timestamp } from "./validation";
 import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
@@ -60,7 +59,7 @@ const graphTask = (value: unknown): GraphTask => {
     id: id(data.id),
     titlePreview: string(data.titlePreview),
     titleTruncated: boolean(data.titleTruncated),
-    status: status(data.status),
+    ...taskStatusFields(data),
     ...taskDependencies(data),
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
@@ -81,10 +80,11 @@ const summary = (value: unknown): TaskGraphSummary => {
     todo: count(data.todo),
     inProgress: count(data.inProgress),
     done: count(data.done),
+    cancelled: count(data.cancelled),
     ready: count(data.ready),
     blocked: count(data.blocked),
   };
-  if (parsed.total !== parsed.todo + parsed.inProgress + parsed.done || parsed.todo !== parsed.ready + parsed.blocked) return malformed();
+  if (parsed.total !== parsed.todo + parsed.inProgress + parsed.done + parsed.cancelled || parsed.todo !== parsed.ready + parsed.blocked) return malformed();
   return parsed;
 };
 
@@ -107,7 +107,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     title: nonemptyString(data.title),
     description: string(data.description),
     properties: parseTaskProperties(data.properties),
-    status: status(data.status),
+    ...taskStatusFields(data),
     version,
     ...taskDependencies(data),
     blockedBy: ids(data.blockedBy),
@@ -125,16 +125,16 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
   readTaskPaused(parsed.properties);
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (worker?.state === "released" && parsed.status !== "todo") return malformed();
+  if (worker?.state === "released" && parsed.status !== "todo" && parsed.status !== "cancelled") return malformed();
   return parsed;
 };
 
 export type ServerError = {
   readonly code: string;
   readonly requestId: string;
-  readonly graphLimit?: GraphLimitDetails;
   readonly serverMessage?: string;
   readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
+  readonly writeOutcome?: "not_committed";
 };
 
 export const parseServerError = (value: unknown, includeSteps = false): ServerError => {
@@ -143,23 +143,15 @@ export const parseServerError = (value: unknown, includeSteps = false): ServerEr
   const requestId = string(data.requestId);
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(code) || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(requestId)) return malformed();
   const message = string(data.message);
+  const detailsValue = data.details;
+  const writeOutcome = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue) &&
+    (detailsValue as Record<string, unknown>).writeOutcome === "not_committed" ? "not_committed" as const : undefined;
+  const withOutcome = (error: ServerError): ServerError => writeOutcome === undefined ? error : { ...error, writeOutcome };
   if (includeSteps && code === "steps_limit_exceeded") {
     const details = record(data.details);
-    return { code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } };
+    return withOutcome({ code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } });
   }
-  if (includeSteps && code !== "graph_limit_exceeded") return { code, requestId, serverMessage: message };
-  if (code !== "graph_limit_exceeded") return { code, requestId };
-  const details = record(data.details);
-  return {
-    code,
-    requestId,
-    graphLimit: {
-      nodeCount: count(details.nodeCount),
-      edgeCount: count(details.edgeCount),
-      maxNodes: count(details.maxNodes),
-      maxEdges: count(details.maxEdges),
-    },
-  };
+  return withOutcome({ code, requestId, ...(includeSteps ? { serverMessage: message } : {}) });
 };
 
 export const isAttachmentPath = (value: string): boolean =>

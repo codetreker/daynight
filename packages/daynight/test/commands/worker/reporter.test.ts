@@ -1,13 +1,18 @@
+import { ChildProcess } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import type { WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError } from "../../../src/api/client.js";
+import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport, WorkerTaskReference, WorkerTelemetry } from "../../../src/api/types.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
-import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
+import type { WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
+import { HerdrCommandCleanupError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 const timestamp = "2026-10-29T00:00:00.000Z";
 const telemetry: WorkerTelemetry = {
   machine: { id: "machine", name: "machine" }, platform: "linux", workingDirectory: "/worker", sampledAt: timestamp,
@@ -33,6 +38,24 @@ const fixture = () => {
 };
 const settle = async () => { await vi.advanceTimersByTimeAsync(0); };
 const claim = (taskId = "task", claimId = "claim"): WorkerTaskReference => ({ projectId: "project", taskId, claimId });
+
+const timedOutProbe = async (terminationFailure?: Error) => {
+  vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+  const child = new ChildProcess();
+  // A throwing PID read fails the real termination path on every platform
+  // without signaling an OS process owned by another test.
+  if (terminationFailure !== undefined) Object.defineProperty(child, "pid", { get: () => { throw terminationFailure; } });
+  const spawn = vi.fn(() => child);
+  const operation = createOperation({ limits: { totalMs: 100, requestMs: 10 } });
+  try {
+    const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, operation, spawn, { cleanupWithinDeadline: true })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(100);
+    const error = await result;
+    expect(error).toBeInstanceOf(HerdrCommandCleanupError);
+    return { child, error, spawn };
+  } finally { operation.dispose(); }
+};
 
 it("reports immediately and every thirty seconds without a task polling loop", async () => {
   const f = fixture(), reporter = f.start();
@@ -69,6 +92,35 @@ it("keeps a claim grant unknown until a complete inventory establishes its obser
   reporter.recordClaim(claim()); await settle();
   reporter.recordClaim(claim("task", "replacement")); await settle();
   expect(f.send.mock.calls[4]![0].taskInventory).toEqual({ observedAt: timestamp, claims: [claim("task", "replacement")] });
+  await reporter.stop();
+});
+
+it("marks an oversized inventory unavailable without truncation and resumes after a complete bounded observation", async () => {
+  const f = fixture(), reporter = f.start(); await settle();
+  const claims = Array.from({ length: 256 }, (_, n) => claim(String(n)));
+  reporter.publishInventory({ observedAt: timestamp, claims }); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory?.claims).toHaveLength(256);
+  reporter.recordClaim(claim("new")); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory).toBeNull();
+  expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" }));
+  reporter.publishInventory({ observedAt: timestamp, claims: [...claims, claim("new")] }); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory).toBeNull();
+  reporter.publishInventory({ observedAt: timestamp, claims }); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory?.claims).toEqual(claims);
+  expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_recovered" }));
+  await reporter.stop();
+});
+
+it("invalidates a complete observation during partial coverage until coverage is restored", async () => {
+  const f = fixture(), reporter = f.start(); await settle();
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] }); await settle();
+  reporter.publishInventory(null); await settle();
+  reporter.recordClaim(claim("new")); await settle();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(f.send.mock.calls.slice(2).map(([report]) => report.taskInventory)).toEqual([null, null, null]);
+  expect(f.send.mock.calls[4]![0].machine).toEqual(telemetry.machine);
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("new")] }); await settle();
+  expect(f.send.mock.calls[5]![0].taskInventory).toEqual({ observedAt: timestamp, claims: [claim("new")] });
   await reporter.stop();
 });
 
@@ -232,6 +284,115 @@ it("preserves each distinct cleanup failure without accumulating repeated cached
   await expect(stopped).rejects.toMatchObject({ errors: [codex, copilot] });
 });
 
+it.each(["direct", "nested"] as const)("finishes after the original child confirms a retained %s cleanup timeout", async (kind) => {
+  const f = fixture(), probe = await timedOutProbe();
+  const failure = kind === "direct" ? probe.error : new Error("Version collection failed", {
+    cause: new AggregateError([probe.error], "Probe failed", { cause: probe.error }),
+  });
+  f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: failure }] });
+  const reporter = f.start(); await settle(); await vi.advanceTimersByTimeAsync(60_000);
+  expect(f.send).toHaveBeenCalledTimes(3);
+  expect(f.emit).toHaveBeenCalledOnce();
+  expect(probe.child.listenerCount("close")).toBe(1);
+  probe.child.emit("close", null, "SIGKILL");
+  await expect(reporter.stop()).resolves.toBeUndefined();
+  reporter.trigger(); reporter.publishInventory({ observedAt: timestamp, claims: [] }); reporter.recordClaim(claim());
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(f.collect).toHaveBeenCalledTimes(3); expect(f.send).toHaveBeenCalledTimes(3);
+  expect(probe.spawn).toHaveBeenCalledOnce();
+  expect(probe.child.listenerCount("close")).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each(["no close", "exit only", "another child", "termination failed", "legacy error"] as const)(
+  "refuses to finish when cleanup has %s",
+  async (kind) => {
+    const f = fixture(), terminationFailure = new Error("Cannot terminate owned process");
+    const probe = await timedOutProbe(kind === "termination failed" ? terminationFailure : undefined);
+    const failure = kind === "legacy error" ? new HerdrCommandCleanupError([new Error("Cleanup has no acknowledgement")], undefined) : probe.error;
+    f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: failure }] });
+    const reporter = f.start(); await settle();
+    if (kind === "exit only") probe.child.emit("exit", 0, null);
+    if (kind === "another child") new ChildProcess().emit("close", 0, null);
+    if (kind === "termination failed" || kind === "legacy error") probe.child.emit("close", null, "SIGKILL");
+    await expect(reporter.stop()).rejects.toBe(failure);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.collect).toHaveBeenCalledOnce(); expect(probe.spawn).toHaveBeenCalledOnce();
+    if (kind === "termination failed") expect((probe.error as AggregateError).errors).toContain(terminationFailure);
+    probe.child.emit("close", null, "SIGKILL");
+  },
+);
+
+it.each(["unconfirmed sibling", "independent member", "independent cause"] as const)(
+  "retains a mixed aggregate with an %s after another cleanup is confirmed",
+  async (kind) => {
+    const f = fixture(), confirmed = await timedOutProbe(), pending = await timedOutProbe();
+    const independent = new Error("Independent collection failure");
+    const failure = new AggregateError(
+      [new Error("Probe wrapper", { cause: confirmed.error }), ...(kind === "unconfirmed sibling" ? [pending.error] : kind === "independent member" ? [independent] : [])],
+      "Collection failed",
+      kind === "independent cause" ? { cause: independent } : undefined,
+    );
+    f.collect.mockRejectedValue(failure);
+    const reporter = f.start(); await settle();
+    confirmed.child.emit("close", null, "SIGKILL");
+    await expect(reporter.stop()).rejects.toBe(failure);
+    expect(f.send).not.toHaveBeenCalled();
+    pending.child.emit("close", null, "SIGKILL");
+  },
+);
+
+it("retains a diagnostic failure after the reported cleanup is confirmed", async () => {
+  const f = fixture(), probe = await timedOutProbe(), diagnosticFailure = new Error("Diagnostic sink failed");
+  f.emit.mockImplementation(() => { throw diagnosticFailure; });
+  f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] });
+  const reporter = f.start(); await settle();
+  probe.child.emit("close", null, "SIGKILL");
+  await expect(reporter.stop()).rejects.toBe(diagnosticFailure);
+  expect(f.send).toHaveBeenCalledOnce();
+});
+
+it.each(["confirmed", "unconfirmed", "independent failure"] as const)(
+  "evaluates %s cleanup after joining collection during stop",
+  async (kind) => {
+    const f = fixture(), probe = await timedOutProbe(), blocked = deferred<WorkerTelemetrySample>();
+    f.collect.mockResolvedValueOnce({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] })
+      .mockImplementationOnce(() => blocked.promise);
+    const reporter = f.start(); await settle(); reporter.trigger(); await settle();
+    reporter.trigger(); reporter.publishInventory({ observedAt: timestamp, claims: [] });
+    let finished = false;
+    const stopping = reporter.stop().then(() => { finished = true; return undefined; }, (error: unknown) => { finished = true; return error; });
+    await settle(); expect(finished).toBe(false);
+    const operation = f.collect.mock.calls[1]![0];
+    expect(operation.signal.aborted).toBe(true);
+    if (kind !== "unconfirmed") probe.child.emit("close", null, "SIGKILL");
+    else probe.child.emit("exit", 0, null);
+    const failure = new AggregateError([operation.signal.reason, probe.error,
+      ...(kind === "independent failure" ? [new Error("Independent shutdown failure")] : [])], "Collection interrupted");
+    blocked.reject(failure);
+    const result = await stopping;
+    if (kind === "confirmed") expect(result).toBeUndefined();
+    else if (kind === "independent failure") expect(result).toBe(failure);
+    else expect(result).toMatchObject({ errors: [probe.error, failure] });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(f.collect).toHaveBeenCalledTimes(2); expect(f.send).toHaveBeenCalledOnce();
+    expect(probe.spawn).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+    probe.child.emit("close", null, "SIGKILL");
+  },
+);
+
+it("accepts an already confirmed cleanup issue returned while stopping", async () => {
+  const f = fixture(), probe = await timedOutProbe(), blocked = deferred<WorkerTelemetrySample>();
+  f.collect.mockImplementationOnce(() => blocked.promise);
+  const reporter = f.start();
+  const stopping = reporter.stop();
+  probe.child.emit("close", null, "SIGKILL");
+  blocked.resolve({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] });
+  await expect(stopping).resolves.toBeUndefined();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(f.collect).toHaveBeenCalledOnce(); expect(f.send).not.toHaveBeenCalled();
+});
+
 it("retries a fresh collection after an ordinary aggregate failure", async () => {
   const f = fixture();
   f.collect.mockRejectedValueOnce(new AggregateError([new Error("private")], "ordinary collection failure"));
@@ -255,8 +416,105 @@ it("starts no work when its root signal is already cancelled", async () => {
   expect(f.collect).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
 });
 
-const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
 const cloudDesired = { revision: "1", updatedAt: timestamp, value: cloudValue };
+
+it("drains a finite prompt cycle on the same reporter and stops after unchanged values", async () => {
+  const f = fixture();
+  const userId = "11111111-1111-4111-8111-111111111111", workerId = "22222222-2222-4222-8222-222222222222";
+  const projects = ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555"];
+  const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId, workerId });
+  source.setDemand(projects);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation, selectors?: readonly WorkerPromptSelector[]) => ({
+    observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt,
+    prompts: { ok: true as const, results: selectors!.map(selector => selector.knownRevision === null
+      ? { key: selector.key, status: "value" as const, value: { scope: selector.key.scope, scopeId: selector.key.scope === "project" ? selector.key.projectId : selector.key.scope === "user" ? userId : workerId, revision: "0", text: "", updatedAt: null } }
+      : { key: selector.key, status: "unchanged" as const, revision: selector.knownRevision }) },
+  }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
+  await settle();
+  expect(send.mock.calls.map(call => call[3]!.length)).toEqual([3, 2]);
+  expect(source.current(projects[0]!)?.project.revision).toBe("0");
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(send.mock.calls.map(call => call[3]!.length)).toEqual([3, 2, 3, 2]);
+  await vi.advanceTimersByTimeAsync(1_000); expect(send).toHaveBeenCalledTimes(4);
+  await reporter.stop(); source.close();
+});
+
+it("ends prompt catchup on a global read failure while retaining the native acknowledgement", async () => {
+  const f = fixture();
+  const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId: "11111111-1111-4111-8111-111111111111", workerId: "22222222-2222-4222-8222-222222222222" });
+  source.setDemand(["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const accept = vi.fn(async () => {});
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation, selectors?: readonly WorkerPromptSelector[]) => ({
+    observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt,
+    prompts: { ok: true as const, results: selectors!.map(selector => ({ key: selector.key, status: "error" as const, error: "timeout" as const })) },
+  }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept, prompts: source } });
+  await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(29_999); expect(send).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1); expect(send).toHaveBeenCalledTimes(2);
+  await reporter.stop(); source.close();
+});
+
+it("does not retry a failed prompt batch when a new demand arrived in flight", async () => {
+  const f = fixture();
+  const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId: "11111111-1111-4111-8111-111111111111", workerId: "22222222-2222-4222-8222-222222222222" });
+  const blocked = deferred<WorkerCloudReportReceipt>();
+  const send = vi.fn((_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => blocked.promise);
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
+  await settle();
+  source.setDemand(["33333333-3333-4333-8333-333333333333"]); reporter.demandChanged();
+  blocked.reject(new Error("network")); await settle();
+  expect(send).toHaveBeenCalledOnce();
+  source.setDemand(["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]); reporter.demandChanged();
+  await settle(); expect(send).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(30_000); expect(send).toHaveBeenCalledTimes(2);
+  await reporter.stop(); source.close();
+});
+
+it("uses the latest inventory after a delayed cloud configuration preparation", async () => {
+  const f = fixture(), preparation = deferred<void>();
+  const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
+  const capture = () => ({ bootstrap: null, observation: null });
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { prepare, capture, send, accept: async () => {} } });
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim()] });
+  await settle();
+  reporter.publishInventory(null);
+  preparation.resolve(); await settle();
+  expect(send.mock.calls[0]![0].taskInventory).toBeNull();
+  await reporter.stop();
+});
+
+it("keeps partial inventory invalidated while a timed-out probe is confirmed during configuration preparation", async () => {
+  const f = fixture(), probe = await timedOutProbe(), preparation = deferred<void>();
+  f.collect.mockResolvedValueOnce({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] })
+    .mockResolvedValue({ telemetry, issues: [] });
+  const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { prepare, capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {} } });
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] });
+  await settle();
+  reporter.publishInventory(null);
+  reporter.recordClaim(claim("new"));
+  probe.child.emit("close", null, "SIGKILL");
+  preparation.resolve(); await settle();
+  expect(send.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(send.mock.calls.map(([report]) => report.taskInventory)).toEqual([null, null]);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed", "worker_report_recovered"]);
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("new")] }); await settle();
+  expect(send.mock.lastCall![0].taskInventory).toEqual({ observedAt: timestamp, claims: [claim("new")] });
+  await expect(reporter.stop()).resolves.toBeUndefined();
+});
 
 it("exchanges cloud configuration without a task inventory and acknowledges only the sent immutable snapshot", async () => {
   const f = fixture();
@@ -307,7 +565,7 @@ it("captures current configuration after an unknown send outcome instead of repl
 
 it("keeps bootstrap reporting independent of runtime application and joins receipt commits on shutdown", async () => {
   const f = fixture(), committed = deferred<void>();
-  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
   const capture = vi.fn(() => ({ bootstrap, observation: null }));
   const receipt = { desired: { revision: "1", updatedAt: timestamp, value: bootstrap }, observationRevision: "0", observationAccepted: false };
   const send = vi.fn(async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));

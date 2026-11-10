@@ -68,17 +68,25 @@ const diagnostic = (stage: string, elapsedMs: number, failure: unknown): void =>
   };
   console.error(JSON.stringify({ fixture: "bot-process-integration", stage, elapsedMs, error: describe(failure) }));
 };
-afterEach(async ({ task }) => {
-  const errors: unknown[] = [];
-  const diagnostics = failureDiagnostics.splice(0);
-  if (task.result?.state === "fail") for (const collect of diagnostics) try { await collect(); } catch (error) { errors.push(error); }
-  for (const cleanup of cleanups.splice(0).reverse()) try { await cleanup(); } catch (error) { errors.push(error); }
-  vi.restoreAllMocks(); vi.unstubAllEnvs();
-  if (errors.length) throw new AggregateError(errors, "Bot integration resources did not close safely.");
-}, cleanupHookTimeout);
+const teardownIsolationDefaultTimeout = 100;
+// Vitest captures the fallback deadline when the hook is registered. A short
+// fallback keeps the isolation regression sensitive to a missing owner budget.
+vi.setConfig({ hookTimeout: teardownIsolationDefaultTimeout });
+try {
+  afterEach(async ({ task }) => {
+    const errors: unknown[] = [];
+    const diagnostics = failureDiagnostics.splice(0);
+    if (task.result?.state === "fail") for (const collect of diagnostics) try { await collect(); } catch (error) { errors.push(error); }
+    for (const cleanup of cleanups.splice(0).reverse()) try { await cleanup(); } catch (error) { errors.push(error); }
+    vi.restoreAllMocks(); vi.unstubAllEnvs();
+    if (errors.length) throw new AggregateError(errors, "Bot integration resources did not close safely.");
+  }, cleanupHookTimeout);
+} finally {
+  vi.resetConfig();
+}
 
 // These adjacent cases exercise Vitest's actual hook scheduling. The first
-// teardown crosses the runner's default 10-second hook deadline; the next case
+// teardown crosses the hook's captured fallback deadline; the next case
 // must retain both its environment and mock until its own teardown starts.
 describe("fixture teardown isolation", { concurrent: false, shuffle: false }, () => {
   let teardownCompleted = false;
@@ -87,14 +95,14 @@ describe("fixture teardown isolation", { concurrent: false, shuffle: false }, ()
   test("joins cleanup beyond the default hook deadline", () => {
     vi.stubEnv("DN_CONFIG_DIR", path.join(home, "first-state"));
     vi.spyOn(subject, "read").mockReturnValue("first");
-    cleanups.push(async () => { await delay(11_000); teardownCompleted = true; });
+    cleanups.push(async () => { await delay(300); teardownCompleted = true; });
   });
   test("keeps the next parent's ticket path aligned with its prepared child", async () => {
     const state = path.join(home, "second-state"), launchId = randomUUID();
     vi.stubEnv("DN_CONFIG_DIR", state);
     vi.spyOn(subject, "read").mockReturnValue("second");
     const preparedEnvironment = { ...process.env, DN_CONFIG_DIR: state };
-    await delay(1500);
+    await delay(350);
     const childTicket = path.join(resolveConfigurationPaths(home, path, preparedEnvironment).stateDirectory, "controller", "launches", `${launchId}.json`);
     expect(controllerTicketPath(home, launchId)).toBe(childTicket);
     expect(subject.read()).toBe("second");
@@ -118,11 +126,16 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
+  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
   const nativeFixture = path.join(home, "codex-native.mjs");
-  await writeFile(nativeFixture, (await readFile(path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"), "utf8")).replaceAll("native-thread", nativeId));
+  // The copied fixture runs outside this package's dependency tree.
+  const nativeSource = (await readFile(path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"), "utf8"))
+    .replace("from 'better-sqlite3'", `from ${JSON.stringify(import.meta.resolve("better-sqlite3"))}`)
+    .replaceAll("native-thread", nativeId);
+  await writeFile(nativeFixture, nativeSource);
   const providerURL = pathToFileURL(path.join(dist, "commands/controller/providers/codex.js")).href;
   const runtimeURL = pathToFileURL(path.join(dist, "commands/controller/runtime.js")).href;
   const wrapper = path.join(packageDirectory, "provider.mjs"), wrapperURL = pathToFileURL(wrapper).href;
@@ -275,7 +288,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
       executions.close(); store.close();
       if (stopped) {
-        if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(home, bot.id)), { recursive: true, force: true });
+        if (socketDirectory !== null) await rm(socketDirectory, { recursive: true, force: true });
         await rm(home, { recursive: true, force: true });
       }
     }

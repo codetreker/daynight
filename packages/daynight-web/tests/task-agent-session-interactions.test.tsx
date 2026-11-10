@@ -14,6 +14,7 @@ describe('native session interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
     expect(respond).toHaveBeenCalledWith({ kind: 'approval', action: 'allow_once' });
     expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+    expect(screen.queryByRole('status')).toBeNull();
     settle();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull());
     expect(screen.getByText('Resolved')).toBeVisible();
@@ -49,5 +50,47 @@ describe('native session interactions', () => {
     const respond = vi.fn();
     render(<SessionInteractionCard interaction={{ ...base, state: 'expired', kind: 'approval', detail: 'Expired', actions: ['allow_once'] }} enabled onRespond={respond} />);
     expect(screen.queryByRole('button')).toBeNull();
+  });
+  it.each(['resolved', 'expired'] as const)('keeps %s approval requests collapsed, readable and non-actionable', state => {
+    const respond = vi.fn();
+    const detail = 'notes/review.txt\n+ approval card check <literal>';
+    const view = render(<SessionInteractionCard interaction={{ ...base, state, kind: 'approval', detail, actions: ['allow_once', 'reject'] }} enabled={false} onRespond={respond} />);
+    expect(screen.getByText(state === 'resolved' ? 'Resolved' : 'Expired')).toBeVisible();
+    const toggle = screen.getByText('Show request');
+    const disclosure = toggle.closest('details')!;
+    expect(disclosure).not.toHaveAttribute('open');
+    fireEvent.click(toggle);
+    expect(disclosure).toHaveAttribute('open');
+    const content = screen.getByRole('region', { name: 'Request content' });
+    expect(content.textContent).toBe(detail);
+    expect(content).toHaveAttribute('tabindex', '0');
+    expect(content.querySelector('input, button, select, textarea, form')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    view.setLocale('zh-CN');
+    expect(screen.getByText('查看请求内容')).toBeVisible();
+    expect(screen.getByText(state === 'resolved' ? '已处理' : '已过期')).toBeVisible();
+    expect(screen.getByRole('region', { name: '请求内容' })).toBeVisible();
+    fireEvent.click(screen.getByText('查看请求内容'));
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(respond).not.toHaveBeenCalled();
+  });
+  it.each(['question', 'form'] as const)('retains the original %s definition after a local answer without exposing entered values', async kind => {
+    const respond = vi.fn(async () => {});
+    const interaction: SessionInteraction = kind === 'question'
+      ? { ...base, kind, canDismiss: false, questions: [{ questionId: 'secret', label: 'Access code', sensitive: true, required: true, multiple: false, allowCustom: true, options: [{ id: 'public', label: 'Public access' }] }] }
+      : { ...base, kind, canDismiss: false, fields: [{ fieldId: 'secret', label: 'Access code', sensitive: true, required: true, type: 'text' }] };
+    const view = render(<SessionInteractionCard interaction={interaction} enabled onRespond={respond} />);
+    fireEvent.change(screen.getByLabelText(kind === 'question' ? 'Access code — Other answer' : 'Access code'), { target: { value: 'private-answer-do-not-display' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    const toggle = await screen.findByText('Show request');
+    fireEvent.click(toggle);
+    expect(screen.getByRole('region', { name: 'Request content' })).toHaveTextContent('Access code');
+    if (kind === 'question') expect(screen.getByText('Public access')).toBeVisible();
+    expect(view.container.innerHTML).not.toContain('private-answer-do-not-display');
+    expect(view.container.querySelector('input, select, textarea, form')).toBeNull();
+    expect(respond).toHaveBeenCalledOnce();
+    view.rerender(<SessionInteractionCard interaction={{ ...interaction, state: 'expired', revision: '2' }} enabled={false} onRespond={respond} />);
+    expect(screen.getByText('Access code')).toBeVisible();
+    expect(respond).toHaveBeenCalledOnce();
   });
 });

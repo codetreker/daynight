@@ -1,0 +1,20 @@
+import type { CommandDefinition, CommandOption } from "../../../cli/schema.js";
+import type { TaskSessionCommandModule } from "./registry.js";
+
+const project: CommandOption = { names: ["--project"], description: "Use this project UUID for this invocation", value: { name: "project-id", kind: "text" } };
+const json: CommandOption = { names: ["--json"], description: "Print the complete response data as JSON" };
+const help: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
+const limit: CommandOption = { names: ["--limit"], description: "Entries per page, 1–200 (default: 20)", value: { name: "count", kind: "text" } };
+const task = { name: "task-id", description: "Task UUID" };
+const session = { name: "session-id", description: "Daynight Session UUID; not a native Provider ID" };
+const common = "Without --project, resolve the current Git origin. Reads preserve the specified Task and Session and never start, resume or replace an execution. Task status, Session activity and permission to send are independent.";
+
+export const taskSessionReadDefinitions: readonly CommandDefinition[] = [
+  { name: "current", description: "Locate the Task's current Session without historical fallback", arguments: [task], options: [project, json, help], details: `${common}\nA waiting or unregistered execution returns an explicit status with no Session; it is not replaced by the latest historical Session.` },
+  { name: "list", description: "Read one page of current and historical Sessions", arguments: [task], options: [limit, { names: ["--cursor"], description: "Continue the Session directory with the returned cursor", value: { name: "cursor", kind: "text" } }, project, json, help], details: `${common}\nReturn one page only, with currentBinding and archive facts for each Session. Pass nextCursor unchanged to continue.` },
+  { name: "show", description: "Inspect the identity, state and readable source of one Session", arguments: [task, session], options: [project, json, help], details: `${common}\nShows currentBinding, execution fence, live/archive/unavailable source and the current live connection's full-content read capability. Herdr is terminal_recording, not a chat timeline.` },
+  { name: "read", description: "Read one recent or earlier page of Web Session entries", arguments: [task, session], options: [limit, { names: ["--before"], description: "Read the earlier page using the returned beforeCursor", value: { name: "cursor", kind: "text" } }, { names: ["--conversation"], description: "Keep user and assistant messages from this page only" }, project, json, help], details: `${common}\nDefault: the latest 20 timeline entries, including tool and interaction events; each page is ordered oldest to newest. --conversation does not scan older pages to fill the limit; an empty filtered page retains the original continuation. Each encoded HTTP response is at most 256 KiB. Large entries contain metadata and contentRef; use entry to obtain the original JSON in blocks. Coverage identifies partial archives. Epoch/source changes require restarting from a recent page; no automatic recovery or fallback is performed.` },
+  { name: "entry", description: "Read one fixed-version block of a large entry's canonical JSON", arguments: [task, session], options: [{ names: ["--cursor"], description: "Use contentRef.cursor or the preceding block's nextCursor", value: { name: "cursor", kind: "text" }, required: true }, project, json, help], details: `${common}\nRead at most 32 KiB of UTF-8 fragment without splitting a code point. JSON preserves fragment, offset, total byteLength, SHA256, revision and nextCursor. Concatenate consecutive fragments of the same identity and version, then verify the byte length and SHA256. A changed entry or history refuses continuation; do not combine versions. Text output escapes controls and is for inspection, not byte reconstruction.` },
+];
+
+export const taskSessionReadModule: TaskSessionCommandModule = { definitions: taskSessionReadDefinitions, load: () => import("./read.js") };

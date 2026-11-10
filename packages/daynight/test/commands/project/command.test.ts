@@ -19,13 +19,18 @@ const context = () => ({
 const fixture = (projects: readonly Project[] = []) => {
   const unavailable = async (): Promise<never> => { throw new Error("Unexpected task API"); };
   const api = {
+    withExpectedUserId: () => { throw new Error("Unexpected actor binding"); },
+    readTaskSessionOperation: async () => { throw new Error("Unexpected operation read"); },
+    sendTaskSessionCommand: async () => { throw new Error("Unexpected Session send"); },
+    inspectTaskSession: unavailable, getObservedTask: unavailable, listObservedTasks: unavailable, getObservedTaskGraph: unavailable, listTaskWork: unavailable,
+    currentTaskSession: unavailable, listTaskSessions: unavailable, readTaskSession: unavailable, readTaskSessionEntry: unavailable,
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: unavailable,
     addTaskStep: unavailable,
     deleteTaskStep: unavailable,
     listTaskSteps: unavailable, getTaskStep: unavailable,
-    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable,
+    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable, previewProjectDeletion: unavailable, deleteProject: unavailable,
     readTaskThread: unavailable, postTaskThreadMessage: unavailable,
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
     getTaskPropertySchema: async () => { throw new Error("Unused property API"); },
@@ -37,7 +42,7 @@ const fixture = (projects: readonly Project[] = []) => {
     listTeamInvitations: unavailable, createTeamInvitation: unavailable, revokeTeamInvitation: unavailable,
     listTeamMembers: unavailable, setTeamMemberRole: unavailable, removeTeamMember: unavailable,
     listBots: unavailable, getBot: unavailable, createBot: unavailable, deleteBot: unavailable, listWorkers: unavailable, getWorker: unavailable,
-    reportWorker: unavailable, getWorkerConfiguration: unavailable, reportWorkerConfiguration: unavailable,
+    reportWorker: unavailable, readWorkerMonitoring: unavailable, writeWorkerMonitoring: unavailable, getWorkerConfiguration: unavailable, reportWorkerConfiguration: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
@@ -48,8 +53,8 @@ const fixture = (projects: readonly Project[] = []) => {
     releaseWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     withdrawWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
-    createTask: unavailable, getTask: unavailable, listTasks: unavailable, listReadyTasks: unavailable, updateTask: unavailable, deleteTask: unavailable, setTaskStatus: unavailable, getTaskGraph: unavailable,
-    putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable,
+    createTask: unavailable, getTask: unavailable, listTasks: unavailable, searchTasks: unavailable, listReadyTasks: unavailable, updateTask: unavailable, deleteTask: unavailable, setTaskStatus: unavailable, getTaskGraph: unavailable,
+    putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable, webhookRequest: unavailable,
   };
   const runServerCommand = vi.fn<ProjectCommandDependencies["runServerCommand"]>(async (current, command) => {
     const operation = createOperation();

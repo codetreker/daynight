@@ -6,6 +6,8 @@ import { isNonemptyText, isText } from "../../platform/text.js";
 import type { resolveProject } from "../../repository/index.js";
 import type { runServerCommand } from "../server/runtime.js";
 import { taskDefinition } from "./definition.js";
+import { isTerminalTaskStatus } from "../../task/status.js";
+import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
@@ -52,6 +54,11 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.path[2] === "session") {
+    const { runTaskSessionCommand } = await import("./session/registry.js");
+    await runTaskSessionCommand(command, context, dependencies);
+    return;
+  }
   if (command.path[2] === "step") {
     const { runTaskStepCommand } = await import("./step.js");
     await runTaskStepCommand(command, context, dependencies);
@@ -65,6 +72,11 @@ export const runTaskCommand = async (
   if (command.path[2] === "attachment") {
     const { runTaskAttachmentCommand } = await import("./attachment.js");
     await runTaskAttachmentCommand(command, context, dependencies);
+    return;
+  }
+  if (command.path[2] === "search") {
+    const { runTaskSearchCommand } = await import("./search.js");
+    await runTaskSearchCommand(command, context, dependencies);
     return;
   }
   if (["properties", "set-property", "remove-property"].includes(command.command.name)) {
@@ -108,8 +120,22 @@ export const runTaskCommand = async (
   const externalDependsOn = command.options.get("--external-depends-on") as readonly string[] | undefined;
   const clearDependencies = command.options.has("--clear-dependencies");
   const limitArgument = command.options.get("--limit") as string | undefined;
-  const readyLimit = limitArgument === undefined ? 10 : Number(limitArgument);
-  if (limitArgument !== undefined && (!/^[0-9]+$/.test(limitArgument) || !Number.isInteger(readyLimit) || readyLimit < 1 || readyLimit > 100)) throw new UsageError("Ready task limit must be a decimal integer from 1 to 100.", help);
+  const grouped = command.options.get("--group-by") === "chain";
+  const cursor = command.options.get("--cursor") as string | undefined;
+  const groupArgument = command.options.get("--group-id") as string | undefined;
+  const targetsCursor = command.options.get("--targets-cursor") as string | undefined;
+  if (!grouped && name === "list" && [limitArgument, cursor, groupArgument, targetsCursor].some(value => value !== undefined)) throw new UsageError("Pagination options require --group-by chain.", help);
+  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined)) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
+  if ((groupArgument === undefined) !== (targetsCursor === undefined)) throw new UsageError("--group-id and --targets-cursor must be supplied together.", help);
+  if (groupArgument !== undefined && cursor !== undefined) throw new UsageError("--cursor cannot be combined with --targets-cursor.", help);
+  const readyLimit = limitArgument === undefined ? (grouped ? 20 : 10) : Number(limitArgument);
+  if (limitArgument !== undefined && (!/^[0-9]+$/.test(limitArgument) || !Number.isInteger(readyLimit) || readyLimit < 1 || readyLimit > (grouped ? 50 : 100))) throw new UsageError(grouped ? "Group limit must be a decimal integer from 1 to 50." : "Ready task limit must be a decimal integer from 1 to 100.", help);
+  let groupId: string | undefined;
+  if (groupArgument !== undefined) {
+    const { canonicalId } = await import("../../api/parse.js");
+    groupId = canonicalId(groupArgument) ?? undefined;
+    if (groupId === undefined) throw new UsageError("group-id must be a hyphenated UUID.", help);
+  }
   if (title !== undefined && !isNonemptyText(title)) throw new UsageError("Task title must be nonempty UTF-8 text without NUL characters.", help);
   if (description !== undefined && !isText(description)) throw new UsageError("Task description must be UTF-8 text without NUL characters.", help);
   const dependencyFields = await compileDependencies(dependsOn, externalDependsOn, clearDependencies, help);
@@ -149,6 +175,8 @@ export const runTaskCommand = async (
     try { expectedVersion = parseVersionArgument(versionArgument); }
     catch (cause) { throw new UsageError(cause instanceof Error ? cause.message : String(cause), help); }
   }
+  let partialObservation = false;
+  let unsupportedObservation = false;
   await dependencies.runServerCommand(context, async ({ api, operation, serverUrl }) => {
     operation.check();
     let project: Project;
@@ -159,6 +187,7 @@ export const runTaskCommand = async (
     }
     operation.check();
     const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
+    const { taskObservationPartial } = await import("../../api/task-observation.js");
     operation.check();
     if (command.command.name === "create") {
       const createAssignedTo = assignedTo === undefined ? (await api.getCurrentUser()).id : assignedTo;
@@ -169,9 +198,20 @@ export const runTaskCommand = async (
       return `Task created.\n${renderTask(task)}`;
     }
     if (command.command.name === "list") {
+      if (grouped) {
+        const { renderTaskWorkPage } = await import("./observation-rendering.js");
+        const { stringifyApiJson } = await import("../../api/json.js");
+        const page = await api.listTaskWork(project.id, { assignedTo: assignedTo ?? "me", ...(limitArgument === undefined ? {} : { limit: readyLimit }), ...(cursor === undefined ? {} : { cursor }), ...(groupId === undefined ? {} : { groupId, targetsCursor: targetsCursor! }) });
+        operation.check();
+        partialObservation = page.partial;
+        return command.options.has("--json") ? `${stringifyApiJson(page)}\n` : renderTaskWorkPage(page, project.id, assignedTo ?? "me");
+      }
       const filters: TaskFilters = { ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
-      const tasks = (await api.listTasks(project.id, filters))
-        .filter((task) => all || status !== undefined || task.status !== "done")
+      const observed = await api.listObservedTasks(project.id, filters);
+      partialObservation = observed.partial;
+      unsupportedObservation = observed.unsupported;
+      const tasks = observed.items
+        .filter((task) => all || status !== undefined || !isTerminalTaskStatus(task.status))
         .toSorted((left, right) => taskPriority(left) - taskPriority(right));
       operation.check();
       return command.options.has("--json") ? renderTaskListJson(tasks) : renderTaskSummaryList(tasks);
@@ -182,14 +222,22 @@ export const runTaskCommand = async (
       return command.options.has("--json") ? renderTaskJson(tasks) : tasks.length === 0 ? "No ready tasks.\n" : renderTaskList(tasks);
     }
     if (command.command.name === "graph") {
-      const graph = await api.getTaskGraph(project.id, taskId!);
+      if (command.options.has("--depends-only")) {
+        const graph = await api.getTaskGraph(project.id, taskId!);
+        operation.check();
+        return renderTaskGraphDependencies(graph, command.options.has("--json"));
+      }
+      const graph = await api.getObservedTaskGraph(project.id, taskId!);
       operation.check();
-      if (command.options.has("--depends-only")) return renderTaskGraphDependencies(graph, command.options.has("--json"));
+      partialObservation = graph.partial;
+      unsupportedObservation = graph.tasks.some(task => task.session.observation === "unsupported");
       return command.options.has("--json") ? renderTaskJson(graph) : renderTaskGraph(graph);
     }
     if (command.command.name === "show") {
-      const task = await api.getTask(project.id, taskId!);
+      const task = await api.getObservedTask(project.id, taskId!);
       operation.check();
+      partialObservation = taskObservationPartial(task.session);
+      unsupportedObservation = task.session.observation === "unsupported";
       return command.options.has("--json") ? renderTaskJson(task) : renderTask(task);
     }
     const version = expectedVersion === undefined ? (await api.getTask(project.id, taskId!)).version : expectedVersion;
@@ -210,4 +258,7 @@ export const runTaskCommand = async (
     operation.check();
     return `Task updated.\n${renderTask(task)}`;
   });
+  if (partialObservation) throw new PublicDiagnosticError(unsupportedObservation
+    ? "Task data is available, but Session observations are unsupported. Upgrade the Daynight service and run the same query again."
+    : "Task data is available, but Session observations are partial. Inspect each observation's reason, error and freshness before using it; run the same query again to refresh.", 3, {});
 };

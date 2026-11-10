@@ -1,5 +1,8 @@
+import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChunk, parseImageReadRequest, parseImageReadChunk, parseImageError, parseProviderImageCapabilities, imageObject, imageId, imageDecimal, imageInteger, imageSha, type ImageUploadSpec, type LocalImagePreparation, type ImageReadRequest, type ImageReadChunk, type PreparedImageChunk, type ProviderImageCapabilities, type ImageError } from "./image-values.js";
+import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage } from "./image-values.js";
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
+import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, historyCursorText, parseInspectionPage, parseEntryChunk, type InspectionPage, type EntryChunk } from "./history.js";
 import { assertSessionFence, sessionBinding, sessionBindingKeys, sessionFence, SESSION_PROTOCOL, parseSessionSnapshot, parseSessionCommand, parseSessionEvent, parseSessionOperation, parseSessionResource, parseTimelineEntry,
   type SessionBinding, type SessionFence, type ControllerFence, type DecimalSequence, type SessionCapabilities, type SessionCommand, type SessionEvent, type SessionOperation, type SessionProvider, type SessionResource, type SessionSnapshot, type TimelineEntry } from "./protocol.js";
 
@@ -12,8 +15,9 @@ export type ControllerGrantResponse = SessionFence & { readonly token: string; r
 export type CurrentSessionResponse = { readonly status: "not_applicable"; readonly claimId: string | null; readonly agentControlMode: "herdr" | null } | { readonly status: "not_registered"; readonly claimId: string; readonly agentControlMode: "web" } | { readonly status: "registered"; readonly session: SessionSnapshot; readonly startupReport?: SessionStartupReport | null };
 export type TimelinePage = { readonly sessionId: string; readonly historyEpoch: string; readonly items: readonly TimelineEntry[]; readonly resources: readonly SessionResource[]; readonly beforeCursor: string | null; readonly afterCursor: string | null; readonly hasMoreBefore: boolean; readonly hasMoreAfter: boolean; readonly lastEventSeq: DecimalSequence };
 export type OperationResponse = { readonly operation: SessionOperation };
+export type TaskOperationResponse = OperationResponse & { readonly currentBinding: boolean };
 export type CommandResponse = OperationResponse & { readonly operationUrl: string };
-export type ControllerState = Pick<SessionSnapshot, "controls" | "turnStartedAt"> & { readonly cleanupInteractionIds?: readonly string[]; readonly nativeSessionId: string | null; readonly initialInputState: SessionSnapshot["initialInputState"]; readonly synchronized: boolean; readonly activity: SessionSnapshot["activity"]; readonly currentTurnId: string | null; readonly capabilities: SessionCapabilities };
+export type ControllerState = Pick<SessionSnapshot, "controls" | "turnStartedAt"> & { readonly providerImages?: ProviderImageCapabilities; readonly cleanupInteractionIds?: readonly string[]; readonly nativeSessionId: string | null; readonly initialInputState: SessionSnapshot["initialInputState"]; readonly synchronized: boolean; readonly activity: SessionSnapshot["activity"]; readonly currentTurnId: string | null; readonly capabilities: SessionCapabilities };
 type WithoutEntrySeq<T> = T extends unknown ? Omit<T, "entrySeq"> : never;
 export type SourceTimelineEntry = WithoutEntrySeq<TimelineEntry> & { readonly entrySeq?: DecimalSequence };
 export type SourceEvent = { readonly sourceSeq: DecimalSequence } & (
@@ -24,12 +28,38 @@ export type SourceEvent = { readonly sourceSeq: DecimalSequence } & (
 export type Reconciliation = { readonly operationId: string; readonly state: "not_submitted" | "dispatching" | "provider_accepted" | "confirmed" | "failed" | "rejected" | "expired" | "unknown"; readonly providerResult: SessionOperation["providerResult"]; readonly error: SessionOperation["error"] };
 export type ContentRequest = { readonly requestId: string } & (
   | { readonly kind: "timeline"; readonly historyEpoch: string; readonly direction: "tail" | "before" | "after"; readonly cursor: string | null; readonly limit: number }
+  | { readonly kind: "inspect_page"; readonly historyEpoch: string; readonly cursor: string | null; readonly limit: number; readonly responseOverhead: number }
+  | { readonly kind: "entry_chunk"; readonly historyEpoch: string; readonly cursor: string; readonly limit: number }
   | { readonly kind: "resource"; readonly resourceId: string; readonly offset: string; readonly limit: number });
 export type ContentResult = (Omit<TimelinePage, "sessionId" | "lastEventSeq"> & { readonly kind: "timeline" })
+  | InspectionPage | EntryChunk
   | { readonly kind: "resource"; readonly resource: SessionResource; readonly offset: string; readonly data: string; readonly eof: boolean };
 export type ContentResponse = { readonly requestId: string; readonly sourceThrough: string; readonly result: ContentResult | null; readonly error: { readonly code: string; readonly message: string } | null };
-export type ControllerHello = Wire & SessionFence & { readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly sourceFloor?: DecimalSequence };
-export type ControllerMessage = ControllerHello | (Wire & ControllerFence & (
+export type ControllerHello = Wire & SessionFence & { readonly contentRevision?: 2; readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly sourceFloor?: DecimalSequence };
+export type ImageActionBody = {
+  prepare: ImageUploadSpec;
+  write: { readonly uploadId:string; readonly offset:string; readonly sha256:string; readonly data:string };
+  complete: { readonly uploadId:string; readonly sha256:string; readonly byteLength:string };
+  status: { readonly uploadId:string };
+  release: { readonly uploadId:string; readonly spec?:ImageUploadSpec };
+  read_prepared: { readonly preparationId:string; readonly offset:string; readonly limit:number };
+  read_capture: { readonly captureId:string; readonly attemptId:string; readonly sha256:string; readonly byteLength:string; readonly offset:string; readonly limit:number };
+  retry_capture: { readonly captureId:string; readonly attemptId:string };
+  read: ImageReadRequest;
+};
+export type ImageAction = keyof ImageActionBody;
+export type ImageRequest = { [K in ImageAction]: Wire & ControllerFence & {readonly type:"image_request";readonly requestId:string;readonly action:K;readonly body:ImageActionBody[K]} }[ImageAction];
+export type ImageResponse = Wire & ControllerFence & {readonly type:"image_response";readonly requestId:string;readonly action:ImageAction;readonly result:LocalImagePreparation|PreparedImageChunk|ImageReadChunk|ValidatedImage|null;readonly error:ImageError|null};
+export type ImageCaptureBody = {
+  register: ImageCaptureRequest;
+  query: { readonly captureId: string };
+  commit: { readonly captureId: string; readonly attemptId: string; readonly validated: ValidatedImage };
+  failed: { readonly captureId: string; readonly attemptId: string; readonly error: ImageError };
+};
+export type ImageCaptureAction = keyof ImageCaptureBody;
+export type ImageCaptureMessage = { [K in ImageCaptureAction]: Wire & ControllerFence & { readonly type: "image_capture"; readonly requestId: string; readonly action: K; readonly body: ImageCaptureBody[K] } }[ImageCaptureAction];
+export type ImageCaptureResult = Wire & ControllerFence & { readonly type: "image_capture_result"; readonly requestId: string; readonly action: ImageCaptureAction; readonly result: ImageCaptureReceipt | null; readonly error: ImageError | null };
+export type ControllerMessage = ControllerHello | ImageResponse | ImageCaptureMessage | (Wire & ControllerFence & (
   | { readonly type: "events"; readonly batchId: string; readonly sourceEpoch: string; readonly events: readonly SourceEvent[] }
   | { readonly type: "source_reset"; readonly previousSourceEpoch: string; readonly newSourceEpoch: string; readonly reason: string }
   | { readonly type: "operation_begin"; readonly operationId: string }
@@ -38,7 +68,7 @@ export type ControllerMessage = ControllerHello | (Wire & ControllerFence & (
   | { readonly type: "sync_state"; readonly state: ControllerState; readonly pendingInteractions: readonly TimelineEntry[] }
   | ({ readonly type: "content_response" } & ContentResponse)
   | { readonly type: "heartbeat" }));
-export type RelayMessage = (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true }) | (Wire & ControllerFence & (
+export type RelayMessage = ImageRequest | ImageCaptureResult | (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true }) | (Wire & ControllerFence & (
   | { readonly type: "events_ack"; readonly batchId: string; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "source_reset_ack"; readonly sourceEpoch: string; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "operation_offer"; readonly operationSeq: DecimalSequence; readonly command: SessionCommand }
@@ -110,13 +140,19 @@ export const parseTimelinePage = (x: unknown): TimelinePage => {
   return { sessionId: id(o.sessionId), historyEpoch: str(o.historyEpoch), items: list(o.items, parseTimelineEntry, 200), resources: list(o.resources, parseSessionResource, 1000), beforeCursor: nullable(o.beforeCursor, str), afterCursor: nullable(o.afterCursor, str), hasMoreBefore: bool(o.hasMoreBefore), hasMoreAfter: bool(o.hasMoreAfter), lastEventSeq: seq(o.lastEventSeq, true) };
 };
 export const parseOperationResponse = (x: unknown): OperationResponse => ({ operation: parseSessionOperation(obj(x, ["operation"]).operation) });
+export const parseTaskOperationResponse = (x: unknown): TaskOperationResponse => {
+  const o = obj(x, ["operation", "currentBinding"]), operation = parseSessionOperation(o.operation);
+  if (operation.claimId === undefined) return fail();
+  return { operation, currentBinding: bool(o.currentBinding) };
+};
 export const parseCommandResponse = (x: unknown): CommandResponse => { const o = obj(x, ["operation", "operationUrl"]); return { operation: parseSessionOperation(o.operation), operationUrl: str(o.operationUrl, 2048) }; };
 export const parseControllerState = (x: unknown): ControllerState => {
-  const o = obj(x, [...sessionControlKeys(x), "nativeSessionId", "initialInputState", "synchronized", "activity", "currentTurnId", "capabilities", ...(x && typeof x === "object" && Object.hasOwn(x, "cleanupInteractionIds") ? ["cleanupInteractionIds"] : [])]);
+  const media = x && typeof x === "object" && Object.hasOwn(x,"providerImages");
+  const o = obj(x, [...sessionControlKeys(x), ...(media ? ["providerImages"] : []), "nativeSessionId", "initialInputState", "synchronized", "activity", "currentTurnId", "capabilities", ...(x && typeof x === "object" && Object.hasOwn(x, "cleanupInteractionIds") ? ["cleanupInteractionIds"] : [])]);
   const c = obj(o.capabilities, ["send", "steer", "cancel", "respond"]);
   const cleanup = Object.hasOwn(o, "cleanupInteractionIds") ? list(o.cleanupInteractionIds, id, 1000) : undefined;
   if (cleanup && new Set(cleanup).size !== cleanup.length) return fail();
-  return { ...parseSessionControlFields(o), ...(cleanup ? { cleanupInteractionIds: cleanup } : {}), nativeSessionId: nullable(o.nativeSessionId, str), initialInputState: choice(o.initialInputState, ["not_required", "not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"]), synchronized: bool(o.synchronized), activity: choice(o.activity, ["initializing", "idle", "working", "waiting_input", "stopped", "unknown"]), currentTurnId: nullable(o.currentTurnId, str), capabilities: { send: bool(c.send), steer: bool(c.steer), cancel: bool(c.cancel), respond: bool(c.respond) } };
+  return { ...parseSessionControlFields(o), ...(media ? { providerImages:parseProviderImageCapabilities(o.providerImages) } : {}), ...(cleanup ? { cleanupInteractionIds: cleanup } : {}), nativeSessionId: nullable(o.nativeSessionId, str), initialInputState: choice(o.initialInputState, ["not_required", "not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"]), synchronized: bool(o.synchronized), activity: choice(o.activity, ["initializing", "idle", "working", "waiting_input", "stopped", "unknown"]), currentTurnId: nullable(o.currentTurnId, str), capabilities: { send: bool(c.send), steer: bool(c.steer), cancel: bool(c.cancel), respond: bool(c.respond) } };
 };
 export const parseSourceEvent = (x: unknown): SourceEvent => {
   const o = obj(x, ["sourceSeq", "kind", "payload"]), sourceSeq = seq(o.sourceSeq);
@@ -129,6 +165,8 @@ export const parseSourceEvent = (x: unknown): SourceEvent => {
 };
 const parseContentResult = (value: unknown): ContentResult => {
   if (!value || typeof value !== "object" || !("kind" in value)) return fail();
+  if (value.kind === "inspect_page") return parseInspectionPage(value);
+  if (value.kind === "entry_chunk") return parseEntryChunk(value);
   if (value.kind === "timeline") {
     const o = obj(value, ["kind", "historyEpoch", "items", "resources", "beforeCursor", "afterCursor", "hasMoreBefore", "hasMoreAfter"]);
     return { kind: "timeline", historyEpoch: id(o.historyEpoch), items: list(o.items, parseTimelineEntry, 200), resources: list(o.resources, parseSessionResource, 1000), beforeCursor: nullable(o.beforeCursor, str), afterCursor: nullable(o.afterCursor, str), hasMoreBefore: bool(o.hasMoreBefore), hasMoreAfter: bool(o.hasMoreAfter) };
@@ -139,10 +177,13 @@ const parseContentResult = (value: unknown): ContentResult => {
 };
 export const parseControllerMessage = (x: unknown): ControllerMessage => {
   if (!x || typeof x !== "object" || !("type" in x)) return fail();
+  if (x.type === "image_response") return parseImageResponse(x);
+  if (x.type === "image_capture") return parseImageCaptureMessage(x);
   if (x.type === "hello") {
-    const o = obj(x, ["type", "protocol", "schemaVersion", "projectionVersion", "sessionId", ...sessionBindingKeys(x), "executionGeneration", "controllerId", "controllerInstanceId", "provider", "sourceEpoch", "lastAckedSourceSeq", ...("sourceFloor" in x ? ["sourceFloor"] : [])]);
-    if (o.schemaVersion !== 1 || o.projectionVersion !== 1) return fail();
-    return { type: "hello", protocol: protocol(o.protocol), schemaVersion: 1, projectionVersion: 1, sessionId: id(o.sessionId), ...sessionBinding(o), executionGeneration: seq(o.executionGeneration), controllerId: id(o.controllerId), controllerInstanceId: id(o.controllerInstanceId), provider: choice(o.provider, ["codex", "claude", "copilot"]), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), ...("sourceFloor" in o ? { sourceFloor: seq(o.sourceFloor, true) } : {}) };
+    const media = Object.hasOwn(x,"contentRevision");
+    const o = obj(x, [...(media ? ["contentRevision"] : []),"type", "protocol", "schemaVersion", "projectionVersion", "sessionId", ...sessionBindingKeys(x), "executionGeneration", "controllerId", "controllerInstanceId", "provider", "sourceEpoch", "lastAckedSourceSeq", ...("sourceFloor" in x ? ["sourceFloor"] : [])]);
+    if (o.schemaVersion !== 1 || o.projectionVersion !== 1 || media && o.contentRevision !== 2) return fail();
+    return { type: "hello", ...(media ? { contentRevision:2 as const } : {}), protocol: protocol(o.protocol), schemaVersion: 1, projectionVersion: 1, sessionId: id(o.sessionId), ...sessionBinding(o), executionGeneration: seq(o.executionGeneration), controllerId: id(o.controllerId), controllerInstanceId: id(o.controllerInstanceId), provider: choice(o.provider, ["codex", "claude", "copilot"]), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), ...("sourceFloor" in o ? { sourceFloor: seq(o.sourceFloor, true) } : {}) };
   }
   const extras: Record<string, readonly string[]> = { events: ["batchId", "sourceEpoch", "events"], source_reset: ["previousSourceEpoch", "newSourceEpoch", "reason"], operation_begin: ["operationId"], operation_receipt: ["operation"], reconcile: ["operations", "final"], sync_state: ["state", "pendingInteractions"], content_response: ["requestId", "sourceThrough", "result", "error"], heartbeat: [] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
@@ -168,6 +209,8 @@ export const parseControllerMessage = (x: unknown): ControllerMessage => {
 };
 export const parseRelayMessage = (x: unknown): RelayMessage => {
   if (!x || typeof x !== "object" || !("type" in x)) return fail();
+  if (x.type === "image_request") return parseImageRequest(x);
+  if (x.type === "image_capture_result") return parseImageCaptureResult(x);
   if (x.type === "welcome") {
     const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits", ...("requiresLiveSync" in x ? ["requiresLiveSync"] : [])]);
     if ("requiresLiveSync" in o && o.requiresLiveSync !== true) return fail();
@@ -175,7 +218,8 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     for (const [k, v] of Object.entries(RELAY_LIMITS)) if (limits[k] !== v) return fail();
     return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}) };
   }
-  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && x.kind === "timeline" ? ["historyEpoch", "direction", "cursor", "limit"] : ["resourceId", "offset", "limit"])], heartbeat_ack: [], error: ["code", "message"] };
+  const contentFields: Record<string, readonly string[]> = { timeline: ["historyEpoch", "direction", "cursor", "limit"], resource: ["resourceId", "offset", "limit"], inspect_page: ["historyEpoch", "cursor", "limit", "responseOverhead"], entry_chunk: ["historyEpoch", "cursor", "limit"] };
+  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
   switch (x.type) {
@@ -196,6 +240,14 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     case "sync_ack": return { ...base, type: "sync_ack" };
     case "content_request": {
       if (typeof o.limit !== "number" || !Number.isSafeInteger(o.limit) || o.limit < 1) return fail();
+      if (o.kind === "inspect_page") {
+        if (o.limit > 200 || typeof o.responseOverhead !== "number" || !Number.isSafeInteger(o.responseOverhead) || o.responseOverhead < 0 || o.responseOverhead >= HISTORY_RESPONSE_BYTES) return fail();
+        return { ...base, type: "content_request", requestId: id(o.requestId), kind: "inspect_page", historyEpoch: id(o.historyEpoch), cursor: nullable(o.cursor, historyCursorText), limit: o.limit, responseOverhead: o.responseOverhead };
+      }
+      if (o.kind === "entry_chunk") {
+        if (o.limit > HISTORY_CHUNK_BYTES) return fail();
+        return { ...base, type: "content_request", requestId: id(o.requestId), kind: "entry_chunk", historyEpoch: id(o.historyEpoch), cursor: historyCursorText(o.cursor), limit: o.limit };
+      }
       if (o.kind === "timeline") {
         if (o.limit > 200) return fail();
         const direction = choice(o.direction, ["tail", "before", "after"]);
@@ -218,4 +270,43 @@ export const parseBrowserMessage = (x: unknown): BrowserMessage => {
   const o = obj(x, ["type", "protocol", "reason"]);
   if (o.type !== "reset_required") return fail();
   return { type: "reset_required", protocol: protocol(o.protocol), reason: str(o.reason, 1_048_576) };
+};
+
+const imageActions:readonly ImageAction[]=["prepare","write","complete","status","release","read_prepared","read_capture","retry_capture","read"];
+export const parseImageRequest = (v:unknown):ImageRequest => {
+  const o=obj(v,["type","protocol",...fenceKeys(v),"requestId","action","body"]);if(o.type!=="image_request")return fail();
+  const action=choice(o.action,imageActions);let body:ImageActionBody[ImageAction];
+  if(action==="prepare")body=parseImageUploadSpec(o.body);
+  else if(action==="read")body=parseImageReadRequest(o.body);
+  else if(action==="read_prepared"){const b=imageObject(o.body,["preparationId","offset","limit"]);body={preparationId:imageId(b.preparationId),offset:imageDecimal(b.offset,true),limit:imageInteger(b.limit,524288)};}
+  else if(action==="retry_capture"){const b=imageObject(o.body,["captureId","attemptId"]);body={captureId:imageId(b.captureId),attemptId:imageId(b.attemptId)};}
+  else if(action==="read_capture"){const b=imageObject(o.body,["captureId","attemptId","sha256","byteLength","offset","limit"]);const byteLength=imageDecimal(b.byteLength),offset=imageDecimal(b.offset,true);if(BigInt(byteLength)>10485760n||BigInt(offset)>=BigInt(byteLength))return fail();body={captureId:imageId(b.captureId),attemptId:imageId(b.attemptId),sha256:imageSha(b.sha256),byteLength,offset,limit:imageInteger(b.limit,524288)};}
+  else if(action==="write"){const b=imageObject(o.body,["uploadId","offset","sha256","data"]);if(typeof b.data!=="string"||b.data.length===0||b.data.length>699052||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(b.data))return fail();const raw=atob(b.data);if(raw.length>524288||btoa(raw)!==b.data)return fail();body={uploadId:imageId(b.uploadId),offset:imageDecimal(b.offset,true),sha256:imageSha(b.sha256),data:b.data};}
+  else if(action==="complete"){const b=imageObject(o.body,["uploadId","sha256","byteLength"]);const byteLength=imageDecimal(b.byteLength);if(BigInt(byteLength)>10485760n)return fail();body={uploadId:imageId(b.uploadId),sha256:imageSha(b.sha256),byteLength};}
+  else if(action==="release" && o.body !== null && typeof o.body === "object" && Object.hasOwn(o.body,"spec")){const b=imageObject(o.body,["uploadId","spec"]),spec=parseImageUploadSpec(b.spec),uploadId=imageId(b.uploadId);if(uploadId!==spec.uploadId)return fail();body={uploadId,spec};}
+  else {const b=imageObject(o.body,["uploadId"]);body={uploadId:imageId(b.uploadId)};}
+  return {type:"image_request",protocol:protocol(o.protocol),...fence(o),requestId:id(o.requestId),action,body} as ImageRequest;
+};
+export const parseImageResponse = (v:unknown):ImageResponse => {
+  const o=obj(v,["type","protocol",...fenceKeys(v),"requestId","action","result","error"]);if(o.type!=="image_response"||(o.result===null)===(o.error===null))return fail();
+  const action=choice(o.action,imageActions),result=o.result===null?null:action==="retry_capture"?parseValidatedImage(o.result):action==="read"?parseImageReadChunk(o.result):action==="read_prepared"||action==="read_capture"?parsePreparedImageChunk(o.result):parseLocalImagePreparation(o.result);
+  return {type:"image_response",protocol:protocol(o.protocol),...fence(o),requestId:id(o.requestId),action,result,error:nullable(o.error,parseImageError)};
+};
+
+const captureActions: readonly ImageCaptureAction[] = ["register", "query", "commit", "failed"];
+export const parseImageCaptureMessage = (v: unknown): ImageCaptureMessage => {
+  const o = obj(v, ["type", "protocol", ...fenceKeys(v), "requestId", "action", "body"]);
+  if (o.type !== "image_capture") return fail();
+  const action = choice(o.action, captureActions);
+  let body: ImageCaptureBody[ImageCaptureAction];
+  if (action === "register") body = parseImageCaptureRequest(o.body);
+  else if (action === "query") { const b = imageObject(o.body, ["captureId"]); body = { captureId: imageId(b.captureId) }; }
+  else if (action === "commit") { const b = imageObject(o.body, ["captureId", "attemptId", "validated"]); body = { captureId: imageId(b.captureId), attemptId: imageId(b.attemptId), validated: parseValidatedImage(b.validated) }; }
+  else { const b = imageObject(o.body, ["captureId", "attemptId", "error"]); body = { captureId: imageId(b.captureId), attemptId: imageId(b.attemptId), error: parseImageError(b.error) }; }
+  return { type: "image_capture", protocol: protocol(o.protocol), ...fence(o), requestId: id(o.requestId), action, body } as ImageCaptureMessage;
+};
+export const parseImageCaptureResult = (v: unknown): ImageCaptureResult => {
+  const o = obj(v, ["type", "protocol", ...fenceKeys(v), "requestId", "action", "result", "error"]);
+  if (o.type !== "image_capture_result" || (o.result === null) === (o.error === null)) return fail();
+  return { type: "image_capture_result", protocol: protocol(o.protocol), ...fence(o), requestId: id(o.requestId), action: choice(o.action, captureActions), result: nullable(o.result, value => parseImageCaptureReceipt(value, parseSessionResource)), error: nullable(o.error, parseImageError) };
 };

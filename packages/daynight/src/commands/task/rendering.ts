@@ -1,6 +1,8 @@
 import { stringifyApiJson } from "../../api/json.js";
 import type { GraphTask, Task, TaskGraph, TaskPropertyResource, TaskPropertySchema } from "../../api/types.js";
 import { terminalText } from "../../platform/terminal.js";
+import type { ObservedTask, ObservedTaskGraph, ObservedGraphTask } from "../../api/task-observation.js";
+import { renderSessionAggregation, renderSessionObservation, taskObservationQuery } from "./observation-rendering.js";
 
 const identifiers = (values: readonly string[]): string => values.length === 0 ? "none" : values.map(terminalText).join(", ");
 
@@ -24,49 +26,54 @@ const taskDependencies = (task: Pick<Task, "ready" | "dependsOn" | "externalDepe
   `Blocked by: ${identifiers(task.blockedBy)}`,
 ];
 
-export const renderTask = (task: Task): string => [
+export const renderTask = (task: Task | ObservedTask): string => [
   ...taskIdentity(task),
   `Description: ${terminalText(task.description)}`,
   ...taskProperties(task),
   `Status: ${terminalText(task.status)}`,
   taskAssignment(task),
+  ...("session" in task ? [...renderSessionObservation(task.session), taskObservationQuery(task.projectId, task.id)] : []),
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   `Version: ${task.version}`,
   ...taskDependencies(task),
   `Created: ${terminalText(task.createdAt)}`,
   `Updated: ${terminalText(task.updatedAt)}`,
+  ...(task.cancelledAt === null ? [] : [`Cancelled at: ${terminalText(task.cancelledAt)}`]),
   "",
 ].join("\n");
 
 export const renderTaskList = (tasks: readonly Task[]): string => tasks.length === 0 ? "No tasks.\n" : tasks.map(renderTask).join("\n");
 
-export const renderTaskSummaryList = (tasks: readonly Task[]): string => tasks.length === 0 ? "No tasks.\n" : tasks.map((task) => [
+export const renderTaskSummaryList = (tasks: readonly (Task | ObservedTask)[]): string => tasks.length === 0 ? "No tasks.\n" : tasks.map((task) => [
   ...taskIdentity(task),
   ...taskProperties(task),
   `Status: ${terminalText(task.status)}`,
   taskAssignment(task),
+  ...("session" in task ? [...renderSessionObservation(task.session), taskObservationQuery(task.projectId, task.id)] : []),
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   ...taskDependencies(task),
   "",
 ].join("\n")).join("\n");
 
-const renderGraphTask = (task: GraphTask): string => [
+const renderGraphTask = (task: GraphTask | ObservedGraphTask, projectId: string): string => [
   `ID: ${terminalText(task.id)}`,
   `Title preview: ${terminalText(task.titlePreview)}`,
   `Title truncated: ${task.titleTruncated}`,
   `Status: ${terminalText(task.status)}`,
   taskAssignment(task),
+  ...("session" in task ? [`Relation: ${task.relation}`, ...renderSessionObservation(task.session), taskObservationQuery(projectId, task.id)] : []),
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   ...taskDependencies(task),
   `Created: ${terminalText(task.createdAt)}`,
   `Updated: ${terminalText(task.updatedAt)}`,
+  ...(task.cancelledAt === null ? [] : [`Cancelled at: ${terminalText(task.cancelledAt)}`]),
   "",
 ].join("\n");
 
-export const renderTaskGraph = (graph: TaskGraph): string => [
+export const renderTaskGraph = (graph: TaskGraph | ObservedTaskGraph): string => [
   `Project: ${terminalText(graph.project.id)}`,
   `Name: ${terminalText(graph.project.name)}`,
   `Repository: ${terminalText(graph.project.repoUrl)}`,
@@ -78,10 +85,12 @@ export const renderTaskGraph = (graph: TaskGraph): string => [
   `Todo: ${graph.summary.todo}`,
   `In progress: ${graph.summary.inProgress}`,
   `Done: ${graph.summary.done}`,
+  `Cancelled: ${graph.summary.cancelled}`,
   `Ready: ${graph.summary.ready}`,
   `Blocked: ${graph.summary.blocked}`,
+  ...("sessionSummary" in graph ? renderSessionAggregation(graph.sessionSummary) : []),
   "",
-  graph.tasks.map(renderGraphTask).join("\n"),
+  graph.tasks.map(task => renderGraphTask(task, graph.project.id)).join("\n"),
 ].join("\n");
 
 export const renderTaskGraphDependencies = (graph: TaskGraph, json: boolean): string => {

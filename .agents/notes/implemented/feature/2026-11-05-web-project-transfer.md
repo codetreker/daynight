@@ -18,11 +18,12 @@ establishes success and supplies the actor's remaining access. When access is
 lost, the matching Task cache generation is revoked before navigation. The source
 Team is checked by ID; only a confirmed 404 chooses Personal. A failed check
 retains the successful result and permits retrying navigation. Unknown writes
-retain a read-only check and are never automatically replayed.
+retain a read-only check and are never automatically replayed. Confirmed Project
+revocation clears unsubmitted private previews without discarding a dispatched
+transfer or its result; its unknown check does not reveal withdrawn Project or
+Team details.
 
-The [service transfer decision](../architecture/2026-11-04-project-transfer.md)
-owns the transaction and receipt. The [browser Team preference decision](2026-11-04-browser-team-preference.md)
-owns selection persistence.
+The [service transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) records the rationale for the transaction and receipt. The [browser Team preference decision](../../archived/feature/2026-11-04-browser-team-preference.md) records the rationale for selection persistence.
 The [stable Project checks decision](../bug-fix/2026-11-05-stable-project-checks.md)
 separates retained presentation from fresh mutation admission.
 

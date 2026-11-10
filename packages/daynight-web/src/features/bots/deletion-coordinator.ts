@@ -3,6 +3,7 @@ import { canonicalId } from '../../api/parse';
 import { BotDeletionUnknown, deleteBot, getBot, parseBot, type BotDefinition, type DeletedBot, type DeleteBotInput } from '../../api/bots';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { clearBotStoredSessionState, type BotSessionCache } from './session-cache';
+import { getBotDisplaySnapshotCoordinator, type BotDisplaySnapshotCoordinator } from './display-snapshot-coordinator';
 
 export type BotDeletionRecord = {
   readonly id: string;
@@ -42,8 +43,11 @@ export class BotDeletionCoordinator {
   private readonly caches = new Set<Cache>();
   private readonly operations = new Map<string, Promise<void>>();
   private view: readonly BotDeletionRecord[] = [];
+  private readonly displaySnapshots: BotDisplaySnapshotCoordinator;
   constructor(private readonly scope: TaskCacheScope) {
+    this.displaySnapshots = getBotDisplaySnapshotCoordinator(scope);
     if (!scope.isInvalidated && !cleared.has(scope.userId)) this.restore();
+    for (const { record } of this.records.values()) this.applyDisplaySnapshots(record);
     scope.signal.addEventListener('abort', () => {
       this.records.clear(); this.view = []; clearPendingBotDeletions(scope.userId);
       for (const listener of this.listeners) listener();
@@ -68,9 +72,15 @@ export class BotDeletionCoordinator {
     else if (record.phase === 'rejected') cache.unblockBot(record.id);
     else cache.blockBot(record.id);
   }
+  private applyDisplaySnapshots(record: BotDeletionRecord): void {
+    if (record.result || record.phase === 'unavailable') this.displaySnapshots.invalidateBot(record.id);
+    else if (record.phase === 'rejected') this.displaySnapshots.unblockBot(record.id);
+    else this.displaySnapshots.blockBot(record.id);
+  }
   private save(record: BotDeletionRecord, rejected = this.records.get(record.id)?.rejected ?? false): void {
     if (this.scope.isInvalidated) return;
     this.records.set(record.id, { record, rejected }); this.view = [...this.records.values()].map(value => value.record);
+    this.applyDisplaySnapshots(record);
     // The original request outlives navigation; its result must clear stored
     // conversation state even after the page has detached its last cache.
     if (record.result || record.phase === 'unavailable') clearBotStoredSessionState(this.scope.userId, record.id, record.sessionId ?? undefined);

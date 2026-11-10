@@ -1,13 +1,14 @@
 import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
-import type { WorkerCloudReport, WorkerCloudReceipt, WorkerCloudReportReceipt } from "../../api/worker-configuration.js";
+import type { WorkerCloudReport, WorkerCloudReceipt, WorkerCloudReportReceipt, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import { ApiError } from "../../api/client.js";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasHerdrCommandCleanupFailure } from "./herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
+import type { WorkerPromptSource } from "./prompt-source.js";
 
 type SafeFailure = { category: string; cause?: SafeFailure; errors?: readonly SafeFailure[] };
 type FailureState = { signature: string; repetitions: number };
@@ -50,24 +51,63 @@ const copyInventory = (inventory: WorkerTaskInventory): WorkerTaskInventory => O
   observedAt: inventory.observedAt, claims: Object.freeze(inventory.claims.map(copyReference)),
 });
 
+export type WorkerConfigurationExchange = {
+  prepare?(operation: Operation): Promise<void>;
+  capture(): WorkerCloudReport;
+  send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
+  prompts?: WorkerPromptSource;
+};
+
+export const syncWorkerConfigurationOnce = async (options: {
+  configuration: WorkerConfigurationExchange; report(): WorkerReport; operation: Operation;
+}): Promise<{ more: boolean; promptError: boolean; stopCatchup: boolean }> => {
+  const { configuration, operation } = options;
+  try {
+    await configuration.prepare?.(operation);
+    operation.check();
+    const captured = configuration.capture();
+    const sent = immutable(parseWorkerCloudReport(captured));
+    const source = configuration.prompts;
+    const promptCapture = source?.captureBatch() ?? null;
+    const receipt = await configuration.send(options.report(), sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []);
+    await configuration.accept(captured, receipt.configuration);
+    if (source === undefined) return { more: false, promptError: false, stopCatchup: false };
+    if (receipt.prompts === undefined || !receipt.prompts.ok) {
+      source.failCycle();
+      return { more: false, promptError: true, stopCatchup: true };
+    }
+    if (promptCapture === null) return { more: false, promptError: false, stopCatchup: false };
+    try {
+      const results = receipt.prompts.results;
+      const more = source.accept(promptCapture, results);
+      if (results.length > 0 && results.every(result => result.status === "error")) { source.failCycle(); return { more: false, promptError: false, stopCatchup: true }; }
+      return { more, promptError: false, stopCatchup: false };
+    } catch {
+      source.failCycle();
+      return { more: false, promptError: true, stopCatchup: true };
+    }
+  } catch (error) {
+    configuration.prompts?.failCycle();
+    throw error;
+  }
+};
+
 export const createWorkerReporter = (options: {
   signal: AbortSignal;
   collect: (operation: Operation) => Promise<WorkerTelemetrySample>;
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
-  configuration?: {
-    prepare?(operation: Operation): Promise<void>;
-    capture(): WorkerCloudReport;
-    send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
-    accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
-  };
-}): { trigger(): void; publishInventory(inventory: WorkerTaskInventory): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
+  configuration?: WorkerConfigurationExchange;
+}): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
   let inventory: WorkerTaskInventory | null = null;
   let stopped = false;
   let pending = false;
+  let pendingPrompt = false;
+  let deferPromptCycle = false;
   let running: Promise<void> | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
   let diagnosticFailure: unknown;
@@ -95,12 +135,27 @@ export const createWorkerReporter = (options: {
   const halt = (): void => {
     stopped = true;
     pending = false;
+    pendingPrompt = false;
     if (timer !== undefined) clearInterval(timer);
     cancellation.abort();
     options.signal.removeEventListener("abort", halt);
   };
   const retainCleanupFailure = (error: unknown): void => {
     cleanupFailures.add(error);
+  };
+  const isCancellation = (error: unknown): boolean => error === cancellation.signal.reason ||
+    (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
+  const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
+    if (seen.has(error)) return true;
+    if (error instanceof HerdrCommandCleanupError) return hasUnconfirmedHerdrCommandCleanup(error);
+    if (isCancellation(error)) return false;
+    // Keep mixed aggregates intact when any independent failure remains. A cause
+    // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
+    const ancestors = new Set(seen).add(error);
+    if (error instanceof AggregateError) return error.errors.some((item: unknown) => requiresCleanupFailure(item, ancestors)) ||
+      (error.cause !== undefined && requiresCleanupFailure(error.cause, ancestors));
+    if (error instanceof Error && error.cause !== undefined) return requiresCleanupFailure(error.cause, ancestors);
+    return true;
   };
   const attempt = async (): Promise<void> => {
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
@@ -123,22 +178,23 @@ export const createWorkerReporter = (options: {
       }
       operation.check();
       phase = "send";
-      const report = Object.freeze({ ...sample.telemetry, taskInventory: inventory });
-      if (options.configuration === undefined) await options.send(report, operation);
+      if (options.configuration === undefined) await options.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), operation);
       else {
         phase = "configuration-read";
-        await options.configuration.prepare?.(operation);
-        operation.check();
-        const captured = options.configuration.capture();
-        const sent = immutable(parseWorkerCloudReport(captured));
-        phase = "send";
-        const receipt = await options.configuration.send(report, sent, operation);
+        const result = await syncWorkerConfigurationOnce({ configuration: options.configuration, operation,
+          report: () => Object.freeze({ ...sample.telemetry, taskInventory: inventory }) });
         phase = "configuration";
-        await options.configuration.accept(captured, receipt.configuration);
+        if (result.promptError) fail("prompts", phase, new ProtocolError("Invalid prompt results."));
+        else recover("prompts", phase);
+        if (result.stopCatchup) { pendingPrompt = false; deferPromptCycle = true; }
+        if (result.more) pendingPrompt = true;
       }
       operation.check();
       recover("report", phase);
     } catch (error) {
+      options.configuration?.prompts?.failCycle();
+      pendingPrompt = false;
+      if (options.configuration?.prompts !== undefined) deferPromptCycle = true;
       if (hasHerdrCommandCleanupFailure(error)) {
         fail("report", phase, error);
         retainCleanupFailure(error);
@@ -146,37 +202,51 @@ export const createWorkerReporter = (options: {
     } finally { operation.dispose(); }
   };
   const run = async (): Promise<void> => {
-    while (pending && !stopped) { pending = false; await attempt(); }
+    while ((pending || pendingPrompt) && !stopped) { pending = false; pendingPrompt = false; await attempt(); }
   };
-  const trigger = (): void => {
+  const schedule = (): void => {
     if (stopped) return;
-    pending = true;
     if (running !== null) return;
-    running = run().then(() => { running = null; if (pending && !stopped) trigger(); });
+    running = run().then(() => { running = null; if ((pending || pendingPrompt) && !stopped) schedule(); });
   };
+  const trigger = (): void => { if (!stopped) { pending = true; schedule(); } };
+  const cycle = (): void => { deferPromptCycle = false; options.configuration?.prompts?.beginCycle(); trigger(); };
   options.signal.addEventListener("abort", halt, { once: true });
   if (options.signal.aborted) halt();
-  else { timer = setInterval(trigger, 30_000); timer.unref(); trigger(); }
+  else { timer = setInterval(cycle, 30_000); timer.unref(); cycle(); }
 
   return {
     trigger,
+    demandChanged: () => { if (!stopped && !deferPromptCycle) { options.configuration?.prompts?.beginCycle(); pendingPrompt = true; schedule(); } },
     publishInventory: (value) => {
       if (stopped) return;
-      inventory = copyInventory(value);
+      if (value !== null && value.claims.length > 256) {
+        inventory = null;
+        fail("inventory", "collect", new RangeError("Worker claim inventory exceeds 256 items."));
+      } else {
+        inventory = value === null ? null : copyInventory(value);
+        if (value !== null) recover("inventory", "collect");
+      }
       trigger();
     },
     recordClaim: (reference) => {
       if (stopped) return;
-      if (inventory !== null) inventory = Object.freeze({
-        observedAt: inventory.observedAt,
-        claims: Object.freeze([...inventory.claims.filter(claim => claim.taskId !== reference.taskId), copyReference(reference)]),
-      });
+      if (inventory !== null) {
+        const replacing = inventory.claims.some(claim => claim.taskId === reference.taskId);
+        if (!replacing && inventory.claims.length >= 256) {
+          inventory = null;
+          fail("inventory", "collect", new RangeError("Worker claim inventory exceeds 256 items."));
+        } else inventory = Object.freeze({
+          observedAt: inventory.observedAt,
+          claims: Object.freeze([...inventory.claims.filter(claim => claim.taskId !== reference.taskId), copyReference(reference)]),
+        });
+      }
       trigger();
     },
     stop: async () => {
       halt();
       await running;
-      const errors = [...cleanupFailures, diagnosticFailure].filter(error => error !== undefined);
+      const errors = [...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), diagnosticFailure].filter(error => error !== undefined);
       if (errors.length === 1) throw errors[0];
       if (errors.length !== 0) throw new AggregateError(errors, "Worker reporter could not finish safely.");
     },

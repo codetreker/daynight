@@ -27,15 +27,18 @@ identity acquisition retains fifteen seconds on Windows and five seconds on
 POSIX; recurring identity probes retain five seconds and Job Object probes
 retain fifteen seconds. Windows proof acquisition uses the
 [native process handle](../bug-fix/2026-11-05-windows-native-process-proof.md)
-implementation, whose deadline checks join native calls without preempting a
-kernel call. The separate
+implementation. Job operations use the
+[native Job API](2026-11-05-native-controller-job-api.md) with the same fifteen-second
+operation budget. Both implementations check deadlines between native calls and
+join a call already in progress without preempting the kernel. The separate
 [startup budget decision](../bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
 owns the caller allowances; this hook does not set production launch or stop
 deadlines.
 
 Process confirmation is polled sequentially, joining each system probe before
 starting another or escalating. A polling deadline limits another round; an
-already started probe retains its per-call bound. Native proofs observed before
+already started probe retains its per-call budget and joins native work already
+in progress. Native proofs observed before
 and after shutdown are deduplicated by original process identity before cleanup.
 No timeout race releases fixture ownership while its cleanup continues.
 
@@ -43,6 +46,19 @@ Only the owning fixture's controlled startup logs, launch records, journal state
 and parent/child ticket paths are diagnosed. Log reads are bounded and marked
 when truncated. Startup and cleanup failures remain failures; unknown process
 ownership retains the fixture's evidence instead of authorizing deletion.
+
+The isolation regression uses a 100-millisecond fallback deadline only while
+registering this hook, whose explicit budget remains 180 seconds. This is the
+file's first runtime configuration override, so Vitest snapshots the inherited
+configuration for `vi.resetConfig()`. Vitest captures the fallback when registering
+a hook; the inherited configuration is restored immediately afterward, including
+when registration throws. Other hook and test registrations retain their
+existing defaults. The synthetic cleanup waits 300
+milliseconds and the following case observes its environment, mock and ticket
+path after 350 milliseconds. If the explicit budget is removed, the runner can
+start that case at the short fallback deadline while the first cleanup still
+owns global restoration. Its late restoration is then visible to the following
+case's assertions. The tests use real scheduling and asynchronous yielding.
 
 ## Alternatives
 
@@ -59,12 +75,23 @@ was observed, but the missing first child journal did not establish its startup
 cause. Altering product deadlines would not repair teardown isolation. Original
 startup diagnostics preserve the evidence needed to reconsider that policy.
 
+**Keep the original eleven-second cleanup and 1.5-second observation.** Those
+waits originally crossed the ordinary ten-second hook limit and exposed late
+global restoration. The same ordering follows from a registration-local default
+and shorter synthetic waits, without adding 12.5 seconds to every file run.
+
+**Shorten only the waits or change the default during execution.** Short waits
+under the ordinary ten-second fallback cannot expose a missing explicit budget.
+Changing the default in a runtime hook is too late because the timeout wrapper
+already captured it at registration.
+
 ## Consequences
 
-The hook waits for bounded owned cleanup before restoring globals. A regression
-holds teardown beyond the former ten-second limit and checks that the following
-fixture's parent ticket path still agrees with its frozen child configuration.
-The extra delay belongs to this regression, not normal successful teardown.
+The hook waits for bounded owned cleanup before restoring globals. The adjacent
+regression cases retain the parent/child ticket-path, mock and completed-cleanup
+assertions while crossing a short captured fallback. Their timing no longer
+requires the former ten-second limit to elapse. Only synthetic waits change;
+real process observations and production deadlines retain their original bounds.
 
 The hook budget is distinct from the production stop deadline. Joined probes can
 finish after a polling deadline, so that deadline is not a strict wall-clock

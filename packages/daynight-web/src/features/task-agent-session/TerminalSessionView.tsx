@@ -12,7 +12,7 @@ import { useSessionFullscreen } from './useSessionFullscreen';
 type ConfirmationAction = 'resume_automation' | 'resolve_initial_assignment' | 'acknowledge_unknown';
 function sameConfirmationIdentity(before: TerminalClientSnapshot, current: TerminalClientSnapshot, action: ConfirmationAction): boolean {
   const a = before.session, b = current.session;
-  const sameSession = a === null || b === null ? a === b : sameTerminalFence(a, b) && a.control?.controlEpoch === b.control?.controlEpoch;
+  const sameSession = a === null || b === null ? a === b : sameTerminalFence(a, b) && a.owner.ownerUserId === b.owner.ownerUserId && a.control?.controlEpoch === b.control?.controlEpoch;
   return sameSession && (action !== 'acknowledge_unknown' || before.result?.operationId === current.result?.operationId);
 }
 
@@ -35,11 +35,12 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   const [draft, setDraft] = useState(''); const [confirmation, setConfirmation] = useState<{ action: ConfirmationAction; snapshot: TerminalClientSnapshot; client: TerminalSessionClient } | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const control = view.session?.control;
+  const isOwner = view.session?.owner.ownerUserId === scope.userId;
   const ownLease = view.ownsControl;
-  const displayedOwnLease = control?.lease?.holderUserId === scope.userId && control.lease.browserClientId === client.browserClientId;
+  const displayedOwnLease = isOwner && control?.lease?.holderUserId === scope.userId && control.lease.browserClientId === client.browserClientId;
   const releaseShown = displayedOwnLease && (!view.inputReady || ownLease);
   const reasonId = useId();
-  const usable = active && current && view.inputReady && view.phase === 'ready' && view.session?.connected === true && view.session.capabilities.observe && view.session.capabilities.control && view.session.capabilities.archive && !view.pending && (view.result?.state !== 'unknown' || view.unknownAcknowledged) && !scope.isInvalidated && !authRequestsPaused();
+  const usable = isOwner && active && current && view.inputReady && view.phase === 'ready' && view.session?.connected === true && view.session.capabilities.observe && view.session.capabilities.control && view.session.capabilities.archive && !view.pending && (view.result?.state !== 'unknown' || view.unknownAcknowledged) && !scope.isInvalidated && !authRequestsPaused();
   const allowed = (action: string) => usable && control?.availableActions.some(value => value === action) === true;
   const unknownInitial = control && ['unknown', 'unconfirmed'].includes(control.initialAssignment);
   const tooLarge = new TextEncoder().encode(draft).byteLength > 16 * 1024;
@@ -82,7 +83,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
     {control?.state === 'suspended' ? <div className="terminal-notice"><p>{m.suspended}</p><button className="button" disabled={!allowed('resume_automation')} onClick={() => requestConfirmation('resume_automation')}>{m.resume}</button></div> : null}
     {view.session?.snapshot ? <><div className="terminal-host-toolbar"><span>{view.session.owner.provider}</span><time dateTime={view.session.snapshot.frame.capturedAt}>{view.session.snapshot.frame.capturedAt.replace('T', ' ')}</time></div><TerminalText frame={view.session.snapshot.frame} /></> : <p className="session-empty">{m.noFrame}</p>}
     {view.phase === 'disconnected' ? <p role="status">{m.expired}</p> : null}
-    <div className="terminal-composer"><label>{m.input}<textarea value={draft} placeholder={m.inputHint} aria-describedby={reasonId} onChange={event => setDraft(event.target.value)} /></label>
+    <div className="terminal-composer"><label>{m.input}<textarea readOnly={!isOwner} value={draft} placeholder={m.inputHint} aria-describedby={reasonId} onChange={event => setDraft(event.target.value)} /></label>
       <div className="terminal-host-toolbar"><div className="terminal-keys">{keys.map(([key, label]) => <button key={key} className="button" disabled={!ownLease || !allowed('keys')} onClick={() => { void client.key(key); }}>{label}</button>)}</div>
       <button className="button" disabled={!allowed(releaseShown ? 'release_control' : 'acquire_control')} onClick={() => { void client.control(releaseShown ? 'release_control' : 'acquire_control'); }}>{releaseShown ? m.release : m.take}</button>
       <button className="button primary" disabled={!ownLease || !allowed('paste') || !draft || tooLarge} onClick={() => { void client.paste(draft); }}>{m.paste}</button></div>
@@ -90,7 +91,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
       <details className="terminal-input-reason"><summary id={reasonId}>{m.reason}</summary><p>{reason}</p></details>
     </div>
     {view.pending ? <p role="status">{m.busy}</p> : null}
-    {view.result?.state === 'unknown' ? <div role="status"><p>{m.unknown}</p><button className="button" disabled={view.pending} onClick={() => { void client.checkOperation(); }}>{m.check}</button>{!view.unknownAcknowledged ? <button className="button" disabled={view.pending} onClick={() => requestConfirmation('acknowledge_unknown')}>{m.acknowledge}</button> : null}</div> : view.result?.state === 'transport_completed' ? <p role="status">{m.transport}</p> : view.result?.state === 'rejected' ? <p role="status">{m.rejected}</p> : null}
+    {view.result?.state === 'unknown' ? <div role="status"><p>{m.unknown}</p><button className="button" disabled={view.pending} onClick={() => { void client.checkOperation(); }}>{m.check}</button>{!view.unknownAcknowledged ? <button className="button" disabled={!isOwner || view.pending} onClick={() => requestConfirmation('acknowledge_unknown')}>{m.acknowledge}</button> : null}</div> : view.result?.state === 'transport_completed' ? <p role="status">{m.transport}</p> : view.result?.state === 'rejected' ? <p role="status">{m.rejected}</p> : null}
     {confirmation && confirmationCurrent ? <div className="terminal-confirmation" role="group" aria-label={confirmation.action === 'resume_automation' ? m.resume : confirmation.action === 'resolve_initial_assignment' ? m.resolve : m.acknowledge}><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{confirmation.action === 'resume_automation' ? m.resumeConfirm : confirmation.action === 'resolve_initial_assignment' ? m.resolveConfirm : m.acknowledgeConfirm}</label><div className="terminal-host-toolbar"><button className="button" onClick={() => setConfirmation(null)}>{m.cancel}</button><button className="button primary" disabled={!confirmed || !active || !current || !view.inputReady || confirmation.action !== 'acknowledge_unknown' && !allowed(confirmation.action)} onClick={submitConfirmation}>{m.confirm}</button></div></div> : null}
   </section>;
 }

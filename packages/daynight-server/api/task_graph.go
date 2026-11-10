@@ -18,6 +18,7 @@ type GraphTask struct {
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	StartedAt         *time.Time `json:"startedAt"`
 	CompletedAt       *time.Time `json:"completedAt"`
+	CancelledAt       *time.Time `json:"cancelledAt"`
 }
 
 type TaskGraphSummary struct {
@@ -25,6 +26,7 @@ type TaskGraphSummary struct {
 	Todo       int64 `json:"todo"`
 	InProgress int64 `json:"inProgress"`
 	Done       int64 `json:"done"`
+	Cancelled  int64 `json:"cancelled"`
 	Ready      int64 `json:"ready"`
 	Blocked    int64 `json:"blocked"`
 }

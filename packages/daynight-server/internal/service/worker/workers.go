@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
+	promptservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 )
 
 type workerStore interface {
@@ -17,9 +20,43 @@ type workerStore interface {
 	store.WorkerWriter
 }
 
-type Workers struct{ store workerStore }
+type reportOperations struct {
+	validate              func(model.WorkerReport) (model.WorkerReport, error)
+	parseConfiguration    func(json.RawMessage) (*model.WorkerConfigurationExchange, error)
+	admit                 func(store.WorkerAdmission) error
+	matchTasks            func([]store.WorkerTaskSource, model.WorkerTaskInventory, string, string) ([]model.WorkerObservedTask, error)
+	snapshot              func(string, string, model.WorkerReport, time.Time, []model.WorkerObservedTask) model.WorkerSnapshot
+	exchangeConfiguration func(context.Context, store.WorkerWriteDAO, model.Principal, string, model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error)
+}
 
-func NewWorkers(database workerStore) *Workers { return &Workers{store: database} }
+func workerReportOperations() reportOperations {
+	return reportOperations{
+		validate:              workercore.ValidateReport,
+		parseConfiguration:    workercore.ParseWorkerConfigurationExchange,
+		admit:                 workercore.AdmitActiveWorker,
+		matchTasks:            workercore.MatchTaskSnapshots,
+		snapshot:              workercore.SnapshotForReport,
+		exchangeConfiguration: workercore.ExchangeConfiguration,
+	}
+}
+
+type Workers struct {
+	putConfiguration func(context.Context, store.WorkerWriteDAO, model.Principal, string, int64, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	report           reportOperations
+	store            workerStore
+	prompts          store.PromptSnapshotReader
+	monitoring       store.MonitoringStore
+}
+
+func NewWorkers(database workerStore) *Workers {
+	return &Workers{store: database, report: workerReportOperations(), putConfiguration: workercore.PutConfiguration}
+}
+
+func NewWorkersWithPrompts(database workerStore, prompts store.PromptSnapshotReader) *Workers {
+	workers := NewWorkers(database)
+	workers.prompts = prompts
+	return workers
+}
 
 type WorkerReportResult struct {
 	Configuration  *model.WorkerConfigurationReceipt
@@ -27,9 +64,42 @@ type WorkerReportResult struct {
 	LastReportedAt time.Time
 }
 
+type ConfigurationSyncResult struct {
+	Native  WorkerReportResult
+	Prompts []model.PromptResult
+}
+
+// ReportSync commits the native report before querying the independent prompt snapshot.
+func (s *Workers) ReportSync(ctx context.Context, principal model.Principal, workerID string, input model.WorkerReport, selectors []model.PromptSelector) (ConfigurationSyncResult, error) {
+	if s.prompts == nil {
+		return ConfigurationSyncResult{}, fmt.Errorf("report worker: prompt snapshot reader is not configured")
+	}
+	native, err := s.Report(ctx, principal, workerID, input)
+	if err != nil {
+		return ConfigurationSyncResult{}, err
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	results, err := promptservice.Batch(readCtx, s.prompts, principal, workerID, selectors)
+	if err != nil {
+		code := "unavailable"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			code = "timeout"
+		}
+		results = make([]model.PromptResult, 0, len(selectors))
+		for _, selector := range selectors {
+			results = append(results, model.PromptResult{Key: selector.Key, Status: "error", Error: code})
+		}
+	}
+	if results == nil {
+		results = []model.PromptResult{}
+	}
+	return ConfigurationSyncResult{Native: native, Prompts: results}, nil
+}
+
 type WorkerPage struct {
 	ObservedAt time.Time
-	Items      []model.WorkerSnapshot
+	Items      []workerprotocol.WorkerSummary
 	NextCursor *string
 }
 
@@ -46,16 +116,19 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
-	input, err = workercore.ValidateReport(input)
+	input, err = s.report.validate(input)
 	if err != nil {
 		return WorkerReportResult{}, err
+	}
+	if _, err := workerprotocol.EncodeTelemetry(io.Discard, input.Telemetry, workercore.MaxTelemetryJSONBytes); err != nil {
+		return WorkerReportResult{}, workercore.InputLimit(err)
 	}
 	if input.Configuration != nil {
 		raw, marshalErr := json.Marshal(input.Configuration)
 		if marshalErr != nil {
 			return WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker configuration exchange is invalid."}
 		}
-		input.Configuration, err = workercore.ParseWorkerConfigurationExchange(raw)
+		input.Configuration, err = s.report.parseConfiguration(raw)
 		if err != nil {
 			return WorkerReportResult{}, err
 		}
@@ -63,29 +136,48 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	var result WorkerReportResult
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
 		tx := scope.WorkerDAO()
-		observedAt, err := scope.ObservedAt(ctx)
+		admission, err := scope.AdmitWorker(ctx, principal.UserID, workerID, workercore.ActiveWindow)
 		if err != nil {
 			return err
 		}
+		if err := s.report.admit(admission); err != nil {
+			return err
+		}
+		observedAt := admission.ObservedAt
 		var items []model.WorkerObservedTask
 		if input.TaskInventory != nil {
 			sources, err := tx.ReportTaskSnapshots(ctx, principal.UserID, *input.TaskInventory)
 			if err != nil {
 				return err
 			}
-			items, err = workercore.MatchTaskSnapshots(sources, *input.TaskInventory, principal.UserID, workerID)
+			items, err = s.report.matchTasks(sources, *input.TaskInventory, principal.UserID, workerID)
 			if err != nil {
 				return err
 			}
 		}
-		stored, err := tx.UpsertWorker(ctx, workercore.SnapshotForReport(principal.UserID, workerID, input, observedAt, items))
+		stored, err := tx.UpsertWorker(ctx, s.report.snapshot(principal.UserID, workerID, input, observedAt, items))
 		if err != nil {
 			return err
 		}
+		if _, err := workerprotocol.EncodeItem(io.Discard, stored, workercore.MaxWorkerJSONBytes); err != nil {
+			return workercore.InputLimit(err)
+		}
 		if input.Configuration != nil {
-			result.Configuration, err = workercore.ExchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			result.Configuration, err = s.report.exchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
 			if err != nil {
 				return err
+			}
+			if result.Configuration.ObservationAccepted {
+				configuration, err := tx.WorkerConfiguration(ctx, principal.UserID, workerID)
+				if err != nil {
+					return err
+				}
+				if configuration.Observation == nil {
+					return fmt.Errorf("accepted worker configuration observation is missing")
+				}
+				if _, err := workerprotocol.EncodeObservation(io.Discard, *configuration.Observation, workercore.MaxConfigurationJSONBytes); err != nil {
+					return workercore.InputLimit(err)
+				}
 			}
 		}
 		result.LastReportedAt = stored.LastReportedAt
@@ -109,26 +201,28 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	if err != nil {
 		return WorkerPage{}, err
 	}
-	var result WorkerPage
-	var records store.WorkerPage
+	result := WorkerPage{Items: []workerprotocol.WorkerSummary{}}
+	var records store.WorkerSummaryPage
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		records, err = snapshot.WorkerDAO().Workers(ctx, principal.UserID, result.ObservedAt, page)
+		records, err = snapshot.WorkerDAO().WorkerSummaries(ctx, principal.UserID, result.ObservedAt, page)
 		return err
 	})
 	if err != nil {
 		return WorkerPage{}, fmt.Errorf("list workers: %w", err)
 	}
-	result.Items = records.Items
+	for _, item := range records.Items {
+		result.Items = append(result.Items, workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, Platform: string(item.Platform), LastReportedAt: item.LastReportedAt, TaskObservationState: string(item.TaskObservationState), TaskObservedAt: item.TaskObservedAt, ActiveTaskCount: item.ActiveTaskCount})
+	}
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
 		cursor, err := workercore.ListCursor(principal.UserID, last.CreatedAt, last.WorkerID)
 		if err != nil {
-			return WorkerPage{}, fmt.Errorf("encode worker cursor: %w", err)
+			return WorkerPage{}, fmt.Errorf("list workers: %w", err)
 		}
 		result.NextCursor = &cursor
 	}

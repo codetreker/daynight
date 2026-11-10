@@ -7,7 +7,10 @@ type CredentialKind string
 const (
 	SessionCredential CredentialKind = "session"
 	PATCredential     CredentialKind = "pat"
+	OAuthCredential   CredentialKind = "oauth"
 )
+
+const OAuthAccessPrefix = "dnmcp_"
 
 type Principal struct {
 	UserID       string
@@ -31,6 +34,7 @@ type LoginTransaction struct {
 	ID                 string
 	StateHash          []byte
 	BrowserBindingHash []byte
+	ScopeHash          []byte
 	Provider           string
 	ReturnPath         string
 	ExpiresAt          time.Time

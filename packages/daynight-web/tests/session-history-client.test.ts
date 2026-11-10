@@ -5,6 +5,8 @@ import type { SessionApi } from '../src/api/sessions';
 import { TaskSessionClient } from '../src/features/task-agent-session/client';
 import type { BrowserMessage, TimelinePage } from '../../daynight/src/session/controller-protocol';
 import type { TaskSessionSnapshot } from './helpers/session';
+import { sessionFence } from '../../daynight/src/session/protocol';
+import { selectSessionHistoryRows, type SessionHistoryPreview } from '../src/features/task-agent-session/history-preview';
 
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
@@ -16,8 +18,9 @@ function fixture() {
   let paused = false, current = true;
   const channels: { receive: (message: BrowserMessage) => void; disconnect: (error?: unknown) => void }[] = [];
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: 'A', afterCursor: null, hasMoreBefore: true, hasMoreAfter: false, lastEventSeq: '0' };
-  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { channels.push({ receive, disconnect }); return { close: vi.fn() }; }) };
-  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage: null });
+  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { channels.push({ receive, disconnect }); return { close: vi.fn() }; }) };
+  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage: null });
+  client.setCurrentReadVisible(true);
   clients.push(client);
   const receive = (snapshot: TaskSessionSnapshot = s) => channels.at(-1)!.receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot, cursor: 'live' });
   return { s, api, page, client, channels, receive, pause: () => { paused = true; client.syncAvailability(); }, resume: () => { paused = false; client.syncAvailability(); }, revoke: () => { current = false; client.syncAvailability(); } };
@@ -25,6 +28,119 @@ function fixture() {
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive(); await flush(); expect(f.client.snapshot().connected).toBe(true); }
 
 describe('session history request progress', () => {
+  it('distinguishes an accepted empty history page from a current snapshot or connection', async () => {
+    const f = fixture(), tail = deferred<TimelinePage>();
+    vi.mocked(f.api.timeline).mockReturnValueOnce(tail.promise);
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+    await f.client.start();
+    expect(f.client.snapshot().historyLoaded).toBe(false);
+    f.receive(); await flush();
+    expect(f.client.snapshot().historyLoaded).toBe(false);
+    tail.resolve({ ...f.page, beforeCursor: null, hasMoreBefore: false }); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true, historyCoverage: { firstEntrySeq: null, throughEntrySeq: f.s.lastTimelineSeq, completeBefore: true, lastEventSeq: '0' } });
+  });
+  it('accepts a validated offline page without claiming online pagination readiness', async () => {
+    const f = fixture(); await f.client.start();
+    f.channels[0]!.disconnect(); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true, connected: false, historyReady: false });
+  });
+  it('keeps accepted history through refresh but blocks observation while its replacement is incomplete', async () => {
+    const f = fixture(); await ready(f);
+    const tail = deferred<TimelinePage>(); vi.mocked(f.api.timeline).mockReturnValueOnce(tail.promise);
+    f.client.refresh(); await flush(); f.receive(); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: false });
+    tail.resolve(f.page); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+    f.channels.at(-1)!.disconnect();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+  });
+  it.each(['history', 'execution'] as const)('clears loaded facts and coverage immediately when %s changes', async identity => {
+    const f = fixture(); await ready(f);
+    const tail = deferred<TimelinePage>(); vi.mocked(f.api.timeline).mockReturnValueOnce(tail.promise);
+    const next = { ...f.s, ...(identity === 'history' ? { historyEpoch: 'history-2' } : { executionGeneration: '2' }), sessionRevision: '13' };
+    f.receive(next); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+    tail.resolve({ ...f.page, historyEpoch: next.historyEpoch }); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+    f.client.close();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+  });
+  it('reports only applied page coverage and preserves newer authoritative revisions', async () => {
+    const f = fixture();
+    const row = { kind: 'assistant_message' as const, entryId: 'message', entrySeq: '10', revision: '3', content: [{ type: 'text' as const, text: 'latest' }] };
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: [row] }); await ready(f);
+    expect(f.client.snapshot().historyCoverage).toEqual({ firstEntrySeq: '10', throughEntrySeq: '10', completeBefore: false, lastEventSeq: '0' });
+    f.receive({ ...f.s, sessionRevision: '13', lastTimelineSeq: '200' });
+    expect(f.client.snapshot().historyCoverage?.throughEntrySeq).toBe('10');
+    f.receive({ ...f.s, sessionRevision: '12', lastTimelineSeq: '1' });
+    expect(f.client.snapshot().historyCoverage?.throughEntrySeq).toBe('10');
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: [{ ...row, revision: '1' }, { ...row, entryId: 'older', entrySeq: '2' }], hasMoreBefore: false, beforeCursor: null });
+    await f.client.loadOlder();
+    expect(f.client.snapshot().historyCoverage).toEqual({ firstEntrySeq: '2', throughEntrySeq: '10', completeBefore: true, lastEventSeq: '0' });
+    expect(f.client.snapshot().state.entries.find(entry => entry.entryId === row.entryId)?.revision).toBe('3');
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: { ...row, entryId: 'new', entrySeq: '300' } } });
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '2', throughEntrySeq: '10', lastEventSeq: '1' });
+    expect(f.client.snapshot().state.entries.some(entry => entry.entryId === 'new')).toBe(true);
+  });
+  it.each(['older', 'newer'] as const)('does not turn a single %s upsert into contiguous page coverage', async direction => {
+    const f = fixture();
+    const row = (seq: number, revision = '1') => ({ kind: 'assistant_message' as const, entryId: `message-${seq}`, entrySeq: String(seq), revision, content: [{ type: 'text' as const, text: `Message ${seq}` }] });
+    const cached = Array.from({ length: 150 }, (_, index) => row(51 + index));
+    const tail = Array.from({ length: 100 }, (_, index) => row((direction === 'older' ? 101 : 51) + index));
+    Object.assign(f.s, { lastTimelineSeq: tail.at(-1)!.entrySeq });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: tail }); await ready(f);
+    const preview: SessionHistoryPreview = { fence: sessionFence(f.s), historyEpoch: f.s.historyEpoch, lastEventSeq: '2', entries: cached, resources: [] };
+    const upsert = row(direction === 'older' ? 51 : 200, '2');
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, ...sessionFence(f.s), connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: upsert } });
+    const view = f.client.snapshot(), rows = selectSessionHistoryRows(view.state, preview, view.historyLoaded, view.historyCoverage);
+    expect(rows).toHaveLength(150);
+    expect(rows.find(item => item.entry.entryId === upsert.entryId)).toEqual({ entry: upsert, preview: false });
+    const untouchedSeq = direction === 'older' ? '52' : '199';
+    expect(rows.find(item => item.entry.entrySeq === untouchedSeq)?.preview).toBe(true);
+    expect(view.historyCoverage).toMatchObject({ firstEntrySeq: tail[0]!.entrySeq, throughEntrySeq: tail.at(-1)!.entrySeq, lastEventSeq: '1' });
+  });
+  it.each([false, true])('keeps an unread interval between same-history tails until its cursor page is accepted (previously complete=%s)', async complete => {
+    const f = fixture();
+    const row = (seq: number) => ({ kind: 'assistant_message' as const, entryId: `message-${seq}`, entrySeq: String(seq), revision: '1', content: [{ type: 'text' as const, text: `Message ${seq}` }] });
+    const range = (first: number, length: number) => Array.from({ length }, (_, index) => row(first + index));
+    Object.assign(f.s, { lastTimelineSeq: '100' });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(1, 100), hasMoreBefore: !complete, beforeCursor: complete ? null : 'A' });
+    await ready(f);
+    const preview: SessionHistoryPreview = { fence: sessionFence(f.s), historyEpoch: f.s.historyEpoch, lastEventSeq: '2', entries: range(51, 150), resources: [], readingAnchor: { entryId: 'message-125', offset: 7, following: false } };
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'registered', session: { ...f.s, lastTimelineSeq: '250', sessionRevision: '13' } });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(151, 100), beforeCursor: 'B', lastEventSeq: '1' });
+    f.client.refresh(); await flush(); f.receive({ ...f.s, lastTimelineSeq: '250', sessionRevision: '13' }); await flush();
+    const rows = () => { const view = f.client.snapshot(); return selectSessionHistoryRows(view.state, preview, view.historyLoaded, view.historyCoverage); };
+    expect(rows()).toHaveLength(250);
+    expect(rows().find(item => item.entry.entryId === preview.readingAnchor!.entryId)?.preview).toBe(true);
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '151', throughEntrySeq: '250', completeBefore: false });
+    expect(f.client.snapshot().state.entries).toHaveLength(200);
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(101, 50), beforeCursor: 'C', lastEventSeq: '1' });
+    await f.client.loadOlder();
+    expect(f.api.timeline).toHaveBeenLastCalledWith(f.s.sessionId, 'before', 'B', expect.any(AbortSignal));
+    expect(rows()).toHaveLength(250);
+    expect(rows().find(item => item.entry.entryId === preview.readingAnchor!.entryId)?.preview).toBe(false);
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '101', throughEntrySeq: '250', completeBefore: false });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: range(1, 100), beforeCursor: null, hasMoreBefore: false, lastEventSeq: '1' });
+    await f.client.loadOlder();
+    expect(rows()).toHaveLength(250); expect(rows().every(item => !item.preview)).toBe(true);
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '1', throughEntrySeq: '250', completeBefore: true });
+  });
+  it('does not expose old coverage under a snapshot event replacing the history epoch', async () => {
+    const f = fixture(); await ready(f);
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'snapshot', payload: { ...f.s, historyEpoch: 'history-2', sessionRevision: '13' } } });
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+  });
+  it('keeps accepted event progress when an older same-history refresh page arrives', async () => {
+    const f = fixture(); await ready(f);
+    const row = { kind: 'assistant_message' as const, entryId: 'message', entrySeq: '10', revision: '3', content: [{ type: 'text' as const, text: 'latest' }] };
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: row } });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: [{ ...row, revision: '1' }], lastEventSeq: '0' });
+    f.client.refresh(); await flush(); f.receive(); await flush();
+    expect(f.client.snapshot().state.lastEventSeq).toBe('1');
+    expect(f.client.snapshot().historyCoverage?.lastEventSeq).toBe('1');
+    expect(f.client.snapshot().state.entries[0]?.revision).toBe('3');
+  });
   it.each([null, ''])('rejects an initial tail advertising more history without a usable cursor (%s)', async cursor => {
     vi.useFakeTimers();
     const f = fixture(); vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, beforeCursor: cursor });

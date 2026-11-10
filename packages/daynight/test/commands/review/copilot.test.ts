@@ -4,12 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
+import * as windowsJobs from "../../../src/commands/review/windows-job-scope.js";
 import type { CopilotRunOptions, CopilotRunnerOptions } from "../../../src/commands/review/adapters/copilot.js";
 import type { PreparedWorktree } from "../../../src/commands/review/adapters/worktrees.js";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import { openStore } from "../../../src/commands/review/store.js";
 import type { PreparedReviewSkill } from "../../../src/commands/review/skill.js";
 import type { Store } from "../../../src/commands/review/store.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 
 const fixtures = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-tests");
 const directories: string[] = [];
@@ -17,7 +19,7 @@ const stores = new Set<Store>();
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const proof = { processesExcluded: true, operationsStopped: true } as const;
 const fixtureSource = `import path from 'node:path';
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, writeFileSync} from 'node:fs';
 let prompt=''; for await(const chunk of process.stdin) prompt+=chunk;
 const args=process.argv.slice(2);
 const pluginRoot=args.find(arg=>arg.startsWith('--plugin-dir=')).slice('--plugin-dir='.length);
@@ -28,8 +30,13 @@ if(args.includes('skill')&&args.includes('list')) {
  if(discovery==='delay') await new Promise(resolve=>setTimeout(resolve,150));
  if(discovery==='descendant') {
    const {spawn}=await import('node:child_process');
-   spawn(process.execPath,['-e',"const fs=require('node:fs');setInterval(()=>fs.writeFileSync(process.argv[1],String(Date.now())),10);",process.env.FIXTURE_REPORT+'.leaf'],{stdio:'ignore'});
-   await new Promise(resolve=>setTimeout(resolve,100));
+   const leafFile=process.env.FIXTURE_REPORT+'.leaf';
+   const leaf=spawn(process.execPath,['-e',"const fs=require('node:fs');setInterval(()=>fs.writeFileSync(process.argv[1],String(Date.now())),10);",leafFile],{stdio:'ignore'});
+   const deadline=Date.now()+5000;
+   while(!existsSync(leafFile)) {
+     if(leaf.exitCode!==null||Date.now()>=deadline) throw new Error('Discovery descendant did not publish its first write.');
+     await new Promise(resolve=>setTimeout(resolve,10));
+   }
  }
  const entry={name:'daynight-review',source:'plugin',enabled:discovery!=='disabled',path:discovery==='shadow'?process.cwd():path.join(pluginRoot,'skills','daynight-review')};
  let output=JSON.stringify(discovery==='missing'?[]:[entry]);
@@ -93,7 +100,7 @@ const fixture = () => {
       stopProcess: input.stopProcess === undefined ? supervisor.stop : input.stopProcess,
       excludeProcess: input.excludeProcess === undefined ? supervisor.exclude : input.excludeProcess };
   };
-  const store = openStore(paths.databaseFile);
+  const store = openStore(createMemoryDatabase());
   stores.add(store);
   const repository = { host: "github.com", githubId: "42" };
   const pr = { ...repository, number: 101 };
@@ -440,6 +447,22 @@ describe("Copilot skill discovery and phase ownership", () => {
     expect(existsSync(f.report)).toBe(false);
   });
 
+  it.skipIf(process.platform !== "win32")("retains discovery identity after its owned Job cleanup fails, even with an exclusion callback", async () => {
+    const f = fixture(), error = new Error("fixture Job cleanup remained unconfirmed");
+    const createScope = windowsJobs.createWindowsReviewJobScope;
+    vi.spyOn(windowsJobs, "createWindowsReviewJobScope").mockImplementation(async () => {
+      const scope = await createScope();
+      return { assignGuardian: scope.assignGuardian, stop: async grace => { await scope.stop(grace); throw error; } };
+    });
+    const excludeProcess = vi.fn(async () => proof);
+    const outcome = await f.run("success", {}, { excludeProcess });
+    expect(outcome.processExclusionFailure).toBeInstanceOf(AggregateError);
+    expect((outcome.processExclusionFailure as AggregateError).errors).toContain(error);
+    expect(excludeProcess).not.toHaveBeenCalled();
+    expect(f.store.getReview(f.review.id)).toMatchObject({ processId: expect.any(Number), processIdentity: expect.stringContaining(":skill-list") });
+    expect(existsSync(f.report)).toBe(false);
+  });
+
   it("clears an excluded preflight when aborted between phases and never launches the review", async () => {
     const f = fixture(); const abort = new AbortController(); const supervisor = createProcessSupervisor({ graceMs: 500 });
     const outcome = await f.run("success", {}, { signal: abort.signal, onProcess: supervisor.onProcess,
@@ -497,12 +520,21 @@ describe("Copilot skill discovery and phase ownership", () => {
 
   it("rechecks the deadline after discovery exclusion before launching the review", async () => {
     const f = fixture(); const supervisor = createProcessSupervisor({ graceMs: 500 });
-    const outcome = await f.run("success", { timeoutMs: 300 }, { onProcess: supervisor.onProcess,
-      excludeProcess: async (current, evidence) => { const result = await supervisor.exclude(current, evidence); await new Promise((resolve) => { setTimeout(resolve, 350); }); return result; } });
-    expect(outcome).toMatchObject({ completed: false, interruption: "timeout", directProcessClosed: true });
-    expect(f.store.getReview(f.review.id)?.processId).toBeNull();
+    let monotonicTime = 1_000, exclusionCompleted = false;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicTime);
+    const outcome = await f.run("success", { timeoutMs: 10_000 }, { onProcess: supervisor.onProcess,
+      excludeProcess: async (current, evidence) => {
+        expect(evidence).toMatchObject({ directProcessClosed: true, captureComplete: true, exitCode: 0, signal: null, interruption: null, launchFailure: null });
+        const result = await supervisor.exclude(current, evidence);
+        exclusionCompleted = true; monotonicTime += 10_000;
+        return result;
+      } });
+    expect(exclusionCompleted).toBe(true);
+    expect(existsSync(`${f.report}.discovery`)).toBe(true);
+    expect(outcome).toMatchObject({ completed: false, interruption: "timeout", directProcessClosed: true, processExclusionFailure: null });
+    expect(f.store.getReview(f.review.id)).toMatchObject({ processId: null, processIdentity: null });
     expect(existsSync(f.report)).toBe(false);
-  });
+  }, 20_000);
 
   it.skipIf(process.platform === "win32")("excludes real discovery descendants before starting the formal review", async () => {
     const f = fixture();

@@ -1,11 +1,13 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createOperation, parseApiJson } from "../../../src/api/index.js";
+import { ApiError, createApiClient, createOperation, parseApiJson } from "../../../src/api/index.js";
 import type { ApiClient, Operation, Project, Task, TaskGraph } from "../../../src/api/index.js";
 import { UsageError } from "../../../src/cli/context.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
 import type { TaskCommandDependencies } from "../../../src/commands/task/command.js";
 import { renderTask, renderTaskList } from "../../../src/commands/task/rendering.js";
+import { notApplicableObservation as session } from "../../fixtures/task-observation.js";
+import type { ObservedTaskGraph } from "../../../src/api/task-observation.js";
 
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
@@ -16,16 +18,29 @@ const accountId = "abcdefab-6666-4222-8333-123456789abc";
 const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
+const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
+const observe = (task: Task) => ({ ...task, session });
+const observeGraph = (value: TaskGraph): ObservedTaskGraph => ({ ...value, tasks: value.tasks.map(task => ({ ...task, session, relation: "member" })), sessionSummary: { indicator: null, workingCount: 0, noticeCount: 0, warningCount: 0, unknownCount: 0, complete: true, observedAt: time }, partial: false });
 const propertySchema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose()); });
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
-    previewProjectTransfer: vi.fn(), transferProject: vi.fn(),
+    withExpectedUserId: () => { throw new Error("Unexpected actor binding"); },
+    readTaskSessionOperation: async () => { throw new Error("Unexpected operation read"); },
+    sendTaskSessionCommand: async () => { throw new Error("Unexpected Session send"); },
+    inspectTaskSession: vi.fn<ApiClient["inspectTaskSession"]>(), listTaskWork: vi.fn<ApiClient["listTaskWork"]>(),
+    currentTaskSession: vi.fn<ApiClient["currentTaskSession"]>(async () => { throw new Error("Unexpected Session read."); }),
+    listTaskSessions: vi.fn<ApiClient["listTaskSessions"]>(async () => { throw new Error("Unexpected Session read."); }),
+    readTaskSession: vi.fn<ApiClient["readTaskSession"]>(async () => { throw new Error("Unexpected Session read."); }),
+    readTaskSessionEntry: vi.fn<ApiClient["readTaskSessionEntry"]>(async () => { throw new Error("Unexpected Session read."); }),
+    getObservedTask: vi.fn<ApiClient["getObservedTask"]>().mockResolvedValue(observe(task)),
+    listObservedTasks: vi.fn<ApiClient["listObservedTasks"]>().mockResolvedValue({ items: [observe(task)], partial: false, unsupported: false }),
+    getObservedTaskGraph: vi.fn<ApiClient["getObservedTaskGraph"]>().mockResolvedValue(observeGraph(graph)),
+    previewProjectTransfer: vi.fn(), transferProject: vi.fn(), previewProjectDeletion: vi.fn(), deleteProject: vi.fn(),
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
@@ -40,7 +55,7 @@ const fixture = (operation = createOperation()) => {
     listTeamMembers: vi.fn<ApiClient["listTeamMembers"]>(), setTeamMemberRole: vi.fn<ApiClient["setTeamMemberRole"]>(), removeTeamMember: vi.fn<ApiClient["removeTeamMember"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
     listBots: vi.fn<ApiClient["listBots"]>(), getBot: vi.fn<ApiClient["getBot"]>(), createBot: vi.fn<ApiClient["createBot"]>(), deleteBot: vi.fn<ApiClient["deleteBot"]>(), listWorkers: vi.fn<ApiClient["listWorkers"]>(), getWorker: vi.fn<ApiClient["getWorker"]>(),
-    reportWorker: vi.fn<ApiClient["reportWorker"]>(), getWorkerConfiguration: vi.fn<ApiClient["getWorkerConfiguration"]>(), reportWorkerConfiguration: vi.fn<ApiClient["reportWorkerConfiguration"]>(),
+    reportWorker: vi.fn<ApiClient["reportWorker"]>(), readWorkerMonitoring: vi.fn<ApiClient["readWorkerMonitoring"]>(), writeWorkerMonitoring: vi.fn<ApiClient["writeWorkerMonitoring"]>(), getWorkerConfiguration: vi.fn<ApiClient["getWorkerConfiguration"]>(), reportWorkerConfiguration: vi.fn<ApiClient["reportWorkerConfiguration"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),
     getTaskProperties: vi.fn<ApiClient["getTaskProperties"]>().mockResolvedValue(propertyResource),
@@ -49,7 +64,7 @@ const fixture = (operation = createOperation()) => {
     createProject: vi.fn<ApiClient["createProject"]>(), listProjects: vi.fn<ApiClient["listProjects"]>(),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
     createTask: vi.fn<ApiClient["createTask"]>().mockResolvedValue(task), getTask: vi.fn<ApiClient["getTask"]>().mockResolvedValue(task),
-    listTasks: vi.fn<ApiClient["listTasks"]>().mockResolvedValue([task]), listReadyTasks: vi.fn<ApiClient["listReadyTasks"]>().mockResolvedValue([task]), updateTask: vi.fn<ApiClient["updateTask"]>().mockResolvedValue(task),
+    listTasks: vi.fn<ApiClient["listTasks"]>().mockResolvedValue([task]), searchTasks: vi.fn<ApiClient["searchTasks"]>().mockResolvedValue([]), listReadyTasks: vi.fn<ApiClient["listReadyTasks"]>().mockResolvedValue([task]), updateTask: vi.fn<ApiClient["updateTask"]>().mockResolvedValue(task),
     deleteTask: vi.fn<ApiClient["deleteTask"]>().mockResolvedValue(),
     setTaskStatus: vi.fn<ApiClient["setTaskStatus"]>().mockResolvedValue(task),
     listTaskPage: async () => { throw new Error("Unused worker API method"); },
@@ -61,7 +76,7 @@ const fixture = (operation = createOperation()) => {
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     getTaskGraph: vi.fn<ApiClient["getTaskGraph"]>().mockResolvedValue(graph),
     putTaskAttachment: vi.fn<ApiClient["putTaskAttachment"]>(), listTaskAttachments: vi.fn<ApiClient["listTaskAttachments"]>(),
-    readTaskAttachment: vi.fn<ApiClient["readTaskAttachment"]>(), removeTaskAttachment: vi.fn<ApiClient["removeTaskAttachment"]>(),
+    readTaskAttachment: vi.fn<ApiClient["readTaskAttachment"]>(), removeTaskAttachment: vi.fn<ApiClient["removeTaskAttachment"]>(), webhookRequest: async <T>(): Promise<T> => { throw new Error("Unavailable in this test."); },
   };
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn<() => string>(() => { throw new Error("Dispatch must not read home"); }),
@@ -78,7 +93,7 @@ const fixture = (operation = createOperation()) => {
 };
 
 describe("task parameter boundaries", () => {
-  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
+  it.each([[], ["--help"], ...["create", "list", "search", "ready", "show", "update", "set-status", "delete", "graph", "properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
     const f = fixture();
     await runTaskCommand(args, f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenCalledOnce();
@@ -137,6 +152,7 @@ describe("task parameter boundaries", () => {
     ["update", taskId, "--pull-request-title=", "--clear-pull-requests"],
     ["update", taskId, "--pull-request-url", "-leading", "--pull-request-title", "Title"],
     ["graph"], ["graph", "invalid"], ["graph", taskId, "extra"], ["graph", taskId, "--depends-only", "--depends-only"],
+    ["search"], ["search", ""], ["search", " \t"], ["search", "\0"], ["search", "x", "--project", "invalid"], ["search", "x", "--assigned-to", "invalid"], ["search", "x", "--status", "invalid"], ["search", "x", "--all"],
     ["graph", taskId, "--ready"], ["create", "--title", "Title", "--json"], ["list", "--ready", "--ready"],
     ...["0", "101", "-1", "+1", "1.5", "1e1", " 1", "1 ", "Infinity", "99999999999999999999999999999", ""].map((value) => ["ready", `--limit=${value}`]),
     ["ready", "--status", "todo"], ["ready", "--cursor", "next"], ["ready", "--limit", "1", "--limit", "2"],
@@ -149,6 +165,36 @@ describe("task parameter boundaries", () => {
     await expect(runTaskCommand(args, f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("searches an explicit project without reading it and preserves the raw expression and filter values", async () => {
+    const f = fixture();
+    const query = '  title:"缓存 😀 \\"x\\""  ';
+    await runTaskCommand(["search", query, "--project", projectId.toUpperCase(), "--status", "done", "--assigned-to", "me", "--ready", "--allow-agents", "false", "--compatible-platform", "linux", "--json"], f.context, f.dependencies);
+    expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(f.api.searchTasks).toHaveBeenCalledExactlyOnceWith(projectId, { query, status: "done", assignedTo: "me", ready: true, allowAgents: false, compatiblePlatform: "linux" });
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith("[]\n");
+  });
+
+  it("resolves the repository when no project is supplied", async () => {
+    const f = fixture();
+    await runTaskCommand(["search", "--", "-literal"], f.context, f.dependencies);
+    expect(f.dependencies.resolveProject).toHaveBeenCalledOnce();
+    expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.api.searchTasks).toHaveBeenCalledExactlyOnceWith(projectId, { query: "-literal" });
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Project: ${projectId}\nNo matching tasks.\n`);
+  });
+
+  it("keeps stdout empty when a search exceeds its shared response budget", async () => {
+    const operation = createOperation({ limits: { responseBytes: 32 } });
+    const f = fixture(operation);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(" ".repeat(33), { status: 200, headers: { "content-type": "application/json", "Daynight-User-ID": accountId } }));
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
+    f.api.searchTasks.mockImplementation(api.searchTasks);
+    await expect(runTaskCommand(["search", "query", "--project", projectId, "--json"], f.context, f.dependencies)).rejects.toThrow("HTTP response byte limit exceeded");
+    expect(fetch).toHaveBeenCalledOnce();
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
@@ -188,9 +234,9 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
-  it.each(["todo", "in_progress", "done"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {
+  it.each(["todo", "in_progress", "done", "cancelled"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {
     const f = fixture();
-    const result = { ...task, status, description: "Full status result", version: task.version + 1n };
+    const result = { ...task, status, ready: status === "todo", cancelledAt: status === "cancelled" ? time : null, description: "Full status result", version: task.version + 1n };
     f.api.setTaskStatus.mockResolvedValue(result);
     await runTaskCommand(["set-status", taskId.toUpperCase(), status], f.context, f.dependencies);
     expect(f.dependencies.resolveProject).toHaveBeenCalledExactlyOnceWith({ serverUrl: "http://localhost:8787", operation: f.operation, api: f.api, workingDirectory: path.resolve("caller") });
@@ -201,7 +247,7 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task status set.\n${renderTask(result)}`);
   });
 
-  it.each(["todo", "in_progress", "done"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
+  it.each(["todo", "in_progress", "done", "cancelled"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
     const f = fixture();
     const failure = new Error("Version conflict");
     f.api.setTaskStatus.mockRejectedValue(failure);
@@ -320,7 +366,7 @@ describe("task request contracts", () => {
     const f = fixture();
     await runTaskCommand(["list", "--compatible-platform", compatiblePlatform, "--allow-agents", "true", "--ready", "--project", projectId], f.context, f.dependencies);
     await runTaskCommand(["ready", `--compatible-platform=${compatiblePlatform}`, "--allow-agents", "false", "--limit", "1", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents: true, compatiblePlatform });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents: true, compatiblePlatform });
     expect(f.api.listReadyTasks).toHaveBeenCalledExactlyOnceWith(projectId, 1, { allowAgents: false, compatiblePlatform });
   });
 
@@ -346,9 +392,9 @@ describe("task request contracts", () => {
   it.each([null, "windows", "linux", "macos"] as const)("renders platform %s in complete, inventory and graph output", async (requiredPlatform) => {
     const f = fixture();
     const value = { ...task, requiredPlatform };
-    f.api.getTask.mockResolvedValue(value);
-    f.api.listTasks.mockResolvedValue([value]);
-    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, requiredPlatform })) });
+    f.api.getObservedTask.mockResolvedValue(observe(value));
+    f.api.listObservedTasks.mockResolvedValue({ items: [observe(value)], partial: false, unsupported: false });
+    f.api.getObservedTaskGraph.mockResolvedValue(observeGraph({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, requiredPlatform })) }));
     for (const args of [["show", taskId], ["list"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
     for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Required platform: ${requiredPlatform === null ? "any" : requiredPlatform}\n`);
   });
@@ -357,7 +403,7 @@ describe("task request contracts", () => {
     const f = fixture();
     await runTaskCommand(["list", "--allow-agents", String(allowAgents), "--ready", "--project", projectId], f.context, f.dependencies);
     await runTaskCommand(["ready", "--allow-agents", String(allowAgents), "--limit", "1", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents });
     expect(f.api.listReadyTasks).toHaveBeenCalledExactlyOnceWith(projectId, 1, { allowAgents });
   });
 
@@ -401,10 +447,10 @@ describe("task request contracts", () => {
   it("combines status and ready filters without inventing absent fields", async () => {
     const f = fixture();
     await runTaskCommand(["list", "--status", "todo", "--ready", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { status: "todo", ready: true });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { status: "todo", ready: true });
     const unfiltered = fixture();
     await runTaskCommand(["list", "--project", projectId], unfiltered.context, unfiltered.dependencies);
-    expect(unfiltered.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, {});
+    expect(unfiltered.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, {});
   });
 
   it.each([{ args: [], limit: 10 }, { args: ["--limit", "1"], limit: 1 }, { args: ["--limit=100"], limit: 100 }, { args: ["--limit=002"], limit: 2 }])("requests a bounded ready page with limit $limit", async ({ args, limit }) => {
@@ -483,7 +529,7 @@ describe("task output contracts", () => {
   it.each(["create", "show", "update"])("renders every task field in %s human output", async (command) => {
     const f = fixture();
     const current = { ...task, properties: { pullRequests: [{ title: "First", url: "arbitrary text" }, { title: "First", url: "arbitrary text" }, { title: "", url: "" }] }, dependsOn: [dependencyId], externalDependsOn: [dependencyId], blockedBy: [dependencyId], ready: false };
-    f.api.createTask.mockResolvedValue(current); f.api.getTask.mockResolvedValue(current); f.api.updateTask.mockResolvedValue(current);
+    f.api.createTask.mockResolvedValue(current); f.api.getTask.mockResolvedValue(current); f.api.getObservedTask.mockResolvedValue(observe(current)); f.api.updateTask.mockResolvedValue(current);
     const base = command === "create" ? [command, "--title", "Title"] : command === "update" ? [command, taskId, "--description="] : [command, taskId];
     await runTaskCommand([...base, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
@@ -499,7 +545,7 @@ describe("task output contracts", () => {
     expect(output.endsWith("\n")).toBe(true);
     const parsed = parseApiJson(output);
     const { description: _description, ...listItem } = task;
-    expect(parsed).toEqual(command === "list" ? [listItem] : command === "ready" ? [task] : command === "graph" ? graph : task);
+    expect(parsed).toEqual(command === "list" ? [{ ...listItem, session }] : command === "ready" ? [task] : command === "graph" ? observeGraph(graph) : observe(task));
     if (command === "list") expect(parsed).not.toHaveProperty("0.description");
     if (command === "ready") expect(parsed).toHaveProperty("0.description", task.description);
     if (command !== "graph") expect(output).toContain('"version":9007199254740993');
@@ -510,7 +556,7 @@ describe("task output contracts", () => {
     await runTaskCommand(["graph", taskId, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
     for (const field of [`Project: ${projectId}`, "Name: Project", `Repository: ${project.repoUrl}`, "Summary:", "Total: 1", "Todo: 1", "In progress: 0", "Done: 0", "Ready: 1", "Blocked: 0", `ID: ${taskId}`, "Title preview: Task title", "Title truncated: true", "Depends on: none", "External dependencies (0): none", "Blocked by: none"]) expect(output).toContain(field);
-    expect(f.api.getTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.getObservedTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
   });
 
   it.each([false, true])("prints only complete dependency declarations in graph audit mode with JSON=%s", async (json) => {
@@ -533,17 +579,17 @@ describe("task output contracts", () => {
   it("keeps terminal control characters visible and preserves raw JSON strings", async () => {
     const f = fixture();
     const raw = { ...task, title: "First\nSecond\u001b[2J", description: "Tab\tReturn\r\u0085", properties: { pullRequests: [{ title: "\0\n\u001b[2J", url: "Tab\tReturn\r\u0085" }, { title: "", url: "" }] } };
-    f.api.getTask.mockResolvedValue(raw);
+    f.api.getObservedTask.mockResolvedValue(observe(raw));
     await runTaskCommand(["show", taskId, "--project", projectId], f.context, f.dependencies);
     expect(f.context.stdout.mock.calls[0]![0]).toContain("First\\nSecond\\u001b[2J");
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Tab\\tReturn\\r\\u0085");
     expect(f.context.stdout.mock.calls[0]![0]).toContain('"title":"\\u0000\\n\\u001b[2J"');
     await runTaskCommand(["show", taskId, "--project", projectId, "--json"], f.context, f.dependencies);
-    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(raw);
+    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(observe(raw));
   });
 
   it("renders an empty task list explicitly", async () => {
-    const f = fixture(); f.api.listTasks.mockResolvedValue([]);
+    const f = fixture(); f.api.listObservedTasks.mockResolvedValue({ items: [], partial: false, unsupported: false });
     await runTaskCommand(["list", "--project", projectId], f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenLastCalledWith("No tasks.\n");
   });
@@ -638,15 +684,15 @@ describe("task responsibility options", () => {
   it.each([dependencyId, "me", "unassigned"])("passes responsibility filter %s before pagination without another identity request", async (assignedTo) => {
     const f = fixture();
     await runTaskCommand(["list", "--assigned-to", assignedTo, "--ready", "--allow-agents", "true", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { assignedTo, ready: true, allowAgents: true });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { assignedTo, ready: true, allowAgents: true });
     expect(f.api.getCurrentUser).not.toHaveBeenCalled();
   });
 
   it.each([null, dependencyId])("renders current assignment %s without changing dependency-only JSON", async (assignedTo) => {
     const f = fixture();
     const value = { ...task, assignedTo };
-    f.api.getTask.mockResolvedValue(value); f.api.listTasks.mockResolvedValue([value]); f.api.listReadyTasks.mockResolvedValue([value]);
-    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, assignedTo })) });
+    f.api.getObservedTask.mockResolvedValue(observe(value)); f.api.listObservedTasks.mockResolvedValue({ items: [observe(value)], partial: false, unsupported: false }); f.api.listReadyTasks.mockResolvedValue([value]);
+    f.api.getObservedTaskGraph.mockResolvedValue(observeGraph({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, assignedTo })) }));
     for (const args of [["show", taskId], ["list"], ["ready"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
     for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Assigned to: ${assignedTo === null ? "unassigned" : assignedTo}\n`);
     f.context.stdout.mockClear();

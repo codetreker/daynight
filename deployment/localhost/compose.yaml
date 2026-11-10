@@ -1,6 +1,21 @@
 name: daynight-localhost
 
 services:
+  redis:
+    container_name: daynight-redis
+    image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+    environment:
+      DAYNIGHT_REDIS_MAXMEMORY: ${DAYNIGHT_REDIS_MAXMEMORY:?Set DAYNIGHT_REDIS_MAXMEMORY in deployment/localhost/.env}
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        if ! printf '%s\n' "$$DAYNIGHT_REDIS_MAXMEMORY" | grep -Eq '^0*[1-9][0-9]*([kKmMgG][bB]?|[bB])?$$'; then
+          echo 'DAYNIGHT_REDIS_MAXMEMORY must be a positive Redis memory value' >&2
+          exit 1
+        fi
+        exec docker-entrypoint.sh redis-server --save '' --appendonly no --maxmemory "$$DAYNIGHT_REDIS_MAXMEMORY" --maxmemory-policy noeviction
+    restart: unless-stopped
+
   postgres:
     container_name: daynight-postgres
     image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
@@ -23,6 +38,7 @@ services:
     image: nginx:1.30.6-alpine3.24
     ports:
       - "127.0.0.1:${DAYNIGHT_PORT:-8787}:80"
+      - "127.0.0.1:${DAYNIGHT_METRICS_PORT:-8788}:81"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
@@ -43,7 +59,9 @@ services:
     network_mode: service:gateway
     environment:
       DAYNIGHT_DATABASE_URL: postgres://daynight:daynight-local@postgres:5432/daynight?sslmode=disable
+      DAYNIGHT_REDIS_URL: ${DAYNIGHT_REDIS_URL:?Set DAYNIGHT_REDIS_URL in deployment/localhost/.env}
       DAYNIGHT_LISTEN_ADDR: 127.0.0.1:8787
+      DAYNIGHT_METRICS_LISTEN_ADDR: 127.0.0.1:8788
       DAYNIGHT_STORAGE_ROOT: /var/lib/daynight/storage
       DAYNIGHT_TASK_SYNC_OVERLAP: ${DAYNIGHT_TASK_SYNC_OVERLAP:-10s}
       DAYNIGHT_PUBLIC_ORIGIN: ${DAYNIGHT_PUBLIC_ORIGIN:?Set DAYNIGHT_PUBLIC_ORIGIN in deployment/localhost/.env}

@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -10,20 +11,21 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
 type Authentication struct {
+	*RequestAuthentication
 	identity     *identityservice.Identity
-	origin       string
-	secure       bool
 	callbackPath string
-	logger       *slog.Logger
 }
 
 func NewAuthentication(identity *identityservice.Identity, settings config.AuthSettings, logger *slog.Logger) (*Authentication, error) {
@@ -31,16 +33,17 @@ func NewAuthentication(identity *identityservice.Identity, settings config.AuthS
 	if err != nil {
 		return nil, err
 	}
-	return &Authentication{identity: identity, origin: settings.PublicOrigin, secure: origin.Scheme == "https", callbackPath: callbackPath, logger: logger}, nil
+	return &Authentication{
+		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
+		identity:              identity, callbackPath: callbackPath,
+	}, nil
 }
 
-func (h *Authentication) Origin() string { return h.origin }
-
-func (h *Authentication) SessionCookieName() string {
+func (h *Authentication) scopeCookieName() string {
 	if h.secure {
-		return "__Host-daynight_session"
+		return "__Host-daynight_login_scope"
 	}
-	return "daynight_session"
+	return "daynight_login_scope"
 }
 
 func (h *Authentication) bindingCookieName(state string) string {
@@ -54,62 +57,6 @@ func (h *Authentication) bindingCookieName(state string) string {
 
 func (h *Authentication) cookie(name, value string, expires time.Time, maxAge int) *http.Cookie {
 	return &http.Cookie{Name: name, Value: value, Path: "/", Secure: h.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: maxAge}
-}
-
-func Failure() error {
-	return &model.Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
-}
-
-func requestCookie(request *http.Request, name string) (string, bool) {
-	value, count := "", 0
-	for _, cookie := range request.Cookies() {
-		if cookie.Name == name {
-			value, count = cookie.Value, count+1
-		}
-	}
-	return value, count == 1
-}
-
-func (h *Authentication) AuthenticateRequest(request *http.Request) (model.Principal, error) {
-	if values, present := request.Header["Authorization"]; present {
-		if len(values) != 1 {
-			return model.Principal{}, Failure()
-		}
-		parts := strings.Fields(values[0])
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return model.Principal{}, Failure()
-		}
-		return h.identity.Authenticate(request.Context(), model.PATCredential, parts[1])
-	}
-	secret, ok := requestCookie(request, h.SessionCookieName())
-	if !ok {
-		return model.Principal{}, Failure()
-	}
-	principal, err := h.identity.Authenticate(request.Context(), model.SessionCredential, secret)
-	if err != nil {
-		return model.Principal{}, err
-	}
-	if request.Method != "GET" && request.Method != "HEAD" && request.Method != "OPTIONS" {
-		origins := request.Header.Values("Origin")
-		if len(origins) != 1 || origins[0] != h.origin {
-			return model.Principal{}, &model.Fault{Code: "forbidden", Message: "Cookie writes require the exact main-site Origin."}
-		}
-	}
-	return principal, nil
-}
-
-func (h *Authentication) Require(next httpx.AuthenticatedHandler) http.HandlerFunc {
-	return func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		principal, err := h.AuthenticateRequest(request)
-		if err != nil {
-			httpx.WriteError(w, request, h.logger, "auth", "authenticate", err)
-			return
-		}
-		w.Header().Set("Daynight-User-ID", principal.UserID)
-		h.logger.InfoContext(request.Context(), "credential authenticated", "component", "auth", "phase", "authenticate", "user_id", principal.UserID, "credential_id", principal.CredentialID, "request_id", httpx.RequestID(request.Context()))
-		next(w, request, principal)
-	}
 }
 
 func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
@@ -142,11 +89,23 @@ func (h *Authentication) login(w http.ResponseWriter, request *http.Request) {
 		httpx.WriteError(w, request, h.logger, "auth", "login", err)
 		return
 	}
-	start, err := h.identity.StartLogin(request.Context(), values.Get("provider"), values.Get("returnPath"))
+	if err := h.identity.ValidateLogin(values.Get("provider"), values.Get("returnPath")); err != nil {
+		httpx.WriteError(w, request, h.logger, "auth", "login", err)
+		return
+	}
+	scope, ok := requestCookie(request, h.scopeCookieName())
+	if !ok || !secret.Valid(scope, "") {
+		scope = secret.Random("")
+		http.SetCookie(w, h.cookie(h.scopeCookieName(), scope, time.Now().Add(identity.LoginLifetime), int(identity.LoginLifetime.Seconds())))
+		http.Redirect(w, request, request.URL.RequestURI(), http.StatusSeeOther)
+		return
+	}
+	start, err := h.identity.StartLogin(request.Context(), values.Get("provider"), values.Get("returnPath"), scope)
 	if err != nil {
 		httpx.WriteError(w, request, h.logger, "auth", "login", err)
 		return
 	}
+	http.SetCookie(w, h.cookie(h.scopeCookieName(), scope, start.ExpiresAt, int(identity.LoginLifetime.Seconds())))
 	http.SetCookie(w, h.cookie(h.bindingCookieName(start.State), start.BrowserBinding, start.ExpiresAt, int(identity.LoginLifetime.Seconds())))
 	h.logger.InfoContext(request.Context(), "login started", "component", "auth", "phase", "login", "login_id", start.ID, "request_id", httpx.RequestID(request.Context()))
 	http.Redirect(w, request, start.AuthorizationURL, http.StatusSeeOther)
@@ -170,6 +129,15 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		http.SetCookie(w, h.cookie(h.bindingCookieName(values.Get("state")), "", time.Unix(1, 0), -1))
 	}
 	if err != nil {
+		var identityFailure *model.IdentityProviderError
+		if errors.As(err, &identityFailure) && identityFailure.Code == "identity_unavailable" {
+			var violation *limit.Violation
+			if errors.As(err, &violation) {
+				logger = logger.With("size_bytes", violation.Actual, "max_bytes", violation.Max, "size_lower_bound", violation.LowerBound)
+			}
+			httpx.WriteError(w, request, logger, "auth", "callback", err)
+			return
+		}
 		if result.LoginID != "" {
 			httpx.LogFailure(logger, request.Context(), "auth", "callback", err)
 			if request.Context().Err() == nil {
@@ -187,7 +155,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 }
 
 func userResponse(user model.User) api.User {
-	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL, PersonalTeam: httpx.TeamRefResponse(user.PersonalTeam)}
+	return profileprotocol.UserResponse(user)
 }
 func tokenResponse(c model.PersonalAccessToken) api.PersonalAccessToken {
 	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}

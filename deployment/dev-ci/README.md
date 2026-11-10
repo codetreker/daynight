@@ -53,14 +53,20 @@ that namespace, so both the browser and the Go server reach one fixture URL.
 The runner records the fixture's generated application credentials in a private
 environment file, starts the authenticated server and waits for `/readyz`.
 
+The gateway also publishes a separate ephemeral host-loopback port for metrics,
+forwarding TCP to the server's `127.0.0.1:8788` listener. Find it during a run
+with `docker compose port gateway 81` using that run's Compose project and
+private environment file. `/metrics` on the business port remains unavailable.
+The metrics endpoint has no application authentication; the loopback mapping
+limits host access. No Prometheus service is started.
+
 `/healthz` and `/readyz` are public database probes and do not call UniAuth. The
 server and gateway Compose health checks use `/readyz`. PostgreSQL, gateway and
 server use `start_interval: 250ms` during their existing startup grace periods;
 normal checks remain every two seconds. Probe commands, retries, deadlines,
 `service_healthy` dependencies and Compose readiness waits still determine actual
 readiness. PostgreSQL uses TCP so its temporary initialization socket cannot
-admit the application early. The [startup probe decision](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)
-owns the timing choice. Business endpoints still require a browser session or
+admit the application early. The [startup probe decision](../../.agents/notes/archived/testing/2026-11-04-dev-ci-startup-probes.md) records the rationale for the timing choice. Business endpoints still require a browser session or
 personal access token; the public readiness example does not perform a login.
 Acceptance clients use the shared
 [authentication fixture helper](../../packages/daynight-server/scripts/auth-fixture.mts)
@@ -222,6 +228,12 @@ decisions; they do not establish authentication or browser behavior. The
 [authentication architecture](../../docs/design/daynight-auth.md) owns the
 cross-layer validation requirements.
 
+`bash deployment/dev-ci/tests/metrics.sh` uses the real production image and
+gateway to check both loopback mappings, independent routing and a scrape of the
+official Go and process collectors. It also checks the localhost Compose port
+configuration. The runner verifies the running image identity and removes its
+owned resources when the check exits.
+
 ## Attachment persistence check
 
 With the runner's prerequisites, run from the repository root; no host workspace
@@ -261,15 +273,6 @@ entrypoint and the ordinary service user. Reads, previews and another nonroot
 upload must succeed after restoration. The
 [localhost backup procedure](../localhost/README.md#persistence-and-backup)
 owns the operator commands and the accepted pre-existing consistency limitation.
-
-The [offline layout upgrade](../localhost/README.md#attachment-layout-upgrade)
-uses explicit plan/apply/resume operations before ordinary HTTP startup. The
-server migration acceptance keeps genuine old task-only bytes, covers a project
-UUID equal to an old task UUID, and checks full directory/content inventories,
-unchanged business rows, failure and interruption continuation. This is separate
-from the deployment check's new-layout restart/restore journey. Maintenance does
-not rotate task_cache_epoch; a historical restore still follows the rotation
-contract above. Source-bound results must identify the actual scenarios run.
 
 Source-bound receipts are written under `.tmp/attachment-deployment-*/` and the
 two normal `.tmp/dev-ci/<run-id>/` directories. They record owned project and

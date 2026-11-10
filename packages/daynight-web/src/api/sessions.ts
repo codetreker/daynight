@@ -1,15 +1,23 @@
-import { parseSessionArchive, parseSessionArchiveStatus, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, type SessionArchive, type SessionArchiveStatus } from '../../../daynight/src/session/archive';
+import { parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
+import { createSessionResourceClient, type SessionResourceClient } from '../../../daynight/src/session/resource-client';
+import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
-import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { ApiError, assertResponsePrincipal, json, request, requestId, readAuthRequestGeneration } from './client';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
-import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTimelinePage, RELAY_LIMITS,
-  type BrowserMessage, type CurrentSessionResponse, type TimelinePage } from '../../../daynight/src/session/controller-protocol';
-import { assertSessionFence, parseSessionCommand, type SessionCommand, type SessionOperation } from '../../../daynight/src/session/protocol';
+import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTaskOperationResponse, parseTimelinePage, RELAY_LIMITS,
+  type BrowserMessage, type CurrentSessionResponse, type OperationResponse, type TimelinePage } from '../../../daynight/src/session/controller-protocol';
+import { assertSessionFence, parseSessionCommand, type SessionCommand, type SessionOperation, type SessionFence } from '../../../daynight/src/session/protocol';
+
+export type LoadedSessionArchive = SessionArchive | (SessionFence & Pick<SessionArchive, 'controllerId' | 'controllerInstanceId' | 'provider' | 'nativeSessionId' | 'entries'> & {
+  readonly schemaVersion: 3;
+  readonly resources: readonly SessionArchiveResourceReference[];
+  readonly completeness: 'complete' | 'partial';
+});
 
 export type SessionChannel = { close(): void };
 /** An authenticated independent-current read rejected continued access, not an operation fence. */
 export class IndependentSessionReadDenied extends ApiError {
-  constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, undefined, error); this.name = 'IndependentSessionReadDenied'; }
+  constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, error); this.name = 'IndependentSessionReadDenied'; }
 }
 export type BotSessionBinding = {
   readonly ownerUserId: string;
@@ -19,7 +27,8 @@ export type BotSessionBinding = {
 };
 export type SessionApi = {
   archive(sessionId: string, signal: AbortSignal): Promise<SessionArchiveStatus>;
-  archiveContent(sessionId: string, signal: AbortSignal): Promise<SessionArchive>;
+  archiveContent(sessionId: string, signal: AbortSignal): Promise<LoadedSessionArchive>;
+  resources(fence: SessionFence, isCurrent: () => boolean): SessionResourceClient;
   current(signal: AbortSignal): Promise<CurrentSessionResponse>;
   timeline(sessionId: string, direction: 'tail' | 'before' | 'after', cursor: string | null, signal: AbortSignal): Promise<TimelinePage>;
   command(sessionId: string, command: SessionCommand, signal: AbortSignal): Promise<SessionOperation>;
@@ -30,7 +39,7 @@ export type SessionApi = {
 };
 export function createSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   const root = `/api/v1/projects/${requestId(projectId)}/tasks/${requestId(taskId)}/sessions`;
-  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse, { [STARTUP_REPORT_HEADER]: '1' });
+  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse, parseTaskOperationResponse, { [STARTUP_REPORT_HEADER]: '1' });
 }
 export function createTestSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   return createIndependentSessionApi(sessionId, userId, onPrincipalMismatch);
@@ -49,7 +58,7 @@ function createIndependentSessionApi(sessionId: string, userId: string, onPrinci
     const { session } = parseRegistrationResponse(value);
     if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId || testExecutionId !== undefined && session.testExecutionId !== testExecutionId) throw new ApiError('protocol');
     return { status: 'registered', session };
-  });
+  }, parseOperationResponse);
   return { ...api, current: async signal => {
     try { return await api.current(signal); }
     catch (error) {
@@ -60,25 +69,66 @@ function createIndependentSessionApi(sessionId: string, userId: string, onPrinci
     }
   } };
 }
-function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
+function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, parseOperation: (value: unknown) => OperationResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expectedStatus = 200): Promise<T> {
     const response = await request(url, signal, { ...init, headers: { Accept: 'application/json', ...init.headers } });
     assertResponsePrincipal(response, userId, onPrincipalMismatch);
     return json(response, signal, (value) => { if (response.status !== expectedStatus) throw new ApiError('protocol', response.status); return parse(value); });
   }
+  const resources = (fence: SessionFence, isCurrent: () => boolean): SessionResourceClient => {
+    const generation = readAuthRequestGeneration();
+    return createSessionResourceClient({
+      scope: { serverOrigin: window.location.origin, actorUserId: userId, fence, authorizationGeneration: String(generation) },
+      baseUrl: new URL(sessionRoot(fence.sessionId), window.location.href).href,
+      isCurrent: () => generation === readAuthRequestGeneration() && isCurrent(),
+      onPrincipalMismatch,
+      transport: async (url, signal, init) => {
+        const response = await request(url, signal, init);
+        assertResponsePrincipal(response, userId, onPrincipalMismatch);
+        if (!response.ok) return json(response, signal, () => { throw new ApiError('protocol', response.status); });
+        return response;
+      },
+    });
+  };
   return {
+    resources,
     archive: (id, signal) => get(`${sessionRoot(id)}/archive`, signal, (value) => parseSessionArchiveStatus(archiveEnvelope(value))),
     archiveContent: async (id, signal) => {
+      const generation = readAuthRequestGeneration();
+      const assertCurrent = () => {
+        signal.throwIfAborted();
+        if (generation !== readAuthRequestGeneration()) throw new DOMException('The authenticated account changed.', 'AbortError');
+      };
       const response = await request(`${sessionRoot(id)}/archive/content`, signal, { headers: { Accept: 'application/json' } });
+      assertCurrent();
       assertResponsePrincipal(response, userId, onPrincipalMismatch);
+      let rawBytes: Uint8Array<ArrayBuffer> = new Uint8Array();
       const archive = await json(response, signal, value => {
         if (response.status !== 200) throw new ApiError('protocol', response.status);
+        if (value && typeof value === 'object' && 'schemaVersion' in value && value.schemaVersion === 3) return parseSessionArchiveManifest(value);
         const archive = parseSessionArchive(archiveEnvelope(value));
         if (archive.sessionId !== id) throw new ApiError('protocol');
         return archive;
-      }, async () => JSON.parse(await boundedArchiveText(response, signal)));
+      }, async () => { rawBytes = await boundedArchiveBytes(response, signal); return decodeStrictSessionJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
+      assertCurrent();
+      if (archive.schemaVersion === 3) {
+        if (archive.recordId !== id) throw new ApiError('protocol');
+        const status = await get(`${sessionRoot(id)}/archive`, signal, value => parseSessionArchiveStatus(archiveEnvelope(value)));
+        const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', rawBytes)), b => b.toString(16).padStart(2, '0')).join('');
+        assertCurrent();
+        if (rawBytes.byteLength > SESSION_ARCHIVE_MANIFEST_MAX_BYTES || status.state !== 'ready' || status.schemaVersion !== 3 || status.completeness !== archive.completeness || status.byteLength !== String(rawBytes.byteLength) || status.sha256 !== digest) throw new ApiError('protocol');
+        const timelineResponse = await request(`${sessionRoot(id)}/archive/files/${requestId(archive.timeline.fileId)}`, signal, { headers: { Accept: 'application/json' } });
+        assertCurrent();
+        assertResponsePrincipal(timelineResponse, userId, onPrincipalMismatch);
+        if (timelineResponse.status !== 200) return json(timelineResponse, signal, () => { throw new ApiError('protocol', timelineResponse.status); });
+        const bytes = await boundedArchiveBytes(timelineResponse, signal);
+        assertCurrent();
+        const timeline = await verifySessionArchiveMetadata(archive, bytes);
+        assertCurrent();
+        return { schemaVersion: 3, ...archive.fence, controllerId: archive.controllerId, controllerInstanceId: archive.controllerInstanceId, provider: archive.provider, nativeSessionId: archive.nativeSessionId, entries: timeline.entries, resources: archive.resources, completeness: archive.completeness };
+      }
       await verifySessionArchiveResources(archive);
-      signal.throwIfAborted();
+      assertCurrent();
       return archive;
     },
     current: (signal) => get(currentUrl, signal, parseCurrent, { headers: currentHeaders }),
@@ -97,7 +147,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       return operation;
     },
     operation: async (id, operationId, signal) => {
-      const { operation } = await get(`${sessionRoot(id)}/operations/${requestId(operationId)}`, signal, parseOperationResponse);
+      const { operation } = await get(`${sessionRoot(id)}/operations/${requestId(operationId)}`, signal, parseOperation);
       if (operation.sessionId !== id || operation.operationId !== operationId) throw new ApiError('protocol');
       return operation;
     },
@@ -140,7 +190,7 @@ function archiveEnvelope(value: unknown): unknown {
   if (!value || typeof value !== 'object' || !('archive' in value) || Object.keys(value).length !== 1) throw new ApiError('protocol');
   return value.archive;
 }
-async function boundedArchiveText(response: Response, signal: AbortSignal): Promise<string> {
+async function boundedArchiveBytes(response: Response, signal: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
   if (!response.body) throw new ApiError('protocol');
   // The content envelope adds a few bytes beyond the bounded archive document.
   const limit = SESSION_ARCHIVE_MAX_BYTES + 1024;
@@ -155,6 +205,9 @@ async function boundedArchiveText(response: Response, signal: AbortSignal): Prom
       if (size > limit) throw new ApiError('protocol');
       chunks.push(new Uint8Array(result.value));
     }
-    return await new Blob(chunks).text();
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes;
   } finally { await reader.cancel(); reader.releaseLock(); }
 }

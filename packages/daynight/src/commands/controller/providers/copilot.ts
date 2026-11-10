@@ -1,3 +1,5 @@
+import { nativeInputText, textNativeInput } from "./native-input.js";
+import type { NativeInput } from "./types.js";
 import { CopilotControls } from "./controls-copilot.js";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -20,7 +22,7 @@ const { ResponseError, ErrorCodes } = createRequire(createRequire(import.meta.ur
 const transportErrors = new Set([ErrorCodes.MessageWriteError, ErrorCodes.MessageReadError, ErrorCodes.PendingResponseRejected, ErrorCodes.ConnectionInactive]);
 
 export const openCopilotProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
-  const args = parseProviderArguments("copilot", options.args), cwd = await realpath(options.cwd);
+  const args = parseProviderArguments("copilot", options.args, options.validateNativeSelection), cwd = await realpath(options.cwd);
   if (!(await stat(cwd)).isDirectory()) throw new Error("Copilot working directory is not a directory.");
   const nativeId = options.resumeNativeSessionId ?? randomUUID(), turns = new NativeTurns();
   let controls: CopilotControls | undefined, turnStartedAt: string | null = null;
@@ -52,11 +54,14 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     for (const waiter of cancelWaiters) waiter.resolve(); cancelWaiters.clear(); state();
   };
   let todoRead: Promise<void> = Promise.resolve();
+  // Resumed history may already contain the stable todo entry and still needs clearing.
+  let todoProjected = options.resumeNativeSessionId !== null;
   const refreshTodos = () => {
     todoRead = todoRead.then(async () => {
       if (!native || closed || disconnected) return;
       const { rows } = await call(native.rpc.plan.readSqlTodos(), "Copilot todo read");
       if (closed || disconnected) return;
+      if (rows.length === 0 && !todoProjected) return;
       options.onTimeline({ entryId: nativeEntryId(nativeId, "todos"), revision: "1", kind: "todo", items: rows.flatMap(row => {
         const text = row.title || row.description, id = row.id;
         const status = row.status === "done" || row.status === "completed" ? "completed" : row.status === "in_progress" ? "in_progress" : row.status === "pending" ? "pending" : null;
@@ -65,6 +70,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
         }
         return [{ id, text, status }];
       }) });
+      todoProjected = true;
     }).catch(() => { options.onDiagnostic?.("Copilot todo state is unavailable."); });
   };
   const seen = new Set<string>();
@@ -118,7 +124,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     } catch (error) { skillDiscoveryError = error instanceof Error ? error.message : "Copilot skill discovery is unavailable."; }
     const config: SessionConfig = { ...(skillDirectories ? { skillDirectories } : {}), sessionId: nativeId, workingDirectory: cwd, streaming: true, includeSubAgentStreamingEvents: true,
       ...(options.instructions !== undefined ? { systemMessage: { mode: "append" as const, content: options.instructions } } : {}),
-      ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && args.effort ? { reasoningEffort: args.effort as "low" | "medium" | "high" | "xhigh" } : {}),
+      ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && args.effort ? { reasoningEffort: args.effort as NonNullable<SessionConfig["reasoningEffort"]> } : {}),
       onEvent, onPermissionRequest: () => interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
       onElicitationRequest: request => interactions.bindElicitation(request), onExitPlanModeRequest: request => interactions.bindPlan(request) };
     const opening = options.resumeNativeSessionId ? client.resumeSession(nativeId, config) : client.createSession(config);
@@ -128,6 +134,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     if (native.sessionId !== nativeId || snapshot.sessionId !== nativeId || snapshot.isRemote || snapshot.alreadyInUse || !snapshot.workingDirectory || await realpath(snapshot.workingDirectory) !== cwd) throw new Error("Native Copilot session identity or working directory mismatch.");
     controls = new CopilotControls(native, state, options.onControlConfirmed, options.controlsRevisionFloor, skillDiscoveryError);
     await controls.initialize(options.resumeNativeSessionId !== null, options.unattended);
+    if (options.validateNativeSelection && !options.resumeNativeSessionId) await controls.validateSelection({ model: options.model, ...(args.effort === undefined ? {} : { effort: args.effort }) });
     const history = await call(native.getEvents(), "Copilot native history");
     const { processing } = await call(native.rpc.metadata.isProcessing(), "Copilot foreground activity");
     // Callbacks must bind immediately, but timeline replay precedes queued live
@@ -155,7 +162,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     try { await close(); } catch { options.onDiagnostic?.("Copilot startup cleanup failed; native process stop remains unconfirmed."); }
     throw failure;
   }
-  const send = async (text: string, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
+  const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
+      const text = nativeInputText(inputValue);
       if (closed || disconnected || dispatching || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
       const steering = currentTurnId !== null;
       const turnId = currentTurnId ?? randomUUID(); if (!currentTurnId) turnStartedAt = null; currentTurnId = turnId; dispatching = true; activity = "working"; state();
@@ -183,7 +191,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (closed || disconnected || dispatching || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
       const result = await controls!.invoke(id, args, revision);
-      if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(result.prompt, operationId, null, result.displayPrompt); }
+      if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(textNativeInput(result.prompt), operationId, null, result.displayPrompt); }
       if (result.kind !== "text" && result.kind !== "completed") throw new NativeRpcError(-32602, "Copilot command requires unsupported subcommand selection.");
       const text = result.kind === "text" ? result.text : result.message;
       if (text) options.onTimeline({ entryId: nativeEntryId(nativeId, `command:${operationId}`), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });

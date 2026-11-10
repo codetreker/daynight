@@ -1,0 +1,67 @@
+# Agent Note: Shared Team Navigation Preview
+
+Status: implemented
+
+## Problem
+
+Team preference, management and member browser checks exercise the same compiled
+application through the same static Vite preview. Running each group through an
+independent Playwright configuration builds that application three times and
+restarts its preview twice. The duplicated preparation delays the Web browser
+shard even though its browser contexts and API fixtures are already isolated.
+
+## Decision
+
+`tests/navigation/team-playwright.config.ts` owns one Vite build and preview for
+the Team and Session layout Playwright projects. `team-preference` retains both Team preference and
+Worker configuration identity files; `team-management` and `team-members` retain
+their respective files. The original grouping contained 79 cases across four
+files. `session-record-layout` shares that preview to check the production
+Session selector with its own HTTP fixtures and output directory. Each test
+receives its own browser context, page,
+controlled API routes and mutable fixture state. The shared server serves static
+assets and holds no account, Team, request or browser storage state.
+
+The complete run retains one worker, zero retries, the default English locale
+and desktop viewport, per-case overrides, and screenshots on failure. Project-specific output directories remain
+unchanged, and members retain failure traces owned by the
+[member evidence decision](2026-11-05-team-members-browser-evidence.md). Preference
+and Worker identity cases retain 45-second deadlines, also used by Session layout
+cases; management and member cases
+retain 30 seconds. Preview startup retains its 90-second limit, strict port 4194
+and refusal to reuse an existing server. A new run owns and stops its preview.
+
+The [Web module browser entry](2026-11-06-web-module-browser-entry.md) invokes
+this configuration once in its serial sequence. Cases enforce their own deadlines
+and can finish in their fresh contexts after another case fails; the resulting
+failed command stops later configurations. The former full-stack browser shard
+was removed when module and product responsibilities were separated.
+
+## Alternatives
+
+**Keep three separate runs.** Each group owns a preview lifetime, but two repeated
+builds and preview startups provide no additional server-state isolation because
+that server has no mutable test state.
+
+**Overlap the complete browser pipeline.** Running more preparation and browser
+work concurrently would alter CPU and memory contention and the ownership of
+shared evidence paths. Removing repeated static preparation does not require that
+broader scheduling change.
+
+**Use one inherited default for every case or output directory.** A combined
+configuration without project-owned settings would change the existing case
+budgets or failure-artifact locations. Explicit projects retain those differences
+while sharing only the static server.
+
+## Consequences
+
+The original three groups paid for one static application build and preview startup.
+This removed two preparation lifetimes without relying on skipped tests, cached test
+results, extra retries or longer case deadlines. The actual command and CI savings
+depend on build cost and runner variation; removing preparation is not proof of
+a particular whole-job speedup.
+
+Fixture state must remain local to each test's browser context and API routes.
+Introducing mutable server state would require reviewing whether the preview
+can still be shared. Individual projects retain their test deadlines; performance measurements must
+separate browser work from shared preparation.

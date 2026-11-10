@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { performance } from "node:perf_hooks";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -25,7 +26,7 @@ const fixture = () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-cleanup-tests");
   mkdirSync(base, { recursive: true });
   const directory = mkdtempSync(path.join(base, "cleanup-"));
-  const store = openWorkerStore(path.join(directory, "state.sqlite"), { onMigration: () => {} }); roots.push({ directory, store });
+  const store = openWorkerStore(createMemoryDatabase(), { onMigration: () => {} }); roots.push({ directory, store });
   const project = store.registerProject({ projectId: uuid(1), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(directory, "repo") });
   const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
   const task = store.activateTask(store.registerPending({ ...owner, agent: "codex" }));
@@ -48,10 +49,31 @@ const fixture = () => {
   const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = () => createCleanupDriver(deps);
   const advance = (deleteWorktree = true, signal?: AbortSignal) => driver().advance({ owner, project, task }, deleteWorktree, signal);
-  return { store, task, owner, herdr, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
+  return { store, task, owner, herdr, deps, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
 };
 
 describe("cleanup from resource observations", () => {
+  it("reports progress only after resource absence is confirmed", async () => {
+    const f = fixture();
+    const observe = vi.fn(); f.deps.observePhase = observe;
+    f.removeWorktree.mockImplementationOnce(async () => {});
+    await expect(f.advance()).rejects.toThrow("worktree resources still exist");
+    expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "agent-stop" }, true, undefined);
+    expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, false, undefined);
+    expect(observe).not.toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
+    await f.advance();
+    expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
+  });
+
+  it("keeps the original cleanup error and resources when monitoring throws", async () => {
+    const f = fixture(); const failure = new Error("original stop failure");
+    f.deps.observePhase = () => { throw new Error("monitoring failure"); };
+    f.stopAndClose.mockRejectedValueOnce(failure);
+    const error = await f.advance().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ stage: "agent-stop", cause: failure });
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("requires durable stop proof without a pane and retains the worktree (terminal %s)", async terminal => {
     const f = fixture(); const reasons: string[] = []; let stopped = false;
     Object.assign(f.herdr, { lifecycle: { stop: async (_owner: ResourceOwner, reason: string, operation: Operation) => { expect(operation.limits).toMatchObject({ totalMs: 300_000, requestMs: 300_000 }); reasons.push(reason); stopped = true; }, isStopped: () => stopped } });

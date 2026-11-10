@@ -1,5 +1,7 @@
 export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string };
-export type DraftScope = { readonly identity: object; readonly projectId: string; readonly taskId: string };
+export type WorkerConfigurationDraftScope = { readonly kind: 'worker-configuration'; readonly identity: object; readonly workerId: string };
+export type PromptDraftScope = { readonly kind: 'user-prompt'; readonly identity: object } | { readonly kind: 'project-prompt'; readonly identity: object; readonly projectId: string };
+export type DraftScope = { readonly kind?: 'task'; readonly identity: object; readonly projectId: string; readonly taskId: string } | WorkerConfigurationDraftScope | PromptDraftScope;
 export type DirtyDraft = {
   readonly scope: DraftScope;
   readonly isDirty: () => boolean;
@@ -11,11 +13,19 @@ type Entry = { readonly url: URL; readonly index: number | null };
 type Decision = { readonly kind: 'action'; readonly run: () => void; readonly drafts: readonly DirtyDraft[] }
   | { readonly kind: 'history'; readonly drafts: readonly DirtyDraft[] };
 const namespace = '__daynightNavigation';
-const sameScope = (a: DraftScope, b: DraftScope) => a.identity === b.identity && a.projectId === b.projectId && a.taskId === b.taskId;
+const sameScope = (a: DraftScope, b: DraftScope): boolean => {
+  if (a.identity !== b.identity) return false;
+  if (a.kind === 'worker-configuration') return b.kind === 'worker-configuration' && a.workerId === b.workerId;
+  if (a.kind === 'user-prompt') return b.kind === 'user-prompt';
+  if (a.kind === 'project-prompt') return b.kind === 'project-prompt' && a.projectId === b.projectId;
+  return (b.kind === undefined || b.kind === 'task') && a.projectId === b.projectId && a.taskId === b.taskId;
+};
 
 /** Owns admitted locations for one window. Raw popstate must never mount routes directly. */
 export class BrowserNavigation {
   private session = crypto.randomUUID();
+  // Browser history state is serialized; exact URL checks stay in this window's memory.
+  private readonly urls = new Map<number, string>();
   private accepted: Entry;
   private observed: Entry;
   private location: BrowserLocation;
@@ -44,13 +54,33 @@ export class BrowserNavigation {
     const url = new URL(this.browser.location.href);
     const marker: unknown = this.browser.history.state?.[namespace];
     const valid = typeof marker === 'object' && marker !== null && 'session' in marker && marker.session === this.session &&
-      'index' in marker && Number.isSafeInteger(marker.index) && 'href' in marker && marker.href === url.href;
+      'index' in marker && typeof marker.index === 'number' && Number.isSafeInteger(marker.index) && this.urls.get(marker.index) === url.href;
     return { url, index: valid ? (marker as { index: number }).index : null };
   }
   private writeState(method: 'pushState' | 'replaceState', url: URL, index: number): void {
     const state: unknown = this.browser.history.state;
     this.browser.history[method]({ ...(typeof state === 'object' && state !== null ? state : {}),
-      [namespace]: { session: this.session, index, href: url.href } }, '', url.href);
+      [namespace]: { session: this.session, index } }, '', url.href);
+    this.urls.set(index, url.href);
+  }
+  /** Scrub a consumed fragment without treating cleanup as a new route or numbering native entries. */
+  clearFragment(): void {
+    const current = this.readEntry();
+    if (current.url.hash === '') return;
+    const url = new URL(current.url);
+    url.hash = '';
+    if (current.index !== null) this.writeState('replaceState', url, current.index);
+    else {
+      let state: unknown = this.browser.history.state;
+      if (typeof state === 'object' && state !== null) {
+        const preserved: Record<string, unknown> = { ...state };
+        delete preserved[namespace];
+        state = preserved;
+      }
+      this.browser.history.replaceState(state, '', url.href);
+    }
+    this.observed = this.readEntry();
+    this.adopt(this.observed);
   }
   private adopt(entry: Entry): void {
     this.accepted = entry;
@@ -60,18 +90,6 @@ export class BrowserNavigation {
   }
   private blockers(destination?: URL): DirtyDraft[] {
     return [...this.drafts].filter((draft) => !this.admitting.has(draft) && draft.isDirty() && (destination === undefined || !draft.survives(destination)));
-  }
-  /** Remove a captured fragment from both history and the admitted navigation snapshot. */
-  clearCapturedFragment(): void {
-    const current = this.readEntry();
-    const url = new URL(current.url);
-    url.hash = '';
-    if (current.index === null) this.session = crypto.randomUUID();
-    this.writeState('replaceState', url, current.index ?? 0);
-    const clean = this.readEntry();
-    this.accepted = this.observed = clean;
-    // Capture can run while React initializes a child; do not notify subscribers during render.
-    this.location = this.toLocation(clean.url);
   }
   /** Register live readers; unregistering releases ownership and never decides to discard. */
   register(draft: DirtyDraft): () => void {
@@ -110,7 +128,7 @@ export class BrowserNavigation {
     this.request(() => {
       const current = this.readEntry();
       // Only application writes allocate an index. Unindexed traversal itself is never repaired.
-      if (current.index === null) this.session = crypto.randomUUID();
+      if (current.index === null) { this.session = crypto.randomUUID(); this.urls.clear(); }
       const index = current.index === null ? 0 : replace ? current.index : current.index + 1;
       this.writeState(replace ? 'replaceState' : 'pushState', url, index);
       this.observed = this.readEntry();
@@ -191,7 +209,7 @@ export class BrowserNavigation {
     this.browser.removeEventListener('popstate', this.traversed);
     this.browser.removeEventListener('hashchange', this.traversed);
     this.browser.removeEventListener('beforeunload', this.beforeUnload);
-    this.drafts.clear(); this.listeners.clear(); this.decisions.clear();
+    this.urls.clear(); this.drafts.clear(); this.listeners.clear(); this.decisions.clear();
     if (owner === this) owner = undefined;
   }
 }

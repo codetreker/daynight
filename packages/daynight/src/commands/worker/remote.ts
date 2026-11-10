@@ -1,4 +1,4 @@
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../api/worker-configuration.js";
+import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
@@ -10,21 +10,34 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import type { ProjectIdentity } from "./types.js";
+import type { MonitoringRead, MonitoringReceipt } from "../../api/worker-monitoring.js";
+import type { Observation } from "./monitoring/types.js";
+
+export type WorkerInventory = {
+  readonly tasks: readonly Task[];
+  readonly coveredProjectIds: readonly string[];
+  readonly unavailableProjectIds: readonly string[];
+};
+
+export const isUnavailableProject = (error: unknown): boolean =>
+  error instanceof ApiError && error.phase === "response" && error.status === 404 && error.code === "not_found";
 
 export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
-  configuration(workerId: string, signal: AbortSignal): Promise<WorkerCloudResource>;
-  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
+  readMonitoring(workerId: string, operation: Operation, requestId: string): Promise<MonitoringRead>;
+  writeMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, operation: Operation, requestId: string): Promise<MonitoringReceipt>;
+  configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource>;
+  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
   resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
   project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
-  ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal): Promise<readonly Task[]>;
-  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal): AsyncGenerator<Task>;
+  ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void, onFailure?: (projectId: string, error: unknown) => void): Promise<WorkerInventory>;
+  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean): AsyncGenerator<Task>;
   claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal): Promise<Task>;
   update(task: Task, input: Omit<UpdateWorkerClaimInput, "version" | "claimId">, signal: AbortSignal): Promise<Task>;
 };
@@ -88,10 +101,20 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       operation.check();
       return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
-    configuration: (workerId, signal) => request(signal, api => api.getWorkerConfiguration(workerId)),
-    reportConfiguration: (workerId, input, configuration, operation) => {
+    readMonitoring: (workerId, operation, requestId) => {
       operation.check();
-      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration);
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).readWorkerMonitoring(workerId, requestId);
+    },
+    writeMonitoring: (workerId, revision, observation, operation, requestId) => {
+      operation.check();
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, revision, observation, requestId);
+    },
+    configuration: (workerId, signal, operation) => operation === undefined
+      ? request(signal, api => api.getWorkerConfiguration(workerId))
+      : createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
+    reportConfiguration: (workerId, input, configuration, operation, selectors) => {
+      operation.check();
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {
@@ -118,7 +141,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       signal.throwIfAborted();
       return project;
     },
-    ownInventory: async (projects, workerId, signal) => {
+    ownInventory: async (projects, workerId, signal, onUnavailable, onFailure) => {
       const owner = verifiedUserId();
       const selected = new Map<string, ProjectIdentity>();
       for (const project of projects) {
@@ -126,18 +149,28 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
         if (projectId === null) throw new Error("Worker project ID must be a hyphenated UUID.");
         selected.set(projectId, project);
       }
-      const result: Task[] = [];
+      const result: Task[] = [], coveredProjectIds: string[] = [], unavailableProjectIds: string[] = [];
       for (const projectId of selected.keys()) {
-        for await (const task of taskPages(projectId, { workerId }, signal)) {
-          if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
-          result.push(task);
+        const projectTasks: Task[] = [];
+        try {
+          for await (const task of taskPages(projectId, { workerId }, signal)) {
+            if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
+            projectTasks.push(task);
+          }
+        } catch (error) {
+          if (!isUnavailableProject(error)) { try { onFailure?.(projectId, error); } catch { /* Observation does not replace the original error. */ } throw error; }
+          onUnavailable?.(projectId);
+          unavailableProjectIds.push(projectId);
+          continue;
         }
+        coveredProjectIds.push(projectId);
+        result.push(...projectTasks);
       }
       signal.throwIfAborted();
-      return result;
+      return { tasks: result, coveredProjectIds, unavailableProjectIds };
     },
-    candidates: async function* (projectId, platform, signal) {
-      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me" }, signal)) {
+    candidates: async function* (projectId, platform, signal, platformSpecific) {
+      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }) }, signal)) {
         if (readWorkerClaim(task.properties)?.state === "released") continue;
         if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;

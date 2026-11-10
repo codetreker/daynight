@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { CopilotProcessOutcome } from "./adapters/copilot.js";
 import type { AttemptIdentity, ReviewState } from "./model.js";
+import { stopWindowsProcessTree } from "./windows-process-stop.js";
+import { windowsReviewPhase } from "./windows-phase.js";
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 const command = (file: string, args: string[], timeout: number): Promise<string> => new Promise((resolve, reject) => {
@@ -58,7 +60,9 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
     }
     if (child.pid === undefined) throw new Error("Cannot supervise an agent before its process has spawned.");
     const entry: ManagedProcess = { child, pid: child.pid, closed: false, excluded: false };
-    child.once("close", () => { entry.closed = true; });
+    const phase = windowsReviewPhase(child);
+    if (phase === undefined) child.once("close", () => { entry.closed = true; });
+    else void phase.closed.then(() => { entry.closed = true; });
     managed.set(key, entry);
   };
   const waitForClose = async (entry: ManagedProcess): Promise<void> => {
@@ -102,9 +106,22 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
     if (entry.stopping === undefined) entry.stopping = (async () => {
       try {
         if (process.platform === "win32") {
-          if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
-          await command("taskkill", ["/PID", String(entry.pid), "/T", "/F"], grace);
-          await waitForClose(entry);
+          const failures: unknown[] = [];
+          try {
+            const phase = windowsReviewPhase(child);
+            if (phase !== undefined) await phase.stop();
+            else await stopWindowsProcessTree({ pid: entry.pid, graceMs: grace,
+              assertCurrent: () => {
+                if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
+              },
+              terminate: async () => { await command("taskkill", ["/PID", String(entry.pid), "/T", "/F"], grace); },
+            });
+          } catch (error) { safe = false; failures.push(error); }
+          // Native exit observation can precede Node's close event. Preserve
+          // tree failure while still joining the original child and streams.
+          try { await waitForClose(entry); } catch (error) { failures.push(error); }
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, "Windows agent tree termination or direct-process closure failed.");
           entry.excluded = true;
         } else await stopGroup(entry);
       } catch (cause) { uncertain("Cannot confirm that the current agent and its foreground tools have stopped; execution state was retained.", cause); }
@@ -118,6 +135,7 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
       if (outcome !== undefined && !outcome.directProcessClosed) uncertain("The agent launch did not establish direct-process closure.");
       return { processesExcluded: true };
     }
+    if (windowsReviewPhase(entry.child) !== undefined) await stop(entry.child, { reviewId: review.id, attempt: review.attemptCount });
     if (entry.closed && outcome?.directProcessClosed && outcome.launchFailure === "command-not-found") {
       managed.delete(attemptKey({ reviewId: review.id, attempt: review.attemptCount }));
       return { processesExcluded: true };

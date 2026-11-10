@@ -3,6 +3,9 @@ package task
 import (
 	"context"
 	"errors"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -26,9 +29,9 @@ func (d *mutationDAO) UpdateTask(_ context.Context, id string, _ store.TaskWrite
 	d.action = "update"
 	return model.Task{ID: id}, d.err
 }
-func (d *mutationDAO) DeleteTask(_ context.Context, _ string, _ bool) error {
+func (d *mutationDAO) DeleteTask(_ context.Context, _ string, _ bool) (model.TaskTombstone, error) {
 	d.action = "delete"
-	return d.err
+	return model.TaskTombstone{}, d.err
 }
 
 func TestMutationPreparationAndApply(t *testing.T) {
@@ -132,22 +135,12 @@ func TestStatusAndCandidateValidation(t *testing.T) {
 }
 func ptr[T any](v T) *T { return &v }
 
-func TestMutationRefusesInvalidWorkerAndDependencies(t *testing.T) {
+func TestMutationRefusesInvalidWritesAndIncompatibleWorker(t *testing.T) {
 	ctx := context.Background()
 	id := "00000000-0000-4000-8000-000000000001"
 	dao := &mutationDAO{current: model.Task{ID: id, Title: "Old", Status: model.TaskTodo, Version: 2, Properties: model.TaskProperties{}}}
 	_, err := PrepareCreate(ctx, dao, id, store.TaskWrite{DependsOn: []string{"unknown"}})
 	faultCode(t, err, "invalid_input")
-	dao.current.Properties["worker"] = []byte(`{"bad":true}`)
-	if _, err = PrepareUpdate(ctx, dao, id, UpdateTask{Version: 2}); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if _, err = PrepareStatus(ctx, dao, model.Principal{}, id, SetTaskStatus{Version: 2, Status: model.TaskDone}); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if err = ValidateDelete(ctx, dao, dao.current, true); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
 	active, worker := activeFixture(t)
 	worker.AgentControlMode = model.AgentControlModeWeb
 	props, err := properties.WithWorker(model.TaskProperties{}, worker)
@@ -181,16 +174,64 @@ func TestMutationRefusesInvalidWorkerAndDependencies(t *testing.T) {
 }
 
 func TestUpdateCandidateExternalDependencies(t *testing.T) {
-	id := "00000000-0000-4000-8000-000000000001"
-	dep := "00000000-0000-4000-8000-000000000002"
-	current := model.Task{ID: id, Title: "Task", Status: model.TaskTodo, Properties: model.TaskProperties{}, DependsOn: []string{dep}}
-	external := []string{dep}
-	values, err := UpdateCandidate(current, UpdateTask{ExternalDependsOn: &external})
-	if err != nil || len(values.ExternalDependsOn) != 1 || values.ExternalDependsOn[0] != dep {
-		t.Fatal(values, err)
+	const id = "dd000000-0000-4000-8000-000000000001"
+	const a = "aa000000-0000-4000-8000-000000000001"
+	const b = "bb000000-0000-4000-8000-000000000001"
+	const c = "cc000000-0000-4000-8000-000000000001"
+	created, err := CreateCandidate(id, CreateTask{Title: "Target", DependsOn: []string{b, strings.ToUpper(a)}, ExternalDependsOn: []string{strings.ToUpper(b)}})
+	if err != nil || !slices.Equal(created.DependsOn, []string{a, b}) || !slices.Equal(created.ExternalDependsOn, []string{b}) {
+		t.Fatalf("canonical classified creation: %#v %v", created, err)
 	}
-	invalid := []string{"bad"}
-	if _, err = UpdateCandidate(current, UpdateTask{ExternalDependsOn: &invalid}); err == nil {
-		t.Fatal("invalid external dependency accepted")
+	current := model.Task{ID: id, Title: "Target", Status: model.TaskTodo, Version: 7, AllowAgents: true, Properties: model.TaskProperties{}, DependsOn: []string{a, b}, ExternalDependsOn: []string{b}}
+	for _, test := range []struct {
+		name                   string
+		input                  UpdateTask
+		dependencies, external []string
+		changed                bool
+	}{
+		{"neither", UpdateTask{Title: ptr("Renamed")}, []string{a, b}, []string{b}, true},
+		{"description", UpdateTask{Description: ptr("Preserved classification")}, []string{a, b}, []string{b}, true},
+		{"properties", UpdateTask{Properties: model.TaskPropertiesPatch{"pullRequests": []byte(`[{"url":"https://example.com/pr/1","title":"Preserved"}]`)}}, []string{a, b}, []string{b}, true},
+		{"dependencies only", UpdateTask{DependsOn: ptr([]string{c, b})}, []string{b, c}, []string{b}, true},
+		{"external only", UpdateTask{ExternalDependsOn: ptr([]string{a})}, []string{a, b}, []string{a}, true},
+		{"both", UpdateTask{DependsOn: ptr([]string{c}), ExternalDependsOn: ptr([]string{c})}, []string{c}, []string{c}, true},
+		{"clear dependencies", UpdateTask{DependsOn: ptr([]string{})}, []string{}, []string{}, true},
+		{"clear external", UpdateTask{ExternalDependsOn: ptr([]string{})}, []string{a, b}, []string{}, true},
+		{"clear both", UpdateTask{DependsOn: ptr([]string{}), ExternalDependsOn: ptr([]string{})}, []string{}, []string{}, true},
+		{"canonical no-op", UpdateTask{DependsOn: ptr([]string{strings.ToUpper(b), a}), ExternalDependsOn: ptr([]string{strings.ToUpper(b)})}, []string{a, b}, []string{b}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := current
+			values, err := UpdateCandidate(current, test.input)
+			if err != nil || !slices.Equal(values.DependsOn, test.dependencies) || !slices.Equal(values.ExternalDependsOn, test.external) || Changed(current, values) != test.changed || values.AllowAgents != current.AllowAgents || !reflect.DeepEqual(current, before) {
+				t.Fatalf("classified candidate: %#v changed=%t want=%t err=%v", values, Changed(current, values), test.changed, err)
+			}
+		})
+	}
+	cleared := current
+	cleared.DependsOn, cleared.ExternalDependsOn = []string{}, []string{}
+	readded, err := UpdateCandidate(cleared, UpdateTask{DependsOn: ptr([]string{b})})
+	if err != nil || !slices.Equal(readded.DependsOn, []string{b}) || len(readded.ExternalDependsOn) != 0 {
+		t.Fatalf("re-added ordinary dependency restored external history: %#v %v", readded, err)
+	}
+	for _, input := range []UpdateTask{
+		{ExternalDependsOn: ptr([]string{"bad"})},
+		{ExternalDependsOn: ptr([]string{a, strings.ToUpper(a)})},
+		{ExternalDependsOn: ptr([]string{id})},
+		{ExternalDependsOn: ptr([]string{c})},
+		{DependsOn: ptr([]string{}), ExternalDependsOn: ptr([]string{a})},
+		{DependsOn: ptr([]string{id}), ExternalDependsOn: ptr([]string{id})},
+	} {
+		_, err := UpdateCandidate(current, input)
+		faultCode(t, err, "invalid_input")
+	}
+	for _, input := range []CreateTask{
+		{Title: "Invalid", ExternalDependsOn: []string{a}},
+		{Title: "Invalid", DependsOn: []string{a}, ExternalDependsOn: []string{"bad"}},
+		{Title: "Invalid", DependsOn: []string{a}, ExternalDependsOn: []string{a, strings.ToUpper(a)}},
+		{Title: "Invalid", DependsOn: []string{a}, ExternalDependsOn: []string{b}},
+	} {
+		_, err := CreateCandidate(id, input)
+		faultCode(t, err, "invalid_input")
 	}
 }

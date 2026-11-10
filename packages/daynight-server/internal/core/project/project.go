@@ -39,6 +39,15 @@ func LookupError(err error) error {
 	return err
 }
 func ValidateCreate(p model.Principal, input CreateProject) error {
+	if err := ValidateCreateFields(p, input); err != nil {
+		return err
+	}
+	return validateRepoURL(input.RepoURL)
+}
+
+// ValidateCreateFields validates the common creation fields independently of
+// the repository syntax used by each registration entry point.
+func ValidateCreateFields(p model.Principal, input CreateProject) error {
 	if err := team.RequireActor(p, input.ExpectedUserID); err != nil {
 		return err
 	}
@@ -47,12 +56,24 @@ func ValidateCreate(p model.Principal, input CreateProject) error {
 			return err
 		}
 	}
+	return validateProjectFields(input)
+}
+func validateProjectFields(input CreateProject) error {
 	if strings.TrimSpace(input.Name) == "" || !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) {
 		return invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
 	}
-	return validateRepoURL(input.RepoURL)
+	return validateProjectSizes(input)
+}
+func validateProjectSizes(input CreateProject) error {
+	if err := AdmitName(input.Name); err != nil {
+		return &model.Fault{Code: "invalid_input", Message: err.Error(), Cause: err}
+	}
+	return validateRepoURLSize(input.RepoURL)
 }
 func Create(ctx context.Context, dao store.ProjectCreationDAO, userID, id string, input CreateProject) (model.Project, model.ProjectAccess, error) {
+	if err := validateProjectSizes(input); err != nil {
+		return model.Project{}, model.ProjectAccess{}, err
+	}
 	var teamID string
 	if input.TeamID == nil {
 		facts, err := dao.CreationPersonalTeam(ctx, true)
@@ -114,7 +135,12 @@ func ValidateRead(p model.Principal, id string) (string, error) {
 	}
 	return model.CanonicalID(id)
 }
-func RequireProjectRead(ctx context.Context, reader store.ProjectReader, p model.Principal, id string) (model.ProjectAccess, error) {
+
+type ProjectAccessReader interface {
+	ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error)
+}
+
+func RequireProjectRead(ctx context.Context, reader ProjectAccessReader, p model.Principal, id string) (model.ProjectAccess, error) {
 	id, err := ValidateRead(p, id)
 	if err != nil {
 		return model.ProjectAccess{}, err

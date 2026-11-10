@@ -49,6 +49,20 @@ describe('Worker configuration editing lifetime', () => {
     expect(result.current.notice).toBe('saved'); expect(result.current.baselineRevision).toBe('2'); expect(result.current.draft?.maxConcurrent).toBe('5'); expect(result.current.dirty).toBe(true);
     expect(result.current.resource?.desired?.value.maxConcurrent).toBe(3);
   });
+  it('protects an edit back to the original baseline while the submitted snapshot is pending', async () => {
+    const put = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockImplementationOnce(() => put.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '2' })));
+    expect(result.current.pending).toBe(true); expect(result.current.dirty).toBe(true);
+    put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+    await act(async () => saving);
+    expect(result.current.draft?.maxConcurrent).toBe('2'); expect(result.current.dirty).toBe(true);
+    expect(result.current.baselineRevision).toBe('2');
+  });
   it('does not let a GET dispatched before PUT completion roll the saved target backward', async () => {
     const read = deferred<Response>(), fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockImplementationOnce(() => read.promise)
       .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
@@ -70,6 +84,23 @@ describe('Worker configuration editing lifetime', () => {
     expect(result.current.resource?.desired?.revision).toBe('2'); expect(result.current.baselineRevision).toBe('1'); expect(result.current.pending).toBe(true); expect(result.current.conflict).toBe(false);
     put.resolve(configurationResponse(saved)); await act(async () => saving);
     expect(result.current.notice).toBe('saved'); expect(result.current.conflict).toBe(false); expect(result.current.dirty).toBe(false);
+  });
+  it('abandons to the highest observed configuration while retaining the write and later edits', async () => {
+    const put = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockImplementationOnce(() => put.promise)
+      .mockResolvedValueOnce(configurationResponse(configurationResource('3', { ...configurationValue(), maxConcurrent: 8 })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush(); await advance();
+    act(() => result.current.abandon());
+    expect(result.current.pending).toBe(true); expect(result.current.dirty).toBe(false);
+    expect(result.current.draft?.maxConcurrent).toBe('8'); expect(result.current.baselineRevision).toBe('3');
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '9' })));
+    put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+    await act(async () => saving);
+    expect(result.current.draft?.maxConcurrent).toBe('9'); expect(result.current.dirty).toBe(true);
+    expect(result.current.resource?.desired?.revision).toBe('3'); expect(result.current.conflict).toBe(true);
   });
   it('retains the draft on CAS conflict and requires explicit loading before another save', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockResolvedValueOnce(configurationError(409, 'version_conflict'))
@@ -102,6 +133,59 @@ describe('Worker configuration editing lifetime', () => {
     await act(async () => result.current.save()); expect(fetch).toHaveBeenCalledTimes(3);
     act(() => result.current.refresh()); await flush(); expect(result.current.notice).toBe('notSaved'); expect(result.current.uncertain).toBe(false); expect(result.current.dirty).toBe(true);
     expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+  it('protects an edit back to the original baseline while the save outcome is unknown', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockRejectedValueOnce(new Error('connection lost'))
+      .mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    await act(async () => result.current.save()); expect(result.current.uncertain).toBe(true);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '2' })));
+    expect(result.current.dirty).toBe(true);
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.uncertain).toBe(false); expect(result.current.draft?.maxConcurrent).toBe('2');
+    expect(result.current.dirty).toBe(true);
+  });
+  it('keeps protecting an edited baseline after an unknown save reconciles to a different target', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockRejectedValueOnce(new Error('connection lost'))
+      .mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 4 })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    await act(async () => result.current.save()); expect(result.current.uncertain).toBe(true);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '2' })));
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.uncertain).toBe(false); expect(result.current.conflict).toBe(true);
+    expect(result.current.draft?.maxConcurrent).toBe('2'); expect(result.current.dirty).toBe(true);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '4' })));
+    expect(result.current.dirty).toBe(false); expect(result.current.conflict).toBe(false);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '2' })));
+    expect(result.current.dirty).toBe(true);
+    act(() => result.current.discard()); expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.dirty).toBe(false);
+  });
+  it('keeps the edited baseline protected through a conflict response and its fresh read', async () => {
+    const put = deferred<Response>(), fresh = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockImplementationOnce(() => put.promise).mockImplementationOnce(() => fresh.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '2' })));
+    put.resolve(configurationError(409, 'version_conflict')); await flush();
+    expect(result.current.dirty).toBe(true);
+    fresh.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 4 })));
+    await act(async () => saving);
+    expect(result.current.conflict).toBe(true); expect(result.current.dirty).toBe(true);
+    act(() => result.current.discard()); expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.dirty).toBe(false);
+  });
+  it('does not make a clean draft dirty when a background read observes another version', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
+      .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 4 })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.refresh()); await flush();
+    expect(result.current.conflict).toBe(true); expect(result.current.dirty).toBe(false);
   });
   it('keeps explicit write failures and raw input until a deliberate correction', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockResolvedValueOnce(configurationError(400, 'invalid_input'))
@@ -167,6 +251,23 @@ describe('Worker configuration editing lifetime', () => {
     expect(result.current.notice).toBe('saved'); expect(result.current.baselineRevision).toBe('2'); expect(result.current.draft?.maxConcurrent).toBe('4');
     read.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }))); await flush();
     expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+  it('cancels a not-yet-dispatched save when its draft is abandoned during admission', async () => {
+    const fetch = vi.fn().mockResolvedValue(configurationResponse(configurationResource()));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    const resume = pauseAuthRequests();
+    let saving!: Promise<void>;
+    try {
+      act(() => { saving = result.current.save(); }); await flush();
+      expect(result.current.pending).toBe(true);
+      act(() => result.current.abandon());
+      expect(result.current.pending).toBe(false); expect(result.current.dirty).toBe(false);
+      expect(result.current.draft?.maxConcurrent).toBe('2');
+    } finally { resume(); }
+    await act(async () => saving);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
   });
   it.each([{ status: 409, code: 'version_conflict' }, { status: 400, code: 'invalid_input' }])('publishes the known $status PUT failure only after admission resumes', async ({ status, code }) => {
     const put = deferred<Response>();

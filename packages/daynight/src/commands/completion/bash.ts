@@ -112,6 +112,7 @@ const runtime = String.raw`
     esac
   done
   [[ -z "$dn_escape" ]] || return 1
+  dn_end_quote="$dn_quote"
   dn_words+=("$dn_token")
 }
 
@@ -144,7 +145,7 @@ const runtime = String.raw`
   local dn_value_option=-1 dn_value_match=-1 dn_inline=0 dn_options_terminated=0 dn_allow_terminator=0
   local dn_used='|' dn_tilde dn_current dn_word dn_index dn_match dn_option
   local dn_candidate dn_prefix dn_fragment dn_trim dn_choice
-  local dn_name dn_value dn_inline_prefix
+  local dn_name dn_value dn_inline_prefix dn_end_quote
   COMPREPLY=()
   compopt +o filenames +o nospace 2>/dev/null || :
   @PREFIX@_words || return 0
@@ -235,9 +236,28 @@ const runtime = String.raw`
         [[ "$dn_candidate" == */ ]] || dn_candidate+='/'
         dn_candidate="@{dn_candidate#"$dn_trim"}"
       fi
+      if [[ "$dn_end_quote" == double ]]; then
+        [[ "$dn_candidate" == */ ]] || dn_candidate+='/'
+        dn_candidate="@{dn_candidate//\\/\\\\}"
+        dn_candidate="@{dn_candidate//\$/\\\$}"
+        dn_candidate="@{dn_candidate//\`/\\\`}"
+        dn_candidate="@{dn_candidate//\"/\\\"}"
+      fi
       COMPREPLY+=("$dn_candidate")
-    done < <(compgen -d -- "$dn_prefix")
-    compopt -o filenames -o nospace 2>/dev/null || :
+    done < <(
+      if [[ "$dn_end_quote" == double ]]; then
+        for dn_candidate in "$dn_prefix"*/; do
+          [[ ! -d "$dn_candidate" ]] || printf '%s\n' "@{dn_candidate%/}"
+        done
+      else
+        compgen -d -- "$dn_prefix"
+      fi
+    )
+    if [[ "$dn_end_quote" == double ]]; then
+      compopt +o filenames -o nospace 2>/dev/null || :
+    else
+      compopt -o filenames -o nospace 2>/dev/null || :
+    fi
     return 0
   fi
   if ((!dn_options_terminated)) && [[ "$dn_current" == -*=* ]]; then

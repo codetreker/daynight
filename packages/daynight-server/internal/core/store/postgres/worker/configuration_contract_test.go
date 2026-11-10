@@ -1,0 +1,565 @@
+package worker_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"math"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	pgworker "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/worker"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+func workerStorage(t *testing.T) *postgres.Store {
+	t.Helper()
+	return testutil.OpenStore(t, postgres.Open)
+}
+
+func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
+	database := workerStorage(t)
+	owner, foreign, project := testutil.ProjectMembershipFixture(t, database)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	workerID := testutil.QueryID(90)
+	configuration := func(max int64) model.WorkerConfiguration {
+		return model.WorkerConfiguration{
+			PreferPlatformSpecificTasks: false, MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
+			Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+			Projects: []model.WorkerProjectConfiguration{{ProjectID: project.ID, NativeOverrides: map[string]json.RawMessage{}}},
+		}
+	}
+	expected := func(revision string, stamp time.Time, max int64) model.WorkerConfigurationResource {
+		return model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: stamp, Value: configuration(max)}, ObservationRevision: "0", Observation: nil}
+	}
+	check := func(got, want model.WorkerConfigurationResource) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("configuration: got=%+v want=%+v", got, want)
+		}
+	}
+	read := func(want model.WorkerConfigurationResource) {
+		t.Helper()
+		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, owner.UserID, workerID)
+			if err == nil {
+				check(got, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var missing error
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		_, missing = scope.WorkerDAO().WorkerConfiguration(ctx, owner.UserID, workerID)
+		return nil
+	}); err != nil || !errors.Is(missing, model.ErrNotFound) {
+		t.Fatalf("unknown Worker configuration: query=%v snapshot=%v", missing, err)
+	}
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, owner.UserID, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		_, err = scope.WorkerDAO().UpsertWorker(ctx, testutil.WorkerSnapshotFixture(owner.UserID, workerID, admission.ObservedAt))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("legacy Worker creation: completion=%+v err=%v", completion, err)
+	}
+	read(model.WorkerConfigurationResource{Desired: nil, ObservationRevision: "0", Observation: nil})
+	var initial model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		if err := dao.ConfigurationProjectAccess(ctx, owner.UserID, project.ID); err != nil {
+			return err
+		}
+		var err error
+		initial, err = dao.SetWorkerConfiguration(ctx, owner.UserID, workerID, 1, configuration(2))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || initial.UpdatedAt.IsZero() || initial.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("initial configuration: completion=%+v result=%+v err=%v", completion, initial, err)
+	}
+	if !reflect.DeepEqual(initial, *expected("1", initial.UpdatedAt, 2).Desired) {
+		t.Fatalf("initial setter result: %+v", initial)
+	}
+	read(expected("1", initial.UpdatedAt, 2))
+	var updated model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		current, err := dao.WorkerConfiguration(ctx, owner.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		check(current, expected("1", initial.UpdatedAt, 2))
+		updated, err = dao.SetWorkerConfiguration(ctx, owner.UserID, workerID, 2, configuration(7))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || updated.UpdatedAt.IsZero() || updated.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("updated configuration: completion=%+v result=%+v err=%v", completion, updated, err)
+	}
+	if !reflect.DeepEqual(updated, *expected("2", updated.UpdatedAt, 7).Desired) {
+		t.Fatalf("updated setter result: %+v", updated)
+	}
+	read(expected("2", updated.UpdatedAt, 7))
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE user_id=$1 AND worker_id=$2`, owner.UserID, workerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		observed, err := scope.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		if observed.IsZero() || observed.Location() != time.UTC {
+			t.Errorf("invalid snapshot clock: %v", observed)
+		}
+		dao := scope.WorkerDAO()
+		got, err := dao.WorkerConfiguration(ctx, owner.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		check(got, expected("2", updated.UpdatedAt, 7))
+		_, workerErr := dao.Worker(ctx, owner.UserID, workerID, observed)
+		if !errors.Is(workerErr, model.ErrNotFound) {
+			t.Errorf("expired Worker: %v", workerErr)
+		}
+		page, err := dao.WorkerSummaries(ctx, owner.UserID, observed, Page{Limit: 10})
+		if err == nil && (page.Items == nil || len(page.Items) != 0 || page.HasMore) {
+			t.Errorf("expired Worker summaries: %+v", page)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		_, missing = scope.WorkerDAO().WorkerConfiguration(ctx, foreign.UserID, workerID)
+		return nil
+	}); err != nil || !errors.Is(missing, model.ErrNotFound) {
+		t.Fatalf("foreign reader: query=%v snapshot=%v", missing, err)
+	}
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		_, err := scope.WorkerDAO().WorkerConfiguration(ctx, foreign.UserID, workerID)
+		return err
+	})
+	var transaction *TransactionError
+	if !errors.Is(err, model.ErrNotFound) || completion.Outcome != TransactionNotCommitted || !errors.As(err, &transaction) || transaction.CleanupFailed {
+		t.Fatalf("foreign writer: completion=%+v err=%v", completion, err)
+	}
+	read(expected("2", updated.UpdatedAt, 7))
+}
+
+func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
+	database := workerStorage(t)
+	admin, member, project := testutil.ProjectMembershipFixture(t, database)
+	ctx := context.Background()
+	workerID := testutil.QueryID(90)
+	sampledAt := time.Now().UTC()
+	worker := testutil.WorkerSnapshotFixture(admin.UserID, workerID, sampledAt)
+	worker.Telemetry.AssistantHost = &model.WorkerAssistantHost{ProtocolVersion: 1, ObservedAt: worker.Telemetry.SampledAt, DefaultCwd: "/workspace", DefaultProvider: model.AgentCodex, Providers: []model.WorkerAssistantProvider{{Provider: model.AgentCodex, Available: true, Args: []string{}}}}
+	worker = testutil.PutWorkerSnapshot(t, database, worker)
+	value := testutil.WorkerConfiguration()
+	value.MaxConcurrent, value.PollIntervalMs, value.RecoveryLimit = 64, 60000, 10
+	name := testutil.WorkerStoredUTF8(256)
+	value.Native.Model = &name
+	value.Native.Args = make([]string, 128)
+	for index := range value.Native.Args {
+		value.Native.Args[index] = "x"
+	}
+	value.Native.Args[0] = testutil.WorkerStoredUTF8(4096)
+	value.Projects = make([]model.WorkerProjectConfiguration, 128)
+	for index := range value.Projects {
+		value.Projects[index] = model.WorkerProjectConfiguration{ProjectID: testutil.QueryID(1000 + index), NativeOverrides: map[string]json.RawMessage{}}
+	}
+	observation := model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: make([]model.WorkerConfigurationItem, 1024)}
+	for index := range observation.Items {
+		observation.Items[index] = model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "projectPreparation", ProjectID: testutil.QueryID(3000 + index)}, TargetRevision: "1", AppliedValue: json.RawMessage(`null`), State: "pending"}
+	}
+	var desired model.WorkerDesiredConfiguration
+	if err := testutil.WriteWorker(database, ctx, func(tx WorkerScope) error {
+		current, err := tx.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
+		if err != nil || current.Desired != nil || current.ObservationRevision != "0" {
+			t.Fatalf("initial configuration lock: %+v %v", current, err)
+		}
+		if err := tx.WorkerDAO().ConfigurationProjectAccess(ctx, admin.UserID, project.ID); err != nil {
+			t.Fatalf("owner Project access rejected: %v", err)
+		}
+		if err := tx.WorkerDAO().ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("inaccessible Project exposed: %v", err)
+		}
+		desired, err = tx.WorkerDAO().SetWorkerConfiguration(ctx, admin.UserID, workerID, 1, value)
+		if err != nil {
+			return err
+		}
+		if desired.Revision != "1" || desired.UpdatedAt.IsZero() || !reflect.DeepEqual(desired.Value, value) {
+			t.Fatalf("stored target result: %+v", desired)
+		}
+		return tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, admin.UserID, workerID, 1, observation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stored model.WorkerConfigurationResource
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		if current.Desired.Revision != "1" || !current.Desired.UpdatedAt.Equal(desired.UpdatedAt) || !reflect.DeepEqual(current.Desired.Value, value) || current.ObservationRevision != "1" || current.Observation == nil || current.Observation.ReportedAt.IsZero() || !reflect.DeepEqual(current.Observation.WorkerConfigurationObservation, observation) {
+			t.Fatalf("configuration did not roundtrip: %+v", current)
+		}
+		stored = current
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expectedLegacy := testutil.WorkerSnapshotFixture(admin.UserID, workerID, worker.CreatedAt)
+	expectedLegacy.LastReportedAt = worker.LastReportedAt.Add(time.Second)
+	expectedLegacy.Telemetry.SampledAt = sampledAt
+	worker.LastReportedAt = worker.LastReportedAt.Add(time.Second)
+	worker.Telemetry.AssistantHost = nil
+	var legacy model.WorkerSnapshot
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		var err error
+		legacy, err = scope.WorkerDAO().UpsertWorker(ctx, worker)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("legacy heartbeat did not commit: %+v %v", completion, err)
+	}
+	if legacy.Telemetry.AssistantHost != nil || !legacy.LastReportedAt.Equal(worker.LastReportedAt) {
+		t.Fatalf("legacy heartbeat retained stale assistant-host telemetry: %#v", legacy)
+	}
+	persisted := testutil.ReadWorkerSnapshot(t, database, admin.UserID, workerID, expectedLegacy.LastReportedAt)
+	if persisted.Telemetry.AssistantHost != nil || !reflect.DeepEqual(persisted.Telemetry, expectedLegacy.Telemetry) || !persisted.LastReportedAt.Equal(expectedLegacy.LastReportedAt) || !reflect.DeepEqual(persisted, expectedLegacy) {
+		t.Fatalf("legacy heartbeat did not persist its complete snapshot: got=%+v want=%+v", persisted, expectedLegacy)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
+		if err == nil && !reflect.DeepEqual(current, stored) {
+			t.Fatal("legacy heartbeat changed committed configuration or observation state")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerHistoricalConfigurationStoreReadback(t *testing.T) {
+	database := workerStorage(t)
+	_, member, project := testutil.ProjectMembershipFixture(t, database)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	workerID := testutil.QueryID(90)
+	configuration := func(max int64, withProject bool) model.WorkerConfiguration {
+		value := model.WorkerConfiguration{
+			MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
+			PreferPlatformSpecificTasks: false,
+			Native:                      model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
+			Projects:                    []model.WorkerProjectConfiguration{},
+		}
+		if withProject {
+			value.Projects = []model.WorkerProjectConfiguration{{ProjectID: project.ID, NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`["--foo","bar"]`)}}}
+		}
+		return value
+	}
+	expected := func(revision string, max int64, withProject bool, updated time.Time) model.WorkerConfigurationResource {
+		value := configuration(max, withProject)
+		if withProject {
+			value.Projects[0].NativeOverrides["args"] = json.RawMessage(`["--foo", "bar"]`)
+		}
+		return model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: revision, UpdatedAt: updated, Value: value}, ObservationRevision: "0", Observation: nil}
+	}
+	check := func(got, want model.WorkerConfigurationResource) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("stored historical configuration: got=%+v want=%+v", got, want)
+		}
+		if want.Desired.UpdatedAt.IsZero() {
+			t.Error("configuration write returned a zero timestamp")
+		}
+		if len(want.Desired.Value.Projects) != 0 {
+			var args []string
+			if got.Desired == nil || len(got.Desired.Value.Projects) != 1 {
+				t.Errorf("stored Project configuration is missing: %+v", got)
+				return
+			}
+			raw := got.Desired.Value.Projects[0].NativeOverrides["args"]
+			if string(raw) != `["--foo", "bar"]` {
+				t.Errorf("JSONB args representation=%q", raw)
+			}
+			if err := json.Unmarshal(raw, &args); err != nil || !reflect.DeepEqual(args, []string{"--foo", "bar"}) {
+				t.Errorf("JSONB changed argument meaning: args=%q err=%v", args, err)
+			}
+		}
+	}
+	read := func(want model.WorkerConfigurationResource) {
+		t.Helper()
+		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, member.UserID, workerID)
+			if err == nil {
+				check(got, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, member.UserID); err != nil {
+		t.Fatal(err)
+	}
+	var initial model.WorkerDesiredConfiguration
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, member.UserID, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		dao := scope.WorkerDAO()
+		if _, err := dao.UpsertWorker(ctx, testutil.WorkerSnapshotFixture(member.UserID, workerID, admission.ObservedAt)); err != nil {
+			return err
+		}
+		if err := dao.ConfigurationProjectAccess(ctx, member.UserID, project.ID); err != nil {
+			return err
+		}
+		initial, err = dao.SetWorkerConfiguration(ctx, member.UserID, workerID, 1, configuration(2, true))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("initial configuration did not commit: %+v %v", completion, err)
+	}
+	read(expected("1", 2, true, initial.UpdatedAt))
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET desired_configuration=jsonb_set(desired_configuration, '{maxConcurrent}', '65'::jsonb) WHERE user_id=$1 AND worker_id=$2`, member.UserID, workerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
+		t.Fatal(err)
+	}
+	read(expected("1", 65, true, initial.UpdatedAt))
+	var repaired model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		if accessErr := dao.ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(accessErr, model.ErrNotFound) {
+			t.Errorf("revoked Project access: %v", accessErr)
+		}
+		current, err := dao.WorkerConfiguration(ctx, member.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		check(current, expected("1", 65, true, initial.UpdatedAt))
+		repaired, err = dao.SetWorkerConfiguration(ctx, member.UserID, workerID, 2, configuration(64, true))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("given configuration replacement did not commit: %+v %v", completion, err)
+	}
+	read(expected("2", 64, true, repaired.UpdatedAt))
+	var cleared model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		var err error
+		cleared, err = scope.WorkerDAO().SetWorkerConfiguration(ctx, member.UserID, workerID, 3, configuration(64, false))
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("given configuration removal did not commit: %+v %v", completion, err)
+	}
+	read(expected("3", 64, false, cleared.UpdatedAt))
+}
+
+func TestWorkerConfigurationStoreRemainsIndependentOfTasks(t *testing.T) {
+	database := workerStorage(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	owner, workerID := testutil.QueryID(40), testutil.QueryID(41)
+	value := testutil.WorkerConfiguration()
+	value.MaxConcurrent = 2
+	var initial model.WorkerDesiredConfiguration
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, owner, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		dao := scope.WorkerDAO()
+		if _, err := dao.UpsertWorker(ctx, testutil.WorkerSnapshotFixture(owner, workerID, admission.ObservedAt)); err != nil {
+			return err
+		}
+		initial, err = dao.SetWorkerConfiguration(ctx, owner, workerID, 1, value)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || initial.UpdatedAt.IsZero() {
+		t.Fatalf("initial configuration did not commit: %+v %v", completion, err)
+	}
+	read := func(want model.WorkerConfigurationResource) {
+		t.Helper()
+		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, owner, workerID)
+			if err == nil && !reflect.DeepEqual(got, want) {
+				t.Errorf("stored configuration: got=%+v want=%+v", got, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: initial.UpdatedAt, Value: value}, ObservationRevision: "0"}
+	read(original)
+	if _, err := database.Pool.Exec(ctx, `DROP TABLE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	value.MaxConcurrent++
+	var updated model.WorkerDesiredConfiguration
+	completion, err = database.WriteWorker(ctx, func(scope WorkerScope) error {
+		dao := scope.WorkerDAO()
+		current, err := dao.WorkerConfiguration(ctx, owner, workerID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(current, original) {
+			t.Errorf("configuration changed with Task storage unavailable: got=%+v want=%+v", current, original)
+		}
+		updated, err = dao.SetWorkerConfiguration(ctx, owner, workerID, 2, value)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted || updated.UpdatedAt.IsZero() {
+		t.Fatalf("configuration write queried Task storage: %+v %v", completion, err)
+	}
+	read(model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: updated.UpdatedAt, Value: value}, ObservationRevision: "0"})
+}
+
+func TestWorkerConfigurationDAOFailuresRetainCauses(t *testing.T) {
+	database := workerStorage(t)
+	ctx := context.Background()
+	userID, workerID := testutil.QueryID(1), testutil.QueryID(2)
+	testutil.PutWorkerSnapshot(t, database, testutil.WorkerSnapshotFixture(userID, workerID, time.Now().UTC()))
+	if err := testutil.WriteWorker(database, ctx, func(scope WorkerScope) error {
+		_, err := scope.WorkerDAO().SetWorkerConfiguration(ctx, userID, workerID, 1, testutil.WorkerConfiguration())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dao := pgworker.NewWriter(tx).WorkerDAO()
+	if _, err := dao.WorkerConfiguration(ctx, userID, workerID); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("closed lock failure lost: %v", err)
+	}
+	if _, err := dao.SetWorkerConfiguration(ctx, userID, workerID, 1, testutil.WorkerConfiguration()); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("closed update failure lost: %v", err)
+	}
+	if err := dao.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{}); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("closed observation clock failure lost: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `ALTER TABLE workers RENAME COLUMN configuration_observation TO missing_observation`); err != nil {
+		t.Fatal(err)
+	}
+	if err := testutil.WriteWorker(database, ctx, func(tx WorkerScope) error {
+		return tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{}})
+	}); err == nil {
+		t.Fatal("observation database update failure hidden")
+	}
+}
+
+func TestWorkerConfigurationMaximumRevisionJSONBAndReportRollback(t *testing.T) {
+	database := workerStorage(t)
+	ctx := t.Context()
+	userID, workerID := testutil.QueryID(1), testutil.QueryID(2)
+	worker := testutil.PutWorkerSnapshot(t, database, testutil.WorkerSnapshotFixture(userID, workerID, time.Now().UTC()))
+	value := testutil.WorkerConfiguration()
+	value.MaxConcurrent = 2
+	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: testutil.QueryID(3), NativeOverrides: map[string]json.RawMessage{
+		"args":  json.RawMessage(`["--foo","b\u0061r","quote\"value","\\path","中文"]`),
+		"model": json.RawMessage(`"model/\u006eame"`),
+	}}}
+	high := strconv.FormatInt(math.MaxInt64, 10)
+	observation := model.WorkerConfigurationObservation{BaseRevision: high, DesiredRevision: high, Items: []model.WorkerConfigurationItem{}}
+	var desired model.WorkerDesiredConfiguration
+	if err := testutil.WriteWorker(database, ctx, func(scope WorkerScope) error {
+		var err error
+		desired, err = scope.WorkerDAO().SetWorkerConfiguration(ctx, userID, workerID, math.MaxInt64, value)
+		if err != nil {
+			return err
+		}
+		return scope.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, math.MaxInt64, observation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var before model.WorkerConfigurationResource
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		var err error
+		before, err = scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if before.Desired == nil || before.Desired.Revision != high || !before.Desired.UpdatedAt.Equal(desired.UpdatedAt) || before.ObservationRevision != high || before.Observation == nil || !reflect.DeepEqual(before.Observation.WorkerConfigurationObservation, observation) {
+		t.Fatalf("maximum revisions did not roundtrip: %+v", before)
+	}
+	var args []string
+	var modelName string
+	if err := json.Unmarshal(before.Desired.Value.Projects[0].NativeOverrides["args"], &args); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(before.Desired.Value.Projects[0].NativeOverrides["model"], &modelName); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(args, []string{"--foo", "bar", "quote\"value", "\\path", "中文"}) || modelName != "model/name" {
+		t.Fatalf("JSONB changed configuration meaning: args=%q model=%q", args, modelName)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET configuration_observation_revision=0;
+CREATE FUNCTION refuse_config_observation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF NEW.configuration_observation_revision <> OLD.configuration_observation_revision THEN
+  RAISE EXCEPTION 'injected configuration observation failure';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER refuse_config_observation BEFORE UPDATE ON workers FOR EACH ROW EXECUTE FUNCTION refuse_config_observation()`); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, userID, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		report := worker
+		report.LastReportedAt = admission.ObservedAt
+		report.Telemetry.Machine.Name = "Must roll back"
+		if _, err := scope.WorkerDAO().UpsertWorker(ctx, report); err != nil {
+			return err
+		}
+		if _, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID); err != nil {
+			return err
+		}
+		return scope.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: high, Items: []model.WorkerConfigurationItem{}})
+	})
+	var fault *model.Fault
+	var driver *pgconn.PgError
+	if err == nil || errors.As(err, &fault) || !errors.As(err, &driver) || !strings.Contains(driver.Message, "injected configuration observation failure") || completion.Outcome != TransactionNotCommitted {
+		t.Fatalf("observation failure or rollback lost: %+v %v", completion, err)
+	}
+	after := testutil.ReadWorkerSnapshot(t, database, userID, workerID, worker.LastReportedAt)
+	if !reflect.DeepEqual(after, worker) {
+		t.Fatalf("observation failure committed partial heartbeat: before=%+v after=%+v", worker, after)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		after, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		if err == nil && (after.Desired == nil || !reflect.DeepEqual(after.Desired, before.Desired) || after.ObservationRevision != "0" || !reflect.DeepEqual(after.Observation, before.Observation)) {
+			t.Errorf("observation failure changed committed configuration: before=%+v after=%+v", before, after)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

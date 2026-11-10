@@ -18,6 +18,7 @@ import type { BotExecutionStore } from "./execution-store.js";
 import type { BotStore } from "./store.js";
 import type { BotDeletionStop, BotSessionApi } from "./session-api.js";
 import type { BotRecord } from "./types.js";
+import { botNativeConfiguration } from "./configuration.js";
 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
@@ -43,14 +44,18 @@ export const createBotProcess = (options: {
   const checkedTicket = async (record: BotRecord): Promise<ControllerLaunchTicket> => {
     const intent = record.intent;
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
-    const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId), config = record.definition!.resolvedConfiguration;
+    const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
+    if (config.selection !== undefined) {
+      const requiresSelection = native.model !== null || parseProviderArguments(config.provider, native.args, true).effort !== undefined;
+      if ((ticket.configuration.validateNativeSelection === true) !== requiresSelection) throw new Error("Bot ticket selection validation conflicts with its frozen configuration.");
+    }
     if (ticket.testExecutionId !== intent.executionId || ticket.executionId !== intent.executionId || ticket.sessionId !== intent.sessionId
       || ticket.controllerId !== intent.registration.controllerId || ticket.controllerInstanceId !== intent.controllerInstanceId
       || ticket.executionGeneration !== intent.executionGeneration || ticket.ownerUserId !== record.owner.ownerUserId || ticket.serverOrigin !== record.owner.serverOrigin
       || ticket.provider !== config.provider || ticket.cwd !== config.cwd || ticket.initialInput !== "none" || ticket.initialPrompt !== ""
       || ticket.resumeNativeSessionId !== intent.nativeSessionId
       || ticket.initialOperationId !== intent.initialOperationId || ticket.instructions !== intent.roleConfiguration.instructions || ticket.credentialFile !== intent.credentialFile
-      || controllerPayloadHash(ticket.configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: config.model, args: config.args, recoveryLimit: intent.recoveryLimit })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
+      || controllerPayloadHash(ticket.configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit, ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true } : {}) })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
     return ticket;
   };
   const sessionRecord = (record: BotRecord): BotRecord => {
@@ -68,7 +73,7 @@ export const createBotProcess = (options: {
     const retained = environments.get(record.botId);
     if (retained !== undefined) return retained;
     const config = record.definition!.resolvedConfiguration;
-    parseProviderArguments(config.provider, config.args);
+    parseProviderArguments(config.provider, botNativeConfiguration(config).args, config.selection !== undefined);
     try {
       const prepared = await environment({ homeDirectory: options.homeDirectory, cwd: config.cwd, workerPaths: resolveConfigurationPaths(options.homeDirectory), serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId, signal });
       environments.set(record.botId, prepared);
@@ -136,7 +141,7 @@ export const createBotProcess = (options: {
       try { ticket = await checkedTicket(record); }
       catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-        const intent = record.intent!, config = record.definition!.resolvedConfiguration;
+        const intent = record.intent!, config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
         if (intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot registration did not establish its frozen role and Session.");
         await mkdir(controllerExecutionDirectory(options.homeDirectory, intent.executionId), { recursive: true, mode: 0o700 });
         const previous = options.executions.get(record)!.previous;
@@ -147,7 +152,8 @@ export const createBotProcess = (options: {
         ticket = { schemaVersion: 1, launchId: intent.launchId, executionId: intent.executionId, testExecutionId: intent.executionId,
           controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, sessionId: intent.sessionId,
           executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId,
-          provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: config.model, args: config.args, recoveryLimit: intent.recoveryLimit },
+          provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
+            ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket);

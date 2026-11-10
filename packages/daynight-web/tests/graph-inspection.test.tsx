@@ -25,13 +25,13 @@ const render = createLocaleRender('zh-CN');
 const time = '2026-10-22T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: 'Project', repoUrl: '', createdAt: time, updatedAt: time },
-  summary: { total: 5, todo: 2, inProgress: 0, done: 3, ready: 2, blocked: 0 },
+  summary: { total: 5, todo: 2, inProgress: 0, done: 3, cancelled: 0, ready: 2, blocked: 0 },
   tasks: [
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: 'A', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: 'B', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'C', titlePreview: 'C', titleTruncated: false, status: 'done', dependsOn: ['B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['C'], startedAt: null, completedAt: null, id: 'D', titlePreview: 'D', titleTruncated: false, status: 'todo', dependsOn: ['A', 'C'], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'X', titlePreview: 'X', titleTruncated: false, status: 'todo', dependsOn: ['C'], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'A', titlePreview: 'A', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'B', titlePreview: 'B', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'C', titlePreview: 'C', titleTruncated: false, status: 'done', dependsOn: ['B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['C'], startedAt: null, completedAt: null, cancelledAt: null, id: 'D', titlePreview: 'D', titleTruncated: false, status: 'todo', dependsOn: ['A', 'C'], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'X', titlePreview: 'X', titleTruncated: false, status: 'todo', dependsOn: ['C'], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
   ],
 };
 const index = buildGraphIndex(graph);
@@ -39,7 +39,7 @@ const noop = () => {};
 const card = (container: HTMLElement, id: string) => container.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"] .task-node`)!;
 const body = (container: HTMLElement, id: string) => card(container, id).querySelector<HTMLButtonElement>('.task-node-body')!;
 const details = (container: HTMLElement, id: string) => card(container, id).querySelector<HTMLButtonElement>('.task-node-details')!;
-const ready = async (container: HTMLElement, count = 4) => {
+const ready = async (container: HTMLElement, count = 3) => {
   await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(count); });
   await waitFor(() => { expect(container.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).not.toBe('translate(0px,0px) scale(1)'); });
 };
@@ -53,7 +53,7 @@ const geometry = (container: HTMLElement) => ({
 beforeEach(installGraphMeasurements);
 
 describe('graph-local prerequisite inspection', () => {
-  it('highlights the exact complete path including external-to-external edges and preserves task statuses', async () => {
+  it('highlights visible prerequisites and counts ancestors beyond the one-hop external boundary', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
     expect(card(view.container, 'X')).toBeNull();
@@ -61,22 +61,23 @@ describe('graph-local prerequisite inspection', () => {
     expect(card(view.container, 'D')).toHaveAttribute('data-inspection', 'selected');
     expect(card(view.container, 'D')).toHaveClass('task-node-todo');
     expect(card(view.container, 'D')).toHaveAttribute('data-task-status', 'todo');
-    for (const id of ['A', 'B', 'C']) {
+    for (const id of ['A', 'C']) {
       expect(card(view.container, id)).toHaveAttribute('data-inspection', 'prerequisite');
       expect(card(view.container, id)).toHaveClass('task-node-done');
       expect(card(view.container, id)).toHaveAttribute('data-task-status', 'done');
     }
-    expect(card(view.container, 'B')).toHaveClass('task-node-external');
+    expect(card(view.container, 'B')).toBeNull();
+    expect(view.container.querySelector('.task-graph')).toHaveAttribute('data-hidden-upstream-count', '1');
     expect(card(view.container, 'C')).toHaveClass('task-node-external');
     const states = () => [...view.container.querySelectorAll<HTMLElement>('.task-dependency-edge')].map((edge) => [edge.dataset.id, edge.dataset.inspection]);
-    expect(states()).toEqual([['A->D', 'highlighted'], ['B->C', 'highlighted'], ['C->D', 'highlighted']]);
+    expect(states()).toEqual([['A->D', 'highlighted'], ['C->D', 'highlighted']]);
     fireEvent.click(body(view.container, 'C'));
-    expect(states()).toEqual([['A->D', 'unrelated'], ['B->C', 'highlighted'], ['C->D', 'unrelated']]);
+    expect(states()).toEqual([['A->D', 'unrelated'], ['C->D', 'unrelated']]);
     expect(card(view.container, 'A')).toHaveAttribute('data-inspection', 'unrelated');
     expect(card(view.container, 'A')).toHaveAttribute('data-task-status', 'done');
-    expect(card(view.container, 'B')).toHaveAttribute('data-inspection', 'prerequisite');
+    expect(view.container.querySelector('.task-graph')).toHaveAttribute('data-hidden-upstream-count', '1');
     fireEvent.click(body(view.container, 'C'));
-    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(4);
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(3);
     fireEvent.click(body(view.container, 'A'));
     expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="highlighted"]')).toHaveLength(0);
     fireEvent.click(view.container.querySelector('.react-flow__pane')!);
@@ -111,6 +112,30 @@ describe('graph-local prerequisite inspection', () => {
     expect(inspect).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('navigates from an external card through a separate keyboard control without changing the current graph', async () => {
+    const user = userEvent.setup();
+    const navigate = vi.fn();
+    const open = vi.fn();
+    const view = render(<TaskGraph index={index} rootId="A" onOpenTask={open} onNavigateExternalTask={navigate} />);
+    await ready(view.container);
+    const external = card(view.container, 'C');
+    const expand = within(external).getByRole('button', { name: '展开 C 所属的任务或 Goal' });
+    expect(external.querySelector('[data-direction]')).toBeNull();
+    expect(expand).not.toHaveAttribute('aria-pressed');
+    fireEvent.click(body(view.container, 'D'));
+    const before = geometry(view.container);
+    expand.focus();
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(navigate.mock.calls).toEqual([['C', expand], ['C', expand]]);
+    expect(open).not.toHaveBeenCalled();
+    expect(geometry(view.container)).toEqual(before);
+    expect(body(view.container, 'D')).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(details(view.container, 'C'));
+    expect(open).toHaveBeenCalledWith('C', details(view.container, 'C'));
+    expect(navigate).toHaveBeenCalledTimes(2);
+  });
+
   it('changes only presentation while retaining controlled node data, compiled geometry, paint pieces and viewport', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const compile = vi.spyOn(routes, 'compileDependencyRoute');
@@ -125,9 +150,9 @@ describe('graph-local prerequisite inspection', () => {
     fireEvent.click(details(view.container, 'D'));
     view.rerender(<TaskGraph index={index} rootId="A" onOpenTask={open} />);
     expect(flowNodes).not.toHaveBeenCalled();
-    expect(nodes).toHaveLength(4);
+    expect(nodes).toHaveLength(3);
     expect(layout).toHaveBeenCalledTimes(1);
-    expect(compile).toHaveBeenCalledTimes(3);
+    expect(compile).toHaveBeenCalledTimes(2);
     expect(geometry(view.container)).toEqual(before);
     expect([...view.container.querySelectorAll('.react-flow__edge-path,.task-dependency-paint-piece')]).toEqual(shapes);
     expect(view.container.querySelectorAll('marker')).toHaveLength(3);

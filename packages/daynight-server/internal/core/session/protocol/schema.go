@@ -20,7 +20,7 @@ func validateObject(data json.RawMessage, fields schema) bool {
 			delete(fields, "claimId")
 		}
 	}
-	for _, name := range []string{"cleanupInteractionIds", "controls", "turnStartedAt"} {
+	for _, name := range []string{"cleanupInteractionIds", "controls", "turnStartedAt", "contentRevision", "imageBudget", "images", "providerImages", "imageProjectionError", "retainedImages", "imageBindings"} {
 		if _, supported := fields[name]; supported && raw[name] == nil {
 			fields = extend(fields, schema{})
 			delete(fields, name)
@@ -124,7 +124,7 @@ func many(validate validator, min, max int, identity string) validator {
 }
 
 var fenceSchema = schema{"sessionId": identifier, "claimId": identifier, "executionGeneration": sequence}
-var capabilitiesSchema = schema{"send": boolean, "steer": boolean, "cancel": boolean, "respond": boolean}
+var capabilitiesSchema = schema{"send": boolean, "steer": boolean, "cancel": boolean, "respond": boolean, "images": validateImageCapabilities}
 var initialState = enum("not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown", "not_required")
 var activity = enum("initializing", "idle", "working", "waiting_input", "stopped", "unknown")
 var errorSchema = schema{"code": key, "message": text}

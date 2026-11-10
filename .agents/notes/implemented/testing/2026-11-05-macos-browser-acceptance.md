@@ -53,10 +53,13 @@ identity checks before any signal. A completed process does not become a failure
 merely because its temporary clone path disappeared, provided its recorded
 ownership remains valid and its group is stopped.
 
-The runner freezes recovery inventory before launch. Ownership recording can
-read the selected executable again; if an installation replacement changes its
-file identity between these observations, recovery rejects the mismatch rather
-than authorizing the replacement.
+The original recovery decision accepted a second executable inventory during
+ownership recording: recovery rejected an installation replacement rather than
+authorizing its different file identity. That preserved unknown-resource safety,
+but could leave a receipt that failed recovery even after normal browser closure.
+The [prelaunch inventory decision](2026-11-05-browser-prelaunch-inventory.md)
+replaces that resampling with the same saved inventory for recording and recovery;
+replacement is rejected before either ownership marker or receipt is written.
 
 macOS process discovery also preserves its bounded exit check when
 `KERN_PROCARGS2` returns `EIO` while the kernel already reports `PROC_FLAG_INEXIT`.
@@ -68,7 +71,7 @@ errors; an `EIO` result alone never establishes that a process stopped.
 
 This extends the executable-path assumptions in the historical
 [production acceptance decision](../../archived/testing/2026-10-20-dashboard-production-acceptance.md).
-The [functional target isolation](2026-11-04-web-functional-target-overlap.md)
+The [functional target isolation](../../archived/testing/2026-11-04-web-functional-target-overlap.md)
 and shared cleanup barriers remain unchanged.
 
 ## Alternatives

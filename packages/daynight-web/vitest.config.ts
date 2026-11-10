@@ -6,6 +6,7 @@ export default defineConfig({
   cacheDir: ".tmp/vitest",
   test: {
     environment: "jsdom",
+    silent: "passed-only",
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.{ts,tsx}"],
     coverage: {

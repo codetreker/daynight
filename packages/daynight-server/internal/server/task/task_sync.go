@@ -4,22 +4,20 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strconv"
 	"time"
 
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 var taskSyncTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$`)
 
-func TaskSyncRoutes(mux *http.ServeMux, sync *service.TaskSync, auth *authhttp.Authentication, logger *slog.Logger, window time.Duration) {
+func TaskSyncRoutes(mux *http.ServeMux, sync SyncOperation, auth RouteAuthentication, logger *slog.Logger, window time.Duration) {
 	handler := &taskHandler{sync: sync, logger: logger, window: window}
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-sync", auth.Require(handler.taskSync))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-sync", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
@@ -56,16 +54,17 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 
 func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	if sync.Sessions != nil {
+		result.Sessions = make(map[string]string, len(sync.Sessions))
+		for taskID, state := range sync.Sessions {
+			result.Sessions[taskID] = string(state)
+		}
+	}
 	for _, person := range sync.AssigneeVersions {
 		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
 	}
 	for _, task := range sync.Tasks {
-		result.Tasks = append(result.Tasks, api.TaskViewRecord{
-			Properties: propertiesResponse(task.Properties),
-			ID:         task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status), Version: strconv.FormatInt(task.Version, 10),
-			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo,
-			CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(), StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
-		})
+		result.Tasks = append(result.Tasks, taskprotocol.RESTSyncRecord(task))
 	}
 	return result
 }
@@ -84,15 +83,14 @@ func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, pri
 		return
 	}
 	logger = logger.With("since", input.Since, "window", h.window)
-	result, err := h.sync.Get(request.Context(), principal, projectID, input)
+	result, err := h.sync(request.Context(), principal, projectID, input)
 	if err != nil {
-		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
-			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)
-		}
+
 		httpx.WriteError(w, request, logger, "task_sync", "get", err)
 		return
 	}
+	response := TaskSyncResponse(result)
 	logger.InfoContext(request.Context(), "task sync read", "type", "resource", "component", "task_sync", "phase", "get",
 		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks))
-	httpx.WriteJSON(w, request, logger, http.StatusOK, TaskSyncResponse(result))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }

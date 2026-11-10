@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { ApiError } from "../../../src/api/client.js";
 import type { Task, WorkerClaim } from "../../../src/api/types.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import type { WorkerControlRequest } from "../../../src/commands/worker/control.js";
+import type { WorkerInputWait } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerEvent } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -22,11 +24,11 @@ const configuration: ExecutionConfiguration = { agent: "codex", model: "current-
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
 const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
-const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: taskId, projectId, title: "Task", description: "", status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
+const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: taskId, projectId, title: "Task", description: "", status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
 const fixture = (local = true) => {
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, "control-"));
-  const store = openWorkerStore(path.join(directory, "state.sqlite"));
+  const store = openWorkerStore(createMemoryDatabase());
   resources.push({ directory, store });
   const project = store.registerProject({ projectId, repoUrl: "https://github.com/example/repo.git", localPath: path.join(directory, "repository") });
   const identity = { projectId, taskId, claimId };
@@ -38,7 +40,7 @@ const fixture = (local = true) => {
   const coordinator = {
     assertCanAcquire: vi.fn(),
     registerClaim: vi.fn((granted: Task) => { const grantedClaim = readWorkerClaim(granted.properties)!; expect(store.getTask({ projectId: granted.projectId, taskId: granted.id, claimId: grantedClaim.claimId })?.status).toBe("pending"); }),
-    advanceRetry: vi.fn(async () => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
+    advanceRetry: vi.fn(async (): Promise<WorkerInputWait | void> => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
     cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
     completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); const worker = readWorkerClaim(observed.properties); expect(worker?.claimId !== claimId || worker.state !== "active").toBe(true); store.completeTask(identity); }),
   };
@@ -46,7 +48,7 @@ const fixture = (local = true) => {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
     release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
     resume: vi.fn(async (_projectId, _taskId, input) => { const { version: _version, previousClaimId: _previousClaim, ...grant } = input; order.push("resume"); observed = remoteTask({ ...claim, ...grant, agentControlMode: input.agentControlMode ?? "herdr", userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
-    report: vi.fn(), configuration: vi.fn(), reportConfiguration: vi.fn(), project: vi.fn(), resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
+    report: vi.fn(), readMonitoring: vi.fn(), writeMonitoring: vi.fn(), configuration: vi.fn(), reportConfiguration: vi.fn(), project: vi.fn(), resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
   const options = { store, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine, repositories: [{ project, configuration }], signal: new AbortController().signal, coordinator, emit: (event: WorkerEvent) => { events.push(event); order.push(event.kind); } };
   const submit = (request: WorkerControlRequest) => submitWorkerControl({ ...options, request });
@@ -158,6 +160,17 @@ describe("synchronous worker source management", () => {
     expect(result.task).toMatchObject({ ...f.identity, status: "active", agent: "copilot", sessionId: uuid(40) });
     expect(f.remote.resume).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();
     expect(f.store.listTasks()).toHaveLength(1);
+  });
+
+  it.each(["prompt_unknown", "prompt_too_large"] as const)("reports %s as unsubmitted input while retaining the original claim", async reason => {
+    const f = fixture();
+    f.coordinator.advanceRetry.mockResolvedValue({ kind: "waiting_input", reason });
+    const result = await f.submit({ kind: "retry", taskId, claimId });
+    expect(result.message).toMatch(/not submitted.*waiting/i);
+    expect(result.message).not.toContain("attempt completed");
+    expect(result.task).toMatchObject({ ...f.identity, status: "active", sessionId: null });
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.remote.release).not.toHaveBeenCalled();
   });
 
   it("does not grant a retry to an administrator or a pending local claim", async () => {

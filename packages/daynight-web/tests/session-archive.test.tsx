@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { screen } from '@testing-library/react';
+import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { SessionArchive, SessionArchiveStatus } from '../../daynight/src/session/archive';
 import { sessionFence, type SessionSnapshot } from '../../daynight/src/session/protocol';
@@ -21,14 +21,23 @@ function fixture(lifecycle: SessionSnapshot['lifecycle'] = 'archived', standalon
   const status: SessionArchiveStatus = { state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null };
   let receive!: (value: BrowserMessage) => void;
   const close = vi.fn();
-  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), archive: vi.fn(async () => status), archiveContent: vi.fn(async () => archive), channel: vi.fn((_id, _cursor, next) => { receive = next; return { close }; }), timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused' };
-  const client = new TaskSessionClient({ api, userId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), ...(standalone ? { testSessionId: s.sessionId } : { projectId: task.identity.projectId, taskId: task.identity.taskId, claimId: task.claimId }) });
+  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), archive: vi.fn(async () => status), archiveContent: vi.fn(async () => archive), channel: vi.fn((_id, _cursor, next) => { receive = next; return { close }; }), timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused' };
+  const client = new TaskSessionClient({ api, userId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), ...(standalone ? { testSessionId: s.sessionId } : { projectId: task.identity.projectId, taskId: task.identity.taskId, claimId: task.claimId , ownerUserId: userId}) });
+  client.setCurrentReadVisible(true);
   clients.push(client);
   return { s, archive, api, client, close, receive: (value: BrowserMessage) => receive(value) };
 }
 it.each([false, true])('renders completed history without a live controller (standalone=%s)', async standalone => {
   const f = fixture('archived', standalone); await f.client.start();
-  render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true, historyReady: false, historyCoverage: { firstEntrySeq: '1', completeBefore: true } });
+  const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
+  for (const locale of ['en', 'zh-CN'] as const) {
+    view.setLocale(locale);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('Completed · Read-only history');
+    expect(screen.getByRole('status')).toHaveAttribute('lang', 'en');
+    expect(view.container.querySelector('.task-agent-session > .session-empty')).toBeNull();
+  }
   expect(screen.getByText('The saved result.')).toBeVisible();
   expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   expect(f.api.channel).not.toHaveBeenCalled(); expect(f.api.timeline).not.toHaveBeenCalled();
@@ -36,14 +45,59 @@ it.each([false, true])('renders completed history without a live controller (sta
   await expect(f.client.cancel()).rejects.toThrow();
   expect(f.api.command).not.toHaveBeenCalled();
 });
+it.each([false, true])('allows reading resolved and expired requests in archived history (standalone=%s)', async standalone => {
+  const f = fixture('archived', standalone);
+  vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, entries: [
+    { entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '2', kind: 'interaction', interaction: { interactionId: 'approval', revision: '2', kind: 'approval', title: 'Approve Write', state: 'resolved', detail: 'notes/review.txt\n+ saved request', actions: ['allow_once'] } },
+    { entryId: '00000008-1111-4111-8111-111111111111', entrySeq: '2', revision: '2', kind: 'interaction', interaction: { interactionId: 'question', revision: '2', kind: 'question', title: 'Choose a destination', state: 'expired', canDismiss: true, questions: [{ questionId: 'q', label: 'Destination', options: [{ id: 'eu', label: 'Europe' }], multiple: false, required: true, sensitive: true, allowCustom: true }] } },
+    { entryId: '00000009-1111-4111-8111-111111111111', entrySeq: '3', revision: '2', kind: 'interaction', interaction: { interactionId: 'form', revision: '2', kind: 'form', title: 'Connection settings', state: 'expired', canDismiss: true, fields: [{ fieldId: 'secret', label: 'Access code', type: 'text', sensitive: true, required: true }] } },
+  ] });
+  await f.client.start();
+  const view = render(<SessionView userId={userId} client={f.client} active current />);
+  const disclosures = screen.getAllByText('Show request');
+  expect(disclosures).toHaveLength(3);
+  for (const disclosure of disclosures) {
+    expect(disclosure.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(disclosure);
+  }
+  expect(screen.getByText('notes/review.txt + saved request')).toBeVisible();
+  expect(screen.getByText('Destination')).toBeVisible();
+  expect(screen.getByText('Europe')).toBeVisible();
+  expect(screen.getByText('Access code')).toBeVisible();
+  expect(view.container.querySelector('.session-interaction input, .session-interaction button, .session-interaction form')).toBeNull();
+  expect(f.api.channel).not.toHaveBeenCalled();
+  expect(f.api.command).not.toHaveBeenCalled();
+});
+it('keeps the archive loading notice until content is ready, then removes it', async () => {
+  const f = fixture(); let finish!: (archive: SessionArchive) => void;
+  vi.mocked(f.api.archiveContent).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const loading = f.client.start();
+  await vi.waitFor(() => expect(f.api.archiveContent).toHaveBeenCalledOnce());
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+  render(<SessionView userId={userId} client={f.client} active current />);
+  expect(screen.getByText('Loading archived history…')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+  await act(async () => { finish(f.archive); await loading; });
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+  expect(screen.queryByText('Loading archived history…')).toBeNull();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
+  expect(screen.getByText('The saved result.')).toBeVisible();
+});
 it.each(['pending', 'failed', 'unavailable'] as const)('shows an honest %s state without an empty conversation or restoring message', async state => {
   const f = fixture(); vi.mocked(f.api.archive).mockResolvedValue({ state, sha256: null, byteLength: null, errorCode: state === 'failed' ? 'upload_failed' : null });
   await f.client.start(); render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   expect(f.client.snapshot().archiveState).toBe(state);
+  const labels = { pending: 'The session has ended. History is being archived.', failed: 'History could not be archived or loaded. Refresh to check again.', unavailable: 'This session has ended, but no archived history is available.' };
+  expect(screen.getByText(labels[state])).toBeVisible();
   expect(screen.queryByText('No conversation yet.')).toBeNull();
   expect(screen.queryByText('Restoring session')).toBeNull();
   expect(screen.queryByRole('textbox')).toBeNull();
   expect(f.api.archiveContent).not.toHaveBeenCalled();
+  vi.mocked(f.api.archive).mockResolvedValue({ state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect(await screen.findByText('The saved result.')).toBeVisible();
+  expect(screen.queryByText(labels[state])).toBeNull();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
 });
 it('keeps active disconnected executions on the live path', async () => {
   const f = fixture('active'); await f.client.start();
@@ -62,6 +116,7 @@ it('closes a live channel as soon as its snapshot starts draining', async () => 
 it.each(['claimId', 'controllerId', 'controllerInstanceId', 'nativeSessionId'] as const)('rejects archive identity mismatch in %s', async field => {
   const f = fixture(); vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, [field]: '00000099-1111-4111-8111-111111111111' } as SessionArchive);
   await f.client.start(); expect(f.client.snapshot().archiveState).toBe('failed'); expect(f.client.snapshot().state.entries).toEqual([]);
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
 });
 it('discards an archive response after the client closes', async () => {
   const f = fixture(); let resolve!: (archive: SessionArchive) => void;
@@ -97,8 +152,10 @@ it('rechecks draining sessions whose archive intent has not arrived yet', async 
   vi.mocked(f.api.archive).mockResolvedValueOnce({ state: 'unavailable', sha256: null, byteLength: null, errorCode: null });
   await f.client.start(); render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   expect(screen.getByText('The session is ending. Waiting for its history archive.')).toBeVisible();
-  await vi.advanceTimersByTimeAsync(3000);
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(f.client.snapshot().archiveState).toBe('ready');
+  expect(screen.queryByText('The session is ending. Waiting for its history archive.')).toBeNull();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
   expect(f.api.channel).not.toHaveBeenCalled();
 });
 it('rejects oversized archive response bodies before reading them', async () => {

@@ -60,7 +60,7 @@ review:
 已知根字段包括 `serverUrl`、`serverToken`、`workerId`、`worker` 和 `review`。
 review 投影校验 `review` mapping 及已知字段值；server 和 worker 投影不校验 `review` 内部值。
 根节点、review 及其仓库条目的未知字段在运行时忽略，配置写入编辑原 YAML 节点并保留未知字段。
-旧顶层 review 字段也被忽略；已有设置须移入 `review` 才生效，不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/implemented/architecture/2026-10-27-review-configuration-section.md)。
+旧顶层 review 字段也被忽略；已有设置须移入 `review` 才生效，不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/archived/architecture/2026-10-27-review-configuration-section.md)。
 同一文件的 `serverUrl` 由独立 server 投影拥有；review 保留它且不校验其值。
 所有 review 数值必须是正的安全整数；毫秒计时字段还必须不超过
 `2147483647`。运行和列表的 `repositories` 必须是非空列表，每项读取 `remote`
@@ -78,7 +78,7 @@ Copilot 自动选择模型。两个字段均可省略，或只设置一项，或
 值，适用于全部仓库，文件修改在下次启动生效。共享 YAML 文档解析器读取 `review`，server
 投影仍只校验自己的字段；交互引导和仓库登记通过既有文档节点写入机制保留字段与注释。
 验证、默认语义和参数归属由
-[模型选项决策](../../.agents/notes/implemented/feature/2026-10-22-review-copilot-model.md)记录。
+[模型选项决策](../../.agents/notes/archived/feature/2026-10-22-review-copilot-model.md)记录。
 
 `review.repositoryRoot` 默认是 `~/daynights`，仅属于添加命令的路径选择。根目录接受本机
 绝对路径、配置目录相对路径，以及 `~` 或 `~/...` 形式的当前用户主目录展开；不支持
@@ -232,7 +232,8 @@ PR 预留，但不占审查 Worker 容量。待处理期间的多次更新合并
 | `instance-lock.ts` | 实例锁持有者校验、存活探测与并发接管 |
 | `runtime.ts` | review 模块组装、实例持有关系、信号与有序关闭 |
 | `skill.ts` 与 `skills/daynight-review/` | 发布资源校验、内容寻址快照、发现结果校验，以及内置审查方法 |
-| `processes.ts` | 本次执行的进程组或 Windows 进程树停止与执行证据 |
+| `processes.ts` | 本次执行的进程组或 Windows Job 停止与执行证据 |
+| `windows-phase.ts` 与 `windows-job-scope.ts` | Windows guardian 准入、原命令结果及持有的 Job 和进程对象 |
 | `publication.ts` | 稳定审查发布身份和完整远端结果的匹配规则 |
 | `adapters/github.ts` | 通过 `gh` 读取仓库、PR、分页、当前 CI、review 和 conversation 完整状态，不登记本地状态 |
 | `adapters/worktrees.ts` | 克隆校验、fetch、PR worktree 准备与清理 |
@@ -590,7 +591,7 @@ subagents，宜并行执行。每个委派显式传递固定 head/base/merge-bas
 不成立，在 attempt 输出汇总角度依据、覆盖、限制、处置及确认阻断项，再由自己使用
 `gh` 发布。subagents 不修改源码或 Git 状态，不管理 worktree、不发布或修改远端 review
 和 thread，也不输出完成标记。完整委派和资源规则归属[skill 设计](daynight-review-skill.md#多角度审查与汇总)，
-选择依据见[多角度审查决策](../../.agents/notes/implemented/process/2026-10-22-pr-specific-review-perspectives.md)。
+选择依据见[多角度审查决策](../../.agents/notes/archived/process/2026-10-22-pr-specific-review-perspectives.md)。
 
 批准条件包括独立的 description 与范围两项质量门槛，以及没有 Critical/Major 代码
 问题。一个 PR 必须解决一个明确问题且能够有效审查；扩大 description 不能单独为
@@ -698,13 +699,46 @@ SQLite。review agent 遵守前台执行契约：返回前结束自己启动的�
 Linux/macOS 为直接子进程建立独立进程组，同时保留引用、pipes 和 await，不调用 unref。
 停止时向本次执行的进程组发送 TERM，超过宽限期再发 KILL。探测返回 EPERM 时仍检查
 目标 PGID 的已有状态；仅无匹配执行成员或全部为 zombie 时确认不再执行。有执行成员时
-保留原权限错误，状态读取或解析失败也保留不确定状态。Windows 在根进程仍存活时使用 `taskkill /PID ... /T /F` 停止普通进程树，避免
-先杀包装脚本而丢失树根。正常、未被强制的退出及排空的 stdio 按前台契约处理。
+保留原权限错误，状态读取或解析失败也保留不确定状态。
 
-取消时根已消失、进程终止失败、输出被强制放弃或其他执行证据不确定时，阻止该 PR
-复用和清理，并保留实例锁及状态供人工确认。系统只操作本次运行实时持有的进程，
-不根据持久化 PID 杀旧进程，也不重建已消失的任意进程树。Windows 包装脚本、后代进程
-和信号差异在各平台使用受控执行文件验证。
+Windows 的 skill 发现和正式审查各自使用一个受信任的 Node guardian。guardian 启动时
+移除 `NODE_OPTIONS`，在收到准入消息前不执行目标命令；目标命令的原环境在准入后传入。
+父进程创建禁止 breakaway、启用 kill-on-close 的独立 Job，持有 guardian 的原进程对象，
+核对 PID、父身份、未 signaled 状态，使用该 handle 分配到 Job，再确认成员身份与存活。
+只有这些步骤成功且未取消、断开 IPC 或超过整体截止时间，才通过 IPC 放行原命令。
+目标仍使用 `cross-spawn` 解析 `.cmd` 等包装入口，stdin、stdout 和 stderr 直接继承
+既有 pipes，保持提示词背压、完整日志和末行解析；实际目标的退出码、signal 和结构化
+command-not-found 通过 guardian receipt 返回，不能用 guardian 的退出码替代。
+
+正常结束、取消、超时及启动失败均汇合到同一个 Job stop；新阶段不使用 `taskkill /T`。
+停止关闭准入，先盘点 Job 中可打开的进程对象并用 `IsProcessInJob` 核对归属，再对
+持有的 Job 调用 `TerminateJobObject`。PID 清单中已被复用为无关对象的条目只释放观察
+handle，不会成为终止目标。Job 包含普通创建方式继承成员身份的后代，即使它们晚于
+盘点出生，或中间父进程、目标根进程已经退出，仍由同一个 Job 拥有。最后一个非继承
+Job handle 随 owner 退出而关闭时，kill-on-close 提供相同的成员终止边界。
+
+成功排除要求所有实际捕获的进程对象均 signaled、Job 的 active count 为零，以及
+原 guardian 退出并关闭所有直接 pipes。`ChildProcess.close` 或独立的 exit、每条 pipe
+close 和 IPC disconnect 联合证明直接关闭，避免把 Node 的事件遗漏当成未完成退出。
+空 PID 清单和 active count 为零都不能替代已捕获对象的 signaled 证明；未被观察的历史
+成员不获得逐对象 signaled 保证。盘点、身份、成员查询、wait、终止或 handle 释放错误
+均保留失败；已确认 signaled 的 handle 逐个释放，其余和 Job handle 保留，不释放执行
+归属。`platform/windows-job.ts` 复用既有 `koffi` 依赖提供 native 边界，Bot Job lease
+复用该边界，保留其原有生命周期。
+
+旧的非 Job helper 仍以受核验的实时祖先关系盘点并使用 `taskkill`，其有界
+`Windows review ancestry` 诊断和 fail-closed 规则保持独立；产品的两个 review 阶段均
+走 Job 路径。机制与旧方案取舍见
+[Windows Job 归属](../../.agents/notes/implemented/bug-fix/2026-11-09-windows-review-job-ownership.md)
+及[原 Windows 终止确认](../../.agents/notes/implemented/bug-fix/2026-11-07-windows-review-termination-completion.md)。
+
+进程终止失败、输出被强制放弃或其他执行证据不确定时，阻止该 PR 复用和清理，
+并保留实例锁及状态供人工确认。系统只操作本次运行实时持有的进程和 Job，
+不根据持久化 PID 杀旧进程，也不重建已消失的任意进程树。Job 不是 sandbox；通过
+WMI、外部 broker 或特权创建而未继承 Job 的进程不在保证范围内。Windows 包装脚本、
+迟生后代、根退出和 owner 丢失的验证使用真实 native Job 与独立保留的 fixture handles；
+可移植协议测试和受控 native 接口测试分别验证流、准入顺序与 fail-closed 决策，
+不能替代 Windows 运行证据。
 
 每个状态目录只能由一个 daemon 实例持有。`instance.lock` 保存 `owner`、`pid` 和
 `startedAt`。读取既有锁时严格校验元数据，其中 PID 必须是正整数且不超过
@@ -759,14 +793,13 @@ Node 文档说明了相关的
 ## 验证与交付
 
 应用工具链提供 `pnpm typecheck`、`pnpm test`、`pnpm build` 和独立的 `pnpm acceptance`。
-CI 要求源码、包元数据、构建或依赖输入发生变化时升级包版本；具体范围和本地检查命令见
-[README](../../README.md#package-versions)。版本检查只在 PR 的 Linux CLI 任务中运行，
-使用事件中的 base 与 head 提交；任务失败使最终 `checks` 汇总失败。main push 保留全量
-应用检查。包构建及命令间依赖隔离由[客户端设计](daynight.md)定义。
+普通变更保持 CLI 包版本不变；版本选择、发布与验证由
+[README](../../README.md#package-versions)拥有。main push 执行全量应用检查，
+包构建及命令间依赖隔离由[客户端设计](daynight.md)定义。
 
 review 测试覆盖组与操作参数、帮助、编译后的入口、仓库添加、审查列表、严格配置解析
-和路径校验；GitHub Actions 在 Linux、macOS ARM64 和 Windows 上运行这些检查。SQLite 测试使用真实磁盘数据库，验证迁移、事务回滚、
-连接锁冲突、重开后的边界与预算、修订转换、会话和 worktree 登记。列表验证缺失或无效
+和路径校验；GitHub Actions 在 Linux、macOS ARM64 和 Windows 上运行这些检查。SQLite 业务单测使用独立的原生内存连接，验证迁移、事务回滚、
+修订转换、会话和 worktree 登记。依赖真实文件、WAL、独立连接、锁冲突和重开后的边界与预算的用例归入明确命名的集成测试；两类用例都由常规 `pnpm test` 执行。连接来源与资源所有权见 [SQLite 升级设计](cli-sqlite-migrations.md#连接来源与所有权)。列表验证缺失或无效
 数据库、当前配置过滤、已记录状态与进程存活的区别、最新目标与旧活跃审查的独立归属，
 以及真实 WAL 上并行读事务的一致性。GitHub 测试使用
 受控 API 和子进程验证完整分页、失败保留、限流、关闭确认和观测事务回滚。真实 Git
@@ -794,8 +827,8 @@ open thread 时等待，以及 actor 切换后已提交结果的核对与草稿�
 验证两个等待 PR 均先于持续更新 PR 的后续修订，且就绪候选保持 FIFO。时钟在准入比较
 期间固定，机器负载不会使其中一个候选的 CI 证据先过期；选择依据记录在
 [公平调度验证决策](../../.agents/notes/archived/testing/2026-10-19-deterministic-coordinator-fairness.md)。
-集成案例组合真实本地 Git、Copilot 受控进程和生产进程监督模块。编译后 CLI 测试验证
-实例锁、状态创建、信号退出和资源释放，无需真实远程认证。调度器内部失败也会取消
+集成案例组合真实本地 Git、Copilot 受控进程和生产进程监督模块，验证实例锁、
+状态及资源释放，无需真实远程认证。调度器内部失败也会取消
 仍在等待的轮询，再等待所有已启动操作结束。
 [协调决策](../../.agents/notes/archived/architecture/2026-10-17-foreground-review-coordination.md)
 记录这些责任和异常恢复前提。
@@ -835,30 +868,20 @@ Promise，防止重复获得清理预算。120 秒 setup、40 秒 teardown、600
 两秒内捕获实际 PID，不能由模拟命令参数测试替代；它不用于识别历史持有者或证明
 原生部分卸载阶段。
 
-独立的 `pnpm acceptance` 先打包，再在临时 consumer 中正常安装，驱动实际生成的
-`daynight` bin。真实 SQLite 和本地 Git 配合受控的原生 gh 执行文件及 Copilot 命令
-包装脚本，验证配置登记、根目录变更后保留既有路径、本地审查列表，以及完整的审查、
-重试、重启和关闭清理流程；模型和推理强度从 YAML 经运行时到新建/恢复进程 argv
-的传递，以及 skill 发现不接收任一覆盖，由安装后的原生受控 Copilot 记录验证，
-测试不替换产品内部依赖。该证据证明参数传递与会话编排，不发起真实模型请求，
-不证明模型能力、强度支持或账户可用性。
-该审查生命周期安装步骤需要包注册表访问，使用本地 consumer，也不需要真实 review 凭据。
-客户端的[自更新验收](daynight.md#验证与交付)独立验证真实 npm 全局安装的替换与归属。
-CI 只上传精选的工具版本清单、审查生命周期 receipt 和 `.tmp/update-evidence.json`。
-异常退出验收在直接工具句柄全部关闭后同步结束 CLI，检查锁保留、存活实例拒绝和自动接管失效锁；进程树终止保留独立的原生验证。
-[仓库验证说明](../../README.md#validation)定义原生平台 receipt 的源码身份与真实服务验收边界。
+独立的 `pnpm acceptance` 打包并安装 CLI，验证 launcher 和完整 review skill
+资源；npm 更新接入在隔离的全局 prefix 中验证。审查、重试、重启和关闭的行为
+由模块测试中的真实 SQLite、本地 Git 及受控进程验证；这些测试不发起真实模型
+请求，也不证明模型能力、强度支持或账户可用性。当前安装入口不运行完整审查
+生命周期矩阵；运行结果及清理证据仅属于被测源码和环境。
 
-独立的既有数据 fixture 直接构造重构前的 YAML 与版本 1 SQLite 表和记录，不使用
-当前 store 创建基线。安装后的列表必须只读旧状态，运行时显式迁移并复用永久边界、
-修订、预算、会话、日志、进程和 worktree 身份，保留清理屏障。迁移 fixture 分别
-验证完成记录的 `legacy` 阶段与活跃未完成记录的 `prepared` 阶段，二者均保留明确的
-旧身份格式及未知 publisher。带前缀旧正文中的有效 APPROVED 和带实际 thread 的
-COMMENT 在丢失 marker 后，按旧 token/head 找到实际 actor，再保留该身份完成对账；
-新轮次仍拒绝旧格式。匹配 approval 保持完成；缺少有效 approval 的相关已完成记录
-可消费一次采用轮次，包括只有正文而无 thread 的历史 COMMENT。不能伪造历史 actor
-或 thread，也不能反复重置预算；无关历史不启动模型。
+独立 schema 1 fixture 验证迁移保留完成与活跃记录、旧身份格式及未知 publisher。
+协调器集成测试验证旧 APPROVED 和真实 thread COMMENT 的丢失 marker 对账及
+历史 actor 保留；新轮次仍拒绝旧格式。迁移必须保留永久边界、修订、预算、会话、
+日志、进程、worktree 身份和清理屏障。匹配 approval 保持完成；缺少有效 approval
+的相关已完成记录可消费一次采用轮次，包括只有正文而无 thread 的历史 COMMENT。
+不得伪造历史 actor 或 thread、反复重置预算或为无关历史启动模型。
 
-下表定义模块、原生子进程和安装后验收需要观测的行为；实际通过记录及其对应修订
+下表定义模块与原生子进程验证需要观测的行为；实际通过记录及其对应修订
 随对应 PR 与 CI 保存。历史平台 receipt 不构成自动接管失效锁行为的验证：
 
 | 范围 | 必须观测的行为 |

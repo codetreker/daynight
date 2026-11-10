@@ -6,6 +6,7 @@ import type { CliContext } from "../../../src/cli/context.js";
 import { runCli } from "../../../src/cli/application.js";
 import { commands } from "../../../src/cli/commands.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
+import * as api from "../../../src/api/index.js";
 
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const workerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -14,7 +15,7 @@ const now = "2026-11-04T10:00:00Z";
 const bot = { id, workerId, ownerUserId: id, version: "9007199254740993", creationOrder: "9007199254740994", name: "助手", requestedOverrides: {}, resolvedConfiguration: { workerId, cwd: "/ordinary", provider: "codex", model: null, args: [] }, roleConfiguration: null, sessionId: null, testExecutionId: null, startupResult: { state: "pending", code: null }, deletion: null, createdAt: now, updatedAt: now };
 const deleted = (worker = "pending", server = "pending") => ({ id, workerId, version: "9007199254740994", deletion: { deletionId: requestId, requestedVersion: bot.version, workerCleanup: { state: worker, code: worker === "failed" ? "stop_failed" : null }, serverCleanup: { state: server, code: null } } });
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 const fixture = async (respond: (url: URL, init: RequestInit) => Response | Promise<Response>, failCleanup = false) => {
   vi.stubEnv("DN_CONFIG_DIR", undefined);
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-tests");
@@ -32,7 +33,7 @@ const fixture = async (respond: (url: URL, init: RequestInit) => Response | Prom
     const registered = commands.find((c) => c.name === "bot");
     const registry = commands.map((c) => c.name !== "bot" ? c : { ...c, load: async () => {
       const module = await import("../../../src/commands/bot/commands.js");
-      return { run: (args: readonly string[], current: CliContext) => module.runBotCommand(args, current, { runServerCommand: (ctx, action) => runServerCommand(ctx, action, { fetch, signalEmitter: signals }) }) };
+      return { run: (args: readonly string[], current: CliContext) => module.runBotCommand(args, current, { runServerCommand: (ctx, action, options) => runServerCommand(ctx, action, { ...options, fetch, signalEmitter: signals }) }) };
     } });
     const exit = await runCli(["bot", ...args], context, registered === undefined ? commands : registry);
     expect(signals.listenerCount("SIGINT")).toBe(0);
@@ -43,6 +44,30 @@ const fixture = async (respond: (url: URL, init: RequestInit) => Response | Prom
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "Daynight-User-ID": id } });
 
 describe("public Bot commands", () => {
+  it.each([{}, { model: "native-model" }, { reasoningEffort: "none" }, { model: "native-model", reasoningEffort: "none" }])("preserves explicit native choices %j through the creation receipt", async (native) => {
+    const overrides = { workerId, ...native };
+    const config = { ...bot.resolvedConfiguration, model: native.model ?? null, reasoningEffort: native.reasoningEffort ?? null, selection: { schemaVersion: 1, modelSource: native.model ? "explicit" : "native", reasoningEffortSource: native.reasoningEffort ? "explicit" : "native" } };
+    const { run, requests } = await fixture(() => json({ ...bot, requestedOverrides: overrides, resolvedConfiguration: config }));
+    const result = await run(["create", "--name", "助手", "--worker", workerId, "--request-id", id, "--json", ...(native.model ? ["--model", native.model] : []), ...(native.reasoningEffort ? ["--reasoning-effort", native.reasoningEffort] : [])]);
+    expect(result.exit).toBe(0);
+    expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ id, name: "助手", overrides });
+    expect(JSON.parse(result.out).resolvedConfiguration).toEqual(config);
+  });
+  it.each([["--model", ""], ["--model", "x".repeat(257)], ["--reasoning-effort", "x".repeat(65)], ["--reasoning-effort", "high\n"]])("rejects invalid native choice %j without HTTP", async (flag, value) => {
+    const { run, requests } = await fixture(() => json(bot));
+    expect((await run(["create", "--name", "助手", flag, value])).exit).toBe(2);
+    expect(requests).toHaveLength(0);
+  });
+  it.each(["missing", "different", "source"])("retains the original identity after a %s native selection receipt without replay", async failure => {
+    const overrides = { workerId, model: "chosen", reasoningEffort: "none" };
+    const config = { ...bot.resolvedConfiguration, model: "chosen", reasoningEffort: "none", selection: { schemaVersion: 1, modelSource: failure === "source" ? "cloud" : "explicit", reasoningEffortSource: "explicit" } };
+    const response = { ...bot, requestedOverrides: failure === "missing" ? { workerId } : failure === "different" ? { ...overrides, model: "other" } : overrides, resolvedConfiguration: config };
+    const { run, requests } = await fixture(() => json(response));
+    const result = await run(["create", "--name", "助手", "--worker", workerId, "--model", "chosen", "--reasoning-effort", "none", "--request-id", id, "--json"]);
+    expect(result.exit).toBe(1);
+    expect(JSON.parse(result.err).error).toMatchObject({ botId: id, outcomeUnconfirmed: true });
+    expect(requests).toHaveLength(1);
+  });
   it("creates with only a name and a pre-generated identity, preserving pending and exact decimal strings", async () => {
     const { run, requests } = await fixture((_url, init) => json({ ...bot, id: JSON.parse(init.body as string).id }));
     const result = await run(["create", "--name", "助手", "--json"]);
@@ -59,6 +84,75 @@ describe("public Bot commands", () => {
     const { run, requests } = await fixture(() => json({ ...bot, requestedOverrides: overrides, resolvedConfiguration: { ...bot.resolvedConfiguration, cwd: overrides.cwd, provider: overrides.provider } }));
     expect((await run(["create", "--name", "助手", "--worker", workerId, "--cwd", overrides.cwd, "--agent", "claude", "--request-id", id])).exit).toBe(0);
     expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ id, name: "助手", overrides });
+  });
+  it("prints the unchanged active Bot on a creation replay using its original identity", async () => {
+    const { run, requests } = await fixture(() => json(bot));
+    const first = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    const second = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    expect(first.exit).toBe(0); expect(second.exit).toBe(0);
+    expect(JSON.parse(first.out)).toEqual(bot);
+    expect(JSON.parse(second.out.slice(first.out.length))).toEqual(bot);
+    expect(requests.map(({ init }) => JSON.parse(String(init.body)))).toEqual([{ id, name: "助手" }, { id, name: "助手" }]);
+    expect(second.err).toBe("");
+  });
+  it("prints every returned field of an active Bot on show", async () => {
+    const { run, requests } = await fixture(() => json(bot));
+    const result = await run(["show", id, "--json"]);
+    expect(result.exit).toBe(0); expect(JSON.parse(result.out)).toEqual(bot);
+    expect(requests.map(({ url, init }) => `${init.method} ${url.pathname}`)).toEqual([`GET /api/v1/me/bots/${id}`]);
+    expect(result.err).toBe("");
+  });
+
+  it("prints the exact Bot returned by list after a refused creation", async () => {
+    let creates = 0;
+    const { run, requests } = await fixture((_url, init) => init.method === "POST"
+      ? ++creates === 1 ? json(bot) : json({ error: { code: "resource_conflict", message: "rejected", requestId: "refused" } }, 409)
+      : json({ items: [bot], nextCursor: null }));
+    const created = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    expect(created.exit).toBe(0); expect(JSON.parse(created.out)).toEqual(bot);
+    const rejected = await run(["create", "--name", "changed", "--request-id", id, "--json"]);
+    expect(rejected.exit).toBe(1); expect(rejected.out).toBe(created.out);
+    const listed = await run(["list", "--json"]);
+    expect(listed.exit).toBe(0); expect(JSON.parse(listed.out.slice(rejected.out.length))).toEqual([bot]);
+    expect(requests.map(({ init }) => init.method)).toEqual(["POST", "POST", "GET"]);
+  });
+
+  it("prints completed deletion replays and the exact remaining Bot list", async () => {
+    const other = { ...bot, id: requestId, name: "Keep me" };
+    const completed = deleted("completed", "completed");
+    const { run, requests } = await fixture((_url, init) => init.method === "DELETE" ? json(completed) : json({ items: [other], nextCursor: null }));
+    const args = ["delete", id, "--if-version", bot.version, "--request-id", requestId, "--json"];
+    const first = await run(args);
+    const replay = await run(args);
+    expect(first.exit).toBe(0); expect(replay.exit).toBe(0);
+    expect(JSON.parse(first.out)).toEqual(completed);
+    expect(JSON.parse(replay.out.slice(first.out.length))).toEqual(completed);
+    const listed = await run(["list", "--json"]);
+    expect(listed.exit).toBe(0); expect(JSON.parse(listed.out.slice(replay.out.length))).toEqual([other]);
+    expect(requests.map(({ init }) => init.method)).toEqual(["DELETE", "DELETE", "GET"]);
+    for (const { init } of requests.slice(0, 2)) expect(JSON.parse(String(init.body))).toEqual({ ifVersion: bot.version, deletionId: requestId });
+    expect(listed.err).toBe("");
+  });
+  it("prints both completed cleanup phases on Bot show", async () => {
+    const tombstone = deleted("completed", "completed");
+    const { run, requests } = await fixture(() => json(tombstone));
+    const result = await run(["show", id, "--json"]);
+    expect(result.exit).toBe(0); expect(JSON.parse(result.out)).toEqual(tombstone);
+    expect(requests.map(({ init }) => init.method)).toEqual(["GET"]);
+    expect(result.err).toBe("");
+  });
+  it.each([
+    [["create", "--name", "changed", "--request-id", id, "--json"], "resource_conflict"],
+    [["create", "--name", "Legacy", "--worker", workerId, "--json"], "resource_conflict"],
+    [["create", "--name", "Unavailable", "--worker", workerId, "--agent", "claude", "--json"], "resource_conflict"],
+    [["create", "--name", "Offline", "--worker", workerId, "--json"], "resource_conflict"],
+    [["delete", id, "--if-version", "1", "--json"], "version_conflict"],
+  ])("exposes the definite refusal for %j without success output", async (args, code) => {
+    const { run, requests } = await fixture(() => json({ error: { code, message: "rejected", requestId: "refused" } }, 409));
+    const result = await run(args);
+    expect(result.exit).toBe(1); expect(result.out).toBe("");
+    expect(JSON.parse(result.err).error).toMatchObject({ code, outcomeUnconfirmed: false });
+    expect(requests).toHaveLength(1);
   });
   it.each(["pending", "completed"])("accepts a creation replay with a %s deletion tombstone", async (state) => {
     const tombstone = deleted(state, state);
@@ -107,6 +201,24 @@ describe("public Bot commands", () => {
     const result = await run(["list", "--json"]);
     expect(result.exit).toBe(0); expect(JSON.parse(result.out)).toHaveLength(2);
     expect(requests[1]!.url.searchParams.get("cursor")).toBe("opaque /+?");
+  });
+  it.each([false, true])("reads count-based Bot pages within the aggregate budget (total exceeded: %s)", async exceedsTotal => {
+    const createOperation = api.createOperation;
+    vi.spyOn(api, "createOperation").mockImplementation(options => createOperation({ ...options, limits: { responseBytes: 1024, totalBytes: 4096, ...options?.limits } }));
+    const large = { ...bot, resolvedConfiguration: { ...bot.resolvedConfiguration, args: ["--add-dir", "/" + "x".repeat(1800)] } };
+    const second = { ...(exceedsTotal ? large : bot), id: requestId };
+    const { run, requests } = await fixture(url => json(url.searchParams.has("cursor") ? { items: [second], nextCursor: null } : { items: [large], nextCursor: "next" }));
+    const result = await run(["list", "--json"]);
+    expect(requests.map(({ url }) => url.searchParams.get("limit"))).toEqual(["100", "100"]);
+    expect(requests[1]!.url.searchParams.get("cursor")).toBe("next");
+    if (exceedsTotal) {
+      expect(result.exit).toBe(1);
+      expect(result.out).toBe("");
+      expect(JSON.parse(result.err).error).toMatchObject({ operation: "bot.list", phase: "response", outcomeUnconfirmed: false });
+    } else {
+      expect(result.exit).toBe(0);
+      expect(JSON.parse(result.out)).toEqual([large, second]);
+    }
   });
   it.each([401, 403, 404, 409])("preserves HTTP %s refusal and stable IDs without retry", async (status) => {
     const { run, requests } = await fixture(() => json({ error: { code: "version_conflict", message: "rejected", requestId: "server-request" } }, status));
@@ -180,4 +292,22 @@ it("preserves an unconfirmed mutation when local cleanup also fails", async () =
   expect(result.exit).toBe(1);
   expect(JSON.parse(result.err).error).toMatchObject({ outcomeUnconfirmed: true, phase: "request", requestId: JSON.parse(requests[0]!.init.body as string).id });
   expect(result.err).not.toContain("SECRET-PAT");
+});
+
+it("retains deletion identity and exact version across pending and completed receipts", async () => {
+  let count = 0;
+  const { run, requests } = await fixture(() => json(deleted(++count === 1 ? "pending" : "completed", count === 1 ? "pending" : "completed")));
+  const first = await run(["delete", id, "--if-version", bot.version, "--request-id", requestId, "--json"]);
+  expect(first.exit).toBe(0);
+  expect(JSON.parse(first.out)).toEqual(deleted());
+  const second = await run(["delete", id, "--if-version", bot.version, "--request-id", requestId, "--json"]);
+  expect(second.exit).toBe(0);
+  expect(JSON.parse(second.out.slice(first.out.length))).toEqual(deleted("completed", "completed"));
+  expect(requests.map(({ init }) => init.method)).toEqual(["DELETE", "DELETE"]);
+  for (const { url, init } of requests) {
+    expect(url.pathname).toBe(`/api/v1/me/bots/${id}`);
+    expect(JSON.parse(String(init.body))).toEqual({ ifVersion: bot.version, deletionId: requestId });
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer SECRET-PAT");
+  }
+  expect(first.out + first.err + second.out + second.err).not.toContain("SECRET-PAT");
 });

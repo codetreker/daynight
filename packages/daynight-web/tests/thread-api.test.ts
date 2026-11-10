@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { getThreadPage, isThreadScopeLoss, postThreadMessage, ThreadPostError, THREAD_REQUEST_TIMEOUT_MS, type ThreadAdmission } from '../src/features/task-thread/api';
-import { encodedMessageBytes, mergeThreadMessage, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES, type ThreadMessage, type ThreadScope } from '../src/features/task-thread/contract';
+import { mergeThreadMessage, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, type ThreadMessage, type ThreadScope } from '../src/features/task-thread/contract';
 import { readThreadJsonSource } from '../src/features/task-thread/json';
 
 const scope: ThreadScope = {
@@ -62,20 +62,24 @@ describe('Thread contract shared with CLI', () => {
     expect(() => parseThreadPage(JSON.stringify({ items: [], hasMoreBefore: true, hasMoreAfter: false }), { count: 50 })).toThrow(ApiError);
   });
 
-  it('uses actual Go HTML-escaped bytes for messages and exact page boundaries', () => {
-    expect(encodedMessageBytes({ ...message(), body: '<>&\u2028\u2029' }) - encodedMessageBytes({ ...message(), body: '' })).toBe(30);
-    const item = { ...message(), body: '' };
-    const full = { ...item, body: 'a'.repeat(THREAD_MESSAGE_BYTES - encodedMessageBytes(item)) };
-    expect(encodedMessageBytes(full)).toBe(THREAD_MESSAGE_BYTES);
-    expect(parseThreadMessage(JSON.stringify(full))).toEqual(full);
-    expect(() => parseThreadMessage(JSON.stringify({ ...full, body: full.body + 'a' }))).toThrow(ApiError);
-    const items = [1, 2, 3, 4].map((number) => ({ ...full, id: id(number) }));
-    const excess = new TextEncoder().encode(JSON.stringify(page(items))).byteLength - THREAD_PAGE_BYTES;
-    items[3] = { ...items[3]!, body: items[3]!.body.slice(excess) };
-    expect(new TextEncoder().encode(JSON.stringify(page(items))).byteLength).toBe(THREAD_PAGE_BYTES);
-    expect(parseThreadPage(JSON.stringify(page(items)), { count: 50 }).items).toHaveLength(4);
-    items[3] = { ...items[3]!, body: items[3]!.body + 'a' };
-    expect(() => parseThreadPage(JSON.stringify(page(items)), { count: 50 })).toThrow(ApiError);
+  it('preserves a complete count-selected page of four 64 KiB messages', async () => {
+    const items = [1, 2, 3, 4].map((number) => {
+      const item = { ...message(number), body: '' };
+      return { ...item, body: 'a'.repeat(THREAD_MESSAGE_BYTES - new TextEncoder().encode(JSON.stringify(item)).byteLength) };
+    });
+    const value = { ...page(items), hasMoreAfter: true };
+    const source = JSON.stringify(value);
+    for (const item of items) expect(new TextEncoder().encode(JSON.stringify(item)).byteLength).toBe(THREAD_MESSAGE_BYTES);
+    expect(new TextEncoder().encode(source).byteLength).toBeGreaterThan(262_144);
+    expect(parseThreadPage(source, { count: 4 })).toEqual(value);
+    const fetch = fetchResponse(response(value));
+    await expect(getThreadPage(scope, { count: 4 }, signal(), admission())).resolves.toEqual(value);
+    fetch.mockResolvedValueOnce(response(page([message(5)])));
+    await expect(getThreadPage(scope, { count: 4, afterId: id(4) }, signal(), admission({ boundary: items[3]! }))).resolves.toEqual(page([message(5)]));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1]![0]).toContain(`afterId=${id(4)}`);
+    fetch.mockResolvedValueOnce(response({ ...value, items: [...items.slice(0, 3), { ...items[3]!, createdAt: 'invalid' }] }));
+    await expect(getThreadPage(scope, { count: 4 }, signal(), admission())).rejects.toBeInstanceOf(ApiError);
   });
 
   it('only enriches matching immutable messages', () => {

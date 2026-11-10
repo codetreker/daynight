@@ -21,7 +21,7 @@ details lifetimes follow user action, selection, deletion or scope invalidation;
 submission and reads still require admission.
 
 The selected Bot's confirmed Session binding and actual display selection keep
-the existing [bounded cache](../architecture/2026-11-04-bot-session-cache.md),
+the existing [bounded cache](../../archived/architecture/2026-11-04-bot-session-cache.md),
 client and pane in place during the check. The shared client freezes input and
 publication and retains its bounded transport pause; it reconnects and replays
 from the cursor when the existing limits or a transport interruption require it.
@@ -29,6 +29,11 @@ The [deletion coordinator](../architecture/2026-11-05-bot-browser-deletion.md)
 continues to block uncertain deletion and revoke confirmed deletion or denied
 access, including late results. The [details decision](../feature/2026-11-05-bot-details-panel.md)
 continues to own the shared fullscreen boundary and responsive focus behavior.
+
+Selection-specific detail revalidation uses the separate
+[current-action admission decision](../architecture/2026-11-09-bot-current-action-admission.md).
+It preserves resident display without entering the authentication transport pause;
+this decision continues to own actual background identity checks.
 
 ## Alternatives
 

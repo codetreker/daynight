@@ -2,6 +2,7 @@ import type { EventEmitter } from "node:events";
 import { createApiClient, createOperation } from "../../api/index.js";
 import type { ApiClient, Operation, OperationLimits } from "../../api/index.js";
 import type { CliContext } from "../../cli/context.js";
+import { CliCancelledError } from "../../cli/cancellation.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
 import type { ServerConfiguration } from "../../config/server.js";
@@ -20,7 +21,14 @@ export type ConfirmedMutationOutput = {
   readonly failureText: (phase: "output" | "cleanup") => string;
   readonly containsSecret?: boolean;
 };
-export type ServerCommand = (session: ServerSession) => Promise<string | void | ConfirmedMutationOutput>;
+export type KnownSessionOperationOutput = {
+  readonly kind: "known-session-operation";
+  readonly output: string;
+  readonly exitCode: 0 | 1 | 3 | 130;
+  readonly diagnostic?: string;
+  readonly failureText: (phase: "output" | "cleanup") => string;
+};
+export type ServerCommand = (session: ServerSession) => Promise<string | void | ConfirmedMutationOutput | KnownSessionOperationOutput>;
 
 export type ServerCommandOptions = {
   readonly signalEmitter?: Pick<EventEmitter, "on" | "off">;
@@ -68,10 +76,12 @@ export const runServerCommand = async (
   let failed = false;
   let failure: unknown;
   let confirmed: ConfirmedMutationOutput | undefined;
+  let known: KnownSessionOperationOutput | undefined;
+  const knownFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(known!.failureText(phase), 1, { cause: protectSecretDiagnostic(cause) });
   const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(confirmed!.failureText(phase), 1, { cause: confirmed!.containsSecret === true ? protectSecretDiagnostic(cause) : cause });
   try {
     for (const signal of signals) {
-      const cancel = (): void => cancellation.abort(new Error(`Received ${signal}.`));
+      const cancel = (): void => cancellation.abort(new CliCancelledError(`Received ${signal}.`));
       emitter.on(signal, cancel);
       listeners.push([signal, cancel]);
     }
@@ -82,7 +92,12 @@ export const runServerCommand = async (
     operation.check();
     const api = createApiClient({ serverUrl, serverToken, operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
     const output = await command({ api, operation, serverUrl, serverConfiguration: { serverUrl, serverToken } });
-    if (typeof output === "object" && output.kind === "confirmed-mutation") {
+    if (typeof output === "object" && output.kind === "known-session-operation") {
+      known = output;
+      const receipt = createOperation({ limits: { totalMs: 5_000 } });
+      try { await context.stdoutBytes(Buffer.from(output.output, "utf8"), receipt.signal); }
+      finally { receipt.dispose(); }
+    } else if (typeof output === "object" && output.kind === "confirmed-mutation") {
       confirmed = output;
       const receipt = createOperation({ limits: { totalMs: 5_000 } });
       try { await context.stdoutBytes(Buffer.from(output.output, "utf8"), receipt.signal); }
@@ -93,7 +108,7 @@ export const runServerCommand = async (
     }
   } catch (cause) {
     failed = true;
-    failure = confirmed === undefined ? cause : confirmedFailure("output", cause);
+    failure = known !== undefined ? knownFailure("output", cause) : confirmed === undefined ? cause : confirmedFailure("output", cause);
     throw failure;
   } finally {
     const cleanup: unknown[] = [];
@@ -107,7 +122,8 @@ export const runServerCommand = async (
     catch (cause) { cleanup.push(cause); }
     if (cleanup.length !== 0) {
       const cause = new AggregateError(failed ? [failure, ...cleanup] : cleanup, "Server command or cancellation cleanup failed.");
-      throw confirmed === undefined ? cause : confirmedFailure("cleanup", cause);
+      throw known !== undefined ? knownFailure("cleanup", cause) : confirmed === undefined ? cause : confirmedFailure("cleanup", cause);
     }
   }
+  if (known !== undefined && known.exitCode !== 0) throw new PublicDiagnosticError(known.diagnostic ?? "Session operation has not been confirmed. Query the original operation.", known.exitCode, {});
 };

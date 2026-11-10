@@ -24,7 +24,5 @@ contracts and generic JSON helpers.
 ## Consequences
 
 The protocol packages do not depend on the Session engine, storage, service or
-HTTP layers. The move preserves protocol bytes and decoding rules. Session
-engine and archive operations remain with their current owners until their own
-reorganization; no compatibility packages or duplicate implementations are
-needed.
+HTTP layers. The move preserves protocol bytes and decoding rules. The Session engine and archive operations consume these contracts directly; no
+compatibility packages or duplicate protocol implementations are needed.

@@ -1,30 +1,74 @@
 # 助手管理页面
 
-[需求](../spec/bot-management-web.md)拥有可观察行为；[共享会话设计](bot-session-view.md)拥有 Bot Session 绑定和缓存。
+[需求](../spec/bot-management-web.md)拥有可观察行为；[共享会话设计](bot-session-view.md)拥有 Bot Session 绑定和缓存。页面以阅读和输入为主，列表、创建及详情围绕同一会话宿主组合。[呈现决策](../../.agents/notes/implemented/architecture/2026-11-05-assistant-management-presentation.md)记录布局选择和替代成本；[管理页面决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-management-web.md)保留读取与创建身份的理由。
+
+## 工作区与列表
+
+`AuthenticatedApp` 为 `/bots` 与 `/bots/{id}` 使用同一 `BotsPage` 组件位置，并添加助手专用外壳样式。`assistant-workspace.css` 取消该路由 `.content` 的最大宽度、居中 margin 和 padding；全局导航仍使用已有展开偏好、Team、账号入口和路由。页面复用 Session 外壳的动态视口高度约束，不另建导航或会话路由。
+
+`bots.css` 将 `.bots-page` 定义为命名 `bots-workspace` inline-size 容器。列表固定 256px（含边框），与对话之间没有额外 gap；工作区内容宽度低于 676px 时，只显示列表或当前选中的对话，等于 676px 时仍并列并为对话保留 420px。判断依据是扣除导航后的实际容器宽度。CSS 只改变既有面板可见性，不创建宽度状态、Session 宿主或新的目标绑定。单栏返回及关闭聊天都导航到 `/bots`，不停止或删除助手。
+
+工作区、对话列、SessionHost 和 pane 的 flex 高度链允许收缩。列表面板承载创建入口与搜索，长列表在自己的区域滚动；创建弹窗使用独立的可见视口约束，不占用列表高度。消息时间线继续拥有自己的滚动面，历史分页与阅读书签使用同一可见区域，输入不会因历史增长被推出页面。详情的滚动区与时间线独立。
+
+列表标题与创建按钮同行，名称搜索下是列表小标题、数量和刷新按钮。刷新用 busy/disabled 表达状态，读取失败保留实际错误。列表沿用服务返回顺序，行内只保留头像标记、名称及必要的启动或 Worker 异常状态；主机、路径和完整信息在详情中读取。零助手与搜索无匹配分别显示。行上的更多、右键和键盘菜单仍固定其自身 Bot 为删除目标。
 
 ## API 与准入
 
 `api/bots.ts` 消费服务端 `/api/v1/me/bots` 的 list、defaults、create、get、delete。读取要求响应 principal 与当前账号一致；定义再次核对 owner、Worker 配置和 Session 双身份。删除响应是仅含身份及删除责任的联合类型。版本与创建顺序保持十进制字符串，不经浮点数转换。
 
-创建只发送 `{id,name,overrides?}`。默认值选择、Provider 的 model/args 解析以及成功偏好保存均由服务端拥有。响应解析保留真实 pending/ready/failed；已 dispatch 的传输、解析或非明确拒绝错误转换为 `BotCreationUnknown`。接口不自动重试写入。
+创建只发送 `{id,name,overrides?}`。默认值选择、Provider 的 model/reasoningEffort/args 解析以及成功偏好保存均由服务端拥有。响应解析保留真实 pending/ready/failed；已 dispatch 的传输、解析或非明确拒绝错误转换为 `BotCreationUnknown`。接口不自动重试写入。
 
-## 创建状态
+## 名字优先弹窗与配置解析
 
-`BotCreateDialog` 以独立字段记录显式 Worker、目录和 Provider；显示默认值不改变这些记录。Worker 切换立即作废旧请求代际，再读取 defaults；取消与完成均不会写浏览器偏好。原生 `dialog.showModal()`、现有 body scroll lock 与焦点恢复负责模态交互。
+`BotCreateDialog` 以原生 `dialog.showModal()` 打开 `BotCreateForm`，取得计数式 body scroll lock。弹窗最大宽度 492px，不改变列表或 Session 的布局尺寸。名称自动聚焦；已保留未确认请求时聚焦核对按钮。默认界面保留名称、实际 Worker/Agent/默认或自定义摘要、折叠设置及提交区。摘要可通过键盘展开完整主机、路径、有效模型、effort 及其来源，长名称不依赖 hover 才能读取。
 
-页面在 dispatch 前将未确认请求交给 `pending-creation.ts`。同一账号 scope 的 WeakMap 跨组件卸载保留内存请求，`sessionStorage` 仅保存 Bot ID，不保存可重放的 POST 正文。新页面或重载后的弹窗只能按该 ID GET；确认结果后清除记录，404 和读取失败仍保留。scope abort 清除对应记录和可访问的存储。无法访问存储时保留同文档内存，不能承诺跨重载恢复。
+首次 defaults 未完成时保留名称编辑，暂不允许创建；后续读取保留已有展示与草稿，不插入后台检查状态行。错误显示实际原因和重试入口，重试不重建表单。`creating` 绑定账号 scope 与打开时的助手选择，目标导航使弹窗收起，迟到完成不能把新选择导航回旧结果。语言、同目标后台检查和布局变化不重建表单。
+
+`BotCreateForm` 分开记录 Worker、cwd、Provider、model 和 reasoningEffort 的显式覆盖。名字创建只发 `{id,name}`；查看默认、展开设置和取消菜单不会把预览写入请求。`getBotDefaults` 接收当前覆盖并重新解析有效配置，来源读取 `configuration.selection`，保留 explicit/preference/local/cloud/native/unknown 的区别；没有历史来源的旧记录不伪造来源。使用默认删除对应覆盖，恢复全部默认同时解除显式 Worker。
+
+确认目录或明确选择 Agent、Model、effort 时，将当前解析到的 Worker 固定为显式目标。切换 Worker 清除旧机器的 cwd、Provider、model 和 effort；切换 Provider 保留目录，清除 model 和 effort；切换 model 清除表单 effort，再读取该模型的权威默认。Worker 当前明确 effort 的兼容性由服务端解析与真实能力校验，不能通过 UI 丢弃该配置来绕过错误。显式 Worker 不可用时保留错误，不自动换机。
+
+`useBotCreationModels` 在设置展开后通过 `discoverWorkerModels` 读取目标 Worker、Provider、cwd 和模型的原生能力，使用 `includeHidden:true` 在同一次有界分页查询中取得隐藏默认模型的能力。它按相同连接及能力代次收齐分页，并核对 configurationGeneration、catalogGeneration、目录、Provider、重复模型和游标，再发布完整目录。表单用完整目录匹配模型与别名，模型菜单只显示非隐藏项；已明确选择的模型后来变为隐藏时保留该值以便恢复默认。
+
+有效模型依次取表单明确值、服务端 Bot defaults 已解析值；仅当服务端以 native/null 委托原生时，才使用无 selectionError 的同目标目录默认模型。effort 摘要同样只补充 native/null，且目录默认模型必须匹配有效模型或其别名，避免把其它模型的默认强度带入。成功偏好和本地/云端明确值仍由 Bot defaults 拥有，未知或失败目录不伪造默认。目录观察只影响摘要与可选能力，始终独立于显式状态；因此仅选 effort 的请求固定 Worker，但不带 model，查看默认仍保持名字请求。没有已确认的模型或 effort 列表时不生成静态选项，失败保留重试入口；提交保留用户明确选择的标识。请求取消和表单代次隔离迟到响应。
+
+## 同一弹窗中的目录浏览
+
+`BotDirectoryBrowser` 接收打开时的 Worker、当前目录与已解析默认目录，在同一个 dialog 内切换视图，父表单保留名字和覆盖状态。`browseWorkerDirectory` 只查询目标 Worker 的目录；路径、父目录和子项路径均使用响应中的规范化值，不在浏览器拼接 HOME 或解释远端平台。默认目录按钮只导航，只有“选择此目录”才写回并固定 Worker。取消、Escape 和浏览页关闭按钮均返回原表单，焦点恢复到 Browse。
+
+目录视图提供当前层已加载条目的本地筛选、隐藏目录开关和显式加载更多。后续页固定连接及能力代次，校验同一路径、父目录、重复条目和游标；条目总数有界。改变路径或隐藏项后重新读第一页。尚未确认的路径编辑、读取中、错误和身份暂停均不能确认目录。旧 Worker 不支持、离线、权限、路径不存在及超时保留各自错误，不冒充空目录；取消或换目标中止原请求，账号 scope 继续约束结果准入。
+
+浏览不读取文件内容、不创建目录、不启动助手。浏览成功只证明这次目录观察，首次启动仍由 Worker 校验实际路径。取消浏览不产生覆盖，原表单仍可使用默认或手动输入绝对路径。
+
+## 焦点、视口与未确认请求
+
+创建弹窗以 `visualViewport.height/offsetTop` 更新高度和纵向位置，缺失时使用窗口尺寸；监听 resize 和 scroll。标题与操作区不收缩，中间内容独立滚动；窄屏左右保留 12px，Model/effort 从双列变为单列。窄屏或粗指针下输入字号至少 16px、主要交互目标至少 44px。可见视口约束用于保持操作可达，不能代替实体手机软键盘验收。
+
+原生模态隔离背景并约束焦点。Escape 由当前子视图处理：目录页先返回表单，表单取消后回到仍连接的创建入口；输入法组合不触发提交或关闭，提交期间禁用取消与重复请求。关闭创建不更换 Bot 绑定，不卸载 SessionHost，不清除会话草稿、阅读位置或执行状态。
+
+页面在 dispatch 前将未确认请求交给 `pending-creation.ts`。同一账号 scope 的 WeakMap 跨组件卸载保留内存请求，`sessionStorage` 仅保存 Bot ID，不保存可重放的 POST 正文。关闭后重新打开、返回页面或重载后的表单只能按该 ID GET；确认结果后清除记录，404 和读取失败仍保留。scope abort 清除对应记录和可访问的存储。无法访问存储时保留同文档内存并显示 ID，不能承诺跨重载恢复。弹窗和浏览视图切换不把结果未知转换为可重新 POST 的明确失败。
+
+布局取舍与原内联方案的关系见[创建弹窗决策](../../.agents/notes/implemented/architecture/2026-11-07-assistant-creation-dialog.md)。
 
 ## 读取与展示
 
-`useBotRead` 为列表、defaults 和选中详情分别管理请求。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。暂停与实际失败分开：普通后台检查保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale；切换资源不显示前一个资源的值。首次加载、显式刷新和实际错误各自保留原有语义。
+`useBotRead` 分别管理列表和 defaults。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。临时身份检查保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale。
 
-列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，因此 Worker 观测失败不会清空助手列表。`ready` 仅显示已启动，当前同步和输入可用性继续由 Session View 解释。服务端 defaults 的 Worker 状态不替代 Session 同步事实。
+选中详情由既有 `useBotDetail` / `BotDetailCache` 管理，按账号 scope、选择对象和请求代次隔离。页面传实际三席 pane 的 Bot ID 集合；新选择可读取自己的缓存详情与 `displayBinding`，但上次选择的确认不能成为本次 `actionBinding`。普通五秒轮询开始保留确认，真实网络、协议或服务错误撤确认，取消不产生成功或失败。`confirmed` 与 actionBinding 使用同一当前确认规则；无 Session 的启动详情仍可得到确认，不把空 binding 误解释成持续加载。
 
-`BotsPage` 在选中项之上创建一次缓存，`/bots` 与 `/bots/{id}` 使用同一个组件位置。SessionHost 始终挂载；未知绑定传 null，已缓存的 pane 隐藏，只有当前目标同 scope 的已确认详情提供真实绑定。临时准入暂停不会使已确认绑定消失，Host 的 active 表示实际选中和展示；Session client 自行暂停请求、发送及结果发布。关闭聊天只导航回列表。删除或权威拒绝访问调用 `cache.invalidateBot`；普通读取失败撤下输入但不销毁可恢复状态。
+列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，Worker 观测失败不会清空助手列表。当前可信列表名称可在冷详情等待时提供标题，不带入上一助手状态。`ready` 仅显示已启动，当前同步和输入可用性继续由 Session View 解释。服务端 defaults 不替代 Session 同步事实。
 
-路由进入既有身份检查与页面标题流程，保留原生链接修改键行为。全局侧栏提供助手入口，并按助手路由显示选中状态；导航不替换本页身份或会话缓存模型。
+`BotsPage` 在选中项之上创建一次 cache，`/bots` 与 `/bots/{id}` 使用同一个组件位置。Host 始终挂载，展示不受详情 stale 隐藏；它接收当前目标独立的显示与操作绑定，原 DOM、草稿和阅读先恢复，远端提交待当前完整身份确认。临时失败保留可读内容并显示局部错误和重试，权威拒绝访问及删除撤下失效内容。具体准入和原回执继续的责任见[Session 设计](bot-session-view.md#绑定和消费接口)。
 
-助手路由复用既有 Session 页面按动态视口约束的应用外壳。助手工作区使用命名 `inline-size` 容器和 flex 分栏，以内容实际宽度选择布局。列表占 280px，间距 24px，会话至少保留 420px；容器宽度低于 724px 时，只展示列表或选中的对话。容器条件仅控制既有子面板的 CSS 可见性，不引入宽度状态、额外路由或 Session 宿主。侧栏、窗口和浏览器缩放改变可用宽度时使用同一规则。工作区、对话列与 SessionHost 的高度链允许收缩；列表和时间线各自滚动，输入框留在可用视口内。时间线的实际滚动面继续由共享 Session View 拥有，确保历史分页触发与缓存阅读位置使用同一滚动坐标。
+路由进入既有身份检查与导航草稿准入，不创建另一份 route state，保留原生链接修改键行为。已采纳导航同步冻结旧 client，提交后的布局 effect 选择当前目标；同 URL 或取消导航维持原选择。关闭聊天只导航回列表。搜索、详情展开与布局尺寸不参与缓存身份；完整绑定仍由 owner、Bot、Session 和执行 ID 共同确定，隐藏 pane 保持 hidden/inert，删除与失效由原协调机制处理。
+
+## 统一标题与状态来源
+
+`BotsPage` 用 `BotConversationTarget` 向标题和详情传递同一次已准入的 Bot 读取、匹配的 Worker 观测、stale 标记、详情展开状态与触发 ref。有绑定时，`BotSessionHost` 将 `variant: 'assistant'` 和 `renderHeader` 透传给原 `SessionView`，`BotConversationHeader` 在共享标题元素内组合当前 Provider、会话活动、显示、专注和刷新控件；无绑定时才渲染页面的后备标题。详情使用独立按钮，更多 popover 容纳共享刷新与关闭聊天链接。显示和专注控件仍由共享 Session 创建和控制，不复制其状态机。
+
+自定义标题只替换标题内容。共享视图继续渲染连接错误、启动与恢复原因、历史、审批、命令回执及输入能力；Bot 的 ready 不证明 Session 已连接或可发送。当前 Session 的连接与活动采用共享状态，未绑定时显示 Bot 启动及 Worker 观测；详情分别呈现 Bot 启动、Worker 可用性和 Session 状态。defaults 读取失败不得延用“可用”判断，临时身份核对则保留已确认展示并暂停业务准入。
+
+`.bot-conversation` 是标题的 inline-size 查询容器。名称默认 17px 单行省略，完整名称从详情读取。可用宽度不超过 600px 时，名称为 15px，返回、名称和操作形成三列，状态独占下一行，关键按钮为 44px；不超过 300px 时再允许操作换行。名称区域可收缩，控件保留自身空间，状态原因允许断行。这些规则不参与 Session 或详情模式选择，标题也不依赖主机名撑开宽度。
 
 ## 删除协调
 
@@ -38,20 +82,24 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)。
 
-## 详情与全屏边界
+## 详情、焦点与全屏边界
 
-`.bot-conversation` 建立具名 inline-size 查询容器，标题在其可用宽度不超过 420px 时改为纵向布局：关闭链接在前，名称和状态区占满后一行。查询对话列而非窗口，使桌面分栏内的窄标题和全屏后的宽标题采用各自实际空间。标题信息区和名称文字允许收缩与任意位置断行，展开标记保持自身宽度；状态子项同样可收缩和断行。保留 19px 标题字体和自然内容高度，避免用截断丢失名称、主机或错误原因。该 CSS 布局不增加宽度状态、不写入业务数据，也不参与 Session 或详情模式的选择。取舍见[窄标题布局决策](../../.agents/notes/implemented/bug-fix/2026-11-05-bot-narrow-heading.md)。
+`BotsPage` 拥有局部 `detailsOpen` 和当前详情按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板在 `.bot-conversation-body` 中与 `.bot-conversation-content` 并列，接收当前 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离立即撤下旧目标值；面板可保留展开意图并显示局部加载，随后与标题及绑定接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时准入暂停保留已确认展示。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。
 
-`BotsPage` 拥有局部 `detailsOpen` 状态和名称按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板是会话内容的兄弟节点，`BotDetailsPanel` 接收当前详情读取所得的 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离会立即清空旧值；面板可以保持挂载并显示加载，随后与标题及绑定一起接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时读取准入暂停保留展开状态和已确认内容。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。
+详情显示完整名称、Bot 启动阶段、独立 Worker 观测、主机名称或 Worker ID，以及冻结的 cwd 和 Agent；defaults 变化不改写冻结启动配置。Session 信息从现有 cache 中按完整绑定找到 pane，订阅其 client，并再次核对 snapshot 的 owner、Session 和执行 ID。无匹配时显示不可用，不借用上一目标信息。共享状态选择器解释连接、启动与恢复；模型和权限来自 `controls.settings` 的确认值，setting intent 与 operation 另行表达 pending、等待或结果未知，保留设置错误和 next-turn 范围说明。详情不发起第二个 Session client，也不将尚未确认的选择当成已生效。
 
-名称、Worker、cwd 和 Agent 来自已解析的 Bot 定义。`BotStatus` 复用列表与标题的启动结果及观测解释，详情状态不以 Worker 名称替代可用性说明；冻结启动配置不受后来 defaults 变化影响。读取失败与不可用保持原有状态，不将持久 ready 转换为当前 Session 同步事实。
+非模态详情须同时满足 `window.innerWidth >= 1280` 和稳定 `.bot-conversation-body` 内容宽度 `>= 760px`。ResizeObserver 与窗口 resize 读取父容器 clientWidth 并扣除 padding；不测量已经被详情压缩的内容列，也不随开关减去 340px，避免模式振荡。条件满足时，同一 `dialog` 以非模态 open 和 complementary 语义参加 flex，340px 宽度含边框，剩余会话至少 420px；任一不足时通过 `showModal()` 进入 top layer。
 
-面板使用同一个 `dialog` 元素：宽屏以非模态 `open` 和 complementary 语义参加横向 flex 布局，窄屏通过 `showModal()` 进入浏览器 top layer。窗口宽度 1000px 是两种布局的分界。断点变化先关闭原模式再打开新模式；只有抽屉取得既有计数式 body scroll lock。打开后聚焦关闭按钮，清理时仅向仍连接且未隐藏或 inert 的当前名称按钮恢复焦点。原生模态负责背景 inert；抽屉只在 Tab 到达首尾时循环本面板控件，避免单个关闭按钮后的焦点离开网页。
+首次打开聚焦关闭按钮。跨断点先关闭原模式，再打开新模式；仍有效的面板焦点保持，转为非模态时也可保留已聚焦的会话控件，转为模态则只保留面板内焦点。关闭后回到仍连接、未禁用且不在 hidden/inert 区域的当前详情按钮。抽屉取得计数式 body scroll lock，原生模态隔离背景，本地 Tab 首尾循环且阻止向外层全屏传播。非模态模式允许同时操作会话；对话区域的 Escape 也先关闭展开的详情。
+
+抽屉宽高与偏移跟随 `visualViewport`，缺失时使用窗口尺寸。标题和底部删除入口不收缩，中间内容独立滚动；短视口缩减纵向 padding，长名称、主机、路径和原因允许断行。详情删除入口与列表复用 `BotDeleteDialog` 和原删除协调器，目标固定于打开确认时。存在选中对话时，确认层通过 portal 留在同一全屏边界；确认层先消费 Escape/Tab，`modalBlocked` 暂停底层详情模式切换和键盘关闭，避免一次按键关闭两层或在确认期间重排模态层。
 
 `BotSessionHost` 将可选 `fullscreenBoundary` ref 透传给 `SessionView` 和 `useSessionFullscreen`。助手提供稳定的 `.bot-conversation` 祖先，包含名称、会话内容和详情；hook 校验该边界确实包含原 Session section，并将注册、背景隔离、焦点范围、视口变量及 `data-session-fullscreen` 状态应用于它。原 section 保持挂载且不重复使用固定全屏定位。未提供边界的 Task/Test 调用方仍以原 Session section 为根。
 
 外层边界模式在 document 冒泡阶段处理键盘，晚于 React 内层控件。详情先消费自己的 Escape；窄屏 Tab 在抽屉首尾循环后停止向外传播。这样关闭详情不退出全屏，也不让外层 Tab 处理器选择原生模态之外的控件。外层模式的焦点观察允许详情内部焦点，因为 dialog 是同一边界的后代。退出或卸载恢复本层持有的属性、样式与 inert 所有权，不改写其他模态拥有者。
 
-详情和全屏改变尺寸时，仍由既有时间线观察器保持文字阅读锚点与跟随意图，不缓存或重放原始 scrollTop。边界选择与取舍见[详情面板决策](../../.agents/notes/implemented/feature/2026-11-05-bot-details-panel.md)。
+详情开关通过当前 pane 的 Timeline handle 捕获、恢复文字书签；详情模式切换也在同一 pane/handle 上恢复。全屏边界属性变化触发已有 handle 的书签恢复，防止宽度变化先钳制 scrollTop 后被误当成用户阅读意图。时间线仍拥有锚点与跟随状态，不用原始 scrollTop 重放代替文字书签；Session DOM、client 和草稿不因详情或全屏重新创建。
 
-取舍见[管理页面决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-management-web.md)。
+## 验证边界
+
+管理页规格定义容器临界值、长内容、短视口和焦点矩阵。API 与组件测试验证默认覆盖、Worker 绑定和级联重置、目录/模型分页与迟到响应、未知结果、当前身份、缓存、标题组合和模态协同；浏览器测试才能验证真实几何、原生 dialog、滚动与 DOM 身份。原型只用于设计交互核对，受控 API 或 Session 测试只证明 Web 消费行为，不证明真实 Worker、Provider、偏好持久化或真机软键盘。共享阅读、输入和图片能力的设计由各自所有者说明，不从标题及详情改造推断其已交付。

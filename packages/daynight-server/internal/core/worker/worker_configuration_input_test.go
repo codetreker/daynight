@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -16,7 +17,7 @@ const configurationInputProjectB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 func configurationInputDocument() map[string]any {
 	return map[string]any{
-		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3,
+		"maxConcurrent": 1, "pollIntervalMs": 60000, "recoveryLimit": 3, "preferPlatformSpecificTasks": false,
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []any{}},
 		"projects": []any{},
 	}
@@ -33,9 +34,10 @@ func configurationInputJSON(t *testing.T, value any) json.RawMessage {
 
 func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *testing.T) {
 	document := configurationInputDocument()
-	document["maxConcurrent"] = int64(9007199254740991)
-	document["pollIntervalMs"] = int64(2147483647)
+	document["maxConcurrent"] = int64(64)
+	document["pollIntervalMs"] = int64(60000)
 	document["recoveryLimit"] = int64(0)
+	document["preferPlatformSpecificTasks"] = true
 	document["native"] = map[string]any{"agent": "copilot", "model": "provider/model", "args": []any{"--flag", "a b"}}
 	document["projects"] = []any{
 		map[string]any{"projectId": strings.ToUpper(configurationInputProjectB), "nativeOverrides": map[string]any{"agent": "claude", "model": nil, "args": []any{}}},
@@ -45,7 +47,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaxConcurrent != 9007199254740991 || value.PollIntervalMs != 2147483647 || value.RecoveryLimit != 0 || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
+	if value.MaxConcurrent != 64 || value.PollIntervalMs != 60000 || value.RecoveryLimit != 0 || !value.PreferPlatformSpecificTasks || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
 		t.Fatalf("invalid parsed settings: %+v", value)
 	}
 	if len(value.Projects) != 2 || value.Projects[0].ProjectID != configurationInputProjectA || value.Projects[1].ProjectID != configurationInputProjectB || len(value.Projects[0].NativeOverrides) != 0 {
@@ -59,7 +61,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 		document := configurationInputDocument()
 		document["native"].(map[string]any)["agent"] = agent
 		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
-		if err != nil || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
+		if err != nil || parsed.PreferPlatformSpecificTasks || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
 			t.Fatalf("explicit empty settings rejected: %+v %v", parsed, err)
 		}
 	}
@@ -67,6 +69,10 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 
 func TestWorkerConfigurationInputRejectsMalformedConfiguration(t *testing.T) {
 	cases := map[string]func(map[string]any){
+		"preference missing":    func(v map[string]any) { delete(v, "preferPlatformSpecificTasks") },
+		"preference null":       func(v map[string]any) { v["preferPlatformSpecificTasks"] = nil },
+		"preference number":     func(v map[string]any) { v["preferPlatformSpecificTasks"] = 1 },
+		"preference string":     func(v map[string]any) { v["preferPlatformSpecificTasks"] = "false" },
 		"missing scalar":        func(v map[string]any) { delete(v, "maxConcurrent") },
 		"unknown field":         func(v map[string]any) { v["repositoryRoot"] = "/private" },
 		"max zero":              func(v map[string]any) { v["maxConcurrent"] = 0 },
@@ -171,7 +177,7 @@ func configurationInputExchange(item map[string]any) map[string]any {
 func TestWorkerConfigurationInputParsesCompleteApplicationOutcomes(t *testing.T) {
 	native := map[string]any{"agent": "claude", "model": nil, "args": []any{}}
 	items := []any{
-		configurationInputItem("maxConcurrent", 3), configurationInputItem("pollIntervalMs", 1), configurationInputItem("recoveryLimit", 0),
+		configurationInputItem("maxConcurrent", 3), configurationInputItem("pollIntervalMs", 1000), configurationInputItem("recoveryLimit", 0),
 		configurationInputItem("native", native), configurationInputItem("projectPreparation", true), configurationInputItem("projectRemoval", true), configurationInputItem("projectNative", native),
 	}
 	failure := configurationInputItem("projectPreparation", nil)
@@ -210,6 +216,23 @@ func TestWorkerConfigurationInputParsesCompleteApplicationOutcomes(t *testing.T)
 		if err != nil || parsed == nil {
 			t.Fatalf("empty exchange: %+v %v", parsed, err)
 		}
+	}
+}
+
+func TestWorkerConfigurationPreferenceApplicationAcceptsBothBooleanValues(t *testing.T) {
+	for _, value := range []any{false, true, nil} {
+		item := configurationInputItem("preferPlatformSpecificTasks", value)
+		if value == nil {
+			item["state"] = "pending"
+		}
+		parsed, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item)))
+		if err != nil || !reflect.DeepEqual(parsed.Observation.Items[0].AppliedValue, configurationInputJSON(t, value)) {
+			t.Fatalf("preference application %v was not preserved: %+v %v", value, parsed, err)
+		}
+	}
+	for _, value := range []any{1, "false", []any{}, map[string]any{}} {
+		_, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(configurationInputItem("preferPlatformSpecificTasks", value))))
+		requireFault(t, err, "invalid_input")
 	}
 }
 
@@ -373,4 +396,135 @@ func TestWorkerConfigurationInputUnicodeBoundaries(t *testing.T) {
 			t.Fatalf("valid Unicode observation %s: %+v %v", test.raw, parsedExchange, err)
 		}
 	}
+}
+
+func configurationCapacityValue() model.WorkerConfiguration {
+	return model.WorkerConfiguration{MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
+		Projects: []model.WorkerProjectConfiguration{}}
+}
+
+func configurationCapacityDocument() map[string]any {
+	return map[string]any{
+		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false,
+		"native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{},
+	}
+}
+
+func configurationCapacityText(size int) string {
+	return strings.Repeat("界", size/3) + strings.Repeat("x", size%3)
+}
+
+func configurationCapacityProjectID(index int) string {
+	return fmt.Sprintf("%08x-0000-4000-8000-000000000001", index+1)
+}
+
+type configurationCapacityCase struct {
+	name           string
+	valid, invalid any
+	setDocument    func(map[string]any, any)
+	setValue       func(*model.WorkerConfiguration)
+	changed        bool
+}
+
+func configurationCapacityCases() []configurationCapacityCase {
+	args := make([]any, 129)
+	for i := range args {
+		args[i] = "x"
+	}
+	projects := make([]any, 129)
+	for i := range projects {
+		projects[i] = map[string]any{"projectId": configurationCapacityProjectID(i), "nativeOverrides": map[string]any{}}
+	}
+	return []configurationCapacityCase{
+		{"maxConcurrent", 64, 65,
+			func(v map[string]any, x any) { v["maxConcurrent"] = x },
+			func(v *model.WorkerConfiguration) { v.MaxConcurrent = 64 }, true},
+		{"pollIntervalMs", 60000, 60001,
+			func(v map[string]any, x any) { v["pollIntervalMs"] = x },
+			func(v *model.WorkerConfiguration) { v.PollIntervalMs = 60000 }, false},
+		{"recoveryLimit", 10, 11,
+			func(v map[string]any, x any) { v["recoveryLimit"] = x },
+			func(v *model.WorkerConfiguration) { v.RecoveryLimit = 10 }, true},
+		{"native.model", configurationCapacityText(256), configurationCapacityText(256) + "x",
+			func(v map[string]any, x any) { v["native"].(map[string]any)["model"] = x },
+			func(v *model.WorkerConfiguration) { text := configurationCapacityText(256); v.Native.Model = &text }, true},
+		{"native.arg", []any{configurationCapacityText(4096)}, []any{configurationCapacityText(4096) + "x"},
+			func(v map[string]any, x any) { v["native"].(map[string]any)["args"] = x },
+			func(v *model.WorkerConfiguration) { v.Native.Args = []string{configurationCapacityText(4096)} }, true},
+		{"native.args", args[:128], args,
+			func(v map[string]any, x any) { v["native"].(map[string]any)["args"] = x },
+			func(v *model.WorkerConfiguration) {
+				v.Native.Args = make([]string, 128)
+				for i := range v.Native.Args {
+					v.Native.Args[i] = "x"
+				}
+			}, true},
+		{"desired.projects", projects[:128], projects,
+			func(v map[string]any, x any) { v["projects"] = x },
+			func(v *model.WorkerConfiguration) {
+				v.Projects = make([]model.WorkerProjectConfiguration, 128)
+				for i := range v.Projects {
+					v.Projects[i] = model.WorkerProjectConfiguration{ProjectID: configurationCapacityProjectID(i), NativeOverrides: map[string]json.RawMessage{}}
+				}
+			}, false},
+	}
+}
+
+func configurationCapacityObservationProjectID(index int) string {
+	// Adjacent IDs are swapped so unintended sorting changes this reproducible input.
+	return configurationCapacityProjectID(index ^ 1)
+}
+
+func configurationCapacityObservationDocument(count int, base string) map[string]any {
+	items := make([]any, count)
+	for i := range items {
+		items[i] = map[string]any{
+			"key":            map[string]any{"kind": "projectPreparation", "projectId": configurationCapacityObservationProjectID(i)},
+			"targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil,
+		}
+	}
+	return map[string]any{"baseRevision": base, "desiredRevision": "1", "items": items}
+}
+
+func configurationCapacityObservation(count int, base string) model.WorkerConfigurationObservation {
+	items := make([]model.WorkerConfigurationItem, count)
+	for i := range items {
+		items[i] = model.WorkerConfigurationItem{
+			Key:            model.WorkerConfigurationItemKey{Kind: "projectPreparation", ProjectID: configurationCapacityObservationProjectID(i)},
+			TargetRevision: "1", AppliedValue: json.RawMessage("null"), State: "pending",
+		}
+	}
+	return model.WorkerConfigurationObservation{BaseRevision: base, DesiredRevision: "1", Items: items}
+}
+
+func TestWorkerConfigurationCapacityInput(t *testing.T) {
+	for _, tc := range configurationCapacityCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			document := configurationCapacityDocument()
+			tc.setDocument(document, tc.valid)
+			got, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
+			want := configurationCapacityValue()
+			tc.setValue(&want)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("normal capacity input differs: got %+v, want %+v: %v", got, want, err)
+			}
+			document = configurationCapacityDocument()
+			tc.setDocument(document, tc.invalid)
+			_, err = ParseWorkerConfiguration(configurationInputJSON(t, document))
+			requireFault(t, err, "invalid_input")
+		})
+	}
+	t.Run("observation.items", func(t *testing.T) {
+		document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(MaxObservationItems, "0")}
+		got, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, document))
+		observation := configurationCapacityObservation(MaxObservationItems, "0")
+		want := &model.WorkerConfigurationExchange{Observation: &observation}
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("maximum observation differs: got %+v, want %+v: %v", got, want, err)
+		}
+		document["observation"] = configurationCapacityObservationDocument(MaxObservationItems+1, "1")
+		_, err = ParseWorkerConfigurationExchange(configurationInputJSON(t, document))
+		requireFault(t, err, "invalid_input")
+	})
 }

@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { getTask, getTaskSync } from '../src/api/client';
@@ -8,10 +8,8 @@ import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { installGraphMeasurements } from './graph-measurements';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
-vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskSync: vi.fn(),
-  listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
-}));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(),
+  listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })), }; });
 
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 
@@ -22,12 +20,12 @@ const projectId = '10000000-0000-0000-0000-000000000001';
 const [A, B, C, X] = [1, 2, 3, 4].map((value) => `20000000-0000-0000-0000-${String(value).padStart(12, '0')}`) as [string, string, string, string];
 const node = (id: string, titlePreview: string, dependsOn: readonly string[]): GraphTask => ({ assignedTo: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, externalDependsOn: [], blockedBy: dependsOn,
-  ready: dependsOn.length === 0, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
+  ready: dependsOn.length === 0, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
 const graph = (tasks: readonly GraphTask[]): TaskGraph => ({
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Task repartition', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
   observedAt: time, tasks,
-  summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0,
+  summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0,
     ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => !task.ready).length },
 });
 let root: HTMLDivElement;
@@ -36,7 +34,7 @@ let overflow: string;
 const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 beforeEach(() => {
   syncFixture.reset();
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(syncFixture.toSync(await graphRequest(projectId, signal), query)));
 });
 
 beforeEach(() => {

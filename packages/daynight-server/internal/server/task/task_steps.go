@@ -8,28 +8,36 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type taskStepsHandler struct {
-	steps  *taskservice.TaskSteps
-	logger *slog.Logger
+	steps           StepService
+	logger          *slog.Logger
+	bodyReadTimeout time.Duration
 }
 
-func TaskStepsRoutes(mux *http.ServeMux, steps *taskservice.TaskSteps, auth *authhttp.Authentication, logger *slog.Logger) {
-	handler := &taskStepsHandler{steps: steps, logger: logger}
+func newTaskStepsHandler(steps StepService, logger *slog.Logger) *taskStepsHandler {
+	return &taskStepsHandler{steps: steps, logger: logger, bodyReadTimeout: transport.JSONBodyReadTimeout}
+}
+
+func (h *taskStepsHandler) decodeObject(w http.ResponseWriter, request *http.Request, allowed ...string) (map[string]json.RawMessage, error) {
+	return httpx.DecodeObjectLimitWithTimeout(w, request, httpx.MaxJSONBody, h.bodyReadTimeout, allowed...)
+}
+
+func TaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
+	handler := newTaskStepsHandler(steps, logger)
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/steps"
 	mux.HandleFunc("POST "+path, auth.Require(handler.add))
 	mux.HandleFunc("GET "+path, auth.Require(handler.get))
@@ -121,13 +129,13 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
-	if request.Context().Err() != nil {
-		refuse(request.Context().Err())
-		return
-	}
+	fields, err := h.decodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
 	if err != nil {
 		refuse(err)
+		return
+	}
+	if request.Context().Err() != nil {
+		refuse(request.Context().Err())
 		return
 	}
 	input, err := addStepInput(fields)
@@ -251,6 +259,11 @@ func stepsErrorResponse(err error) (int, api.Error) {
 }
 
 func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, phase string, err error) {
+	if _, ok := err.(*httpx.BodyReadError); ok {
+		httpx.WriteBodyError(w, request, logger, "task_step", phase, err)
+		return
+	}
+	httpx.CloseUnreadBody(w, request)
 	status, response := stepsErrorResponse(err)
 	cause := httpx.ErrorKind(err)
 	if response.Code == "internal_error" {
@@ -258,10 +271,9 @@ func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.
 			cause = "internal"
 		}
 	}
-	sqlstate := ""
-	var databaseError *pgconn.PgError
-	if errors.As(err, &databaseError) && validSQLState(databaseError.Code) {
-		sqlstate = databaseError.Code
+	_, sqlstate := store.DatabaseErrorFacts(err)
+	if !validSQLState(sqlstate) {
+		sqlstate = ""
 	}
 	logger.ErrorContext(request.Context(), "task steps operation failed", "type", "operation_error", "component", "task_step", "phase", phase, "cause", cause, "error_code", response.Code, "diagnostic", stepsDiagnostic(response.Code), "sqlstate", sqlstate, "request_id", httpx.RequestID(request.Context()))
 	response.RequestID = httpx.RequestID(request.Context())

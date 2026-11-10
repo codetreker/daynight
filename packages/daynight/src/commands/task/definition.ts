@@ -1,4 +1,16 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
+import { taskStatuses } from "../../task/status.js";
+import type { TaskSessionCommandModule } from "./session/registry.js";
+import { taskSessionReadModule } from "./session/read-definition.js";
+import { sessionSendDefinitions } from "./session/send-definition.js";
+
+// Session modules register metadata here and load their handlers only on dispatch.
+export const taskSessionModules: readonly TaskSessionCommandModule[] = [taskSessionReadModule, { definitions: sessionSendDefinitions, load: () => import("./session/send.js") }];
+const sessionDefinitions = taskSessionModules.flatMap(module => module.definitions);
+export const taskSessionDefinitions: readonly CommandDefinition[] = sessionDefinitions.length === 0 ? [] : [{
+  name: "session", description: "Inspect and interact with a specific Task Session", commands: sessionDefinitions,
+  options: [{ names: ["-h", "--help"], description: "Show this help", action: "help" }],
+}];
 
 const helpOption: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
 const projectOption: CommandOption = { names: ["--project"], description: "Use this project UUID for this invocation", value: { name: "project-id", kind: "text" } };
@@ -8,10 +20,10 @@ const titleOption: CommandOption = { names: ["--title"], description: "Task titl
 const descriptionOption: CommandOption = { names: ["--description"], description: "Task description; an empty value clears it", value: { name: "description", kind: "text", allowEmpty: true } };
 const dependencyOption: CommandOption = { names: ["--depends-on"], description: "Ordinary prerequisite UUID; repeat for the complete ordinary set", value: { name: "task-id", kind: "text" }, repeatable: true };
 const externalDependencyOption: CommandOption = { names: ["--external-depends-on"], description: "External prerequisite UUID; repeat for the complete external set", value: { name: "task-id", kind: "text" }, repeatable: true };
-const dependencyDetails = "Supplying either dependency option replaces every dependency and its classification. --depends-on supplies ordinary prerequisites; --external-depends-on supplies external prerequisites. External-only input keeps only those external prerequisites; ordinary-only input makes every supplied prerequisite ordinary. IDs must be valid UUIDs and occur once across both options. Both kinds block execution until completed.";
+const dependencyDetails = "Supplying either dependency option replaces every dependency and its classification. --depends-on supplies ordinary prerequisites; --external-depends-on supplies external prerequisites. External-only input keeps only those external prerequisites; ordinary-only input makes every supplied prerequisite ordinary. IDs must be valid UUIDs and occur once across both options. Both kinds block execution until done or cancelled.";
 const assignedToOption: CommandOption = { names: ["--assigned-to"], description: "Task assignee UUID", value: { name: "user-id", kind: "text" } };
 const assignedToFilterOption: CommandOption = { names: ["--assigned-to"], description: "Include tasks assigned to this user, me, or unassigned", value: { name: "user-id|me|unassigned", kind: "text" } };
-const statusOption: CommandOption = { names: ["--status"], description: "Task status", value: { name: "status", kind: "text", choices: ["todo", "in_progress", "done"] } };
+const statusOption: CommandOption = { names: ["--status"], description: "Task status", value: { name: "status", kind: "text", choices: taskStatuses } };
 const allowAgentsOption: CommandOption = { names: ["--allow-agents"], description: "Automatic-execution permission", value: { name: "true|false", kind: "text", choices: ["true", "false"] } };
 const platformChoices = ["windows", "linux", "macos"] as const;
 const requiredPlatformOption: CommandOption = { names: ["--required-platform"], description: "Required execution platform", value: { name: "platform", kind: "text", choices: platformChoices } };
@@ -24,6 +36,7 @@ export const taskDefinition: CommandDefinition = {
   name: "task",
   description: "Create, query, update, and delete project tasks on the configured server",
   commands: [
+    ...taskSessionDefinitions,
     {
       name: "create",
       description: "Create a todo task with optional dependencies",
@@ -33,8 +46,22 @@ export const taskDefinition: CommandDefinition = {
     {
       name: "list",
       description: "List unfinished tasks, with in-progress and ready tasks first",
-      options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, listJsonOption, helpOption],
-      details: "By default, exclude done tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and done tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
+      options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption,
+        { names: ["--group-by"], description: "Return one page of ordinary chains and independent tasks", value: { name: "chain", kind: "text", choices: ["chain"] } },
+        { names: ["--limit"], description: "Groups per page, 1–50 (default: 20); requires --group-by chain", value: { name: "count", kind: "text" } },
+        { names: ["--cursor"], description: "Continue a group page; requires --group-by chain", value: { name: "cursor", kind: "text" } },
+        { names: ["--group-id"], description: "Group UUID for a target continuation", value: { name: "group-id", kind: "text" } },
+        { names: ["--targets-cursor"], description: "Continue at most 20 targets with --group-id", value: { name: "cursor", kind: "text" } },
+        projectOption, listJsonOption, helpOption],
+      details: "By default, exclude done and cancelled tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. Ordinary lists read every matching page before printing, in_progress first, then ready todo, blocked todo, and terminal tasks; preserve server order within each group.\nOrdinary text lists omit description, Task version, and Task timestamps. --json remains an array, omits description, and adds each Task's Session observation. Observations from different pages have separate observedAt/freshUntil values and may be stale by output time. A partial observation preserves Task data and exits 3; an old service reports unsupported with an upgrade instruction.\n--group-by chain requires --status in_progress; --assigned-to defaults to me and cannot be unassigned. Other list filters and --all do not apply. This mode returns one page, including chains whose roots are already done, and does not expand external prerequisites. --cursor continues groups; --group-id and --targets-cursor must be paired and cannot combine with --cursor. Target pages contain at most 20 in-progress members regardless of --limit. Each group aggregates all accessible in-progress members, with each target's assignee and independent send eligibility. A changed Task graph requires restarting pagination. Session changes do not change pagination membership.",
+    },
+    {
+      name: "search",
+      description: "Search task IDs, titles and descriptions in one project",
+      arguments: [{ name: "expression", description: "Complete search expression" }],
+      options: [statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, { names: ["--json"], description: "Print search results as a JSON array" }, helpOption],
+      allowOptionsTerminator: true,
+      details: "Pass the complete expression as one argument; use -- before an expression starting with a dash. Supports AND, OR, NOT, parentheses, quoted phrases, id:, title: and description:.\nAll statuses, including done, are searched by default. Filters combine with the expression. Every page is read before output, preserving server order. Search output omits assignee and update time; use task show for complete details.",
     },
     {
       name: "ready",
@@ -47,6 +74,7 @@ export const taskDefinition: CommandDefinition = {
       description: "Show a task by its ID",
       arguments: [taskArgument],
       options: [projectOption, jsonOption, helpOption],
+      details: "Include a read-only Session observation with identity, activity, freshness and the caller's ordinary-message eligibility. Task status and indicator colors do not grant sending permission. Partial observations preserve Task data and exit 3.",
     },
     {
       name: "properties",
@@ -85,10 +113,10 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "set-status",
-      description: "Set a task to todo, in_progress, or done",
-      arguments: [taskArgument, { name: "status", description: "Target task status", choices: ["todo", "in_progress", "done"] }],
+      description: "Set a task to todo, in_progress, done, or cancelled",
+      arguments: [taskArgument, { name: "status", description: "Target task status", choices: taskStatuses }],
       options: [claimOption, versionOption, projectOption, helpOption],
-      details: "Every direct prerequisite must be done when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration.\nUse --claim-id with done to complete an explicitly identified active worker claim as its current owner. The claim is never inferred from the task or environment. Without --claim-id, use ordinary task status setting.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
+      details: "Every direct prerequisite must be done or cancelled when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done. Cancellation does not require satisfied prerequisites and cannot be reversed. An active worker must be released before cancellation; released history may be cancelled.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration. Cancellation preserves execution timestamps and records cancelledAt; task records and materials remain readable.\nUse --claim-id with done to complete an explicitly identified active worker claim as its current owner. The claim is never inferred from the task or environment. Without --claim-id, use ordinary task status setting.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
     },
     {
       name: "delete",
@@ -102,7 +130,7 @@ export const taskDefinition: CommandDefinition = {
       description: "Show a task's complete chain and direct external prerequisites",
       arguments: [taskArgument],
       options: [{ names: ["--depends-only"], description: "Print only task IDs and complete dependency sets" }, projectOption, jsonOption, helpOption],
-      details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents.\n--depends-only preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
+      details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents. Each node includes its Session observation and member/external relation. sessionSummary aggregates in-progress members only; its observedAt is independent of the graph snapshot time.\n--depends-only does not request Session observations. It preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
     },
     {
       name: "step",

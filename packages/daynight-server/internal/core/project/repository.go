@@ -7,9 +7,21 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
+func validateRepoURLSize(value string) error {
+	if err := AdmitRepoURL(value); err != nil {
+		return &model.Fault{Code: "invalid_input", Message: err.Error(), Cause: err}
+	}
+	return nil
+}
+
 func validateRepoURL(value string) error {
+	if err := validateRepoURLSize(value); err != nil {
+		return err
+	}
 	invalid := func() error { return invalidInput("Repository address must be a valid HTTPS, SSH, or SCP address.") }
 	if value == "" || !utf8.ValidString(value) || strings.ContainsFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
 		return invalid()

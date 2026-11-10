@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
-import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
 import type { WebExecutionStore } from "./web-store.js";
@@ -13,7 +13,9 @@ import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
 import { createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
 import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
+import { PromptInputLimitError } from "../prompt-input-limit.js";
 export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number }) => {
+  let grantObserver: { started(task: LocalTask): void; settled(task: LocalTask): void; checked(task: LocalTask): void; refreshed(task: LocalTask): void; failed(task: LocalTask, error: unknown, started: boolean): void; ticketFailed(task: LocalTask, error: unknown): void; ticketVerified(task: LocalTask): void; identityUnknown(task: LocalTask): void; identityResolved(task: LocalTask): void; identityLost(task: LocalTask): void } | undefined;
   const current = (task: LocalTask) => { const latest = options.store.getTask(task); if (latest?.webExecution == null) throw new Error("The web execution identity disappeared."); return latest; };
   const serializeExecution = createControllerExecutionSerializer();
   const serialize = <T>(task: LocalTask, action: () => Promise<T>): Promise<T> => serializeExecution(task.webExecution?.executionId ?? task.claimId, action);
@@ -26,7 +28,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     return proof !== null && await confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
   };
   const methods = {
-    prepare: async (input: LocalTask, prompt: string, signal: AbortSignal): Promise<ControllerLaunchTicket> => {
+    prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {
       let task = current(input); let execution = task.webExecution!;
       if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
       try {
@@ -34,7 +36,6 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         if (existing.executionId !== execution.executionId || existing.claimId !== task.claimId || existing.executionGeneration !== execution.executionGeneration || existing.controllerInstanceId !== execution.controllerInstanceId || existing.initialOperationId !== execution.initialOperationId || existing.sessionId !== execution.sessionId || existing.initialPrompt !== execution.initialPrompt) throw new Error("An existing launch ticket does not match the durable execution intent.");
         options.store.updateWebExecution(task, { ticketPath: controllerTicketPath(options.homeDirectory, execution.launchId), nativeHome: existing.nativeHome }, options.now()); return existing;
       } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
-      if (execution.initialPrompt === null) { task = options.store.updateWebExecution(task, { initialPrompt: prompt }, options.now()); execution = task.webExecution!; }
       if (task.resources.worktree === null || task.configuration === null || task.userId === null) throw new Error("Controller launch requires its original worktree, provider and owner.");
       if (execution.sessionId === null) { const registered = await options.sessionApi.register(task, execution, signal); task = options.store.updateWebExecution(task, { sessionId: registered.sessionId }, options.now()); execution = task.webExecution!; }
       const directory = controllerExecutionDirectory(options.homeDirectory, execution.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -48,8 +49,15 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         : task.configuration.agent === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(options.homeDirectory, ".claude")
         : process.env.COPILOT_HOME ?? path.join(options.homeDirectory, ".copilot"));
       if (execution.nativeHome === null) execution = options.store.updateWebExecution(task,{nativeHome},options.now()).webExecution!;
-      const initialPrompt = execution.initialPrompt ?? prompt;
+      const initialPrompt = execution.initialPrompt ?? (typeof prompt === "function" ? prompt() : prompt);
       const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId, provider: task.configuration.agent, cwd: task.resources.worktree.worktreePath, nativeHome, configuration: task.configuration, initialOperationId: execution.initialOperationId, initialPrompt, resumeNativeSessionId: task.resources.nativeSession?.sessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(options.now()).toISOString() };
+      try { serializeLaunchTicket(ticket); }
+      catch (error) {
+        if (error instanceof LaunchTicketLimitError) throw new PromptInputLimitError("web_ticket", error.actualBytes, error.maxBytes);
+        throw error;
+      }
+      // Freeze only the same complete ticket that passed both existing size checks.
+      if (execution.initialPrompt === null) task = options.store.updateWebExecution(task, { initialPrompt }, options.now());
       const ticketPath = await writeLaunchTicket(options.homeDirectory, ticket);
       options.store.updateWebExecution(task, { ticketPath, initialPrompt }, options.now());
       return ticket;
@@ -73,18 +81,50 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         throw error;
       }
     },
-    refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
-      const task = current(input);
-      if (task.webExecution!.launchId !== ticket.launchId || await cleanupStopped(task)) return;
-      if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, options.now())) return;
-      const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
-      const latest = current(task);
-      if (latest.webExecution!.launchId !== ticket.launchId || await cleanupStopped(latest)) return;
-      signal.throwIfAborted();
-      await writeControllerCredential(ticket.credentialFile, grant);
+    refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal, onRefreshed?: () => void, onStarting?: () => void, onChecked?: () => void): Promise<void> => {
+      let task: LocalTask | null;
+      try { task = options.store.getTask(input); }
+      catch (error) {
+        if (onRefreshed === undefined && !signal.aborted) try { grantObserver?.identityUnknown(input); } catch { /* Optional monitoring cannot alter the lookup failure. */ }
+        throw error;
+      }
+      if (onRefreshed === undefined && !signal.aborted) try { grantObserver?.identityResolved(input); } catch { /* Optional monitoring cannot alter identity handling. */ }
+      if (task?.webExecution == null) {
+        if (!signal.aborted) try { grantObserver?.identityLost(input); } catch { /* Optional monitoring cannot alter identity handling. */ }
+        throw new Error("The web execution identity disappeared.");
+      }
+      let started = false;
+      try {
+        if (task.webExecution!.launchId !== ticket.launchId || await cleanupStopped(task)) return;
+        const needsRefresh = await controllerCredentialNeedsRefresh(ticket.credentialFile, options.now());
+        if (!signal.aborted) {
+          try { onChecked?.(); } catch { /* Optional monitoring cannot alter renewal. */ }
+          try { grantObserver?.checked(task); } catch { /* Optional monitoring cannot alter renewal. */ }
+        }
+        if (!needsRefresh) return;
+        signal.throwIfAborted();
+        started = true;
+        try { onStarting?.(); } catch { /* Optional monitoring cannot alter renewal. */ }
+        try { grantObserver?.started(task); } catch { /* Optional monitoring cannot alter renewal. */ }
+        const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
+        const latest = current(task);
+        if (latest.webExecution!.launchId !== ticket.launchId || await cleanupStopped(latest)) return;
+        signal.throwIfAborted();
+        await writeControllerCredential(ticket.credentialFile, grant);
+        try { onRefreshed?.(); } catch { /* Optional monitoring cannot alter the refresh result. */ }
+        try { grantObserver?.refreshed(latest); } catch { /* Optional monitoring cannot alter the refresh result. */ }
+      } catch (error) {
+        if (onRefreshed === undefined && !signal.aborted) try { grantObserver?.failed(task, error, started); } catch { /* Optional monitoring cannot alter the refresh failure. */ }
+        throw error;
+      } finally {
+        if (started) try { grantObserver?.settled(task); } catch { /* Optional monitoring cannot alter renewal. */ }
+      }
     },
   };
   return {
+    setGrantObserver: (observer: typeof grantObserver): void => { grantObserver = observer; },
+    reportTicketFailure: (task: LocalTask, error: unknown): void => { try { grantObserver?.ticketFailed(task, error); } catch { /* Optional monitoring cannot alter renewal. */ } },
+    reportTicketVerified: (task: LocalTask): void => { try { grantObserver?.ticketVerified(task); } catch { /* Optional monitoring cannot alter renewal. */ } },
     prepare: (...args: Parameters<typeof methods.prepare>) => serialize(args[0], () => methods.prepare(...args)),
     launch: (...args: Parameters<typeof methods.launch>) => serialize(args[0], () => methods.launch(...args)),
     refreshGrant: (...args: Parameters<typeof methods.refreshGrant>) => serialize(args[0], () => methods.refreshGrant(...args)),

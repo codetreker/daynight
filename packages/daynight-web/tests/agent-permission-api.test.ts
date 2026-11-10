@@ -9,10 +9,10 @@ const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
 const task = { assignedTo: null, id: taskId, projectId, title: 'Automatic work', description: '', properties: { pullRequests: [] }, status: 'todo',
-  version: 9007199254740993n, requiredPlatform: null, allowAgents: false, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+  version: 9007199254740993n, requiredPlatform: null, allowAgents: false, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graph = (allowAgents: unknown) => ({ observedAt: time,
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
-  summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
+  summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
   tasks: [{ ...task, titlePreview: task.title, titleTruncated: false, allowAgents }],
 });
 const signal = () => new AbortController().signal;
@@ -24,10 +24,12 @@ describe('strict task automatic execution contract', () => {
     expect(parseTaskDetail({ ...task, allowAgents }, projectId, taskId)).toMatchObject({ allowAgents, ready: true });
     expect(parseTaskGraph(graph(allowAgents), projectId).tasks[0]).toMatchObject({ allowAgents, ready: true });
   });
-  it.each([undefined, null, 'false', 'true', 0, 1, {}, []])('rejects invalid or missing permission %#', async (allowAgents) => {
+  it.each([undefined, null, 'false', 'true', 0, 1, {}, []])('rejects invalid or missing permission %#', (allowAgents) => {
     expect(() => parseTaskDetail({ ...task, allowAgents }, projectId, taskId)).toThrow('invalid response');
     expect(() => parseTaskGraph(graph(allowAgents), projectId)).toThrow('invalid response');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...task, allowAgents })));
+  });
+  it('classifies a malformed permission in an HTTP response as a protocol error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...task, allowAgents: 'true' })));
     await expect(getTask(projectId, taskId, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
   });
   it.each([false, true])('sends one exact numeric-wire PATCH for %s', async (allowAgents) => {

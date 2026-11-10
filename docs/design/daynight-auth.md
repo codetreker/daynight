@@ -4,9 +4,8 @@
 服务配置校验失败会拒绝启动，所有业务请求强制认证。源码绑定的验证结果与真实上游
 人工登录以相应回执为准，本文不把接线完成等同于完整验收通过。
 [需求](../spec/daynight-auth.md)拥有行为；
-[原始鉴权决策](../../.agents/notes/implemented/architecture/2026-10-22-auth-architecture.md)
-保留架构取舍，[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-拥有当前配置、组合与验收隐私规则。
+[原始鉴权决策](../../.agents/notes/archived/architecture/2026-10-22-auth-architecture.md)
+保留架构取舍，[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)记录了当前配置、组合与验收隐私规则的历史取舍。
 
 ## 已采纳的架构边界
 
@@ -18,17 +17,15 @@
 
 ## 现状与可复用机制
 
-`server.New(Dependencies, Config, logger)` 先校验必需配置并构造真实 UniAuth SDK，
-再注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI；失败返回
-error，运行时关闭已获得的 listener、数据库和文件根句柄。业务服务显式接受
+`internal/config` 先校验必需配置，`service.App` 在打开文件和数据库之前构造真实 UniAuth SDK；`server.New` 使用组装好的应用注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI。启动失败返回 error 并按依赖顺序释放已获得的资源。业务服务显式接受
 model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
 直接实现私有创建和按成员过滤。正式 Application 在常驻 LocaleProvider 下选择公开首页、
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
 [公开入口设计](daynight-landing.md)拥有路由组合与公开身份提示，后者不参与私有资源准入。
 
-[身份基础](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
-与[成员基础](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
-先独立交付的原因仍成立；当前统一组合由启用决策拥有。以下固定源码是最初设计
+[身份基础](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
+与[成员基础](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
+先独立交付的原因仍成立；当前统一组合由本文说明，启用决策保留采用该组合的历史理由。以下固定源码是最初设计
 采用机制时的基线 `38b827fe644139f4e20989cd8e7740350566fb56`，不表示当前入口仍未鉴权：
 
 | 机制 | 固定源码 | 使用方式 |
@@ -36,7 +33,7 @@ model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普�
 | HTTP composition 与 loopback | [server.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/server/server.go#L10-L19)、[config.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/server/config.go#L71-L77) | 一个入口认证，继续原有监听/部署边界。 |
 | 项目写锁 | [project_tx.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/core/store/project_tx.go#L29-L39) | 在项目锁内检查权限并执行写入。 |
 | 读取快照/列表 | [snapshot.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/core/store/snapshot.go#L14-L38) | 快照内验证成员；列表 SQL 先筛选再分页。 |
-| 文件 IO 准入 | [attachment.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/service/attachment.go#L83-L114) | IO 前授权，慢传输不持有事务，保留 K1。 |
+| 文件 IO 准入 | [attachment.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/service/attachment.go#L83-L114) | IO 前授权；读取使用短快照，变更持 Task SHARE 锁至事务完成，保留 K1。 |
 | 直接浏览器资源/键盘 | [AttachmentPreview.tsx](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-web/src/features/task-detail/attachments/AttachmentPreview.tsx#L35-L72) | iframe/img/下载自然使用主站 Cookie，保留同源键盘桥。 |
 
 当前 Go SDK 固定为
@@ -59,8 +56,8 @@ flowchart LR
     S --> F[现有文件存储]
 ```
 
-core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 拥有迁移、查询与
-事务，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
+core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 定义数据访问及
+事务合同，PostgreSQL 后端实现迁移和查询，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
 复用一个 store 和既有文件存储，不复制业务实现或增加通用权限引擎。
 
 Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。认证代码
@@ -87,7 +84,7 @@ access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规
 有效项目准入。PUT 成功返回指定 grant 与 actorAccess，DELETE 返回项目和目标 ID、deleted 与
 actorAccess；actorAccess 是事务中变更后的完整访问投影，可以为 null。邀请 no-op 读取实际直接关系，
 不以计算的准入结果代替。
-[participant 决策](../../.agents/notes/implemented/architecture/2026-11-04-project-participant-projection.md)
+[participant 决策](../../.agents/notes/archived/architecture/2026-11-04-project-participant-projection.md)
 拥有资料、有效角色与可写记录分离的原因及范围。
 
 `ProjectAccess` 的内部模型保存当前主体的 project/user ID、真实归属、owner Team、
@@ -124,7 +121,7 @@ TaskSync 顶层 actorAccess 使用同一 DTO 和读取快照，空 delta 也包�
 members 返回 `{items,actorAccess}`，成员资料与本人 access 属于同一读取快照；Web 经既有
 身份、project、generation 和请求观察次序屏障发布 actorAccess，不能用独立读取的旧角色
 授权新名册。CLI 的 roster facade 校验完整 envelope 后保留其 participant 数组返回值。
-[当前准入投影决策](../../.agents/notes/implemented/architecture/2026-11-03-project-access-projection.md)
+[当前准入投影决策](../../.agents/notes/archived/architecture/2026-11-03-project-access-projection.md)
 记录内存所有权、刷新与资料读取分离的原因。
 
 读取在原 repeatable-read 快照中计算准入再读取资源；写入取得现有项目行锁后重算
@@ -133,7 +130,7 @@ projectID, taskID, input) 沿用同一项目锁，在取锁后检查当前准入
 版本、目标状态与依赖。admin 和 member 都可执行这些资源操作；管理员角色额外
 管理成员、邀请与项目提醒设置。Worker 的 claim owner 操作路径和领取时的任务
 负责人要求保持各自原有规则。创建默认 todo，通用元数据更新不接收 status，没有
-旧状态写入旁路。任务版本、int64、图容量和现有分页合同保持。
+旧状态写入旁路。任务版本、int64、完整图范围和现有按条数分页合同保持。
 
 ### Team 元数据与生命周期事务
 
@@ -144,19 +141,20 @@ server 统一映射创建、分页、详情和改名的 Team DTO；有限删除�
 
 `core/team` 接受显式 Principal 并拥有 Team 业务规则；`service/team` 选择事务或快照并处理
 完成结果，`server/team` 负责 HTTP 适配。管理输入先严格核对 expectedUserId，再进入任何领域查询或
-事务；JSON 字符串先验证原始 Unicode 转义，core 同时验证合法 Unicode、无 NUL 和非全
-Unicode `White_Space`。名称按原文存储，重复名称合法。资源 ID 和 expectedUserId 使用规范
+事务；JSON 字符串先验证原始 Unicode 转义，core 验证合法 Unicode、无 NUL 和非全
+Unicode `White_Space`，并对名称同时执行 256 code points 和 1024 UTF-8 bytes 的准入。
+名称按原文存储，重复名称合法；容量拒绝不修改 Team 或成员关系。资源 ID 和 expectedUserId 使用规范
 小写 UUID，正 int64 元数据版本在 no-op 比较之前校验。
 
 创建作用域先锁定创建者 user，再在单一事务写入普通 Team 与创建者 admin 行；不预锁不存在的
 Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与当前主体真实成员关系，列表 SQL 在 `(created_at,id)` 排序、游标和 LIMIT 之前
 过滤当前成员资格。HTTP Team cursor 使用 kind `teams`、version 1，绑定认证 userId 与页位置；
 不按名称解析身份，不返回全量 count。缺失或不可见 Team 同为 not_found，外部 Project grant
-不会授予 Team 元数据访问权。
+不会授予 Team 元数据访问权。列表一次取得请求条数加一项 lookahead，读取直接消费写入入口生成的规范存储字段；不重复结构、字段或容量检查，不引入读取 measurement callback 或字节裁页。REST 成员和邀请目录保持完整，MCP 页使用相应普通批量入口。[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录职责取舍。
 
 已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
 Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
-version 后才接受相同原文。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
+version 后才接受相同原文，即使存量名称超出新额度；真实改名前检查名称额度。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
 
 成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性
@@ -165,12 +163,12 @@ version 后才接受相同原文。真实改名只更新 Team 名称、元数据
 自行降级或退出后仍有 admin。角色变化从 `team_member_versions` sequence 取得新版本，删除
 重加同样产生新版本；删除和变更均不访问 Project grant。提交确认后回执携带操作者剩余角色，
 不确定提交遵守相同的 unknown 合同。详细取舍见
-[成员管理决策](../../.agents/notes/implemented/architecture/2026-11-04-team-membership-management.md)。
+[成员管理决策](../../.agents/notes/archived/architecture/2026-11-04-team-membership-management.md)。
 
-删除在取得 Team 锁后，另发一条不加行锁的 ownership `EXISTS` 查询。Read Committed 的新语句
-快照能看见取锁等待期间已提交的 ownership；把检查合并进最初的锁定查询会使用等待前的快照。
-检查使用既有 `project_ownership(team_id,project_id)` 索引。非空返回 team_not_empty，空集才在
-同一事务删除成员和 Team。事务不取得已有 Project、Task 或 Thread head 锁，避免把 Team-only
+删除在取得 Team 锁后，另发一条不加行锁的活跃 Project 与 ownership `EXISTS` 查询。Read Committed 的新语句
+快照能看见取锁等待期间已提交的 ownership 和 Project 删除标记；把检查合并进最初的锁定查询会使用等待前的快照。
+检查使用既有 `project_ownership(team_id,project_id)` 索引并排除已删除 Project。非空返回 team_not_empty，空集才在
+同一事务删除成员和 Team；已删除 Project 的历史 ownership 保留。事务不取得已有 Project、Task 或 Thread head 锁，避免把 Team-only
 操作引入那些资源的锁序。创建 Project 先锁目标 Team；任何建立目标
 ownership 的写入必须先锁定并重读该 Team，和删除共享其存在性锁，不能在 Team 删除后插入孤立归属。
 
@@ -180,12 +178,16 @@ ownership 的写入必须先锁定并重读该 Team，和删除共享其存在�
 失败的 rollback/连接清理仍输出 500 internal_error，不伪装为已拒绝或成功。响应写失败保持传输错误，
 调用者不能把缺失回执当作回滚证据。此信息只属于本次调用，不增加持久提交账本。
 
-[Team 生命周期决策](../../.agents/notes/implemented/architecture/2026-11-04-team-lifecycle.md)
+[Team 生命周期决策](../../.agents/notes/archived/architecture/2026-11-04-team-lifecycle.md)
 记录存在性锁、独立版本和有限回执的取舍；公开字段、拒绝及验收由[鉴权需求](../spec/daynight-auth.md#team-生命周期)拥有。
 
 ## 认证响应归属
 
-`Authentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
+`RequestAuthentication` 拥有请求凭据的 HTTP 适配：Bearer 解析、会话 Cookie 选择、Cookie 写入的精确 Origin 校验、`AuthenticateRequest` 和 `Require`。它接收 `AuthenticateCredential` 操作，调用时传递原 request context、凭据种类和 secret，并保留 principal 或原错误。`ValidatePublicOrigin` 校验该 middleware 的公开 Origin 与 HTTP 测试配置。
+
+完整 `Authentication` 组合这个 middleware，并保留 concrete Identity、登录、账户、PAT 和 device 路由；其构造继续校验完整认证配置和 callback。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
+
+`RequestAuthentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
 从准入 principal 写入 `Daynight-User-ID`。因此 GET、空写结果及下游资源错误共用
 一个归属边界，认证失败不泄露未准入身份，也不回显调用方提供的值。会话/PAT 选择、
 Origin 检查、角色和业务授权仍由原入口执行；该头只是响应证明。跨窗口 Cookie
@@ -205,17 +207,29 @@ Origin 检查、角色和业务授权仍由原入口执行；该头只是响应�
 保留无重定向、无重放和有界响应。App 配置/凭据失效映射为
 503 identity_configuration，网络或协议失败为 502 identity_unavailable，超时为
 504 identity_timeout；它们不返回用户会话 401，避免错误清除当前账户。
-[Web 决策](../../.agents/notes/implemented/feature/2026-10-22-web-auth-workspace.md)
+[Web 决策](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md)
 保留初始旧 SDK 缺少 discovery 的证据，生产组合已使用新能力。
 
 ## 登录和凭据
 
 ### UniAuth 一次性交接
 
-login_transactions 保存随机 state 摘要、浏览器绑定摘要、provider、主站内返回路径
-和十分钟到期时间。每次登录使用独立的绑定 Cookie，支持同时打开多个登录页。
+login_transactions 保存随机 state、每笔浏览器绑定及独立浏览器 scope 的摘要、provider、主站内返回路径和十分钟到期时间。先验证 provider 和最多 4096 bytes 的 returnPath；有效 scope Cookie 缺失时只设置 32-byte 随机 scope 并以 303 返回原登录 URL，不创建 pending。首次并发请求或清除 Cookie 后的请求不能关联为同一物理浏览器。每次准入成功刷新 scope Cookie，使其覆盖新交易的期限；每笔登录仍使用独立绑定 Cookie，支持同时打开多个登录页。
+
+短数据库事务取得全服务容量锁后读取数据库当前时间，排除过期记录并检查全服务 10000 条及同 scope 5 条上限。仅准入成功后才执行有限清理并插入；拒绝不清理、不插入、不撤销其他交易。锁后时间决定交易期限，避免等待锁使有效期缩短；callback 在取得交易行锁后按数据库时间判断到期，其他凭据仍按服务时钟判断自身期限。scope Cookie 与绑定 Cookie 都使用 host-only、HttpOnly、SameSite=Lax，HTTPS 时带 Secure 和 `__Host-` 前缀。
+
+升级时必须停止旧版本创建登录交易，允许旧 callback 完成或等待十分钟到期。迁移对仍有效的旧 pending 明确失败并保留记录；旧记录全部消费或到期后，迁移清理过期记录并建立非空 scope 摘要合同，不伪造 scope。
 callback 在同一事务验证绑定/state/provider/期限并消费 pending；提交后才通过 SDK
-执行一次 Retrieve，继承请求 context 和有界 deadline。
+执行一次 Retrieve，继承请求 context 和 15 秒期限。专用 HTTP client 禁止重定向，
+在底层 transport 解压之后限制 response body 的实际读取量为 2097152 bytes；读取到
+上限后再探测一个 byte，超限即返回错误并停止读取，不依赖 Content-Length。读取、取消和
+关闭仍遵循响应 body 的生命周期，错误原因保留在服务内部，日志不记录 code、token 或资料正文。
+
+领取成功且 provider 匹配后，identity 领域校验外部 ID、姓名和邮箱各最多 1024 UTF-8 bytes，
+头像 URL 最多 524288 UTF-8 bytes；纯 profile codec 按实际规范化 JSON 编码计量完整对象，
+上限 1048576 bytes。转义可能使字段分别合规但整体超限。所有校验在本地用户、Personal Team
+和 session 的写事务之前完成；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
+消费事实，旧资料不变。null、false 和头像 data URL 保持原值，不添加头像 scheme 限制。
 
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
 领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
@@ -252,13 +266,25 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 不确定 PATCH 只通过 GET 令牌列表核对，失败时只提供读取重试；读回值供新的明确决定使用，不自动
 重放原写入。身份切换使旧账号请求和编辑状态失效，语言切换保留输入与请求。
 
+账户页通过 `GET /api/v1/oauth/grants` 读取当前会话账户的无秘密授权元数据。响应包含 `userId` 和
+`grants`，每项包含 `id`、`clientName`、`clientId`、`resource`、`scope`、`createdAt`、`expiresAt`、
+可空 `revokedAt` 和 `status`（`active`、`expired` 或 `revoked`）；撤销状态优先于过期状态。
+`POST /api/v1/oauth/grants/{id}/revoke` 接受 `expectedUserId`，成功返回 `{changed:boolean}`，
+重复撤销不改变 family。两个端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
+不可见授权返回 404。服务复用 OAuth 生命周期用例撤销该 grant 的 access/refresh family。
+服务在同一事务中复核 Session，撤销按 grant、Session、access 锁序执行并在等待后重新检查到期。
+网页核对响应主体并独立维护授权列表与 PAT 状态。提交前按账户在 `sessionStorage` 保存无秘密的 grant ID；
+存储不可用时不派发撤销。撤销结果未知时保留目标并等待显式读取，即使离开页面或刷新也不自动重放。
+读取只说明当前状态，不推断原响应；账户变化时丢弃旧账户界面状态。
+
 明确的 Authorization 优先；重复、格式错误或无效 Bearer 返回 401，不回退 Cookie。
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
 Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精确主站 Origin，PAT 写
 请求按其 header 凭据验证。数据 API 401
-始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie、
-记录清洗后的错误并 303 到固定主站 `/login?authError=login_failed`；已知事务同时带回
-经过验证的 `returnPath`，包括身份领取后本地 session 创建失败。错误/未绑定 callback
+始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie 并
+记录清洗后的错误；上游响应协议错误及 profile 准入失败返回 502 `identity_unavailable`，
+其他失败 303 到固定主站 `/login?authError=login_failed`，带回经过验证的 `returnPath`，
+包括身份领取后本地 session 创建失败。错误/未绑定 callback
 保留 JSON 拒绝。登录壳读取并清除通用标记，保留目标与重试入口，不带回原始 code/错误。
 主站默认 HTTPS，使用 __Host- 会话/绑定 Cookie；显式 HTTP 主站测试配置使用不带
 该前缀和 Secure 的测试名称，仍为 host-only、HttpOnly、Lax。SDK gateway 的
@@ -276,13 +302,15 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
 | device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |
 | teams | UUID；唯一 nullable personal_user_id；Personal 的 name 为 null，普通 Team 的 name 非 null；正 version 与时间。 |
-| team_members | `(team_id,user_id)` 唯一；admin/member；正 bigint version 来自独立 sequence；加入与更新时间。 |
+| team_members | `(team_id,user_id)` 唯一；admin/member；正 bigint version 来自独立 sequence；加入与更新时间；`(team_id,created_at)` B-tree 支持成员分页。 |
 | project_ownership | project_id 唯一；真实 team_id、正 version 与 updated_at；每个 Project 恰一行。 |
 | project_grants | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
 | project_invitations | ID、project_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 | team_invitations | ID、team_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 
 使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务验证。
+成员分页仍以 `created_at,user_id` 排序并使用复合游标；两列索引不替代同时间成员的完整排序。
+索引取舍见[成员与终端读取索引决策](../../.agents/notes/implemented/architecture/2026-11-09-member-terminal-read-indexes.md)。
 迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
@@ -325,7 +353,7 @@ Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team
 降级本人及他人的最后一条 direct admin grant；owner Team 的继承权限独立计算。变更后在同一
 事务重新计算 actor access，确认 COMMIT 后才发送有限回执；失权时返回 null，不依赖后续有权限
 的 GET。无法确认 COMMIT 则报告 write_outcome_unknown，不能重放。Team 成员变化不重写 Project
-grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/implemented/architecture/2026-11-04-project-grant-management.md)
+grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/archived/architecture/2026-11-04-project-grant-management.md)
 拥有存在性条件、有限回执与外部加入范围的取舍。
 
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
@@ -341,14 +369,18 @@ Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。
 新 member 与消费同事务提交。撤销与接受共享 Team 和邀请锁；删除 Team 同事务清除邀请。
 Personal 不可创建邀请。inspect 仅返回 Team 引用和当前主体关系，accept 返回真实成员及
 joined/consumed。两种邀请都通过 POST body 传秘密，响应 no-store，失效原因统一为
-invitation_unavailable；[Team 邀请决策](../../.agents/notes/implemented/architecture/2026-11-04-team-invitations.md)
-拥有接收入口及交付边界。
+invitation_unavailable；[Team 邀请决策](../../.agents/notes/archived/architecture/2026-11-04-team-invitations.md)记录了接收入口及交付边界的历史取舍。
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
-提交串行化。附件在短快照完成项目/task/路径与成员检查后准入文件 IO，不持锁慢传输。
-已准入操作允许完成；不能在文件写入后仅因成员刚移除而拒绝元数据写入。真实存储/
-数据库错误按原链传播，保留 K1。撤销后新准入请求拒绝，已发字节不承诺撤回。
+提交串行化。附件读取在短快照完成项目与 task 成员检查后准入文件 IO；变更取得 Task SHARE 锁后，
+通过 `pg.ReadProjectAccess` 在单条语句中重新读取当前 ownership、owner Team member 和 direct grant
+形成准入结果，不锁定授权来源行。Task 锁继续覆盖删除状态检查、文件 IO、事务绑定元数据写入及事务完成，
+与 Task 删除排序。准入后的 grant 或 Team 成员撤权无需等待文件 IO；已准入操作允许完成，
+不能在文件写入后仅因成员刚移除而拒绝元数据写入。撤权后没有其他有效来源的新准入请求拒绝；
+HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由其专用事务拥有。
+真实存储/数据库错误按原链传播，保留 K1，已发字节不承诺撤回。
+[附件准入锁决策](../../.agents/notes/implemented/bug-fix/2026-11-06-attachment-admission-locks.md)记录锁范围与撤权完成的取舍。
 
 ## HTTP、Web 与 CLI
 
@@ -358,7 +390,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 |---|---|
 | GET /healthz、GET /readyz | 无业务数据的存活/就绪；就绪保留 store 可用性。 |
 | GET /api/v1/auth/providers | 公开 App 范围 provider 发现；真实 SDK 投影当前权威交集。 |
-| GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
+| GET /api/v1/auth/login?provider=... | 校验输入；无有效 scope 时初始化并返回同一 URL，否则按容量创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET/HEAD /api/v1/me | 当前用户最小资料及必填 personalTeam:TeamRef；读取真实 Personal 关系并校验 owner admin，认证及完整资料读取后以强 ETag 重验，成功 200/304 使用 private, no-cache。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |
@@ -374,7 +406,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
-| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与四状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
 | POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
@@ -409,11 +441,13 @@ Web 的 me 入口单独向共用 request 传入 cache:no-cache，其他端点保
 TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详情关闭/重开
 保持 project/task 的状态操作身份与结果，401 或身份变化时丢弃旧用户状态；同一
 用户核验与语言切换不重建 Provider。状态设置依赖当前完整详情的精确版本，冲突与未知
-结果遵守[三状态设计](daynight-task-status.md)。
+结果遵守[状态设计](daynight-task-status.md)。
 它通过 /me 取得身份，401 进入带有效目标的独立登录流程；资源 404 不退出全局会话。
-登录地址的有效目标仍是相应邀请路径时保留现有 tab 内凭据，fragment 在请求之前捕获
-并移出地址。离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理
-与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
+登录地址的有效目标仍是相应项目或 Team 邀请路径时保留现有 tab 内凭据。AuthenticatedApp 在 layout effect
+中捕获首次或新进入的已准入邀请，并在 API effect 前通过 BrowserNavigation 清除 fragment；
+导航所有者同步更新地址、当前条目的内存 URL 与已准入 location，不写入新的历史条目。
+清理后的快照不重新捕获邀请，因此 sessionStorage 受限时仍保留本次捕获的内存值。
+离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
 邀请/设备目标，退出失败保持当前错误与重试。
 项目列表增加名称/仓库地址创建表单，复用原 API，成功进入空项目且创建者为 admin。
 账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
@@ -422,6 +456,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
 项目成员页分别展示有效、Team 继承和单独授权，按 participant 的真实 grant 存在性与版本操作；确认回执提供提交后本人 access，失权时清除项目缓存并保留成功结果。成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+成员页副标题的名称由各自面板按 projectId 读取现有 Project 资源，不依赖导航按钮传入或分页项目列表。读取受当前账号、ProjectAccess 和项目缓存代际约束；名称读取失败单独展示错误并重试，不阻断成员目录。首次读取使用副标题占位，确认失权或更换账号后清除旧名称，迟到响应不能恢复它；很长的名称完整换行并为邀请按钮保留空间。机制与取舍见[成员页名称决策](../../.agents/notes/implemented/bug-fix/2026-11-06-member-project-name.md)。
 成员表格在所有视口宽度使用局部 overflow-x:auto，按自身容器宽度决定是否滚动。五列的最小宽度和既有 ≤700px 布局保留；侧栏展开压缩内容区时，操作列仍可完整滚入表格，不把溢出转交给页面。
 普通 Team 成员页与 Project 成员页分别管理本范围的邀请；列表只显示元数据，创建回执中的链接只保存在一次结果对话框中。邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果并提供真实 Team 路由；该路由通过现有 Team 选择机制验证并保存当前上下文。
 未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复；重读只能观察当前列表，不能证明原操作结果。权限降级或失去访问后仍显示当前主体已确认的一次性创建结果，或未知结果及无法读取的原因；Team 普通成员可以退出，重新取得管理权限后须明确读取列表才能继续管理。
@@ -451,7 +486,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 立即中止旧核验、推进核验请求 generation 并发起新核验，较早响应不能覆盖最新
 结果。核验失败保留组件状态并显示阻塞错误层；
 重试及失败后的前台返回保持遮蔽，成功后才恢复原页面或切换身份。阻塞层使用原生模态隔离，Escape 不能关闭；它继承当前应用语言，但不提供自己的语言选择器或偏好反馈。原焦点元素仍连接时，恢复后尝试将焦点返回原位置。
-[前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
+[前台身份核验决策](../../.agents/notes/archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
 
@@ -472,10 +507,14 @@ Project 设置、成员和转移的在途读取与写入保留原 scope 和资�
 重建组件或进入请求依赖，保持输入、一次性秘密、成员版本、当前身份和 pending
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
-邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
-跨登录保存，确认/取消/失效后删除；捕获时同步清理导航快照及 history marker，
-未编号历史条目的清理 replace 开始新 segment，同标签再次打开也重新捕获。
-秘密不进请求路径/Referer/日志。一次性 token/
+邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，分别使用
+项目与 Team 的 tab 临时 sessionStorage key 跨登录保存，捕获时清理另一 scope 的临时值；
+已认证界面仅在内存中保留邀请，进入登录或会话失效时恢复对应临时副本，确认/取消/失效、
+主动离开或确认身份改变后删除。同标签再次打开邀请或切换邀请 scope 时重新捕获；清理产生的
+同路径快照及同流程登录返回不重新读取，以保留临时存储受限时的内存值。
+秘密不进请求路径/Referer/日志或序列化导航 marker。marker 仅保存 segment 与 index，
+清理同步通知已准入 location；未编号原生条目保留未编号状态，移除复制的 marker 并保留其他 state。
+完整 URL 的匹配与原生条目边界由[导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。一次性 token/
 邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
 失效、禁用和键盘焦点。
 
@@ -493,7 +532,7 @@ CLI server 投影在文件或 `serverUrl` 缺省时使用 `https://daynight.cc`�
 本地缺少凭据时业务请求层直接提示 `daynight login`；服务 401 同样提示，业务不自动开始登录。
 
 `login` 是独立的公开客户端 `daynight-cli`，不接触 UniAuth App Secret。
-[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
+[设备登录决策](../../.agents/notes/archived/architecture/2026-10-25-cli-device-login.md)
 记录采用现有 PAT 存储与显式登录的理由；协议采用
 [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)。设备授权与业务操作各自拥有取消和期限，
 登录至多十分钟，正常请求预算仍有界；CLI 不启动常驻监听器或本地 callback 服务。
@@ -597,7 +636,7 @@ callback 的 returnPath，防止回调循环。
 | DAYNIGHT_ALLOW_LOOPBACK_HTTP=1 | 仅允许 SDK gateway 为 literal localhost/numeric-loopback HTTP，其他 gateway 仍需 HTTPS。 |
 
 HTTPS 主站和回环 HTTP gateway 可以独立组合。普通运行不存在 auth-disable 分支。
-/healthz 返回无业务数据的存活状态；/readyz 只验证数据库就绪，不查询项目、登录
+/healthz 返回无业务数据的存活状态；/readyz 验证数据库与 Webhook 后台工作，不查询项目、登录
 上游或 provider 健康。两套 Compose 均使用 readyz。
 
 [localhost 部署](../../deployment/localhost/README.md)要求从 .env.example 创建私有
@@ -610,8 +649,8 @@ Vite 保留原 /api Go 代理；设置同一 DAYNIGHT_UNIAUTH_CALLBACK_URL 后�
 
 ## 真实协议 fixture 与验证隐私
 
-Go、安装 CLI、Web native/container 和 Docker 附件/恢复调用方通过正常 UniAuth
-协议取得 session/PAT。共用固定 0978963 的 fixture 可执行文件与 bootstrap 协议，
+Go 服务测试和 dev-ci 附件/恢复验证通过正常 UniAuth 协议取得 session/PAT。
+它们使用固定 0978963 的 fixture 可执行文件与 bootstrap 协议，
 每个目标独立拥有 App、SQLite、端口、用户会话和清理。只控制外部 provider 响应，
 不直接插入 Daynight 用户、会话、PAT 或成员作为验收捷径。预算服务验证 Bearer，
 同时保留其合成 transport 场景与真实授权证明的区别。
@@ -628,16 +667,12 @@ UniAuth，发布同一回环 U 端口供浏览器与 SDK 共用；随后写私�
 reconfigure --bootstrap 允许先恢复配对 SQL/附件，私有 UniAuth 目录沿 run 生命周期
 保留，既有 target 清理结束后删除。详情由[dev-ci 指南](../../deployment/dev-ci/README.md)拥有。
 
-Playwright action/network trace 在固定版本会保留凭据 header 与响应体，因此普通
-trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获。自定义 CDP
-性能 trace、全部断言、原始报告校验、截图 oracle、请求/容量/时间预算保持。
-`auth-login-session` 为等待操作命名，并在成功和失败时保存 `auth-login-operations`
-附件；字段仅包含操作名、状态、耗时和可选的错误类型，不保存 URL、OAuth 参数、凭据或响应体。
-身份 route 与 provider 的每个清理操作独立限时五秒，`Fetch.disable` 失败后仍尝试
-CDP detach。原始错误、清理错误与附件保存错误共同保留，唯一错误原样抛出，多项失败用
-`AggregateError` 保留原对象及首个错误原因链。[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
-拥有这些诊断和错误传播规则；历史产物或操作栈缺失时，后续成功不能证明原超时的触发原因。
-[启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
+浏览器 trace 可能包含凭据 header 或响应体；使用真实身份验证时，采集、截图及产物
+必须避免泄露秘密。Web 模块浏览器 fixture 使用受控响应，具体入口及产物规则见
+[Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)。
+[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+记录旧登录验收的诊断和错误传播取舍；历史产物或操作栈缺失时，后续成功不能证明原超时原因。
+[启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)
 保存包版本、源码位置、隐私证据与诊断能力取舍。各适用 gate 和真实上游人工登录
 仍须提供源码绑定结果；受控组件或协议成功不冒充第三方人工登录。
 
@@ -659,16 +694,19 @@ URL query、body、Cookie、Authorization、code、App Secret 或身份 origin p
 docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_id == "REQUEST_ID") | {request_id,user_id,team_id,project_id,component,phase,error_code,cause}'
 ```
 
-验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
-生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
-拥有实际领取结果后 TCP 断连，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、撤销、已准入上传和 socket 中断证明。两目标各有一份额外必需回执，当前
-26+26+5 共 57 项 Playwright inventory 与容量门槛保持；项目设置旅程单独拥有阈值读写与未知结果核对。
+验证按 AU-V1–AU-V12 映射：服务模块验证真实 PostgreSQL 并发、SDK 与受控 UniAuth，
+CLI 和 Web 分别验证客户端协议、错误、状态隔离及恢复。Web 模块浏览器入口使用受控
+响应，不能代替真实服务或安装 CLI 的授权证据。Go 服务的 `TestAttachmentGrantRevocationWithFreshProcess`
+由独立 startup/shutdown 入口以 `startupshutdown` tag 执行，在
+`cmd/daynight-server` 中新构建并运行服务，使用真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
+上传正文未完成时成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对
+字节与清理。[附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
+记录服务与 Web 的验证边界。真实服务与客户端的正常连接须由独立产品组合验证证明；
+[组合验收历史](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
+记录原有断连、撤销及同数据验证的取舍，历史结果不能证明当前源码。
 
-统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合
-结果核对当前源码、安装包、进程/镜像与清理；真实上游人工联调单独留证，缺少时
-不宣称全部完成。模型工具预算不适用：不新增 MCP；CLI 不增加认证预检往返，沿用
-既有 request/operation/response/累计预算和 stdout 合同。
+结果绑定实际源码、产物和环境，真实上游人工联调单独留证；缺少证据时不宣称完成。
+CLI 不增加认证预检往返，保持既有 request/operation/response/累计预算和 stdout 合同。
 
 ## 交付边界
 

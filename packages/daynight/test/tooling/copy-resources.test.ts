@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -40,6 +41,9 @@ const fixture = (missing?: Resource) => {
   mkdirSync(scripts);
   mkdirSync(caller);
   writeFileSync(path.join(directory, "package.json"), JSON.stringify({ type: "module" }));
+  const media = path.join(directory, "dist/commands/controller/media");
+  mkdirSync(media, { recursive: true });
+  for (const file of ["image-validation-helper.js", "image-validation.js"]) writeFileSync(path.join(media, file), `// Compiled ${file}\n`);
   cpSync(path.join(packageDirectory, "scripts/copy-resources.ts"), path.join(scripts, "copy-resources.ts"));
   const source = (resource: Resource) => path.join(directory, "src", resource);
   const destination = (resource: Resource) => path.join(directory, "dist", resource);
@@ -72,6 +76,17 @@ afterEach(() => {
 });
 
 describe("packaged resource copy", () => {
+  it("binds the validation manifest to the exact compiled helper and engine bytes", () => {
+    const f = fixture();
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    const media = path.join(f.directory, "dist/commands/controller/media");
+    const hash = (file: string) => createHash("sha256").update(readFileSync(path.join(media, file))).digest("hex");
+    expect(JSON.parse(readFileSync(path.join(media, "image-validation-manifest.json"), "utf8"))).toEqual({
+      version: 1, buildId: "daynight-image-validation-v1-sharp-0.35.5",
+      helperSha256: hash("image-validation-helper.js"), engineSha256: hash("image-validation.js"),
+    });
+  });
   it("ships the standalone CLI usage manual with valid metadata and no local document dependencies", () => {
     const f = fixture();
     const copied = f.run();

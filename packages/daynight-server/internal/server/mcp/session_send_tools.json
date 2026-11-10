@@ -1,0 +1,530 @@
+[
+  {
+    "name": "task_session_send",
+    "description": "Send one exact ordinary text message to the supplied Task execution. Supply an owned operationId and frozen command fence; expectedTurnId must be null for idle. connectionEpoch is not a command fence. Text is limited to 1 MiB UTF-8 and the encoded command to 2 MiB. Slash text stays text. After any unknown result, query the original operation ID without resending.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "taskId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "sessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "claimId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "executionGeneration": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "expectedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1048576
+        }
+      },
+      "required": [
+        "projectId",
+        "taskId",
+        "sessionId",
+        "operationId",
+        "claimId",
+        "executionGeneration",
+        "expectedTurnId",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "const": "daynight.session.v1"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "claimId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "executionGeneration": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$"
+                },
+                "operationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "kind": {
+                  "enum": [
+                    "send_message",
+                    "cancel",
+                    "interaction_response",
+                    "update_setting",
+                    "execute_command",
+                    "refresh_controls"
+                  ]
+                },
+                "state": {
+                  "enum": [
+                    "accepted",
+                    "offered",
+                    "dispatching",
+                    "provider_accepted",
+                    "confirmed",
+                    "failed",
+                    "rejected",
+                    "expired",
+                    "unknown"
+                  ]
+                },
+                "providerResult": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "protocol",
+                "sessionId",
+                "claimId",
+                "executionGeneration",
+                "operationId",
+                "kind",
+                "state"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "taskId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "operationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                }
+              },
+              "required": [
+                "projectId",
+                "taskId",
+                "sessionId",
+                "operationId"
+              ],
+              "additionalProperties": false
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed"
+              ]
+            },
+            "phase": {
+              "enum": [
+                "commit"
+              ]
+            }
+          },
+          "required": [
+            "requestId",
+            "refs",
+            "writeOutcome",
+            "phase"
+          ],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "task_session_operation",
+    "description": "Read the original persisted Task Session receipt, including after a claim change. currentBinding describes the current Task relation. not_found leaves the send outcome unknown; never infer that it is safe to resend.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "taskId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "sessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "projectId",
+        "taskId",
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "const": "daynight.session.v1"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "claimId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "executionGeneration": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$"
+                },
+                "operationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "kind": {
+                  "enum": [
+                    "send_message",
+                    "cancel",
+                    "interaction_response",
+                    "update_setting",
+                    "execute_command",
+                    "refresh_controls"
+                  ]
+                },
+                "state": {
+                  "enum": [
+                    "accepted",
+                    "offered",
+                    "dispatching",
+                    "provider_accepted",
+                    "confirmed",
+                    "failed",
+                    "rejected",
+                    "expired",
+                    "unknown"
+                  ]
+                },
+                "providerResult": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "protocol",
+                "sessionId",
+                "claimId",
+                "executionGeneration",
+                "operationId",
+                "kind",
+                "state"
+              ],
+              "additionalProperties": false
+            },
+            "currentBinding": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "operation",
+            "currentBinding"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "taskId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "operationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                }
+              },
+              "required": [
+                "projectId",
+                "taskId",
+                "sessionId",
+                "operationId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "requestId",
+            "refs"
+          ],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]
