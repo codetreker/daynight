@@ -78,7 +78,9 @@ describe("resolved tool commands", () => {
     const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "auto" }, cwd: root, environment: { PATH: "native-bin", PATHEXT: ".EXE" } }, operation());
     const command = toolCommand(launch, ["--eval", "console.log('captured-native')"]);
     expect((await execute(command.file, command.args, { cwd: root, timeout: 5000 })).stdout.trim()).toBe("captured-native");
-    expect(launch).toMatchObject({ entryPath: entry, interpreterPath: null, source: "path" });
+    // Windows discovery retains the captured PATHEXT spelling in its lexical entry.
+    const discovered = process.platform === "win32" ? path.join(directory, "codex.EXE") : entry;
+    expect(launch).toMatchObject({ entryPath: discovered, canonicalEntryPath: await realpath(entry), interpreterPath: null, source: "path" });
   });
 
   it("uses canonical identity for a shared probe but retains each symlink mapping for verification", async () => {
