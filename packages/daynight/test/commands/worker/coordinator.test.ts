@@ -3472,7 +3472,7 @@ describe("real Git resource isolation", () => {
   }, 20000);
 
 
-  it.each(["mapping", "web-record"])("fences matching UUIDs whose %s points to another physical repository", async proof => {
+  it.each(["mapping", "web-record", "herdr-record", "herdr-path-accessor"])("fences matching UUIDs whose %s points to another physical repository", async proof => {
     const { readFile, rename } = await import("node:fs/promises");
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
     const f = await fixture(2), other = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
@@ -3502,6 +3502,15 @@ describe("real Git resource isolation", () => {
       f.store.registerPending({ ...owner, agent: "codex" });
       f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
       if (proof === "web-record") webStore.register({ ...owner, project: other, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+      if (proof.startsWith("herdr-")) Object.assign(f.herdr, { lifecycle: {
+        responsibilities: () => [owner],
+        ...(proof === "herdr-path-accessor" ? { worktreePath: () => binding.worktreePath } : { archive: { resources: () => [{
+          owner, worktreePath: binding.worktreePath, sessionId: uuid(950), stopped: true, stopEvidence: [], terminal: true,
+          sourcePath: path.join(f.root, "archive"), sourceBytes: "0", state: "pending", error: null,
+          nextAttemptAt: 90000, worktreeDeleted: false, disposition: null,
+        }] } }),
+        isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {},
+      } });
       const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
       const coordinator = createWorkerCoordinator({ ...f.options, git, webStore, monitoring: monitor });
       try {

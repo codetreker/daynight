@@ -1712,3 +1712,15 @@ it("reconnects observation while preserving an unknown input result and preventi
     expect(f.inputs).toHaveLength(2); expect(f.launches).toHaveLength(1);
   } finally { store.close(); }
 });
+
+
+it("reads the original lifecycle worktree path without scanning archive contents", () => {
+  const f = fixture(false, true); f.register();
+  const resources = vi.spyOn(f.facade.lifecycle!.archive!, "resources").mockImplementation(() => { throw new Error("Archive contents must not be inspected"); });
+  try {
+    expect(f.facade.lifecycle!.worktreePath!(f.context)).toBe(f.context.cwd);
+    expect(f.facade.lifecycle!.worktreePath!({ ...f.context, claimId: uuid(992) })).toBeNull();
+    expect(() => f.facade.lifecycle!.worktreePath!({ ...f.context, worktreeId: uuid(991) })).toThrow();
+    expect(resources).not.toHaveBeenCalled();
+  } finally { resources.mockRestore(); }
+});
