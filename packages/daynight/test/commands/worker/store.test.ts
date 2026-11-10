@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
@@ -153,7 +155,7 @@ it("rebuilds the current seven-column layout when its stored version is zero", (
   const rebuilt = open(db);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
-  expect(db.pragma("user_version", { simple: true })).toBe(12);
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
 });
 
 it("rebuilds an unknown unversioned schema containing duplicate identities and invalid payloads", () => {
@@ -163,11 +165,11 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
-  expect(db.pragma("user_version", { simple: true })).toBe(12);
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
 });
 
 it("fences an open worker connection before writing a subsequently changed format", () => {
-  const { database: db, store, register } = fixture(); register(); db.pragma("user_version = 13");
+  const { database: db, store, register } = fixture(); register(); db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat) + 1}`);
   expect(() => store.activateTask(claim)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
   expect(db.prepare("SELECT status FROM tasks").get()).toEqual({ status: "pending" });
@@ -219,7 +221,7 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ status: "active", sessionId: uuid(75) });
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("submitted");
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("notified");
-    expect(db.pragma("user_version", { simple: true })).toBe(12);
+    expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   });
 
   it("upgrades version five while retaining every original claim and project", () => {
@@ -233,6 +235,6 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ ...claim, status: "active", sessionId: uuid(75) });
     expect(recovered.listCleanupSchedules()).toEqual([]);
     recovered.saveCleanupSchedule(owner, schedule);
-    expect(db.pragma("user_version", { simple: true })).toBe(12);
+    expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   });
 });
