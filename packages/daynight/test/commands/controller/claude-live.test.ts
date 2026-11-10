@@ -7,8 +7,8 @@ import type { ProviderOptions } from "../../../src/commands/controller/providers
 import { openNativeMediaSpool } from "../../../src/commands/controller/media/native-spool.js";
 import { inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 // The package test command builds these production helper entries before collection.
-import { queryClaudeLive, claudeLiveImage, releaseClaudeLiveRecord } from "../../../dist/commands/controller/providers/claude-live.js";
-import { openClaudeProvider } from "../../../dist/commands/controller/providers/claude.js";
+const { queryClaudeLive, claudeLiveImage, releaseClaudeLiveRecord } = await import(new URL("../../../dist/commands/controller/providers/claude-live.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude-live.js");
+const { openClaudeProvider } = await import(new URL("../../../dist/commands/controller/providers/claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude.js");
 
 test("actual SDK helper joins its native child, preserves control RPC and transfers image bytes through bounded frames", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-process-")), log = path.join(root, "native.jsonl"), imagePath = path.join(root, "image.png"), spoolDirectory = path.join(root, "spools"); await mkdir(spoolDirectory);
