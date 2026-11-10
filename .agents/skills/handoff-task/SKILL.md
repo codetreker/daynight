@@ -5,4 +5,4 @@ description: Hand a user-specified Daynight task off to an agent.
 
 # Handoff Task
 
-Use the "using-daynight" skill to hand the user-specified task off to an agent.
+Apply the [handoff workflow](../development-workflow/references/handoff.md) to the user-specified task.

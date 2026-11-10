@@ -1,7 +1,7 @@
 # Interactive Prototypes for UI Findings
 
 A UI finding that changes layout or presentation carries a frontend-only
-interactive prototype, as `using-daynight` requires for frontend delivery. The
+interactive prototype, as the [creation workflow](../../development-workflow/references/create-task.md#prepare-content) requires for frontend delivery. The
 prototype lets the implementer and reviewer operate the proposed behavior; it does
 not prove the product's behavior.
 

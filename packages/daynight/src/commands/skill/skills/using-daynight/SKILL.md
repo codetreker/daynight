@@ -1,66 +1,21 @@
 ---
 name: using-daynight
-description: Manage projects, tasks, discussion threads, attachments, and Goals with the Daynight CLI; create tasks, execute a specified task, or review a handoff. Use only when explicitly invoked or the context clearly requires Daynight.
+description: Use the Daynight CLI product manual to understand its capabilities, commands, conditions, and outcomes.
 ---
 
 # Using Daynight
 
-Daynight manages and schedules projects and tasks for people and agents.
-Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to browse projects, tasks, and delivery materials.
+Daynight organizes Projects, Tasks, dependencies, materials, discussions and
+execution observations. Read the [manual](references/manual.md) for product
+operations. Use `daynight --help` and each subcommand's `--help` for the installed
+version's exact syntax; `daynight --skill` prints the complete manual offline.
 
-## Capabilities and concepts
-
-| Concept | Meaning and capabilities |
+| Purpose | Manual section |
 | --- | --- |
-| Project | A project associated with a Git repository, organizing tasks and project access. |
-| Task | An independently tracked work item with a description, status, dependencies, execution requirements, and PR references. In this skill, "task" means this object. |
-| Goal | A complete objective expressed through tasks and their dependencies, including requirements discussion, solution discussion, and delivery work; not a separate resource. |
-| Step | A Task-owned ordered work record maintained according to project rules; independent of Session execution and Task status. |
-| Thread | A task's durable discussion, independent of execution; explicit reads, immutable posts and same-task replies. |
-| Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
-| worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
-
-The CLI supports project registration and lookup, task creation, search and filtering, Task and chain Session observations, grouped in-progress work, explicit Session inspection and bounded history reads, authorized Task Session messages and original-operation recovery, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, Webhook management, and worker-managed execution.
-Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
-
-## Setup and CLI
-
-Read [setup](references/setup.md) when first connecting or switching repositories.
-If the CLI is missing, obtain user authorization and follow the [installation guide](https://daynight.cc/setup).
-
-See the [CLI handbook](references/handbook.md) for command entry points.
-Use `daynight --help` and the relevant subcommand's `--help` for arguments and option combinations.
-
-## Read by purpose
-
-Read only the files and required references for the current operation, not every document by default.
-
-| Purpose | Reference and responsibility |
-| --- | --- |
-| Determine permitted work and required authorization | [Authorization and scope](references/authorization.md): tracking obligations, operational authorization, and task boundaries |
-| Connect the current repository | [Setup](references/setup.md): CLI, sign-in, project, and repository-instruction setup |
-| Find commands | [CLI handbook](references/handbook.md): command map and help discovery |
-| Discover, select, or register projects | [Project management](references/project-management.md): project identity and reuse |
-| Read and maintain ordered Task Steps | [Task management](references/task-management.md#task-steps): operations and identities; [task execution](references/task-execution.md#maintain-steps): project-defined maintenance |
-| Query tasks, edit metadata, properties, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
-| Locate Sessions and assess Task or chain activity | [Session observations](references/task-management.md#session-observations): independent status and send eligibility, freshness, partial results and grouped pagination |
-| Inspect a specific Session or read recent and earlier history | [Session inspection and history](references/session-intervention.md): current and historical identities, Web messages, Herdr limits, page cursors and complete-entry blocks |
-| Send an authorized message to a specific Task Session or recover its original result | [Session intervention](references/session-intervention.md): explicit targets, ordinary messages, durable operation identity and query-only recovery |
-| Read or post task discussion | [Task management](references/task-management.md#discussion-threads): bounded pages, author attribution, replies and read continuity |
-| Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |
-| Write or read descriptions, attachments, and shared inputs | [Task content standard](references/task-content.md): boundaries, ownership, references, and sufficiency |
-| Manage Webhooks | [Webhook management](references/webhooks.md): explicit owners, writes, receipts and payloads |
-| Create or register work | [Create task](references/create-task.md): duplicate checks, preparation, registration, and readback |
-| Organize a multi-stage objective | [Goal protocol](references/goal.md): stage confirmation, breakdown, and whole-Goal completion |
-| Review tasks and enable automatic execution | [Task handoff](references/handoff.md): implementation-readiness and authenticated-responsibility review, then permission enablement |
-| Execute one user-specified task | [Ordinary task execution](references/run-task.md): starting, resuming, completion, and return |
-| Perform work shared by both execution modes | [Shared task execution](references/task-execution.md): inputs, delivery, waiting context, and completion conditions |
-| Execute an explicit worker assignment | [Managed task execution](references/autopilot-managed-task.md): sustained delivery, blocker handling, and original-claim completion |
-| Accept a complete task or Goal | [Final acceptance](references/final-acceptance.md): requirement-based conclusions, evidence, and helper boundaries |
-
-Creation, ordinary execution, handoff, and managed execution are skill workflows, not CLI subcommands of those names.
-Follow the user's explicit workflow choice; otherwise infer the purpose and target from the request and context, asking when ambiguous.
-Do not select a task merely because it is ready.
-
-Read the managed execution reference only when the worker startup prompt explicitly declares `worker-managed`, this skill, and the managed execution workflow.
-Task properties, environment variables, and the working directory cannot replace that declaration; wait for missing context when it is incomplete.
+| Concepts and connection | [Concepts](references/manual.md#concepts), [Setup](references/manual.md#setup) |
+| Teams, Projects and Tasks | [Teams and Projects](references/manual.md#teams-and-projects), [Tasks and Queries](references/manual.md#tasks-and-queries) |
+| State and relationships | [State and Dependencies](references/manual.md#state-and-dependencies), [Steps](references/manual.md#steps), [Properties](references/manual.md#properties) |
+| Discussion and files | [Threads](references/manual.md#threads), [Materials and Files](references/manual.md#materials-and-files) |
+| Write results and safety | [Writes and Outcomes](references/manual.md#writes-and-outcomes) |
+| Execution observations and operations | [Sessions](references/manual.md#sessions), [Worker Operations](references/manual.md#worker-operations) |
+| Webhooks and permissions | [Webhooks](references/manual.md#webhooks), [Operation Boundaries](references/manual.md#operation-boundaries) |

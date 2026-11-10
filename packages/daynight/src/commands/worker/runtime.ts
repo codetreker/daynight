@@ -51,7 +51,7 @@ import { createDurableWorkerHerdr } from "./herdr/durable.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
-import { createWorkerPromptBuilder } from "./prompts.js";
+import { buildWorkerPrompt } from "./prompts.js";
 import { createWorkerPromptSource } from "./prompt-source.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter, syncWorkerConfigurationOnce } from "./reporter.js";
@@ -166,7 +166,6 @@ const nativeConfigurationApplication = (options: {
 const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
-    const buildPrompt = await createWorkerPromptBuilder(options.packageDirectory);
     const api = createWorkerSessionApi(serverUrl, serverToken);
     const launcher = createWebControllerLauncher({ ...options, store: webStore, sessionApi: api, now: Date.now });
     const archive: NonNullable<import("./backends/web.js").WebBackendOptions["archive"]> = async (task, journalPath, signal) => {
@@ -278,11 +277,11 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
     const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, probeArchive, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
-        return buildPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
+        return buildWorkerPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt };
+    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt: buildWorkerPrompt };
   } catch (error) {
     try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
     throw error;
@@ -1165,7 +1164,7 @@ export const runWorkerControl = async (options: {
       store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
       hasHerdrJournal: await hasHerdrJournal(paths, platform),
       availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
-      buildPrompt: await createWorkerPromptBuilder(options.packageDirectory), ...(retryPromptSource === undefined || preparePromptSource === undefined ? {} : { promptSource: retryPromptSource, preparePromptSource }), emit: diagnostics.emit, signal,
+      buildPrompt: buildWorkerPrompt, ...(retryPromptSource === undefined || preparePromptSource === undefined ? {} : { promptSource: retryPromptSource, preparePromptSource }), emit: diagnostics.emit, signal,
     });
     const result = await submitWorkerControl({
       store, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories: coordinatorConfiguration.repositories,

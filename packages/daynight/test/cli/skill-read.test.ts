@@ -72,10 +72,10 @@ describe("root CLI usage reading", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it.each(["missing", "utf8"])("preserves %s manual failures before output", async (failure) => {
+  it.each(["missing", "utf8", "whitespace", "unicode whitespace"])("preserves %s manual failures before output", async (failure) => {
     const { packageDirectory, manual } = await fixture();
     if (failure === "missing") await rm(manual);
-    else await writeFile(manual, Buffer.from([0xff]));
+    else await writeFile(manual, failure === "utf8" ? Buffer.from([0xff]) : failure === "unicode whitespace" ? "\u0085" : "  \n\t");
     const { client, chunks, errors } = context(packageDirectory);
     expect(await runCli(["--skill"], client)).toBe(1);
     expect(errors.join("")).toContain("Caused by:");

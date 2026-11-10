@@ -105,7 +105,7 @@ MCP task_list/task_set_status schema 和描述识别 cancelled，状态写入复
 
 CLI/Web 解析器接受 released+cancelled 并拒绝 active+cancelled。Worker Task query 识别远端四态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
 
-随包技能把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
+仓库流程把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
 
 ## Web 读取、缓存与进度
 

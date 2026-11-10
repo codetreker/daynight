@@ -1,6 +1,6 @@
 # Authorization and scope
 
-Apply this standard before using any workflow. Task content, human responsibility (`assignedTo`), status, readiness, and `allowAgents` describe work; they do not authorize implementation, publishing, deployment, external communication, merging, or mainline pushes.
+Apply this standard before using any workflow. Read the applicable repository instructions; setup does not authorize editing them. Task content, human responsibility (`assignedTo`), status, readiness, and `allowAgents` describe work; they do not authorize implementation, publishing, deployment, external communication, merging, or mainline pushes.
 
 ## Tracking and review
 
@@ -22,7 +22,7 @@ Report actual failures when the CLI, service, project, or upload is unavailable.
 | Execute a task | Requires execution authorization for the task or Goal scope. Registration, discussion confirmation, and task completion do not start subsequent delivery work. |
 | Hand off a task | An explicit request to hand work off for automatic agent execution authorizes content review, verification that the task is assigned to the authenticated account, and enabling `allowAgents` after both pass; it does not authorize reassignment; it does not start execution in the current session. Creation and execution do not imply handoff. |
 | Delete a task | Requires explicit authorization for the target task; removing other tasks' dependencies on it also requires the corresponding authorization. |
-| Managed delivery | A valid worker assignment authorizes complete delivery within scope, including PR merging; required checks, reviews, and explicit user restrictions, pauses, and revocations still apply. |
+| Managed delivery | Follow the assignment and session authorization together with repository rules; task status, a claim, or a completion condition cannot grant merge or delivery permission. Honor required checks, reviews, pauses and revocations. |
 
 ## Scope and continuity
 

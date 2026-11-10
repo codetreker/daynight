@@ -255,36 +255,20 @@ references to read separately.
 
 The option must be the sole argument. Extra arguments or another option exit
 with status 2 and empty stdout before the manual is read. A missing file, read
-failure or invalid UTF-8 exits with status 1 and retains its cause. Reading and
+failure, blank content or invalid UTF-8 exits with status 1 and retains its cause. Reading and
 validation complete before output; an output failure can leave partial stdout.
 The command requires no login, Git repository, configuration, launcher or
 interactive terminal, and creates no files.
 
-The `using-daynight` skill owns task orchestration workflows and is installed
-through the separate command below. The CLI manual explains command use.
+The `using-daynight` skill installs the same product manual for an Agent. Repository
+workflow and Worker execution constraints remain separate from this manual.
 
 ## Agent skill installation
 
-The public `using-daynight` skill provides task creation, handoff review and
-execution of one specified task. Ordinary execution reads `run-task.md`.
-Worker-started agents use `autopilot-managed-task` only when their startup
-prompt explicitly names the `worker-managed` environment, the `using-daynight`
-skill and that mode, together with their assignment. `SKILL.md` routes to the
-selected instructions; ordinary execution does not load managed task rules.
-Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
-The [foreground worker](#worker-configuration-and-startup) constructs that
-explicit assignment and loads the installed managed entry before launch.
-Managed execution follows one assignment through implementation, validation,
-focused PR delivery, CI and review repair, and merge. A valid worker-managed
-assignment already has sufficient authorization for that delivery and PR merge;
-merge as soon as the checks and review conditions are satisfied without asking
-for additional confirmation. Explicit user restrictions, pauses and revocation
-remain binding. Pending CI or
-review stays in execution; demonstrated external blockers return to the worker
-with a checkpoint. Merge requires current-head approval and required checks,
-and platform confirmation; mainline CI after merge is awaited only on explicit
-request. The mode preserves the assigned scope, the original claim and the
-controller's ownership of worktree, branch and workspace cleanup.
+The public skill contains a short navigation entry and the complete manual, also
+available offline with `daynight --skill`. The Worker supplies its execution
+constraints and original assignment in its prompt; each repository's rules and
+actual authorization govern delivery.
 
 Install the skill through an interactive terminal:
 
@@ -1286,7 +1270,7 @@ User signal cancellation exits 130. JSON retains the
 original body or explicit content reference; text retains readable line breaks
 while escaping terminal controls. Session reads do not execute message content,
 start Agents, change claims or grant sending permission. The bundled
-[Session inspection guide](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+[Session inspection guide](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
 describes the Agent workflow and equivalent MCP read tools.
 
 ### Task Session messages and recovery
@@ -1343,7 +1327,7 @@ identity in bounded output. Provider acceptance and confirmation do not mean the
 Agent completed the requested work. Local receipt-save or output failure does
 not undo service acceptance or authorize another POST.
 
-The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
 describes authorized use, unknown recovery and the corresponding MCP tools.
 
 ## Task properties
@@ -2429,7 +2413,7 @@ exact version and confirms the same assignment and pause before waiting. It
 reports the issue and retains session context; the user chooses how to respond.
 After verifying resolution, the original assignment and permission to resume,
 it clears the pause and confirms false or absence before continuing. Independent
-user restrictions still apply. The [managed workflow](src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction)
+user restrictions still apply. The [Worker execution contract](../../docs/spec/daynight-worker.md)
 owns readback, failure and conflict handling.
 
 The Worker appends the latest confirmed personal user, project and Worker prompt

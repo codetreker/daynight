@@ -4,13 +4,7 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
-const requiredSkillResources = [
-  "SKILL.md", "references/handbook.md", "references/create-task.md", "references/handoff.md",
-  "references/run-task.md", "references/autopilot-managed-task.md", "references/task-execution.md",
-  "references/goal.md", "references/task-content.md",
-  "references/authorization.md", "references/setup.md", "references/project-management.md",
-  "references/task-management.md", "references/write-safety.md", "references/final-acceptance.md",
-] as const;
+const requiredSkillResources = ["SKILL.md", "references/manual.md"] as const;
 
 type Resource = { readonly path: string; readonly sha256: string; readonly localReferences: readonly string[] };
 export type InstalledSkillContract = {
@@ -52,10 +46,17 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
         documents.set(relative, content);
         for (const match of prose(content).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
           const target = match[1]!;
-          if (target.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
-          const resource = path.resolve(path.dirname(file), target.split("#")[0]!);
+          if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+          const [targetPath, fragment] = target.split("#");
+          const resource = targetPath ? path.resolve(path.dirname(file), targetPath) : file;
           assert.ok(contained(root, resource), `${relative} links outside the installed bundle: ${target}`);
           assert.ok(contained(root, await realpath(resource)), `${relative} resolves outside the installed bundle: ${target}`);
+          if (fragment) {
+            const linked = await readFile(resource, "utf8");
+            const anchors = [...prose(linked).matchAll(/^#{1,6}\s+(.+?)\s*#*\s*$/gm)]
+              .map((heading) => heading[1]!.toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, "").replaceAll(" ", "-"));
+            assert.ok(anchors.includes(decodeURIComponent(fragment)), `${relative} has a missing anchor: ${target}`);
+          }
           localReferences.push(target);
         }
       }
@@ -65,8 +66,7 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
   await visit(root);
   resources.sort((left, right) => left.path.localeCompare(right.path));
   for (const resource of requiredSkillResources) assert.ok(documents.has(resource), `The installed bundle contains ${resource}.`);
-  assert.equal(documents.has("references/autopilot.md"), false, "The removed automatic execution mode is not packaged.");
-  assert.equal(documents.has("references/execute-task-in-managed.md"), false, "The renamed managed entrypoint is not packaged under its old name.");
+  assert.deepEqual(resources.map((resource) => resource.path).sort(), [...requiredSkillResources].sort(), "The bundle contains only the entrypoint and manual.");
   const entrypoint = documents.get("SKILL.md");
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(entrypoint!);
   assert.notEqual(frontmatter, null, "The installed skill has YAML frontmatter.");

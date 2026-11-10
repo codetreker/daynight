@@ -14,7 +14,7 @@ acceptance must assess the current confirmed requirements and actual combined
 results rather than count cancelled tasks as delivered requirements.
 
 Deliver requirement-based conclusions, defects, unverified items, and the evaluated sources, key observations, and material limitations needed to support those conclusions in the owning task.
-Content ownership follows the [task content standard](task-content.md); managed acceptance must also meet the evidence attachment requirements of the [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard).
+Content ownership follows the [task content standard](task-content.md); managed acceptance must also meet the evidence attachment requirements of the [complete delivery standard](delivery.md#worker-delivery-results).
 Keep verification commands, debugging history, and progress in the session unless they are themselves required deliverables.
 
 ## Helper boundaries

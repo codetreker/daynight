@@ -46,7 +46,7 @@ export const runWorkerSetup = async (
   const workingDirectory = context.workingDirectory();
   const paths = resolveWorkerPaths(homeDirectory);
   const snapshot = await dependencies.readSnapshot(paths, signal);
-  const environment = { homeDirectory, workingDirectory, packageDirectory: context.packageDirectory, paths, signal, agentControlMode: snapshot.configuration.agentControlMode ?? "herdr" };
+  const environment = { homeDirectory, workingDirectory, paths, signal, agentControlMode: snapshot.configuration.agentControlMode ?? "herdr" };
   context.stderr("Worker environment checks\n");
   const commonChecks = await dependencies.inspectEnvironment(environment);
   renderChecks(commonChecks, context);

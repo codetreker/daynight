@@ -12,7 +12,7 @@ another owner for the rules governing task handoff.
 
 The repository provides [handoff-task](../../../skills/handoff-task/SKILL.md)
 for one user-specified task and [handoff-goal](../../../skills/handoff-goal/SKILL.md)
-for every unfinished task in a user-specified group. Each uses `using-daynight`
+for every unfinished task in a user-specified group. Each uses `development-workflow`
 directly. That skill owns the handoff workflow and its safeguards; the
 [content-sufficient handoff decision](../../archived/process/2026-10-25-task-content-handoff.md)
 records their original rationale.
@@ -28,6 +28,6 @@ without providing a distinct rule.
 
 ## Consequences
 
-The entrypoints express target selection while `using-daynight` controls each
+The entrypoints express target selection while `development-workflow` controls each
 handoff. Changes to the shared workflow remain centralized; the group entrypoint
 must still identify every unfinished task before handing them off individually.

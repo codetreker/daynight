@@ -2,7 +2,7 @@ import type { CommandDefinition } from "../../cli/schema.js";
 
 export const skillDefinition: CommandDefinition = {
   name: "skill",
-  description: "Install the using-daynight project and task skill for coding agents",
+  description: "Install the using-daynight CLI operation manual for coding agents",
   commands: [{
     name: "install",
     description: "Choose detected agents and install or replace their using-daynight skill",

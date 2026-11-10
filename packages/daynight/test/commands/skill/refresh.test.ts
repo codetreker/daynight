@@ -25,7 +25,7 @@ const fixture = async () => {
   await fs.mkdir(path.join(source, "references"), { recursive: true });
   const entrypoint = "---\nname: using-daynight\ndescription: Current guidance\n---\nNew bundle\n";
   await fs.writeFile(path.join(source, "SKILL.md"), entrypoint);
-  await fs.writeFile(path.join(source, "references/handbook.md"), "New handbook\n");
+  await fs.writeFile(path.join(source, "references/manual.md"), "New manual\n");
   const output: string[] = [];
   const errors: string[] = [];
   const context: CliContext = {
@@ -53,7 +53,7 @@ describe("refresh existing agent skills", () => {
     for (const target of [user, project]) {
       expect((await fs.readdir(target)).sort()).toEqual(["SKILL.md", "references"]);
       expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe(f.entrypoint);
-      expect(await fs.readFile(path.join(target, "references/handbook.md"), "utf8")).toBe("New handbook\n");
+      expect(await fs.readFile(path.join(target, "references/manual.md"), "utf8")).toBe("New manual\n");
     }
     await expect(fs.lstat(path.join(f.home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.lstat(path.join(f.project, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -147,6 +147,28 @@ describe("refresh existing agent skills", () => {
     await fs.writeFile(path.join(f.source, "SKILL.md"), "invalid bundle");
     await expect(refreshInstalledSkills(f.context, signal())).rejects.toThrow("Cannot capture installed");
     expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe("Local edits\n");
+  });
+
+  it.each(["missing", "directory", "whitespace", "unicode whitespace", "invalid UTF-8"])("keeps every existing copy when the source manual is %s", async (damage) => {
+    const f = await fixture();
+    const user = await f.seed(f.home, ".agents");
+    const project = await f.seed(f.project, ".claude");
+    for (const target of [user, project]) {
+      await fs.mkdir(path.join(target, "references"));
+      await fs.writeFile(path.join(target, "references/autopilot-managed-task.md"), "old workflow\n");
+    }
+    const manual = path.join(f.source, "references/manual.md");
+    if (damage === "missing" || damage === "directory") {
+      await fs.rm(manual);
+      if (damage === "directory") await fs.mkdir(manual);
+    } else await fs.writeFile(manual, damage === "whitespace" ? " \n\t" : damage === "unicode whitespace" ? "\u0085" : Buffer.from([0xff]));
+    await expect(refreshInstalledSkills(f.context, signal())).rejects.toThrow("Cannot capture installed");
+    for (const target of [user, project]) {
+      expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe("Local edits\n");
+      expect(await fs.readFile(path.join(target, "obsolete"), "utf8")).toBe("old resource");
+      expect(await fs.readFile(path.join(target, "references/autopilot-managed-task.md"), "utf8")).toBe("old workflow\n");
+    }
+    expect(f.output).toEqual([]);
   });
 
   it("reports Git discovery failures rather than treating a damaged repository as absent", async () => {
