@@ -188,13 +188,14 @@ export const parseWorkerCloudBootstrap = async (
   }
   signal.throwIfAborted();
   return parseWorkerCloudValue({
+    agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr",
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
     preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  });
+  }, true, true);
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>
@@ -218,6 +219,6 @@ export const assertWorkerConfigurationIsLocal = async (
     let resource;
     try { resource = await createApiClient({ ...apiOptions, expectedUserId: user.id }).getWorkerConfiguration(workerId); }
     catch (error) { if (error instanceof ApiError && error.status === 404 && error.code === "not_found") return; throw error; }
-    if (resource.desired !== null) throw new Error("This Worker's runtime configuration is cloud-managed. View and edit it in My Workers; local paths and agentControlMode remain in the local configuration file.");
+    if (resource.desired !== null) throw new Error("This Worker's runtime configuration is cloud-managed. View and edit it in My Workers; local paths remain in the local configuration file.");
   } finally { operation.dispose(); }
 };

@@ -15,7 +15,7 @@ export const configurationOutcomeState = (resource: WorkerConfigurationResource,
     if (resource.desired !== null && resource.observation !== null && BigInt(resource.observation.desiredRevision) < BigInt(resource.desired.revision)) return 'pending';
   }
   const matches = JSON.stringify(item.appliedValue) === JSON.stringify(expected);
-  if (item.state === 'applied') return matches ? 'applied' : 'pending';
+  if (item.state === 'applied') return matches && item.appliedValue !== null ? 'applied' : 'pending';
   if (resource.desired !== null && resource.observation !== null && BigInt(resource.observation.desiredRevision) < BigInt(resource.desired.revision)) return 'pending';
   return item.state;
 };
@@ -34,7 +34,7 @@ export const ConfigurationFeedback = ({ resource, kind, projectId, expected, cha
   const actualState = configurationOutcomeState(resource, item, expected);
   const state = changed ? 'unsaved' : actualState;
   const value = item?.appliedValue;
-  const rendered = value === undefined || value === null ? m.unavailableValue : typeof value === 'number' ? String(value)
+  const rendered = value === undefined || value === null ? m.unavailableValue : typeof value === 'number' || typeof value === 'string' ? String(value)
     : typeof value === 'boolean' ? kind === 'preferPlatformSpecificTasks' ? value ? m.enabled : m.disabled : m.state.applied : `${value.agent === 'claude' ? 'Claude Code' : value.agent === 'copilot' ? 'Copilot' : 'Codex'} / ${value.model === null ? m.defaultModel : value.model} / ${JSON.stringify(value.args)}`;
   const previousFailure = item?.lastFailure ?? (actualState === 'pending' ? item?.error : null);
   return <div id={id} className="application-feedback">

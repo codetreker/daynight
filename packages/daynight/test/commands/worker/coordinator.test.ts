@@ -1044,6 +1044,25 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.store.getTask(old)?.sessionId).toBe(old.sessionId);
   });
 
+  it("recovers a frozen Herdr claim while the new Web project configuration is unavailable", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const old = f.store.listTasks()[0]!; f.resources.clear();
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: { ...configuration, agentControlMode: "web", model: "new-model", recoveryLimit: 5 } });
+    await restarted.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId, configuration: { ...configuration, agentControlMode: "herdr", recoveryLimit: 5 } });
+    expect(f.store.getTask(old)).toMatchObject({ claimId: old.claimId, sessionId: old.sessionId });
+  });
+
+  it("does not reinterpret an unfrozen historical Herdr claim with Web parameters", async () => {
+    const f = await fixture(); const candidate = f.candidates[0]!; f.candidates.splice(0);
+    const task = f.grant(candidate, { claimId: uuid(991), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(992) });
+    const active = f.store.activateTask(f.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: uuid(991), agent: "codex" }));
+    const current = { ...configuration, agentControlMode: "web" as const };
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current });
+    await expect(restarted.advanceRetry(active)).rejects.toThrow("Native configuration is unavailable");
+    expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("starts fresh after an interrupted NULL-session launch with frozen native settings=%s", async frozen => {
     const f = await fixture(); f.candidates.splice(0);
     const granted = f.grant(task(f.project.projectId, uuid(200)), { claimId: uuid(201), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(202) });
@@ -2668,7 +2687,7 @@ describe("Web acquisition configuration changes", () => {
 });
 
 describe("applied cloud runtime configuration", () => {
-  it("keeps an unavailable project tuple distinct from usable global defaults", async () => {
+  it("keeps a frozen claim available when the current project tuple is unavailable", async () => {
     const f = await fixture();
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     const observed = f.tasks.observe.mock.calls.length;
@@ -2678,7 +2697,8 @@ describe("applied cloud runtime configuration", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce();
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
-    await expect(f.coordinator.advanceRetry(f.store.listUnfinishedTasks()[0]!)).rejects.toThrow("Native configuration is unavailable");
+    await expect(f.coordinator.advanceRetry(f.store.listUnfinishedTasks()[0]!)).resolves.toBeUndefined();
+    expect(f.tasks.start.mock.calls[0]![2].configuration).toMatchObject(configuration);
     await f.coordinator.shutdown();
   });
 

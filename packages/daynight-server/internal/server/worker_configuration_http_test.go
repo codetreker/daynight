@@ -313,7 +313,9 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	f := newConfigurationHTTPFixture(t, &logs)
 	origin := configuredTestConfig().PublicOrigin
 	value := configurationHTTPModel(t, configurationHTTPValue())
-	putBody := func(revision string) string { return jsonBody(t, map[string]any{"revision": revision, "value": value}) }
+	putBody := func(revision string) string {
+		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPLegacyValue(t, value)})
+	}
 	f.headers = http.Header{}
 	f.tx.WriteIdentityCall = nil
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
@@ -331,10 +333,10 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	projectID := "d4444444-4444-4444-8444-444444444444"
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}}}
 	bootstrap := &model.WorkerConfigurationExchange{Bootstrap: &value}
-	f.report(t, uninitialized, configurationHTTPReportBody(value, nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
 	f.get(t, uninitialized)
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: value}
-	f.report(t, uninitialized, configurationHTTPReportBody(value, nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
 	current := model.WorkerConfigurationResource{Desired: &initial, ObservationRevision: "0"}
 	f.actor(t, bob, cookieHeaders(origin))
 	for _, method := range []string{http.MethodGet, http.MethodPut} {

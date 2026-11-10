@@ -45,6 +45,7 @@ export type WorkerCoordinatorOptions = {
   readyProjectIds?: readonly string[]; targetProjectIds?: readonly string[];
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
   preferPlatformSpecificTasks: boolean;
+  recoveryLimit?: number;
   prepareProject?: (projectId: string, signal: AbortSignal) => Promise<void>;
   configurationComplete?: () => boolean;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
@@ -55,10 +56,11 @@ export type WorkerCoordinatorOptions = {
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
   monitoring?: ReturnType<typeof createMonitoringObserver>;
 };
-export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds">;
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit">;
 
 const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
   maxConcurrent: value.maxConcurrent,
+  ...(value.recoveryLimit === undefined ? {} : { recoveryLimit: value.recoveryLimit }),
   preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
   ...(value.targetProjectIds === undefined ? {} : { targetProjectIds: Object.freeze([...value.targetProjectIds]) }),
@@ -280,14 +282,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const configurationFor = (task: LocalTask): ExecutionConfiguration | null => {
-    if (task.agentControlMode === "web") { const frozen = options.webStore?.getTask(task)?.configuration; if (frozen) return frozen; }
+    const mode = task.agentControlMode ?? "herdr";
     const repository = configuration.repositories.find(repository => repository.project.projectId === task.projectId);
-    if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;
     const current = repository?.configuration ?? configuration.globalConfiguration;
-    if (current === null) return null;
-    const frozen = options.store.getNativeConfiguration(task);
-    if (frozen !== null) return { ...frozen, agentControlMode: task.agentControlMode ?? "herdr", recoveryLimit: current.recoveryLimit };
-    return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
+    const frozen = mode === "web" ? options.webStore?.getTask(task)?.configuration : options.store.getNativeConfiguration(task);
+    const recoveryLimit = configuration.recoveryLimit ?? current?.recoveryLimit ?? (frozen != null && "recoveryLimit" in frozen ? frozen.recoveryLimit as number : undefined);
+    if (frozen != null && recoveryLimit !== undefined) return { ...frozen, agentControlMode: mode, recoveryLimit };
+    if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;
+    // An unfrozen historical claim cannot borrow parameters validated for another backend.
+    if (current == null || (current.agentControlMode ?? "herdr") !== mode) return null;
+    return current.agent === task.agent ? { ...current, agentControlMode: mode } : { agent: task.agent, agentControlMode: mode, model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
   const canAdvance = (task: LocalTask): boolean => canAdvanceProject(task.projectId) && configurationFor(task) !== null;
   const updatePromptDemand = (): void => {

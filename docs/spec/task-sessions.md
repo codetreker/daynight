@@ -12,7 +12,7 @@ Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额
 - `herdr`：worker 通过 Herdr 启动原生终端会话，Task Session 提供只读终端观察和明确授权的控制；Herdr 承载终端通道。
 - `web`：worker 直接启动 Daynight controller，由 controller 持有私有原生会话，经 Daynight server 将结构化事件和操作连接到 Task Session。整个生命周期不依赖 Herdr 安装或服务。
 
-配置复用 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
+模式由 Worker 云端配置的已应用 agentControlMode 决定。首次采纳读取 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，已有本地 `web` 保持其值；旧服务继续使用本地模式。模式变更仅用于新 claim，原 claim 保持冻结模式、native 配置和执行身份，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
 
 本文件定义要求，不以字段或协议存在宣称运行时已完成。各组件的实际可用性与拒绝行为由[实现设计](../design/task-session-protocol.md)说明。
 

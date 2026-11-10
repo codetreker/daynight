@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。通过独立托管模式能力协商的完整值还必须包含 agentControlMode。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -23,6 +23,7 @@
 | pollIntervalMs | 1000..60000 的整数，单位毫秒 |
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
+| agentControlMode | 协商后为 herdr 或 web；已有旧目标尚未采纳时可为 null，不是第三种模式 |
 | native | 完整 {agent,model,args}，Agent 为 codex、copilot 或 claude |
 | projects | 显式数组；条目为 {projectId,nativeOverrides}，规范 Project UUID 不重复，最多 128 项 |
 
@@ -30,32 +31,41 @@
 
 model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 字节。项目覆盖遵循相同限制。本地候选及云端目标共享这些数值和集合限制。
 
-项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、本机路径、服务连接与凭据、Worker 身份及 agentControlMode 不属于目标配置。
+项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode 是 Worker 级全局目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
 
 ## 首次导入与编辑
 
-本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略候选，始终保留云端值。并发或迟到候选不能覆盖它。接入不查询任务状态或要求先处理任务。
+完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode 并推进目标 revision，其他字段原样保留。候选来自本机有效默认配置：明确 web 必须采纳为 web，未指定时才为 herdr。完整首次导入不额外再推进一次版本。网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同；先保存的非 null 模式不会被后来的候选覆盖，同值报告不反复升版。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
 
 PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
 
 新增或修改的项目条目必须可访问。原样保留或删除已选但后来失权的条目，不阻塞其他配置编辑；不能获取失权项目的名称或仓库信息。
 
+## 托管模式能力
+
+配置 GET、HEAD、PUT 及带配置的 Worker 报告使用独立请求头 Daynight-Worker-Control-Mode: 1。服务明确回显同名响应头才表示支持；它不替代 Daynight-Worker-Configuration: 1/2，不改变 prompt 结果、认证、Origin、principal 或 CAS。配置页面与 API 同源使用，不为该能力新增跨源准入。
+
+未协商请求仍使用原严格结构：GET 和报告回执省略 agentControlMode，配置资源观测省略同名项。旧 PUT 在目标 CAS 和同一事务锁内保留当前模式，只替换原协议字段。旧存储记录缺失模式通过专用旧格式解码成为未采纳状态；新写入合同不因升级而放宽。
+
+新客户端未收到回显时按旧合同解析并继续本机模式，不向旧服务发送新正文。运行中的 Worker 必须继续探测服务升级或回退，并按新读取的能力构造后续报告，不自动重放结果未知的请求。Web 禁用该字段并提供升级说明，其他字段保持可编辑。支持能力的旧目标尚未采纳时显示等待同步，不能将默认 herdr 当作实际已应用。
+
 ## 心跳扩展
 
 Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2。该标记只选择配置交换格式，不改变任务或 inventory 协议。未携带标记的报告和协议 1 保留各自的既有合同。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
 
-扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
+扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；即使已有云端 desired，仍可提交独立模式候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
 
 扩展回执保留原时间字段，并含 configuration:{desired,observationRevision,observationAccepted}。观测 CAS 不匹配时返回 false 与当前版本，保留已有应用观测；合法机器报告仍按原规则保存。响应未知不能被当作未写入，后续使用最新实际状态收敛，不重放旧报告。
 
 ## 应用观测
 
-每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。完整 items 最多 1025 个不同 key，应用值遵循目标配置相同的字段与数值限制。
+每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。未协商托管模式的完整 items 最多 1025 个不同 key；协商后最多 1026 项，其中非 mode 项仍最多 1025 个，应用值遵循目标配置相同的字段与数值限制。
 
 | kind | appliedValue |
 | --- | --- |
 | maxConcurrent、pollIntervalMs、recoveryLimit | 对应合法标量或 null |
 | preferPlatformSpecificTasks | true 或 false 表示已应用的优先策略；尚无确认值时为 null |
+| agentControlMode | herdr 或 web 表示已应用模式；尚无确认值时为 null |
 | native、projectNative | 完整 native 元组或 null |
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
@@ -94,9 +104,9 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 
 ## Web 消费者
 
-“我的 Worker”详情的配置表单编辑 desired.value，以 desired.revision 保存完整目标；observationRevision 与 observation 只用于展示最近应用报告，不改变草稿的保存版本。页面的运行观测和配置分别读取：近期快照超窗的 404 不代表配置不存在，配置读取失败也不清除独立的运行观测。资源没有 supported 标志；desired:null 表示尚未首次导入，Web 不能使用 PUT 建立初值。
+“我的 Worker”详情的配置表单编辑 desired.value，以 desired.revision 保存完整目标；observationRevision 与 observation 只用于展示最近应用报告，不改变草稿的保存版本。页面的运行观测和配置分别读取：近期快照超窗的 404 不代表配置不存在，配置读取失败也不清除独立的运行观测。响应正文没有 supported 标志；客户端从独立能力响应头记录模式支持情况，不能从默认值或已有目标推断支持。desired:null 表示尚未首次导入，Web 不能使用 PUT 建立初值。
 
-表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。
+表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功；模式应用仍需要同名观测，缺失项不得被其它字段成功覆盖，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。
 
 保存冲突、明确失败和响应未知保留草稿及无效原始输入。响应未知先读取当前资源核对，不重放 PUT，不根据同值核对推断先前写入成功。完整编辑与交互要求由[Web 需求](daynight-web.md#云端运行配置)拥有，机制由[Web 设计](../design/daynight-web.md#worker-云端配置编辑)拥有；Web 展示的应用结果来自 Worker 报告，不能作为本机副作用的独立证明。
 

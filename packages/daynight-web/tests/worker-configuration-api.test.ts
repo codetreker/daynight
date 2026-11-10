@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getWorkerConfiguration, listWorkerConfigurationProjects, parseConfigurationRevision, parseWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationOutcome, type WorkerConfigurationResource } from '../src/api/worker-configuration';
 import { invalidateAuthRequests } from '../src/api/client';
-import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
+import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
 const admission = () => ({ userId: WORKER_USER, onPrincipalMismatch: vi.fn() });
@@ -105,5 +105,57 @@ describe('principal-admitted configuration API', () => {
     expect(await listWorkerConfigurationProjects({ limit: 50, cursor: 'next/+' }, signal, admission())).toEqual({ items: [], nextCursor: null });
     expect(fetch.mock.calls[1]![0]).toBe('/api/v1/projects?limit=50&cursor=next%2F%2B');
     await expect(listWorkerConfigurationProjects({}, signal, admission())).rejects.toMatchObject({ code: 'principal_mismatch' });
+  });
+});
+
+
+describe('Worker control mode capability', () => {
+  it('negotiates mode independently, preserving null until adoption and string observations', async () => {
+    const value = { ...configurationValue(), agentControlMode: null };
+    const fetch = vi.fn().mockResolvedValueOnce(controlModeResponse(configurationResource('1', value)))
+      .mockResolvedValueOnce(controlModeResponse({ ...configurationResource('2', { ...value, agentControlMode: 'web' }), observationRevision: '1', observation: {
+        baseRevision: '0', desiredRevision: '2', reportedAt: WORKER_TIME,
+        items: [{ ...outcome({ kind: 'agentControlMode' }, 'herdr'), state: 'pending', targetRevision: '2' }],
+      } }));
+    vi.stubGlobal('fetch', fetch);
+    const signal = new AbortController().signal;
+    const first = await getWorkerConfiguration(workerId(1), signal, admission());
+    expect(first.controlModeSupported).toBe(true);
+    expect(first.desired!.value.agentControlMode).toBeNull();
+    const saved = await saveWorkerConfiguration(workerId(1), '1', { ...value, agentControlMode: 'web' }, signal, { ...admission(), controlModeSupported: true });
+    expect(saved.observation!.items[0]!.appliedValue).toBe('herdr');
+    expect(saved.desired!.value.agentControlMode).toBe('web');
+    for (const [, init] of fetch.mock.calls) expect(new Headers(init.headers).get('Daynight-Worker-Control-Mode')).toBe('1');
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value.agentControlMode).toBe('web');
+  });
+  it('keeps old-service responses strict and saves other fields without mode', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
+      .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), recoveryLimit: 5 })))
+      .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), agentControlMode: 'herdr' })));
+    vi.stubGlobal('fetch', fetch);
+    const signal = new AbortController().signal;
+    const legacy = await getWorkerConfiguration(workerId(1), signal, admission());
+    expect(legacy.controlModeSupported).not.toBe(true);
+    expect(legacy.desired!.value).not.toHaveProperty('agentControlMode');
+    await saveWorkerConfiguration(workerId(1), '1', { ...legacy.desired!.value, recoveryLimit: 5 }, signal, admission());
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value).not.toHaveProperty('agentControlMode');
+    await expect(getWorkerConfiguration(workerId(1), signal, admission())).rejects.toMatchObject({ kind: 'protocol' });
+  });
+  it('requires an explicit mode field and refuses invalid modes, overrides and invented null success', () => {
+    for (const mode of [undefined, '', 'native', 1, false, {}]) {
+      const value = { ...configurationValue(), ...(mode === undefined ? {} : { agentControlMode: mode }) };
+      expect(() => parseWorkerConfiguration({ ...configurationResource(), desired: { ...configurationResource().desired, value } }, true)).toThrow('invalid response');
+    }
+    for (const mode of ['herdr', 'web', null]) {
+      const resource = configurationResource('1', { ...configurationValue(), agentControlMode: mode as 'herdr' | 'web' | null });
+      expect(parseWorkerConfiguration(resource, true).desired!.value.agentControlMode).toBe(mode);
+    }
+    const resource = { ...observed([outcome({ kind: 'agentControlMode' }, null)]), desired: configurationResource('1', { ...configurationValue(), agentControlMode: null }).desired };
+    expect(() => parseWorkerConfiguration(resource, true)).toThrow('invalid response');
+    expect(() => parseWorkerConfiguration({ ...resource, observation: null, observationRevision: '0', desired: { ...resource.desired, value: { ...resource.desired!.value, projects: [{ projectId: workerId(3), nativeOverrides: { agentControlMode: 'web' } }] } } }, true)).toThrow('invalid response');
+  });
+  it('requires the capability echo when saving a mode', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(configurationResponse(configurationResource('2'))));
+    await expect(saveWorkerConfiguration(workerId(1), '1', { ...configurationValue(), agentControlMode: 'web' }, new AbortController().signal, { ...admission(), controlModeSupported: true })).rejects.toMatchObject({ kind: 'protocol' });
   });
 });

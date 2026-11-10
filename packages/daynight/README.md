@@ -1956,13 +1956,24 @@ existing service credentials and stable worker identity, with no separate
 command or configuration switch.
 
 The cloud target owns concurrency, polling and recovery limits, platform-specific
-acquisition preference, Project selection, and global/per-Project Agent, model and
-arguments. Repository roots, local paths, service credentials, Worker identity,
-`agentControlMode`, and optional
+acquisition preference, control mode, Project selection, and global/per-Project
+Agent, model and arguments. Repository roots, local paths, service credentials,
+Worker identity, and optional
 `agentModel` / `agentReasoningEffort` overrides stay local. First enrollment imports a candidate from the original local YAML only
 when no cloud target exists. Later starts and heartbeats always use the cloud
 target; legacy local managed fields cannot replace it. Configuration enrollment does not depend
 on active claims or alter task/claim formats, permission or recovery rules.
+
+My Workers → Configuration → Control mode selects `herdr` or `web`. A new local
+configuration defaults to `herdr`; an existing local `web` setting is adopted
+when its cloud target has not yet acquired a mode. Explicit cloud choices win
+over later bootstrap candidates. Both service and CLI must support the separate
+`Daynight-Worker-Control-Mode: 1` capability; older services keep local mode.
+Applying a mode validates it together with global native settings and publishes
+the pair only after persistence. Project native settings are revalidated for that
+mode. Existing claims retain their frozen mode, native settings, sessions and
+worktrees. Failed application keeps the previous effective pair and reports the
+failure; saving a target alone does not confirm application.
 
 Set `worker.agentModel` and/or `worker.agentReasoningEffort` to override only
 those settings for new executions, even after enrollment. Each field independently
@@ -2191,18 +2202,20 @@ The Worker stores its target, successful per-item values, errors and observation
 acknowledgments in `worker/configuration.json`, scoped to the service origin,
 authenticated user and Worker ID. One serialized commit owner merges receives,
 application results and acknowledgments, atomically persists the latest state,
-then publishes an immutable effective view. The cache uses schema version 2;
-version 1 is explicitly migrated, adding a false platform preference and pending
-application item for an initialized target while preserving removals, retries,
-failures and observation identity.
-The observation limit of 1025 retains space for the added scalar alongside a full
-previous collection. Current-format missing fields, invalid scope, corrupt data
+then publishes an immutable effective view. The cache uses schema version 3;
+versions 1 and 2 are explicitly migrated while preserving removals, retries,
+failures, unadopted mode and observation identity. Version 1 also retains its
+platform-preference migration. Native history records its validation mode and
+must be revalidated in a new process. The negotiated observation limit is 1026,
+including at most 1025 non-mode items; old projections retain the 1025 limit. Current-format missing fields, invalid scope, corrupt data
 and storage errors remain failures. Cached native success history is retained for
 observation. For both global and Project native settings, a new runtime validates
 the current cloud target first and publishes that tuple on success, including
 explicit null model and empty arguments. Only a failed target validation permits
-revalidation of historical successful settings under the current local control
-mode. Unvalidated history remains unavailable while the target is being checked;
+revalidation of historical successful settings under their recorded control
+mode. Migrated version 1/2 history has no recorded mode and must instead be
+validated under the local compatibility mode; that mode is not historical proof.
+Unvalidated history remains unavailable while the target is being checked;
 values already validated in this runtime remain usable during later updates.
 Atomic file replacement alone does not permit an older application result to
 overwrite a newer target.
@@ -2701,10 +2714,12 @@ recovery ledger. The
 
 ## Web worker sessions
 
-Set `worker.agentControlMode: web` and select `worker.agent: codex`, `claude` or
-`copilot` in `~/.daynight/config.yml`. The default mode is `herdr`. The mode is
+Select Control mode `web` and Agent `codex`, `claude` or `copilot` in
+My Workers → Configuration. Before enrollment, `worker.agentControlMode` and
+`worker.agent` in `~/.daynight/config.yml` supply the initial values.
+The default mode is `herdr`. The mode is
 worker-wide, frozen by the service on each claim, and cannot be changed through
-summary updates. Older service records without a mode mean Herdr. Changing
+summary updates. Older claim records without a mode mean Herdr. Changing
 configuration affects new claims; existing work stays with its original backend.
 
 Web execution does not initialize, start or probe Herdr. Independent runtime

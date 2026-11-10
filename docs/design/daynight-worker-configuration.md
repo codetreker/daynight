@@ -23,7 +23,7 @@ flowchart LR
 
 workers 增加 configuration_revision、configuration_updated_at、desired_configuration、configuration_observation_revision 和 configuration_observation。目标三列同时为空或存在；应用观测独立为空，观测版本初始为 0。迁移不从任务或旧机器报告推测配置。
 
-目标和观测保存受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。preferPlatformSpecificTasks 是独立布尔标量，不进入原生配置元组；应用观测的同名 key 接受 true、false 或 null。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值。
+目标和观测保存受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。preferPlatformSpecificTasks 是独立布尔标量，不进入原生配置元组；应用观测的同名 key 接受 true、false 或 null。agentControlMode 作为同一目标 JSONB 中的 nullable 字段存储，只有旧目标未采纳时为 null。专用存储升级解码识别旧行缺字段，不改变新写入严格结构。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值；mode 不属于项目覆盖。
 
 数据库迁移为已初始化且缺少 preferPlatformSpecificTasks 的目标 JSON 补入 false，保留目标版本、修改时间、观测版本与原应用结果。缺少同名应用观测仍表示等待 Worker 确认，不从迁移后的目标推导已应用。当前完整目标解析始终要求该布尔字段。
 
@@ -31,9 +31,9 @@ workers 增加 configuration_revision、configuration_updated_at、desired_confi
 
 ## Worker 行事务
 
-报告复用 Store.WriteWorker。机器观测 upsert 建立或更新记录后，配置分支锁定同一 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被候选改写；观测比较自身 baseRevision 后保存。回执来自该事务内最终目标与观测版本。
+报告复用 Store.WriteWorker。机器观测 upsert 建立或更新记录后，配置分支锁定同一 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被完整候选改写。独立 controlModeBootstrap 仅在模式为 null 时补入候选并推进目标版本，已确定模式时不写；同次完整导入已含模式，不重复升版。观测比较自身 baseRevision 后保存。回执来自该事务内最终目标与观测版本。
 
-PUT 也锁定这行，先校验目标版本，再校验新增/修改项目的准入，比较规范值并保存。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
+PUT 也锁定这行，先校验目标版本，再校验新增/修改项目的准入，比较规范值并保存。未协商模式的旧 PUT 在这次锁定读取后保留已有 agentControlMode，不能由解析层预填默认值；模式已采纳后的显式 null 拒绝。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
 
 并发导入只建立一次初值。观测 CAS 失败不覆盖结果，也不使合法 telemetry 失败；目标 CAS 失败不改变目标。数据库操作、提交与回滚错误保留原链。
 
@@ -41,9 +41,11 @@ PUT 也锁定这行，先校验目标版本，再校验新增/修改项目的准
 
 目标、项目覆盖、观测 key 与应用值分别做闭合解析。native 原子组合保证 Agent/model/args 的表示有效，服务端不运行 native preflight。观测只接受闭合诊断字段，不把自由输出带入日志或 HTTP。
 
-对目标配置值和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。客户端在增长当前集合前检查容量，通过已接纳回执清理匹配失败与完成且不再需要的项目记录；未知结果和未完成移除保留以供恢复。观测集合上限为 1025，新增加的一个名额对应平台优先标量，允许原 1024 项缓存迁移时保留全部恢复记录；规范化 JSON 的总字节预算仍独立适用。
+对目标配置值和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。客户端在增长当前集合前检查容量，通过已接纳回执清理匹配失败与完成且不再需要的项目记录；未知结果和未完成移除保留以供恢复。旧协议观测集合上限仍为 1025；模式能力扩展为 1026，新增名额只用于 agentControlMode，非 mode 项最多 1025。旧响应投影删除 mode 后仍可由旧严格客户端解析，旧缓存迁移不丢失已有恢复记录；规范化 JSON 的总字节预算仍独立适用。
 
 应用观测保留自身服务器接纳时间；机器报告可以更新，而应用结果仍是此前已确认状态。消费者将当前目标与每项目标版本比较，保持旧实际值和明确等待/失败含义。
+
+独立 Daynight-Worker-Control-Mode: 1 请求与回显控制 mode 字段及观测项的严格解析和投影，不依赖配置协议 1/2。未协商时去除 mode 及同名观测，保持旧严格消费者可读；新客户端只有确认回显才发送 controlModeBootstrap。模式能力不改变账号、Origin、principal、配置 CAS 和报告身份校验。
 
 旧协议不接受新正文，旧回执不附加配置字段；配置协议 1 遵循完整扩展结构。协议 2 的有限个人 prompt 批次在原报告提交后独立读取，机制由[个人 prompt 设计](worker-prompts.md#配置报告)拥有。能力仅影响配置交换，不成为 Task/claim 或 inventory 的准入条件。
 

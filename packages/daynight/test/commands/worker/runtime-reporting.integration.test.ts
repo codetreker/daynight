@@ -117,6 +117,64 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it.each([{ supported: false, change: "upgrade" }, { supported: true, change: "rollback" }])("renegotiates control mode after a server $change", async ({ supported: initialSupport }) => {
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, projects: [] } };
+    const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
+    const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
+    let supported = initialSupport;
+    const exchanges: string[] = [];
+    const accepted: WorkerCloudReport[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const pathname = new URL(String(url)).pathname, headers = new Headers(options!.headers);
+      const mode = supported && headers.get("Daynight-Worker-Control-Mode") === "1";
+      const desired = mode ? { ...target, value: { ...target.value, agentControlMode: "web" } } : target;
+      const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: {
+        "Content-Type": "application/json", "Daynight-User-ID": uuid(6),
+        ...(headers.has("Daynight-Worker-Configuration") ? { "Daynight-Worker-Configuration": headers.get("Daynight-Worker-Configuration")! } : {}),
+        ...(mode ? { "Daynight-Worker-Control-Mode": "1" } : {}),
+      } });
+      if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
+      if (pathname.endsWith("/configuration")) {
+        exchanges.push(`GET:${mode ? "mode" : "legacy"}`);
+        return response({ desired, observationRevision: "0", observation: null });
+      }
+      if (pathname.endsWith("/report")) {
+        const configuration = (JSON.parse(options!.body as string) as { configuration: WorkerCloudReport }).configuration;
+        const includesMode = Object.hasOwn(configuration, "controlModeBootstrap");
+        if (!supported && includesMode) {
+          exchanges.push("POST:mode:rejected");
+          return response({ error: { code: "invalid_input", message: "Unknown Worker configuration field.", requestId: "mode-rollback" } }, 400);
+        }
+        exchanges.push(`POST:${includesMode ? "mode" : "legacy"}:accepted`);
+        accepted.push(configuration);
+        const selectors = JSON.parse(headers.get("Daynight-Worker-Prompts")!) as { key: { scope: string; projectId?: string } }[];
+        const prompts = selectors.map(({ key }) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "user" ? uuid(6) : key.scope === "worker" ? uuid(4) : key.projectId, revision: "0", text: "", updatedAt: null } }));
+        return response({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false, prompts } });
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    });
+    mocks.remote.mockReturnValue({ ...real, project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })) });
+    const running = start(f);
+    await eventually(() => expect(accepted.some(configuration => configuration.observation?.items.some(item => item.key.kind === "native" && item.state === "applied"))).toBe(true));
+    const before = exchanges.length;
+    supported = !initialSupport;
+    await vi.advanceTimersByTimeAsync(30_000);
+    if (initialSupport) {
+      await eventually(() => expect(exchanges.slice(before)).toEqual(["POST:mode:rejected"]));
+      await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await eventually(() => expect(exchanges.slice(before, before + 3)).toEqual(["POST:mode:rejected", "GET:legacy", "POST:legacy:accepted"]));
+      expect(accepted.at(-1)).not.toHaveProperty("controlModeBootstrap");
+      expect(accepted.at(-1)!.observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+    } else {
+      await eventually(() => expect(exchanges.slice(before, before + 2)).toEqual(["GET:mode", "POST:mode:accepted"]));
+      await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
+      expect(accepted.at(-1)!.controlModeBootstrap).toBe("herdr");
+    }
+    f.signal.abort(); await running;
+  });
+
   it("shares the real response byte budget between reconciliation GET and report POST", async () => {
     const f = await fixture();
     target = { ...target, value: { ...target.value, projects: [] } };
@@ -300,6 +358,40 @@ describe("worker runtime configuration reporting", () => {
     const restored = report.mock.calls.find(([, body]) => body.runtimeConfiguration?.native?.model.source === "cloud")![1];
     expect(restored.runtimeConfiguration!.native).toEqual({ agent: "codex", model: { value: "cloud-model", source: "cloud" }, reasoningEffort: { value: "medium", source: "cloud" } });
     restart.signal.abort(); await restarted;
+  });
+
+  it("normalizes new execution settings and source reports with the applied cloud mode", async () => {
+    const f = await fixture();
+    await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "herdr", agentReasoningEffort: "high" } }));
+    target = { ...target, value: { ...target.value, agentControlMode: "web", native: { agent: "codex", model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
+    const running = start(f);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.some(([, body]) => body.runtimeConfiguration?.native?.reasoningEffort.value === "high")).toBe(true));
+    const web = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")![0];
+    expect(web.globalConfiguration).toMatchObject({ args: ["--effort", "high"] });
+    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "herdr", native: { ...target.value.native, args: [] } } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")).toBe(true));
+    const herdr = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")![0];
+    expect(herdr.globalConfiguration).toMatchObject({ args: ["-c", "model_reasoning_effort=\"high\""] });
+    expect(report.mock.calls.at(-1)![2].controlModeBootstrap).toBe("herdr");
+    f.signal.abort(); await running;
+  });
+
+  it("keeps the applied Herdr configuration when its native arguments cannot run in Web mode", async () => {
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, agentControlMode: "herdr", native: { agent: "codex", model: null, args: ["--search"] }, projects: [] } };
+    const running = start(f);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")).toBe(true));
+    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "web" } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(configurationTransitions().some(item => item.key.kind === "agentControlMode" && item.state === "error")).toBe(true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.some(([, , configuration]) => configuration.observation?.items.some(item => item.key.kind === "agentControlMode" && item.state === "error" && item.appliedValue === "herdr"))).toBe(true));
+    expect(update.mock.calls.every(([configuration]) => configuration.globalConfiguration === null || configuration.globalConfiguration.agentControlMode === "herdr")).toBe(true);
+    expect(update.mock.calls.at(-1)![0].globalConfiguration.args).toEqual(["--search"]);
+    f.signal.abort(); await running;
   });
 
   it("reconciles an imported target after a lost bootstrap receipt before capturing another report", async () => {
