@@ -34,7 +34,9 @@ likewise isolates the Project read operation while retaining the Step service's
 own snapshot, parent gate, DAO calls and encoding. The [Step content write
 decision](2026-11-10-step-content-write-coordination-tests.md) isolates Project
 write authorization and Add/Change admission while retaining the service's locked
-parent gate, DAO coordination, encoding and completion handling.
+parent gate, DAO coordination, encoding and completion handling. The
+[Step order write decision](2026-11-10-step-order-write-coordination-tests.md)
+extends that separation to Move and Delete.
 
 Callback execution and transaction completion remain separate. Service tests
 control `committed`, `not_committed` and `unknown` outcomes and retain original

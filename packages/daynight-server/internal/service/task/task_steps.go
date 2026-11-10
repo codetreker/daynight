@@ -34,6 +34,8 @@ type taskStepWriteOperations struct {
 	requireProjectWrite func(context.Context, store.ProjectWriteDAO, model.Principal) (model.ProjectAccess, error)
 	admitAdd            func(model.TaskHeader, []model.TaskStep, model.TaskStep, *string, *string) (tasksteps.Mutation, error)
 	admitChange         func(model.TaskHeader, []model.TaskStep, string, tasksteps.Changes) (tasksteps.Mutation, error)
+	admitMove           func(model.TaskHeader, []model.TaskStep, string, tasksteps.Placement) (tasksteps.Mutation, error)
+	admitDelete         func(model.TaskHeader, []model.TaskStep, string) (tasksteps.Mutation, error)
 }
 
 func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
@@ -45,6 +47,8 @@ func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
 			requireProjectWrite: projectcore.RequireProjectWrite,
 			admitAdd:            tasksteps.AdmitAdd,
 			admitChange:         tasksteps.AdmitChange,
+			admitMove:           tasksteps.AdmitMove,
+			admitDelete:         tasksteps.AdmitDelete,
 		},
 	}
 }
