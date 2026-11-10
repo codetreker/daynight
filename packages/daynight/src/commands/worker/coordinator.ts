@@ -640,6 +640,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             const result = await options.webBackend.probeArchive(task, signal);
             signal.throwIfAborted();
             if (result.kind === "blocked") throw new ArchiveRepairRequiredError(result.code);
+            if (result.kind === "complete") {
+              // Clear only the repaired condition; cleanup still owns the claim and worktree.
+              const schedule = ensureCleanupSchedule(options.store, owner, now());
+              const cleared = options.store.saveCleanupSchedule(owner, { ...schedule, ...retained, archiveRepairCode: null });
+              cleanupRetries.set(identityKey, cleared);
+            }
           } catch (error) { throw new WorkerCleanupError("archive", error); }
           archiveProbes.delete(identityKey);
         }

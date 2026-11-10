@@ -46,7 +46,7 @@ export const probeStoppedControllerArchive = async (options: { journalPath: stri
     assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
     const source = db.prepare("SELECT projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { projection_gap: string | null; archive_incomplete: number };
     const code = archiveRepairCode(source);
-    return code === null ? { kind: "attempt" } : { kind: "blocked", code };
+    return code === null ? { kind: "complete" } : { kind: "blocked", code };
   }).deferred());
   options.signal?.throwIfAborted();
   return result;
