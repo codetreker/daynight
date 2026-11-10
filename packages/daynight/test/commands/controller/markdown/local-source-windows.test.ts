@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { fork } from "node:child_process";
 import { decodeWindowsReparsePoint } from "../../../../src/commands/controller/markdown/local-source-windows.js";
 import { copyLocalImage, createLocalImageContext, type LocalImageContext } from "../../../../src/commands/controller/markdown/local-source.js";
+import type { LocalImageCheckpoint } from "../../../../src/commands/controller/markdown/local-source-proof.js";
 
 const reparse = (target: string, junction = false, relative = false) => {
   const text = Buffer.from(target, "utf16le"), base = junction ? 16 : 20, bytes = Buffer.alloc(base + text.length);
@@ -50,6 +51,38 @@ const fixture = async () => {
 };
 const allowed = async () => {};
 describe.skipIf(process.platform !== "win32")("Windows local image source native handles", () => {
+  it("proves real root and file IDs across a junction and parent traversal", async () => {
+    const f = await fixture(); await mkdir(path.join(f.cwd, "a", "b"), { recursive: true }); await writeFile(path.join(f.cwd, "a", "image"), Buffer.alloc(524_289, 7));
+    await symlink(path.join(f.cwd, "a", "b"), path.join(f.cwd, "link"), "junction");
+    const nativeIdentity = async (filename: string) => {
+      const observed = await stat(filename, { bigint: true }), koffi = await import("koffi"), kernel = koffi.load("kernel32.dll");
+      const open = kernel.func("intptr_t __stdcall CreateFileW(str16 path, uint32_t access, uint32_t share, void *security, uint32_t disposition, uint32_t flags, intptr_t template)");
+      const info = kernel.func("int __stdcall GetFileInformationByHandleEx(intptr_t file, int kind, void *data, uint32_t length)");
+      const close = kernel.func("int __stdcall CloseHandle(intptr_t file)");
+      const handle = open(filename, 0x80, 7, null, 3, 0x02000000, 0) as number | bigint;
+      expect(handle).not.toBe(-1); expect(handle).not.toBe(-1n);
+      try { const bytes = Buffer.alloc(24); expect(info(handle, 18, bytes, bytes.length)).toBe(1); return { kind: "windows", dev: String(observed.dev), ino: String(observed.ino), fileId: bytes.toString("hex") }; }
+      finally { expect(close(handle)).toBe(1); }
+    };
+    const root = await nativeIdentity(f.cwd), source = await nativeIdentity(path.join(f.cwd, "a", "image")), checks: LocalImageCheckpoint[] = [];
+    await copyLocalImage({ ...f, path: "link/%2e%2e/image", checkPolicy: checkpoint => { checks.push(checkpoint); } });
+    expect(checks.map(check => check.stage)).toEqual(["initial", "opened", "block", "block", "final"]);
+    expect(checks[0]!.proof).toMatchObject({ requested: { locator: "link/%2e%2e/image", path: "link/../image" }, root: { cwd: f.cwd, identity: root }, opened: null, traversal: [] });
+    expect(checks[1]!.proof.opened).toEqual(source);
+    expect(checks[1]!.proof.traversal).toContainEqual(expect.objectContaining({ kind: "link", name: "link", target: path.join(f.cwd, "a", "b"), relative: false }));
+    expect(checks[1]!.proof.traversal.some(step => step.kind === "parent")).toBe(true);
+    expect(checks.slice(2).every(check => JSON.stringify(check.proof) === JSON.stringify(checks[1]!.proof))).toBe(true);
+  });
+  it("refuses an opened object without exporting bytes and releases its locks", async () => {
+    const f = await fixture(); await writeFile(path.join(f.cwd, "image"), "private");
+    await expect(copyLocalImage({ ...f, path: "image", checkPolicy: checkpoint => { if (checkpoint.stage === "opened") throw new Error("object denied"); } })).rejects.toThrow("object denied");
+    expect(await readFile(f.outputPath)).toHaveLength(0); await rename(f.cwd, `${f.cwd}-closed`);
+  });
+  it("bounds traversal evidence before exporting bytes", async () => {
+    const f = await fixture(); await mkdir(path.join(f.cwd, "d")); await writeFile(path.join(f.cwd, "image"), "private");
+    await expect(copyLocalImage({ ...f, path: `${"d/../".repeat(1000)}image`, checkPolicy: allowed })).rejects.toMatchObject({ code: "source_forbidden" });
+    expect(await readFile(f.outputPath)).toHaveLength(0);
+  });
   it("copies relative, absolute and file-URI sources under the pinned root", async () => {
     const f = await fixture(), bytes = Buffer.from("original"); await writeFile(path.join(f.cwd, "image"), bytes);
     for (const source of ["image", path.join(f.cwd, "image"), `file:///${path.join(f.cwd, "image").replaceAll("\\", "/")}`]) {

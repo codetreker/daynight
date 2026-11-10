@@ -15,14 +15,14 @@
 | [pipeline.ts](../../packages/daynight/src/commands/controller/markdown/pipeline.ts) | `createMarkdownTimelinePipeline.accept/tick/receipt/failure/stop` 将同步正文接收、异步解析、回执关联和停止结算分开；旧投影从持久索引重放。 |
 | [store.ts](../../packages/daynight/src/commands/controller/markdown/store.ts) | `createMarkdownSourceStore` 在既有 `image_runtime_state` 保存 `markdown:projection`、`markdown:source`、`markdown:context` 与 `markdown:rate`；按最多 32 个身份分页，计入既有元数据预算。 |
 | [coordinator.ts](../../packages/daynight/src/commands/controller/markdown/coordinator.ts) | `createMarkdownCaptureCoordinator` 拥有可信 context、持久 source intent、位置 ACK、原 capture 查询、权限复核、来源重试和取消后的 join。 |
-| [local-source.ts](../../packages/daynight/src/commands/controller/markdown/local-source.ts)、[local-source-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-helper.ts)、[local-source-filesystem.ts](../../packages/daynight/src/commands/controller/markdown/local-source-filesystem.ts)、[local-source-windows.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows.ts)、[local-source-windows-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows-helper.ts) | `createLocalImageContext` 与 `copyLocalImage` 按平台选择独立 helper，以根和祖先句柄执行 no-follow/reparse-aware 组件遍历、链接解析和逐块复制。 |
+| [local-source.ts](../../packages/daynight/src/commands/controller/markdown/local-source.ts)、[local-source-proof.ts](../../packages/daynight/src/commands/controller/markdown/local-source-proof.ts)、[local-source-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-helper.ts)、[local-source-filesystem.ts](../../packages/daynight/src/commands/controller/markdown/local-source-filesystem.ts)、[local-source-windows.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows.ts)、[local-source-windows-helper.ts](../../packages/daynight/src/commands/controller/markdown/local-source-windows-helper.ts) | `createLocalImageContext` 与 `copyLocalImage` 按平台选择独立 helper，以根和祖先句柄执行 no-follow/reparse-aware 组件遍历、链接解析和逐块复制；`LocalImageCheckpoint` 将有界的实际来源证明交给策略消费者。 |
 | [external-source.ts](../../packages/daynight/src/commands/controller/markdown/external-source.ts) | `createExternalImagePolicy` 与 `copyExternalImage` 将受信出口策略和逐次请求计费接入独立 DNS、TCP/TLS、HTTP/1.1 reader。 |
 
 [runtime.ts](../../packages/daynight/src/commands/controller/runtime.ts) 将 Provider 的正文和完成元数据交给 pipeline，以 250 ms 周期分别推进解析与采集；原生回调不等待媒体工作。断线使活动来源失效；停止先取消并等待来源工作，再关闭 Provider、完成已有正文的投影结算和关闭媒体存储。停止后不启动来源请求或后台 query。已持久的 unknown、validated 和 retained 仍属于原执行的恢复与归档闭包。
 
 当前能力有以下未完成条件，不能据此缩小[验收规格](../spec/session-image-acceptance.md)：
 
-- 真实 runtime 没有向 coordinator 提供 `nativeReadPolicy`。现有私有调用点返回 `{revision,verify():void}`，本身不能证明某条路径、链接解析后的对象、独立 Read deny 和当前撤销代次均获准。真实 Provider 的完整有效读策略适配仍未实现；`permissionMode`、sandbox/profile 名、同用户可读或一次工具读取不能代替该证明。本地来源因此返回 `policy_restricted`，不把测试中的允许策略用于真实原生会话。
+- 真实 runtime 没有向 coordinator 提供 `nativeReadPolicy`。私有策略调用点消费 context 与 helper 的来源 checkpoint；来源证明可以描述实际打开对象，但不能自行证明原生已允许该路径、链接目标和当前读取。真实 Provider 的完整有效读策略适配仍未实现；`permissionMode`、sandbox/profile 名、同用户可读或一次工具读取不能代替该证明。本地来源因此返回 `policy_restricted`，不把测试中的允许策略用于真实原生会话。
 - 真实 runtime 没有提供 `externalPolicy`，也没有取得部署级出口隔离证明。外部来源因此返回 `policy_restricted`。受控网络测试可注入 `controlledNetworkBoundary` 和 CA，但该配置不证明真实部署已阻断透明路由到本机、内网和元数据。
 
 这些条件是完整来源交付尚未满足的要求，不是已经批准的范围延期。受控 transport、文件系统和 Provider fixture 分别只证明其覆盖的机制，不能据此开放真实自动采集或声明端到端验收通过。macOS ARM64、Linux 和 Windows 的句柄用例须在对应平台实际执行，代码分支或其他平台的结果不替代该证据；Intel macOS 不在现行支持平台范围内。具体结果及版本由验收材料记录。
@@ -96,6 +96,8 @@ cwd/policy/来源平台或恢复归属不可信时 fail closed，报 context_una
 
 读取前、每块源 bytes 交付前、validated 前都复核 policy；私有 prepared 副本的每个 read_capture 块也需要有效短期 policy lease。撤销与块 lease 发放串行：先撤销则不发新块；已合法交付 bytes 无法远程擦除。最后合法块交付是本地导出的线性化点，若它早于本地撤销，服务仍可在复核 Session 权限后提交；反之不能凑齐原件。copying 未知先 query，不擅删准备文件。
 
+原生权限生产者须提供当前有效 Read 决定或可验证能力，以及足以与来源块准入排序的权限变化语义。此要求不限定上游必须导出完整权限快照或提供单块 lease RPC；完整原生判定配合可靠通知与屏障等机制，可以在证明同等效果后接入。原生 Session 由真实 RPC 实例关联，execution、导出根和已打开对象的对应由 A3 保持。原生已判定路径必须覆盖 helper 实际取得的对象；不要求原生端直接认识 Daynight executionId 或全部平台 file ID。字节复制、取消及 writer join 仍由 A3 承担。
+
 已 committed 图的读权属于 Session/record，不因源根移除而销毁历史；账户、Session 访问撤销或删除则阻断服务读取和页面缓存/预览。只读权限不能创建 context 或重新读本地源。
 
 ### 路径分类与一次解码
@@ -134,6 +136,10 @@ realpath 仅用于诊断或选择候选根，不能作随后字符串 open 的�
 文件系统按句柄拒绝未知类型，Linux/macOS 当前允许本地 APFS/HFS 与 ext/XFS/Btrfs/tmpfs，并在 macOS 核验 `MNT_LOCAL` 与实际 `f_fstypename` 的 `apfs`/`hfs` 名称，拒绝扩展 flags 带 `MNT_EXT_FSKIT` 的 userspace 挂载，不把动态注册的 `f_type` 编号作为稳定类型；Linux 保持按文件系统 magic 判断。Windows 只接受 fixed 本地盘的 NTFS；ReFS 的 64-bit stat file ID 不保证唯一，在可信 execution-root 合同保存完整 128-bit 身份前拒绝。最终对象必须为本机受支持文件系统的 regular file，拒绝 FIFO/socket/设备/目录，不能在读取前被 FIFO 挂住。POSIX 使用 no-follow/nonblocking，Windows 使用 reparse-point/backup-semantics 句柄并核验 disk file 类型。不创建、截断、chmod 或提权来源文件。EACCES 显示安全 permission_denied，不泄露私有路径。
 
 句柄授权的是当时从允许根取得的目录对象；同用户随后重命名不会改变该对象。重命名即撤权、恶意同用户恢复时间戳或硬链接原始来源隔离需要额外 OS 沙箱，本机制不声称提供进程隔离。允许目录里的普通硬链接沿该目录授权，不能凭 inode 推断全部出处。
+
+helper 将本次真实遍历产生的来源证明交给策略消费者：原 locator 与一次解码后的路径、已持有根的身份、组件及链接/reparse 展开记录和最终打开对象身份。证明来自执行打开操作的句柄遍历，不用另一次 `realpath` 猜测来源；路径随后变化也不能将其替换为另一个对象的证明。该数据只在 helper 与 Controller 内部使用，不写入 Session journal、timeline 或对外错误。
+
+`LocalImageCheckpoint` 的顺序为 `initial`、`opened`、一个或多个 `block`、`final`；initial 尚无最终来源对象，opened 的策略检查先于任何来源内容读取。父进程在放行前核验 checkpoint 的结构、关联、阶段顺序及证明稳定性，block/final 必须保留 opened 的同一来源。字符串必须为合法 Unicode、无控制字符且最多 8192 UTF-8 bytes；每个根或来源遍历集合最多 4096 条记录、编码最多 262144 bytes，包含消息类型的整个 checkpoint JSON 也最多 262144 bytes。追加遍历记录时即检查界限，发送及内容读取前再次核验完整证明；越限、失配或拒绝均停止来源读取。异步策略检查期间取消，仍须等 helper 真正退出，迟到检查成功不得继续 writer。证明传递及受控策略验证只建立消费机制，不能替代尚未交付的原生有效授权。
 
 ### 原件取得与本地资源界限
 

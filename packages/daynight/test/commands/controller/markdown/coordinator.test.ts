@@ -9,10 +9,11 @@ import { createMarkdownCaptureCoordinator } from "../../../../src/commands/contr
 import { validateImageFile } from "../../../../src/commands/controller/media/image-validation.js";
 import type { ControllerLaunchTicket } from "../../../../src/commands/controller/launch-ticket.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../../src/session/image-values.js";
+import type { LocalImageCheckpoint } from "../../../../src/commands/controller/markdown/local-source-proof.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const fixture = async () => {
+const fixture = async (checkSource?: (checkpoint: LocalImageCheckpoint) => void) => {
   const base = path.resolve(import.meta.dirname, "../../../../../../.tmp/a3-coordinator-tests");
   await mkdir(base, { recursive: true }); const home = await mkdtemp(path.join(base, "c-"));
   const workspace = path.join(home, "workspace"); await mkdir(workspace);
@@ -37,7 +38,7 @@ const fixture = async () => {
       if (action === "failed") receipt = { ...receipt, revision: String(BigInt(receipt.revision) + 1n), state: "failed", resourceId: null, error: (body as { error: { code: string; message: string } }).error };
       return receipt;
     } });
-  const coordinator = createMarkdownCaptureCoordinator({ ticket: currentTicket, journal, bridge: bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: () => ({ revision: "verified-test-policy", verify: () => { if (!allowed) throw new Error("revoked"); } }), onReceipt: (_request, value) => { changes.push(value); } });
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: currentTicket, journal, bridge: bridge.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: () => ({ revision: "verified-test-policy", verify: (checkpoint?: LocalImageCheckpoint) => { if (!allowed) throw new Error("revoked"); if (checkpoint) checkSource?.(checkpoint); } }), onReceipt: (_request, value) => { changes.push(value); } });
   cleanups.push(async () => { await coordinator.stop(); await journal.stopMedia(); journal.close(); });
   const context = coordinator.contextFor(occurrence);
   const committed = () => {
@@ -54,6 +55,26 @@ const fixture = async () => {
   };
   return { journal, coordinator, occurrence, context, calls, changes, bytes, home: workspace, committed, serviceRetry, setLost: () => { loseRegister = true; }, revoke: () => { allowed = false; } };
 };
+
+test("the source policy can refuse the actual opened object before capture validation", async () => {
+  const stages: string[] = [];
+  const f = await fixture(checkpoint => { stages.push(checkpoint.stage); if (checkpoint.stage === "opened") { expect(checkpoint.proof.requested.locator).toBe("original.png"); expect(checkpoint.proof.opened).not.toBeNull(); throw new Error("native object denied"); } });
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); await f.coordinator.tick();
+  expect(f.calls).toEqual(["register", "failed"]); expect(stages).toEqual(["initial", "opened"]);
+  const record = f.coordinator.get(f.occurrence.imageId)!;
+  expect(record.error?.code).toBe("policy_restricted");
+  expect(f.journal.media().captureStatus(record.request!.captureId, record.request!.attemptId)).toBeNull();
+  expect(JSON.stringify(record)).not.toContain('"traversal"');
+});
+
+test("the source policy receives stable evidence through final without persisting it", async () => {
+  const checks: LocalImageCheckpoint[] = [], f = await fixture(checkpoint => { checks.push(checkpoint); });
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); await f.coordinator.tick();
+  expect(f.calls).toEqual(["register", "commit"]); expect(checks.map(check => check.stage)).toEqual(["initial", "opened", "block", "final"]);
+  expect(checks[1]!.proof.root.identity).toMatchObject(f.context.root);
+  expect(checks[2]!.proof).toEqual(checks[1]!.proof); expect(checks[3]!.proof).toEqual(checks[1]!.proof);
+  expect(JSON.stringify(f.coordinator.get(f.occurrence.imageId))).not.toContain('"traversal"');
+});
 
 test("the original position is acknowledged before source IO and copies remain immutable after source deletion", async () => {
   const f = await fixture();

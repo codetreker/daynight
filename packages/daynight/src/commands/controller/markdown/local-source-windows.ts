@@ -1,5 +1,8 @@
 import * as koffi from "koffi";
 import type { LocalImageRootIdentity } from "./local-source.js";
+import type { LocalImageObjectIdentity, LocalImageSourceProof, LocalImageTraversalStep } from "./local-source-proof.js";
+
+const { LocalImageTraversal }: typeof import("./local-source-proof.js") = await import(new URL(`./local-source-proof.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href);
 
 const refuse = (code = "source_forbidden"): never => { throw Object.assign(new Error("Local image source is unavailable."), { code }); };
 const components = (value: string): string[] => {
@@ -45,6 +48,7 @@ export function decodeWindowsReparsePoint(bytes: Buffer): { target: string; rela
 
 type Handle = number | bigint;
 export type WindowsFile = { handle: Handle; path: string; id: string; size: bigint; directory: boolean; reparse: boolean; links: number; legacy: LocalImageRootIdentity; snapshot: string };
+export const windowsImageIdentity = (file: WindowsFile): LocalImageObjectIdentity => ({ kind: "windows", ...file.legacy, fileId: file.id });
 
 /** Resolve one name relative to its held parent; pathname ancestors are never reparsed. */
 export function openWindowsImageRoot(cwd: string, expectedRoot?: LocalImageRootIdentity) {
@@ -130,7 +134,7 @@ export function openWindowsImageRoot(cwd: string, expectedRoot?: LocalImageRootI
   };
   // Used only to identify the original cwd or an absolute locator's root
   // prefix. No file data is read before the pinned root has been reached.
-  const directoryPrefix = (value: string, held: WindowsFile[], expand: () => void, stop?: string): { file: WindowsFile; rest: string[] } => {
+  const directoryPrefix = (value: string, held: WindowsFile[], expand: () => void, traversal: InstanceType<typeof LocalImageTraversal>, stop?: string): { file: WindowsFile; rest: string[] } => {
     const candidate = diskPath(value), stack = [pinDrive(candidate.drive, held)];
     let parts = candidate.parts, steps = 0;
     for (;;) {
@@ -140,49 +144,56 @@ export function openWindowsImageRoot(cwd: string, expectedRoot?: LocalImageRootI
       if (++steps > 8192 || held.length > 4096) return refuse();
       const part = parts.shift()!;
       if (part === ".") continue;
-      if (part === "..") { if (stack.length === 1) return refuse(); stack.pop(); continue; }
+      if (part === "..") { if (stack.length === 1) return refuse(); const from = stack.pop()!; traversal.push({ kind: "parent", from: windowsImageIdentity(from), to: windowsImageIdentity(stack.at(-1)!) }); continue; }
       const file = openChild(parent, part); held.push(file);
       if (file.reparse) {
         expand(); const decoded = substitution(file);
+        traversal.push({ kind: "link", parent: windowsImageIdentity(parent), name: part, object: windowsImageIdentity(file), ...decoded });
         if (decoded.relative) parts = [...components(decoded.target), ...parts];
         else {
           const target = diskPath(decoded.target); stack.splice(0, stack.length, pinDrive(target.drive, held));
           parts = [...target.parts, ...parts];
         }
-      } else { if (!file.directory) return refuse(); stack.push(file); }
+      } else { if (!file.directory) return refuse(); traversal.push({ kind: "open", parent: windowsImageIdentity(parent), name: part, object: windowsImageIdentity(file), directory: true }); stack.push(file); }
     }
   };
   const rootHandles: WindowsFile[] = [];
+  const rootTraversal = new LocalImageTraversal();
   let root: WindowsFile;
   try {
     let links = 0;
-    root = directoryPrefix(cwd, rootHandles, () => { if (++links > 40) refuse(); }).file;
+    root = directoryPrefix(cwd, rootHandles, () => { if (++links > 40) refuse(); }, rootTraversal).file;
     if (expectedRoot && (root.legacy.dev !== expectedRoot.dev || root.legacy.ino !== expectedRoot.ino)) refuse();
   } catch (error) { close(rootHandles); throw error; }
   let closed = false;
   const verifyRoot = () => { if (closed || inspect(root.handle, root.path).id !== root.id) refuse("context_unavailable"); };
-  const absoluteParts = (value: string, held: WindowsFile[], expand: () => void): string[] => directoryPrefix(value, held, expand, root.id).rest;
+  const absoluteParts = (value: string, held: WindowsFile[], expand: () => void, traversal: InstanceType<typeof LocalImageTraversal>): string[] => directoryPrefix(value, held, expand, traversal, root.id).rest;
   return { close() { if (closed) return; closed = true; close(rootHandles); }, verifyRoot,
+    proof: (): LocalImageSourceProof["root"] => ({ cwd, identity: windowsImageIdentity(root), traversal: rootTraversal.steps }),
     inspect: (file: WindowsFile) => inspect(file.handle, file.path), closeFiles: close,
-    source(value: string): { file: WindowsFile; held: WindowsFile[] } {
+    source(value: string): { file: WindowsFile; held: WindowsFile[]; traversal: LocalImageTraversalStep[] } {
       verifyRoot(); const held: WindowsFile[] = [], stack = [root]; let links = 0, steps = 0;
+      const traversal = new LocalImageTraversal();
       try {
         const expand = () => { if (++links > 40) refuse(); };
-        let parts = /^[A-Za-z]:[\\/]/u.test(value) ? absoluteParts(value, held, expand) : components(value);
+        let parts = /^[A-Za-z]:[\\/]/u.test(value) ? absoluteParts(value, held, expand, traversal) : components(value);
         while (parts.length) {
           if (++steps > 8192 || held.length > 4096) refuse();
           const part = parts.shift()!;
           if (part === ".") continue;
-          if (part === "..") { if (stack.length === 1) refuse(); stack.pop(); continue; }
-          const file = openChild(stack.at(-1)!, part); held.push(file);
+          if (part === "..") { if (stack.length === 1) refuse(); const from = stack.pop()!; traversal.push({ kind: "parent", from: windowsImageIdentity(from), to: windowsImageIdentity(stack.at(-1)!) }); continue; }
+          const parent = stack.at(-1)!;
+          const file = openChild(parent, part); held.push(file);
           if (file.reparse) {
             expand(); const decoded = substitution(file);
+            traversal.push({ kind: "link", parent: windowsImageIdentity(parent), name: part, object: windowsImageIdentity(file), ...decoded });
             if (decoded.relative) parts = [...components(decoded.target), ...parts];
-            else { stack.length = 1; parts = [...absoluteParts(decoded.target, held, expand), ...parts]; }
+            else { stack.length = 1; parts = [...absoluteParts(decoded.target, held, expand, traversal), ...parts]; }
             continue;
           }
+          traversal.push({ kind: "open", parent: windowsImageIdentity(parent), name: part, object: windowsImageIdentity(file), directory: file.directory });
           if (parts.some(value => value !== ".")) { if (!file.directory) refuse(); stack.push(file); }
-          else { if (file.directory) refuse(); return { file, held }; }
+          else { if (file.directory) refuse(); return { file, held, traversal: traversal.steps }; }
         }
         return refuse();
       } catch (error) { close(held); throw error; }

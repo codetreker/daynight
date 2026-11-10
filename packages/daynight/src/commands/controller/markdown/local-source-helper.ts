@@ -1,8 +1,10 @@
 import { constants, closeSync, fstatSync, lstatSync, realpathSync, openSync, readSync, writeSync, fsyncSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as koffi from "koffi";
+import type { LocalImageCheckpoint, LocalImageObjectIdentity, LocalImageSourceProof, LocalImageTraversalStep } from "./local-source-proof.js";
 
 const { isSupportedLocalImageFilesystem }: typeof import("./local-source-filesystem.js") = await import(new URL(`./local-source-filesystem.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href);
+const { LocalImageTraversal, parseLocalImageCheckpoint }: typeof import("./local-source-proof.js") = await import(new URL(`./local-source-proof.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href);
 
 const darwin = process.platform === "darwin";
 const library = koffi.load(darwin ? "libSystem.B.dylib" : "libc.so.6");
@@ -32,6 +34,8 @@ const safeFs = (fd: number): void => {
   if (!isSupportedLocalImageFilesystem(info, process.platform)) sourceError("policy_restricted");
 };
 const identity = (stat: { dev: number | bigint; ino: number | bigint }): string => `${stat.dev}:${stat.ino}`;
+const objectIdentity = (value: string): LocalImageObjectIdentity => { const [dev, ino] = value.split(":"); return { kind: "posix", dev: dev!, ino: ino! }; };
+const heldIdentity = (fd: number): LocalImageObjectIdentity => objectIdentity(identity(fstatSync(fd, { bigint: true })));
 const snapshot = (fd: number): string => {
   const stat = fstatSync(fd, { bigint: true });
   return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
@@ -47,7 +51,7 @@ const statAt = (parent: number, name: string): { symlink: boolean; identity: str
   const dev = darwin ? BigInt(bytes.readUInt32LE(0)) : bytes.readBigUInt64LE(0);
   return { symlink: (mode & 0xf000) === 0xa000, identity: key.toString("hex"), object: `${dev}:${bytes.readBigUInt64LE(8)}` };
 };
-let root = -1, cwd = "", physicalCwd = "", rootIdentity = "", active = false;
+let root = -1, cwd = "", requestedCwd = "", physicalCwd = "", rootIdentity = "", active = false;
 const post = (message: object): void => { if (process.connected) process.send!(message); };
 const rootValid = (): void => {
   for (const rootPath of new Set([cwd, physicalCwd])) {
@@ -62,17 +66,18 @@ const absoluteParts = (value: string): string[] => {
   }
   return sourceError("source_forbidden");
 };
-const resolveSource = (value: string): { fd: number; held: number[] } => {
+const resolveSource = (value: string): { fd: number; held: number[]; traversal: LocalImageTraversalStep[] } => {
   rootValid();
   const held: number[] = [];
   const stack = [root];
+  const traversal = new LocalImageTraversal();
   let parts = value.startsWith("/") ? absoluteParts(value) : value.split("/"), links = 0, steps = 0;
   try {
     while (parts.length) {
       if (++steps > 8192 || held.length > 4096) sourceError("source_forbidden");
       const component = parts.shift()!;
       if (!component || component === ".") continue;
-      if (component === "..") { if (stack.length === 1) sourceError("source_forbidden"); stack.pop(); continue; }
+      if (component === "..") { if (stack.length === 1) sourceError("source_forbidden"); const from = stack.pop()!; traversal.push({ kind: "parent", from: heldIdentity(from), to: heldIdentity(stack.at(-1)!) }); continue; }
       const parent = stack.at(-1)!;
       const before = statAt(parent, component);
       if (before.symlink) {
@@ -82,6 +87,7 @@ const resolveSource = (value: string): { fd: number; held: number[] } => {
         if (!count || count > 8192) sourceError("source_forbidden");
         const target = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count));
         if (/\p{Cc}/u.test(target) || !target.isWellFormed() || statAt(parent, component).identity !== before.identity) sourceError("source_changed");
+        traversal.push({ kind: "link", parent: heldIdentity(parent), name: component, object: objectIdentity(before.object), target, relative: !target.startsWith("/") });
         if (target.startsWith("/")) { stack.length = 1; parts = [...absoluteParts(target), ...parts]; }
         else parts = [...target.split("/"), ...parts];
         continue;
@@ -89,36 +95,40 @@ const resolveSource = (value: string): { fd: number; held: number[] } => {
       const directory = parts.some(part => part !== "" && part !== ".");
       const fd = openRelative(parent, component, directory); held.push(fd); safeFs(fd);
       const stat = fstatSync(fd, { bigint: true });
+      traversal.push({ kind: "open", parent: heldIdentity(parent), name: component, object: objectIdentity(identity(stat)), directory: stat.isDirectory() });
       if (directory) { if (!stat.isDirectory()) sourceError("source_forbidden"); stack.push(fd); }
-      else { if (!stat.isFile()) sourceError("source_forbidden"); rootValid(); return { fd, held }; }
+      else { if (!stat.isFile()) sourceError("source_forbidden"); rootValid(); return { fd, held, traversal: traversal.steps }; }
     }
     sourceError("source_forbidden");
   } catch (error) { for (const fd of held.reverse()) closeSync(fd); throw error; }
 };
 let continueRead: (() => void) | undefined;
-const checkpoint = async (stage: string): Promise<void> => {
-  await new Promise<void>(resolve => { continueRead = resolve; post({ type: "checkpoint", stage }); });
+const checkpoint = async (stage: LocalImageCheckpoint["stage"], proof: LocalImageSourceProof): Promise<void> => {
+  const checked = parseLocalImageCheckpoint({ stage, proof });
+  await new Promise<void>(resolve => { continueRead = resolve; post({ type: "checkpoint", ...checked }); });
 };
-const copy = async (value: string, outputPath: string): Promise<{ byteLength: number; sha256: string }> => {
+const copy = async (locator: string, value: string, outputPath: string): Promise<{ byteLength: number; sha256: string }> => {
   const handles: number[] = [];
   try {
-    await checkpoint("initial"); rootValid();
+    const initialProof: LocalImageSourceProof = { requested: { locator, path: value }, root: { cwd: requestedCwd, identity: heldIdentity(root), traversal: [] }, traversal: [], opened: null };
+    await checkpoint("initial", initialProof); rootValid();
     const source = resolveSource(value); handles.push(...source.held);
     const initial = fstatSync(source.fd, { bigint: true }), before = snapshot(source.fd);
     if (initial.size === 0n) sourceError("source_unavailable");
     if (initial.size > BigInt(limit)) sourceError("source_too_large");
+    const proof: LocalImageSourceProof = { ...initialProof, traversal: source.traversal, opened: objectIdentity(identity(initial)) };
     // The reservation owns creation and cleanup; this reader never creates,
     // truncates or changes permissions on any filesystem object.
     const output = openSync(outputPath, constants.O_WRONLY | nonblock | nofollow); handles.push(output);
     const outputBefore = fstatSync(output, { bigint: true });
     if (!outputBefore.isFile() || outputBefore.size !== 0n || outputBefore.nlink !== 1n || outputBefore.uid !== BigInt(process.getuid!()) || (outputBefore.mode & 0o777n) !== 0o600n || identity(outputBefore) === identity(initial)) sourceError("source_forbidden");
-    safeFs(output); await checkpoint("opened");
+    safeFs(output); await checkpoint("opened", proof);
     const bytes = Buffer.alloc(chunkSize), hash = createHash("sha256"); let total = 0;
     for (;;) {
       const count = readSync(source.fd, bytes, 0, Math.min(chunkSize, limit + 1 - total), null);
       if (!count) break;
       if (total + count > limit) sourceError("source_too_large");
-      await checkpoint("block"); rootValid();
+      await checkpoint("block", proof); rootValid();
       let written = 0;
       while (written < count) {
         const countWritten = writeSync(output, bytes, written, count - written, null);
@@ -128,18 +138,18 @@ const copy = async (value: string, outputPath: string): Promise<{ byteLength: nu
       hash.update(bytes.subarray(0, count)); total += count;
     }
     if (snapshot(source.fd) !== before || BigInt(total) !== initial.size) sourceError("source_changed");
-    await checkpoint("final"); rootValid();
+    await checkpoint("final", proof); rootValid();
     if (snapshot(source.fd) !== before) sourceError("source_changed");
     const visibleOutput = lstatSync(outputPath, { bigint: true }), outputAfter = fstatSync(output, { bigint: true });
     if (!visibleOutput.isFile() || identity(visibleOutput) !== identity(outputBefore) || identity(outputAfter) !== identity(outputBefore) || outputAfter.size !== BigInt(total) || outputAfter.nlink !== 1n) sourceError("source_changed");
     fsyncSync(output); return { byteLength: total, sha256: hash.digest("hex") };
   } finally { for (const fd of handles.reverse()) closeSync(fd); }
 };
-process.on("message", (message: { type: string; cwd?: string; path?: string; outputPath?: string; expectedRoot?: { dev: string; ino: string } }) => {
+process.on("message", (message: { type: string; cwd?: string; locator?: string; path?: string; outputPath?: string; expectedRoot?: { dev: string; ino: string } }) => {
   if (message.type === "continue") { const resume = continueRead; continueRead = undefined; resume?.(); return; }
   if (message.type === "init") {
     try {
-      cwd = message.cwd!;
+      cwd = requestedCwd = message.cwd!;
       if (cwd.length > 1 && cwd.endsWith("/")) cwd = cwd.slice(0, -1);
       root = openSync(cwd, constants.O_RDONLY | constants.O_DIRECTORY | nofollow | nonblock); safeFs(root);
       const stat = fstatSync(root, { bigint: true }); if (!stat.isDirectory()) sourceError("context_unavailable"); rootIdentity = identity(stat);
@@ -151,7 +161,7 @@ process.on("message", (message: { type: string; cwd?: string; path?: string; out
     } catch (error) { post({ type: "error", code: (error as { code?: string }).code ?? "context_unavailable" }); process.disconnect(); }
   } else if (message.type === "copy" && !active && root >= 0) {
     active = true;
-    void copy(message.path!, message.outputPath!).then(result => post({ type: "result", ...result }), error => {
+    void copy(message.locator!, message.path!, message.outputPath!).then(result => post({ type: "result", ...result }), error => {
       const code = (error as { code?: string }).code;
       post({ type: "error", code: code === "ENOENT" ? "source_not_found" : code === "EACCES" || code === "EPERM" ? "permission_denied" : code === "ELOOP" ? "source_forbidden" : code === "ENOSPC" ? "source_capacity" : typeof code === "string" && ["source_not_found", "source_forbidden", "source_changed", "source_too_large", "source_capacity", "policy_restricted", "source_unavailable"].includes(code) ? code : "source_unavailable" });
     }).finally(() => { active = false; });

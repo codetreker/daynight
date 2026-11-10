@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { endianness } from "node:os";
+import { createLocalImageProofSequence, type LocalImageCheckpoint } from "./local-source-proof.js";
 
 export class LocalImageSourceError extends Error {
   readonly code: string;
@@ -45,9 +46,9 @@ export type LocalImageContext = {
   readonly policyRevision: string;
   close(): Promise<void>;
 };
-type InternalContext = { child: ChildProcess; closed: Promise<void>; dead: boolean; busy: boolean };
+type InternalContext = { child: ChildProcess; closed: Promise<void>; dead: boolean; busy: boolean; expectedRoot: LocalImageRootIdentity | undefined };
 const contexts = new WeakMap<LocalImageContext, InternalContext>();
-type HelperMessage = { stage?: string; type: "ready" | "checkpoint" | "result" | "error"; code?: string; byteLength?: number; sha256?: string };
+type HelperMessage = { stage?: string; proof?: unknown; type: "ready" | "checkpoint" | "result" | "error"; code?: string; byteLength?: number; sha256?: string };
 const send = (child: ChildProcess, message: object): void => {
   // IPC can disconnect between the connected check and send. The operation
   // observes child close or its deadline; a late EPIPE must not crash Controller.
@@ -57,10 +58,10 @@ const helperPath = (): string => fileURLToPath(new URL(`./local-source-${process
 
 export async function createLocalImageContext(options: { cwd: string; platform?: NodeJS.Platform; policyRevision: string; nativeReadAllowed: boolean | undefined; expectedRoot?: LocalImageRootIdentity }): Promise<LocalImageContext> {
   const platform = options.platform ?? process.platform;
-  if (options.nativeReadAllowed !== true || !options.policyRevision || platform !== process.platform || !["darwin", "linux", "win32"].includes(platform) || !["arm64", "x64"].includes(process.arch) || endianness() !== "LE" || !path.isAbsolute(options.cwd) || !options.cwd.isWellFormed() || /\p{Cc}/u.test(options.cwd)) refuse("policy_restricted");
+  if (options.nativeReadAllowed !== true || !options.policyRevision || platform !== process.platform || !["darwin", "linux", "win32"].includes(platform) || !["arm64", "x64"].includes(process.arch) || endianness() !== "LE" || !path.isAbsolute(options.cwd) || Buffer.byteLength(options.cwd) > 8192 || !options.cwd.isWellFormed() || /\p{Cc}/u.test(options.cwd)) refuse("policy_restricted");
   if (options.expectedRoot && [options.expectedRoot.dev, options.expectedRoot.ino].some(value => !/^(?:0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18_446_744_073_709_551_615n)) refuse("context_unavailable");
   const child = fork(helperPath(), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], env: { ...process.env, NODE_OPTIONS: "" } });
-  const internal: InternalContext = { child, closed: new Promise(resolve => child.once("close", () => { internal.dead = true; resolve(); })), dead: false, busy: false };
+  const internal: InternalContext = { child, closed: new Promise(resolve => child.once("close", () => { internal.dead = true; resolve(); })), dead: false, busy: false, expectedRoot: options.expectedRoot ? { ...options.expectedRoot } : undefined };
   const close = async (): Promise<void> => { internal.dead = true; child.kill("SIGKILL"); await internal.closed; };
   try {
     await new Promise<void>((resolve, reject) => {
@@ -76,16 +77,17 @@ export async function createLocalImageContext(options: { cwd: string; platform?:
   contexts.set(context, internal); return context;
 }
 
-export async function copyLocalImage(options: { path: string; context: LocalImageContext; outputPath: string; signal?: AbortSignal; checkPolicy: () => void | Promise<void> }): Promise<{ inputPath: string; byteLength: number; sha256: string }> {
+export async function copyLocalImage(options: { path: string; context: LocalImageContext; outputPath: string; signal?: AbortSignal; checkPolicy: (checkpoint: LocalImageCheckpoint) => void | Promise<void> }): Promise<{ inputPath: string; byteLength: number; sha256: string }> {
   const internal = contexts.get(options.context);
   if (!internal || internal.dead) refuse("context_unavailable");
   if (internal.busy) refuse("source_busy");
   const parsed = parseLocalImagePath(options.path, options.context.platform);
+  const proofSequence = createLocalImageProofSequence({ locator: options.path, path: parsed, cwd: options.context.cwd, platform: options.context.platform, root: internal.expectedRoot });
   if (options.signal?.aborted) refuse("source_cancelled");
   internal.busy = true;
   try {
     return await new Promise((resolve, reject) => {
-      let finishing = false;
+      let finishing = false, checking = false;
       const finish = async (error?: unknown, result?: { byteLength: number; sha256: string }, terminate = false): Promise<void> => {
         if (finishing) return; finishing = true; clearTimeout(timer); clearTimeout(openTimer);
         options.signal?.removeEventListener("abort", onAbort); internal.child.off("message", onMessage); internal.child.off("close", onClose);
@@ -98,16 +100,21 @@ export async function copyLocalImage(options: { path: string; context: LocalImag
       const onClose = (): void => { void finish(new LocalImageSourceError("context_unavailable")); };
       const onMessage = (message: HelperMessage): void => {
         if (message.type === "checkpoint") {
-          if (message.stage === "opened") clearTimeout(openTimer);
-          void Promise.resolve().then(options.checkPolicy).then(() => { if (!finishing) send(internal.child, { type: "continue" }); }, error => finish(error, undefined, true));
+          let checkpoint: LocalImageCheckpoint;
+          try { if (checking) refuse(); checkpoint = proofSequence.accept({ stage: message.stage, proof: message.proof }); }
+          catch (error) { void finish(error, undefined, true); return; }
+          if (checkpoint.stage === "opened") clearTimeout(openTimer);
+          checking = true;
+          void Promise.resolve().then(() => { if (!finishing) return options.checkPolicy(checkpoint); }).then(() => { checking = false; if (!finishing) send(internal.child, { type: "continue" }); }, error => finish(error, undefined, true));
         } else if (message.type === "error") { void finish(new LocalImageSourceError(message.code ?? "source_unavailable")); }
         else if (message.type === "result") {
+          try { if (checking) refuse(); proofSequence.complete(); } catch (error) { void finish(error, undefined, true); return; }
           if (!Number.isSafeInteger(message.byteLength) || !message.sha256 || !/^[a-f0-9]{64}$/.test(message.sha256)) void finish(new LocalImageSourceError("source_unavailable"));
           else void finish(undefined, { byteLength: message.byteLength!, sha256: message.sha256 });
         }
       };
       internal.child.on("message", onMessage); internal.child.once("close", onClose); options.signal?.addEventListener("abort", onAbort, { once: true });
-      send(internal.child, { type: "copy", path: parsed, outputPath: options.outputPath });
+      send(internal.child, { type: "copy", locator: options.path, path: parsed, outputPath: options.outputPath });
     });
   } finally { internal.busy = false; }
 }

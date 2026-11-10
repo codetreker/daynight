@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import childProcess, { type ChildProcess } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { constants } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createLocalImageContext, copyLocalImage, parseLocalImagePath, type LocalImageContext } from "../../../../src/commands/controller/markdown/local-source.js";
+import type { LocalImageCheckpoint } from "../../../../src/commands/controller/markdown/local-source-proof.js";
 
 const contexts: LocalImageContext[] = [], directories: string[] = [];
-afterEach(async () => { await Promise.all(contexts.splice(0).map(context => context.close())); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); await Promise.all(contexts.splice(0).map(context => context.close())); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 async function fixture() {
   const base = await mkdtemp(fileURLToPath(new URL("../../../../../../.tmp/local-image-", import.meta.url))); directories.push(base);
   const cwd = path.join(base, "root"), outputPath = path.join(base, "reserved");
@@ -29,6 +32,48 @@ describe("local image source path parsing", () => {
   });
 });
 describe.skipIf(process.platform === "win32")("local image source handles", () => {
+  it("proves the held root, symlink expansion and parent traversal before reading", async () => {
+    const f = await fixture(); await mkdir(path.join(f.cwd, "a", "b"), { recursive: true });
+    await writeFile(path.join(f.cwd, "a", "image"), Buffer.alloc(524_289, 7)); await symlink("a/b", path.join(f.cwd, "link"));
+    const root = await stat(f.cwd, { bigint: true }), file = await stat(path.join(f.cwd, "a", "image"), { bigint: true }), link = await lstat(path.join(f.cwd, "link"), { bigint: true });
+    const checks: LocalImageCheckpoint[] = [];
+    await copyLocalImage({ ...f, path: "link/%2e%2e/image", checkPolicy: checkpoint => { checks.push(checkpoint); } });
+    expect(checks.map(check => check?.stage)).toEqual(["initial", "opened", "block", "block", "final"]);
+    expect(checks[0]!.proof).toMatchObject({ requested: { locator: "link/%2e%2e/image", path: "link/../image" }, root: { cwd: f.cwd, identity: { kind: "posix", dev: String(root.dev), ino: String(root.ino) } }, opened: null, traversal: [] });
+    const proof = checks[1]!.proof;
+    expect(proof.opened).toEqual({ kind: "posix", dev: String(file.dev), ino: String(file.ino) });
+    expect(proof.traversal).toContainEqual({ kind: "link", name: "link", parent: proof.root.identity, object: { kind: "posix", dev: String(link.dev), ino: String(link.ino) }, target: "a/b", relative: true });
+    expect(proof.traversal.map(step => step.kind)).toEqual(["link", "open", "open", "parent", "open"]);
+    expect(checks.slice(2).every(check => JSON.stringify(check.proof) === JSON.stringify(proof))).toBe(true);
+  });
+  it("keeps proof bound to the held file when the requested ancestor is replaced", async () => {
+    const f = await fixture(); await mkdir(path.join(f.cwd, "directory")); await writeFile(path.join(f.cwd, "directory", "image"), "held");
+    const original = await stat(path.join(f.cwd, "directory", "image"), { bigint: true });
+    const checks: LocalImageCheckpoint[] = [];
+    await copyLocalImage({ ...f, path: "directory/image", checkPolicy: async checkpoint => {
+      checks.push(checkpoint);
+      if (checkpoint?.stage === "opened") { await rename(path.join(f.cwd, "directory"), path.join(f.cwd, "held")); await mkdir(path.join(f.cwd, "directory")); await writeFile(path.join(f.cwd, "directory", "image"), "replacement"); }
+    } });
+    expect(checks[1]?.proof.opened).toEqual({ kind: "posix", dev: String(original.dev), ino: String(original.ino) });
+    expect(checks.slice(2).map(check => check.proof)).toEqual([checks[1]!.proof, checks[1]!.proof]);
+    expect(await readFile(f.outputPath, "utf8")).toBe("held");
+    expect(await readFile(path.join(f.cwd, "directory", "image"), "utf8")).toBe("replacement");
+  });
+  it("delivers no bytes when the opened-object policy refuses", async () => {
+    const f = await fixture(); await writeFile(path.join(f.cwd, "image"), "private");
+    await expect(copyLocalImage({ ...f, path: "image", checkPolicy: checkpoint => { if (checkpoint?.stage === "opened") throw new Error("object denied"); } })).rejects.toThrow("object denied");
+    expect(await readFile(f.outputPath)).toHaveLength(0);
+  });
+  it("refuses oversized traversal evidence before delivering source content", async () => {
+    const f = await fixture(); await mkdir(path.join(f.cwd, "d")); await writeFile(path.join(f.cwd, "image"), "private");
+    await expect(copyLocalImage({ ...f, path: `${"d/../".repeat(1000)}image`, checkPolicy: allowed })).rejects.toMatchObject({ code: "source_forbidden" });
+    expect(await readFile(f.outputPath)).toHaveLength(0);
+  });
+  it("keeps bounded repeated parent traversals usable", async () => {
+    const f = await fixture(); await mkdir(path.join(f.cwd, "d")); await writeFile(path.join(f.cwd, "image"), "allowed");
+    await copyLocalImage({ ...f, path: `${"d/../".repeat(300)}image`, checkPolicy: allowed });
+    expect(await readFile(f.outputPath, "utf8")).toBe("allowed");
+  });
   it("copies an authorized regular file to an existing reserved file", async () => {
     const f = await fixture(), bytes = Buffer.from("original"); await writeFile(path.join(f.cwd, "image"), bytes);
     expect(await copyLocalImage({ path: "image", ...f, checkPolicy: allowed })).toEqual({ inputPath: f.outputPath, byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
@@ -75,11 +120,17 @@ describe.skipIf(process.platform === "win32")("local image source handles", () =
     await expect(copyLocalImage({ ...f, path: "image", checkPolicy: async () => { if (++checks === 3) await writeFile(source, Buffer.alloc(1_048_576, 8)); } })).rejects.toMatchObject({ code: "source_changed" });
   });
   it("cancels a blocked policy checkpoint and joins the helper before returning", async () => {
-    const f = await fixture(); await writeFile(path.join(f.cwd, "image"), Buffer.alloc(1_048_576)); const controller = new AbortController(); let notify!: () => void;
-    const checkpoint = new Promise<void>(resolve => { notify = resolve; }); let checks = 0;
-    const result = copyLocalImage({ ...f, path: "image", signal: controller.signal, checkPolicy: async () => { if (++checks === 3) { notify(); await new Promise(() => {}); } } });
+    const fork = vi.spyOn(childProcess, "fork");
+    syncBuiltinESMExports();
+    const f = await fixture(), helper = fork.mock.results[0]!.value as ChildProcess; fork.mockRestore(); syncBuiltinESMExports();
+    await writeFile(path.join(f.cwd, "image"), Buffer.alloc(1_048_576)); const controller = new AbortController(); let notify!: () => void, resume!: () => void, closed = false;
+    helper.once("close", () => { closed = true; });
+    const checkpoint = new Promise<void>(resolve => { notify = resolve; }), policy = new Promise<void>(resolve => { resume = resolve; }); let checks = 0;
+    const result = copyLocalImage({ ...f, path: "image", signal: controller.signal, checkPolicy: async evidence => { expect(evidence.proof).toBeDefined(); if (++checks === 3) { notify(); await policy; } } });
     await checkpoint; controller.abort(); await expect(result).rejects.toMatchObject({ code: "source_cancelled" });
-    const before = (await readFile(f.outputPath)).length; await new Promise(resolve => setTimeout(resolve, 30)); expect((await readFile(f.outputPath)).length).toBe(before);
+    expect(closed).toBe(true); expect(helper.signalCode).toBe("SIGKILL");
+    resume(); await policy; await new Promise<void>(resolve => setImmediate(resolve));
+    expect(checks).toBe(3); expect(await readFile(f.outputPath)).toHaveLength(0);
     await expect(copyLocalImage({ ...f, path: "image", checkPolicy: allowed })).rejects.toMatchObject({ code: "context_unavailable" });
   });
   it("refuses an unreserved output without creating it", async () => {

@@ -7,6 +7,7 @@ import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ProviderOptions } from "../providers/types.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
+import type { LocalImageCheckpoint } from "./local-source-proof.js";
 import { copyExternalImage, createExternalImagePolicy, ExternalImageSourceError, parseExternalImageUrl, type ExternalImagePolicyOptions } from "./external-source.js";
 
 export type MarkdownSourceContext = {
@@ -20,7 +21,7 @@ export type MarkdownCaptureRecord = {
   started: boolean; awaitingRetry: boolean; queuedAt: number; receipt: ImageCaptureReceipt | null; error: ImageError | null; cooldownUntil: number;
 };
 type Hooks = Required<Pick<ProviderOptions, "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture">>;
-type NativeReadPolicy = { revision: string; verify(): void };
+type NativeReadPolicy = { revision: string; verify(checkpoint?: LocalImageCheckpoint): void };
 const failure = (code: string): ImageError => ({ code, message: "The original image source could not be captured." });
 const sourceError = (error: unknown): ImageError => {
   const code = error !== null && typeof error === "object" && "code" in error ? String(error.code) : "";
@@ -62,7 +63,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     const context = { ...candidate, contextId: randomUUID() };
     store.put("context", id, context); store.put("context", context.contextId, context); return context;
   };
-  const checkContext = (context: MarkdownSourceContext, local: boolean, originalFence?: string): void => {
+  const checkContext = (context: MarkdownSourceContext, local: boolean, originalFence?: string, checkpoint?: LocalImageCheckpoint): void => {
     if (stopped || !options.writable() || !options.fence() || originalFence !== undefined && options.fence() !== originalFence) refuse("policy_restricted");
     if (context.serverOrigin !== ticket.serverOrigin || context.ownerUserId !== (ticket.userId ?? ticket.ownerUserId) || context.sessionId !== ticket.sessionId || context.executionId !== ticket.executionId || !context.nativeSessionId || context.nativeSessionId !== journal.getSnapshot().nativeSessionId || context.cwd !== ticket.cwd || context.platform !== process.platform) refuse("context_unavailable");
     const known = store.get<MarkdownSourceContext>("context", context.contextId);
@@ -70,7 +71,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     if (local) {
       const policy = options.nativeReadPolicy?.();
       if (!policy || policy.revision !== context.policyRevision) return refuse("policy_restricted");
-      try { const result: unknown = policy.verify(); if (result !== undefined) refuse("policy_restricted"); } catch { refuse("policy_restricted"); }
+      try { const result: unknown = policy.verify(checkpoint); if (result !== undefined) refuse("policy_restricted"); } catch { refuse("policy_restricted"); }
     }
   };
   const acquireReadPolicy: CaptureReadPolicy = request => {
@@ -143,7 +144,7 @@ export const createMarkdownCaptureCoordinator = (options: {
           const context = await createLocalImageContext({ cwd: record.context.cwd, platform: record.context.platform, policyRevision: record.context.policyRevision, nativeReadAllowed: true, expectedRoot: record.context.root });
           try {
             checkContext(record.context, true, fence); joined.throwIfAborted();
-            const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, checkPolicy: () => checkContext(record.context, true, fence) });
+            const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, checkPolicy: checkpoint => checkContext(record.context, true, fence, checkpoint) });
             return { ...result, byteLength: String(result.byteLength) };
           } finally { await context.close(); }
         }

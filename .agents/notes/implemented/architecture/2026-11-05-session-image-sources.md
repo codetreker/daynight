@@ -65,6 +65,21 @@ Linux retains its filesystem-magic allowlist.
 Trusted document directories or additional roots still require explicit authority;
 text cannot supply them.
 
+The helper reports bounded source evidence from its actual held-handle traversal:
+the requested locator and parsed path, root identity, component and link/reparse
+expansions, and the final opened object. The initial checkpoint precedes source
+resolution; the opened checkpoint precedes content reads. Block and final
+checkpoints retain that same source evidence. Controller checks the message
+structure, stage order and source binding before forwarding evidence to the
+policy consumer. A second pathname resolution cannot describe a different object
+as the held source. Evidence remains inside the helper/Controller boundary and
+never enters the Session journal, timeline or public diagnostics. Strings are
+limited to 8192 UTF-8 bytes; each traversal holds at most 4096 events and 262144
+encoded bytes, with a separate 262144-byte ceiling on the complete checkpoint
+message. Traversal enforces its bounds while accumulating events, before source
+content reads. Long or expanding paths can therefore fail closed without an
+unbounded evidence allocation.
+
 External HTTP(S) has a separate HTTP/1.1 transport. It checks every DNS answer,
 redirect and actual peer, uses pinned approved addresses, verifies TLS identity
 and sends no account credentials. `createExternalImagePolicy` requires a trusted
@@ -118,6 +133,12 @@ but avoids irreversible IO for text that ultimately is not an image.
 directory can change between operations. Handle-relative traversal costs native
 platform code and race tests but preserves the checked object boundary.
 
+**Give policy consumers only a stage or a newly resolved pathname.** A stage
+cannot identify the checked source, and resolving the pathname again can select
+a replacement after the helper opened it. Carrying bounded evidence from the
+actual traversal preserves object association without prescribing a native
+authorization wire protocol.
+
 **Use a general service URL proxy or fetch only at archive time.** A proxy adds
 a second network execution and authorization surface. Delayed fetching cannot
 recover an earlier version after a source changes or disappears. Controller
@@ -136,11 +157,13 @@ Without equivalent isolation, external capture stays disabled.
 
 The real runtime supplies neither `nativeReadPolicy` nor `externalPolicy`, so
 local and external source IO fails closed with `policy_restricted`. The private
-native policy callback currently has only `{revision, verify(): void}`; that API
-alone cannot prove path-specific Read rules, the resolved symlink target or a
-revocation generation. A sandbox/profile name, permission mode or successful tool
-read is not that proof. Controlled policy and network fixtures cannot enable real
-Provider collection or establish deployment egress isolation.
+native policy consumer receives source checkpoints, but object evidence alone
+cannot prove effective native Read permission or revocation order. The native
+authority must provide a complete effective decision or verifiable capability
+and reliable change semantics; a full snapshot export or a per-block lease RPC
+is not the only possible interface. A sandbox/profile name, permission mode or
+successful tool read is not that proof. Controlled policy and network fixtures
+cannot enable real Provider collection or establish deployment egress isolation.
 
 The Windows opener uses `CreateFileW` only for the initial local drive root.
 Every later component is opened with `NtCreateFile` relative to its held parent
