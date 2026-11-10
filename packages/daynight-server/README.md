@@ -2786,6 +2786,10 @@ authorization and collection admission while exercising the locked parent gate,
 DAO writes, real encoding, capture and transaction completion. Core tests own
 the corresponding collection decisions; controlled completion does not prove a
 physical commit.
+Core Step tests encode the fitting 170-description collection and the
+overflowing 171-description Change candidate through the real codec. Service
+tests forward the complete collection to controlled admission and exercise a
+real encoding failure before writes; they do not measure capacity at that layer.
 The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
