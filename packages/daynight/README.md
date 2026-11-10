@@ -2634,7 +2634,7 @@ Restart resumes the same claim's remaining resources without starting business
 execution. Previously confirmed cleanup responsibility can continue during later
 service-read failures.
 
-Native cleanup failures retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
+Transient or unclassified cleanup failures retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
 seconds, when normal reconciliation next observes eligibility. Backoff does not
 spend execution recovery budget or release a capacity slot. Other eligible
 cleanup and healthy execution continue under the existing capacity limit. Errors
@@ -2642,6 +2642,36 @@ identify the failed stage and next retry time, distinguishing unconfirmed native
 stop from a stopped agent awaiting backend closure, archive upload or worktree
 removal. If a retry-state write fails, the current process retains bounded
 backoff and both errors without claiming that the latest decision is durable.
+
+A known incomplete Web archive enters a durable repair-required state. Every
+15 minutes the Worker checks the original stopped generation without loading
+pending timeline content or resource bytes. The claim, source and capacity remain
+reserved. A recovered receipt still enters the normal remote receipt validation;
+its presence alone neither clears the repair classification nor releases resources.
+Confirmed complete source conditions clear the saved repair classification before
+a full cleanup attempt, which must pass every archive and ownership check. Later
+transient upload failures use normal cleanup backoff or the 60-second historical
+backfill retry. A failed classification write preserves the repair wait; successful
+classification changes still retain cleanup responsibility and capacity until
+complete cleanup succeeds. Repeated checks do not repair missing history or clear
+its completeness flags.
+
+On supported macOS APFS volumes, an immutable identity sidecar lets a newer
+Worker verify the original worktree after mount device numbers change. Existing
+worktrees acquire this evidence only while their original ownership checks still
+pass. A worktree that already drifted without saved evidence needs explicit
+reconciliation; restarting cannot manufacture the missing proof. Other platforms
+retain strict identity checks. Keep the original marker and sidecar intact.
+
+A fully enumerated, independently attributed damaged worktree can be quarantined
+only for static local validation failures under stable observations, while
+unrelated tasks use remaining capacity. It retains its claim's slot and blocks
+reuse of the same task. Observed changes to ownership, metadata, current directory
+objects or Git pointers during inspection leave coverage unknown. An early
+validation failure cannot bypass the scan's recheck of the indexed ownership
+marker. Unreadable inventory, changing observations or conflicting ownership
+still blocks new acquisition globally. An online heartbeat or zero remote active
+tasks does not establish that local capacity is available.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
 terminal cleanup, and joins them before directly stopping agents and closing
@@ -2887,8 +2917,9 @@ daynight worker resources list
 The JSON result identifies the original Session, project/task/claim/worktree,
 stop evidence, source and worktree paths, source byte count, archive state,
 retry time and any disposal decision. Inspection never starts an Agent. A
-confirmed original stop releases execution capacity even if archival failed;
-`stop_unknown` still consumes capacity. The old worktree continues to reserve
+confirmed original stop releases execution capacity even if archival failed,
+provided no quarantined resource responsibility remains. Quarantine retains its
+reservation until revalidation; `stop_unknown` still consumes capacity. The old worktree continues to reserve
 its task path until verified removal.
 
 New claims are blocked at 20 retained worktrees or 2 GiB of pending recording
