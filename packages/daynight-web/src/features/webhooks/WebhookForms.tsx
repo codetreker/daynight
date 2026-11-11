@@ -23,6 +23,7 @@ export type WebhookFormActions = {
   readonly reconcile: () => void;
   readonly submit: (input: WebhookIntentInput) => Promise<WebhookIntentState>;
   readonly onClose: () => void;
+  readonly onDraftChange: () => void;
   readonly opener: HTMLElement | null;
 };
 const isPending = (state: WebhookIntentState) => ["preparing", "submitting", "unknown"].includes(state.phase) || state.reconciling;
@@ -54,7 +55,7 @@ export const WebhookConfigurationDialog = ({ endpoint, projects, projectLabels, 
   const m = useWebhookMessages(), formId = useId(), [draft, setDraft] = useState(() => initialConfigurationDraft(endpoint));
   const [selectedProjects, setSelectedProjects] = useState<readonly string[]>([]), [selectedEvents, setSelectedEvents] = useState<readonly WebhookEventType[]>([]), [validation, setValidation] = useState<string | null>(null), [reviewing, setReviewing] = useState(false), [localError, setLocalError] = useState<unknown>(null);
   const changeField = (field: ConfigurationField, value: string) => setDraft(old => ({ ...old, [field]: value, dirty: { ...old.dirty, [field]: value !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } }));
-  const resolveField = (field: ConfigurationField, keepEdit: boolean) => setDraft(old => ({ ...old, [field]: keepEdit ? old[field] : observedField(old.baseline, field), dirty: { ...old.dirty, [field]: keepEdit && old[field] !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } }));
+  const resolveField = (field: ConfigurationField, keepEdit: boolean) => { actions.onDraftChange(); setDraft(old => ({ ...old, [field]: keepEdit ? old[field] : observedField(old.baseline, field), dirty: { ...old.dirty, [field]: keepEdit && old[field] !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } })); };
   const conflicts = draft.conflicts.name || draft.conflicts.url;
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!actions.canSubmit || isPending(actions.state) || conflicts || !actions.expansionAvailable && (draft.baseline === null || draft.dirty.url)) return;
