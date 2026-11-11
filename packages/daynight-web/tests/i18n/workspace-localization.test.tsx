@@ -174,7 +174,8 @@ describe("workspace localization", () => {
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
     expect(screen.getByRole("button", { name: "Dismiss notification" })).toBe(dismiss);
     expect(graphRequest).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No standalone tasks" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Goals" })).toBeVisible();
     await user.click(dismiss);
     expect(screen.queryByText(en.workspace.project.selectedTaskRemoved)).toBeNull();
     expect(graphRequest).toHaveBeenCalledTimes(3);

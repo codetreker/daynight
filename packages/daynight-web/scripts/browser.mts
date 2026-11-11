@@ -28,6 +28,7 @@ export const browserConfigs = [
   'markdown-browser-playwright.config.ts',
   'claim-reading-playwright.config.ts',
   'task-reading-playwright.config.ts',
+  'goal-reading-playwright.config.ts',
   'identity-cache-playwright.config.ts',
   'locale-continuity-playwright.config.ts',
   'landing-header-playwright.config.ts',

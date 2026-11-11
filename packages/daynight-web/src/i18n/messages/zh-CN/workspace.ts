@@ -31,14 +31,15 @@ export const workspace: WorkspaceMessages = {
     rowLabel: ({ title, done, cancelled, total, percent }) => cancelled === 0 ? `${title}，已完成 ${number(done)} / ${number(total)}，${number(percent)}%，前往任务列表` : `${title}，已结束 ${number(done + cancelled)} / ${number(total)}，${number(done)} 完成，${number(cancelled)} 取消，${number(percent)}%，前往任务列表`,
   },
   standalone: {
-    list: "独立任务列表", summary: ({ visible, total }) => `最新创建在前 · ${number(visible)} / ${number(total)} 个独立任务`, summaryLabel: ({ visible, total }) => `显示 ${number(visible)} 个，共 ${number(total)} 个独立任务`, empty: "暂无独立任务", emptyDetail: "当前任务均由普通依赖连接为任务链，可在任务链页签查看。", createdOn: ({ date }) => `创建于 ${date}`,
+    list: "独立任务列表", summary: ({ visible, total }) => `最新创建在前 · ${number(visible)} / ${number(total)} 个独立任务`, summaryLabel: ({ visible, total }) => `显示 ${number(visible)} 个，共 ${number(total)} 个独立任务`, empty: "暂无独立任务", emptyDetail: "未归属 Goal 的独立任务将显示在这里。", createdOn: ({ date }) => `创建于 ${date}`,
   },
   pagination: {
     label: ({ list }) => `${list}分页`, range: ({ start, end, total }) => `第 ${number(start)}–${number(end)} 条，共 ${number(total)} 条`,
     page: ({ page, pages }) => `第 ${number(page)} / ${number(pages)} 页`, previous: "上一页", next: "下一页",
   },
   sections: { label: "项目视图", overview: "概览", tasks: "任务列表", overviewDescription: "查看项目整体进展与当前任务状态。", tasksDescription: "浏览独立任务与按依赖关联的任务链。" },
-  tabs: { label: "项目任务视图", standalone: "独立任务", chains: "任务链", unfinishedCount: "未完成任务数" },
+  tabs: { label: "项目任务视图", standalone: "独立任务", chains: "任务链", goals: "Goal", unfinishedCount: "未完成任务数" },
+  goals: { list: "Goal", empty: "暂无 Goal", emptyDetail: "Goal 将显示在这里。", summary: ({ shown, total }) => `${number(shown)} / ${number(total)} 个 Goal`, composition: ({ chains, standalone }) => `${number(chains)} 条任务链 · ${number(standalone)} 个独立任务` },
   preferences: {
     section: { read: "无法读取浏览器保存的项目视图，本次浏览仍可正常使用。", invalid: "浏览器保存的项目视图无效，已默认显示概览，本次浏览仍可正常使用。", write: "项目视图无法保存到浏览器，刷新后可能无法恢复，本次浏览仍可正常使用。" },
     tab: { read: "无法读取浏览器保存的任务页签，本次浏览仍可正常使用。", invalid: "浏览器保存的任务页签无效，已默认显示任务链，本次浏览仍可正常使用。", write: "任务页签无法保存到浏览器，刷新后可能无法恢复，本次浏览仍可正常使用。" },

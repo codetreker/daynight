@@ -50,6 +50,7 @@ async function fixture(sessions: TaskSync['sessions'], rootActive = false) {
   const onOpenTask = vi.fn(); const onOpenSession = vi.fn(); const onOpenChain = vi.fn(); const noop = () => {};
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
   const view = renderWithLocale(<ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} sessionStore={store}
+    goalCount={0} goals={{ projectId, goals: [], total: 0, onOpenGoal: noop }}
     activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
     chains={{ projectId, representativeIds: [rootId], allRepresentativeIds: [rootId], openChainId: null, onOpenChain, onCloseChain: noop, onOpenTask, onOpenSession }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} />, { taskCache: { scope }, locale: 'zh-CN' });

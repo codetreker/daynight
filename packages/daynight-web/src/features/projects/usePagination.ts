@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 
-export const taskPageSize = 15;
+export const taskPageSize = 20;
 
 export type PaginationState = {
   readonly page: number;

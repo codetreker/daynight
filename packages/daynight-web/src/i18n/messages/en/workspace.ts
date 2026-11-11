@@ -43,14 +43,15 @@ export const workspace: WorkspaceMessages = {
     list: "Standalone task list",
     summary: ({ visible, total }) => `Newest first · ${number(visible)} / ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
     summaryLabel: ({ visible, total }) => `Showing ${number(visible)} of ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
-    empty: "No standalone tasks", emptyDetail: "All current tasks are connected by ordinary dependencies. View them in the task chains tab.", createdOn: ({ date }) => `Created on ${date}`,
+    empty: "No standalone tasks", emptyDetail: "Standalone tasks outside a Goal will appear here.", createdOn: ({ date }) => `Created on ${date}`,
   },
   pagination: {
     label: ({ list }) => `${list} pagination`, range: ({ start, end, total }) => `${number(start)}–${number(end)} of ${number(total)}`,
     page: ({ page, pages }) => `Page ${number(page)} of ${number(pages)}`, previous: "Previous", next: "Next",
   },
   sections: { label: "Project views", overview: "Overview", tasks: "Task list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
-  tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", unfinishedCount: "Unfinished task count" },
+  tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", goals: "Goals", unfinishedCount: "Unfinished task count" },
+  goals: { list: "Goals", empty: "No goals yet", emptyDetail: "Goals will appear here.", summary: ({ shown, total }) => `${number(shown)} of ${number(total)} goals`, composition: ({ chains, standalone }) => `${number(chains)} chains · ${number(standalone)} standalone tasks` },
   preferences: {
     section: { read: "The saved project view could not be read. You can continue browsing.", invalid: "The saved project view is invalid. Overview is shown by default. You can continue browsing.", write: "The project view could not be saved. It may not return after a reload. You can continue browsing." },
     tab: { read: "The saved task tab could not be read. You can continue browsing.", invalid: "The saved task tab is invalid. Task chains are shown by default. You can continue browsing.", write: "The task tab could not be saved. It may not return after a reload. You can continue browsing." },

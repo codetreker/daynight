@@ -37,6 +37,15 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", "personal", "--confirm"]);
   const projectId = project.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(projectId).toBeDefined();
+  const emptySync = page.waitForResponse(response => response.url().includes(`/api/v1/projects/${projectId}/task-sync`) && response.request().method() === "GET");
+  await page.goto(`${topology.baseURL}/projects/${projectId}`);
+  expect((await emptySync).status()).toBe(200);
+  await page.getByRole("tab", { name: "Task list" }).click();
+  await expect(page.getByRole("tab", { name: "Standalone tasks" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Task chains" })).toBeVisible();
+  await page.getByRole("tab", { name: "Goals", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No goals yet" })).toBeVisible();
+
   const creation = await cli(["task", "create", "--project", projectId!, "--title", name, "--description", "Shared E2E content"]);
   const taskId = creation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(taskId).toBeDefined();

@@ -117,6 +117,14 @@ export type WorkspaceMessages = {
     readonly standalone: string;
     readonly chains: string;
     readonly unfinishedCount: string;
+    readonly goals: string;
+  };
+  readonly goals: {
+    readonly list: string;
+    readonly empty: string;
+    readonly emptyDetail: string;
+    readonly summary: (args: { shown: number; total: number }) => string;
+    readonly composition: (args: { chains: number; standalone: number }) => string;
   };
   readonly preferences: {
     readonly section: PreferenceNotices;

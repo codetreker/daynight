@@ -137,6 +137,7 @@ export class BrowserNavigation {
   }
   /** Local detail close/relation changes use the same gate before changing keyed content. */
   requestAction = (action: () => void): void => this.request(action, this.blockers());
+  requestScopeAction = (scope: DraftScope, action: () => void): void => this.request(action, this.blockers().filter((draft) => sameScope(draft.scope, scope)));
   private request(run: () => void, drafts: readonly DirtyDraft[]): void {
     if (this.pending !== null || this.restoring) return;
     if (drafts.length === 0) { run(); return; }
