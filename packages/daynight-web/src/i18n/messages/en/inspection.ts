@@ -147,7 +147,7 @@ export const inspection: InspectionMessages = {
     stale: "Task details differ from the current task graph. Refresh to see consistent progress and relationships.",
     retainedDetail: "Showing previously loaded task details. Task changes are unavailable until the current details can be confirmed.",
     refreshGraph: "Refresh task graph", description: "Description", noDescription: "No description",
-    relationsMetadata: "Task relationships and metadata", dependencies: "Prerequisites", noDependencies: "No prerequisites",
+    relationsMetadata: "Task relationships and metadata", currentGoal: "Current Goal", noGoal: "No Goal", dependencies: "Prerequisites", noDependencies: "No prerequisites",
     relationLabel: ({ title, kind }) => `${title}, ${kind}`,
     ordinaryDependency: "Ordinary dependency", externalDependency: "External dependency",
     blockers: "Unfinished prerequisites", noBlockers: "All prerequisites are complete", successors: "Direct successors in the graph snapshot",

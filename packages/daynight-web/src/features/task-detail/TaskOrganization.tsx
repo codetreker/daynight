@@ -13,8 +13,8 @@ import { useTaskDetail } from './useTaskDetail';
 import './task-organization.css';
 
 const labels = {
-  en: { newTask: 'New Task', addExisting: 'Add existing Task', title: 'Title', description: 'Description', goal: 'Goal', none: 'No Goal', assignee: 'Assignee', defaultAssignee: 'Default', unassigned: 'Unassigned', peopleFailed: 'Could not load assignees.', retry: 'Retry', cancel: 'Cancel', create: 'Create', add: 'Add to Goal', select: 'Task', loading: 'Loading Task…', check: 'Check current state', checking: 'Checking…', unknown: 'The result is unknown. Check the current state before making another change.', createUnknown: 'The result is unknown. Check the task list before creating another Task.', checked: 'I checked the list; start a new Task', error: 'The request failed.', conflict: 'The Task changed. Check its current state before trying again.', review: 'Review current Task', close: 'Close', current: 'Current Goal', move: 'Move Task', save: 'Save' },
-  'zh-CN': { newTask: '新建 Task', addExisting: '加入已有 Task', title: '标题', description: '工作说明', goal: 'Goal', none: '未归属 Goal', assignee: '负责人', defaultAssignee: '默认', unassigned: '未分配', peopleFailed: '无法读取负责人列表。', retry: '重试', cancel: '取消', create: '创建', add: '加入 Goal', select: 'Task', loading: '正在读取 Task…', check: '查看当前状态', checking: '正在查看…', unknown: '结果尚未确认，请先查看当前状态再进行其他修改。', createUnknown: '结果尚未确认，请先检查任务列表，再创建其他 Task。', checked: '我已检查列表，开始新建 Task', error: '请求失败。', conflict: 'Task 已发生变化，请查看当前状态后再试。', review: '确认当前 Task', close: '关闭', current: '所属 Goal', move: '移动 Task', save: '保存' },
+  en: { newTask: 'New Task', addExisting: 'Add existing Task', title: 'Title', description: 'Description', goal: 'Goal', none: 'No Goal', assignee: 'Assignee', defaultAssignee: 'Default', unassigned: 'Unassigned', peopleFailed: 'Could not load assignees.', retry: 'Retry', cancel: 'Cancel', create: 'Create', add: 'Add to Goal', select: 'Task', loading: 'Loading Task…', check: 'Check current state', checking: 'Checking…', unknown: 'The result is unknown. Check the current state before making another change.', createUnknown: 'The result is unknown. Check the task list before creating another Task.', checked: 'I checked the list; start a new Task', error: 'The request failed.', conflict: 'The Task changed. Check its current state before trying again.', review: 'Review current Task', close: 'Close', current: 'Current Goal' },
+  'zh-CN': { newTask: '新建 Task', addExisting: '加入已有 Task', title: '标题', description: '工作说明', goal: 'Goal', none: '未归属 Goal', assignee: '负责人', defaultAssignee: '默认', unassigned: '未分配', peopleFailed: '无法读取负责人列表。', retry: '重试', cancel: '取消', create: '创建', add: '加入 Goal', select: 'Task', loading: '正在读取 Task…', check: '查看当前状态', checking: '正在查看…', unknown: '结果尚未确认，请先查看当前状态再进行其他修改。', createUnknown: '结果尚未确认，请先检查任务列表，再创建其他 Task。', checked: '我已检查列表，开始新建 Task', error: '请求失败。', conflict: 'Task 已发生变化，请查看当前状态后再试。', review: '确认当前 Task', close: '关闭', current: '所属 Goal' },
 } as const;
 
 const failureText = (error: unknown, fallback: string) => error instanceof ApiError ? error.serverMessage ?? error.message : error instanceof Error ? error.message : fallback;
@@ -52,32 +52,6 @@ const createStore = (scope: object, projectId: string): CreateStore => {
 const updateCreate = (store: CreateStore, patch: Partial<CreateState>) => {
   store.state = { ...store.state, ...patch };
   for (const listener of store.listeners) listener();
-};
-
-export const TaskParentControl = ({ detail, snapshot, disabled, mutation, onSelect, onReconcile }: {
-  readonly detail: NonNullable<ReturnType<typeof useTaskDetail>['detail']>; readonly snapshot: GraphSnapshot | null; readonly disabled: boolean;
-  readonly mutation: ReturnType<typeof useTaskDetail>['mutation']; readonly onSelect: (id: string | null, version: bigint) => void; readonly onReconcile: () => void;
-}) => {
-  const { locale } = useI18n(); const m = labels[locale];
-  const [selected, setSelected] = useState(detail.parentId ?? '');
-  const [selectedVersion, setSelectedVersion] = useState(detail.version);
-  const [dirty, setDirty] = useState(false);
-  const revision = useRef(0);
-  const submitted = useRef<{ parentId: string | null; version: bigint; revision: number } | null>(null);
-  const relevant = mutation.operation?.action === 'parent';
-  const unresolved = relevant && (mutation.phase === 'unknown' || mutation.reconciliationError !== null);
-  useEffect(() => {
-    const operation = mutation.operation;
-    const saved = submitted.current;
-    if (operation?.action !== 'parent' || saved === null || mutation.publicationPending || operation.parentId !== saved.parentId || operation.version !== saved.version || saved.revision !== revision.current) return;
-    if (mutation.phase === 'confirmed' || mutation.phase === 'reconciled') { submitted.current = null; setSelected(detail.parentId ?? ''); setSelectedVersion(detail.version); setDirty(false); }
-  }, [mutation.phase, mutation.operation, mutation.publicationPending, detail]);
-  const goals = goalOptions(snapshot);
-  return <section className="task-parent-control"><label>{m.current}<select value={dirty ? selected : detail.parentId ?? ''} disabled={disabled && !mutation.publicationPending || snapshot === null} onChange={(event) => { revision.current++; setSelected(event.target.value); setSelectedVersion(detail.version); setDirty(event.target.value !== (detail.parentId ?? '') || submitted.current !== null && mutation.publicationPending === true); }}><option value="">{m.none}</option>{detail.parentId !== null && !goals.some(goal => goal.id === detail.parentId) && <option value={detail.parentId}>{detail.parentId}</option>}{goals.map(goal => <option key={goal.id} value={goal.id}>{optionTitle(goal)}</option>)}</select></label>
-    <button className="button" type="button" aria-label={locale === 'en' ? 'Save Goal membership' : '保存 Goal 归属'} disabled={disabled || !dirty || selectedVersion !== detail.version} onClick={() => { submitted.current = { parentId: selected || null, version: selectedVersion, revision: revision.current }; onSelect(selected || null, selectedVersion); }}>{m.save}</button>
-    {dirty && selectedVersion !== detail.version && <div role="alert"><p>{m.conflict}</p><p>{m.current}: {snapshot === null ? detail.parentId ?? m.none : parentLabel(snapshot, detail.parentId, m.none)}</p><button className="button" type="button" disabled={disabled} onClick={() => { revision.current++; setSelectedVersion(detail.version); }}>{m.review}</button></div>}
-    {relevant && (mutation.error !== null || unresolved || mutation.phase === 'conflict') && <div role="alert">{unresolved && <p>{m.unknown}</p>}{mutation.phase === 'conflict' && <p>{m.conflict}</p>}{mutation.error !== null && <p>{failureText(mutation.error, m.error)}</p>}{mutation.reconciliationError !== null && <p>{failureText(mutation.reconciliationError, m.error)}</p>}{(unresolved || mutation.phase === 'conflict') && <button className="button" type="button" disabled={mutation.reconciling} onClick={onReconcile}>{mutation.reconciling ? m.checking : m.check}</button>}</div>}
-  </section>;
 };
 
 export const ExistingSelection = ({ projectId, taskId, goalId, snapshot, onClose }: { readonly projectId: string; readonly taskId: string; readonly goalId: string; readonly snapshot: GraphSnapshot; readonly onClose: () => void }) => {
