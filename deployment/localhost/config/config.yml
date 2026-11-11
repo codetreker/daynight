@@ -1,0 +1,8 @@
+server:
+  listen_address: "127.0.0.1:8787"
+database:
+  url: "postgres://daynight:daynight-local@postgres:5432/daynight?sslmode=disable"
+storage:
+  root: "storage"
+monitoring:
+  metrics_listen_address: "127.0.0.1:8788"

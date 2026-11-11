@@ -5,6 +5,7 @@ import path from 'node:path';
 import { runCommand, startCommand, type ManagedCommand } from './command.ts';
 import { createLifecycle } from './lifecycle.ts';
 import { providerClientId, providerClientSecret, startProvider } from './provider.ts';
+import { writeServerConfig } from './server-config.ts';
 
 type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string };
 type ServerConfiguration = { appId: string; appSecret: string };
@@ -165,19 +166,12 @@ const main = async (): Promise<void> => {
   const credentials = await awaitServerConfiguration();
   const serverInternalPort = await reservePort(publicPorts);
   await forward(configuration.serverPort, serverInternalPort);
-  launch('daynight', path.join(artifacts, 'daynight-server'), {
-    ...environment,
-    DAYNIGHT_LISTEN_ADDR: `127.0.0.1:${serverInternalPort}`,
-    DAYNIGHT_PUBLIC_ORIGIN: baseURL,
-    DAYNIGHT_DATABASE_URL: configuration.databaseURL,
-    DAYNIGHT_STORAGE_ROOT: path.join(runDirectory, 'private', 'storage'),
-    DAYNIGHT_UNIAUTH_URL: authURL,
-    DAYNIGHT_UNIAUTH_APP_ID: credentials.appId,
-    DAYNIGHT_UNIAUTH_APP_SECRET: credentials.appSecret,
-    DAYNIGHT_UNIAUTH_CALLBACK_URL: `${baseURL}/auth/callback`,
-    DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN: '1',
-    DAYNIGHT_ALLOW_LOOPBACK_HTTP: '1',
-  }, ['--root', daynightRoot]);
+  await writeServerConfig(daynightRoot, {
+    listenAddress: `127.0.0.1:${serverInternalPort}`, publicOrigin: baseURL,
+    databaseURL: configuration.databaseURL, storageRoot: path.join(runDirectory, 'private', 'storage'),
+    authURL, appId: credentials.appId, appSecret: credentials.appSecret, callbackURL: `${baseURL}/auth/callback`,
+  });
+  launch('daynight', path.join(artifacts, 'daynight-server'), environment, ['--root', daynightRoot]);
   await ended;
   if (failure !== undefined) throw failure;
 };

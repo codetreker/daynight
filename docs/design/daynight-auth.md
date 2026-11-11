@@ -613,8 +613,10 @@ serverUrl/repoIdentity/projectId，review/update/help/version 不加载登录依
 
 ## 配置、部署与正式组合
 
-五项必需配置为 DAYNIGHT_PUBLIC_ORIGIN、DAYNIGHT_UNIAUTH_URL、
-DAYNIGHT_UNIAUTH_APP_ID、DAYNIGHT_UNIAUTH_APP_SECRET、DAYNIGHT_UNIAUTH_CALLBACK_URL。
+五项必需配置为 `server.public_origin`、`uniauth.url`、`uniauth.app_id`、
+`uniauth.app_secret` 和 `uniauth.callback_url`。它们可由 YAML 提供，也可分别由
+`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
+`DAYNIGHT_UNIAUTH_APP_SECRET` 和 `DAYNIGHT_UNIAUTH_CALLBACK_URL` 显式覆盖。
 启动校验和 handler 工厂都拒绝无效配置。App Secret 只进入服务端 SDK，不下发前端。
 Public origin 是无路径/凭据/query/fragment 的 canonical origin，host 小写、默认端口
 省略，不从请求或 listener 推导。Go listener 仍要求数值 loopback。
@@ -628,7 +630,7 @@ UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 
 这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口和实际
 callback 的 returnPath，防止回调循环。
 
-两个独立的 0/1 开关在未设置或为 0 时关闭，其他值拒绝：
+两个独立开关默认关闭；YAML 使用布尔值，环境变量使用 0/1，其他值拒绝：
 
 | 配置 | 控制对象 |
 |---|---|

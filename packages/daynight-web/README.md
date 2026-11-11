@@ -1331,8 +1331,10 @@ ordinary writable storage directory and does not require an APFS image. Names
 that alias another file or directory on that filesystem are refused; Linux CI
 owns case-coexistence coverage. Vite proxies `/api` to that address
 and listens on loopback. For real login through Vite, set the same
-`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite and Go environments, registered with
-UniAuth for the development browser origin. Vite proxies exactly that callback
+`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite environment to the same public callback
+URL configured for Go, registered with UniAuth for the development browser origin.
+Go can receive this value through YAML or its environment; Vite does not read the
+server configuration file. Vite proxies exactly that callback
 path through the same Go API target. When unset, no callback proxy is added. The five required
 backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser

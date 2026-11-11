@@ -602,18 +602,17 @@ DELETE 的 204 空响应；错误响应继续使用 JSON DTO 和字节预算。
 
 ## 配置、部署与备份
 
-服务使用必填 `DAYNIGHT_STORAGE_ROOT`，为 LocalStorage 指定明确的根目录。
-当前启动以 `local.New` 准备根目录，向工厂提供 `server.Dependencies{Store, Files}`，
-在监听前完成验证；后续启动失败与 HTTP 排空后均关闭已取得的文件根句柄。
-启动时校验配置并以服务用户准备所需目录；无法访问或创建时启动失败。该必填
-配置适用于所有服务启动调用方，包括 Compose、镜像目录权限、Go 子进程测试及
-实际服务组合验证。
-物理目录不进入 API、PG 或 CLI 配置，所有客户端继续使用既有 `serverUrl`。
+服务为 LocalStorage 使用所选 Daynight root 下的 `storage` 作为默认目录；
+`storage.root` 可在 YAML 中设置，`DAYNIGHT_STORAGE_ROOT` 可显式覆盖。相对路径
+以 Daynight root 为基准。启动以 `local.New` 准备根目录，向工厂提供
+`server.Dependencies{Store, Files}`，在监听前完成验证；后续启动失败与 HTTP
+排空后均关闭已取得的文件根句柄。无法访问或创建目录时启动失败。物理目录不进入
+API、PG 或 CLI 配置，所有客户端继续使用既有 `serverUrl`。
 
-两套 Compose 均将项目作用域的 `attachment-data` 命名卷挂载到
-`/var/lib/daynight/storage`，并以该路径设置 `DAYNIGHT_STORAGE_ROOT`。生产镜像已为
-UID/GID `10001:10001` 准备目录；Docker 对空卷的初始化保留该目录所有权，普通非
-root 服务直接写入，不增加 root entrypoint。Go 启动与重启 fixture 使用其所属独立目录。
+两套 Compose 显式选择 `/var/lib/daynight` root，并将项目作用域的
+`attachment-data` 命名卷挂载到其 `storage` 目录。生产镜像已为 UID/GID
+`10001:10001` 准备目录；Docker 对空卷的初始化保留该目录所有权，普通非 root
+服务直接写入，不增加 root entrypoint。Go fixture 使用其所属独立 root。
 
 localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保留，显式
 `down --volumes` 同时销毁两者。dev-ci 每次隔离 Compose 项目拥有独立的 PG 与

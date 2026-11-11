@@ -1,8 +1,8 @@
 # 服务端运行时指标
 
 `daynight-server` 使用独立 HTTP listener 暴露 Prometheus 指标；业务 listener
-不注册 `/metrics`。部署者显式设置 `DAYNIGHT_METRICS_LISTEN_ADDR` 才启用该
-能力，空值禁用。接口没有应用身份认证，网络命名空间、绑定地址和网络规则负责
+不注册 `/metrics`。部署者通过 YAML 的 `monitoring.metrics_listen_address`
+或显式环境变量 `DAYNIGHT_METRICS_LISTEN_ADDR` 启用该能力，空值禁用。接口没有应用身份认证，网络命名空间、绑定地址和网络规则负责
 限定抓取者。配置和操作示例由[服务 README](../../packages/daynight-server/README.md#metrics)
 维护。
 

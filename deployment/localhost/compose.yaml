@@ -57,12 +57,9 @@ services:
       args:
         DAYNIGHT_NPM_REGISTRY: ${DAYNIGHT_NPM_REGISTRY:-https://registry.npmjs.org/}
     network_mode: service:gateway
+    command: ["--root", "/var/lib/daynight"]
     environment:
-      DAYNIGHT_DATABASE_URL: postgres://daynight:daynight-local@postgres:5432/daynight?sslmode=disable
       DAYNIGHT_REDIS_URL: ${DAYNIGHT_REDIS_URL:?Set DAYNIGHT_REDIS_URL in deployment/localhost/.env}
-      DAYNIGHT_LISTEN_ADDR: 127.0.0.1:8787
-      DAYNIGHT_METRICS_LISTEN_ADDR: 127.0.0.1:8788
-      DAYNIGHT_STORAGE_ROOT: /var/lib/daynight/storage
       DAYNIGHT_TASK_SYNC_OVERLAP: ${DAYNIGHT_TASK_SYNC_OVERLAP:-10s}
       DAYNIGHT_PUBLIC_ORIGIN: ${DAYNIGHT_PUBLIC_ORIGIN:?Set DAYNIGHT_PUBLIC_ORIGIN in deployment/localhost/.env}
       DAYNIGHT_UNIAUTH_URL: ${DAYNIGHT_UNIAUTH_URL:?Set DAYNIGHT_UNIAUTH_URL in deployment/localhost/.env}
@@ -72,6 +69,7 @@ services:
       DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN: ${DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN:-0}
       DAYNIGHT_ALLOW_LOOPBACK_HTTP: ${DAYNIGHT_ALLOW_LOOPBACK_HTTP:-0}
     volumes:
+      - ./config:/var/lib/daynight/config:ro
       - attachment-data:/var/lib/daynight/storage
       - server-logs:/var/lib/daynight/logs
     depends_on:

@@ -29,6 +29,19 @@ Set the following values in `deployment/localhost/.env` before starting:
 | `DAYNIGHT_REDIS_URL` | Server connection URL for monitoring; the template uses `redis://redis:6379/0` on the Compose network |
 | `DAYNIGHT_REDIS_MAXMEMORY` | Positive Redis memory budget, such as the template's `128mb` |
 
+Compose passes `--root /var/lib/daynight` and mounts `config/` read-only at
+`/var/lib/daynight/config`. The public `config.yml` supplies the listener,
+metrics, development database URL and storage path. It contains
+only development values; keep credentials in the private `.env` file. The
+server loads `config.yml`, then optional `config.local.yml`, then explicitly
+set environment variables. Restart the server after changing files. Keep the
+public directory at mode `0755` and its file at `0644` so UID 10001 can read
+them. Protect any local override and do not commit secrets.
+Required authentication environment bindings remain mandatory even when a
+local YAML override is present. The image sets the three image tool paths and
+the root-relative staging path `storage/.image-validation` through environment
+variables.
+
 Redis uses `noeviction`: when the budget is exhausted, monitoring writes fail
 instead of silently evicting current states. Size the budget for the deployment's
 actual workload and Redis overhead; the template does not guarantee capacity for
@@ -94,11 +107,14 @@ The pinned image-validation helper and its build manifest live under
 `/opt/daynight/image-validation`; service validation runs independently from
 Controller validation. Provider image profiles remain disabled until their full
 native evidence exists. It prepares the required writable
-`DAYNIGHT_STORAGE_ROOT` for UID/GID `10001:10001`. The Compose-managed
-`attachment-data` volume mounts at that root. The `server-logs` volume mounts at
+`/var/lib/daynight/storage` for UID/GID `10001:10001`. The Compose-managed
+`attachment-data` volume mounts there. The `server-logs` volume mounts at
 `/var/lib/daynight/logs`. Docker initializes fresh volumes from the image
 directories with their ownership, so the server writes as UID 10001 without a
 privileged startup process.
+
+If `storage.root` is changed, update the attachment volume mount and the fixed
+storage paths in the backup and restore commands below to match it before use.
 
 Open the configured public origin, `http://127.0.0.1:8787/` with the template,
 and sign in through UniAuth. The dashboard provides project creation, member and

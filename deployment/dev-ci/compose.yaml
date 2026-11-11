@@ -39,15 +39,13 @@ services:
       args:
         DAYNIGHT_NPM_REGISTRY: ${DAYNIGHT_NPM_REGISTRY:-https://registry.npmjs.org/}
     network_mode: service:gateway
+    command: ["--root", "/var/lib/daynight"]
     env_file:
       - ${DAYNIGHT_DEV_CI_AUTH_ENV_FILE:?Use deployment/dev-ci/run.sh}
     environment:
-      DAYNIGHT_DATABASE_URL: postgres://daynight:daynight-dev-ci@postgres:5432/daynight?sslmode=disable
-      DAYNIGHT_LISTEN_ADDR: 127.0.0.1:8787
-      DAYNIGHT_METRICS_LISTEN_ADDR: 127.0.0.1:8788
-      DAYNIGHT_STORAGE_ROOT: /var/lib/daynight/storage
       DAYNIGHT_TASK_SYNC_OVERLAP: ${DAYNIGHT_TASK_SYNC_OVERLAP:-10s}
     volumes:
+      - ${DAYNIGHT_DEV_CI_CONFIG_DIRECTORY:?Use deployment/dev-ci/run.sh}:/var/lib/daynight/config:ro
       - attachment-data:/var/lib/daynight/storage
       - server-logs:/var/lib/daynight/logs
     depends_on:
