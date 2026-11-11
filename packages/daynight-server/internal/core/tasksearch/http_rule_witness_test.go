@@ -98,7 +98,7 @@ func (f *httpRuleSearchFixture) Titles(ctx context.Context, project string, ids 
 }
 
 func TestSearchPreservesRankingSnippetAndContinuation(t *testing.T) {
-	f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "graph", "titles")
+	f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "titles")
 	f.rows.Items[0].Description = "Description without matching text"
 	first, err := Search(f.ctx, f, principal(), projectID, Request{Query: "cache", Limit: 1})
 	if err != nil || first.ProjectID != projectID || first.Total != 2 || len(first.Items) != 1 || first.Items[0].ID != child || first.NextCursor == nil ||
@@ -108,7 +108,7 @@ func TestSearchPreservesRankingSnippetAndContinuation(t *testing.T) {
 
 	secondID := "55555555-5555-4555-8555-555555555555"
 	snippet := "raw **cache** markdown"
-	next := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "graph")
+	next := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches")
 	next.after = &store.TaskSearchPosition{TitlePriority: true, UpdatedAt: f.rows.Items[0].UpdatedAt, ID: child}
 	next.rows = store.TaskSearchPage{Total: 2, Items: []store.TaskSearchRow{{ID: secondID, Title: "Other", Status: model.TaskDone, UpdatedAt: f.rows.Items[0].UpdatedAt.Add(-time.Second),
 		Description: snippet}}}
@@ -123,7 +123,7 @@ func TestSearchPreservesRankingSnippetAndContinuation(t *testing.T) {
 func TestSearchCompletionFailurePrecedesLateCallerCancellation(t *testing.T) {
 	for _, phase := range []string{"commit", "cleanup", "caller cancellation"} {
 		t.Run(phase, func(t *testing.T) {
-			f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "graph", "titles")
+			f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "titles")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			f.ctx = ctx

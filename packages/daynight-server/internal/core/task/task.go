@@ -260,6 +260,10 @@ func canonicalExternalDependencies(ids []string, self string, dependencies []str
 }
 
 func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite) error {
+	return validateCandidate(ctx, dao, id, values, nil)
+}
+
+func validateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite, retained []string) error {
 	if err := AdmitDependencies(values.DependsOn); err != nil {
 		return PropertyInputError(err)
 	}
@@ -279,6 +283,27 @@ func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, v
 	}
 	if len(missing) > 0 {
 		return &model.Fault{Code: "invalid_input", Message: "Dependencies must identify tasks in this project.", TaskIDs: missing}
+	}
+	added := make([]string, 0, len(values.DependsOn))
+	for _, dependency := range values.DependsOn {
+		if !slices.Contains(retained, dependency) {
+			added = append(added, dependency)
+		}
+	}
+	if len(added) > 0 {
+		visible, err := dao.VisibleTaskIDs(ctx, added)
+		if err != nil {
+			return err
+		}
+		missing = missing[:0]
+		for _, dependency := range added {
+			if !slices.Contains(visible, dependency) {
+				missing = append(missing, dependency)
+			}
+		}
+		if len(missing) > 0 {
+			return &model.Fault{Code: "invalid_input", Message: "Dependencies must identify visible tasks in this project.", TaskIDs: missing}
+		}
 	}
 	cycles := make([]string, 0)
 	for _, dependency := range values.DependsOn {

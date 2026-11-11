@@ -91,7 +91,7 @@ func TestTaskHTTPAssignedToFilteringPrecedesLimitAndBindsCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cursorFields map[string]any
-	if err := json.Unmarshal(decoded, &cursorFields); err != nil || cursorFields["version"] != float64(2) {
+	if err := json.Unmarshal(decoded, &cursorFields); err != nil || cursorFields["version"] != float64(3) {
 		t.Fatalf("Task cursor version: %s %v", decoded, err)
 	}
 	for _, selector := range []string{"unassigned", otherID} {
@@ -107,7 +107,7 @@ func TestTaskHTTPAssignedToFilteringPrecedesLimitAndBindsCursor(t *testing.T) {
 	if len(same.Items) != 1 || same.Items[0].ID != second.ID {
 		t.Fatalf("me/explicit canonical cursor scope: %#v", same)
 	}
-	cursorFields["version"] = float64(1)
+	cursorFields["version"] = float64(2)
 	old, err := json.Marshal(cursorFields)
 	if err != nil {
 		t.Fatal(err)

@@ -192,6 +192,9 @@ var taskProposedStateSQL string
 //go:embed migrations/061_task_type_parent.sql
 var taskTypeParentSQL string
 
+//go:embed migrations/062_task_resource_rows.sql
+var taskResourceRowsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -261,6 +264,7 @@ var schemaMigrations = []migration{
 	{version: 59, sql: sessionMediaRatesMigration},
 	{version: 60, sql: taskProposedStateSQL},
 	{version: 61, sql: taskTypeParentSQL},
+	{version: 62, sql: taskResourceRowsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

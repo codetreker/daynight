@@ -27,6 +27,8 @@ type WorkerQuery struct {
 }
 
 type TaskQuery struct {
+	Type               model.TaskType
+	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter
 	Page               Page
 	Status             *model.TaskStatus
@@ -53,6 +55,8 @@ type TaskPriorityPosition struct {
 
 // TaskPriorityQuery applies all filters before priority ordering and limiting.
 type TaskPriorityQuery struct {
+	Type               model.TaskType
+	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus
 	ExcludeTerminal    bool

@@ -9,7 +9,11 @@ import (
 
 func ReadTaskHeader(ctx context.Context, tx pgx.Tx, projectID, taskID, lock string) (model.TaskHeader, error) {
 	var header model.TaskHeader
-	err := tx.QueryRow(ctx, `SELECT project_id::text,id::text,version,deleted_at FROM tasks WHERE project_id=$1 AND id=$2`+lock, projectID, taskID).
+	relation, deleted := "task_resource_rows", "effective_deleted_at"
+	if lock != "" {
+		relation, deleted = "tasks", "deleted_at"
+	}
+	err := tx.QueryRow(ctx, `SELECT project_id::text,id::text,version,`+deleted+` FROM `+relation+` WHERE project_id=$1 AND id=$2`+lock, projectID, taskID).
 		Scan(&header.ProjectID, &header.ID, &header.Version, &header.DeletedAt)
 	if err != nil {
 		return model.TaskHeader{}, QueryError("read task header", err)

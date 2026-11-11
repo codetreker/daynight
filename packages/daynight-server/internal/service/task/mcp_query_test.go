@@ -63,12 +63,12 @@ func TestMCPListAuthorizationMaterializationAndFailures(t *testing.T) {
 		return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: first}, {Task: second}}}, nil
 	}
 	fullReads := 0
-	f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
+	f.reader.TaskBodiesFn = func(actual context.Context, projectID string, ids []string) ([]model.Task, error) {
 		fullReads++
-		if actual != ctx || projectID != f.project.ID || id != first.ID {
-			t.Fatal("visitor stop still materialized another task")
+		if actual != ctx || projectID != f.project.ID || !reflect.DeepEqual(ids, []string{first.ID, second.ID}) {
+			t.Fatal("batch changed selected page")
 		}
-		return first, nil
+		return []model.Task{second, first}, nil
 	}
 	count := 0
 	err := f.tasks.MCPList(ctx, f.principal, f.project.ID, request, func(item store.TaskPriorityItem, cursor string, more bool) bool {
@@ -93,12 +93,12 @@ func TestMCPListAuthorizationMaterializationAndFailures(t *testing.T) {
 	f.reader.TaskPriorityListFn = func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
 		return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: first}}}, nil
 	}
-	f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
-		if actual != cancelled || projectID != f.project.ID || id != first.ID {
+	f.reader.TaskBodiesFn = func(actual context.Context, projectID string, ids []string) ([]model.Task, error) {
+		if actual != cancelled || projectID != f.project.ID || !reflect.DeepEqual(ids, []string{first.ID}) {
 			t.Fatal("full materialization changed canceled scope")
 		}
 		cancel()
-		return model.Task{}, actual.Err()
+		return nil, actual.Err()
 	}
 	err = f.tasks.MCPList(cancelled, f.principal, f.project.ID, request, visit)
 	if !errors.Is(err, context.Canceled) {
@@ -135,20 +135,19 @@ func TestMCPReadyCandidatesAndFullSnapshot(t *testing.T) {
 		}
 		return store.TaskPriorityPage{Items: items}, nil
 	}
-	f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
+	f.reader.TaskBodiesFn = func(actual context.Context, projectID string, ids []string) ([]model.Task, error) {
 		fullReads++
 		if actual != ctx || projectID != f.project.ID {
 			t.Fatal("full read changed selection snapshot")
 		}
-		switch id {
-		case first.ID:
-			return first, nil
-		case second.ID:
-			return second, nil
-		default:
-			t.Fatalf("unselected task materialized: %s", id)
-			panic("unselected Task")
+		if reflect.DeepEqual(ids, []string{first.ID}) {
+			return []model.Task{first}, nil
 		}
+		if reflect.DeepEqual(ids, []string{first.ID, second.ID}) {
+			return []model.Task{second, first}, nil
+		}
+		t.Fatalf("unselected tasks materialized: %v", ids)
+		return nil, nil
 	}
 	items, err := f.tasks.MCPReady(ctx, f.principal, f.project.ID, request)
 	if err != nil || len(items) != 1 || !reflect.DeepEqual(items[0].Task, first) || fullReads != 1 {
@@ -156,11 +155,11 @@ func TestMCPReadyCandidatesAndFullSnapshot(t *testing.T) {
 	}
 	request.Limit = 20
 	items, err = f.tasks.MCPReady(ctx, f.principal, f.project.ID, request)
-	if err != nil || len(items) != 2 || !reflect.DeepEqual(items[0].Task, first) || !reflect.DeepEqual(items[1].Task, second) || fullReads != 3 {
+	if err != nil || len(items) != 2 || !reflect.DeepEqual(items[0].Task, first) || !reflect.DeepEqual(items[1].Task, second) || fullReads != 2 {
 		t.Fatalf("ordered filtered candidates: %#v %v reads=%d", items, err, fullReads)
 	}
 	request.View = "summary"
-	f.reader.TaskFn = nil
+	f.reader.TaskBodiesFn = nil
 	items, err = f.tasks.MCPReady(ctx, f.principal, f.project.ID, request)
 	if err != nil || len(items) != 2 || items[0].Task.Description != "" || !items[0].Task.Ready || queryCalls != 3 {
 		t.Fatalf("bounded summary projections: %#v %v", items, err)
@@ -220,12 +219,12 @@ func TestMCPReadyAuthorizationAndFailures(t *testing.T) {
 				}
 				return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: f.target}}}, nil
 			}
-			f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
-				if actual != cancelled || projectID != f.project.ID || id != f.target.ID {
+			f.reader.TaskBodiesFn = func(actual context.Context, projectID string, ids []string) ([]model.Task, error) {
+				if actual != cancelled || projectID != f.project.ID || !reflect.DeepEqual(ids, []string{f.target.ID}) {
 					t.Fatal("cancellation scope changed")
 				}
 				cancel()
-				return model.Task{}, actual.Err()
+				return nil, actual.Err()
 			}
 			items, err := f.tasks.MCPReady(cancelled, f.principal, f.project.ID, request)
 			if !errors.Is(err, context.Canceled) || len(items) != 0 {

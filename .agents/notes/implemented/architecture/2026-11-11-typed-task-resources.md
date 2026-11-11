@@ -20,8 +20,9 @@ references retain their own projections. Ordinary creation explicitly supplies
 MCP output schemas describe the typed resource and Goal progress shape.
 
 The [server design](../../../../docs/design/daynight-server.md) owns the deployed
-storage and API mechanics. Type-specific operations, Goal reads and public
-creation are separate capabilities and are not enabled by these columns.
+storage and API mechanics. Type-specific operations and public creation remain separate capabilities.
+The [resource read decision](2026-11-11-typed-task-resource-reads.md) owns typed
+selection, effective visibility and derived Goal progress.
 
 ## Alternatives
 
@@ -37,6 +38,5 @@ resource type requiring that structure.
 
 Existing ordinary data keeps its identity and behavior, and consumers can learn
 the added fields before new resource types are publicly created. The database
-does not enforce cross-row parent semantics; later business operations must own
-those checks and visibility rules. Storage and schema alone do not provide Goal
-lifecycle, progress or parent mutation.
+does not enforce cross-row parent semantics; business operations own those checks. Typed reads supply visibility and derived
+progress; Goal lifecycle and parent mutation remain separate capabilities.

@@ -25,31 +25,20 @@ func TestTypedResourceMappings(t *testing.T) {
 	if err != nil || full.Type != model.TaskTypeGoal || full.ParentID != nil {
 		t.Fatalf("full goal: %+v, %v", full, err)
 	}
-	page, err := reader.Tasks(ctx, f.project, store.TaskQuery{Page: store.Page{Limit: 10}})
-	mustOK(t, err)
-	if len(page.Items) != 2 {
-		t.Fatalf("list: %+v", page)
-	}
-	for _, item := range page.Items {
-		if item.ID == child && (item.Type != model.TaskTypeTask || item.ParentID == nil || *item.ParentID != goal) {
-			t.Fatalf("list child: %+v", item)
+	for _, typ := range []model.TaskType{model.TaskTypeTask, model.TaskTypeGoal} {
+		want := child
+		if typ == model.TaskTypeGoal {
+			want = goal
 		}
-		if item.ID == goal && (item.Type != model.TaskTypeGoal || item.ParentID != nil) {
-			t.Fatalf("list goal: %+v", item)
+		page, err := reader.Tasks(ctx, f.project, store.TaskQuery{Type: typ, Page: store.Page{Limit: 10}})
+		mustOK(t, err)
+		if len(page.Items) != 1 || page.Items[0].ID != want || page.Items[0].Type != typ {
+			t.Fatalf("list %s: %+v", typ, page)
 		}
-	}
-	priority, err := reader.TaskPriorityList(ctx, f.project, store.TaskPriorityQuery{Limit: 10})
-	mustOK(t, err)
-	if len(priority.Items) != 2 {
-		t.Fatalf("priority list: %+v", priority)
-	}
-	for _, entry := range priority.Items {
-		item := entry.Task
-		if item.ID == child && (item.Type != model.TaskTypeTask || item.ParentID == nil || *item.ParentID != goal) {
-			t.Fatalf("priority child: %+v", item)
-		}
-		if item.ID == goal && (item.Type != model.TaskTypeGoal || item.ParentID != nil) {
-			t.Fatalf("priority goal: %+v", item)
+		priority, err := reader.TaskPriorityList(ctx, f.project, store.TaskPriorityQuery{Type: typ, Limit: 10})
+		mustOK(t, err)
+		if len(priority.Items) != 1 || priority.Items[0].Task.ID != want || priority.Items[0].Task.Type != typ {
+			t.Fatalf("priority %s: %+v", typ, priority)
 		}
 	}
 	graph, err := reader.TaskGraphTasks(ctx, f.project, child, store.TaskGraphSelection{LiveOnly: true}, 160)
@@ -70,17 +59,15 @@ func TestTypedResourceMappings(t *testing.T) {
 		}
 	}
 	search := task.NewSearchSnapshot(f.tx)
-	rows, err := search.Matches(ctx, f.project, store.TaskSearchQuery{Expression: &searchmodel.Node{Kind: searchmodel.Leaf, Atom: searchmodel.Atom{Field: searchmodel.TitleField, Term: "example"}}, Limit: 10})
-	mustOK(t, err)
-	if len(rows.Items) != 2 {
-		t.Fatalf("search: %+v", rows)
-	}
-	for _, item := range rows.Items {
-		if item.ID == child && (item.Type != model.TaskTypeTask || item.ParentID == nil || *item.ParentID != goal) {
-			t.Fatalf("search child: %+v", item)
+	for _, typ := range []model.TaskType{model.TaskTypeTask, model.TaskTypeGoal} {
+		want := child
+		if typ == model.TaskTypeGoal {
+			want = goal
 		}
-		if item.ID == goal && (item.Type != model.TaskTypeGoal || item.ParentID != nil) {
-			t.Fatalf("search goal: %+v", item)
+		rows, err := search.Matches(ctx, f.project, store.TaskSearchQuery{Type: typ, Expression: &searchmodel.Node{Kind: searchmodel.Leaf, Atom: searchmodel.Atom{Field: searchmodel.TitleField, Term: "example"}}, Limit: 10})
+		mustOK(t, err)
+		if len(rows.Items) != 1 || rows.Items[0].ID != want || rows.Items[0].Type != typ {
+			t.Fatalf("search %s: %+v", typ, rows)
 		}
 	}
 }

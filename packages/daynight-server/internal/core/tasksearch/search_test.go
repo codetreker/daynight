@@ -81,7 +81,8 @@ func principal() model.Principal {
 }
 func testFixture() *searchFixture {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	return &searchFixture{fence: store.TaskSearchFence{Epoch: user, Count: "2", VersionSum: "2"}, rows: store.TaskSearchPage{Total: 2, HasMore: true, Items: []store.TaskSearchRow{{ID: child, Title: "Cache", Description: "raw markdown", Status: model.TaskDone, UpdatedAt: now, TitlePriority: true}}}, graph: store.TaskSearchGraph{Nodes: []store.TaskSearchNode{{ID: child, CreatedAt: now}, {ID: root, CreatedAt: now.Add(-time.Hour)}}, Edges: []store.TaskSearchEdge{{TaskID: child, DependsOnID: root}}}}
+	parent := root
+	return &searchFixture{fence: store.TaskSearchFence{Epoch: user, Count: "2", VersionSum: "2"}, rows: store.TaskSearchPage{Total: 2, HasMore: true, Items: []store.TaskSearchRow{{ID: child, Type: model.TaskTypeTask, ParentID: &parent, Title: "Cache", Description: "raw markdown", Status: model.TaskDone, UpdatedAt: now, TitlePriority: true}}}, graph: store.TaskSearchGraph{Nodes: []store.TaskSearchNode{{ID: child, CreatedAt: now}, {ID: root, CreatedAt: now.Add(-time.Hour)}}, Edges: []store.TaskSearchEdge{{TaskID: child, DependsOnID: root}}}}
 }
 func TestSearchPageAndCursor(t *testing.T) {
 	f := testFixture()
@@ -176,7 +177,7 @@ func TestSearchInvalidRequests(t *testing.T) {
 }
 
 func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
-	for _, phase := range []string{"fence", "matches", "graph", "titles"} {
+	for _, phase := range []string{"fence", "matches", "titles"} {
 		t.Run(phase, func(t *testing.T) {
 			f := testFixture()
 			f.failurePhase = phase
@@ -217,7 +218,7 @@ func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
 }
 
 func TestSearchCursorValidation(t *testing.T) {
-	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+	scope := cursorScope{Version: 3, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: "hash"}
 	valid := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "0", VersionSum: "123456789012345678901234567890"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	encoded, err := encodeCursor(valid)
 	if err != nil {
@@ -272,7 +273,7 @@ func TestSearchIDEvidenceAndContinuation(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Match.Fields, []string{"id"}) || page.Items[0].Match.DescriptionSnippet != nil || page.NextCursor == nil {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
-	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("id:"+id))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}}
+	scope := cursorScope{Version: 3, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("id:"+id))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}}
 	value, err := decodeCursor(*page.NextCursor, scope)
 	if err != nil || !value.Position.ExactIDPriority || value.Position.TitlePriority || value.Position.ID != id {
 		t.Fatalf("position=%+v err=%v", value.Position, err)
@@ -280,8 +281,8 @@ func TestSearchIDEvidenceAndContinuation(t *testing.T) {
 
 }
 
-func TestSearchCursorV2RequiresCanonicalExactPriority(t *testing.T) {
-	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+func TestSearchCursorV3RequiresCanonicalExactPriority(t *testing.T) {
+	scope := cursorScope{Version: 3, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: "hash"}
 	c := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "1", VersionSum: "1"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	encoded, err := encodeCursor(c)
 	if err != nil {
@@ -295,7 +296,7 @@ func TestSearchCursorV2RequiresCanonicalExactPriority(t *testing.T) {
 		"missing":     strings.Replace(string(raw), `"ExactIDPriority":false,`, "", 1),
 		"null":        strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":null`, 1),
 		"wrong type":  strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":"false"`, 1),
-		"old version": strings.Replace(string(raw), `"version":2`, `"version":1`, 1),
+		"old version": strings.Replace(string(raw), `"version":3`, `"version":2`, 1),
 		"duplicate":   strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":false,"ExactIDPriority":false`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -308,3 +309,56 @@ func TestSearchCursorV2RequiresCanonicalExactPriority(t *testing.T) {
 		t.Fatalf("explicit false rejected: %v", err)
 	}
 }
+
+func TestSearchContextUsesOnlyRealParentAndRejectsMissingParent(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		typ         model.TaskType
+		parent      *string
+		missing     bool
+		wantContext bool
+		wantError   bool
+	}{
+		{name: "child", typ: model.TaskTypeTask, parent: ptrSearch(root), wantContext: true},
+		{name: "independent", typ: model.TaskTypeTask},
+		{name: "goal", typ: model.TaskTypeGoal},
+		{name: "invalid parent", typ: model.TaskTypeTask, parent: ptrSearch(root), missing: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := testFixture()
+			f.rows.Items[0].Type, f.rows.Items[0].ParentID, f.missingTitles = tc.typ, tc.parent, tc.missing
+			page, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 1})
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("missing parent accepted")
+				}
+				return
+			}
+			if err != nil || len(page.Items) != 1 || (page.Items[0].Context != nil) != tc.wantContext || f.graphCalled {
+				t.Fatalf("context=%+v graph=%v error=%v", page, f.graphCalled, err)
+			}
+		})
+	}
+}
+
+func TestSearchCursorBindsTypeAndParent(t *testing.T) {
+	f := testFixture()
+	request := Request{Query: "cache", Limit: 1}
+	page, err := Search(context.Background(), f, principal(), projectID, request)
+	if err != nil || page.NextCursor == nil {
+		t.Fatalf("page=%+v error=%v", page, err)
+	}
+	for _, change := range []Request{
+		{Query: "cache", Limit: 1, Cursor: page.NextCursor, Type: model.TaskTypeGoal},
+		{Query: "cache", Limit: 1, Cursor: page.NextCursor, Parent: ptrSearch("none")},
+		{Query: "cache", Limit: 1, Cursor: page.NextCursor, Parent: ptrSearch(root)},
+	} {
+		_, err := Search(context.Background(), f, principal(), projectID, change)
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != "invalid_input" {
+			t.Fatalf("scope change accepted: %+v %v", change, err)
+		}
+	}
+}
+
+func ptrSearch(value string) *string { return &value }

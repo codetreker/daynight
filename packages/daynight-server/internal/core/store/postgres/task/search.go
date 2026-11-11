@@ -38,7 +38,7 @@ func (s *searchSnapshot) Fence(ctx context.Context, projectID string) (store.Tas
 // Keep live-task lookup dependent on the neighbor: without this barrier stale
 // statistics can place a full project scan outside the recursive traversal.
 const searchClosure = `WITH RECURSIVE chain(id) AS (
- SELECT id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) AND deleted_at IS NULL
+ SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=ANY($2::uuid[]) AND type='task' AND effective_deleted_at IS NULL
  UNION
  SELECT neighbor.id FROM chain member
  CROSS JOIN LATERAL (
@@ -46,7 +46,7 @@ const searchClosure = `WITH RECURSIVE chain(id) AS (
   UNION
   SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
  ) neighbor
- JOIN LATERAL (SELECT id FROM tasks WHERE project_id=$1 AND id=neighbor.id AND deleted_at IS NULL OFFSET 0) live ON true
+ JOIN LATERAL (SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=neighbor.id AND type='task' AND effective_deleted_at IS NULL OFFSET 0) live ON true
 ) `
 
 func (s *searchSnapshot) ContextGraph(ctx context.Context, projectID string, ids []string) (store.TaskSearchGraph, error) {
@@ -90,7 +90,7 @@ func (s *searchSnapshot) ContextGraph(ctx context.Context, projectID string, ids
 }
 
 func (s *searchSnapshot) Titles(ctx context.Context, projectID string, ids []string) (map[string]string, error) {
-	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM tasks WHERE project_id=$1 AND deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
+	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM task_resource_rows WHERE project_id=$1 AND type='goal' AND effective_deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
 	if err != nil {
 		return nil, searchError("read task search titles", err)
 	}

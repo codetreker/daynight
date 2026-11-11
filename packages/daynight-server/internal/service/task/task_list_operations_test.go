@@ -73,7 +73,7 @@ func newListOperationFixture(t *testing.T) *listOperationFixture {
 		Status: listOperationPointer(model.TaskInProgress), Ready: listOperationPointer(false), AllowAgents: listOperationPointer(true),
 		CompatiblePlatform: listOperationPointer(model.PlatformLinux), PlatformSpecific: listOperationPointer(false), WorkerID: listOperationPointer(strings.ToUpper(listOperationWorker))}
 	f.selection = taskcore.ListSelection{
-		Scope: query.ListScope{Kind: "tasks", ProjectID: listOperationProject, Status: listOperationPointer("in_progress"), Ready: listOperationPointer(false),
+		Scope: query.ListScope{Type: model.TaskTypeTask, Kind: "tasks", ProjectID: listOperationProject, Status: listOperationPointer("in_progress"), Ready: listOperationPointer(false),
 			AllowAgents: listOperationPointer(true), CompatiblePlatform: listOperationPointer(model.PlatformLinux), PlatformSpecific: listOperationPointer(false),
 			WorkerID: listOperationPointer(listOperationWorker), WorkerUserID: listOperationPointer(listOperationActor), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor}},
 		Query: store.TaskQuery{Page: store.Page{Limit: 2}, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor},
@@ -379,7 +379,7 @@ func TestTaskListOperationsCoordinateSnapshotAndProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 			last := listOperationRows()[1]
-			want := map[string]any{"version": float64(2), "kind": "tasks", "projectId": listOperationProject,
+			want := map[string]any{"version": float64(3), "type": "task", "kind": "tasks", "projectId": listOperationProject,
 				"status": "in_progress", "ready": false, "allowAgents": true, "compatiblePlatform": "linux", "platformSpecific": false,
 				"workerId": listOperationWorker, "workerUserId": listOperationActor, "assignedTo": "user:" + listOperationActor,
 				"createdAt": last.CreatedAt.Format(time.RFC3339Nano), "id": last.ID}
@@ -489,4 +489,11 @@ func TestTaskListOperationsRejectBeforeSnapshot(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (c *listOperationCapability) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	return nil, c.fail("GoalProgresses")
+}
+func (c *listOperationCapability) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
+	return nil, c.fail("TaskBodies")
 }

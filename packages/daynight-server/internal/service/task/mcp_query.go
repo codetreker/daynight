@@ -37,14 +37,12 @@ func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		for i, item := range page.Items {
-			if request.View == "full" {
-				full, err := snapshot.TaskDAO().Task(ctx, projectID, item.Task.ID)
-				if err != nil {
-					return err
-				}
-				item.Task = full
+		if request.View == "full" {
+			if err := expandPriorityPage(ctx, snapshot.TaskDAO(), projectID, page.Items); err != nil {
+				return err
 			}
+		}
+		for i, item := range page.Items {
 			more := i+1 < len(page.Items) || page.HasMore
 			cursor, err := page.CursorAfter(selection, item.Task)
 			if err != nil {
@@ -94,12 +92,8 @@ func (s *Tasks) MCPReady(ctx context.Context, principal model.Principal, project
 		}
 		items = page.Items
 		if request.View == "full" {
-			for i := range items {
-				full, err := snapshot.TaskDAO().Task(ctx, projectID, items[i].Task.ID)
-				if err != nil {
-					return err
-				}
-				items[i].Task = full
+			if err := expandPriorityPage(ctx, snapshot.TaskDAO(), projectID, items); err != nil {
+				return err
 			}
 		}
 		return nil
