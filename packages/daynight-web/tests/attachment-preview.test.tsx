@@ -43,6 +43,13 @@ describe('attachment preview', () => {
     expect(screen.queryByTitle('HTML 预览：site.html')).toBeNull();
     view.rerender(<AttachmentPreview {...frameProps} />);
     const loadedFrame = screen.getByTitle('HTML 预览：site.html');
+    view.rerender(<AttachmentPreview {...frameProps} paused />);
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(loadedFrame);
+    expect(loadedFrame).not.toHaveAttribute('src');
+    fireEvent.load(loadedFrame);
+    expect(loadedFrame).not.toHaveAttribute('src');
+    view.rerender(<AttachmentPreview {...frameProps} />);
+    expect(loadedFrame).toHaveAttribute('src', `${root}site.html`);
     fireEvent.load(loadedFrame);
     view.rerender(<AttachmentPreview {...frameProps} paused />);
     expect(screen.getByTitle('HTML 预览：site.html')).toBe(loadedFrame);

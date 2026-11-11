@@ -34,6 +34,8 @@ const TrustedFrame = ({ url, title, keyboardOwner, paused }: { readonly url: str
   const m = messages.inspection.attachments;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [loadedFrame, setLoadedFrame] = useState(false);
+  const started = useRef(!paused);
+  if (!paused) started.current = true;
   const [frameDocument, setFrameDocument] = useState<Document | null>(null);
   const owner = useRef(keyboardOwner);
   owner.current = keyboardOwner;
@@ -88,13 +90,14 @@ const TrustedFrame = ({ url, title, keyboardOwner, paused }: { readonly url: str
   }, [frameDocument, ownerRoot]);
 
   const loaded = () => {
+    if (paused && !loadedFrame) return;
     setLoadedFrame(true);
     setFrameDocument(frameRef.current!.contentDocument);
   };
 
   return <div className="attachment-native">
     {!loadedFrame && !paused && <p className="attachment-state attachment-native-state" role="status">{m.previewLoading}</p>}
-    {(!paused || loadedFrame) && <iframe className="attachment-frame" ref={frameRef} src={url} title={title} tabIndex={0} onLoad={loaded} />}
+    {started.current && <iframe className="attachment-frame" ref={frameRef} src={paused && !loadedFrame ? undefined : url} title={title} tabIndex={0} onLoad={loaded} />}
   </div>;
 };
 

@@ -47,6 +47,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const [resumeRevision, setResumeRevision] = useState(0);
   const listRequest = useRef<AbortController | null>(null);
   const previewRequest = useRef<AbortController | null>(null);
+  const preservePreviewOnResume = useRef(false);
   const writeRequest = useRef<AbortController | null>(null);
   const listGeneration = useRef(0);
   const writeGeneration = useRef(0);
@@ -59,6 +60,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       ++writeGeneration.current;
       listRequest.current?.abort();
       previewRequest.current?.abort();
+      preservePreviewOnResume.current = true;
       writeRequest.current?.abort();
       listRequest.current = null;
       writeRequest.current = null;
@@ -143,6 +145,10 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     const cleanup = () => { controller.abort(); if (previewRequest.current === controller) previewRequest.current = null; };
     const path = selectedPath;
     if (paused || authRequestsPaused()) return cleanup;
+    if (preservePreviewOnResume.current) {
+      preservePreviewOnResume.current = false;
+      if (preview.scope === scope && preview.path === path && preview.status === "ready") return cleanup;
+    }
     setPreview(initialPreview(scope, path));
     if (!enabled || path === null || selectedKind === undefined) return cleanup;
     const pauseRevision = authRequestsPauseRevision();
