@@ -711,7 +711,7 @@ it('does not publish an old paused rejection into a replacement settings owner',
     return url.endsWith('/members') ? json(members()) : json(project());
   });
   const oldRetention = vi.fn(); let completion: Promise<void> | undefined;
-  const Probe = ({ retention }: { retention?: (value: boolean) => void }) => {
+  const Probe = ({ retention }: { retention?: ((value: boolean) => void) | undefined }) => {
     const state = useProjectSettings(id, userId, true, true, retention);
     return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.writeError instanceof ApiError ? `rejected ${state.writeError.status}` : 'no rejection'}</span><span>{state.project?.name}</span></>;
   };
