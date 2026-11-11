@@ -38,9 +38,12 @@ including tags, errors and cleanup. Matched cost comparisons include the Root
 and receiving packages and their preparation and cleanup; moving time between
 packages is not itself a saving.
 
-The Root fixture retains its existing shared names and semantics for ordinary
-and tagged consumers. Root Runtime lifecycle, metrics listener and transport
-tests are grouped by their tested responsibility; application shutdown ordering
+Root assembly tests and their shared fixtures are grouped by server, auth,
+OAuth, route and fixture responsibility. The fixture retains the shared names
+and semantics still needed by ordinary and tagged consumers; unused definitions
+are removed only after their last consumers leave. Root Runtime lifecycle,
+metrics listener and transport tests are grouped by their tested responsibility;
+application shutdown ordering
 belongs with server assembly. The tests retain real socket, metrics, relay and
 file mechanisms while controlling unrelated DAO facts. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
