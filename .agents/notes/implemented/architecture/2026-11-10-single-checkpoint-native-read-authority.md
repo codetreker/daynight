@@ -54,6 +54,14 @@ allowance. Matching only the thread
 ID would hide later lifecycle changes; invalidating every notification would
 close a normally started thread before its first source read.
 
+Startup regressions distinguish a restriction received before the start response
+from one received after policy publication. The former cannot publish authority;
+the latter invalidates the issued binding before its next checkpoint. Separate
+stdout writes do not fix either order relative to installation. The live fixture
+sends the early restriction before its older response and uses the Provider's
+subsequent model-list request to place the late restriction after installation.
+Both cases retain a usable text Session and prohibit the next source read.
+
 Every checkpoint also calls the loaded thread's `hooks/list`. Unknown structures,
 warnings, errors and enabled `PreToolUse` hooks refuse capture; the adapter does
 not interpret scripts or disable user hooks. A background plugin change cannot

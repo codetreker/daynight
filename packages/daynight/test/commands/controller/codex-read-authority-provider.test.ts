@@ -53,6 +53,18 @@ test.each(["version", "restricted", "remote", "startup-restrict"])("Codex %s kee
   expect((await requests()).some(call => call.method === "hooks/list")).toBe(false);
 });
 
+test("a restriction after startup installation revokes the issued policy before any checkpoint", async () => {
+  const { provider, policies, states } = await open({}, "startup-restrict-after-install");
+  const issued = policies.filter((policy): policy is NativeReadPolicy => policy !== null);
+  expect(issued).toHaveLength(1);
+  expect(policies.at(-1)).toBeNull();
+  expect(provider.nativeSessionId).toBe("authority-thread");
+  expect(states.at(-1)?.capabilities.send).toBe(true);
+  expect(() => issued[0]!.verify()).toThrow();
+  await expect(issued[0]!.authorizeCheckpoint(checkpoint())).rejects.toMatchObject({ code: "source_forbidden" });
+  expect((await requests()).some(call => call.method === "hooks/list")).toBe(false);
+});
+
 test("Codex without a native Read consumer does not start authority probes", async () => {
   await open({ onNativeReadPolicy: undefined } as unknown as Partial<ProviderOptions>);
   expect((await requests()).filter(call => ["hooks/list", "remoteControl/status/read"].includes(call.method))).toEqual([]);

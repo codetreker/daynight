@@ -16,15 +16,24 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (method === 'thread/start' || method === 'thread/resume') {
     const thread = { id: threadId, sessionId: threadId, cwd, turns: [], environments: [{ environmentId: 'local', cwd, runtimeWorkspaceRoots: [cwd] }] };
-    out({ id, result: { ...settings, sandbox: settings.sandboxPolicy, runtimeWorkspaceRoots: [cwd],
-      thread } });
-    if (process.env.CODEX_AUTHORITY_CASE === 'startup-restrict') out({ method: 'thread/settings/updated', params: { threadId, threadSettings: { ...settings, sandboxPolicy: { type: 'readOnly' } } } });
+    const result = { ...settings, sandbox: settings.sandboxPolicy, runtimeWorkspaceRoots: [cwd], thread };
+    if (process.env.CODEX_AUTHORITY_CASE === 'startup-restrict') {
+      settings = { ...settings, sandboxPolicy: { type: 'readOnly' } };
+      // A newer restriction must be observed before the older response can install authority.
+      out({ method: 'thread/settings/updated', params: { threadId, threadSettings: settings } });
+    }
+    out({ id, result });
     if (method === 'thread/start') {
       if (process.env.CODEX_AUTHORITY_CASE === 'started-after-install') pendingStarted = thread;
       else out({ method: 'thread/started', params: { thread } });
     }
   }
   if (method === 'model/list') {
+    if (process.env.CODEX_AUTHORITY_CASE === 'startup-restrict-after-install') {
+      // The Provider requests models only after it has installed the startup policy.
+      settings = { ...settings, sandboxPolicy: { type: 'readOnly' } };
+      out({ method: 'thread/settings/updated', params: { threadId, threadSettings: settings } });
+    }
     if (pendingStarted) { out({ method: 'thread/started', params: { thread: pendingStarted } }); pendingStarted = undefined; }
     out({ id, result: { data: [{ model: 'model' }, { model: 'other-model' }], nextCursor: null } });
   }
