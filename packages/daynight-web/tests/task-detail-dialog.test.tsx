@@ -7,8 +7,14 @@ import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } 
 import type { AttachmentRecordSlots } from '../src/features/task-detail/attachments/TaskAttachments';
 import type { GraphTask, Project, TaskDetail, TaskGraph } from '../src/api/types';
 import { stringifyApiJson } from '../src/api/json';
+import { graphFixture } from './helpers/taskDetail';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/task-detail/TaskDetailDialog';
+import { ProjectDraftHost } from '../src/features/task-detail/TaskDraftNavigation';
+import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
+import { browserNavigation } from '../src/app/navigation';
+import { useBrowserLocation } from '../src/app/browser-location';
+import { projectHistory, readProjectHistory, type ProjectReading } from '../src/app/page-history';
 import { dialogFocusables } from '../src/features/task-detail/focus';
 import { buildGraphIndex } from '../src/features/task-graph/model';
 import { TEST_VIEWER_ID, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
@@ -139,6 +145,111 @@ describe('task detail dialog', () => {
     view.rerender(<TaskDetailDialog {...options} snapshot={null} observation={{ kind: 'project-summary', revision: 0, task: undefined }} />);
     expect(screen.getByRole('textbox', { name: '附件草稿' })).toBe(reader);
     expect(reader).toHaveValue('keep existing reader');
+  });
+
+  it.each(['identity', 'history'] as const)('retains a real Goal edit across source changes until %s retirement', async retirement => {
+    const goal = detail(1, { type: 'goal', title: 'Goal draft', description: 'Original', ready: false });
+    await world.sync([goal]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(goal)));
+    history.replaceState(null, '', `/projects/${projectId}`);
+    const navigation = browserNavigation();
+    const initial: ProjectReading = { section: 'tasks', view: 'goals', projectGraphWitness: null, detail: { id: goal.id, source: 'direct', insideProjectGraph: false,
+      navigation: { tab: 'overview', path: null }, goalChildren: null } };
+    navigation.setView(projectHistory(TEST_VIEWER_ID, projectId, initial), { replace: true });
+    const Harness = () => {
+      const location = useBrowserLocation();
+      const selected = readProjectHistory(location.view, TEST_VIEWER_ID, projectId)!.detail!;
+      return <ProjectDraftHost projectId={projectId} taskId={goal.id} source={selected.source} summaryType={undefined} insideProjectGraph={false} graphWitness={null}>
+        <TaskDetailDialog {...props({ taskId: goal.id, snapshot: null, observation: selected.source === 'direct' ? { kind: 'direct' } : { kind: 'project-summary', revision: 0, task: undefined } })} />
+      </ProjectDraftHost>;
+    };
+    const view = renderWithLocale(<Harness />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    const edit = await screen.findByRole('button', { name: 'Edit' });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    const editor = screen.getByRole('textbox', { name: 'Description' });
+    fireEvent.change(editor, { target: { value: 'Keep Goal changes' } });
+    // Ordinary cache changes may advance the project revision without retiring history.
+    const revision = world.scope.getProjectRevision(projectId);
+    const revisionRead = vi.spyOn(world.scope, 'getProjectRevision').mockReturnValue(revision + 1);
+    view.rerender(<Harness />);
+    expect(screen.getByRole('textbox', { name: 'Description' })).toBe(editor);
+    revisionRead.mockRestore();
+    const summary: ProjectReading = { ...initial, detail: { ...initial.detail!, source: 'summary' } };
+    act(() => navigation.setView(projectHistory(TEST_VIEWER_ID, projectId, summary)));
+    expect(screen.queryByRole('alertdialog', { name: 'Discard unsaved changes?' })).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Description' })).toBe(editor);
+    expect(editor).toHaveValue('Keep Goal changes');
+    act(() => navigation.setView(projectHistory(TEST_VIEWER_ID, projectId, initial)));
+    expect(screen.getByRole('textbox', { name: 'Description' })).toBe(editor);
+    expect(editor).toHaveValue('Keep Goal changes');
+    act(() => {
+      if (retirement === 'identity') world.scope.dispose();
+      else world.scope.retireGoalHistory(projectId, fixtureTaskEpoch(projectId));
+    });
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull());
+  });
+
+  it.each(['summary', 'direct'] as const)('keeps an admitted %s Goal child through a missing graph, recovery and history retirement', async (source) => {
+    const goal = detail(1, { type: 'goal', title: 'Parent Goal', ready: false });
+    const child = detail(2, { parentId: goal.id, title: 'Child task' });
+    await world.sync([goal, child]);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes(child.id) ? child : goal)));
+    const project = world.scope.getAuthorizedProject(projectId)!;
+    const current = { ...snapshot([detail()], 1), graph: project.graph, index: project.index, summaries: project.summaries };
+    const goalOnly = graphFixture([goal]);
+    const withoutChild = { ...current, graph: goalOnly, index: buildGraphIndex(goalOnly), summaries: summariesForGraph(goalOnly) };
+    const initialGraph = source === 'summary' ? current : withoutChild;
+    const options = props({ taskId: goal.id, snapshot: initialGraph, observation: { kind: 'direct' }, goalChildren: { graphRootId: null,
+      task: { id: child.id, navigation: { tab: 'attachments', path: null } } }, onGoalChildrenChange: vi.fn() });
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByRole('heading', { name: child.title });
+    const reader = screen.getByRole('textbox', { name: '附件草稿' });
+    fireEvent.change(reader, { target: { value: 'child reading state' } });
+    view.rerender(<TaskDetailDialog {...options} snapshot={null} />);
+    expect(screen.getByRole('textbox', { name: '附件草稿' })).toBe(reader);
+    expect(reader).toHaveValue('child reading state');
+    view.rerender(<TaskDetailDialog {...options} snapshot={current} />);
+    expect(screen.getByRole('textbox', { name: '附件草稿' })).toBe(reader);
+    expect(reader).toHaveValue('child reading state');
+    act(() => world.scope.retireGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: '附件草稿' })).toBeNull());
+  });
+
+  it('selects summary admission only after a restored Goal child becomes eligible', async () => {
+    const goal = detail(1, { type: 'goal', title: 'Parent Goal', ready: false });
+    const child = detail(2, { parentId: goal.id, title: 'Eligible child' });
+    await world.sync([goal, child]);
+    const directRead = vi.spyOn(world.scope, 'beginTaskRead');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.includes(child.id) ? child : goal)));
+    const options = props({ taskId: goal.id, snapshot: null, observation: { kind: 'direct' }, goalChildren: { graphRootId: null,
+      task: { id: child.id, navigation: { tab: 'overview', path: null } } }, onGoalChildrenChange: vi.fn() });
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByRole('heading', { name: goal.title });
+    expect(screen.queryByRole('heading', { name: child.title })).toBeNull();
+    const project = world.scope.getAuthorizedProject(projectId)!;
+    const current = { ...snapshot([detail()], 1), graph: project.graph, index: project.index, summaries: project.summaries };
+    view.rerender(<TaskDetailDialog {...options} snapshot={current} />);
+    await screen.findByRole('heading', { name: child.title });
+    expect(directRead.mock.calls.filter(([, id]) => id === child.id)).toHaveLength(0);
+  });
+
+  it('does not use a retired graph Goal to start a direct read for a summary selection', async () => {
+    const goal = detail(1, { type: 'goal', title: 'Retired Goal', ready: false });
+    await world.sync([goal]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(goal)));
+    const project = world.scope.getAuthorizedProject(projectId)!;
+    const current = { ...snapshot([detail()], 1), graph: project.graph, index: project.index, summaries: project.summaries };
+    const options = props({ taskId: goal.id, snapshot: current, observation: { kind: 'direct' } });
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByRole('heading', { name: goal.title });
+    const direct = vi.spyOn(TaskDetailSessions.prototype, 'openDirect');
+    act(() => {
+      world.scope.retireGoalHistory(projectId, fixtureTaskEpoch(projectId));
+      view.rerender(<TaskDetailDialog {...options} observation={{ kind: 'project-summary', revision: 1, task: current.index.nodes.get(goal.id) }} />);
+    });
+    expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+    expect(direct).not.toHaveBeenCalled();
   });
 
   it('continues a direct Task read when there is no Project graph', async () => {

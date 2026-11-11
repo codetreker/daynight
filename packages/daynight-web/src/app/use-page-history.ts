@@ -24,6 +24,16 @@ const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence 
   return fence;
 };
 
+/** Observe only Project history and access retirement, not ordinary cache changes. */
+export function useProjectHistoryGeneration(scope: TaskCacheScope, projectId: string): number {
+  const fence = resourceFence(scope, projectId);
+  const subscribe = useCallback((listener: () => void) => {
+    fence.listeners.add(listener);
+    return () => { fence.listeners.delete(listener); };
+  }, [fence]);
+  return useSyncExternalStore(subscribe, () => fence.generation);
+}
+
 /** A numbered entry may carry a selection from a retired project history. */
 export const isRetiredResourceEntry = (scope: TaskCacheScope, projectId: string, entryId: string): boolean => {
   const fence = resourceFence(scope, projectId);

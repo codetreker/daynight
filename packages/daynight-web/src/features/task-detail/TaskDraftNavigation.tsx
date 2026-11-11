@@ -10,13 +10,13 @@ import { TaskConfirmation } from './TaskConfirmation';
 
 type ResourceHost = { readonly projectId: string; readonly rootId: string; readonly kind: 'root' | 'root-child' | 'external' | 'external-child'; readonly parentId?: string };
 const ResourceHostContext = createContext<ResourceHost | null>(null);
-type ProjectHost = { readonly projectId: string; readonly rootId: string; readonly child: boolean; readonly source: 'summary' | 'direct'; readonly insideProjectGraph: boolean; readonly graphWitness: string | null };
+type ProjectHost = { readonly projectId: string; readonly rootId: string; readonly child: boolean; readonly source: 'summary' | 'direct'; readonly summaryType: 'task' | 'goal' | null | undefined; readonly insideProjectGraph: boolean; readonly graphWitness: string | null };
 const ProjectHostContext = createContext<ProjectHost | null>(null);
 
-export const ProjectDraftHost = ({ projectId, taskId, source, insideProjectGraph, graphWitness, children }: {
-  readonly projectId: string; readonly taskId: string; readonly source: 'summary' | 'direct'; readonly insideProjectGraph: boolean; readonly graphWitness: string | null; readonly children: ReactNode;
+export const ProjectDraftHost = ({ projectId, taskId, source, summaryType, insideProjectGraph, graphWitness, children }: {
+  readonly projectId: string; readonly taskId: string; readonly source: 'summary' | 'direct'; readonly summaryType: 'task' | 'goal' | null | undefined; readonly insideProjectGraph: boolean; readonly graphWitness: string | null; readonly children: ReactNode;
 }) => {
-  const host = useMemo<ProjectHost>(() => ({ projectId, rootId: taskId, child: false, source, insideProjectGraph, graphWitness }), [projectId, taskId, source, insideProjectGraph, graphWitness]);
+  const host = useMemo<ProjectHost>(() => ({ projectId, rootId: taskId, child: false, source, summaryType, insideProjectGraph, graphWitness }), [projectId, taskId, source, summaryType, insideProjectGraph, graphWitness]);
   return <ProjectHostContext.Provider value={host}>{children}</ProjectHostContext.Provider>;
 };
 
@@ -60,6 +60,10 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, projectSourceSensit
           const detail = selection.detail;
           if (detail === null || detail.id !== projectHost.rootId || !projectHost.child && projectSourceSensitive && detail.source !== projectHost.source || detail.insideProjectGraph !== projectHost.insideProjectGraph ||
               projectHost.insideProjectGraph && selection.projectGraphWitness !== projectHost.graphWitness) return false;
+          // A Goal reader keeps its direct-qualified owner when the graph is absent,
+          // but an available graph must still identify the summary target as a Goal.
+          if (detail.source !== projectHost.source && detail.source === 'summary' &&
+              (projectHost.child || !projectSourceSensitive) && projectHost.summaryType !== undefined && projectHost.summaryType !== 'goal') return false;
           return projectHost.child ? detail.goalChildren?.task?.id === taskId : taskId === projectHost.rootId;
         } catch { return false; }
       }

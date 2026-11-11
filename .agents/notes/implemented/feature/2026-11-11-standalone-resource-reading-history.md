@@ -23,12 +23,18 @@ admission. Same-resource editors are identified by their resource, host and
 presentation, not the history entry. A Project root Task may change draft hosts
 when switching between `summary` and `direct` observations, so that transition
 requires departure admission even for the same Task ID. Goal roots and children
-are judged by their actual hosts rather than the root observation source.
+are judged by their actual hosts rather than the root observation source. A
+verified direct Goal retains its typed owner when the graph is temporarily absent;
+an available graph that cannot identify the target as a Goal requires draft
+admission. An admitted child retains its original reading source for that mount,
+while an unadmitted child waits before selecting its source.
 A restored summary selection waits for the graph to identify its resource rather
 than becoming a direct read while the graph is absent. An existing summary
 reader retains its admitted observation during a temporary snapshot gap, while
 the original identity, access and history fences still govern its eligibility.
-This preserves the reader and draft without promoting an unqualified selection.
+Retired graphs cannot establish a resource type; ordinary cache changes do not
+retire the reader. This preserves the reader and draft without promoting an
+unqualified selection.
 
 The [inspection design](../../../../docs/design/daynight-task-inspection.md#独立完整任务详情)
 owns the current composition and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)

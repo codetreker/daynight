@@ -16,7 +16,8 @@ import '../../src/styles/attachments.css';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
-const detail = detailFixture(projectId, taskId, { title: 'Target task', version: 5n });
+const goal = new URLSearchParams(location.search).get('resource') === 'goal';
+const detail = detailFixture(projectId, taskId, goal ? { type: 'goal', title: 'Target goal', version: 5n, ready: false } : { title: 'Target task', version: 5n });
 const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { throw new Error('Unexpected identity'); } });
 let directReads = 0;
 const beginTaskRead = scope.beginTaskRead.bind(scope);
@@ -33,14 +34,15 @@ const snapshot = (revision: number): GraphSnapshot => {
 
 const Fixture = () => {
   const [revision, setRevision] = useState<number | null>(null);
+  const [source, setSource] = useState<'direct' | 'summary'>(goal ? 'direct' : 'summary');
   useEffect(() => {
-    (window as unknown as { summaryDetailFixture: { setRevision(value: number | null): void; directReads(): number } }).summaryDetailFixture = { setRevision, directReads: () => directReads };
+    (window as unknown as { summaryDetailFixture: { setRevision(value: number | null): void; setSource(value: 'direct' | 'summary'): void; directReads(): number } }).summaryDetailFixture = { setRevision, setSource, directReads: () => directReads };
   }, []);
   const graph = revision === null ? null : snapshot(revision);
   return <LocaleProvider initial={{ locale: 'en', issue: null }}><CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Reader' }} admissionBlocked={false}>
-    <output data-testid="summary-fixture-stage">{revision === null ? 'none' : revision}</output>
-    <TaskCacheProvider scope={scope}><TaskAssigneesProvider><ProjectDraftHost projectId={projectId} taskId={taskId} source="summary" insideProjectGraph={false} graphWitness={null}>
-      <TaskDetailDialog projectId={projectId} taskId={taskId} snapshot={graph} observation={{ kind: 'project-summary', revision: revision ?? 0, task: graph?.index.nodes.get(taskId) }}
+    <output data-testid="summary-fixture-stage">{source}:{revision === null ? 'none' : revision}</output>
+    <TaskCacheProvider scope={scope}><TaskAssigneesProvider><ProjectDraftHost projectId={projectId} taskId={taskId} source={source} summaryType={graph === null ? undefined : graph.summaries.get(taskId)?.type ?? null} insideProjectGraph={false} graphWitness={null}>
+      <TaskDetailDialog projectId={projectId} taskId={taskId} snapshot={graph} observation={source === 'direct' ? { kind: 'direct' } : { kind: 'project-summary', revision: revision ?? 0, task: graph?.index.nodes.get(taskId) }}
         onClose={() => {}} onRestoreFocus={() => {}} onSelectTask={() => {}} onRefreshGraph={() => {}} />
     </ProjectDraftHost></TaskAssigneesProvider></TaskCacheProvider>
   </CurrentAccountProvider></LocaleProvider>;

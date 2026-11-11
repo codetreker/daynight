@@ -174,7 +174,7 @@ test('summary detail waits for a snapshot and retains its real editor through sn
   await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
   expect(await directReads()).toBe(0);
   await setRevision(0);
-  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('0');
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:0');
   await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
   expect(await directReads()).toBe(0);
   await setRevision(1);
@@ -185,11 +185,37 @@ test('summary detail waits for a snapshot and retains its real editor through sn
   await draft.fill('Retained after snapshot loss');
   const original = await draft.elementHandle();
   await setRevision(null);
-  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('none');
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:none');
   await expect(draft).toHaveValue('Retained after snapshot loss');
   expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
   expect(await directReads()).toBe(0);
   expect(writes).toEqual([]);
+});
+
+test('a direct Goal retains its editor when the summary snapshot is not yet available', async ({ page }) => {
+  await install(page);
+  const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Target goal', version: 5n, ready: false });
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, route => route.fulfill({ status: 200, body: stringifyWireJson(goal), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': taskSyncEpoch(projectId) } }));
+  await page.goto('/summary-detail-fixture?resource=goal');
+  await page.waitForFunction(() => 'summaryDetailFixture' in window);
+  const goalDialog = page.getByRole('dialog', { name: 'Target goal' });
+  await goalDialog.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  const draft = editor.getByRole('textbox', { name: 'Description', exact: true });
+  await draft.fill('Goal draft across observation changes');
+  const original = await draft.elementHandle();
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setSource(value: 'summary'): void } }).summaryDetailFixture.setSource('summary'));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:none');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setRevision(value: number): void } }).summaryDetailFixture.setRevision(0));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:0');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setRevision(value: number): void } }).summaryDetailFixture.setRevision(1));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:1');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
 });
 
 test('Step status and position menus stay in a short viewport and return keyboard focus', async ({ page }) => {
