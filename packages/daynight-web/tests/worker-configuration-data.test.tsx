@@ -489,6 +489,49 @@ describe('Worker configuration editing lifetime', () => {
     expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.dirty).toBe(true);
     expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
   });
+  it('does not discard or load a stale target while a confirmed save awaits publication', async () => {
+    const put = deferred<Response>(), enteringPublication = deferred<void>(), releasePublication = deferred<void>(), scope = makeScope();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockImplementationOnce(() => put.promise);
+    vi.stubGlobal('fetch', fetch);
+    const ready = scope.ready.bind(scope);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    vi.spyOn(scope, 'ready').mockImplementationOnce(async signal => {
+      enteringPublication.resolve();
+      await Promise.race([releasePublication.promise, new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+    }).mockImplementation(ready);
+    put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+    await act(async () => enteringPublication.promise); await act(async () => saving);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '4' })));
+    act(() => { result.current.discard(); result.current.loadLatest(); });
+    expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.dirty).toBe(true);
+    releasePublication.resolve(); await flush();
+    expect(result.current.baselineRevision).toBe('2'); expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.dirty).toBe(true);
+    act(() => result.current.discard()); expect(result.current.draft?.maxConcurrent).toBe('3'); expect(result.current.dirty).toBe(false);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+  it.each([false, true])('publishes the confirmed target after abandonment and preserves a later edit: %s', async laterEdit => {
+    const put = deferred<Response>(), enteringPublication = deferred<void>(), releasePublication = deferred<void>(), scope = makeScope();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockImplementationOnce(() => put.promise);
+    vi.stubGlobal('fetch', fetch);
+    const ready = scope.ready.bind(scope);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    vi.spyOn(scope, 'ready').mockImplementationOnce(async signal => {
+      enteringPublication.resolve();
+      await Promise.race([releasePublication.promise, new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+    }).mockImplementation(ready);
+    put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+    await act(async () => enteringPublication.promise); await act(async () => saving);
+    act(() => { result.current.setDraft(draft => ({ ...draft, maxConcurrent: '4' })); result.current.abandon(); });
+    expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.dirty).toBe(false);
+    if (laterEdit) act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '5' })));
+    releasePublication.resolve(); await flush();
+    expect(result.current.baselineRevision).toBe('2'); expect(result.current.draft?.maxConcurrent).toBe(laterEdit ? '5' : '3');
+    expect(result.current.dirty).toBe(laterEdit); expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
   it('keeps a confirmed save distinct from a publication failure and recovers with an explicit read', async () => {
     const put = deferred<Response>(), scope = makeScope(), failure = new Error('admission unavailable');
     const saved = configurationResource('2', { ...configurationValue(), maxConcurrent: 3 });

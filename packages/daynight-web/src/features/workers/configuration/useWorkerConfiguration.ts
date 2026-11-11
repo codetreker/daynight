@@ -126,7 +126,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       } finally { if (attempt === generation) read = null; }
     };
     const replaceDraft = () => update(old => {
-      if (old.pending || old.uncertain || old.resource?.desired === null || old.resource === null || old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision) return old;
+      if (old.pending || old.uncertain || old.submission !== null || old.resource?.desired === null || old.resource === null || old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision) return old;
       const draft = draftFromValue(old.resource.desired.value);
       draftRevision++;
       return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: null, protectedDraft: false };
@@ -139,7 +139,8 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
         const draft = desired ? draftFromValue(desired.value) : old.baselineDraft;
         return { ...old, draft, baselineDraft: draft, baselineRevision: desired?.revision ?? old.baselineRevision, pending: false, submission: null, abandoned: false, protectedDraft: false, error: null, errorSource: null, notice: null };
       }
-      if (!old.pending && !old.uncertain) {
+      if (!old.pending && old.submission?.receipt != null) return { ...old, abandoned: true, protectedDraft: false };
+      if (!old.pending && !old.uncertain && old.submission === null) {
         if (!old.resource?.desired) return old;
         const draft = draftFromValue(old.resource.desired.value);
         return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision ? 'conflict' : null, abandoned: false, protectedDraft: false };
