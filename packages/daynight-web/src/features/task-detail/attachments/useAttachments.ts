@@ -39,6 +39,8 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const currentScope = useRef(enabled ? scope : "");
   currentScope.current = enabled ? scope : "";
   const [list, setList] = useState(() => initialList(scope));
+  const currentList = useRef(list);
+  currentList.current = list;
   const [selection, setSelection] = useState<{ readonly scope: string; readonly path: string | null }>({ scope, path: null });
   const [preview, setPreview] = useState(() => initialPreview(scope, null));
   const [previewRevision, setPreviewRevision] = useState(0);
@@ -48,6 +50,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const listRequest = useRef<AbortController | null>(null);
   const previewRequest = useRef<AbortController | null>(null);
   const preservePreviewOnResume = useRef(false);
+  const recoverList = useRef(false);
   const writeRequest = useRef<AbortController | null>(null);
   const listGeneration = useRef(0);
   const writeGeneration = useRef(0);
@@ -61,6 +64,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       listRequest.current?.abort();
       previewRequest.current?.abort();
       preservePreviewOnResume.current = true;
+      recoverList.current = true;
       writeRequest.current?.abort();
       listRequest.current = null;
       writeRequest.current = null;
@@ -76,7 +80,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     return () => { lifetime.abort(); unsubscribe(); };
   }, []);
 
-  const reload = useCallback(() => {
+  const load = useCallback((retainPublished: boolean) => {
     if (!enabled || authRequestsPaused()) return;
     listRequest.current?.abort();
     const controller = new AbortController();
@@ -98,7 +102,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
           if (page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
           if (page.nextCursor !== null) cursors.add(page.nextCursor);
           cursor = page.nextCursor === null ? undefined : page.nextCursor;
-          setList({ scope, items: [...items], loading: cursor !== undefined, complete: cursor === undefined, error: null });
+          if (!retainPublished || cursor === undefined) setList({ scope, items: [...items], loading: cursor !== undefined, complete: cursor === undefined, error: null });
         } while (cursor !== undefined);
       } catch (error) {
         if (!owns() || isAbortError(error)) return;
@@ -109,6 +113,8 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     })();
   }, [api, projectId, taskId, scope, enabled]);
 
+  const reload = useCallback(() => load(false), [load]);
+
   useLayoutEffect(() => {
     if (!enabled) {
       setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
@@ -117,7 +123,12 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   }, [enabled, scope]);
 
   useEffect(() => {
-    if (enabled && !paused) reload();
+    if (enabled && !paused) {
+      const recovering = recoverList.current;
+      recoverList.current = false;
+      if (!recovering) reload();
+      else if (currentList.current.scope !== scope || !currentList.current.complete) load(true);
+    }
     return () => {
       ++listGeneration.current;
       ++writeGeneration.current;
@@ -126,7 +137,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       listRequest.current = null;
       writeRequest.current = null;
     };
-  }, [reload, enabled, paused, resumeRevision]);
+  }, [load, reload, enabled, paused, resumeRevision, scope]);
 
   const selectedPath = selection.scope === scope ? selection.path : null;
   const visibleList = list.scope === scope ? list : initialList(scope);

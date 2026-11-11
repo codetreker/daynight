@@ -30,6 +30,7 @@ clicks and keyboard activation.
 ## Consequences
 
 Temporary pauses retain local context without admitting new attachment operations.
-The controller must fence late results and resume interrupted reads; preserving a
+The controller must fence late results and resume interrupted reads without
+replacing the published inventory with a partial recovery; preserving a
 loaded native preview also retains its existing browser document and its trusted
 HTML execution semantics.
