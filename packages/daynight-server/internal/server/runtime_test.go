@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/logging"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -1084,8 +1086,12 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			writer := &blockedCompletionWriter{entered: make(chan struct{}), release: make(chan struct{})}
 			var releaseOnce sync.Once
-			t.Cleanup(func() { releaseOnce.Do(func() { close(writer.release) }) })
-			logger := slog.New(slog.NewJSONHandler(writer, nil))
+			root := t.TempDir()
+			output, err := logging.Open(root, writer, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger := slog.New(slog.NewJSONHandler(output, nil))
 			hijacked := make(chan error, 1)
 			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				connection, buffer, err := http.NewResponseController(w).Hijack()
@@ -1101,7 +1107,7 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 			})
 			shutdownStarted := make(chan struct{})
 			appClosed := make(chan struct{})
-			budget := time.Second
+			budget := 5 * time.Second
 			if deadline {
 				budget = 100 * time.Millisecond
 			}
@@ -1109,15 +1115,35 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 				func(context.Context) error { close(shutdownStarted); return nil }, nil, nil,
 				func(context.Context) error { close(appClosed); return nil })
 			if err != nil {
+				_ = output.Close()
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan error, 1)
-			go func() { done <- runtime.Run(ctx) }()
+			finished := make(chan struct{})
+			go func() { done <- runtime.Run(ctx); close(finished) }()
 			t.Cleanup(func() {
 				releaseOnce.Do(func() { close(writer.release) })
 				cancel()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("runtime did not stop during cleanup")
+					return
+				}
+				if !runtime.TransportDrained() {
+					cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+					_ = runtime.Close(cleanup)
+					done()
+				}
+				if !runtime.TransportDrained() {
+					t.Error("transport did not drain during cleanup; retaining log lock")
+					return
+				}
+				if err := output.Close(); err != nil {
+					t.Error(err)
+				}
 			})
 			connection, err := net.DialTimeout("tcp", runtime.Address(), time.Second)
 			if err != nil {
@@ -1138,6 +1164,9 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 			await(t, writer.entered)
 			cancel()
 			await(t, shutdownStarted)
+			if code := runRuntimeLogLockProbe(t, root); code != 3 {
+				t.Fatalf("another process acquired lock during completion logging: exit=%d", code)
+			}
 			if deadline {
 				if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("blocked completion should exhaust shutdown budget: %v", err)
@@ -1158,14 +1187,25 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 			default:
 			}
 			releaseOnce.Do(func() { close(writer.release) })
-			if !deadline {
-				if err := await(t, done); err != nil {
-					t.Fatalf("graceful shutdown: %v", err)
+			if deadline {
+				cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+				err := runtime.Close(cleanup)
+				done()
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("shutdown retry lost original deadline: %v", err)
 				}
-				await(t, appClosed)
-				if !runtime.TransportDrained() {
-					t.Fatal("completed transport was not marked drained")
-				}
+			} else if err := await(t, done); err != nil {
+				t.Fatalf("graceful shutdown: %v", err)
+			}
+			await(t, appClosed)
+			if !runtime.TransportDrained() {
+				t.Fatal("completed transport was not marked drained")
+			}
+			if err := output.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if code := runRuntimeLogLockProbe(t, root); code != 0 {
+				t.Fatalf("another process could not acquire released lock: exit=%d", code)
 			}
 		})
 	}
@@ -1259,4 +1299,48 @@ func TestRuntimeMetricsRejectionRetainsLogging(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable || json.Unmarshal(output.Bytes(), &event) != nil || event.Component != "metrics" || event.Phase != "scrape" || event.RequestID != "metrics-rejection" {
 		t.Fatalf("metrics rejection lost diagnostic: status=%d log=%s", response.Code, output.String())
 	}
+}
+
+// The probe obtains the production lock from a separate process rather than
+// relying on an in-process approximation of flock semantics.
+func TestRuntimeLogLockProbe(t *testing.T) {
+	root := os.Getenv("DAYNIGHT_TEST_RUNTIME_LOG_LOCK_ROOT")
+	if root == "" {
+		return
+	}
+	output, err := logging.Open(root, io.Discard, nil)
+	if err != nil {
+		var detail *logging.Error
+		if errors.As(err, &detail) && detail.Phase == "lock" && detail.Cause == "busy" {
+			os.Exit(3)
+		}
+		os.Exit(2)
+	}
+	if output.Close() != nil {
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func runRuntimeLogLockProbe(t *testing.T, root string) int {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeLogLockProbe$")
+	command.Env = append(os.Environ(), "DAYNIGHT_TEST_RUNTIME_LOG_LOCK_ROOT="+root)
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatal("lock probe did not exit")
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return exit.ExitCode()
+		}
+		t.Fatal(err)
+	}
+	return 0
 }
