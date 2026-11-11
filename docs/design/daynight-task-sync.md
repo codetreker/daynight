@@ -106,6 +106,7 @@ type TaskSync = {
   assigneeVersions: { userId: string; version: string; hasProjectAccess: boolean }[];
   observedAt: string;
   tasks: TaskViewRecord[];
+  dependencyStates: Record<string, { taskVersion: string; blockedBy: string[]; ready: boolean }>;
   sessions: Record<string, "working" | "notice" | "warning" | "pending">;
 };
 ```
@@ -128,6 +129,10 @@ type TaskSync = {
 同一快照内的 assigneeVersions 复用项目人员资格查询，只输出规范 userId、资料内容 version 和当前 hasProjectAccess，按 UUID 排序去重；资格、版本与失败规则由[负责人设计](daynight-task-assignment.md)拥有。每轮读取并散列合格人员资料，CPU/数据库读取成本为 O(人员数 + 资料总字节)，清单传输为 O(人员数)；它不传姓名或头像，也不依赖登录更新时间、Task version 或访问状态来伪造内容变化。清单失败使整个同步失败。全部状态都参与同步。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 关闭匹配任务 rows 后，以全部选中 task IDs 的一次 `ANY` 查询批量加载完整属性，空属性为 {}。任务与属性属于同一快照，查询次数不随命中任务或属性数量线性增长；授权先于任务及属性读取。
 
 属性读取直接装入已规范化的 `json.RawMessage` map，不重复定义注册表的结构校验或规范化；查询、扫描、自然解码与编码以及事务完成错误沿原链路传播。独立的 Session source 查询只读取全项目适用 Task 的 Worker 属性及窄 Session 标量。完整响应包含 `sessions`，不设置读取节点、边或字节预算；协议仍一次返回完整 snapshot/delta，不引入分页或中间发布。完整 assigneeVersions 及匹配摘要由当前请求物化，读取成本随实际集合增长，不承诺固定内存上限。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)拥有职责取舍。
+
+`dependencyStates` 是必填非 null 的普通 Task 派生状态 map。snapshot 覆盖全部可见普通 Task；delta 仅包含自身或直接前置的 updatedAt 命中同一窗口下界的可见普通 Task。每项 `taskVersion` 是所属 Task 的精确十进制版本，`blockedBy` 是未满足的直接前置 ID 数组，`ready` 沿用 Task 自身规则，不受父 Goal 状态影响。每条普通 Task 摘要都伴随同版本状态；空集合为 `{}`，空阻塞数组为 `[]`。一次批量 SQL 在相同快照读取保留的物理前置事实，隐藏的 done/cancelled 前置仍满足，隐藏的未结束前置仍阻塞。读取和事务失败使整个同步失败。既有 Web 继续从可见图计算派生状态；服务端字段的严格消费属于独立客户端交付。
+
+map 的键和 `blockedBy` 元素是规范 Task UUID；`taskVersion` 为正 int64 的规范十进制字符串，`blockedBy` 按 ID 排序且属于该 Task 的 `dependsOn` 子集。普通 Task 的 `ready` 等价于 status 为 `todo` 且 `blockedBy` 为空。同版本状态可能反映不同前置观察，跨响应乱序时旧状态可能晚到；该协议不提供派生状态的严格全序。后续相关变化或完整 snapshot 可刷新它，但不保证下一轮轮询必然修正。
 
 TaskStatus为proposed/todo/in_progress/done/cancelled五态，cancelledAt为必需nullable字段；仅cancelled有值。摘要必须保留 GraphTask 的 assignedTo（明确可空 UUID）、requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version、Project.ownership.version，以及 actorAccess 中的 ownership.version 与
 directGrant.version 的 JSON number 分别在已知子树中无损解码。Project 内在字段必含
