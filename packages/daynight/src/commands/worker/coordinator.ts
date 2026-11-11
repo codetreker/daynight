@@ -36,6 +36,7 @@ import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, W
 import type { createMonitoringObserver } from "./monitoring/observer.js";
 import { MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
 import { encodeWorktree } from "./monitoring/worktree.js";
+import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
 import type { FailureWorktree } from "./monitoring/types.js";
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
@@ -136,10 +137,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     },
   };
   // Only an operation-selected target or a durable original binding can identify a path.
-  const selectedWorktrees = new Map<string, { worktree: FailureWorktree; worktreeId?: string }>();
-  const selectWorktree = (identity: ClaimIdentity, root: string, target: string): void => {
-    selectedWorktrees.set(key(identity), { worktree: encodeWorktree(root, target), ...("worktreeId" in identity && typeof identity.worktreeId === "string" ? { worktreeId: identity.worktreeId } : {}) });
-  };
+  const selectedWorktrees = createSelectedWorktrees();
+  const selectWorktree = selectedWorktrees.select;
   const worktreeContext = (identity: ClaimIdentity, originalPath?: string): { worktree?: FailureWorktree } => {
     try {
       const web = options.webStore?.getTask(identity);
@@ -151,8 +150,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (target != null) return { worktree: encodeWorktree(project.localPath, target) };
         }
       }
-      const selected = selectedWorktrees.get(key(identity));
-      if (selected !== undefined && (!("worktreeId" in identity) || selected.worktreeId === undefined || identity.worktreeId === selected.worktreeId)) return { worktree: selected.worktree };
+      const selected = selectedWorktrees.get(identity);
+      if (selected !== undefined) return { worktree: selected };
     } catch { /* Optional context must not suppress the failure. */ }
     return {};
   };
@@ -227,7 +226,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const [pendingKey, pending] of pendingWebFailures) if (key(pending.identity) === identityKey) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); recordWebFailure(pending.identity, pending.phase, pending.error, pending.operationKey, pending.observedFailure); }
   };
   const discardWebClaim = (identityKey: string): void => {
-    confirmedClaims.delete(identityKey); selectedWorktrees.delete(identityKey);
+    confirmedClaims.delete(identityKey);
     for (const [pendingKey, pending] of unattributedWebIdentities) if (key(pending.identity) === identityKey) { unattributedWebIdentities.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); }
     for (const [pendingKey, pending] of pendingWebFailures) if (key(pending.identity) === identityKey) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); }
   };
@@ -746,6 +745,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
         await runCleanup(owner, true, signal);
         options.store.deleteCleanupSchedule(owner);
+        selectedWorktrees.release(ending.get(identityKey) ?? owner);
         ending.delete(identityKey);
         cleanupRetries.delete(identityKey);
         const activity = monitoringActivities.get(`true/${identityKey}`);
@@ -1073,6 +1073,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const pending = ending.get(identity);
         if (pending && hasWorktreeIdentity(pending) && pending.worktreeId !== resource.owner.worktreeId) throw new Error("The pending cleanup belongs to another original worktree.");
         reconcileDeletedHerdrResource(options.store, resource);
+        selectedWorktrees.release(resource.owner);
         ending.delete(identity); cleanupRetries.delete(identity);
         const task = options.store.getTask(resource.owner); if (task !== null) execution.forget(task);
         observe(m => {
@@ -1159,6 +1160,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         archive.cleaned(owner);
         const deleted = archive.resources().find(resource => resource.sessionId === selected.sessionId && sameClaim(resource.owner, owner) && resource.owner.worktreeId === owner.worktreeId);
         if (!deleted || !reconcileDeletedHerdrResource(options.store, deleted)) throw new Error("The original archive deletion has no durable readback.");
+        selectedWorktrees.release(owner);
         ending.delete(key(owner));
         cleanupRetries.delete(key(owner));
         observe(m => {
@@ -1204,6 +1206,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       // never filesystem paths that a successor may now own.
       if (task !== null && task.status !== "done") options.store.completeTask(owner);
       if (schedule !== null) options.store.deleteCleanupSchedule(owner);
+      selectedWorktrees.release(owner);
       ending.delete(identity); cleanupRetries.delete(identity);
       if (task !== null) execution.forget(task);
     }
