@@ -1,4 +1,4 @@
-import { ApiError, authRequestsPaused } from '../../api/client';
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause } from '../../api/client';
 import { canonicalId } from '../../api/parse';
 import { BotDeletionUnknown, deleteBot, getBot, parseBot, type BotDefinition, type DeletedBot, type DeleteBotInput } from '../../api/bots';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -18,6 +18,8 @@ export type BotDeletionRecord = {
 };
 type Cache = Pick<BotSessionCache, 'blockBot' | 'unblockBot' | 'invalidateBot'>;
 type Saved = { readonly record: BotDeletionRecord; readonly rejected: boolean };
+type Operation = { readonly revision: number; readonly request: DeleteBotInput | null; readonly controller: AbortController; promise: Promise<void> };
+const sameRequest = (left: DeleteBotInput | null, right: DeleteBotInput | null): boolean => left === right || left !== null && right !== null && left.deletionId === right.deletionId && left.ifVersion === right.ifVersion;
 const owners = new WeakMap<TaskCacheScope, BotDeletionCoordinator>();
 const cleared = new Set<string>();
 const storageKey = (userId: string) => `daynight.bot.deletions:${userId}`;
@@ -41,7 +43,7 @@ export class BotDeletionCoordinator {
   private readonly records = new Map<string, Saved>();
   private readonly listeners = new Set<() => void>();
   private readonly caches = new Set<Cache>();
-  private readonly operations = new Map<string, Promise<void>>();
+  private readonly operations = new Map<string, Operation>();
   private view: readonly BotDeletionRecord[] = [];
   private readonly displaySnapshots: BotDisplaySnapshotCoordinator;
   constructor(private readonly scope: TaskCacheScope) {
@@ -119,19 +121,40 @@ export class BotDeletionCoordinator {
   }
   private admitted = (): boolean => !this.scope.isInvalidated && !authRequestsPaused();
   private admission = () => ({ userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
-  private async run(id: string, action: () => Promise<void>): Promise<void> {
-    const existing = this.operations.get(id); if (existing) return existing;
-    if (!this.admitted()) return;
-    const operation = Promise.resolve().then(action).finally(() => { if (this.operations.get(id) === operation) this.operations.delete(id); });
-    this.operations.set(id, operation); return operation;
+  private current(id: string, operation: Operation): boolean {
+    return !this.scope.isInvalidated && this.operations.get(id) === operation;
+  }
+  private uninterrupted(operation: Operation): boolean {
+    return this.admitted() && authRequestsPauseRevision() === operation.revision;
+  }
+  // Cancel only preparation. Once dispatched, an authenticated response remains
+  // evidence even if a temporary identity check starts before it arrives.
+  private async prepare<T>(operation: Operation, action: (signal: AbortSignal, dispatched: () => void) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const cancel = () => controller.abort(new DOMException('Identity admission paused.', 'AbortError'));
+    const unsubscribe = subscribeAuthPause(cancel);
+    if (!this.uninterrupted(operation)) cancel();
+    try { return await action(AbortSignal.any([this.scope.signal, operation.controller.signal, controller.signal]), unsubscribe); }
+    finally { unsubscribe(); }
+  }
+  private run(id: string, request: DeleteBotInput | null, action: (operation: Operation) => Promise<void>): Promise<void> {
+    const existing = this.operations.get(id); if (existing) return existing.promise;
+    if (!this.admitted()) return Promise.resolve();
+    const operation: Operation = { revision: authRequestsPauseRevision(), request, controller: new AbortController(), promise: Promise.resolve() };
+    operation.promise = Promise.resolve().then(() => action(operation)).finally(() => {
+      if (this.operations.get(id) === operation) this.operations.delete(id);
+    });
+    this.operations.set(id, operation);
+    return operation.promise;
   }
   begin = (bot: BotDefinition): Promise<void> => {
     if (!this.admitted() || bot.ownerUserId !== this.scope.userId || this.operations.has(bot.id)) return Promise.resolve();
     const old = this.records.get(bot.id)?.record;
     if (old && old.phase !== 'rejected') return Promise.resolve();
     const request = Object.freeze({ ifVersion: bot.version, deletionId: crypto.randomUUID() });
+    const promise = this.run(bot.id, request, operation => this.submit(bot.id, request, operation));
     this.save({ id: bot.id, name: bot.name, sessionId: bot.sessionId, workerId: bot.workerId, request, result: null, phase: 'submitting', busy: true, error: null }, false);
-    return this.run(bot.id, () => this.submit(bot.id, request));
+    return promise;
   };
   observe = (bot: DeletedBot): void => {
     this.retainDeletion(bot);
@@ -144,70 +167,91 @@ export class BotDeletionCoordinator {
     if (previous?.result && BigInt(previous.result.version) > BigInt(bot.version)) return;
     if (previous?.result && previous.result.deletion.deletionId !== bot.deletion.deletionId) return;
     if (previous?.phase === 'completed' && phase(bot) !== 'completed') return;
-    this.save({ id: bot.id, name: previous?.name ?? '', sessionId: previous?.sessionId ?? null, workerId: bot.workerId, request: { ifVersion: bot.deletion.requestedVersion, deletionId: bot.deletion.deletionId }, result: bot, phase: phase(bot), busy: previous?.busy ?? false, error: null }, false);
+    const request = { ifVersion: bot.deletion.requestedVersion, deletionId: bot.deletion.deletionId };
+    const operation = this.operations.get(bot.id);
+    const superseded = operation !== undefined && !sameRequest(operation.request, request);
+    if (superseded) {
+      this.operations.delete(bot.id);
+      operation.controller.abort(new DOMException('Deletion operation superseded.', 'AbortError'));
+    }
+    this.save({ id: bot.id, name: previous?.name ?? '', sessionId: previous?.sessionId ?? null, workerId: bot.workerId, request, result: bot, phase: phase(bot), busy: superseded ? false : previous?.busy ?? false, error: null }, false);
   }
   /** A rejected replay cannot settle an earlier request whose response was lost. */
-  private async submit(id: string, request: DeleteBotInput, earlierUnknown = false): Promise<void> {
+  private async submit(id: string, request: DeleteBotInput, operation: Operation, earlierUnknown = false): Promise<void> {
+    let dispatched = false;
     try {
-      await this.scope.ready(this.scope.signal);
-      if (!this.admitted()) return;
-      const bot = await deleteBot(id, request, this.scope.signal, this.admission());
+      const bot = await this.prepare(operation, async (signal, releasePreparation) => {
+        await this.scope.ready(signal);
+        signal.throwIfAborted();
+        return deleteBot(id, request, signal, this.admission(), () => { dispatched = true; releasePreparation(); });
+      });
+      if (!this.current(id, operation)) return;
       const expectedWorker = this.records.get(id)?.record.workerId;
       if (expectedWorker && bot.workerId !== expectedWorker) throw new BotDeletionUnknown(id, request, new ApiError('protocol'));
       this.retainDeletion(bot);
     } catch (error) {
-      if (this.scope.isInvalidated) return;
-      const current = this.records.get(id)!;
-      // Preserve the response classification while paused, without releasing
-      // input or starting another request. Lifecycle errors are not rejections.
-      const rejected = !earlierUnknown && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500;
-      this.save({ ...current.record, phase: current.record.result ? current.record.phase : 'unknown', error }, rejected);
-      await this.read(id);
+      if (!this.current(id, operation)) return;
+      const current = this.records.get(id); if (!current) return;
+      const cancelledBeforeDispatch = !dispatched && !this.uninterrupted(operation);
+      const rejected = !earlierUnknown && (cancelledBeforeDispatch || error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500);
+      this.save({ ...current.record, phase: current.record.result ? current.record.phase : cancelledBeforeDispatch && !earlierUnknown ? 'rejected' : 'unknown', error }, rejected);
+      if (!cancelledBeforeDispatch && this.uninterrupted(operation) && this.current(id, operation)) await this.read(id, operation);
     } finally {
-      const current = this.records.get(id)?.record;
-      if (current) this.save({ ...current, busy: false });
+      if (this.current(id, operation)) {
+        const current = this.records.get(id)?.record;
+        if (current) this.save({ ...current, busy: false });
+      }
     }
   }
-  private async read(id: string): Promise<boolean> {
-    if (!this.admitted()) return false;
+  private async read(id: string, operation: Operation): Promise<boolean> {
+    if (!this.current(id, operation) || !this.uninterrupted(operation)) return false;
     const current = this.records.get(id)?.record; if (!current) return false;
     try {
-      await this.scope.ready(this.scope.signal);
-      const bot = await getBot(id, this.scope.signal, this.admission());
-      if (this.scope.isInvalidated) return false;
+      const bot = await this.prepare(operation, async (signal, releasePreparation) => {
+        await this.scope.ready(signal);
+        signal.throwIfAborted();
+        return getBot(id, signal, this.admission(), releasePreparation);
+      });
+      if (!this.current(id, operation)) return false;
       const expectedWorker = this.records.get(id)?.record.workerId;
       if (expectedWorker !== null && expectedWorker !== undefined && expectedWorker !== bot.workerId) throw new ApiError('protocol');
       if (bot.deletion !== null) { this.retainDeletion(bot); return true; }
       // An active observation may release input only after identity is verified.
-      await this.scope.ready(this.scope.signal);
-      if (!this.admitted()) return false;
-      const latest = this.records.get(id)!;
+      await this.prepare(operation, signal => this.scope.ready(signal));
+      if (!this.current(id, operation) || !this.uninterrupted(operation)) return false;
+      const latest = this.records.get(id); if (!latest) return false;
       if (!latest.record.result && latest.record.phase !== 'unavailable') {
         if (latest.record.sessionId !== null && latest.record.sessionId !== bot.sessionId) throw new ApiError('protocol');
         this.save({ ...latest.record, sessionId: bot.sessionId, phase: latest.rejected ? 'rejected' : 'unknown', error: latest.rejected ? latest.record.error : null });
       }
       return true;
     } catch (error) {
-      if (this.scope.isInvalidated) return false;
+      if (!this.current(id, operation)) return false;
       const latest = this.records.get(id)?.record;
-      if (latest) this.save({ ...latest, phase: latest.phase === 'completed' ? 'completed' : unavailable(error) ? 'unavailable' : latest.phase, error });
+      if (latest && (this.uninterrupted(operation) || unavailable(error))) this.save({ ...latest, phase: latest.phase === 'completed' ? 'completed' : unavailable(error) ? 'unavailable' : latest.phase, error });
       return false;
     }
   }
-  check = (id: string): Promise<void> => this.run(id, async () => {
+  check = (id: string): Promise<void> => this.run(id, this.records.get(id)?.record.request ?? null, async operation => {
+    if (!this.current(id, operation)) return;
     const current = this.records.get(id)?.record; if (!current) return;
     this.save({ ...current, busy: true });
-    try { await this.read(id); } finally { const latest = this.records.get(id)?.record; if (latest) this.save({ ...latest, busy: false }); }
+    try { await this.read(id, operation); } finally {
+      if (this.current(id, operation)) { const latest = this.records.get(id)?.record; if (latest) this.save({ ...latest, busy: false }); }
+    }
   });
-  retry = (id: string): Promise<void> => this.run(id, async () => {
+  retry = (id: string): Promise<void> => this.run(id, this.records.get(id)?.record.request ?? null, async operation => {
+    if (!this.current(id, operation)) return;
     const current = this.records.get(id)?.record;
     if (!current || ['completed', 'unavailable', 'rejected'].includes(current.phase)) return;
     this.save({ ...current, busy: true });
     try {
-      if (!await this.read(id) || !this.admitted()) return;
-      const latest = this.records.get(id)!.record;
-      if (latest.request === null || ['completed', 'unavailable', 'rejected'].includes(latest.phase)) return;
-      await this.submit(id, latest.request, latest.phase === 'unknown');
-    } finally { const latest = this.records.get(id)?.record; if (latest) this.save({ ...latest, busy: false }); }
+      if (!await this.read(id, operation) || !this.current(id, operation) || !this.uninterrupted(operation)) return;
+      const latest = this.records.get(id)?.record;
+      if (!latest || latest.request === null || !sameRequest(latest.request, operation.request) || ['completed', 'unavailable', 'rejected'].includes(latest.phase)) return;
+      await this.submit(id, latest.request, operation, latest.phase === 'unknown');
+    } finally {
+      if (this.current(id, operation)) { const latest = this.records.get(id)?.record; if (latest) this.save({ ...latest, busy: false }); }
+    }
   });
 }

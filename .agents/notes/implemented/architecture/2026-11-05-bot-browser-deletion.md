@@ -24,7 +24,14 @@ unconfirmed request by observing a still-active server snapshot.
 Temporary identity checks stop new work without discarding a dispatched request's
 authenticated rejection. That evidence survives until the same account can
 reconcile; actual scope invalidation still discards the response. Otherwise a
-known rejection becomes permanently unknown after a routine focus change.
+known rejection becomes permanently unknown after a routine focus change. Each
+operation owns cancellable preparation; a pause before dispatch releases that
+request without claiming a server rollback. After dispatch, authenticated results
+remain evidence, while the original promise and busy state settle without waiting
+for identity admission. A later check is a new admitted action, and a retry cannot
+submit a different deletion observed during its original operation. Observing a
+different deletion retires the old operation so its late result cannot alter the
+new record or hold its busy state.
 
 Confirmed deletion invalidates the target's mounted and retained browser state.
 The account coordinator clears target storage and display preferences even when
@@ -56,6 +63,10 @@ is authoritatively revoked.
 **Let page caches own all confirmed cleanup.** Navigation detaches and closes
 those caches while the account request remains in flight. A later successful
 response must erase saved input immediately, without waiting for another visit.
+
+**Keep the original operation waiting for identity admission.** A persistent pause
+would retain its busy state and waiter indefinitely. Cancelling preparation and
+settling locally preserves the result without issuing a new read.
 
 **Resume after an unknown DELETE followed by an active GET.** The write may still
 be in flight, so that observation cannot prove the Bot will remain available.
