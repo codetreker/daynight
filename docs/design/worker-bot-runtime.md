@@ -26,7 +26,7 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 ## 原会话恢复
 
-对已提交执行，先用原 ticket 观察 Controller。可观察且仍在 starting、ready 或 working 的执行继续复用，并撤销先前未完成停机的来源标记，避免后来异常退出获得正常重启豁免；无法观察时读取同一 journal 和持久进程证据。恢复路径不为了获得停证主动杀死一个可能存活的 writer。`confirmControllerProcessesStopped` 核对原进程实例及所属进程组或 Windows Job Object，随后通过 journal 的停证写入和 snapshot CAS 固定原 generation 已停止。Windows 复核发现出生时间仍相同但命令行哈希或 process group 不同时，先报告身份不确定并保留原责任，停止确认不能以 Job 查询代替该实例的完整停证。缺失证明或 native ID 时保留责任并报告，不能新建空白会话。
+对已提交执行，先用原 ticket 观察 Controller。可观察且仍在 starting、ready 或 working 的执行继续复用，并撤销先前未完成停机的来源标记，避免后来异常退出获得正常重启豁免；无法观察时读取同一 journal 和持久进程证据。恢复路径不为了获得停证主动杀死一个可能存活的 writer。停止所有者核验原进程及对应 OS 边界，并通过 journal 的停证写入和 snapshot CAS 固定原 generation 已停止。Windows 的原 guardian、Job 句柄与版本化收据遵循[Session 停止设计](task-session-protocol.md#关闭与清理)；不以旧 nativeStopped 或失去的名称授权新 generation。出生时间仍相同但命令行哈希或 process group 不同时保留身份不确定责任。缺失证明或 native ID 时不能新建空白会话。
 
 `beginRecovery` 将正常关停与异常恢复区分。`markShutdown` 只从停止前新鲜、健康的认证观察建立 `restartAfterShutdown`，既有阻止原因不允许该标记覆盖。异常换代递增 `recoveryCount`，正常来源且 stopped snapshot 没有 error 时不递增；两条路径均不重置此前异常次数。达到预算的健康执行仍可正常停止和恢复，异常停止则持久阻止继续恢复。
 
@@ -42,7 +42,7 @@ grant 接收持久前代的 generation、Controller instance、recordId 和 stop
 
 取消 `run` 或显式 `shutdown` 先关闭调度并取消在途管理操作，等待发现、续期和启动 job 全部结束，再对本地责任清单中每个 Bot 进行有界停止。停止不依赖远端可用性，按原 ticket 尝试 IPC stop，并通过原进程证明停止进程树；IPC 回执或 timeout 单独不决定结果。恢复子进程可能已提交，而共享 journal 尚未替换前代 snapshot；此时不把前代 snapshot 当作当前原生进程证据，仍依据父进程已保存的当前子进程出生证明尝试停止。当前代 journal 停证缺失仍报告失败并保留责任，不能借前代已停止状态宣称完成。OS 确认与 journal 停证完成后才返回成功，不调用 StopTest、归档、cleanup prompt 或删除接口。每个 Bot 独立完成停止尝试，全部错误一并交给调用方；stores 与 Worker 实例锁必须保留到这些尝试完成。
 
-Windows Job 终止是异步的。`stopControllerProcesses` 请求终止后，反复通过 `confirmControllerProcessesStopped` 核对全部已保留的 Controller/native 进程身份及 Job 成员；成员列表先变空不等于原进程均已停止。调用方的原 deadline 是启动新一轮完整确认的预算，轮询不重置该期限，到时不再开始下一轮；已经开始的系统探测沿用既有单次 timeout，因此不承诺严格的总 wall-clock 上界。预算耗尽仍未取得完整停证、权限错误或未知查询结果均保留失败、执行资料与删除责任。
+Windows 停止在发送 IPC 前持有原 Job 句柄；封闭准入后终止并等待该 Job 及最终 journal 中所有原进程实例实际退出。原 deadline 限制发起新的确认轮次，已经开始的系统探测仍须等待完成，不承诺严格总 wall-clock 上界。停证提交前的权限、查询、等待或提交失败保留执行资料和删除责任；完成后 guardian 才能按原收据释放。
 
 `shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 接入 Bot 执行所有者和 `assistantHost` 广告，保持 stores 与实例锁直到管理循环和所有停止尝试结束。
 

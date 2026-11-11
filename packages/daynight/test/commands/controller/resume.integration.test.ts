@@ -6,8 +6,8 @@ import { chmod, mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { CliContext } from "../../../src/cli/context.js";
-import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
-import { controllerExecutionDirectory, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { commitWindowsJobStop, openControllerLifecycleStore, readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { controllerExecutionDirectory, controllerPayloadHash, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { SessionSnapshot } from "../../../src/session/protocol.js";
 const journalVersion = currentSqliteVersion(controllerJournalFormat);
 const proof = vi.hoisted(() => ({ capture: vi.fn(), stopped: vi.fn() }));
@@ -15,7 +15,9 @@ vi.mock("../../../src/commands/controller/process-proof.js", () => ({ capturePro
 import { acquireResume } from "../../../src/commands/controller/resume.js";
 type Mutable<T> = { -readonly [P in keyof T]: T[P] extends object ? Mutable<T[P]> : T[P] };
 const roots: string[] = [];
-const identity = { pid: 789, parentPid: 1, processGroupId: 789, startedAt: "original", commandHash: "a".repeat(64) };
+const identity = process.platform === "win32"
+  ? { pid: 789, parentPid: 1, processGroupId: null, startedAt: "2026-11-11T00:00:00.1234560Z", commandHash: "a".repeat(64) }
+  : { pid: 789, parentPid: 1, processGroupId: 789, startedAt: "original", commandHash: "a".repeat(64) };
 const config = { serverUrl: "https://daynight.example", serverToken: "secret" };
 beforeEach(() => { vi.clearAllMocks(); proof.capture.mockResolvedValue(identity); proof.stopped.mockResolvedValue(true); });
 afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(home => rm(home, { recursive: true, force: true }))); });
@@ -28,8 +30,16 @@ async function fixture() {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", testExecutionId: executionId, ownerUserId, initialInput: "none", serverOrigin: config.serverUrl, provider: "codex", cwd, nativeHome, configuration: { agent: "codex", agentControlMode: "web", model: "original-model", args: [], recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: "", resumeNativeSessionId: null, credentialFile: path.join(home, "credential.json"), ipcEndpoint: path.join(home, "local.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   async function save(target: ControllerLaunchTicket, nativeId = nativeSessionId, stopped = true) {
     await writeLaunchTicket(home, target); const directory = controllerExecutionDirectory(home, target.executionId); await mkdir(directory, { recursive: true });
-    const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), target);
-    journal.patchSnapshot({ nativeSessionId: nativeId, lifecycle: stopped ? "stopped" : "ready", nativeStopped: stopped, stoppedAt: stopped ? new Date().toISOString() : null, controllerProcess: identity }); journal.close();
+    const file = path.join(directory, "journal.sqlite"), journal = openControllerLifecycleStore(file, target);
+    if (process.platform === "win32" && stopped) {
+      const prepared = { version: 1 as const, phase: "prepared" as const, launchId: target.launchId, executionId: target.executionId, executionGeneration: target.executionGeneration, controllerInstanceId: target.controllerInstanceId, ticketHash: controllerPayloadHash(target), guardian: { ...identity, pid: 790, parentPid: identity.pid, commandHash: "b".repeat(64) }, jobHandle: "7", controller: identity };
+      const assigned = { ...prepared, phase: "assigned" as const };
+      journal.prepareWindowsJobSource(prepared); journal.assignWindowsJobSource(prepared, assigned);
+      journal.patchSnapshot({ nativeSessionId: nativeId, lifecycle: "ready", controllerProcess: identity }); journal.close();
+      commitWindowsJobStop(file, target, readControllerSnapshot(file)!, assigned);
+    } else {
+      journal.patchSnapshot({ nativeSessionId: nativeId, lifecycle: stopped ? "stopped" : "ready", nativeStopped: stopped, stoppedAt: stopped ? new Date().toISOString() : null, controllerProcess: identity }); journal.close();
+    }
   }
   await save(ticket);
   const session: Mutable<SessionSnapshot> = { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, sessionId: ticket.sessionId, testExecutionId: executionId, executionGeneration: "1", connectionEpoch: "1", identity: { ownerUserId, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, agentControlMode: "web", provider: "codex", nativeSessionId }, sessionRevision: "1", historyEpoch: randomUUID(), lastEventSeq: "0", lastTimelineSeq: "0", initialInputState: "not_required", synchronized: false, lifecycle: "archived", connectionState: "disconnected", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, operations: { canSend: false, canCancel: false, canRespond: false } };
@@ -39,7 +49,9 @@ async function fixture() {
 test("resume binds the original stopped native identity and holds an exclusive lease until release", async () => {
   const f = await fixture(), input = { provider: "codex" as const, sessionId: f.ticket.sessionId };
   const lease = await acquireResume(input, f.context, config);
-  expect(lease.nativeSessionId).toBe(f.nativeSessionId); expect(lease.ticket.nativeHome).toBe(f.nativeHome); expect(proof.stopped).toHaveBeenCalledWith(identity, []);
+  expect(lease.nativeSessionId).toBe(f.nativeSessionId); expect(lease.ticket.nativeHome).toBe(f.nativeHome);
+  if (process.platform === "win32") expect(proof.stopped).not.toHaveBeenCalled();
+  else expect(proof.stopped).toHaveBeenCalledWith(identity, []);
   await expect(acquireResume(input, f.context, config)).rejects.toThrow(/lease|already/i);
   await lease.release(); await lease.release(); const next = await acquireResume(input, f.context, config); await next.release();
 });
@@ -73,7 +85,11 @@ test("resume refuses origin changes, foreign cwd, unknown IDs and live original 
   await expect(acquireResume(input, f.context, { ...config, serverUrl: "https://other.example" })).rejects.toThrow();
   await expect(acquireResume(input, { ...f.context, workingDirectory: () => f.home }, config)).rejects.toThrow();
   await expect(acquireResume({ ...input, sessionId: f.nativeSessionId }, f.context, config)).rejects.toThrow();
-  proof.stopped.mockResolvedValue(false); await expect(acquireResume(input, f.context, config)).rejects.toThrow(/stopp|running/i);
+  if (process.platform === "win32") {
+    const db = new Database(path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"));
+    db.prepare("UPDATE windows_job_evidence SET receipt=NULL").run(); db.close();
+  } else proof.stopped.mockResolvedValue(false);
+  await expect(acquireResume(input, f.context, config)).rejects.toThrow(/stop|running/i);
 });
 test("a different active execution for the same native identity blocks resume and releases only the unexposed lease", async () => {
   const f = await fixture(), executionId = randomUUID();
@@ -100,9 +116,23 @@ test("a retained lease cannot be stolen merely because its recorded launcher no 
 });
 test("stop evidence is rechecked under the lease and a failed prelaunch check leaves no held lease", async () => {
   const f = await fixture(), input = { provider: "codex" as const, sessionId: f.ticket.sessionId };
-  proof.stopped.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-  await expect(acquireResume(input, f.context, config)).rejects.toThrow(/running/);
-  proof.stopped.mockResolvedValue(true); const lease = await acquireResume(input, f.context, config); await lease.release();
+  if (process.platform === "win32") {
+    const file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file);
+    const saved = (db.prepare("SELECT receipt FROM windows_job_evidence").get() as { receipt: string }).receipt;
+    f.fetch.mockImplementation(async url => {
+      if (url.endsWith("/me")) return Response.json({ id: f.ticket.ownerUserId });
+      db.prepare("UPDATE windows_job_evidence SET receipt=NULL").run();
+      return Response.json({ session: f.session });
+    });
+    try { await expect(acquireResume(input, f.context, config)).rejects.toThrow(/receipt/); }
+    finally { db.prepare("UPDATE windows_job_evidence SET receipt=?").run(saved); db.close(); }
+    f.fetch.mockImplementation(async url => url.endsWith("/me") ? Response.json({ id: f.ticket.ownerUserId }) : Response.json({ session: f.session }));
+  } else {
+    proof.stopped.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await expect(acquireResume(input, f.context, config)).rejects.toThrow(/running/);
+    proof.stopped.mockResolvedValue(true);
+  }
+  const lease = await acquireResume(input, f.context, config); await lease.release();
 });
 test("a symlink journal is refused before it can authorize a native writer", async () => {
   const f = await fixture(), journal = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite");

@@ -7,6 +7,7 @@ import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
+import { confirmWebStop } from "./web-stop.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
@@ -25,7 +26,11 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"));
     if (saved !== null && (saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId)) throw new Error("Controller credential renewal has conflicting cleanup evidence.");
     const proof = saved?.controllerProcess ?? execution.controllerProcess;
-    return proof !== null && await confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
+    if (proof === null) return false;
+    if (process.platform !== "win32" && proof.processGroupId !== null && proof.jobObjectName === undefined) return confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
+    if (saved === null) return false;
+    const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+    return confirmWebStop(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), ticket, saved);
   };
   const methods = {
     prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {

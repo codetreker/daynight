@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readWindowsJobReceipt, readWindowsJobSource, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
@@ -301,13 +301,23 @@ test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypo
     store.acknowledgeEvents("9");
     store.close();
   }
-  const stopped = { ...f.snapshot, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: 2_000_000_000, startedAt: "original", commandHash: "a".repeat(64) } };
+  const stopped = { ...f.snapshot, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: process.platform === "win32" ? null : 2_000_000_000, startedAt: "original", commandHash: "a".repeat(64) } };
   inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(stopped)));
   // Only process-tree inspection is substituted; stop reconciliation and both
   // database openings are real and preserve their migration transactions.
-  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  if (process.platform === "win32") {
+    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket)).rejects.toThrow(/Windows.*(Job|receipt)/);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(readWindowsJobSource(f.journalPath, f.ticket)).toBeNull();
+    expect(readWindowsJobReceipt(f.journalPath, f.ticket)).toBeNull();
+    expect(readControllerSnapshot(f.journalPath)).toEqual(stopped);
+    await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow(/Windows.*(Job|receipt)/);
+  } else {
+    expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
+    expect(confirm).toHaveBeenCalledOnce();
+    await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
+  }
   expect(bodies).toEqual([]);
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));

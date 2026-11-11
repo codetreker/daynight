@@ -9,6 +9,20 @@ import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format
 import { parseSourceEvent, RELAY_LIMITS, type SourceEvent } from "../../session/controller-protocol.js";
 import { sessionBinding } from "../../session/protocol.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
+import { parseWindowsJobReceipt, parseWindowsJobSource } from "./windows-job-evidence.js";
+
+/** A Windows generation is stopped only by the receipt for its original Job. */
+export const assertStoppedWindowsJobEvidence = (db: Database.Database, ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot): void => {
+  const version = Number(db.pragma("user_version", { simple: true }));
+  const row = version >= 9 ? db.prepare("SELECT source,receipt FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId) as { source: string; receipt: string | null } | undefined : undefined;
+  const proof = snapshot.controllerProcess;
+  const requiresReceipt = row !== undefined || proof != null && (proof.processGroupId === null || proof.jobObjectName !== undefined);
+  if (!requiresReceipt) return;
+  if (!row || row.receipt === null) throw new Error("Windows stopped history requires the original Job stop receipt.");
+  const source = parseWindowsJobSource(JSON.parse(row.source), ticket);
+  const receipt = parseWindowsJobReceipt(JSON.parse(row.receipt), ticket);
+  if (source.phase !== "assigned" || controllerPayloadHash(source) !== controllerPayloadHash(receipt.source) || controllerPayloadHash(snapshot) !== controllerPayloadHash(receipt.snapshot)) throw new Error("Windows Job stop receipt conflicts with the original stopped generation.");
+};
 
 export type StoppedSourceTail = { sourceEpoch: string; batchId: string; events: readonly SourceEvent[] };
 export type StoppedSourceTailReceipt = { sourceEpoch: string; batchId: string; lastAckedSourceSeq: string };
@@ -26,6 +40,7 @@ export const replayStoppedControllerHistory = async (options: {
     const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
     const s = row ? JSON.parse(row.snapshot) as ControllerSnapshot : null;
     if (!row || !s || row.owner_pid !== null || !s.nativeStopped || s.lifecycle !== "stopped" || s.executionId !== ticket.executionId || s.sessionId !== ticket.sessionId || s.claimId !== ticket.claimId || s.testExecutionId !== ticket.testExecutionId || s.executionGeneration !== ticket.executionGeneration || s.controllerInstanceId !== ticket.controllerInstanceId || row.ticket_hash !== controllerPayloadHash(ticket) || original !== undefined && row.snapshot !== original) throw new Error("Source replay requires the unchanged original stopped controller generation.");
+    assertStoppedWindowsJobEvidence(db, ticket, s);
     original = row.snapshot;
   };
   try { inspectSqlite(initial, controllerJournalFormat); assertStopped(initial); }

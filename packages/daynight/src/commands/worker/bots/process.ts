@@ -4,9 +4,10 @@ import { randomBytes } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
-import { readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerSnapshot, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
-import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
+import { openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
+import { withControllerStop } from "../../controller/controller-stop-scope.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
 import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../backends/controller-process.js";
@@ -24,7 +25,7 @@ import { botNativeConfiguration } from "./configuration.js";
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
   sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
-  dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController };
+  dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; openStop?: typeof openControllerStop; recoverProof?: typeof recoverWindowsControllerProof; request?: typeof requestController };
 }) => {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
   const environments = new Map<string, PreparedBotEnvironment>();
@@ -32,9 +33,8 @@ export const createBotProcess = (options: {
   const environment = options.dependencies?.prepareEnvironment ?? prepareBotEnvironment;
   const launch = options.dependencies?.launch ?? launchControllerProcess, observe = options.dependencies?.observe ?? observeControllerProcess;
   const readSnapshot = options.dependencies?.readSnapshot ?? readControllerSnapshot;
-  const confirmStopped = options.dependencies?.confirmStopped ?? confirmControllerProcessesStopped;
-  const stopProcesses = options.dependencies?.stopProcesses ?? stopControllerProcesses;
-  const recordStopped = options.dependencies?.recordStopped ?? recordStoppedControllerGeneration;
+  const openStop = options.dependencies?.openStop ?? openControllerStop;
+  const recoverProof = options.dependencies?.recoverProof ?? recoverWindowsControllerProof;
   const request = options.dependencies?.request ?? requestController;
   const current = (input: BotRecord, stopping = false): BotRecord => {
     const record = options.store.get(input.owner, input.botId);
@@ -103,19 +103,28 @@ export const createBotProcess = (options: {
       if (saved !== null) options.executions.update(record, { snapshot: saved });
       // IPC loss is not a stop proof. Do not interrupt a possible writer to make
       // recovery convenient; shutdown is the separate explicit stopping path.
-      if (saved?.controllerProcess == null || !await confirmStopped(saved.controllerProcess, saved.nativeProcesses)) {
+      const controller = saved?.controllerProcess ?? recoverProof(record.intent!.journalPath, ticket) ?? prior.controllerProcess;
+      if (saved === null || controller === null) {
         if (saved?.startup?.state === "failed") return remember(record, saved);
         throw new Error("Bot original writer stop is unproven; IPC is unavailable or the process tree is still running.");
       }
-      if (saved.nativeSessionId === null) throw new Error("Bot native session identity is missing; a blank replacement is forbidden.");
-      if (prior.recoveryBlocked !== null) throw new Error(prior.recoveryBlocked);
-      if (!(prior.restartAfterShutdown && saved.error === null) && prior.recoveryCount >= record.intent!.recoveryLimit) {
-        const reason = "Bot execution recovery budget is exhausted.";
-        options.executions.blockRecovery(record, reason);
-        throw new Error(reason);
-      }
-      signal.throwIfAborted();
-      const stopped = await recordStopped(record.intent!.journalPath, ticket);
+      const stop = await openStop({ journalPath: record.intent!.journalPath, ticket, controller, native: saved.nativeProcesses });
+      const stopped = await withControllerStop(stop, async () => {
+        if (!await stop.confirm()) {
+          if (saved.startup?.state === "failed") return null;
+          throw new Error("Bot original writer stop is unproven; IPC is unavailable or the process tree is still running.");
+        }
+        if (saved.nativeSessionId === null) throw new Error("Bot native session identity is missing; a blank replacement is forbidden.");
+        if (prior.recoveryBlocked !== null) throw new Error(prior.recoveryBlocked);
+        if (!(prior.restartAfterShutdown && saved.error === null) && prior.recoveryCount >= record.intent!.recoveryLimit) {
+          const reason = "Bot execution recovery budget is exhausted.";
+          options.executions.blockRecovery(record, reason);
+          throw new Error(reason);
+        }
+        signal.throwIfAborted();
+        return stop.commit();
+      });
+      if (stopped === null) return remember(record, saved);
       options.executions.update(record, { snapshot: stopped });
       record = options.executions.beginRecovery(record, stopped, options.homeDirectory);
       // A new launch must revalidate CLI owner/server configuration. Old aliases
@@ -194,7 +203,7 @@ export const createBotProcess = (options: {
     let observed: ControllerSnapshot | null = null;
     try { observed = await observe(ticket, signal); }
     catch { signal.throwIfAborted(); }
-    const candidate = observed ?? readSnapshot(record.intent!.journalPath);
+    const candidate = readSnapshot(record.intent!.journalPath) ?? observed;
     // A recovery child may be spawned before it replaces the shared journal's
     // stopped predecessor. Only the current fence can supply native proofs;
     // the parent's persisted child proof still owns the stop attempt.
@@ -204,10 +213,12 @@ export const createBotProcess = (options: {
       && snapshot.controllerInstanceId === ticket.controllerInstanceId;
     const saved = candidate !== null && matchesCurrent(candidate) ? candidate : execution.snapshot;
     if (saved !== null) options.executions.update(record, { snapshot: saved });
-    const proof = saved?.controllerProcess ?? execution.controllerProcess;
+    const proof = saved?.controllerProcess ?? recoverProof(record.intent!.journalPath, ticket) ?? execution.controllerProcess;
     if (proof === null) throw new Error("Bot shutdown has no original process proof; execution evidence is retained.");
     const native = saved?.nativeProcesses ?? [];
-    const alreadyStopped = await confirmStopped(proof, native);
+    const stop = await openStop({ journalPath: record.intent!.journalPath, ticket, controller: proof, native });
+    const stopped = await withControllerStop(stop, async () => {
+    const alreadyStopped = await stop.confirm();
     if (!alreadyStopped) {
       // Only a live, authenticated healthy observation earns orderly restart.
       // A stale ready journal cannot erase an earlier abnormal failure.
@@ -216,13 +227,14 @@ export const createBotProcess = (options: {
       try { await request(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { signal, timeoutMs: 10_000 }); }
       catch { signal.throwIfAborted(); }
       signal.throwIfAborted();
-      try { await stopProcesses(proof, native, Date.now() + 10_000); }
-      catch (error) { if (!await confirmStopped(proof, native)) throw error; }
-      if (!await confirmStopped(proof, native)) throw new Error("Bot original process tree did not stop; recovery evidence is retained.");
+      try { await stop.stop(Date.now() + 10_000); }
+      catch (error) { if (!await stop.confirm()) throw error; }
+      if (!await stop.confirm()) throw new Error("Bot original process tree did not stop; recovery evidence is retained.");
     }
     // Records stop through the journal's process verification + snapshot CAS;
     // operation receipts and pending user input remain in that same journal.
-    const stopped = await recordStopped(record.intent!.journalPath, ticket);
+    return stop.commit();
+    });
     options.executions.update(record, { snapshot: stopped });
     environments.delete(record.botId);
   };

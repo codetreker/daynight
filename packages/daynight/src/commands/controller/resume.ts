@@ -12,12 +12,12 @@ import { resolveConfigurationPaths } from "../../config/paths.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { parseRegistrationResponse } from "../../session/controller-protocol.js";
 import type { SessionProvider } from "../../session/protocol.js";
-import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { readControllerSnapshot, type ControllerSnapshot } from "./lifecycle-store.js";
+import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { readControllerSnapshot, readWindowsJobReceipt, type ControllerSnapshot } from "./lifecycle-store.js";
 import { captureProcessProof, confirmControllerProcessesStopped } from "./process-proof.js";
 
 export type ResumeLease = { ticket: ControllerLaunchTicket; nativeSessionId: string; release(): Promise<void> };
-type LocalExecution = { ticket: ControllerLaunchTicket; snapshot: ControllerSnapshot | null };
+type LocalExecution = { ticket: ControllerLaunchTicket; snapshot: ControllerSnapshot | null; journalPath: string };
 const uuid = (value: unknown): value is string => typeof value === "string" && canonicalId(value) === value;
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const privateFile = async (file: string): Promise<void> => {
@@ -44,12 +44,17 @@ const inventory = async (home: string): Promise<LocalExecution[]> => {
     try { await privateFile(file); snapshot = readControllerSnapshot(file); }
     catch (error) { if (!missing(error)) throw error; }
     if (snapshot && (snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.testExecutionId !== ticket.testExecutionId || snapshot.claimId !== ticket.claimId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId || snapshot.nativeSessionId !== null && !uuid(snapshot.nativeSessionId))) throw new Error("Controller journal does not match its latest launch ticket.");
-    result.push({ ticket, snapshot });
+    result.push({ ticket, snapshot, journalPath: file });
   }
   return result;
 };
-const assertStopped = async ({ snapshot }: LocalExecution): Promise<void> => {
+const assertStopped = async ({ snapshot, ticket, journalPath }: LocalExecution): Promise<void> => {
   if (!snapshot || snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || !snapshot.stoppedAt || !Number.isFinite(Date.parse(snapshot.stoppedAt)) || !snapshot.controllerProcess || !Array.isArray(snapshot.nativeProcesses)) throw new Error("The original native execution is not proven stopped; reconcile its controller evidence before resuming.");
+  if (process.platform === "win32" || snapshot.controllerProcess.processGroupId === null || snapshot.controllerProcess.jobObjectName !== undefined) {
+    const receipt = readWindowsJobReceipt(journalPath, ticket);
+    if (receipt === null || controllerPayloadHash(receipt.snapshot) !== controllerPayloadHash(snapshot)) throw new Error("The original Windows Job stop receipt is unavailable or conflicts with the stopped generation.");
+    return;
+  }
   if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses)) throw new Error("The original controller or native descendants are still running.");
 };
 const get = async (config: { serverUrl: string; serverToken: string }, resource: string): Promise<unknown> => {

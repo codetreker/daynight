@@ -78,7 +78,7 @@ const operationDeadline = (): (() => void) => {
   return () => { if (performance.now() >= deadline) throw new Error("Windows controller Job Object operation exceeded its deadline."); };
 };
 
-/** Membership survives handle closure while associated processes remain; no breakaway is enabled. */
+/** Legacy named Job helper. Its temporary name is not proof of process-tree stop. */
 export const createControllerJob = async (launchId: string, pid: number): Promise<string> => {
   const name = `Local\\Daynight-${launchId}`; validate(name);
   if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0x7fff_ffff) throw new Error("Invalid controller process ID.");
@@ -97,7 +97,7 @@ export const createControllerJob = async (launchId: string, pid: number): Promis
   return name;
 };
 
-/** Native calls are joined before checking the operation's fifteen-second budget. */
+/** Inspect a named Job for diagnostics, not for Controller stop authorization. */
 export const inspectControllerJob = async (name: string, stop = false): Promise<readonly number[]> => {
   validate(name);
   const checkDeadline = operationDeadline(), api = await (kernel ??= loadKernel());

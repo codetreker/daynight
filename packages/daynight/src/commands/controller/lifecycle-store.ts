@@ -25,6 +25,7 @@ import { sessionBinding, type SessionBinding, type InitialInputState, type Opera
 import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
+import { matchesWindowsJobController, parseWindowsJobReceipt, parseWindowsJobSource, windowsJobStoppedController, WindowsJobEvidenceConflictError, type WindowsJobAssignedSource, type WindowsJobPreparedSource, type WindowsJobSource, type WindowsJobStopReceipt } from "./windows-job-evidence.js";
 export type ControllerSnapshot = SessionBinding & {
   executionId: string; sessionId: string; executionGeneration: string; controllerInstanceId: string;
   lifecycle: "starting" | "ready" | "working" | "stopping" | "stopped" | "paused" | "failed";
@@ -45,6 +46,10 @@ const json = <T>(value: unknown): T => {
   try { return JSON.parse(String(value)) as T; }
   catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, phase: "decode" }, { cause }); }
 };
+const evidenceJson = <T>(value: unknown): T => {
+  try { return json<T>(value); }
+  catch (cause) { throw new WindowsJobEvidenceConflictError("Windows Job evidence cannot be decoded.", { cause }); }
+};
 const checkedSnapshot = (value: ControllerSnapshot): ControllerSnapshot => {
   if (value.startup !== undefined) parseStartupObservation(value.startup);
   return value;
@@ -57,8 +62,37 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
   if (failed) throw failure;
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
+const currentWindowsJobExecution = (db: Database.Database, ticket: ControllerLaunchTicket, source: WindowsJobSource): void => {
+  const execution = db.prepare("SELECT ticket_hash,snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; snapshot: string } | undefined;
+  if (!execution) throw new Error("Original controller generation is unavailable.");
+  const snapshot = json<ControllerSnapshot>(execution.snapshot);
+  if (execution.ticket_hash !== controllerPayloadHash(ticket) || snapshot.executionId !== ticket.executionId || snapshot.claimId !== ticket.claimId || snapshot.testExecutionId !== ticket.testExecutionId || snapshot.sessionId !== ticket.sessionId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId || snapshot.lifecycle !== "starting" || snapshot.nativeStopped !== false || !Array.isArray(snapshot.nativeProcesses) || snapshot.nativeProcesses.length !== 0 || snapshot.controllerProcess !== null && !matchesWindowsJobController(snapshot.controllerProcess, source)) throw new WindowsJobEvidenceConflictError("Windows Job source does not match the current generation.");
+};
+const prepareWindowsJobInDb = (db: Database.Database, ticket: ControllerLaunchTicket, source: WindowsJobPreparedSource): void => {
+  if (parseWindowsJobSource(source, ticket).phase !== "prepared") throw new WindowsJobEvidenceConflictError("Windows Job preparation is invalid.");
+  currentWindowsJobExecution(db, ticket, source);
+  if (db.prepare("SELECT 1 FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId)) throw new Error("Windows Job preparation already exists; observe it before deciding.");
+  db.prepare("INSERT INTO windows_job_evidence(launch_id,source) VALUES(?,?)").run(ticket.launchId, JSON.stringify(source));
+};
+const assignWindowsJobInDb = (db: Database.Database, ticket: ControllerLaunchTicket, expected: WindowsJobPreparedSource, assigned: WindowsJobAssignedSource): void => {
+  if (parseWindowsJobSource(expected, ticket).phase !== "prepared" || parseWindowsJobSource(assigned, ticket).phase !== "assigned" || controllerPayloadHash({ ...expected, phase: "assigned" }) !== controllerPayloadHash(assigned)) throw new WindowsJobEvidenceConflictError("Windows Job assignment differs from its preparation.");
+  currentWindowsJobExecution(db, ticket, assigned);
+  const row = db.prepare("SELECT source,receipt FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId) as { source: string; receipt: string | null } | undefined;
+  if (!row) throw new Error("Windows Job preparation is unavailable.");
+  if (row.receipt !== null || controllerPayloadHash(parseWindowsJobSource(evidenceJson(row.source), ticket)) !== controllerPayloadHash(expected)) throw new WindowsJobEvidenceConflictError("Windows Job preparation changed before assignment.");
+  if (db.prepare("UPDATE windows_job_evidence SET source=? WHERE launch_id=? AND source=? AND receipt IS NULL").run(JSON.stringify(assigned), ticket.launchId, row.source).changes !== 1) throw new WindowsJobEvidenceConflictError("Windows Job preparation changed before assignment.");
+};
+const assertPreviousWindowsJobReceipt = (db: Database.Database, previous: ControllerSnapshot, ticketHash: string, ticket: ControllerLaunchTicket | undefined): void => {
+  if (ticket === undefined) throw new Error("Windows controller recovery requires the original ticket and Job stop receipt.");
+  parseLaunchTicket(ticket);
+  if (controllerPayloadHash(ticket) !== ticketHash) throw new WindowsJobEvidenceConflictError("Windows controller recovery ticket differs from the original generation.");
+  const row = db.prepare("SELECT source,receipt FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId) as { source: string; receipt: string | null } | undefined;
+  if (!row || row.receipt === null) throw new Error("Windows controller recovery requires the original Job stop receipt.");
+  const source = parseWindowsJobSource(evidenceJson(row.source), ticket), receipt = parseWindowsJobReceipt(evidenceJson(row.receipt), ticket);
+  if (controllerPayloadHash(source) !== controllerPayloadHash(receipt.source) || controllerPayloadHash(receipt.snapshot) !== controllerPayloadHash(previous)) throw new WindowsJobEvidenceConflictError("Windows controller recovery receipt does not match the previous generation.");
+};
 /** The store owns a supplied connection; file identifies its separate pending-content archive. */
-export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder } = {}) => {
+export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder; previousWindowsTicket?: ControllerLaunchTicket } = {}) => {
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
@@ -81,6 +115,9 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       if (existing.ticket_hash === controllerPayloadHash(ticket) && previous.controllerProcess !== null) throw new Error("A native controller generation cannot be relaunched without a new stopped-generation ticket.");
       if (existing.ticket_hash !== controllerPayloadHash(ticket)) {
         if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
+        // A Windows generation retains its provenance even when the new
+        // Controller runs on another platform.
+        if (process.platform === "win32" || previous.controllerProcess?.processGroupId === null || previous.controllerProcess?.jobObjectName !== undefined) assertPreviousWindowsJobReceipt(db, previous, existing.ticket_hash, options.previousWindowsTicket);
         db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(ticket), JSON.stringify({ ...initial, initialInputState: previous.initialInputState, controlsRevisionFloor: (() => {
           let floor = BigInt(previous.controls?.revision ?? previous.controlsRevisionFloor ?? "0");
           // Old source events are replayed before new provider state. Keep their
@@ -121,6 +158,8 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
+  const prepareWindowsJobSource = (source: WindowsJobPreparedSource): void => atomic(() => prepareWindowsJobInDb(db, ticket, source));
+  const assignWindowsJobSource = (expected: WindowsJobPreparedSource, assigned: WindowsJobAssignedSource): void => atomic(() => assignWindowsJobInDb(db, ticket, expected, assigned));
   const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget);
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
@@ -219,7 +258,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
-    getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
+    getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable, prepareWindowsJobSource, assignWindowsJobSource,
     patchNativeImagePart: (input: ImageOccurrence, part: ImagePart | ImageUnavailablePart): TimelineEntry => atomic(() => {
       const occurrence = parseImageOccurrence(input);
       const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
@@ -366,10 +405,67 @@ export const readControllerSnapshot = (file: SqliteDatabaseSource): ControllerSn
   return row === undefined ? null : checkedSnapshot(json<ControllerSnapshot>(row.snapshot));
 });
 
+/** Guardian writes do not migrate or claim the Controller's journal. */
+const writeWindowsJobEvidence = (file: string, ticket: ControllerLaunchTicket, action: (db: Database.Database) => void): void => {
+  parseLaunchTicket(ticket);
+  const db = new Database(file, { fileMustExist: true });
+  closeJournal(db, file, () => runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); action(db); }));
+};
+export const prepareWindowsJobSource = (file: string, ticket: ControllerLaunchTicket, source: WindowsJobPreparedSource): void =>
+  writeWindowsJobEvidence(file, ticket, db => prepareWindowsJobInDb(db, ticket, source));
+export const assignWindowsJobSource = (file: string, ticket: ControllerLaunchTicket, expected: WindowsJobPreparedSource, assigned: WindowsJobAssignedSource): void =>
+  writeWindowsJobEvidence(file, ticket, db => assignWindowsJobInDb(db, ticket, expected, assigned));
+
+const readWindowsJobEvidence = (file: SqliteDatabaseSource, ticket: ControllerLaunchTicket): { source: WindowsJobSource; receipt: WindowsJobStopReceipt | null } | null => {
+  parseLaunchTicket(ticket);
+  return readSqliteDatabase({ file, format: controllerJournalFormat, onMissing: () => null, assertMigrationAllowed: assertJournalMigrationAllowed }, db => {
+    const row = db.prepare("SELECT source,receipt FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId) as { source: string; receipt: string | null } | undefined;
+    if (!row) return null;
+    const source = parseWindowsJobSource(evidenceJson(row.source), ticket);
+    const receipt = row.receipt === null ? null : parseWindowsJobReceipt(evidenceJson(row.receipt), ticket);
+    if (receipt !== null && controllerPayloadHash(receipt.source) !== controllerPayloadHash(source)) throw new WindowsJobEvidenceConflictError("Windows Job stop receipt has a different original source.");
+    if (receipt !== null) {
+      const execution = db.prepare("SELECT ticket_hash,snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; snapshot: string } | undefined;
+      if (!execution) throw new Error("Original controller journal execution is unavailable.");
+      const current = evidenceJson<ControllerSnapshot>(execution.snapshot);
+      if (current.executionId !== ticket.executionId || current.claimId !== ticket.claimId || current.testExecutionId !== ticket.testExecutionId || current.sessionId !== ticket.sessionId || !/^[1-9][0-9]{0,18}$/.test(current.executionGeneration) || BigInt(current.executionGeneration) < BigInt(ticket.executionGeneration)) throw new WindowsJobEvidenceConflictError("Windows Job stop receipt belongs to another journal execution.");
+      if (current.executionGeneration === ticket.executionGeneration && (execution.ticket_hash !== controllerPayloadHash(ticket) || controllerPayloadHash(current) !== controllerPayloadHash(receipt.snapshot))) throw new WindowsJobEvidenceConflictError("Windows Job stop receipt differs from the current stopped generation.");
+      if (current.executionGeneration !== ticket.executionGeneration && execution.ticket_hash === controllerPayloadHash(ticket)) throw new WindowsJobEvidenceConflictError("Windows Job stop receipt has a conflicting current generation.");
+    }
+    return { source, receipt };
+  });
+};
+export const readWindowsJobSource = (file: SqliteDatabaseSource, ticket: ControllerLaunchTicket): WindowsJobSource | null => readWindowsJobEvidence(file, ticket)?.source ?? null;
+export const readWindowsJobReceipt = (file: SqliteDatabaseSource, ticket: ControllerLaunchTicket): WindowsJobStopReceipt | null => readWindowsJobEvidence(file, ticket)?.receipt ?? null;
+
+/** Caller retains the original Job handle and has sealed, emptied and joined it. */
+export const commitWindowsJobStop = (file: string, ticket: ControllerLaunchTicket, observed: ControllerSnapshot, source: WindowsJobAssignedSource): ControllerSnapshot => {
+  parseLaunchTicket(ticket);
+  if (parseWindowsJobSource(source, ticket).phase !== "assigned") throw new WindowsJobEvidenceConflictError("Windows Job assignment is unavailable.");
+  let stopped: ControllerSnapshot | undefined;
+  const db = new Database(file, { fileMustExist: true });
+  closeJournal(db, file, () => {
+    stopped = runSqliteImmediate(db, () => {
+      assertCurrentSqlite(db, controllerJournalFormat);
+      const execution = db.prepare("SELECT ticket_hash,snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; snapshot: string } | undefined;
+      const row = db.prepare("SELECT source,receipt FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId) as { source: string; receipt: string | null } | undefined;
+      if (!execution || !row) throw new Error("The original Windows controller or Job source is unavailable.");
+      if (execution.ticket_hash !== controllerPayloadHash(ticket) || execution.snapshot !== JSON.stringify(observed) || row.receipt !== null || controllerPayloadHash(parseWindowsJobSource(evidenceJson(row.source), ticket)) !== controllerPayloadHash(source)) throw new WindowsJobEvidenceConflictError("The controller state or original Windows Job source changed during stop verification.");
+      const value: ControllerSnapshot = { ...observed, controllerProcess: windowsJobStoppedController(observed, source), lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString(), activity: "stopped", capabilities: { send: false, steer: false, cancel: false, respond: false } };
+      const receipt: WindowsJobStopReceipt = { version: 1, source, sealed: true, empty: true, controllerStopped: true, nativeProcessesStopped: true, observedSnapshot: observed, snapshot: value };
+      parseWindowsJobReceipt(receipt, ticket);
+      if (db.prepare("UPDATE windows_job_evidence SET receipt=? WHERE launch_id=? AND source=? AND receipt IS NULL").run(JSON.stringify(receipt), ticket.launchId, row.source).changes !== 1 || db.prepare("UPDATE execution SET snapshot=?,owner_pid=NULL WHERE id=1 AND ticket_hash=? AND snapshot=?").run(JSON.stringify(value), execution.ticket_hash, execution.snapshot).changes !== 1) throw new WindowsJobEvidenceConflictError("The controller state or original Windows Job source changed during stop commit.");
+      return value;
+    });
+  });
+  return stopped!;
+};
+
 /** Only an independent worker may commit complete process-tree stop after the writer exits. */
 export const recordStoppedControllerGeneration = async (file: string, ticket: ControllerLaunchTicket): Promise<ControllerSnapshot> => {
   const observed = readControllerSnapshot(file);
   if (observed === null || observed.controllerProcess === null || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Original controller stop evidence is unavailable.");
+  if (process.platform === "win32") throw new Error("Windows controller stop requires the original held Job and a versioned stop receipt.");
   if (!await confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses)) throw new Error("The original controller or its descendants are still running.");
   const db = new Database(file, { fileMustExist: true });
   let stopped: ControllerSnapshot | undefined;

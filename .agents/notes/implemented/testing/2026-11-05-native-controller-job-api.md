@@ -14,38 +14,26 @@ number of generations or replacing OS evidence would weaken those regressions.
 ## Decision
 
 Controller Job operations use the existing Koffi dependency to call Win32 in the
-calling process. Native function bindings are loaded lazily and reused. Creation
-retains the original name validation, noninheritable handles, process assignment
-and handle release. Inspection opens with query access, adding terminate access
-only for a stop request; termination retains exit code 1 before the membership
-query. No breakaway or kill-on-close policy is added.
+calling process. Native function bindings are loaded lazily and reused. The
+original optimization preserved the existing create/assign/close and
+open/query/close lifetimes and did not add kill-on-close. It interpreted
+`ERROR_FILE_NOT_FOUND` as an empty inventory and retained errors for access,
+query, termination and release failures. Its fifteen-second budget applied
+between native calls; an in-progress kernel call could not be preempted.
 
-Only an open failure with `ERROR_FILE_NOT_FOUND` yields an empty inventory.
-Access denial, duplicate creation, native failures and malformed process IDs
-remain errors. Membership decoding checks the bounded buffer against the native
-pointer width and reported counts. Owned handles are released on success and
-failure; simultaneous operation and release failures retain both errors and the
-original cause. The fifteen-second operation budget includes lazy loading and
-native work. Checks between calls and after handle release reject late results;
-a synchronous kernel call already in progress must finish before release.
-
-The existing create/assign/close and open/query/close lifetimes remain in place.
 A Job object's body and its namespace name have different lifetimes: the
 [CreateJobObjectW contract](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw)
 keeps its body until handles and member processes are gone, while a
 [temporary object's name](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject)
-is removed when its final handle closes. This optimization does not establish a
-new persistent Job-name owner. The Bot capability-probe lease has different
-ownership and kill-on-close requirements and remains independent.
+is removed when its final handle closes. The optimization did not establish a
+persistent Job-name owner. Its Windows regression held a separate fixture handle
+so that the membership and termination checks exercised an existing Job.
 
-Cross-platform regressions exercise native layouts, access masks, failures,
-deadlines and handle release. A Windows regression holds its own raw Job handle
-while checking actual descendant membership and termination through the public
-Controller helpers; this prevents a missing name from substituting for a real
-query. Original Bot generation counts, recovery limits, process evidence and
-cleanup assertions remain in place. The
-[development guide](../../../../docs/development.md#cli-development) owns the
-validation commands and interpretation.
+The [Controller Job ownership decision](../bug-fix/2026-11-11-windows-controller-job-ownership.md)
+replaces that handle lifetime and missing-name interpretation with an independent
+guardian, exact object ownership and a durable stop receipt. Koffi remains the
+native call boundary; the original benchmark and fixture do not prove the new
+production ownership path.
 
 ## Alternatives
 
@@ -63,8 +51,8 @@ would combine separate resource owners to obtain a performance change.
 
 ## Consequences
 
-Repeated Job operations avoid shell startup and C# compilation while preserving
-the caller's independent stop confirmations and error paths. Native library
+Repeated Job operations avoid shell startup and C# compilation. The original
+optimization retained the then-existing stop confirmation and error paths. Native library
 loading still contributes once per process; real Controller/native startup,
 SQLite journals, IPC and Git fixture work remain costs.
 

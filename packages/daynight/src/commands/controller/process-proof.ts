@@ -1,7 +1,7 @@
-import { createControllerJob, inspectControllerJob } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { captureWindowsProcessProof } from "./windows-process-proof.js";
+import type { ControllerLaunchTicket } from "./launch-ticket.js";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
@@ -17,9 +17,13 @@ export const captureProcessProof = async (pid: number, timeoutMs = process.platf
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
   return { pid, parentPid: Number(match[2]), processGroupId: Number(match[3]), startedAt: match[4]!.replace(/\s+/g, " "), commandHash: hash(match[5]!.trim()) };
 };
-export const captureControllerProcessProof = async (launchId: string): Promise<ProcessProof> => {
+export const captureControllerProcessProof = async (launchId: string, context?: { ticket: ControllerLaunchTicket; journalPath: string }): Promise<ProcessProof> => {
   const proof = await captureProcessProof(process.pid);
-  return process.platform === "win32" ? { ...proof, jobObjectName: await createControllerJob(launchId, process.pid) } : proof;
+  if (process.platform !== "win32") return proof;
+  if (context === undefined || context.ticket.launchId !== launchId) throw new Error("The original Windows Controller Job context is required.");
+  const { startWindowsJobGuardian } = await import("./windows-job-launch.js");
+  await startWindowsJobGuardian({ ...context, controller: proof });
+  return { ...proof, jobObjectName: `Local\\Daynight-${launchId}` };
 };
 export const inspectProcessProof = async (proof: ProcessProof): Promise<"running" | "stopped" | "replaced"> => {
   validPid(proof.pid);
@@ -40,24 +44,14 @@ const groupMembers = async (group: number): Promise<number[]> => {
   return result;
 };
 export const confirmControllerProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[]): Promise<boolean> => {
+  if (process.platform === "win32") throw new Error("Windows Controller stop requires the original held Job and its receipt.");
   for (const proof of [controller, ...native]) if (await inspectProcessProof(proof) === "running") return false;
-  if (process.platform === "win32") { if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; its descendants cannot be inferred stopped."); return (await inspectControllerJob(controller.jobObjectName)).length === 0; }
   if (controller.processGroupId !== controller.pid) throw new Error("Controller was not launched in its own process group.");
   return (await groupMembers(controller.pid)).length === 0;
 };
 export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number): Promise<void> => {
   if (process.platform === "win32") {
-    if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
-    await inspectControllerJob(controller.jobObjectName, true);
-    // Job termination is asynchronous. An empty inventory is insufficient until
-    // every retained original process identity also confirms it has stopped.
-    while (Date.now() < deadline) {
-      if (await confirmControllerProcessesStopped(controller, native)) return;
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-      await new Promise(resolve => setTimeout(resolve, Math.min(25, remaining)));
-    }
-    throw new Error("The original Windows Job Object did not stop completely.");
+    throw new Error("Windows Controller stop requires the original held Job and its receipt.");
   }
   if (controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
   if ((await groupMembers(controller.pid)).length === 0) return;

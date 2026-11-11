@@ -12,8 +12,10 @@ import { SESSION_PROTOCOL, sessionFence, assertSessionFence, type SessionSnapsho
 import { parseControllerGrantResponse, parseRegistrationResponse } from "../../session/controller-protocol.js";
 import { writeControllerCredential } from "../worker/backends/session-api.js";
 import { controllerExecutionDirectory, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { readControllerSnapshot, recordStoppedControllerGeneration } from "./lifecycle-store.js";
-import { captureProcessProof, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
+import { readControllerSnapshot } from "./lifecycle-store.js";
+import { captureProcessProof, type ProcessProof } from "./process-proof.js";
+import { openControllerStop, recoverWindowsControllerProof } from "./controller-stop.js";
+import { withControllerStop } from "./controller-stop-scope.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import { prepareControllerIpcEndpoint } from "./paths.js";
 import type { ResumeLease } from "./resume.js";
@@ -174,16 +176,13 @@ export const runIndependentController = async (input: IndependentControllerInput
     // Credential revocation and network failure must never prevent local stop.
     if (child && ticket && directory) {
       try {
-        await requestController(ticket, { kind: "stop", deadline: Date.now() + 15_000 }, { timeoutMs: 2000 }).catch(() => {});
-        await waitForExit(childExit, 2500);
         const journal = path.join(directory, "journal.sqlite");
         let snapshot: ReturnType<typeof readControllerSnapshot> = null;
         const stopFailures: unknown[] = [];
         try { snapshot = readControllerSnapshot(journal); } catch (error) { stopFailures.push(error); }
-        const proof = snapshot?.controllerProcess ?? processProof;
-        try {
-          if (proof) await stopControllerProcesses(proof, snapshot?.nativeProcesses ?? [], Date.now() + 10_000);
-          else if (child.pid && child.exitCode === null && child.signalCode === null) {
+        const proof = snapshot?.controllerProcess ?? recoverWindowsControllerProof(journal, ticket) ?? processProof;
+        if (!proof) {
+          if (child.pid && child.exitCode === null && child.signalCode === null) {
             // This ChildProcess handle belongs to the spawn above, even if proof
             // capture failed. Terminate it; do not infer descendants are stopped.
             child.kill("SIGTERM");
@@ -191,11 +190,18 @@ export const runIndependentController = async (input: IndependentControllerInput
             if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
             throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
           }
-          await childExit;
-        } catch (error) { stopFailures.push(error); }
-        if (stopFailures.length === 1) throw stopFailures[0];
-        if (stopFailures.length > 1) throw new AggregateError(stopFailures, "Controller journal observation and local stopping failed.");
-        const stopped = await recordStoppedControllerGeneration(journal, ticket);
+          throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
+        }
+        const stop = await openControllerStop({ journalPath: journal, ticket, controller: proof, native: snapshot?.nativeProcesses ?? [] });
+        const stopped = await withControllerStop(stop, async () => {
+          await requestController(ticket!, { kind: "stop", deadline: Date.now() + 15_000 }, { timeoutMs: 2000 }).catch(() => {});
+          await waitForExit(childExit, 2500);
+          try { await stop.stop(Date.now() + 10_000); await childExit; }
+          catch (error) { stopFailures.push(error); }
+          if (stopFailures.length === 1) throw stopFailures[0];
+          if (stopFailures.length > 1) throw new AggregateError(stopFailures, "Controller journal observation and local stopping failed.");
+          return stop.commit();
+        });
         nativeStopped = true;
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };

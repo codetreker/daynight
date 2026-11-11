@@ -470,7 +470,9 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 Controller 用 `cleanupInteractionIds` 标识清理阶段实际产生的交互。服务端冻结时保存 Timeline 序号边界，拒绝将冻结前的 pending 交互重新标为 cleanup；只有边界后且属于当前白名单的交互响应可以提交。浏览器按相同白名单启用控件，服务端在接受、Poll 投递和 operation_begin 时分别重验，避免排队期间权限变化绕过限制。
 
-Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 的创建、成员查询与终止通过已有 Koffi 依赖调用 Win32 API，保留原有命名、权限与逐次句柄释放方式。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。只有打开 Job 时的 `ERROR_FILE_NOT_FOUND` 表示名称不存在，权限、查询、终止和释放失败均保留错误；空 Job 清单仍不能代替原进程实例的停止证明。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
+Controller 自身只能报告 stopping。独立停止所有者确认原进程树后才在 journal 固定 stopped/nativeStopped，继而清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。
+
+Windows Controller 在启动 provider 前建立不属于目标 Job 的 guardian，设置并读回 kill-on-close，按原 ticket、generation、Controller 与 guardian 进程实例及原句柄在 journal 分别记录 prepared 和 assigned。执行停止前从经核验的 guardian 复制原 Job 句柄并持有，不能凭同名对象或名称缺失判断原对象。停止所有者封闭新成员准入、终止并观察该 Job 为空，再读取同代 journal 的最终 native 列表，逐个核验原进程实例停止；已开始的 native 调用必须真实结束。完整证据与同代 snapshot 在 SQLite CAS 事务中提交为版本化停证，随后 guardian 读回匹配收据并释放原句柄。guardian 或句柄失去前的身份、权限、查询、提交和释放错误保留责任；即使 kill-on-close 已尽力终止，缺少真实 join 与收据仍为 unknown。旧版 nativeStopped、PID 消失及 Job 名称不存在均不能替代收据，跨平台恢复仍依原 Windows 来源校验。机制与历史取舍见[Windows Controller Job 责任决策](../../.agents/notes/implemented/bug-fix/2026-11-11-windows-controller-job-ownership.md)。
 
 ## 升级与安全失败
 

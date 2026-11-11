@@ -6,15 +6,17 @@ import { lstat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { requestController } from "../../controller/local-client.js";
-import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
+import { readControllerOperation, readControllerSnapshot, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { confirmControllerProcessesStopped, inspectProcessProof } from "../../controller/process-proof.js";
+import { openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
+import { withControllerStop } from "../../controller/controller-stop-scope.js";
 import { selectedWorktreePath, WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
 import type { CleanupRequest, CleanupTarget } from "../execution-stop.js";
 import type { Operation } from "../../../api/operation.js";
-import { assertWebTicketIdentity, observeWebExecutionStop, webExecutionRef } from "./web-stop.js";
+import { assertWebTicketIdentity, confirmWebStop, observeWebExecutionStop, previousWebTicket, settleWebStop, webExecutionRef } from "./web-stop.js";
 import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 import type { WorkerPromptSource, WorkerPromptTuple } from "../prompt-source.js";
@@ -125,6 +127,14 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const signature = (task: LocalTask, tuple: WorkerPromptTuple): string => JSON.stringify([tuple.user.revision, tuple.project.revision, tuple.worker.revision, task.configuration]);
   const current = (task: LocalTask): LocalTask => { const latest = options.store.getTask(task); if (latest === null || taskAgentControlMode(latest) !== "web") throw new Error("The frozen Web execution disappeared."); return latest; };
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
+  const confirmSaved = async (task: LocalTask, saved: ControllerSnapshot): Promise<boolean> => {
+    if (!saved.controllerProcess) throw new Error("The original controller process identity is missing.");
+    if (process.platform !== "win32" && saved.controllerProcess.processGroupId !== null && saved.controllerProcess.jobObjectName === undefined) return confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
+    const ticket = saved.executionGeneration === task.webExecution!.executionGeneration
+      ? await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId)
+      : await previousWebTicket(options.homeDirectory, saved);
+    return confirmWebStop(journal(task), ticket, saved);
+  };
   const remember = (input: LocalTask, snapshot: ControllerSnapshot): LocalTask => {
     let task = current(input);
     if (!matchesGeneration(task, snapshot)) throw new Error("Controller observation does not match the original execution generation.");
@@ -210,12 +220,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || ((observed.lifecycle === "ready" || observed.lifecycle === "working") && !liveObservation))) throw new Error("Orchestration verification found conflicting original native evidence.");
     const unusedRetry = task.recovery.retryAuthorized && task.recovery.pauseReason !== null;
     if (unusedRetry || execution.restartAfterShutdown || observed === null || !liveObservation) {
-      const stopped = await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
+      const stopped = await confirmSaved(task, saved);
       if (correctLegacyLatch || !stopped) {
         if (observed !== null && ["paused", "failed", "stopped", "stopping"].includes(observed.lifecycle)) options.store.pauseRecovery(task, observed.error ?? "The native controller is paused or stopped.", options.now(), "recovery_blocked");
         throw new Error("Orchestration verification could not confirm the healthy original native identity or complete process stop.");
       }
-      const stoppedSnapshot = await recordStoppedControllerGeneration(journal(task), ticket);
+      const stoppedSnapshot = await settleWebStop(journal(task), ticket, saved);
       if (!matchesGeneration(task, stoppedSnapshot) || stoppedSnapshot.lifecycle !== "stopped" || !stoppedSnapshot.nativeStopped || stoppedSnapshot.stoppedAt === null
         || !preservesControllerEvidence(saved, stoppedSnapshot, ticket.launchId)
         || (observed !== null && !preservesControllerEvidence(observed, stoppedSnapshot, ticket.launchId))) throw new Error("The stopped native observation conflicts with the original controller evidence.");
@@ -283,7 +293,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             // Preparation may fail after allocating a generation but before any writer is launched.
             const previous = readControllerSnapshot(journal(task));
             if (previous === null || previous.controllerProcess === null || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null) throw new Error("Unsubmitted recovery requires the original complete stopped generation evidence.");
-            if (!await confirmControllerProcessesStopped(previous.controllerProcess, previous.nativeProcesses)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
+            if (!await confirmSaved(task, previous)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
             signal.throwIfAborted();
             if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
             task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
@@ -292,9 +302,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");
             task = remember(task, saved);
             const proof = task.webExecution!.controllerProcess;
-            if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("Web retry requires complete original controller and native process stop.");
+            if (proof === null || !await confirmSaved(task, saved)) throw new Error("Web retry requires complete original controller and native process stop.");
             const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
-            const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
+            const stopped = await settleWebStop(journal(task), ticket, saved);
             task = options.store.beginWebGeneration(task, stopped, options.now());
           }
           success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
@@ -305,7 +315,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             task = remember(task, saved);
             const proof = task.webExecution!.controllerProcess;
             if (proof === null) throw new Error("The exhausted execution has no complete original process stop evidence.");
-            const stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
+            const stopped = await confirmSaved(task, saved);
             if (stopped) {
               if (!task.webExecution!.restartAfterShutdown || saved.error !== null) return pause(new WebRecoveryBlockedError("recovery_limit", "The execution recovery budget is exhausted."));
             } else {
@@ -361,9 +371,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           const saved = originalSnapshot();
           task = remember(task, saved);
           const proof = task.webExecution!.controllerProcess;
-          if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("The original controller is unreachable; its native writer may still be alive and will not be replaced.", { cause: error });
+          if (proof === null || !await confirmSaved(task, saved)) throw new Error("The original controller is unreachable; its native writer may still be alive and will not be replaced.", { cause: error });
           if (saved.nativeSessionId === null) throw new WebRecoveryBlockedError("native_identity_missing", "The stopped native launch has no proven session identity; recovery cannot create another conversation.");
-          const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
+          const stopped = await settleWebStop(journal(task), ticket, saved);
           if (!task.webExecution!.restartAfterShutdown) task = options.store.beginRecovery(task, options.now());
           if (task.recovery.pauseReason !== null) return task;
           recovering = true;
@@ -431,7 +441,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           try {
             const saved = readControllerSnapshot(journal(task));
             if (saved === null || !matchesGeneration(task, saved) || saved.controllerProcess === null) throw new Error("The exhausted execution has no original generation evidence before shutdown.");
-            if (["failed", "paused", "stopped", "stopping"].includes(saved.lifecycle) || await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses)) task = options.store.pauseRecovery(task, "The execution recovery budget is exhausted.", options.now());
+            if (["failed", "paused", "stopped", "stopping"].includes(saved.lifecycle) || await confirmSaved(task, saved)) task = options.store.pauseRecovery(task, "The execution recovery budget is exhausted.", options.now());
           } catch (error) {
             signal.throwIfAborted();
             task = options.store.pauseRecovery(task, error instanceof Error ? error.message : String(error), options.now());
@@ -451,7 +461,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           if (saved !== null && !matchesGeneration(task, saved)) {
             if (execution.launchSubmission !== "not-submitted" || saved.executionId !== execution.executionId || saved.claimId !== task.claimId
               || saved.controllerProcess === null || BigInt(saved.executionGeneration) + 1n !== BigInt(execution.executionGeneration)
-              || !await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses)) throw new Error("The original controller generation cannot be identified and stopped from its journal.");
+              || !await confirmSaved(task, saved)) throw new Error("The original controller generation cannot be identified and stopped from its journal.");
             saved = null;
           }
           launched = saved !== null || execution.launchSubmission !== "not-submitted";
@@ -480,37 +490,42 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             }
             if (saved !== null && !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("The original native process identities conflict with their journal.");
             if (saved?.nativeSessionId != null && task.status !== "done") task = options.store.bindNativeSession(task, { source: "controller", sessionId: saved.nativeSessionId }, options.now(), saved);
-            const proof = saved?.controllerProcess ?? execution.controllerProcess;
+            const proof = saved?.controllerProcess ?? execution.controllerProcess ?? (process.platform === "win32" && saved !== null ? recoverWindowsControllerProof(journal(task), ticket) : null);
             const native = saved?.nativeProcesses ?? execution.nativeProcesses;
             if (proof === null) throw new Error("The original controller process identity is missing; cleanup cannot infer stop.");
-            let stopped = await confirmControllerProcessesStopped(proof, native);
-            if (!immediateStop && task.status !== "done" && !stopped && options.now() < intent.deadline) {
-              if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process identity.");
-              if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
-              const operationId = task.webExecution!.cleanupOperationId!;
-              let operation = readControllerOperation(journal(task), operationId);
-              if (operation === null) {
-                try { await request(ticket, { kind: "cleanup", operationId, prompt: workerCleanupPrompt(task, intent.deadline), deadline: intent.deadline }, { signal, timeoutMs: Math.max(1, Math.min(CLEANUP_OPERATION_MS, intent.deadline - options.now())) }); }
-                catch (error) {
-                  signal.throwIfAborted();
+            const stop = await openControllerStop({ journalPath: journal(task), ticket, controller: proof, native });
+            const completedStop = await withControllerStop(stop, async () => {
+              let stopped = await stop.confirm();
+              if (!immediateStop && task.status !== "done" && !stopped && options.now() < intent.deadline) {
+                if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process identity.");
+                if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
+                const operationId = task.webExecution!.cleanupOperationId!;
+                let operation = readControllerOperation(journal(task), operationId);
+                if (operation === null) {
+                  try { await request(ticket, { kind: "cleanup", operationId, prompt: workerCleanupPrompt(task, intent.deadline), deadline: intent.deadline }, { signal, timeoutMs: Math.max(1, Math.min(CLEANUP_OPERATION_MS, intent.deadline - options.now())) }); }
+                  catch (error) {
+                    signal.throwIfAborted();
+                    operation = readControllerOperation(journal(task), operationId);
+                    if (operation === null) throw error;
+                  }
                   operation = readControllerOperation(journal(task), operationId);
-                  if (operation === null) throw error;
                 }
-                operation = readControllerOperation(journal(task), operationId);
+                if (operation !== null && (operation.kind !== "cleanup" || operation.executionGeneration !== execution.executionGeneration)) throw new Error("The cleanup operation belongs to a different controller generation.");
+                if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return false;
               }
-              if (operation !== null && (operation.kind !== "cleanup" || operation.executionGeneration !== execution.executionGeneration)) throw new Error("The cleanup operation belongs to a different controller generation.");
-              if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return { task, complete: false };
-            }
-            if (!stopped) {
-              if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + CLEANUP_OPERATION_MS }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); } catch { /* OS process observation remains authoritative after an IPC loss. */ }
-              signal.throwIfAborted();
-              try { await stopControllerProcesses(proof, native, Date.now() + CLEANUP_OPERATION_MS); }
-              catch (error) { if (!await confirmControllerProcessesStopped(proof, native)) throw error; }
-              stopped = await confirmControllerProcessesStopped(proof, native);
-            }
-            if (!stopped) throw new Error("The original controller or its native processes still exist.");
-            if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "stopped", execution: webExecutionRef(task), observedAt: options.now() } });
-            if (saved !== null) await recordStoppedControllerGeneration(journal(task), ticket);
+              if (!stopped) {
+                if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + CLEANUP_OPERATION_MS }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); } catch { /* OS process observation remains authoritative after an IPC loss. */ }
+                signal.throwIfAborted();
+                try { await stop.stop(Date.now() + CLEANUP_OPERATION_MS); }
+                catch (error) { if (!await stop.confirm()) throw error; }
+                stopped = await stop.confirm();
+              }
+              if (!stopped) throw new Error("The original controller or its native processes still exist.");
+              if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "stopped", execution: webExecutionRef(task), observedAt: options.now() } });
+              if (saved !== null) await stop.commit();
+              return true;
+            });
+            if (!completedStop) return { task, complete: false };
             success(task, { kind: "cleanup", phase: "agent-stop" });
             phase(task, { kind: "cleanup", phase: "agent-stop" }, true);
             stage = "backend-close";

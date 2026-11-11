@@ -24,7 +24,8 @@ import { controllerExecutionDirectory, controllerTicketPath } from "../../../src
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { readControllerSnapshot, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { openControllerStop } from "../../../src/commands/controller/controller-stop.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
@@ -189,20 +190,22 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     const retained = aliasDirectory;
     return { environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory, bindings: [], release: async () => { if (retained !== null) await rm(retained, { recursive: true, force: true }); } };
   };
-  const stopProcesses: typeof stopControllerProcesses = async (controller, native, deadline) => {
+  const openStop: typeof openControllerStop = async input => {
+    const operation = await openControllerStop(input);
+    return { ...operation, stop: async deadline => {
     const started = Date.now();
-    try { await stopControllerProcesses(controller, native, deadline); }
+    try { await operation.stop(deadline); }
     catch (error) {
       diagnostic("stop-original-processes", Date.now() - started, error);
       // Only inspect identities created by this fixture; retain the original
       // failure even if a diagnostic probe also fails.
-      const identities = await Promise.all([controller, ...native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
-      const jobMembers = controller.jobObjectName === undefined ? null : await inspectControllerJob(controller.jobObjectName).catch(() => "unconfirmed");
+      const identities = await Promise.all([input.controller, ...input.native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
+      const jobMembers = input.controller.jobObjectName === undefined ? null : await inspectControllerJob(input.controller.jobObjectName).catch(() => "unconfirmed");
       console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "stop-original-process-evidence", elapsedMs: Date.now() - started, deadlineExpired: Date.now() >= deadline, identities, jobMembers }));
       throw error;
-    }
+    } } };
   };
-  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment, stopProcesses } });
+  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment, openStop } });
   const botProcess = create();
   const frames: ReturnType<typeof parseControllerMessage>[] = [], relayErrors: unknown[] = [];
   let browserConnections = 0, deleted = false;
@@ -257,19 +260,17 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
             return latest;
           }, { timeout: 30_000, interval: 100 });
         } catch (error) { diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error); }
+        saved = journal() ?? saved;
         const proof = saved?.controllerProcess ?? execution.controllerProcess;
-        try { const ticket = await botProcess.readTicket(record); await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
-        // Shutdown joins startup, which can publish native proofs after the
-        // first snapshot. Preserve both observations before checking cleanup.
-        const native = [...new Map([...(saved?.nativeProcesses ?? []), ...(journal()?.nativeProcesses ?? [])]
-          .map(proof => [JSON.stringify([proof.pid, proof.startedAt, proof.commandHash]), proof])).values()];
         if (proof !== null) {
-          // A cooperative stop can finish between process/group probes. Observe
-          // that completion before escalating the exact retained process group.
-          try { await waitForProcessesStopped(proof, native, 5000); }
-          catch { await stopControllerProcesses(proof, native, Date.now() + 10_000); }
-          stopped = await confirmControllerProcessesStopped(proof, native);
-          expect(stopped).toBe(true);
+          const ticket = await botProcess.readTicket(record), operation = await openControllerStop({ journalPath: record.intent!.journalPath, ticket, controller: proof, native: saved?.nativeProcesses ?? [] });
+          try {
+            try { await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* The held original Job owns cleanup completion. */ }
+            await operation.stop(Date.now() + 10_000);
+            stopped = await operation.confirm();
+            expect(stopped).toBe(true);
+            await operation.commit();
+          } finally { await operation.close(); }
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
       }
       const recordNow = current();
@@ -444,7 +445,7 @@ test("deletes every private generation after real Controller stop while preservi
   const receipts: BotDeletionReceipt[] = [];
   const api = { ...f.api, completeDeletion: async (_record: BotRecord, receipt: BotDeletionReceipt): Promise<BotDeleted> => {
     if (receipt.result.state === "completed") {
-      expect(await confirmControllerProcessesStopped(finalWriter.controllerProcess!, finalWriter.nativeProcesses)).toBe(true);
+      for (const proof of [finalWriter.controllerProcess!, ...finalWriter.nativeProcesses]) expect(await inspectProcessProof(proof)).not.toBe("running");
       expect(existsSync(controllerExecutionDirectory(f.home, first.executionId))).toBe(false);
     }
     receipts.push(structuredClone(receipt));

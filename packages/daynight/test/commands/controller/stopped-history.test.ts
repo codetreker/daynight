@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, open } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { assignWindowsJobSource, commitWindowsJobStop, openControllerLifecycleStore, prepareWindowsJobSource, readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
+import { probeStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { replayStoppedControllerHistory, type StoppedSourceTail } from "../../../src/commands/controller/stopped-history.js";
 const roots: string[] = [];
@@ -65,6 +67,40 @@ test("valid one MiB text events use separate bounded batches without changing th
 test("an active generation is rejected before transport", async () => {
   const f = await fixture(), db = new Database(f.journalPath); try { db.exec("UPDATE execution SET snapshot=json_set(snapshot,'$.nativeStopped',json('false'),'$.lifecycle','ready')"); } finally { db.close(); }
   const send = vi.fn(); await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow("original stopped"); expect(send).not.toHaveBeenCalled();
+});
+
+test("Windows history and archive require the matching original Job receipt regardless of reader platform", async () => {
+  const f = await fixture();
+  const controller = { pid: 123, parentPid: 1, processGroupId: null, startedAt: "2026-01-01T00:00:00.0000000Z", commandHash: "a".repeat(64) };
+  const guardian = { ...controller, pid: 124, parentPid: controller.pid, commandHash: "b".repeat(64) };
+  const store = openControllerLifecycleStore(f.journalPath, f.ticket);
+  store.patchSnapshot({ controllerProcess: controller }); store.close();
+  const send = vi.fn(async (batch: StoppedSourceTail) => acknowledged(batch));
+  await expect(probeStoppedControllerArchive(f)).rejects.toThrow(/Windows.*receipt/);
+  await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow(/Windows.*receipt/);
+  expect(send).not.toHaveBeenCalled();
+  const prepared = { version: 1 as const, phase: "prepared" as const, launchId: f.ticket.launchId, executionId: f.ticket.executionId, executionGeneration: f.ticket.executionGeneration, controllerInstanceId: f.ticket.controllerInstanceId, ticketHash: controllerPayloadHash(f.ticket), guardian, controller, jobHandle: "100" };
+  const assigned = { ...prepared, phase: "assigned" as const };
+  const starting = new Database(f.journalPath);
+  try { starting.exec("UPDATE execution SET snapshot=json_set(snapshot,'$.lifecycle','starting','$.nativeStopped',json('false'))"); }
+  finally { starting.close(); }
+  prepareWindowsJobSource(f.journalPath, f.ticket, prepared);
+  assignWindowsJobSource(f.journalPath, f.ticket, prepared, assigned);
+  const stopped = new Database(f.journalPath);
+  try { stopped.exec("UPDATE execution SET snapshot=json_set(snapshot,'$.lifecycle','stopped','$.nativeStopped',json('true'))"); }
+  finally { stopped.close(); }
+  await expect(probeStoppedControllerArchive(f)).rejects.toThrow(/Windows.*receipt/);
+  commitWindowsJobStop(f.journalPath, f.ticket, readControllerSnapshot(f.journalPath)!, assigned);
+  expect(await probeStoppedControllerArchive(f)).toEqual({ kind: "complete" });
+  await replayStoppedControllerHistory({ ...f, send });
+  expect(send).toHaveBeenCalledOnce();
+  const db = new Database(f.journalPath);
+  try { db.prepare("UPDATE windows_job_evidence SET receipt=json_set(receipt,'$.source.jobHandle','101') WHERE launch_id=?").run(f.ticket.launchId); }
+  finally { db.close(); }
+  send.mockClear();
+  await expect(probeStoppedControllerArchive(f)).rejects.toThrow(/receipt/);
+  await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow(/receipt/);
+  expect(send).not.toHaveBeenCalled();
 });
 
 test("a stopped batch cannot consume metadata beyond the settlement reserve or discard its original events", async () => {

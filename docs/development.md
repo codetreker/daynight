@@ -209,15 +209,13 @@ an assertion fails. The
 owns the implementation and its dependency limits; the
 [startup budget decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
 preserves the acquisition policy's rationale.
-Controller Job Object creation, membership queries and termination use the existing
-Koffi dependency in the calling process. Each operation retains its fifteen-second
-budget, checked between native calls and after handle release; an in-progress
-kernel call is joined. Native regressions cover access failures, malformed process
-inventories and handle release, while Windows CI keeps real Bot generation,
-recovery and deletion scenarios. A test-owned handle keeps a controlled Job name
-available for direct membership and termination checks. The
-[native Job API decision](../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)
-owns the preserved handle lifetime and measurement boundaries.
+Controller Job operations use the existing Koffi dependency. Windows Controller
+ownership retains the original guardian and duplicated Job handles until the
+matching stop receipt commits; a named Job fixture alone cannot prove this
+production lifecycle. Native regressions exercise actual membership, termination
+and handle lifetime, while controlled boundaries cover failures and recovery.
+The [Job ownership decision](../.agents/notes/implemented/bug-fix/2026-11-11-windows-controller-job-ownership.md)
+records the stop evidence and compatibility boundary.
 Repository Git uses the shared Windows owned-command platform with its own
 completion policy. Native regressions keep a live Job member across root and
 intermediate exit, seal new admissions before stopping, distinguish actual target

@@ -11,7 +11,7 @@ import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { finalizePendingMigration, reconcilePendingContent, openPendingContent, writeDurableJson } from "./pending-content.js";
-import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
+import { assertStoppedWindowsJobEvidence, replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
 
 const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket): ControllerSnapshot => {
   const version = Number(db.pragma("user_version", { simple: true }));
@@ -22,6 +22,7 @@ const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket):
   try { observed = row === undefined ? null : JSON.parse(row.snapshot) as ControllerSnapshot; }
   catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: db.name, phase: "archive-decode" }, { cause }); }
   if (!observed || row?.ticket_hash !== controllerPayloadHash(ticket) || !observed.nativeStopped || observed.lifecycle !== "stopped" || observed.sessionId !== ticket.sessionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId) throw new Error("Session archive requires the original stopped controller generation.");
+  assertStoppedWindowsJobEvidence(db, ticket, observed);
   return observed;
 };
 const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {

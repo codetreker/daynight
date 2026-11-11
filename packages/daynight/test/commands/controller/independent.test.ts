@@ -13,12 +13,13 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 250 ? 1 : milliseconds, value, options);
   } };
 });
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), openStop: vi.fn(), closeStop: vi.fn(), recover: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readControllerSnapshot: f.snapshot, recordStoppedControllerGeneration: f.record }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
+vi.mock("../../../src/commands/controller/controller-stop.js", () => ({ openControllerStop: f.openStop, recoverWindowsControllerProof: f.recover }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
@@ -87,7 +88,10 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   f.capture.mockResolvedValue(proof);
   f.snapshot.mockReturnValue({ controllerProcess: proof, nativeProcesses: [] });
   f.record.mockResolvedValue({ stoppedAt: new Date().toISOString() });
+  f.recover.mockReturnValue(null);
   f.stop.mockResolvedValue(undefined);
+  f.closeStop.mockResolvedValue(undefined);
+  f.openStop.mockImplementation(async ({ journalPath, ticket, controller, native }) => ({ confirm: async () => true, stop: (deadline: number) => f.stop(controller, native, deadline), commit: () => f.record(journalPath, ticket), close: f.closeStop }));
   f.archive.mockResolvedValue({ state: "ready" });
   f.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "stop") { child.exitCode = 0; child.emit("exit", 0); return {}; }
@@ -113,6 +117,33 @@ test.each([null, "hello 中文"])("foreground Test lifecycle preserves registrat
   expect(ticket).toMatchObject({ initialInput: prompt === null ? "none" : "prompt", initialPrompt: prompt ?? "" });
   for (const field of ["taskId", "claimId", "projectId", "workerId", "worktreeId"]) expect(ticket).not.toHaveProperty(field);
   expect(v.out.join("")).toContain("stopped and archived");
+});
+
+test("acquires the original stop responsibility before IPC and releases it after the receipt", async () => {
+  const v = await setup(null);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const stopRequest = f.request.mock.calls.findIndex(([, action]) => action.kind === "stop");
+  expect(stopRequest).toBeGreaterThanOrEqual(0);
+  expect(f.openStop.mock.invocationCallOrder[0]).toBeLessThan(f.request.mock.invocationCallOrder[stopRequest]!);
+  expect(f.record.mock.invocationCallOrder[0]).toBeLessThan(f.closeStop.mock.invocationCallOrder[0]!);
+});
+
+test("an unavailable original stop responsibility cannot send IPC stop or publish a stopped proof", async () => {
+  const v = await setup(null); f.openStop.mockRejectedValueOnce(new Error("Original Job is unknown"));
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow("Original Job is unknown");
+  expect(f.request.mock.calls.some(([, action]) => action.kind === "stop")).toBe(false);
+  expect(f.record).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("an assigned guardian supplies the original Controller identity before snapshot publication", async () => {
+  const v = await setup(null);
+  const controller = { pid: 987, processGroupId: null, startedAt: "original", commandHash: "hash", parentPid: 1 };
+  f.snapshot.mockReturnValue({ controllerProcess: null, nativeProcesses: [] });
+  f.recover.mockReturnValue(controller);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(f.openStop).toHaveBeenCalledWith(expect.objectContaining({ controller }));
+  expect(f.record).toHaveBeenCalledOnce();
 });
 test.each(["codex", "claude", "copilot"] as const)("%s startup retries IPC quietly until its first observation", async provider => {
   const v = await setup(null), original = f.request.getMockImplementation()!;

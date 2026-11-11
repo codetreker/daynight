@@ -80,12 +80,18 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}) =>
   await f.process.advance(f.current(), signal);
   let saved: ControllerSnapshot = { ...f.executions.get(f.current())!.snapshot!, controllerProcess: proof };
   f.executions.update(f.current(), { snapshot: saved });
-  const confirmStopped = vi.fn(async () => false);
-  const stopProcesses = vi.fn(async () => { confirmStopped.mockResolvedValue(true); });
+  const confirmStopped = vi.fn(async (..._args: unknown[]) => false);
+  const stopProcesses = vi.fn(async (..._args: unknown[]) => { confirmStopped.mockResolvedValue(true); });
   const request = vi.fn(async () => ({ snapshot: saved }));
-  const recordStopped = vi.fn(async () => (saved = { ...saved, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" }));
+  const recordStopped = vi.fn(async (..._args: unknown[]) => (saved = { ...saved, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" }));
+  const closeStop = vi.fn(async () => {});
+  const openStop = vi.fn(async ({ journalPath, ticket, controller, native }: any) => ({
+    confirm: () => confirmStopped(controller, native),
+    stop: (deadline: number) => stopProcesses(controller, native, deadline),
+    commit: () => recordStopped(journalPath, ticket), close: closeStop,
+  }));
   f.observe.mockImplementation(async () => { if (saved.nativeStopped) throw new Error("IPC unavailable"); return saved; });
-  const deps = { confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved };
+  const deps = { openStop, closeStop, confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved };
   return { ...f, signal, deps, manager: f.createProcess(deps), saved: () => saved,
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps) };
@@ -114,6 +120,39 @@ test("shutdown fails visibly when its stop receipt cannot prove the process tree
   const f = await recoveryFixture(); f.deps.stopProcesses.mockRejectedValue(new Error("cannot stop original process"));
   await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow(/cannot stop/);
   expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.current().intent!.executionGeneration).toBe("1");
+});
+
+test("Bot shutdown retains the original stop responsibility before IPC through receipt commit", async () => {
+  const f = await recoveryFixture();
+  await f.manager.shutdown(f.current(), f.signal);
+  expect(f.deps.openStop.mock.invocationCallOrder[0]).toBeLessThan(f.deps.request.mock.invocationCallOrder[0]!);
+  expect(f.deps.recordStopped.mock.invocationCallOrder[0]).toBeLessThan(f.deps.closeStop.mock.invocationCallOrder[0]!);
+});
+
+test("Bot cannot stop or release files when the original stop responsibility is unknown", async () => {
+  const f = await recoveryFixture();
+  f.deps.openStop.mockRejectedValueOnce(new Error("Original Job is unknown"));
+  await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow("Original Job is unknown");
+  expect(f.deps.request).not.toHaveBeenCalled();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled();
+  expect(f.executions.get(f.current())!.snapshot!.nativeStopped).toBe(false);
+});
+
+test("Bot recovery uses an assigned guardian when the Controller snapshot was not published", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  await f.process.advance(f.current(), signal);
+  const saved = f.executions.get(f.current())!.snapshot!;
+  const controller = { pid: 123, parentPid: 12, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
+  const stopped = { ...saved, controllerProcess: controller, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" };
+  f.observe.mockRejectedValue(new Error("IPC unavailable"));
+  const recoverProof = vi.fn(() => controller), close = vi.fn(async () => {});
+  const openStop = vi.fn(async () => ({ confirm: async () => true, stop: async () => {}, commit: async () => stopped, close }));
+  await f.createProcess({ recoverProof, openStop, readSnapshot: () => saved }).advance(f.current(), signal);
+  expect(recoverProof).toHaveBeenCalledOnce();
+  expect(openStop).toHaveBeenCalledWith(expect.objectContaining({ controller }));
+  expect(close).toHaveBeenCalledOnce();
+  expect(f.current().intent!.executionGeneration).toBe("2");
 });
 
 test("recovery keeps its persisted target generation after a lost grant response", async () => {

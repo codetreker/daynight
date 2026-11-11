@@ -8,7 +8,9 @@ import { loadServerConfiguration } from "../../config/server.js";
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, type SessionProvider } from "../../session/protocol.js";
 import { parseRegistrationResponse } from "../../session/controller-protocol.js";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { recordStoppedControllerGeneration } from "./lifecycle-store.js";
+import { readControllerSnapshot } from "./lifecycle-store.js";
+import { openControllerStop, recoverWindowsControllerProof } from "./controller-stop.js";
+import { withControllerStop } from "./controller-stop-scope.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
 import { writeDurableJson } from "./pending-content.js";
 
@@ -30,7 +32,15 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
   }
   if (!ticket) throw new Error("No local Test Session matches this provider, session ID and configured server.");
   const execution = controllerExecutionDirectory(home, ticket.executionId), journalPath = path.join(execution, "journal.sqlite");
-  const stopped = await recordStoppedControllerGeneration(journalPath, ticket);
+  const observed = readControllerSnapshot(journalPath);
+  if (!observed) throw new Error("Original controller stop evidence is unavailable.");
+  const controller = observed.controllerProcess ?? recoverWindowsControllerProof(journalPath, ticket);
+  if (!controller) throw new Error("Original controller stop evidence is unavailable.");
+  const stop = await openControllerStop({ journalPath, ticket, controller, native: observed.nativeProcesses });
+  const stopped = await withControllerStop(stop, async () => {
+    if (!await stop.confirm()) throw new Error("The original controller or its descendants are still running.");
+    return stop.commit();
+  });
   const proofPath = path.join(execution, "stop-proof.json");
   let body: unknown;
   if (existsSync(proofPath)) {

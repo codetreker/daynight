@@ -15,7 +15,7 @@ import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
 import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.js";
-import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
+import { openControllerLifecycleStore, readControllerSnapshot, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
 import { createControllerRelay } from "./relay.js";
@@ -33,7 +33,18 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
-  const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory });
+  const journalPath = path.join(directory, "journal.sqlite");
+  let previousWindowsTicket: typeof ticket | undefined;
+  if (BigInt(ticket.executionGeneration) > 1n) {
+    const previous = readControllerSnapshot(journalPath);
+    const proof = previous?.controllerProcess;
+    if (process.platform === "win32" || proof != null && (proof.processGroupId === null || proof.jobObjectName !== undefined)) {
+      const match = /^Local\\Daynight-([0-9a-f-]{36})$/.exec(proof?.jobObjectName ?? "");
+      if (!match) throw new Error("The preceding Windows Controller Job identity is unavailable.");
+      previousWindowsTicket = await readLaunchTicket(options.homeDirectory, match[1]!);
+    }
+  }
+  const journal = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory, ...(previousWindowsTicket === undefined ? {} : { previousWindowsTicket }) });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
   let nativeReadPolicy: NativeReadPolicy | null = null;
   let nativeImages: ProviderState["images"];
@@ -358,7 +369,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
     journal.patchSnapshot({ startup: { state: "starting", reasonCode: "initializing" } });
-    journal.patchSnapshot({ controllerProcess: await captureControllerProcessProof(ticket.launchId) });
+    journal.patchSnapshot({ controllerProcess: await captureControllerProcessProof(ticket.launchId, { ticket, journalPath }) });
     await journal.reconcileNativeIndexReservation();
     if (stopping) return;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { server.off("error", reject); resolve(); }); });

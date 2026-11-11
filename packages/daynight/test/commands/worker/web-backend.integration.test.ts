@@ -13,6 +13,10 @@ import type { LocalTask } from "../../../src/commands/worker/backends/web-types.
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
+import { previousWebTicket, webExecutionRef } from "../../../src/commands/worker/backends/web-stop.js";
+import { createExecutionCapacity } from "../../../src/commands/worker/execution-capacity.js";
+import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
@@ -23,6 +27,44 @@ const cleanupRequest = (owner: { projectId: string; taskId: string; claimId: str
   : { kind, deadline, immediateStop: false, scope: { attempt: { attemptId: "test", owner }, onExecutionStopped: () => {} } };
 
 const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebBackendFixtures("file");
+
+const mockPosixControllerStop = () => vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
+  confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
+  stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
+  commit: () => lifecycle.recordStoppedControllerGeneration(journalPath, ticket),
+  close: async () => {},
+}));
+
+it("recovers the exact previous Windows ticket from its persisted controller proof", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const snapshot = { ...source.snapshot, controllerProcess: { ...source.snapshot.controllerProcess!, jobObjectName: `Local\\Daynight-${source.ticket.launchId}` } };
+  expect(await previousWebTicket(f.home, snapshot)).toEqual(source.ticket);
+  await expect(previousWebTicket(f.home, { ...snapshot, controllerProcess: { ...snapshot.controllerProcess, jobObjectName: "Local\\Daynight-invalid" } })).rejects.toThrow("no recoverable launch ticket");
+});
+
+it.each(["identity conflict", "ordinary read failure"] as const)("handles a Windows Job %s after a stopped observation", async kind => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const proof = { ...source.snapshot.controllerProcess!, processGroupId: null, jobObjectName: `Local\\Daynight-${source.ticket.launchId}` };
+  const task = f.store.updateWebExecution(source.task, { controllerProcess: proof }, 6);
+  source.saved.mockReturnValue({ ...source.snapshot, controllerProcess: proof });
+  const fault = kind === "identity conflict" ? new controllerStop.ControllerStopIdentityError("Job source changed") : new Error("Temporary journal I/O failure");
+  vi.spyOn(controllerStop, "openControllerStop").mockRejectedValue(fault);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const execution = webExecutionRef(task), attempt = { owner: execution.owner, attemptId: "attempt" };
+  const capacity = createExecutionCapacity(() => {});
+  capacity.beginAttempt(attempt);
+  expect(capacity.notify({ attempt, observation: { kind: "stopped", execution, observedAt: 1 } })).toBe(true);
+  const observationTicket = capacity.beginObservation(execution.owner)!;
+  const operation = createOperation({ limits: { totalMs: 30_000 } });
+  try {
+    const observed = await backend.observeExecutionStop(task, operation);
+    expect(observed.kind).toBe("unknown");
+    if (observed.kind !== "unknown") throw new Error("Expected an unknown observation.");
+    expect(observed.error instanceof ExecutionSourceConflictError).toBe(kind === "identity conflict");
+    expect(capacity.commitObservation(observationTicket, observed)).toBe(true);
+    expect(capacity.isStopped(execution.owner)).toBe(kind === "ordinary read failure");
+  } finally { operation.dispose(); }
+});
 
 it("retains a single retry across starting, store reopen, and later native failure below the ordinary budget", async () => {
   const f = await recoveryFixture(5);
@@ -102,6 +144,7 @@ it("continues a consumed unsubmitted retry after a Worker reopen without consumi
 
 it("reconciles an unknown cleanup IPC outcome from the controller operation journal across Worker reopen", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  mockPosixControllerStop();
   const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
   await mkdir(path.dirname(journalPath), { recursive: true });
   const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
@@ -142,6 +185,7 @@ it.each((["live", "stopped"] as const).flatMap(state => (["none", "pid", "birth"
   const f = await fixture("codex", 3);
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   const source = await cleanupSource(f, task);
+  mockPosixControllerStop();
   const launcherProof = { ...source.snapshot.controllerProcess!, parentPid: 777 };
   const native = { ...launcherProof, pid: 988, parentPid: launcherProof.pid, startedAt: "native-original", commandHash: "b".repeat(64) };
   f.store.updateWebExecution(source.task, { launchSubmission: "unknown", controllerProcess: launcherProof, nativeProcesses: [native] }, 6);
@@ -190,6 +234,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   const f = await fixture("codex", 3);
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   const source = await cleanupSource(f, task);
+  mockPosixControllerStop();
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
   const nativeSessionId = randomUUID();
   let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
@@ -253,7 +298,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
 });
 
-const osWriterScript = (moduleUrl: string, launchId: string, failCapture = false): string => {
+const osWriterScript = (moduleUrl: string, launchId: string, failCapture = false, context?: { ticket: ControllerLaunchTicket; journalPath: string }): string => {
   const descendant = `
     const { captureProcessProof } = await import(${JSON.stringify(moduleUrl)});
     try {
@@ -274,7 +319,7 @@ const osWriterScript = (moduleUrl: string, launchId: string, failCapture = false
   return `
     import { spawn } from "node:child_process";
     const { captureControllerProcessProof } = await import(${JSON.stringify(moduleUrl)});
-    const proof = await captureControllerProcessProof(${JSON.stringify(launchId)});
+    const proof = await captureControllerProcessProof(${JSON.stringify(launchId)}, ${JSON.stringify(context)});
     const descendant = spawn(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(descendant)}], { stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true });
     let failure = null;
     descendant.on("error", error => { throw error; });
@@ -298,6 +343,25 @@ const osWriterScript = (moduleUrl: string, launchId: string, failCapture = false
   `;
 };
 
+const windowsWriterContext = async () => {
+  if (process.platform !== "win32") return undefined;
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  vi.restoreAllMocks();
+  const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalPath), { recursive: true });
+  lifecycle.openControllerLifecycleStore(journalPath, source.ticket).close();
+  return { ticket: source.ticket, journalPath };
+};
+
+const releaseFixtureGuardian = async (context: { ticket: ControllerLaunchTicket; journalPath: string } | undefined): Promise<void> => {
+  if (context === undefined) return;
+  const source = lifecycle.readWindowsJobSource(context.journalPath, context.ticket);
+  if (source === null) return;
+  const state = await processProof.inspectProcessProof(source.guardian);
+  if (state === "running") process.kill(source.guardian.pid, "SIGKILL");
+  await vi.waitFor(async () => expect(await processProof.inspectProcessProof(source.guardian)).not.toBe("running"), { timeout: 15_000, interval: 25 });
+};
+
 const forceOsWriterFixture = async (child: ChildProcess, native: processProof.ProcessProof | undefined): Promise<void> => {
   if (process.platform !== "win32" && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
     try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
@@ -309,7 +373,8 @@ const forceOsWriterFixture = async (child: ChildProcess, native: processProof.Pr
 
 it("joins the original descendant when process proof acquisition fails", async () => {
   const moduleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(moduleUrl, randomUUID(), true)], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  const context = await windowsWriterContext();
+  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(moduleUrl, context?.ticket.launchId ?? randomUUID(), true, context)], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
   children.push(child);
   const exited = once(child, "exit"); void exited.catch(() => {});
   let stderr = ""; child.stderr!.setEncoding("utf8"); child.stderr!.on("data", chunk => { stderr += chunk; });
@@ -321,6 +386,7 @@ it("joins the original descendant when process proof acquisition fails", async (
     expect(result).toMatchObject({ kind: "capture-failed", code: 1, message: expect.stringContaining("Injected process proof failure") });
     expect(result.descendantPid).toBeGreaterThan(0);
   } finally {
+    try {
     if (child.exitCode === null && child.signalCode === null) {
       const joined = once(child, "message", { signal: AbortSignal.timeout(15_000) });
       child.send("abort");
@@ -329,12 +395,14 @@ it("joins the original descendant when process proof acquisition fails", async (
       try { await Promise.race([exited, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Fixture leader did not exit after descendant join.")), 15_000); })]); }
       finally { if (timer !== undefined) clearTimeout(timer); }
     }
+    } finally { await releaseFixtureGuardian(context); }
   }
 }, 90_000);
 
 it.each(["lost activation receipt", "leader crash before activation"] as const)("reaps the descendant after %s", async scenario => {
   const moduleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(moduleUrl, randomUUID())], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  const context = await windowsWriterContext();
+  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(moduleUrl, context?.ticket.launchId ?? randomUUID(), false, context)], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
   children.push(child);
   const exited = once(child, "exit"); void exited.catch(() => {});
   const joinLeader = async () => {
@@ -363,6 +431,7 @@ it.each(["lost activation receipt", "leader crash before activation"] as const)(
     await joinLeader();
     await vi.waitFor(async () => expect(await processProof.inspectProcessProof(native!)).toBe("stopped"), { timeout: 15_000, interval: 25 });
   } finally {
+    try {
     if (child.exitCode === null && child.signalCode === null) {
       if (!activationSubmitted) {
         const joined = once(child, "message", { signal: AbortSignal.timeout(15_000) });
@@ -374,6 +443,7 @@ it.each(["lost activation receipt", "leader crash before activation"] as const)(
       if (await processProof.inspectProcessProof(native) === "running") process.kill(native.pid, "SIGKILL");
       await vi.waitFor(async () => expect(await processProof.inspectProcessProof(native!)).toBe("stopped"), { timeout: 15_000, interval: 25 });
     }
+    } finally { await releaseFixtureGuardian(context); }
   }
 }, 90_000);
 
@@ -381,7 +451,11 @@ it("observes the original OS writer stop before terminal archive joins", async (
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   vi.restoreAllMocks();
   const moduleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
-  const script = osWriterScript(moduleUrl, source.ticket.launchId);
+  const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalPath), { recursive: true });
+  lifecycle.openControllerLifecycleStore(journalPath, source.ticket).close();
+  const context = process.platform === "win32" ? { ticket: source.ticket, journalPath } : undefined;
+  const script = osWriterScript(moduleUrl, source.ticket.launchId, false, context);
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
   children.push(child);
   const childExit = once(child, "exit"); void childExit.catch(() => {});
@@ -404,8 +478,6 @@ it("observes the original OS writer stop before terminal archive joins", async (
     proof = receipt.proof; descendantPid = receipt.descendantPid; native = receipt.native;
     expect(native.parentPid).toBe(proof.pid);
     const task = f.store.updateWebExecution(source.task, { controllerProcess: proof, nativeProcesses: [native] }, 6);
-    const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
-    await mkdir(path.dirname(journalPath), { recursive: true });
     const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
     journal.patchSnapshot({ controllerProcess: proof, nativeProcesses: [native], lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null }); journal.close();
     let entered!: () => void;
@@ -421,9 +493,13 @@ it("observes the original OS writer stop before terminal archive joins", async (
     expect(await backend.observeExecutionStop(task, operation)).toMatchObject({ kind: "running" });
     expect(await processProof.inspectProcessProof(native)).toBe("running");
     if (process.platform === "win32") {
-      const { inspectControllerJob } = await import("../../../src/commands/controller/windows-job.js");
-      expect(proof.jobObjectName).toBeDefined();
-      expect(await inspectControllerJob(proof.jobObjectName!)).toEqual(expect.arrayContaining([proof.pid, native.pid]));
+      const { openWindowsGuardianJob } = await import("../../../src/commands/controller/windows-job-guardian.js");
+      const original = lifecycle.readWindowsJobSource(journalPath, source.ticket);
+      expect(original?.phase).toBe("assigned");
+      if (original?.phase !== "assigned") throw new Error("Original guardian source was not assigned.");
+      const lease = await openWindowsGuardianJob(original);
+      try { expect(lease.inspect().members).toEqual(expect.arrayContaining([proof.pid, native.pid])); }
+      finally { lease.close(); }
     }
     const activation = once(child, "message");
     activationSubmitted = true;
@@ -437,7 +513,8 @@ it("observes the original OS writer stop before terminal archive joins", async (
     expect(notice).toHaveBeenCalledWith(expect.objectContaining({ observation: expect.objectContaining({ kind: "stopped", execution: expect.objectContaining({ backend: "web" }) }) }));
     expect(await backend.observeExecutionStop(task, operation)).toMatchObject({ kind: "stopped", execution: { backend: "web" } });
     expect(await processProof.inspectProcessProof(native)).toBe("stopped");
-    expect(await processProof.confirmControllerProcessesStopped(proof, [native])).toBe(true);
+    if (process.platform !== "win32") expect(await processProof.confirmControllerProcessesStopped(proof, [native])).toBe(true);
+    else expect(lifecycle.readWindowsJobReceipt(journalPath, source.ticket)).toMatchObject({ sealed: true, empty: true, controllerStopped: true, nativeProcessesStopped: true });
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
   } catch (error) {
     console.error(JSON.stringify({ fixture: "web-stop-os-writer", stage, platform: process.platform, pid: proof?.pid ?? child.pid, descendantPid, jobObjectName: proof?.jobObjectName ?? null, exitCode: child.exitCode, signalCode: child.signalCode, stderr: stderr.slice(0, 2048) }));
@@ -445,7 +522,7 @@ it("observes the original OS writer stop before terminal archive joins", async (
   } finally {
     release(); operation.dispose();
     try { if (cleanup !== undefined) await bounded(cleanup, 60_000, "Cleanup join"); }
-    finally {
+    finally { try {
       if (!activationSubmitted && child.exitCode === null && child.signalCode === null) {
         const aborted = once(child, "message");
         child.send("abort");
@@ -462,9 +539,127 @@ it("observes the original OS writer stop before terminal archive joins", async (
           await new Promise(resolve => setTimeout(resolve, 25));
         }
       }
-    }
+    } finally { await releaseFixtureGuardian(context); } }
   }
 }, 240_000);
+
+it.skipIf(process.platform !== "win32")("retains the original Job across Worker restart and reports unknown when its guardian disappears without a receipt", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  vi.restoreAllMocks();
+  const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalPath), { recursive: true });
+  lifecycle.openControllerLifecycleStore(journalPath, source.ticket).close();
+  const context = { ticket: source.ticket, journalPath };
+  const proofUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
+  const guardianUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/windows-job-guardian.js")).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(proofUrl, source.ticket.launchId, false, context)], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  children.push(child);
+  const exited = once(child, "exit"); void exited.catch(() => {});
+  let native: processProof.ProcessProof | undefined;
+  try {
+    const [ready] = await Promise.race([once(child, "message", { signal: AbortSignal.timeout(45_000) }), exited.then(() => { throw new Error("Controller exited before its original guardian was ready."); })]) as [{ kind: string; proof: processProof.ProcessProof; native: processProof.ProcessProof }];
+    expect(ready.kind).toBe("ready"); native = ready.native;
+    const task = f.store.updateWebExecution(source.task, { controllerProcess: ready.proof, nativeProcesses: [native] }, 6);
+    const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
+    journal.patchSnapshot({ controllerProcess: ready.proof, nativeProcesses: [native], lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null }); journal.close();
+    const original = lifecycle.readWindowsJobSource(journalPath, source.ticket);
+    expect(original?.phase).toBe("assigned");
+    if (original?.phase !== "assigned") throw new Error("Original guardian source was not assigned.");
+    // Each observer exits after releasing its duplicate; the test process never owns a Job handle.
+    const observer = `const { openWindowsGuardianJob } = await import(${JSON.stringify(guardianUrl)}); const lease = await openWindowsGuardianJob(${JSON.stringify(original)}); try { process.send(lease.inspect()); } finally { lease.close(); process.disconnect(); }`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const worker = spawn(process.execPath, ["--input-type=module", "-e", observer], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+      children.push(worker);
+      const workerExit = once(worker, "exit"); void workerExit.catch(() => {});
+      const [inspection] = await Promise.race([once(worker, "message", { signal: AbortSignal.timeout(30_000) }), workerExit.then(() => { throw new Error("Worker could not copy the original guardian Job."); })]) as [{ members: number[]; sealed: boolean }];
+      expect(inspection.sealed).toBe(false);
+      expect(inspection.members).toEqual(expect.arrayContaining([ready.proof.pid, native.pid]));
+      expect((await workerExit)[0]).toBe(0);
+    }
+    const activation = once(child, "message", { signal: AbortSignal.timeout(15_000) });
+    child.send("activate"); expect((await activation)[0]).toEqual({ kind: "activated" });
+    child.kill("SIGKILL");
+    await Promise.race([exited, new Promise<never>((_resolve, reject) => { const timer = setTimeout(() => reject(new Error("Original Controller did not exit.")), 15_000); timer.unref(); })]);
+    expect(await processProof.inspectProcessProof(native)).toBe("running");
+    const restartedWorker = spawn(process.execPath, ["--input-type=module", "-e", observer], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+    children.push(restartedWorker);
+    const restartedExit = once(restartedWorker, "exit"); void restartedExit.catch(() => {});
+    const [recovered] = await Promise.race([once(restartedWorker, "message", { signal: AbortSignal.timeout(30_000) }), restartedExit.then(() => { throw new Error("Restarted Worker could not copy the original guardian Job."); })]) as [{ members: number[] }];
+    expect(recovered.members).toContain(native.pid);
+    expect((await restartedExit)[0]).toBe(0);
+    expect(await processProof.inspectProcessProof(original.guardian)).toBe("running");
+    process.kill(original.guardian.pid, "SIGKILL");
+    await vi.waitFor(async () => expect(await processProof.inspectProcessProof(original.guardian)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+    await vi.waitFor(async () => expect(await processProof.inspectProcessProof(native!)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+    const { openWindowsGuardianJob } = await import("../../../src/commands/controller/windows-job-guardian.js");
+    await expect(openWindowsGuardianJob(original)).rejects.toThrow();
+    expect(lifecycle.readWindowsJobSource(journalPath, source.ticket)).toEqual(original);
+    expect(lifecycle.readWindowsJobReceipt(journalPath, source.ticket)).toBeNull();
+    const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: vi.fn() });
+    const operation = createOperation({ limits: { totalMs: 30_000 } });
+    try { expect(await backend.observeExecutionStop(task, operation)).toMatchObject({ kind: "unknown" }); }
+    finally { operation.dispose(); }
+  } finally {
+    try {
+      await forceOsWriterFixture(child, native);
+      if (child.exitCode === null && child.signalCode === null) await Promise.race([exited, new Promise<never>((_resolve, reject) => { const timer = setTimeout(() => reject(new Error("Controller fixture did not exit.")), 15_000); timer.unref(); })]);
+    } finally { await releaseFixtureGuardian(context); }
+  }
+}, 180_000);
+
+it.skipIf(process.platform !== "win32")("commits the original stop after the guardian dies while a Worker holds its Job", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  vi.restoreAllMocks();
+  const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalPath), { recursive: true });
+  lifecycle.openControllerLifecycleStore(journalPath, source.ticket).close();
+  const context = { ticket: source.ticket, journalPath };
+  const proofUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
+  const stopUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/controller-stop.js")).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(proofUrl, source.ticket.launchId, false, context)], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  children.push(child);
+  const childExit = once(child, "exit"); void childExit.catch(() => {});
+  let native: processProof.ProcessProof | undefined, worker: ChildProcess | undefined;
+  try {
+    const [ready] = await Promise.race([once(child, "message", { signal: AbortSignal.timeout(45_000) }), childExit.then(() => { throw new Error("Controller exited before its guardian was ready."); })]) as [{ kind: string; proof: processProof.ProcessProof; native: processProof.ProcessProof }];
+    expect(ready.kind).toBe("ready"); native = ready.native;
+    const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
+    journal.patchSnapshot({ controllerProcess: ready.proof, nativeProcesses: [native], lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null }); journal.close();
+    const original = lifecycle.readWindowsJobSource(journalPath, source.ticket);
+    if (original?.phase !== "assigned") throw new Error("Original guardian source was not assigned.");
+    const activation = once(child, "message", { signal: AbortSignal.timeout(15_000) });
+    child.send("activate"); expect((await activation)[0]).toEqual({ kind: "activated" });
+    const workerScript = `
+      import { once } from "node:events";
+      const { openControllerStop } = await import(${JSON.stringify(stopUrl)});
+      const stop = await openControllerStop(${JSON.stringify({ journalPath, ticket: source.ticket, controller: ready.proof, native: [native] })});
+      process.send({ kind: "held" });
+      await once(process, "message");
+      await stop.stop(Date.now() + 30000); await stop.commit(); await stop.close();
+      process.send({ kind: "committed" }, () => process.disconnect());
+    `;
+    worker = spawn(process.execPath, ["--input-type=module", "-e", workerScript], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+    children.push(worker);
+    const workerExit = once(worker, "exit"); void workerExit.catch(() => {});
+    const [held] = await Promise.race([once(worker, "message", { signal: AbortSignal.timeout(30_000) }), workerExit.then(() => { throw new Error("Worker failed to hold the original Job."); })]);
+    expect(held).toEqual({ kind: "held" });
+    expect(await processProof.inspectProcessProof(original.guardian)).toBe("running");
+    process.kill(original.guardian.pid, "SIGKILL");
+    await vi.waitFor(async () => expect(await processProof.inspectProcessProof(original.guardian)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+    expect(await processProof.inspectProcessProof(native)).toBe("running");
+    expect(lifecycle.readWindowsJobReceipt(journalPath, source.ticket)).toBeNull();
+    const committed = once(worker, "message", { signal: AbortSignal.timeout(45_000) });
+    worker.send("stop");
+    expect((await Promise.race([committed, workerExit.then(() => { throw new Error("Worker exited before committing its stop receipt."); })]))[0]).toEqual({ kind: "committed" });
+    expect((await workerExit)[0]).toBe(0);
+    expect(await processProof.inspectProcessProof(native)).toBe("stopped");
+    expect(lifecycle.readWindowsJobReceipt(journalPath, source.ticket)).toMatchObject({ source: original, sealed: true, empty: true, controllerStopped: true, nativeProcessesStopped: true });
+  } finally {
+    if (worker && worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
+    try { await forceOsWriterFixture(child, native); }
+    finally { await releaseFixtureGuardian(context); }
+  }
+}, 180_000);
 
 it.skipIf(process.platform === "win32")("uses the actual OS process group and controller journal to stop a live original writer", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);

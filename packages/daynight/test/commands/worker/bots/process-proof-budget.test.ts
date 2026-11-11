@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const fixture = vi.hoisted(() => ({ execute: vi.fn(), native: vi.fn(), job: vi.fn() }));
+const fixture = vi.hoisted(() => ({ execute: vi.fn(), native: vi.fn(), guardian: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: fixture.execute }));
 vi.mock("../../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: fixture.native }));
-vi.mock("../../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: fixture.job, inspectControllerJob: vi.fn() }));
+vi.mock("../../../../src/commands/controller/windows-job-launch.js", () => ({ startWindowsJobGuardian: fixture.guardian }));
 import { captureControllerProcessProof, captureProcessProof, inspectProcessProof } from "../../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -20,7 +20,7 @@ const delayedWindowsQuery = (durationMs: number) => {
 
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks();
-  fixture.job.mockResolvedValue("Local\\Daynight-controlled");
+  fixture.guardian.mockResolvedValue(undefined);
   fixture.native.mockImplementation(async pid => proof(pid));
   fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Thu Nov 5 00:00:00 2026 ${command}\n`));
 });
@@ -51,19 +51,20 @@ describe("process ownership capture budgets", () => {
 
   it("establishes the Controller's self-proof before assigning its Job Object", async () => {
     setPlatform("win32"); delayedWindowsQuery(6000);
-    const pending = captureControllerProcessProof("controlled").then(value => ({ value }), error => ({ error }));
+    const context = { ticket: { launchId: "controlled" } as never, journalPath: "/original/journal.sqlite" };
+    const pending = captureControllerProcessProof("controlled", context).then(value => ({ value }), error => ({ error }));
     await vi.advanceTimersByTimeAsync(5000);
-    expect(fixture.job).not.toHaveBeenCalled();
+    expect(fixture.guardian).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
     expect(await pending).toEqual({ value: { ...proof(process.pid), jobObjectName: "Local\\Daynight-controlled" } });
-    expect(fixture.job).toHaveBeenCalledExactlyOnceWith("controlled", process.pid);
+    expect(fixture.guardian).toHaveBeenCalledExactlyOnceWith({ ...context, controller: proof(process.pid) });
     expect(fixture.execute).not.toHaveBeenCalled();
   });
 
-  it("preserves a startup failure without assigning a Job Object or falling back", async () => {
+  it("preserves a startup failure without launching a guardian or falling back", async () => {
     setPlatform("win32"); const failure = new Error("Original native capture failed"); fixture.native.mockRejectedValue(failure);
     await expect(captureControllerProcessProof("controlled")).rejects.toBe(failure);
-    expect(fixture.job).not.toHaveBeenCalled(); expect(fixture.native).toHaveBeenCalledOnce(); expect(fixture.execute).not.toHaveBeenCalled();
+    expect(fixture.guardian).not.toHaveBeenCalled(); expect(fixture.native).toHaveBeenCalledOnce(); expect(fixture.execute).not.toHaveBeenCalled();
   });
 
   it("honors an explicit capture deadline and preserves its original failure", async () => {
@@ -95,7 +96,7 @@ describe("ordinary process ownership inspection", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(await pending).toBe(failure);
     expect(fixture.native).toHaveBeenCalledExactlyOnceWith(42, 5000);
-    expect(liveness).toHaveBeenCalledTimes(2); expect(fixture.job).not.toHaveBeenCalled(); expect(fixture.execute).not.toHaveBeenCalled();
+    expect(liveness).toHaveBeenCalledTimes(2); expect(fixture.guardian).not.toHaveBeenCalled(); expect(fixture.execute).not.toHaveBeenCalled();
   });
 
   it("detects a reused Windows PID with a different birth", async () => {

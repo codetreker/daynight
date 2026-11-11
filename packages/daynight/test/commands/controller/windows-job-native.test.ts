@@ -1,109 +1,73 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { expect, test, vi } from "vitest";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
-import { createControllerJob, inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
+import { commitWindowsJobStop, openControllerLifecycleStore, readControllerSnapshot, readWindowsJobReceipt, readWindowsJobSource } from "../../../src/commands/controller/lifecycle-store.js";
+import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { openWindowsGuardianJob, wakeWindowsJobGuardian } from "../../../src/commands/controller/windows-job-guardian.js";
 
-test.skipIf(process.platform !== "win32")("queries and terminates a real named Job containing a leader and its descendant", async () => {
-  const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
-  const create = library.func("void * __stdcall CreateJobObjectW(void *attributes, str16 name)");
-  const openProcess = library.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
-  const assign = library.func("int __stdcall AssignProcessToJobObject(void *job, void *process)");
-  const query = library.func("int __stdcall QueryInformationJobObject(void *job, int kind, void *data, uint32_t size, void *returned)");
-  const terminate = library.func("int __stdcall TerminateJobObject(void *job, uint32_t code)");
-  const close = library.func("int __stdcall CloseHandle(void *handle)");
-  const lastError = library.func("uint32_t __stdcall GetLastError()");
-  const launchId = randomUUID(), name = `Local\\Daynight-${launchId}`;
-  // The test owns a separate handle so the namespace remains available to each
-  // production observation; membership references alone retain only the body.
-  // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject
-  const job: unknown = create(null, name);
-  if (job === null) throw new Error(`Fixture Job creation failed (Win32 ${lastError()}).`);
-  const pointerSize = koffi.sizeof("uintptr_t");
-  const inventory = (): number[] => {
-    if (pointerSize !== 4 && pointerSize !== 8) throw new Error("Unsupported fixture Job pointer size.");
-    const data = Buffer.alloc(262_144);
-    if (query(job, 3, data, data.length, null) === 0) throw new Error(`Fixture Job query failed (Win32 ${lastError()}).`);
-    const assigned = data.readUInt32LE(0), count = data.readUInt32LE(4);
-    if (count > assigned || 8 + count * pointerSize > data.length) throw new Error("Invalid fixture Job inventory size.");
-    const pids = Array.from({ length: count }, (_, index) => {
-      const offset = 8 + index * pointerSize;
-      return pointerSize === 8 ? Number(data.readBigUInt64LE(offset)) : data.readUInt32LE(offset);
-    });
-    if (pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error("Invalid fixture Job process identity.");
-    return pids.sort((a, b) => a - b);
-  };
+test.skipIf(process.platform !== "win32")("queries and terminates the real guardian's original Job containing a leader and descendant", async () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/windows-guardian-native");
+  await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, "h-")), journalPath = path.join(home, "journal.sqlite");
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  openControllerLifecycleStore(journalPath, ticket).close();
+  const proofUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
   const script = `
-import { spawn } from 'node:child_process';
-process.on('message', message => {
-  if (message !== 'spawn') return;
-  const child = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
-  child.on('error', error => { throw error; });
-  child.once('message', () => process.send({ descendantPid: child.pid }));
-});
-process.send({ ready: true });
-`;
+    import { spawn } from "node:child_process";
+    const { captureControllerProcessProof } = await import(${JSON.stringify(proofUrl)});
+    const proof = await captureControllerProcessProof(${JSON.stringify(ticket.launchId)}, ${JSON.stringify({ ticket, journalPath })});
+    const child = spawn(process.execPath, ["-e", 'process.send("ready"); setInterval(() => {}, 1000)'], { stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true });
+    child.once("message", () => process.send({ proof, descendantPid: child.pid }));
+    setInterval(() => {}, 1000);
+  `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
-  const closed = once(child, "close"); void closed.catch(() => {});
-  const waitForClose = async () => {
-    let timeout: ReturnType<typeof setTimeout>;
-    try {
-      await Promise.race([closed, new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error("Fixture leader did not close.")), 10_000); timeout.unref();
-      })]);
-    } finally { clearTimeout(timeout!); }
-  };
-  let stderr = ""; child.stderr!.setEncoding("utf8"); child.stderr!.on("data", chunk => { stderr += chunk; });
-  let descendant: ProcessProof | undefined, leader: ProcessProof | undefined, assigned = false;
-  let failure: unknown, failed = false;
-  const cleanupFailures: unknown[] = [];
+  const exited = once(child, "exit"); void exited.catch(() => {});
+  let leader: ProcessProof | undefined, descendant: ProcessProof | undefined;
+  let lease: Awaited<ReturnType<typeof openWindowsGuardianJob>> | undefined;
   try {
-    const [ready] = await once(child, "message", { signal: AbortSignal.timeout(15_000) });
-    expect(ready).toEqual({ ready: true });
-    leader = await captureProcessProof(child.pid!);
-    const processHandle: unknown = openProcess(0x101, 0, child.pid!);
-    if (processHandle === null) throw new Error(`Fixture process opening failed (Win32 ${lastError()}).`);
-    try {
-      if (assign(job, processHandle) === 0) throw new Error(`Fixture Job assignment failed (Win32 ${lastError()}).`);
-      assigned = true;
-    } finally { if (close(processHandle) === 0) throw new Error(`Fixture process handle release failed (Win32 ${lastError()}).`); }
-    await expect(createControllerJob(launchId, child.pid!)).rejects.toMatchObject({ stage: "identity-already-exists", win32Code: 183 });
-    const spawned = once(child, "message", { signal: AbortSignal.timeout(15_000) });
-    child.send("spawn");
-    const [receipt] = await spawned as [{ descendantPid: number }];
-    descendant = await captureProcessProof(receipt.descendantPid);
-    expect(descendant.parentPid).toBe(child.pid);
-    expect(await inspectProcessProof(leader)).toBe("running");
-    expect(await inspectProcessProof(descendant)).toBe("running");
-    await vi.waitFor(async () => {
-      const expected = inventory();
-      expect(expected).toContain(leader!.pid);
-      expect(expected).toContain(descendant!.pid);
-      expect([...(await inspectControllerJob(name))].sort((a, b) => a - b)).toEqual(expected);
-    }, { timeout: 10_000, interval: 25 });
-    await inspectControllerJob(name, true);
-    await waitForClose();
-    await vi.waitFor(async () => {
-      expect(await inspectProcessProof(leader!)).toBe("stopped");
-      expect(await inspectProcessProof(descendant!)).toBe("stopped");
-      expect(await inspectControllerJob(name)).toEqual([]);
-    }, { timeout: 10_000, interval: 25 });
-    expect(stderr).toBe("");
-  } catch (error) { failed = true; failure = error; }
-  finally {
-    try {
-      if (assigned && terminate(job, 1) === 0) throw new Error(`Fixture Job termination failed (Win32 ${lastError()}).`);
-    } catch (error) { cleanupFailures.push(error); }
-    try {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
-      await waitForClose();
-      await vi.waitFor(() => expect(inventory()).toEqual([]), { timeout: 10_000, interval: 25 });
-      if (descendant !== undefined) await vi.waitFor(async () => expect(await inspectProcessProof(descendant!)).toBe("stopped"), { timeout: 10_000, interval: 25 });
-    } catch (error) { cleanupFailures.push(error); }
-    try { if (close(job) === 0) throw new Error(`Fixture Job handle release failed (Win32 ${lastError()}).`); }
-    catch (error) { cleanupFailures.push(error); }
+    const [ready] = await Promise.race([once(child, "message", { signal: AbortSignal.timeout(45_000) }), exited.then(() => { throw new Error("Controller exited before the original Job was ready."); })]) as [{ proof: ProcessProof; descendantPid: number }];
+    leader = ready.proof; descendant = await captureProcessProof(ready.descendantPid);
+    expect(descendant.parentPid).toBe(leader.pid);
+    const journal = openControllerLifecycleStore(journalPath, ticket);
+    journal.patchSnapshot({ controllerProcess: leader, nativeProcesses: [descendant], lifecycle: "working", nativeStopped: false }); journal.close();
+    const source = readWindowsJobSource(journalPath, ticket);
+    if (source?.phase !== "assigned") throw new Error("Original guardian source was not assigned.");
+    lease = await openWindowsGuardianJob(source);
+    expect(lease.inspect().members).toEqual(expect.arrayContaining([leader.pid, descendant.pid]));
+    expect(await inspectProcessProof(leader)).toBe("running"); expect(await inspectProcessProof(descendant)).toBe("running");
+    lease.terminate();
+    await vi.waitFor(async () => { expect(await inspectProcessProof(leader!)).toBe("stopped"); expect(await inspectProcessProof(descendant!)).toBe("stopped"); expect(lease!.inspect().active).toBe(0); }, { timeout: 15_000, interval: 25 });
+    expect(lease.sealAndObserveEmpty()).toMatchObject({ sealed: true, active: 0, members: [] });
+    commitWindowsJobStop(journalPath, ticket, readControllerSnapshot(journalPath)!, source);
+    const receipt = readWindowsJobReceipt(journalPath, ticket);
+    if (!receipt) throw new Error("Original Job stop receipt was not committed.");
+    lease.closeAfterCommit(receipt); lease = undefined;
+    await wakeWindowsJobGuardian(ticket.launchId);
+    await vi.waitFor(async () => expect(await inspectProcessProof(source.guardian)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+  } finally {
+    const source = readWindowsJobSource(journalPath, ticket);
+    if (lease) {
+      const receipt = readWindowsJobReceipt(journalPath, ticket);
+      if (receipt) lease.closeAfterCommit(receipt);
+      else if (source && await inspectProcessProof(source.guardian) === "running") lease.close();
+      else if (source?.phase === "assigned") {
+        lease.terminate();
+        await vi.waitFor(() => expect(lease!.inspect().active).toBe(0), { timeout: 15_000, interval: 25 });
+        lease.sealAndObserveEmpty();
+        commitWindowsJobStop(journalPath, ticket, readControllerSnapshot(journalPath)!, source);
+        lease.closeAfterCommit(readWindowsJobReceipt(journalPath, ticket)!);
+      }
+    }
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (source && await inspectProcessProof(source.guardian) === "running") process.kill(source.guardian.pid, "SIGKILL");
+    if (descendant && await inspectProcessProof(descendant) === "running") process.kill(descendant.pid, "SIGKILL");
+    if (source) await vi.waitFor(async () => expect(await inspectProcessProof(source.guardian)).not.toBe("running"), { timeout: 15_000, interval: 25 });
+    if (child.exitCode === null && child.signalCode === null) await Promise.race([exited, new Promise<never>((_resolve, reject) => { const timer = setTimeout(() => reject(new Error("Controller fixture did not exit.")), 15_000); timer.unref(); })]);
+    await rm(home, { recursive: true, force: true });
   }
-  if (cleanupFailures.length > 0) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "Native Job fixture cleanup failed.", failed ? { cause: failure } : undefined);
-  if (failed) throw failure;
-}, 90_000);
+}, 120_000);
