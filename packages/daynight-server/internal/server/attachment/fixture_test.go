@@ -564,6 +564,14 @@ func (s *unexpectedProjectReader) TransferRole(context.Context, string, string, 
 
 type unexpectedTaskReader struct{ unexpectedDAO }
 
+func (s *unexpectedTaskReader) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
+	s.reject("TaskBodies")
+	panic("unreachable")
+}
+func (s *unexpectedTaskReader) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	s.reject("GoalProgresses")
+	panic("unreachable")
+}
 func (s *unexpectedTaskReader) Task(context.Context, string, string) (model.Task, error) {
 	s.reject("Task")
 	panic("unreachable")

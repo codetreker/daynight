@@ -34,6 +34,7 @@ func TestWebhookDeliveryStore(t *testing.T) {
 
 func TestWebhookHistoryStore(t *testing.T) {
 	suite := newWebhookDAOSuite(t)
+	suite.run(t, "ParentDeletionHidesWebhookSources", testParentDeletionHidesWebhookSources)
 	suite.run(t, "HistoryKeysetCursorSelectsOnlyFollowingDelivery", testHistoryKeysetCursorSelectsOnlyFollowingDelivery)
 	suite.run(t, "HistorySourcesDistinguishTombstonesMissingFactsAndStorageFailures", testHistorySourcesDistinguishTombstonesMissingFactsAndStorageFailures)
 	suite.run(t, "HistoryBatchJoinsFactsAndGroupsBothCollections", testHistoryBatchJoinsFactsAndGroupsBothCollections)

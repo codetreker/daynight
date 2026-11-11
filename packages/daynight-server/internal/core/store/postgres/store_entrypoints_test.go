@@ -76,6 +76,7 @@ func TestStoreTaskSearchEntryPointRetainsSnapshotAndCallbackCause(t *testing.T) 
 	ctx := t.Context()
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
+	mustQueryExec(t, database, `UPDATE tasks SET type='goal' WHERE id=$1`, task.ID)
 	calls := 0
 	if err := database.ReadTaskSearch(ctx, func(snapshot store.TaskSearchSnapshot) error {
 		calls++

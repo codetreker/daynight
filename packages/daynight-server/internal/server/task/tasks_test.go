@@ -298,8 +298,17 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 	if current != nil {
 		want["current"] = 1
 	}
+	var added []string
 	if validateDependencies {
 		want["prerequisites"] = 1
+		for _, id := range values.DependsOn {
+			if current == nil || !slices.Contains(current.DependsOn, id) {
+				added = append(added, id)
+			}
+		}
+		if len(added) > 0 {
+			want["visible"] = 1
+		}
 		for _, id := range values.DependsOn {
 			want["reachable:"+id] = 1
 		}
@@ -341,6 +350,12 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			f.require(ctx, f.project.ID)
 			externalHTTPCheck(f.t, ids, values.DependsOn)
 			return copyTaskHTTPRows(dependencies), nil
+		}
+		writer.VisibleTaskIDsFn = func(ctx context.Context, ids []string) ([]string, error) {
+			plan.Called("visible")
+			f.require(ctx, f.project.ID)
+			externalHTTPCheck(f.t, ids, added)
+			return slices.Clone(ids), nil
 		}
 		writer.ReachableFn = func(ctx context.Context, start, target string, replacement store.DependencyReplacement) (bool, error) {
 			plan.Called("reachable:" + start)

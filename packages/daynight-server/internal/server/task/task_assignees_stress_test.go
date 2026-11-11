@@ -58,7 +58,7 @@ func (r *assigneeQueryRecorder) selected(t *testing.T, directory bool) assigneeM
 	for _, query := range r.queries {
 		matches := strings.Contains(query.SQL, "FROM candidate_ids candidate") || strings.Contains(query.SQL, "FROM unnest($2::uuid[]) requested")
 		if !directory {
-			matches = strings.Contains(query.SQL, "FROM tasks t") && strings.Contains(query.SQL, "ORDER BY t.created_at, t.id LIMIT")
+			matches = strings.Contains(query.SQL, "FROM task_resource_rows t") && strings.Contains(query.SQL, "ORDER BY t.created_at, t.id LIMIT")
 		}
 		if matches {
 			found = append(found, query)
@@ -134,6 +134,14 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	if _, err := pool.Exec(ctx, `ANALYZE tasks; ANALYZE users; ANALYZE project_grants; ANALYZE task_properties; ANALYZE task_dependencies`); err != nil {
 		t.Fatal(err)
 	}
+	var taskCount, deletedCount, unassignedCount, oldIndexBytes, newIndexBytes int64
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE deleted_at IS NOT NULL),
+		count(*) FILTER (WHERE assigned_to IS NULL),
+		pg_relation_size('tasks_project_assigned_to_created_id'),
+		pg_relation_size('tasks_project_assigned_to_created_id_all')
+		FROM tasks WHERE project_id=$1`, project.ID).Scan(&taskCount, &deletedCount, &unassignedCount, &oldIndexBytes, &newIndexBytes); err != nil {
+		t.Fatal(err)
+	}
 	query := url.Values{}
 	for _, id := range ids {
 		query.Add("userId", id)
@@ -175,7 +183,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 		indexes := map[string]bool{}
 		assigneePlanIndexes(parsed, indexes)
 		if sample.name == "named" || strings.HasPrefix(sample.name, "resolve-") {
-			if !indexes["tasks_project_assigned_to_created_id"] {
+			if !indexes["tasks_project_assigned_to_created_id_all"] {
 				t.Fatalf("sample %s did not use the native project/assignment index: %s", sample.name, plan)
 			}
 		}
@@ -202,8 +210,10 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	}
 	evidence := map[string]any{
 		"tasks": 10000, "people": 100, "scope": "isolated PostgreSQL, actual HTTP resources and traced production SQL",
-		"sourceGitSha": source("rev-parse", "HEAD"), "sourceDirty": source("status", "--porcelain") != "",
-		"measurements": measurements, "limit": "Source-bound sample; no latency threshold or production capacity claim.",
+		"sampleDistribution": map[string]any{"tasks": taskCount, "deleted": deletedCount, "unassigned": unassignedCount},
+		"indexBytes":         map[string]any{"tasks_project_assigned_to_created_id": oldIndexBytes, "tasks_project_assigned_to_created_id_all": newIndexBytes},
+		"sourceGitSha":       source("rev-parse", "HEAD"), "sourceDirty": source("status", "--porcelain") != "",
+		"measurements": measurements, "limit": "Source-bound sample; no latency threshold, production capacity, or write cost claim.",
 	}
 	data, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {

@@ -6,7 +6,7 @@
 
 `model.Task`、`store.TaskWrite` 和 HTTP Task/summary/graph DTO 使用可空 `AssignedTo`。数据库列为 `tasks.assigned_to uuid NULL`；响应的 assignedTo 不使用 omitempty。它是普通 Task 元数据，properties 的静态定义与独立行模型保持原有职责。
 
-迁移 `028_task_assignment.sql` 增加列及 `(project_id, assigned_to, created_at, id) WHERE deleted_at IS NULL` 索引。既有行包括软删除行取得 NULL，其他任务事实与历史迁移 checksum 不变；不添加外键或历史身份推断。负责人查询直接复用该索引，不增加 DDL。
+迁移 `028_task_assignment.sql` 增加列及 `(project_id, assigned_to, created_at, id) WHERE deleted_at IS NULL` 索引。既有行包括软删除行取得 NULL，其他任务事实与历史迁移 checksum 不变；不添加外键或历史身份推断。`063_task_assignment_all_index.sql` 保留该部分索引，并增加相同列顺序的完整索引，供通过 `task_resource_rows` 按负责人读取或解析的查询选择。完整索引包含软删除和父 Goal 已删除的行，查询仍通过 `effective_deleted_at IS NULL` 过滤可见性。索引增加存储和写入维护；迁移在事务中构建索引，期间阻塞相关写入，构建时间随数据规模变化。
 
 ## 输入与完整候选
 

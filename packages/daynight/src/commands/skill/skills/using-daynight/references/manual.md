@@ -155,7 +155,7 @@ automatic permission are separate.
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
 | `task list` | Traverse all matching pages. Excludes `done` and `cancelled` by default; explicitly include terminal tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
 | `task list --status in_progress --group-by chain` | One page of ordinary chains and independent tasks containing the selected user's in-progress work; defaults to `me`. |
-| `task search <expression>` | Search Task IDs, full titles and Markdown descriptions in one project, including done and cancelled tasks. Traverses all pages in server relevance order; returns a compact match and chain context, not complete tasks. |
+| `task search <expression>` | Search Task IDs, full titles and Markdown descriptions in one project, including done and cancelled tasks. Traverses all pages in server relevance order; returns a compact match and its actual parent Goal context when present, not complete tasks. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |

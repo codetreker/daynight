@@ -1,6 +1,6 @@
 //go:build stress && webhooktest
 
-package server
+package webhook_test
 
 import (
 	"context"

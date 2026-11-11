@@ -61,10 +61,10 @@ func (s *Reader) MonitoringSources(ctx context.Context, userID string, projectID
 	}
 	if len(taskIDs) > 0 {
 		rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.title, t.status, wp.value, p.name
-			FROM tasks t JOIN projects p ON p.id=t.project_id
+			FROM task_resource_rows t JOIN projects p ON p.id=t.project_id
 			JOIN (`+pg.ProjectAccessRelation+`) a ON a.project_id=t.project_id AND a.user_id=$2
 			LEFT JOIN task_properties wp ON wp.task_id=t.id AND wp.name='worker'
-			WHERE t.id=ANY($1::uuid[]) AND t.deleted_at IS NULL`, taskIDs, userID)
+			WHERE t.id=ANY($1::uuid[]) AND t.effective_deleted_at IS NULL`, taskIDs, userID)
 		if err != nil {
 			return store.WorkerMonitoringSources{}, pg.QueryError("read monitoring tasks", err)
 		}
