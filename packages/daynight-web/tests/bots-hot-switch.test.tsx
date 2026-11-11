@@ -253,7 +253,7 @@ it('keeps C selected when cancelled A and B detail reads resolve out of order', 
   f.choose(1); await waitFor(() => expect(f.reads.filter(id => id === f.bots[0]!.id)).toHaveLength(2));
   f.choose(3); await waitFor(() => expect(f.reads).toContain(f.bots[2]!.id));
   await act(async () => c.resolve(botResponse(f.bots[2]))); await screen.findByText(`Message ${f.bots[2]!.id}`);
-  const input = f.input(); fireEvent.change(input, { target: { value: 'C only' } });
+  const input = await editableInput(); fireEvent.change(input, { target: { value: 'C only' } });
   await act(async () => { b.resolve(botResponse(f.bots[1])); a.resolve(botResponse(f.bots[0])); });
   expect(f.input()).toBe(input); expect(input).toHaveValue('C only');
   expect(screen.getByRole('heading', { name: 'Assistant 3' })).toBeVisible();
@@ -261,7 +261,7 @@ it('keeps C selected when cancelled A and B detail reads resolve out of order', 
 });
 
 it('retains readable DOM but revokes new actions during read admission pause', async () => {
-  const f = fixture(); const input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = fixture(); const input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().actionAdmitted).toBe(true));
   const pane = f.resident().snapshot()[0]!; fireEvent.change(input, { target: { value: 'Kept across pause' } });
   f.enabled(false); expect(f.input()).toBe(input);
@@ -274,7 +274,7 @@ it('retains readable DOM but revokes new actions during read admission pause', a
 
 it('preserves action admission during an ordinary poll and keeps the resident readable through failure and retry', async () => {
   const timers = vi.spyOn(globalThis, 'setInterval');
-  const f = fixture(); const input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = fixture(); const input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().actionAdmitted).toBe(true));
   const pane = f.resident().snapshot()[0]!, timeline = input.closest('.task-agent-session')!.querySelector('.session-timeline');
   fireEvent.change(input, { target: { value: 'Readable through a transient failure' } });

@@ -124,7 +124,7 @@ it('keeps the channel, draft and retained message when changing display mode', a
   render(f.element());
   await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
   f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
-  const message = await screen.findByText('Retained answer'), input = screen.getByRole('textbox');
+  const message = await screen.findByText('Retained answer'), input = await editableInput();
   expect(screen.queryByText('Reasoning')).toBeNull();
   fireEvent.change(input, { target: { value: 'Unsubmitted draft' } });
   const calls = vi.mocked(f.api.current).mock.calls.length;
@@ -154,7 +154,7 @@ it('retains the live client, channel and draft through Session fullscreen and la
   render(f.element());
   await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
   f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
-  const input = screen.getByRole('textbox');
+  const input = await editableInput();
   fireEvent.change(input, { target: { value: 'Fullscreen draft' } });
   const currentReads = vi.mocked(f.api.current).mock.calls.length;
   const timelineReads = vi.mocked(f.api.timeline).mock.calls.length;

@@ -50,6 +50,7 @@ it('renders the shared session after authentication and removes it on sign-out',
   expect(screen.getByRole('link', { name: 'Test Sessions' })).toHaveAttribute('aria-current', 'page');
   expect(screen.getByRole('link', { name: 'My projects' })).not.toHaveAttribute('aria-current');
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).not.toHaveAttribute('readonly'));
   fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Uncertain input' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   await screen.findByText('Unable to connect to the server. Please try again.');
@@ -124,6 +125,7 @@ it.each(['focus', 'focus-first', 'visibility-first'] as const)('reuses a Test Se
   const f = focusSession(); render(<AuthenticatedApp />);
   await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(textbox).not.toHaveAttribute('readonly'));
   fireEvent.change(textbox, { target: { value: 'Unsent focus draft' } });
   await waitFor(() => {
     expect(textbox).toHaveValue('Unsent focus draft');
@@ -162,6 +164,7 @@ it.each(['changed', 'expired'] as const)('clears the retained Test Session when 
   const f = focusSession(); render(<AuthenticatedApp />);
   await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(textbox).not.toHaveAttribute('readonly'));
   fireEvent.change(textbox, { target: { value: 'Private retained draft' } });
   expect(Object.keys(window.sessionStorage).some(key => key.startsWith(`daynight:session-draft:${owner}:`))).toBe(true);
   f.leave(true);

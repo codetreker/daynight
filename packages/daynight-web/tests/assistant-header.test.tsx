@@ -50,6 +50,7 @@ it.each(['task', 'test', 'assistant'] as const)('keeps one functional set of sha
   await f.start();
   const input = await screen.findByRole('textbox', { name: 'Message' });
   await waitFor(() => expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   fireEvent.change(input, { target: { value: 'Retained header draft' } });
   const header = view.container.querySelector<HTMLElement>('.session-header')!, timeline = view.container.querySelector('.session-timeline');
   expect(view.container.querySelectorAll('.session-header')).toHaveLength(1);
@@ -94,6 +95,7 @@ it('retains the open action group and draft while identity verification disables
   await f.start();
   const input = await screen.findByRole('textbox', { name: 'Message' });
   await waitFor(() => expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   fireEvent.change(input, { target: { value: 'Local draft during verification' } });
   fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
   const actions = screen.getByRole('group', { name: 'More actions' }), refresh = within(actions).getByRole('button', { name: 'Refresh' });
@@ -148,6 +150,7 @@ it('shows safe target controls before a Session snapshot and clears Session cont
   expect(screen.getByRole('button', { name: 'Enter Session fullscreen' })).toBeEnabled();
   await f.start();
   const input = await screen.findByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   fireEvent.change(input, { target: { value: 'Private draft' } });
   await screen.findByText(`Message ${f.session.binding.botId}`);
   act(() => f.client.invalidate());
