@@ -6,12 +6,12 @@ import { CreateProjectDialog } from '../src/features/auth/CreateProjectDialog';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
-import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { ApiError, assertResponsePrincipal, getTask, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { act } from '@testing-library/react';
 import * as auth from '../src/api/auth';
 import { browserNavigation } from '../src/app/navigation';
 import { directAccessFixture } from './helpers/taskSync';
-import { stringifyWireJson } from './helpers/wireJson';
+import { stringifyWireJson, wireResponse } from './helpers/wireJson';
 import { ProjectsProvider, useProjectList, type ProjectScope } from '../src/features/projects/ProjectsProvider';
 
 const render = createLocaleRender('en');
@@ -734,4 +734,74 @@ describe('project creation context', () => {
     expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
     unregister(); view.unmount(); admission.dispose(); navigation.dispose();
   });
+});
+
+
+it.each(['confirmed', 'refused', 'unknown'] as const)('settles a %s project creation across a retaining principal mismatch', async outcome => {
+  const pending = Promise.withResolvers<Response>(), mismatch = Promise.withResolvers<Response>(); let resume = () => {};
+  const admission = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+  const fetcher = vi.fn((_url: string, init?: RequestInit) => init?.method === 'POST' ? pending.promise : mismatch.promise); vi.stubGlobal('fetch', fetcher);
+  const onCreated = vi.fn(), onPublished = vi.fn();
+  const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={admission.principalMismatch} onClose={vi.fn()} onPublished={onPublished} onCreated={onCreated} />);
+  fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+  fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+  fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1));
+  const observation = getTask(project.id, '20000000-0000-4000-8000-000000000001', new AbortController().signal, { userId, onPrincipalMismatch: admission.principalMismatch });
+  const denied = expect(observation).rejects.toMatchObject({ code: 'principal_mismatch' });
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2)); const foreground = pauseAuthRequests();
+  try {
+    if (outcome === 'confirmed') {
+      const access = { ...directAccessFixture(project.id, userId, 'admin'), teamRole: 'admin', canTransfer: true };
+      await act(async () => pending.resolve(wireResponse({ ...project, access }, { status: 201, headers: { 'Daynight-User-ID': userId } })));
+      await waitFor(() => expect(screen.getByLabelText(/Project name/)).not.toBeDisabled());
+    } else if (outcome === 'refused') {
+      await act(async () => pending.resolve(wireResponse({ error: { code: 'forbidden', message: 'denied', requestId: 'refusal' } }, { status: 403, headers: { 'Daynight-User-ID': userId } })));
+      await waitFor(() => expect(screen.getByLabelText(/Project name/)).not.toBeDisabled());
+    }
+    await act(async () => { mismatch.resolve(wireResponse({}, { headers: { 'Daynight-User-ID': teamB } })); await denied; });
+    if (outcome === 'confirmed') await screen.findByText(/project was created, but its result could not be displayed/i);
+    else if (outcome === 'unknown') await screen.findByText(/creation result is unknown/i);
+    else await screen.findByText(/project could not be created/i);
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Project'); expect(onCreated).not.toHaveBeenCalled(); expect(onPublished).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  } finally { foreground(); resume(); view.unmount(); admission.dispose(); }
+});
+
+
+it('keeps a real server failure unknown and refuses to replay project creation', async () => {
+  const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const fetcher = vi.fn().mockResolvedValue(wireResponse({ error: { code: 'internal_error', message: 'unavailable', requestId: 'failed' } }, { status: 500, headers: { 'Daynight-User-ID': userId } }));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={admission.principalMismatch} onClose={vi.fn()} onCreated={vi.fn()} />);
+  try {
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.submit(screen.getByRole('button', { name: 'Check projects' }).closest('form')!);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  } finally { view.unmount(); admission.dispose(); }
+});
+
+
+it.each(['confirmed', 'refused', 'unknown'] as const)('retains the %s creation fact at the decoded-response mismatch boundary', async outcome => {
+  let resume = () => {}; const admission = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+  const access = { ...directAccessFixture(project.id, userId, 'admin'), teamRole: 'admin', canTransfer: true };
+  const mismatch = wireResponse({}, { headers: { 'Daynight-User-ID': teamB } });
+  const trigger = () => { try { assertResponsePrincipal(mismatch, userId, admission.principalMismatch); } catch { /* The other principal is rejected. */ } };
+  const create = auth.createProject; const spy = vi.spyOn(auth, 'createProject').mockImplementation((input, signal, onMismatch, onDispatch, onConfirmed, onRejected) => create(input, signal, onMismatch, onDispatch, value => { onConfirmed?.(value); trigger(); }, error => { onRejected?.(error); trigger(); }));
+  const result = outcome === 'confirmed' ? wireResponse({ ...project, access }, { status: 201, headers: { 'Daynight-User-ID': userId } }) : wireResponse({ error: { code: outcome === 'refused' ? 'forbidden' : 'internal_error', message: 'denied', requestId: 'boundary' } }, { status: outcome === 'refused' ? 403 : 500, headers: { 'Daynight-User-ID': userId } });
+  const fetcher = vi.fn().mockResolvedValue(result); vi.stubGlobal('fetch', fetcher); const onCreated = vi.fn();
+  const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={admission.principalMismatch} onClose={vi.fn()} onCreated={onCreated} />);
+  try {
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } }); fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    if (outcome === 'confirmed') await screen.findByText(/project was created, but its result could not be displayed/i);
+    else if (outcome === 'refused') await screen.findByText(/project could not be created/i);
+    else await screen.findByText(/creation result is unknown/i);
+    expect(admission.hasIdentityMismatch).toBe(true); expect(onCreated).not.toHaveBeenCalled(); expect(fetcher).toHaveBeenCalledTimes(1);
+  } finally { spy.mockRestore(); resume(); view.unmount(); admission.dispose(); }
 });

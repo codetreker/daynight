@@ -5,8 +5,15 @@ import type { Project } from "../../api/types";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { useBodyScrollLock } from "../../app/useBodyScrollLock";
 import { browserNavigation } from "../../app/navigation";
-import { TaskCacheLifecycleChanged, type TaskCacheScope } from "../task-cache/project-cache";
+import { isRetryableTaskCacheLifecycleChange, type TaskCacheScope } from "../task-cache/project-cache";
 import { TaskCacheError } from "../task-cache/database";
+
+const abortable = <T,>(promise: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+  if (signal.aborted) { void promise.catch(() => {}); abort(); return; }
+  signal.addEventListener("abort", abort, { once: true });
+  promise.then(value => { signal.removeEventListener("abort", abort); resolve(value); }, error => { signal.removeEventListener("abort", abort); reject(error); });
+});
 
 export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = true, admission, onIdentityMismatch, onClose, onPublished, onCreated }: { readonly userId: string; readonly teamId?: string; readonly teamName?: string; readonly teamPersonal?: boolean; readonly admission?: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onClose: () => void; readonly onPublished?: (project: Project) => void; readonly onCreated: (project: Project) => void }) => {
   const targetTeamId = useRef(teamId).current;
@@ -95,7 +102,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       active.current.abort(); active.current = null; checkActive.current = null; checkSnapshot.current = null;
     }
     const controller = new AbortController();
-    const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
+    const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal, admission.mismatchSignal]);
     active.current = controller;
     checkActive.current = controller;
     checkSnapshot.current = null;
@@ -155,13 +162,13 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   checkAction.current = () => checkProjects(null, true);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (active.current !== null || unknown || settled?.kind === "unknown" || settled?.kind === "confirmed" && settled.revision === revision.current) return;
+    if (admission?.hasIdentityMismatch || active.current !== null || unknown || settled?.kind === "unknown" || settled?.kind === "confirmed" && settled.revision === revision.current) return;
     publication.current?.abort();
     publication.current = null;
     retainedPublication.current?.abort();
     const data = new FormData(event.currentTarget);
     const controller = new AbortController();
-    const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
+    const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal, admission.mismatchSignal]);
     const submittedRevision = revision.current;
     const authGeneration = readAuthRequestGeneration();
     if (receiptGeneration.current !== authGeneration) { receipts.current.clear(); receiptGeneration.current = authGeneration; }
@@ -170,6 +177,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     let navigationChanged = navigation.decision() !== null;
     const unsubscribeNavigation = navigation.subscribeDecision(() => { navigationChanged = true; });
     let dispatched = false, publicationStarted = false;
+    let receipt: Project | null = null, rejection: ApiError | null = null;
     active.current = controller;
     setBusy(true); setError(null); setSettled(null); setPublicationError(false);
     const owns = () => mounted.current && owner.current.userId === userId && owner.current.admission === admission;
@@ -180,7 +188,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
           if (admission === undefined) await waitForAuthRequests(target);
           else await admission.ready(target);
         } catch (cause) {
-          if (cause instanceof TaskCacheLifecycleChanged && !target.aborted && !admission?.isInvalidated && authRequestsPaused() && belongs()) continue;
+          if (isRetryableTaskCacheLifecycleChange(cause) && !target.aborted && !admission?.isInvalidated && authRequestsPaused() && belongs()) continue;
           throw cause;
         }
         target.throwIfAborted();
@@ -199,7 +207,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       void (async () => {
         try {
           do { await readyToPublish(retainedSignal); } while (authRequestsPaused());
-          if (!retainedSignal.aborted && belongs() && retainedPublication.current === retained) {
+          if (!retainedSignal.aborted && !admission?.hasIdentityMismatch && belongs() && retainedPublication.current === retained) {
             for (const project of receipts.current) publishReceipt(project);
           }
         } catch (cause) {
@@ -219,13 +227,16 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       void (async () => {
         try {
           do { await readyToPublish(publicationSignal); } while (authRequestsPaused());
-          if (publicationSignal.aborted || !belongs() || publication.current !== pending) return;
+          if (publicationSignal.aborted || admission?.hasIdentityMismatch || !belongs() || publication.current !== pending) return;
           if ("project" in result) {
             publishReceipt(result.project);
             if (revision.current === submittedRevision && navigation.snapshot() === location && !navigationChanged && navigation.decision() === null) onCreated(result.project);
           } else setError(result.error);
         } catch (cause) {
-          if (!publicationSignal.aborted && !isAbortError(cause) && belongs() && publication.current === pending) {
+          if (belongs() && publication.current === pending && admission?.hasIdentityMismatch) {
+            if ("project" in result) setPublicationError(true);
+            else if (result.error instanceof ProjectCreationUnknown || result.error instanceof ApiError && result.error.kind === "server" && result.error.status !== null && result.error.status >= 400 && result.error.status < 500) setError(result.error);
+          } else if (!publicationSignal.aborted && !isAbortError(cause) && belongs() && publication.current === pending) {
             if ("project" in result) setPublicationError(true);
             else setError(cause);
           }
@@ -238,7 +249,13 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     void (async () => {
       try {
         if (admission !== undefined) await admission.ready(signal);
-        const project = await createProject({ name: String(data.get("name")), repoUrl: String(data.get("repoUrl")), expectedUserId: userId, ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, onIdentityMismatch, () => { dispatched = true; });
+        let project: Project;
+        try {
+          project = await abortable(createProject({ name: String(data.get("name")), repoUrl: String(data.get("repoUrl")), expectedUserId: userId, ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, onIdentityMismatch, () => { dispatched = true; }, value => { receipt = value; }, error => { if (error.status !== null && error.status >= 400 && error.status < 500) rejection = error; }), signal);
+        } catch (cause) {
+          if (receipt === null) throw rejection ?? cause;
+          project = receipt;
+        }
         if (owns() && active.current === controller) {
           setSettled({ kind: "confirmed", revision: submittedRevision });
           receipts.current.add(project);
@@ -247,7 +264,11 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       } catch (cause) {
         if (owns() && active.current === controller) {
           const result = cause instanceof ProjectCreationUnknown ? cause : dispatched && (signal.aborted || isAbortError(cause)) && !(cause instanceof ApiError && cause.kind === "server" && cause.status !== null && cause.status >= 400 && cause.status < 500) ? new ProjectCreationUnknown(cause) : cause;
-          if (result instanceof ProjectCreationUnknown) setSettled({ kind: "unknown", revision: submittedRevision });
+          if (result instanceof ProjectCreationUnknown) {
+            setSettled({ kind: "unknown", revision: submittedRevision });
+            if (admission?.hasIdentityMismatch) setError(result);
+          }
+          if (admission?.hasIdentityMismatch && result instanceof ApiError && result.kind === "server" && result.status !== null && result.status >= 400 && result.status < 500) setError(result);
           if (result instanceof ProjectCreationUnknown || result instanceof ApiError && result.kind === "server" && result.status !== null && result.status >= 400 && result.status < 500 || !signal.aborted && !isAbortError(result)) publish({ error: result });
         }
       } finally {
@@ -274,6 +295,6 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
         {check.status === "loading" ? <p>{m.checking}</p> : check.status === "error" ? <div role="alert"><p>{m.checkFailed}</p>{check.error instanceof ApiError && check.error.requestId !== null && <p>{common.requestId}<code>{check.error.requestId}</code></p>}</div> : check.items.length === 0 ? <p>{m.noProjects}</p> : null}
         {check.nextCursor !== null && check.status !== "loading" && <button className="button" type="button" onClick={() => checkProjects(check.nextCursor)}>{m.loadMore}</button>}
       </section>}
-    </div><footer className="dialog-footer"><button className="button" type="button" disabled={busy} onClick={onClose}>{m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={check.status === "loading"} onClick={() => checkProjects(null)}>{m.checkProjects}</button> : <button className="button primary" type="submit" disabled={busy || settled?.kind === "unknown" || settled?.kind === "confirmed" && settled.revision === draftRevision}>{busy ? m.busy : m.submit}</button>}</footer></form>
+    </div><footer className="dialog-footer"><button className="button" type="button" disabled={busy} onClick={onClose}>{m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={check.status === "loading" || admission?.hasIdentityMismatch} onClick={() => checkProjects(null)}>{m.checkProjects}</button> : <button className="button primary" type="submit" disabled={busy || admission?.hasIdentityMismatch || settled?.kind === "unknown" || settled?.kind === "confirmed" && settled.revision === draftRevision}>{busy ? m.busy : m.submit}</button>}</footer></form>
   </dialog>;
 };

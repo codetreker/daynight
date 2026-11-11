@@ -4,7 +4,7 @@ import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from "
 import { getProject, isExecutionWarningMinutes, saveProjectSettings } from "../../api/project-settings";
 import type { Project } from "../../api/types";
 import type { ProjectManagementGuard } from "./ProjectManagementGuard";
-import { TaskCacheLifecycleChanged } from "../task-cache/project-cache";
+import { isRetryableTaskCacheLifecycleChange } from "../task-cache/project-cache";
 
 export type SettingsNotice = "saved" | "cancelled" | "conflict" | "permission" | "reconciled" | null;
 export const parseWarningDraft = (draft: string): number | null => {
@@ -93,7 +93,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
   // route synchronously as well so a late receipt cannot publish during that gap.
   const canPresent = () => {
     const current = access.session.snapshot();
-    return activeRef.current && routeRef.current && !authRequestsPaused() && !access.session.scope.isInvalidated
+    return activeRef.current && routeRef.current && !authRequestsPaused() && !access.session.scope.isInvalidated && !access.session.scope.hasIdentityMismatch
       && (!unavailableRef.current || revokedAccess.current && current.status === "ready")
       && !access.session.scope.isProjectSuspended(projectId) && current.status !== "unavailable"
       && current.status === "ready" && !current.refreshing;
@@ -102,11 +102,12 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     while (true) {
       try { await access.session.scope.ready(signal); return; }
       catch (failure) {
-        if (signal.aborted || access.session.scope.isInvalidated || !(failure instanceof TaskCacheLifecycleChanged)) throw failure;
+        if (signal.aborted || access.session.scope.isInvalidated || !isRetryableTaskCacheLifecycleChange(failure)) throw failure;
       }
     }
   };
   const waitForFreshAccess = async (signal: AbortSignal, requireActive = false) => {
+    signal = AbortSignal.any([signal, access.session.scope.mismatchSignal]);
     while (true) {
       await waitForScope(signal);
       signal.throwIfAborted();
@@ -132,7 +133,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     }
   };
   const waitForPresentation = async (signal: AbortSignal) => {
-    const lifetime = AbortSignal.any([signal, access.session.scope.signal]);
+    const lifetime = AbortSignal.any([signal, access.session.scope.signal, access.session.scope.mismatchSignal]);
     while (true) {
       lifetime.throwIfAborted();
       if (!activeRef.current || !routeRef.current) await new Promise<void>((resolve, reject) => {
@@ -170,7 +171,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
 
   const setUncertainState = (value: boolean) => { uncertainRef.current = value; setUncertain(value); };
   const releaseResolvedRetention = () => {
-    if (!submitting.current && publication.current === null && !returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && !uncertainRef.current) {
+    if (!submitting.current && publication.current === null && !returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && !uncertainRef.current && !(access.session.scope.hasIdentityMismatch && rejectedDraft.current)) {
       guard?.release("settings");
       retention.current?.(false);
     }
@@ -190,9 +191,10 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     releaseResolvedRetention();
   };
   const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null) => {
+    if (access.session.scope.hasIdentityMismatch) return;
     readController.current?.abort();
     const read = new AbortController(); readController.current = read;
-    const signal = AbortSignal.any([lifetime, read.signal, access.session.scope.signal]);
+    const signal = AbortSignal.any([lifetime, read.signal, access.session.scope.signal, access.session.scope.mismatchSignal]);
     const current = ++generation.current;
     const route = routeGeneration.current;
     routeRead.current = { route, generation: current, status: "pending" };
@@ -222,7 +224,9 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
         finishRead("failed");
         return;
       }
-      const [saved] = await Promise.all([abortable(getProject(projectId, signal), signal), abortable(access.session.revalidate(), signal)]);
+      await waitForScope(signal);
+      signal.throwIfAborted();
+      const [saved] = await Promise.all([abortable(getProject(projectId, signal, { userId, onPrincipalMismatch: access.session.scope.principalMismatch }), signal), abortable(access.session.revalidate(), signal)]);
       let admitted;
       let currentAccess;
       do {
@@ -272,7 +276,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       if (signal.aborted || current !== generation.current || isAbortError(failure) || !currentRoute()) { finishRead("cancelled"); return; }
       try { do { await waitForScope(signal); } while (authRequestsPaused()); } catch { return; }
       if (signal.aborted || access.session.scope.isInvalidated || current !== generation.current || !currentRoute()) { finishRead("cancelled"); return; }
-      if (failure instanceof ApiError && (failure.status === 404 || failure.status === 403)) {
+      if (failure instanceof ApiError && failure.kind === "server" && (failure.status === 404 || failure.status === 403)) {
         if (uncertainRef.current || reconciliationNotice.current !== null || confirmedNeedsRead.current) {
           revokedAccess.current = false;
           clearPrivateDraft(); setUnavailableState(true); setError(failure);
@@ -282,7 +286,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     } finally {
       if (routeRead.current?.generation === current && routeRead.current.status === "pending") finishRead("cancelled");
       if (readController.current === read) readController.current = null;
-      if (!returning && !signal.aborted && current === generation.current) setLoading(false);
+      if (!returning && current === generation.current && (!signal.aborted || access.session.scope.hasIdentityMismatch)) setLoading(false);
     }
   };
 
@@ -317,7 +321,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     }
   }, [access.ready, access.refreshing, unavailable, access.session, awaitingSavedRead, pending, onRoute, active]);
   useEffect(() => {
-    if (confirmedNeedsRead.current && onRoute && active && !unavailableRef.current && !authRequestsPaused()) setNotice("saved");
+    if (confirmedNeedsRead.current && onRoute && active && !unavailableRef.current && !authRequestsPaused() && !access.session.scope.hasIdentityMismatch) setNotice("saved");
   }, [access.status, access.ready, onRoute, active, awaitingSavedRead]);
   useEffect(() => {
     const prior = routeRead.current;
@@ -329,19 +333,19 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
 
   const save = async () => {
     const admitted = access.session.snapshot();
-    if (!routeRef.current || submitting.current || confirmedNeedsRead.current || reconciliationNotice.current !== null || returnRead.current || draftConflictRef.current || loading || uncertain || admitted.status !== "ready" || admitted.access!.effectiveRole !== "admin" || project === null) return;
+    if (access.session.scope.hasIdentityMismatch || !routeRef.current || submitting.current || confirmedNeedsRead.current || reconciliationNotice.current !== null || returnRead.current || draftConflictRef.current || loading || uncertain || admitted.status !== "ready" || admitted.access!.effectiveRole !== "admin" || project === null) return;
     const minutes = parseWarningDraft(draft);
     if (minutes === null) { setInvalid(true); return; }
     if (guard !== undefined && !guard.tryAcquire("settings")) return;
     submitting.current = true; setPending(true); setError(null); setWriteError(null); setNotice(null); setInvalid(false);
     retention.current?.(true);
     const lifetime = controller.current!;
-    const operation = { controller: new AbortController(), dispatched: false, confirmed: false };
+    const operation: { controller: AbortController; dispatched: boolean; confirmed: boolean; receipt: Project | null; rejection: ApiError | null } = { controller: new AbortController(), dispatched: false, confirmed: false, receipt: null, rejection: null };
     admission.current = operation;
     const cancelPreparation = () => { if (!operation.dispatched) operation.controller.abort(); };
     const unsubscribePause = subscribeAuthPause(cancelPreparation);
     if (authRequestsPaused()) cancelPreparation();
-    const signal = AbortSignal.any([lifetime.signal, operation.controller.signal]);
+    const signal = AbortSignal.any([lifetime.signal, operation.controller.signal, access.session.scope.mismatchSignal]);
     const operationGeneration = generation.current;
     const operationRoute = routeGeneration.current;
     const submittedDraftGeneration = draftGeneration.current;
@@ -361,7 +365,9 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
           publicationSignal.throwIfAborted();
           await work(publicationSignal);
         } catch (failure) {
-          if (!publicationSignal.aborted && !isAbortError(failure)) setError(failure);
+          const rejection = operation.rejection;
+          if (!lifetime.signal.aborted && publication.current === owner && access.session.scope.hasIdentityMismatch && rejection !== null && rejection.kind === "server" && rejection.status !== null && rejection.status >= 400 && rejection.status < 500) setWriteError(rejection);
+          else if (!publicationSignal.aborted && !isAbortError(failure)) setError(failure);
         } finally {
           if (publication.current === owner) {
             publication.current = null;
@@ -382,15 +388,21 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       if (fresh === null) return;
       if (fresh.effectiveRole !== "admin") { setNotice("permission"); return; }
       if (fresh.ownership.teamId !== ownership.teamId || fresh.ownership.version !== ownership.version) { setNotice("conflict"); return; }
-      const saved = await abortable(saveProjectSettings(projectId, { version: expectedVersion, executionWarningMinutes: minutes }, signal, () => {
-        if (!routeRef.current || operationRoute !== routeGeneration.current) throw new DOMException("The settings route changed.", "AbortError");
-        operation.dispatched = true;
-      }), signal);
+      let saved: Project;
+      try {
+        saved = await abortable(saveProjectSettings(projectId, { version: expectedVersion, executionWarningMinutes: minutes }, signal, () => {
+          if (!routeRef.current || operationRoute !== routeGeneration.current) throw new DOMException("The settings route changed.", "AbortError");
+          operation.dispatched = true;
+        }, { userId, onPrincipalMismatch: access.session.scope.principalMismatch, onConfirmed: value => { operation.confirmed = true; operation.receipt = value; }, onRejected: error => { operation.rejection = error; } }), signal);
+      } catch (failure) {
+        if (operation.receipt === null) throw operation.rejection ?? failure;
+        saved = operation.receipt;
+      }
       operation.confirmed = true;
       confirmedFloor.current = saved.settings.version;
       confirmedEditGeneration.current = submittedDraftGeneration;
-      if (draftGeneration.current === submittedDraftGeneration) draftVersion.current = null;
-      if (routeRef.current && activeRef.current && !authRequestsPaused() && !unavailableRef.current) setNotice("saved");
+      if (!access.session.scope.hasIdentityMismatch && draftGeneration.current === submittedDraftGeneration) draftVersion.current = null;
+      if (routeRef.current && activeRef.current && !authRequestsPaused() && !access.session.scope.hasIdentityMismatch && !unavailableRef.current) setNotice("saved");
       confirmedNeedsRead.current = true; setAwaitingSavedRead(true);
       publish(async (publicationSignal) => {
         if (returnRead.current && routeRead.current?.status === "failed" && (revokedAccess.current || !unavailableRef.current)) {
@@ -503,11 +515,12 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
   };
 
   return {
-    project: unavailable || access.status === "unavailable" ? null : project, role, draft, canSubmit: access.status === "ready" && !awaitingSavedRead && !returnReadRequired && !returnRead.current && !draftConflict && !reconciliationRequired, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain: !unavailable && access.status !== "unavailable" && uncertain, error: error ?? access.error, writeError: unavailable || access.status === "unavailable" ? null : writeError, reconciliation: !unavailable && access.status !== "unavailable" && reconciliationRequired ? reconciliationNotice.current : null, draftConflict, invalid, notice: unavailable || access.status === "unavailable" ? null : notice,
+    project: unavailable || access.status === "unavailable" ? null : project, role, draft, canSubmit: !access.session.scope.hasIdentityMismatch && access.status === "ready" && !awaitingSavedRead && !returnReadRequired && !returnRead.current && !draftConflict && !reconciliationRequired, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain: !unavailable && access.status !== "unavailable" && uncertain, error: error ?? access.error, writeError: unavailable || access.status === "unavailable" ? null : writeError, reconciliation: !unavailable && access.status !== "unavailable" && reconciliationRequired ? reconciliationNotice.current : null, draftConflict, invalid, notice: unavailable || access.status === "unavailable" ? null : notice,
     dirty: project !== null && (draftVersion.current !== null || draft !== String(project.settings.executionWarningMinutes)),
     change,
     cancel,
     retry: () => {
+      if (access.session.scope.hasIdentityMismatch) return;
       if (submitting.current) { if (unavailableRef.current || access.session.snapshot().status === "unavailable") retryAccessAndRead(); return; }
       if ((returnRead.current || reconciliationNotice.current !== null || confirmedNeedsRead.current || uncertainRef.current) && !access.ready) {
         retryAccessAndRead();

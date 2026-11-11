@@ -3,7 +3,7 @@ import { openDB } from "idb";
 import type { ProjectPersonVersion } from "../src/api/auth-types";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { afterEach, expect, it, vi } from "vitest";
-import { getTaskSync, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
+import { getTask, getTaskSync, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import { TaskAssignees } from "../src/features/task-assignees/TaskAssignees";
 import { createTaskCacheScope, type CacheEvent, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
@@ -152,6 +152,61 @@ it("waits for identity revalidation before adopting a positive response", async 
   const { owner } = await harness(); owner.setDemand(projectId, Symbol(), [personId]); owner.receipt(projectId, Symbol(), 1); await count(1);
   const resume = pauseAuthRequests(); await settle(0); expect(owner.snapshot(projectId).people.size).toBe(0);
   resume(); await vi.waitFor(() => expect(owner.snapshot(projectId).people.has(personId)).toBe(true));
+});
+
+it("stops the people admission retry after a retained scope observes a different principal", async () => {
+  let resume = () => {};
+  const cache = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  scopes.push(cache); await apply(cache);
+  const owner = new TaskAssignees(cache); owners.push(owner);
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, options: RequestInit) => new Promise<Response>((finish) => requests.push({ url: new URL(url, location.origin), signal: options.signal!, finish }))));
+  const row = Symbol(); owner.setDemand(projectId, row, [personId]); owner.receipt(projectId, Symbol(), 1);
+  await count(1); await settle(0);
+  const projection = cache.getAuthorizedProject(projectId);
+  owner.setDemand(projectId, row, [personId, otherId]); await count(2);
+  const ready = cache.ready.bind(cache); let attempts = 0, exceeded = false;
+  vi.spyOn(cache, "ready").mockImplementation(async (requestSignal) => {
+    if (cache.hasIdentityMismatch && ++attempts > 10) { exceeded = true; resume(); throw new Error("Identity admission retried indefinitely"); }
+    return ready(requestSignal);
+  });
+  try {
+    requests[1]!.finish(denial("40000000-0000-4000-8000-000000000001"));
+    await vi.waitFor(() => expect(cache.hasIdentityMismatch).toBe(true));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(exceeded).toBe(false); expect(attempts).toBe(1);
+    expect(cache.signal.aborted).toBe(false); expect(cache.isInvalidated).toBe(false);
+    expect(owner.snapshot(projectId).people.get(personId)).toEqual(person());
+    expect(owner.snapshot(projectId).people.has(otherId)).toBe(false);
+    expect(requests).toHaveLength(2);
+  } finally { resume(); }
+  expect(cache.getAuthorizedProject(projectId)).toBe(projection);
+});
+
+it("keeps published people when identity changes between readiness and publication", async () => {
+  const mismatch = vi.fn();
+  const cache = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch }); scopes.push(cache); await apply(cache);
+  const owner = new TaskAssignees(cache); owners.push(owner);
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, options: RequestInit) => new Promise<Response>((finish) => requests.push({ url: new URL(url, location.origin), signal: options.signal!, finish }))));
+  const row = Symbol(); owner.setDemand(projectId, row, [personId]); owner.receipt(projectId, Symbol(), 1);
+  await count(1); await settle(0);
+  const projection = cache.getAuthorizedProject(projectId);
+  owner.setDemand(projectId, row, [personId, otherId]); await count(2);
+  const ready = cache.ready.bind(cache); let triggered = false, failure: unknown;
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { headers: { "Daynight-User-ID": "40000000-0000-4000-8000-000000000001" } })));
+  vi.spyOn(cache, "ready").mockImplementation(async (requestSignal) => {
+    await ready(requestSignal);
+    if (!triggered) {
+      triggered = true;
+      try { await getTask(projectId, taskId, signal(), { userId: TEST_VIEWER_ID, onPrincipalMismatch: cache.principalMismatch }); }
+      catch (error) { failure = error; }
+    }
+  });
+  await settle(1);
+  await vi.waitFor(() => expect(mismatch).toHaveBeenCalledOnce());
+  expect(failure).toMatchObject({ kind: "protocol", code: "principal_mismatch" });
+  expect(cache.signal.aborted).toBe(false); expect(cache.getAuthorizedProject(projectId)).toBe(projection);
+  expect(owner.snapshot(projectId).people.get(personId)).toEqual(person());
+  expect(owner.snapshot(projectId).people.has(otherId)).toBe(false);
 });
 
 it("retains known identity on a missing profile read failure and retries only the missing ID", async () => {
