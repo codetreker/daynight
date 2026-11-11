@@ -101,7 +101,7 @@ func TestTestSessionUsesSharedRelayAndOwnerScope(t *testing.T) {
 	testRecord, testLocation := f.data.Session, f.data.Location
 	f.data.Session = nil
 	f.data.RegistrationError = model.ErrNotFound
-	ctx = f.dao.ContextPhase(ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1, "InsertTaskSession": 1})
+	ctx = f.dao.ContextPhase(ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1, "InsertTaskSession": 1})
 	taskV, e := f.s.Register(ctx, f.p, f.project, f.task, f.r)
 	f.dao.FinishContext(ctx)
 	if e != nil {

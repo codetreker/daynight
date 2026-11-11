@@ -70,10 +70,7 @@ func (s *Service) registerTerminal(ctx context.Context, principal model.Principa
 	}
 	defer op.Close()
 	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-		if err := scope.SessionDAO().LockTaskRegistration(ctx, project, taskID); err != nil {
-			return err
-		}
-		task, err := op.LockTask(ctx, scope, project, taskID)
+		task, err := op.LockRegistrationTask(ctx, scope, project, taskID)
 		if err != nil {
 			return err
 		}

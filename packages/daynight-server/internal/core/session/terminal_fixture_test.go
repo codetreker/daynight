@@ -82,7 +82,7 @@ func (f fixture) TerminalPhase(ctx context.Context, finalize bool, work map[stri
 }
 
 func (f fixture) TerminalRegistrationPhase(ctx context.Context, work map[string]int) context.Context {
-	counts := map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1}
+	counts := map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1}
 	return f.dao.ContextPhase(ctx, mergeFixtureCounts(counts, work))
 }
 

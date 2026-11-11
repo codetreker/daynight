@@ -65,7 +65,7 @@ func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, proj
 	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, _ func(string) (*Access, error)) error {
 		_, tx := op.scoped(scope)
 		t := task.task
-		if t.Worker == nil || t.Worker.AgentControlMode != model.AgentControlModeHerdr {
+		if t.Type == model.TaskTypeGoal || t.Worker == nil || t.Worker.AgentControlMode != model.AgentControlModeHerdr {
 			out = map[string]any{"status": "not_applicable", "protocol": v2.Protocol}
 			return nil
 		}
@@ -117,6 +117,10 @@ func (s *Execution) terminalHistory(ctx context.Context, p model.Principal, proj
 	}
 	var out map[string]any
 	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, _ func(string) (*Access, error)) error {
+		if task.task.Type == model.TaskTypeGoal {
+			out = map[string]any{"items": []map[string]any{}, "nextCursor": (*string)(nil)}
+			return nil
+		}
 		_, tx := op.scoped(scope)
 		rows, err := tx.dao.TerminalHistory(ctx, project, taskID, before, beforeID, limit+1)
 		if err != nil {

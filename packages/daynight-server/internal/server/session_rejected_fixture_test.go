@@ -57,7 +57,7 @@ func (d sessionHTTPRejectedDAO) SaveSession(a0 context.Context, a1 store.Session
 	panic("unconfigured SessionDAO.SaveSession")
 }
 
-func (d sessionHTTPRejectedDAO) LockTaskRegistration(a0 context.Context, a1 string, a2 string) error {
+func (d sessionHTTPRejectedDAO) LockTaskRegistration(a0 context.Context, a1 string, a2 string) (store.SessionTask, error) {
 	unexpectedHTTPCall(d.t, "SessionDAO.LockTaskRegistration")
 	panic("unconfigured SessionDAO.LockTaskRegistration")
 }

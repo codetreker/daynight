@@ -36,7 +36,7 @@ type Authority struct {
 
 func (op *Operation) CheckRegistration(t *TaskAccess, p model.Principal, input sp.Registration) error {
 	w := t.task.Worker
-	if w == nil || t.task.Status != "in_progress" || w.State != model.WorkerActive || w.AgentControlMode != model.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
+	if t.task.Deleted || t.task.Type == model.TaskTypeGoal || w == nil || t.task.Status != "in_progress" || w.State != model.WorkerActive || w.AgentControlMode != model.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
 		return conflict()
 	}
 	return nil
@@ -52,6 +52,12 @@ func (op *Operation) LockTask(ctx context.Context, scope store.SessionScope, pro
 	_, tx := op.scoped(scope)
 	t, err := scopeTask(ctx, tx, project, id)
 	return &TaskAccess{task: t}, err
+}
+
+// LockRegistrationTask acquires the target in its final update mode together with its parent.
+func (op *Operation) LockRegistrationTask(ctx context.Context, scope store.SessionScope, project, id string) (*TaskAccess, error) {
+	persisted, err := scope.SessionDAO().LockTaskRegistration(ctx, project, id)
+	return &TaskAccess{task: taskFromStore(persisted)}, err
 }
 
 func (op *Operation) LockArchiveTask(ctx context.Context, scope store.SessionScope, project, id string, finalize bool) (*TaskAccess, bool, error) {
