@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { WORKER_TIME } from '../helpers/workers';
 import { deferredRead, installTools, observedConfiguration, openToolConfiguration, pathChoice, reportedDetail, targetWorker, toolActual, toolObservation, toolPaths, toolReport } from './worker-tool-paths-fixture';
 
-const configuration = (page: Page) => page.locator('#worker-panel-configuration');
+const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
 const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具路径/ });
 const field = (page: Page, tool = 'codex') => page.locator(`#config-toolPaths-${tool}`);
 const facts = (page: Page, tool = 'codex', context = 'web') => configuration(page).locator(`.worker-tool-path-details[data-tool="${tool}"] .worker-tool-context[data-context="${context}"]`);
@@ -44,7 +44,7 @@ test('unadopted tools remain null and blank edits require explicit automatic res
 
 test('initial configuration loading does not invent an applied tool result', async ({ page }) => {
   const state = await installTools(page), gate = deferredRead(); state.configurationGate = gate;
-  await page.goto(`/workers/${targetWorker}`); await page.locator('#worker-tab-configuration').click();
+  await page.goto(`/workers/${targetWorker}`); await page.locator('[data-worker-tab="configuration"]:visible').click();
   await gate.observed;
   try {
     await expect(configuration(page).getByRole('heading', { name: '正在读取配置' })).toBeVisible();
@@ -135,10 +135,16 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '其他执行模式' : 'Other execution mode' }).click();
   await expect(herdr).toContainText('1.0.099'); await expect(herdr).toContainText('/opt/installed/bin/copilot');
   await expect(herdr).not.toContainText('/opt/daynight/runtime');
-  await page.locator('#worker-tab-configuration').click(); await configuration(page).locator('.configuration-tool-paths > summary').click();
+  await page.locator('[data-worker-tab="configuration"]:visible').click(); await configuration(page).locator('.configuration-tool-paths > summary').click();
   await expect(field(page, 'copilot')).toHaveAttribute('placeholder', locale === 'zh-CN' ? '自动' : 'Automatic');
   await expect(facts(page, 'copilot')).toContainText('1.0.105');
-  await field(page, 'copilot').fill('/opt/draft/copilot'); await page.locator('#worker-tab-overview').click();
+  await field(page, 'copilot').fill('/opt/draft/copilot');
+  await field(page, 'copilot').evaluate(element => { (window as unknown as { toolPromptDraftNode: Element }).toolPromptDraftNode = element; });
+  await page.locator('[data-worker-tab="prompt"]:visible').click();
+  await expect(page.locator('[data-worker-panel="prompt"]:visible')).toBeVisible(); await expect(field(page, 'copilot')).toBeHidden();
+  await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(field(page, 'copilot')).toHaveValue('/opt/draft/copilot');
+  expect(await field(page, 'copilot').evaluate(element => element === (window as unknown as { toolPromptDraftNode: Element }).toolPromptDraftNode)).toBe(true);
+  await page.locator('[data-worker-tab="overview"]:visible').click();
   await expect(web).toContainText('/opt/daynight/runtime/copilot'); await expect(software).not.toContainText('/opt/draft/copilot');
 });
 

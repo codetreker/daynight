@@ -1,10 +1,10 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { pauseAuthRequests } from "../src/api/client";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
 import { browserNavigation } from "../src/app/navigation";
 import { navigate } from "../src/app/router";
-import { TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { detailFixture, graphFixture, resourceResponse } from "./helpers/taskDetail";
 import { personalTeamPage } from "./helpers/team";
@@ -85,19 +85,34 @@ it.each([
   expect(window.location.pathname).toBe(path); expect(app.writes()).toBe(1);
 });
 
-it("keeps success and both retries reachable when another task draft blocks navigation", async () => {
-  const revoke = vi.spyOn(TaskCacheScope.prototype, "revokeProject").mockRejectedValueOnce(new Error("local cleanup failed"));
+it("keeps a dispatched refusal across leaving settings and a paused publication", async () => {
+  const app = setup(); await submit(); await waitFor(() => expect(app.writes()).toBe(1));
+  const path = `/projects/${otherProject}/tasks/${taskId}`;
+  act(() => navigate(path));
+  await screen.findByText("Other task");
+  const resume = pauseAuthRequests(); const count = app.fetcher.mock.calls.length;
+  try {
+    await act(async () => app.pending.resolve(json({ error: { code: "forbidden", message: "Denied", requestId: app.requestId() } }, 403, { "X-Request-ID": app.requestId() })));
+    expect(screen.queryByText(/you do not have permission to delete this project/i)).toBeNull();
+    expect(app.fetcher).toHaveBeenCalledTimes(count); expect(app.writes()).toBe(1);
+    act(() => resume());
+    expect(await screen.findByText(/you do not have permission to delete this project/i)).toBeVisible();
+    expect(window.location.pathname).toBe(path); expect(app.writes()).toBe(1);
+  } finally { resume(); }
+});
+
+it("keeps success reachable without navigating away from a newer task draft", async () => {
   const app = setup(); await submit(); await waitFor(() => expect(app.writes()).toBe(1));
   const path = `/projects/${otherProject}/tasks/${taskId}?tab=steps`;
   act(() => navigate(path));
   const add = await screen.findByRole("button", { name: "Add step" }); await waitFor(() => expect(add).toBeEnabled()); fireEvent.click(add);
   const draft = screen.getByRole("textbox", { name: "Title" }); fireEvent.change(draft, { target: { value: "Other task draft" } });
   await act(async () => app.pending.resolve(json({ projectId, deleted: true })));
-  expect(await screen.findByText("Deletion succeeded, but local cache cleanup failed.")).toBeVisible();
-  expect(await screen.findByText("Deletion succeeded, but navigation to projects failed.")).toBeVisible();
-  expect(screen.getByText(/Project deleted/)).toBeVisible();
+  expect(await screen.findByText(/Project deleted/)).toBeVisible();
   expect(draft).toHaveValue("Other task draft");
-  const decision = screen.getByRole("alertdialog"); fireEvent.click(within(decision).getByRole("button", { name: "Keep editing" }));
+  expect(window.location.pathname).toBe(`/projects/${otherProject}/tasks/${taskId}`);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByText("Deletion succeeded, but navigation to projects failed.")).toBeNull();
   vi.stubGlobal("innerWidth", 320);
   const keyboard = userEvent.setup(); const toggle = screen.getByRole("button", { name: "Collapse deletion results" });
   toggle.focus(); await keyboard.keyboard("{Enter}");
@@ -106,11 +121,9 @@ it("keeps success and both retries reachable when another task draft blocks navi
   expect(draft).toBeVisible(); expect(draft).toHaveValue("Other task draft");
   await keyboard.keyboard("{Enter}"); expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText(/Project deleted/)).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Retry cleanup" }));
-  await waitFor(() => expect(revoke).toHaveBeenCalledTimes(2));
   expect(draft).toHaveValue("Other task draft");
-  fireEvent.click(screen.getByRole("button", { name: "Retry navigation" }));
-  expect(screen.getByRole("alertdialog")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Retry navigation" })).toBeNull();
+  expect(window.location.pathname).toBe(`/projects/${otherProject}/tasks/${taskId}`);
   expect(draft).toHaveValue("Other task draft");
   expect(app.writes()).toBe(1);
 });

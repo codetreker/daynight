@@ -49,7 +49,7 @@ for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choos
     await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), scenario.locale);
     const state = await install(page);
     await page.goto(`/workers/${target}`);
-    await page.locator('#worker-tab-configuration').click();
+    await page.locator('[data-worker-tab="configuration"]:visible').click();
     const args = page.locator('#config-native-args'); await expect(args).toBeVisible();
     await args.fill('[invalid JSON');
     await page.getByRole('button', { name: scenario.choose }).first().click();

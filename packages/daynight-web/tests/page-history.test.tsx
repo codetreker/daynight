@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
-import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type ResourcePageReading } from '../src/app/page-history';
-import { useAccountHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
+import { accountHistory, emptyResourceReading, projectHistory, readAccountHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
+import { useAccountHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 
 const user = '00000000-0000-4000-8000-000000000001';
@@ -115,6 +115,56 @@ describe('standalone resource reading history', () => {
 beforeEach(() => { history.replaceState(null, '', '/account'); });
 afterEach(() => { cleanup(); browserNavigation().dispose(); vi.restoreAllMocks(); });
 
+describe('Project reading history', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const path = `/projects/${project}`;
+  const defaults = { section: 'overview', view: 'chains' } as const;
+  const selection: ProjectReading = { section: 'tasks', view: 'chains', projectGraphWitness: root,
+    detail: { id: root, source: 'summary', insideProjectGraph: true, navigation: { tab: 'overview', path: null },
+      goalChildren: { graphRootId: child, task: { id: child, navigation: { tab: 'attachments', path: 'docs/readme.md' } } } } };
+
+  it('validates matching selections and isolates identity and project', () => {
+    const state = projectHistory(user, project, selection);
+    expect(readProjectHistory(state, user, project)).toEqual(selection);
+    expect(readProjectHistory(state, other, project)).toBeNull();
+    expect(readProjectHistory(state, user, root)).toBeNull();
+    for (const bad of [
+      { ...selection, view: 'invalid' }, { ...selection, projectGraphWitness: 'bad' },
+      { ...selection, detail: { ...selection.detail, revision: 1 } },
+      { ...selection, detail: { ...selection.detail, insideProjectGraph: 'yes' } },
+      { ...selection, detail: { ...selection.detail, goalChildren: { graphRootId: null, task: { id: child, navigation: { tab: 'attachments', path: '../secret' } } } } },
+    ]) expect(() => readProjectHistory({ ...state, selection: bad }, user, project)).toThrow('Invalid project navigation state.');
+  });
+
+  it('initializes, traverses and deduplicates without replaying commit callbacks', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const navigation = browserNavigation(), length = history.length, committed = vi.fn();
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      const initial = result.current.selection;
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, initial));
+      const source = history.state;
+      act(() => result.current.select(selection, false, committed));
+      const destination = history.state;
+      expect(history.length).toBe(length + 1);
+      expect(committed).toHaveBeenCalledTimes(1);
+      act(() => result.current.select(selection, false, committed));
+      expect(history.length).toBe(length + 1);
+      arrival(source, path); expect(result.current.selection).toEqual(initial);
+      arrival(destination, path); expect(result.current.selection).toEqual(selection);
+      expect(committed).toHaveBeenCalledTimes(1);
+      act(() => result.current.select({ ...selection, detail: null }));
+      act(() => scope.suspendProject(project));
+      expect(result.current.selection.detail).toBeNull();
+      arrival(destination, path); expect(result.current.selection.detail).toBeNull();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+});
+
 describe('account reading history', () => {
   it('validates recognized state and isolates account and page scope', () => {
     expect(readAccountHistory(undefined, user)).toBeNull();
@@ -210,11 +260,19 @@ describe('Worker reading history', () => {
   const path = `/workers/${worker}`;
   it('validates the current Worker selection and isolates identity and resource', () => {
     expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
+    expect(readWorkerHistory(workerHistory(user, worker, 'prompt'), user, worker)).toBe('prompt');
     expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
     expect(readWorkerHistory(workerHistory(user, otherWorker, 'configuration'), user, worker)).toBeNull();
     for (const selection of [{ workerId: otherWorker, section: 'overview' }, { workerId: worker, section: 'bad' }, { workerId: worker, section: 'overview', draft: 'secret' }]) {
       expect(() => readWorkerHistory({ ...workerHistory(user, worker, 'overview'), selection }, user, worker)).toThrow();
     }
+  });
+  it('opens a directly restored prompt selection', () => {
+    const navigation = browserNavigation();
+    act(() => navigation.navigate(path, false, workerHistory(user, worker, 'prompt')));
+    const { result } = renderHook(() => useWorkerHistory(user, worker, true));
+    expect(result.current.section).toBe('prompt');
+    expect(result.current.error).toBe(false);
   });
   it('initializes, traverses and deduplicates while inactive owners cannot overwrite another page', () => {
     history.replaceState(null, '', path);
@@ -227,8 +285,15 @@ describe('Worker reading history', () => {
     expect(result.current.section).toBe('configuration');
     act(() => result.current.select('configuration'));
     expect(history.length).toBe(length + 1);
+    act(() => result.current.select('prompt'));
+    const prompt = history.state;
+    expect(result.current.section).toBe('prompt');
+    act(() => result.current.select('prompt'));
+    expect(history.length).toBe(length + 2);
+    arrival(configuration, path); expect(result.current.section).toBe('configuration');
     arrival(overview, path); expect(result.current.section).toBe('overview');
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    arrival(prompt, path); expect(result.current.section).toBe('prompt');
     rerender({ identity: user, active: false });
     act(() => navigation.navigate('/account', false, accountHistory(user, 'tokens')));
     act(() => result.current.select('overview'));

@@ -59,7 +59,7 @@ for (const scenario of [
     await page.setViewportSize({ width: scenario.width, height: scenario.height });
     await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), scenario.locale);
     const state = await install(page);
-    await page.goto(`/workers/${target}`); await page.locator('#worker-tab-configuration').click();
+    await page.goto(`/workers/${target}`); await page.locator('[data-worker-tab="configuration"]:visible').click();
     const agent = page.locator('#config-native-agent'); await expect(agent).toHaveValue('codex');
     await page.locator('.project-native summary').first().click();
     await page.locator('.project-native summary').nth(1).click();
@@ -98,7 +98,7 @@ for (const scenario of [
 
 test('forced colors retains a visible inset arrow', async ({ page }) => {
   await page.emulateMedia({ forcedColors: 'active' }); await install(page);
-  await page.goto(`/workers/${target}`); await page.locator('#worker-tab-configuration').click();
+  await page.goto(`/workers/${target}`); await page.locator('[data-worker-tab="configuration"]:visible').click();
   const agent = page.locator('#config-native-agent'); await expect(agent).toBeVisible();
   const bounds = await paintedArrow(page, agent);
   expect(bounds.count).toBeGreaterThan(3); expect(bounds.width - bounds.right).toBeGreaterThanOrEqual(10); expect(bounds.gapCount).toBe(0);

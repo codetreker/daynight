@@ -1,11 +1,18 @@
 import { canonicalId } from '../api/validation';
 import { isAttachmentPath } from '../api/parse';
 import type { TaskDetailNavigation } from './router';
+import type { ProjectSection, TaskView } from '../features/projects/useProjectViewPreferences';
 
 export type AccountTab = 'profile' | 'tokens' | 'prompt';
-export type WorkerSection = 'overview' | 'configuration';
+export type WorkerSection = 'overview' | 'configuration' | 'prompt';
 export type ResourceReading = { readonly id: string; readonly navigation: TaskDetailNavigation };
 export type GoalChildren = { readonly graphRootId: string | null; readonly task: ResourceReading | null };
+export type ProjectReading = {
+  readonly section: ProjectSection;
+  readonly view: TaskView;
+  readonly projectGraphWitness: string | null;
+  readonly detail: (ResourceReading & { readonly source: 'summary' | 'direct'; readonly insideProjectGraph: boolean; readonly goalChildren: GoalChildren | null }) | null;
+};
 export type ResourcePageReading = {
   readonly goalChildren: GoalChildren | null;
   readonly externalGoal: (ResourceReading & { readonly witness: string; readonly goalChildren: GoalChildren | null }) | null;
@@ -18,6 +25,7 @@ type HistoryEnvelope<Key extends string, Selection> = {
 };
 export type PageHistoryState = HistoryEnvelope<'account', { readonly tab: AccountTab }>
   | HistoryEnvelope<`worker:${string}`, { readonly workerId: string; readonly section: WorkerSection }>
+  | HistoryEnvelope<`project:${string}`, ProjectReading>
   | HistoryEnvelope<`resource:${string}/${string}`, ResourcePageReading>;
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -64,12 +72,32 @@ export function readResourceHistory(value: unknown, userId: string, projectId: s
 export const resourceHistory = (userId: string, projectId: string, taskId: string, selection: ResourcePageReading): PageHistoryState =>
   ({ version: 1, userId, pageKey: resourceKey(projectId, taskId), selection });
 
+/** Read the project selection only for its authenticated identity and project. */
+export function readProjectHistory(value: unknown, userId: string, projectId: string): ProjectReading | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || !validId(value.userId) || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== `project:${projectId}`) return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['section', 'view', 'projectGraphWitness', 'detail']) ||
+      (selection.section !== 'overview' && selection.section !== 'tasks') ||
+      (selection.view !== 'standalone' && selection.view !== 'chains' && selection.view !== 'goals') ||
+      !(selection.projectGraphWitness === null || validId(selection.projectGraphWitness))) throw new Error('Invalid project navigation state.');
+  const detail = selection.detail;
+  if (detail !== null && (!record(detail) || !exact(detail, ['id', 'navigation', 'source', 'insideProjectGraph', 'goalChildren']) ||
+      !validId(detail.id) || !validNavigation(detail.navigation) || (detail.source !== 'summary' && detail.source !== 'direct') ||
+      typeof detail.insideProjectGraph !== 'boolean' || !(detail.goalChildren === null || validChildren(detail.goalChildren)))) throw new Error('Invalid project navigation state.');
+  return selection as ProjectReading;
+}
+
+export const projectHistory = (userId: string, projectId: string, selection: ProjectReading): PageHistoryState =>
+  ({ version: 1, userId, pageKey: `project:${projectId}`, selection });
+
 export function readWorkerHistory(value: unknown, userId: string, workerId: string): WorkerSection | null {
   if (value === undefined) return null;
   if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
   if (value.userId !== userId || value.pageKey !== `worker:${workerId}`) return null;
   const selection = value.selection;
-  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration')) throw new Error('Invalid worker navigation state.');
+  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration' && selection.section !== 'prompt')) throw new Error('Invalid worker navigation state.');
   return selection.section;
 }
 

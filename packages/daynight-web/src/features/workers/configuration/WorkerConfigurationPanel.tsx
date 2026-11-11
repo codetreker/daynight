@@ -18,9 +18,6 @@ import { useConfigurationProjects } from './useConfigurationProjects';
 import { TaskCacheError } from '../../task-cache/database';
 import { useWorkerConfiguration } from './useWorkerConfiguration';
 import { useConfigurationFormScroll } from './useConfigurationFormScroll';
-import { useWorkerConfigurationNavigation } from './WorkerConfigurationNavigation';
-import { useWorkerPrompt } from '../../worker-prompts/useWorkerPrompt';
-import { WorkerPromptEditor } from '../../worker-prompts/WorkerPromptEditor';
 import './configuration.css';
 
 const agentName = (agent: string) => agent === 'claude' ? 'Claude Code' : agent === 'copilot' ? 'Copilot' : 'Codex';
@@ -66,27 +63,23 @@ const ConfigurationError = ({ error, write, retained }: { readonly error: unknow
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 
-export const WorkerConfigurationPanel = ({ workerId, platform, visible = true, readEnabled, online, tasks, toolPaths, onContinueEditing, onRetentionChange }: {
+export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnabled, online, tasks, toolPaths, state, confirming }: {
   readonly workerId: string;
   readonly platform?: ExecutionPlatform;
-  readonly visible?: boolean;
+  readonly visible: boolean;
   readonly readEnabled: boolean;
   readonly online: boolean | null;
   readonly tasks: readonly WorkerTaskSnapshot[];
   readonly toolPaths?: ToolPathTelemetry;
-  readonly onContinueEditing?: () => void;
-  readonly onRetentionChange?: (retain: boolean) => void;
+  readonly state: ReturnType<typeof useWorkerConfiguration>;
+  readonly confirming: boolean;
 }) => {
   const toolPathsEditable = toolPaths !== undefined;
-  const state = useWorkerConfiguration(workerId, { readEnabled, toolPathsEditable, ...(platform === undefined ? {} : { platform }) });
-  const prompt = useWorkerPrompt({ scope: 'worker', workerId }, { readEnabled });
   const choices = useConfigurationProjects(readEnabled);
   const { messages: { workers: { configuration: m }, workers, platform: platformMessages }, format } = useI18n();
   const scope = useTaskCacheScope();
   const [dialog, setDialog] = useState<'projects' | 'removal' | null>(null);
-  const navigation = useWorkerConfigurationNavigation({ workerId, dirty: (!state.unavailable && state.dirty) || (!prompt.unavailable && prompt.dirty), unavailable: state.unavailable && (prompt.unavailable || !prompt.dirty), discard: () => { state.abandon(); prompt.abandon(); }, visible, ...(onContinueEditing === undefined ? {} : { onContinueEditing }) });
-  useLayoutEffect(() => { onRetentionChange?.(state.pending || state.uncertain || prompt.pending || prompt.uncertain); }, [onRetentionChange, state.pending, state.uncertain, prompt.pending, prompt.uncertain]);
-  useLayoutEffect(() => { if (navigation.confirming) setDialog(null); }, [navigation.confirming]);
+  useLayoutEffect(() => { if (confirming) setDialog(null); }, [confirming]);
   useLayoutEffect(() => { setDialog(null); }, [workerId, scope]);
   useLayoutEffect(() => { if (!visible) setDialog(null); }, [visible]);
   useLayoutEffect(() => { if (state.unavailable || state.resource !== null && state.resource.desired === null) setDialog(null); }, [state.unavailable, state.resource]);
@@ -95,7 +88,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible = true, r
   const disabled = state.unavailable;
   const actionsDisabled = !readEnabled || disabled;
   const metadata = new Map(choices.items.map(project => [project.id, project]));
-  const shell = (content: ReactNode) => <div className="worker-configuration" ref={navigation.owner} onFocusCapture={navigation.rememberFocus}>{content}<WorkerPromptEditor state={prompt} scope="worker" />{navigation.confirmation}</div>;
+  const shell = (content: ReactNode) => <div className="worker-configuration">{content}</div>;
   if (state.unavailable) return shell(<section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section>);
   if (resource === null) return shell(<section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section>);
   if (resource.desired === null || draft === null) return shell(<section className="state-box" role="status"><h2>{m.uninitialized}</h2><p>{m.uninitializedDetail}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></section>);
@@ -105,7 +98,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible = true, r
   const updateProject = (projectId: string, value: ConfigurationDraft['projects'][number]['native']) => state.setDraft(old => ({ ...old, projects: old.projects.map(project => project.projectId === projectId ? { ...project, native: value } : project) }));
   const save = (event: FormEvent) => {
     event.preventDefault();
-    if (actionsDisabled || state.pending || state.uncertain || parsed.value === null || !state.saveableDirty || state.conflict) return;
+    if (actionsDisabled || state.pending || state.uncertain || state.publicationPending || state.notice === 'conflict' || parsed.value === null || !state.saveableDirty || state.conflict) return;
     if (removed.length > 0) setDialog('removal');
     else void state.save();
   };
@@ -113,7 +106,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible = true, r
   return shell(<>
     <div className="configuration-toolbar"><button className="button" type="button" disabled={!readEnabled || state.refreshing || state.pending} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></div>
     {online === false && <div className="notice warning configuration-notice" role="status">{m.offlineNotice}</div>}
-    {state.conflict || state.notice === 'conflict' ? <div className="notice warning configuration-notice" role="alert"><p className="notice-heading">{m.conflict}</p><p>{m.retainedDraft}</p><details><summary>{m.viewLatest}</summary><pre>{JSON.stringify(desired.value, null, 2)}</pre></details><div className="notice-actions"><button className="button" type="button" disabled={disabled || state.pending || state.uncertain} onClick={state.loadLatest}>{m.loadLatest}</button></div></div> : null}
+    {state.conflict || state.notice === 'conflict' ? <div className="notice warning configuration-notice" role="alert"><p className="notice-heading">{m.conflict}</p><p>{m.retainedDraft}</p><details><summary>{m.viewLatest}</summary><pre>{JSON.stringify(desired.value, null, 2)}</pre></details><div className="notice-actions"><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || state.publicationPending || state.notice === 'conflict' && !state.conflict} onClick={state.loadLatest}>{m.loadLatest}</button></div></div> : null}
     {state.uncertain && <div className="notice warning configuration-notice" role="alert"><p>{m.uncertain}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{m.verifySave}</button></div>}
     {state.error !== null && !state.uncertain && <div className="notice error configuration-notice" role="alert"><ConfigurationError error={state.error} write={state.errorSource === 'write'} retained /><button className="button" type="button" disabled={!readEnabled || state.refreshing || state.pending} onClick={state.refresh}>{workers.retry}</button></div>}
     {choices.error !== null && <div className="notice error configuration-notice" role="alert"><p>{choices.error instanceof TaskCacheError ? workers.cacheStorageError : m.projectsFailed}</p><button className="button" type="button" disabled={!readEnabled || choices.loading} onClick={choices.refresh}>{workers.retry}</button></div>}
@@ -141,9 +134,9 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible = true, r
         const projectId = item.key.projectId;
         return <article className="project-config-item" key={projectId}><div className="project-config-heading"><div className="project-config-identity"><span className="project-config-icon" aria-hidden="true">▦</span><div><h3>{metadata.get(projectId)?.name ?? projectId}</h3><p>{m.kind.projectRemoval}</p></div></div></div><ConfigurationFeedback resource={resource} kind="projectRemoval" projectId={projectId} expected={true} /></article>;
       })}</div></section>}
-      <div className="config-save-slot"><footer className="config-save-bar"><span className="draft-summary" role="status">{state.dirty ? m.unsaved : m.noChanges}</span><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || !state.dirty} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={actionsDisabled || state.pending || state.uncertain || !state.saveableDirty || parsed.value === null || state.conflict}>{state.pending ? m.saving : m.save}</button></footer></div>
+      <div className="config-save-slot"><footer className="config-save-bar"><span className="draft-summary" role="status">{state.dirty ? m.unsaved : m.noChanges}</span><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || state.publicationPending || !state.dirty} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={actionsDisabled || state.pending || state.uncertain || state.publicationPending || state.notice === 'conflict' || !state.saveableDirty || parsed.value === null || state.conflict}>{state.pending ? m.saving : m.save}</button></footer></div>
     </form></div><ConfigurationSummary resource={resource} online={online} toolPaths={toolPaths} /></div>
-    {!navigation.confirming && dialog === 'projects' && <ConfigurationProjectsDialog projects={choices.items} selected={draft.projects.map(project => project.projectId)} loading={choices.loading} error={choices.error} refresh={choices.refresh} onClose={() => setDialog(null)} onApply={ids => { state.setDraft(old => ({ ...old, projects: ids.map(id => old.projects.find(project => project.projectId === id) ?? emptyProjectDraft(id)) })); setDialog(null); }} />}
-    {!navigation.confirming && dialog === 'removal' && <ConfigurationRemovalDialog disabled={actionsDisabled} projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
+    {!confirming && dialog === 'projects' && <ConfigurationProjectsDialog projects={choices.items} selected={draft.projects.map(project => project.projectId)} loading={choices.loading} error={choices.error} refresh={choices.refresh} onClose={() => setDialog(null)} onApply={ids => { state.setDraft(old => ({ ...old, projects: ids.map(id => old.projects.find(project => project.projectId === id) ?? emptyProjectDraft(id)) })); setDialog(null); }} />}
+    {!confirming && dialog === 'removal' && <ConfigurationRemovalDialog disabled={actionsDisabled} projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
   </>);
 };

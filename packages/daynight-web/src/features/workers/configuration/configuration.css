@@ -1,4 +1,4 @@
-.worker-tabs { display: flex; gap: 7px; margin: 0 0 24px; border-bottom: 1px solid var(--line); }
+.worker-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 24px; border-bottom: 1px solid var(--line); }
 .worker-tabs button { border: 0; border-bottom: 2px solid transparent; background: none; color: #737d8e; padding: 11px 15px 13px; font-size: 12px; }
 .worker-tabs button[aria-selected="true"] { border-color: var(--indigo); color: var(--indigo); font-weight: 600; }
 .worker-tabs button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; border-radius: 4px; }

@@ -17,7 +17,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
     activeError: { legacy_tool_identity_missing: 'Older executions did not record their tool identity.', cleanup_unknown: 'Some process stops are unconfirmed.', inventory_unavailable: 'The complete running selection inventory is unavailable.' },
     error: { not_found: 'The tool file was not found.', permission_denied: 'Permission to access or execute the tool was denied.', not_executable: 'The selected file is not executable.', invalid_path: 'The selected path is invalid.', unsupported_launcher: 'This launcher or package layout is unsupported.', unrecognized_output: 'The tool version could not be recognized.', incompatible_runtime: 'The tool does not support the required protocol or capabilities.', probe_timeout: 'The tool check timed out.', cleanup_unknown: 'Process cleanup has not been confirmed.', tool_identity_changed: 'The recorded tool identity has changed.', legacy_tool_identity_missing: 'The original execution did not record its tool identity.', io_error: 'A tool file or storage operation failed.', unavailable: 'The tool is currently unavailable.' },
   },
-  overview: 'Runtime monitoring', configuration: 'Configuration', sections: 'Worker sections',
+  overview: 'Runtime monitoring', configuration: 'Configuration', prompt: 'Prompts', sections: 'Worker sections',
   leaveQuestion: 'Leave this Worker configuration and discard unsaved changes?',
   leaveExplanation: 'Unsaved edits will be lost. Changes already submitted to the service are not undone.',
   loading: 'Loading configuration', unavailable: 'Worker configuration is unavailable',

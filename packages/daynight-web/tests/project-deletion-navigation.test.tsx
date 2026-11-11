@@ -56,11 +56,46 @@ it("holds a confirmed receipt until the original identity check completes", asyn
   const resume = pauseAuthRequests(); const finish = vi.fn(async () => {});
   act(() => state.complete({ projectId, deleted: true }, finish));
   await act(async () => { await Promise.resolve(); });
-  expect(screen.queryByText(/Project deleted/)).toBeNull(); expect(finish).toHaveBeenCalledOnce();
+  expect(screen.queryByText(/Project deleted/)).toBeNull(); expect(finish).not.toHaveBeenCalled();
   expect(window.location.pathname).not.toBe("/projects");
   act(() => resume());
   expect(await screen.findByText(/Project deleted/)).toBeVisible();
   expect(finish).toHaveBeenCalledOnce();
+});
+
+it("cancels a held publication when its owner unmounts", async () => {
+  const view = render(<Harness />);
+  const resume = pauseAuthRequests(); const finish = vi.fn(async () => {});
+  act(() => state.complete({ projectId, deleted: true }, finish));
+  view.unmount();
+  act(() => resume());
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(finish).not.toHaveBeenCalled();
+  expect(window.location.pathname).not.toBe("/projects");
+});
+
+it("supersedes a held publication for the same project", async () => {
+  render(<Harness />);
+  const resume = pauseAuthRequests();
+  const older = vi.fn(async () => {}), newer = vi.fn(async () => {});
+  act(() => { state.complete({ projectId, deleted: true }, older); state.complete({ projectId, deleted: true }, newer); });
+  expect(older).not.toHaveBeenCalled(); expect(newer).not.toHaveBeenCalled();
+  act(() => resume());
+  expect(await screen.findByText(/Project deleted/)).toBeVisible();
+  expect(older).not.toHaveBeenCalled(); expect(newer).toHaveBeenCalledOnce();
+});
+
+it("does not navigate after leaving and returning to the submission route", async () => {
+  render(<Harness />);
+  const origin = browserNavigation().snapshot();
+  const resume = pauseAuthRequests(); const finish = vi.fn(async () => {});
+  act(() => state.complete({ projectId, deleted: true }, finish, origin));
+  act(() => { navigate("/workers"); navigate(`/projects/${projectId}/settings`); });
+  expect(browserNavigation().snapshot().entryId).not.toBe(origin.entryId);
+  act(() => resume());
+  expect(await screen.findByText(/Project deleted/)).toBeVisible();
+  expect(finish).toHaveBeenCalledOnce();
+  expect(window.location.pathname).toBe(`/projects/${projectId}/settings`);
 });
 
 it("keeps a confirmed receipt visible when cleanup fails and retries only cleanup", async () => {

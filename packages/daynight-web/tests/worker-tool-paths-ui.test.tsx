@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
-import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
+import { WorkerEditingPanels } from '../src/features/workers/configuration/WorkerEditingPanels';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationResponse } from './helpers/worker-configuration';
 import { toolPathConfiguration, toolPathTelemetry } from './helpers/worker-tool-paths';
@@ -27,7 +27,7 @@ const setup = (initial = toolPathConfiguration()) => {
   }));
   return writes;
 };
-const mount = (supported = true) => renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online tasks={[]} platform="macos" {...(supported ? { toolPaths: toolPathTelemetry() } : {})} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
+const mount = (supported = true) => renderWithLocale(<WorkerEditingPanels id="worker-tool-path-test" workerId={workerId(1)} section="configuration" onContinueEditing={() => {}} readEnabled online tasks={[]} platform="macos" {...(supported ? { toolPaths: toolPathTelemetry() } : {})} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const expand = () => {
   const summary = screen.getByText('Tool paths', { selector: 'summary' });
   fireEvent.click(summary);

@@ -16,10 +16,13 @@ Project Settings previews the actual Project and blocking claims and requires
 exact name confirmation. A shared guard serializes its management writes. The
 original identity retains dispatched operations across route changes; a separate
 result owner stores confirmed receipts before withdrawal and navigation. The
-owner uses the dispatch generation for immediate withdrawal, waits for identity
+owner uses the dispatch generation for withdrawal, waits for identity
 admission before publishing results or navigating, and retries local cleanup
-and navigation independently. Standalone pages present the retained result in a
-collapsible region so that other Task controls remain usable. Session fullscreen
+and navigation independently. The initial implementation withdrew immediately
+after a receipt; the [paused-result decision](../bug-fix/2026-11-11-project-deletion-paused-result.md)
+separates that withdrawal from local result settlement. Standalone pages present
+the retained result in a collapsible region so that other Task controls remain
+usable. Session fullscreen
 retains visual viewport dimensions and offsets while reserving the measured
 result-bar height, including when a mobile keyboard changes the visible area. Unknown results allow only
 read-only checks and retain their uncertainty after a 404. The

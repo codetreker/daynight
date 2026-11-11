@@ -29,7 +29,7 @@ const install = async (page: Page) => {
   });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   await page.goto(`/workers/${target}`);
-  await page.locator('#worker-tab-configuration').click();
+  await page.locator('[data-worker-tab="configuration"]:visible').click();
   await expect(page.locator('#config-maxConcurrent')).toHaveValue('2');
   return state;
 };
@@ -78,9 +78,9 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }
       await page.setViewportSize({ width: 1920, height: 900 });
       await page.locator('.sidebar-toggle').click(); await visibleBar(page);
       await page.locator('.sidebar-toggle').click(); await visibleBar(page);
-      await page.locator('#worker-tab-overview').click(); await expect(bar).toBeHidden();
+      await page.locator('[data-worker-tab="overview"]:visible').click(); await expect(bar).toBeHidden();
       await page.setViewportSize(viewport);
-      await page.locator('#worker-tab-configuration').click(); await visibleBar(page);
+      await page.locator('[data-worker-tab="configuration"]:visible').click(); await visibleBar(page);
     }
     for (const fraction of [0, 0.3, 0.6, 1]) {
       await page.evaluate(fraction => { const form = document.querySelector('.configuration-main form')!; window.scrollTo(0, window.scrollY + form.getBoundingClientRect().top + (form.clientHeight - innerHeight) * fraction); }, fraction);

@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import * as configurationApi from '../src/api/worker-configuration';
 import type { WorkerCloudToolPaths } from '../src/api/worker-tool-paths';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
@@ -169,17 +170,89 @@ describe('Worker tool paths in the configuration owner', () => {
     expect(result.current.draft?.toolPaths).toEqual(explicit); expect(result.current.dirty).toBe(true);
   });
 
-  it('does not dispatch a tool save when capability disappears during the API identity wait', async () => {
+  it('settles tool preparation during identity pause and retains capability restrictions after resume', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response()).mockResolvedValueOnce(response('2', explicit)); vi.stubGlobal('fetch', fetch);
     const owner = scope();
     const { result, rerender } = renderHook(({ editable }) => useWorkerConfiguration(workerId(1), { readEnabled: true, toolPathsEditable: editable }), { initialProps: { editable: true }, wrapper: wrapper(owner) });
     await flush(); act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: explicit })));
     let resume!: () => void;
     vi.spyOn(owner, 'ready').mockImplementationOnce(async () => { resume = pauseAuthRequests(); });
-    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
-    expect(result.current.pending).toBe(true); expect(fetch).toHaveBeenCalledTimes(1);
+    let saving!: Promise<void>, settled = false;
+    act(() => { saving = result.current.save(); void saving.then(() => { settled = true; }); }); await flush();
+    expect(settled).toBe(true); expect(result.current.pending).toBe(false); expect(fetch).toHaveBeenCalledTimes(1);
     rerender({ editable: false }); resume(); await act(async () => saving);
+    await act(async () => result.current.save());
     expect(fetch).toHaveBeenCalledTimes(1); expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false);
     expect(result.current.draft?.toolPaths).toEqual(explicit); expect(result.current.dirty).toBe(true);
+  });
+
+  it('keeps a confirmed tool receipt through identity pause without replacing a later raw draft', async () => {
+    const put = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(response()).mockImplementationOnce(() => put.promise);
+    vi.stubGlobal('fetch', fetch);
+    const originalSave = configurationApi.saveWorkerConfiguration; let resume = () => {};
+    const spy = vi.spyOn(configurationApi, 'saveWorkerConfiguration').mockImplementation((id, revision, target, signal, admission) => originalSave(id, revision, target, signal, {
+      ...admission, onConfirmed: receipt => { admission.onConfirmed?.(receipt); resume = pauseAuthRequests(); },
+    }));
+    try {
+      const { result, rerender } = renderHook(({ editable }) => useWorkerConfiguration(workerId(1), { readEnabled: true, toolPathsEditable: editable }), { initialProps: { editable: true }, wrapper: wrapper() });
+      await flush(); act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: explicit })));
+      let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+      put.resolve(response('2', explicit)); await act(async () => saving); await flush();
+      expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false); expect(result.current.publicationPending).toBe(true);
+      expect(result.current.resource?.desired?.value.toolPaths).toEqual(paths);
+      act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: { ...paths, codex: { kind: 'path', path: '' } } })));
+      rerender({ editable: false }); await act(async () => result.current.save()); expect(fetch).toHaveBeenCalledTimes(2);
+      resume(); await flush();
+      expect(result.current.notice).toBe('saved'); expect(result.current.publicationPending).toBe(false);
+      expect(result.current.baselineRevision).toBe('2'); expect(result.current.resource?.desired?.value.toolPaths).toEqual(explicit);
+      expect(result.current.draft?.toolPaths?.codex).toEqual({ kind: 'path', path: '' }); expect(result.current.dirty).toBe(true);
+      expect(result.current.saveableDirty).toBe(false);
+    } finally { resume(); spy.mockRestore(); }
+  });
+
+  it('retains the latest read capability when publishing an older confirmed tool receipt', async () => {
+    const put = deferred<Response>(), enteringPublication = deferred<void>(), releasePublication = deferred<void>(), owner = scope();
+    const fetch = vi.fn().mockResolvedValueOnce(response()).mockImplementationOnce(() => put.promise)
+      .mockResolvedValueOnce(configurationResponse(configurationResource('2')));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true, toolPathsEditable: true }), { wrapper: wrapper(owner) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: explicit })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    const ready = owner.ready.bind(owner);
+    vi.spyOn(owner, 'ready').mockImplementationOnce(async () => { enteringPublication.resolve(); await releasePublication.promise; }).mockImplementation(ready);
+    put.resolve(response('2', explicit)); await act(async () => enteringPublication.promise); await act(async () => saving);
+    expect(result.current.publicationPending).toBe(true);
+    await refresh(result);
+    expect(result.current.notice).toBe('saved'); expect(result.current.uncertain).toBe(false);
+    expect(result.current.resource?.toolPathsSupported).not.toBe(true);
+    releasePublication.resolve(); await flush();
+    expect(result.current.resource?.toolPathsSupported).not.toBe(true);
+    act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: paths })));
+    expect(result.current.saveableDirty).toBe(false);
+    await act(async () => result.current.save());
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+
+  it('settles an interrupted tool PUT locally and keeps legacy reconciliation query-only after resume', async () => {
+    const dispatched = deferred<void>();
+    const fetch = vi.fn().mockResolvedValueOnce(response()).mockImplementationOnce((_url: string, init: RequestInit) => {
+      dispatched.resolve();
+      return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true }));
+    }).mockResolvedValueOnce(configurationResponse(configurationResource('2'))).mockResolvedValueOnce(response('2', explicit));
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ enabled, editable }) => useWorkerConfiguration(workerId(1), { readEnabled: enabled, toolPathsEditable: editable }), { initialProps: { enabled: true, editable: true }, wrapper: wrapper() });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: explicit })));
+    let saving!: Promise<void>, settled = false;
+    act(() => { saving = result.current.save(); void saving.then(() => { settled = true; }); }); await act(async () => dispatched.promise);
+    const resume = pauseAuthRequests(); rerender({ enabled: false, editable: false }); await flush();
+    expect(settled).toBe(true); expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(true);
+    await act(async () => result.current.save()); expect(fetch).toHaveBeenCalledTimes(2);
+    resume(); rerender({ enabled: true, editable: false }); await flush();
+    expect(result.current.uncertain).toBe(true); expect(result.current.draft?.toolPaths).toEqual(explicit);
+    await act(async () => result.current.save()); expect(fetch).toHaveBeenCalledTimes(3);
+    rerender({ enabled: true, editable: true }); await refresh(result); await act(async () => saving);
+    expect(result.current.notice).toBe('reconciled'); expect(result.current.uncertain).toBe(false); expect(result.current.dirty).toBe(false);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
   });
 });

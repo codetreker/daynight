@@ -37,7 +37,7 @@ const install = async (page: Page) => {
 const open = async (page: Page) => {
   await page.goto('/workers');
   await page.locator(`a.worker-card[href="/workers/${target}"]`).click();
-  await page.locator('#worker-tab-configuration').click();
+  await page.locator('[data-worker-tab="prompt"]:visible').click();
   await expect(page.locator('.worker-prompt-text')).toHaveValue('Original prompt');
 };
 const revalidate = async (page: Page) => page.evaluate(() => {
@@ -67,9 +67,20 @@ for (const width of [1280, 390]) test(`${width}px preserves focus, selection and
   // Native input history remains attached to the same textarea across background checks.
   await page.keyboard.insertText('X');
   await expect(input).not.toHaveValue(text);
-  await page.keyboard.press('Control+z'); await expect(input).toHaveValue(text);
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z'); await expect(input).toHaveValue(text);
+  await page.locator('[data-worker-tab="configuration"]:visible').click();
   await page.locator('#config-native-args').fill('[invalid');
+  await page.locator('[data-worker-tab="prompt"]:visible').click();
   await input.focus();
+  await page.keyboard.insertText('X');
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  await expect(input).toHaveValue(text);
+  await page.goBack();
+  await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(page.locator('[data-worker-tab="prompt"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(page.locator('[data-worker-tab="overview"]:visible')).toHaveAttribute('aria-selected', 'true');
   await page.goBack();
   const dialog = page.getByRole('alertdialog'); await expect(dialog).toHaveCount(1);
   await dialog.getByRole('button', { name: /keep editing/i }).click();
@@ -82,4 +93,30 @@ for (const width of [1280, 390]) test(`${width}px preserves focus, selection and
   expect(state.writes[0]).toEqual({ expectedUserId: WORKER_USER, revision: '1', text });
   await expect(page.locator('.worker-prompt').getByText('No unsaved changes')).toBeVisible();
   await expect(page.locator('#config-native-args')).toHaveValue('[invalid');
+});
+
+for (const width of [1280, 390]) test(`${width}px Worker tabs expose selection and keyboard order`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page); await page.goto(`/workers/${target}`);
+  const overview = page.locator('[data-worker-tab="overview"]:visible'), configuration = page.locator('[data-worker-tab="configuration"]:visible'), prompt = page.locator('[data-worker-tab="prompt"]:visible');
+  await expect(overview).toHaveAttribute('aria-selected', 'true');
+  for (const [tab, panel] of [[overview, 'overview'], [configuration, 'configuration'], [prompt, 'prompt']] as const) {
+    const panelElement = page.locator(`.worker-page:visible [data-worker-panel="${panel}"]`);
+    const tabId = await tab.getAttribute('id'), panelId = await panelElement.getAttribute('id');
+    expect(tabId).toBeTruthy(); expect(panelId).toBeTruthy();
+    await expect(tab).toHaveAttribute('aria-controls', panelId!);
+    await expect(panelElement).toHaveAttribute('aria-labelledby', tabId!);
+  }
+  await overview.focus(); await page.keyboard.press('ArrowLeft');
+  await expect(prompt).toBeFocused(); await expect(prompt).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.worker-page:visible [data-worker-panel="prompt"]')).toBeVisible();
+  await expect(page.locator('.worker-page:visible [data-worker-panel="overview"]')).toHaveAttribute('inert', '');
+  await page.keyboard.press('ArrowRight'); await expect(overview).toBeFocused();
+  await page.keyboard.press('ArrowRight'); await expect(configuration).toBeFocused();
+  await page.keyboard.press('End'); await expect(prompt).toBeFocused();
+  await page.keyboard.press('Home'); await expect(overview).toBeFocused();
+  await expect(overview).toHaveAttribute('tabindex', '0');
+  await expect(configuration).toHaveAttribute('tabindex', '-1');
+  await expect(prompt).toHaveAttribute('tabindex', '-1');
+  expect(state.writes).toEqual([]);
 });

@@ -91,6 +91,6 @@ export const installTools = async (page: Page, options: { service?: boolean; wor
 };
 export const openToolConfiguration = async (page: Page) => {
   await page.goto(`/workers/${targetWorker}`);
-  await page.locator('#worker-tab-configuration').click();
+  await page.locator('[data-worker-tab="configuration"]:visible').click();
   await expect(page.locator('#config-maxConcurrent')).toHaveValue('2');
 };

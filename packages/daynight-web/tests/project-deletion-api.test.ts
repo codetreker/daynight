@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invalidateAuthRequests } from "../src/api/client";
+import { invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import { parseServerError } from "../src/api/parse";
 import { deleteProject, isConfirmedProjectDeletionRefusal, previewProjectDeletion } from "../src/api/project-deletion";
 
@@ -43,6 +43,18 @@ describe("project deletion API", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(receipt)));
       await expect(deleteProject(project, user, signal(), vi.fn(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
     }
+  });
+  it("retains the validated receipt when pause starts after dispatch", async () => {
+    const reply = Promise.withResolvers<Response>();
+    const dispatched = vi.fn(), fetch = vi.fn(() => reply.promise); vi.stubGlobal("fetch", fetch);
+    const result = deleteProject(project, user, signal(), vi.fn(), dispatched);
+    await vi.waitFor(() => expect(dispatched).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    try {
+      reply.resolve(response({ projectId: project, deleted: true }));
+      await expect(result).resolves.toEqual({ projectId: project, deleted: true });
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally { resume(); }
   });
   it("distinguishes correlated definite refusals from unknown outcomes", async () => {
     for (const [status, code, details] of [[400, "invalid_input", undefined], [401, "unauthenticated", undefined], [403, "forbidden", undefined], [404, "not_found", undefined], [409, "active_worker_claims", undefined], [500, "internal_error", { writeOutcome: "not_committed" }]] as const) {
