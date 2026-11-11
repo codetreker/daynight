@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, test, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
+import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { readCodexConfiguration } from "../../../src/commands/worker/herdr/codex-config.js";
 
 const directories: string[] = [], operations: Operation[] = [];
@@ -36,3 +37,18 @@ test.skipIf(process.platform === "win32")("cancellation joins the owned configur
   await vi.waitFor(async () => { expect(Number(await readFile(f.pidPath, "utf8"))).toBeGreaterThan(0); }, { timeout: 5000 });
   f.operation.dispose(); await failed; await f.stopped();
 }, 15_000);
+
+
+test("configuration RPC uses the frozen Node and entry after PATH changes, and rejects replacement before spawn", async () => {
+  const f = await fixture();
+  const entry = path.join(f.options.cwd, "selected.mjs"), workerNode = path.join(f.options.cwd, process.platform === "win32" ? "node-a.exe" : "node-a");
+  await copyFile(f.options.executable, entry); await copyFile(process.execPath, workerNode); await chmod(workerNode, 0o755);
+  const toolLaunch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: f.options.cwd, environment: process.env, workerNode }, f.operation);
+  const { executable: _executable, ...base } = f.options;
+  const options = { ...base, environment: { ...base.environment, PATH: "" }, toolLaunch, detached: false };
+  expect(await readCodexConfiguration(options, f.operation)).toMatchObject({ probe: { node: await realpath(workerNode), cwd: f.options.cwd } });
+  await f.stopped(); await rm(f.pidPath);
+  await writeFile(entry, "throw new Error('replacement');");
+  await expect(readCodexConfiguration(options, f.operation)).rejects.toMatchObject({ code: "tool_identity_changed" });
+  await expect(readFile(f.pidPath)).rejects.toMatchObject({ code: "ENOENT" });
+});

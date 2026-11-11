@@ -120,7 +120,7 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform; workerId: string; serverOrigin: string;
-  toolPaths?: { context: ToolContext; snapshot: () => ToolPathTelemetry | undefined };
+  toolPaths?: { context: ToolContext | (() => ToolContext); snapshot: () => ToolPathTelemetry | undefined };
   assistantHost?: { collect: (operation: Operation, codexProbes?: CodexProbeOwner) => Promise<AssistantHostSample | undefined> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
@@ -201,7 +201,7 @@ export const createWorkerTelemetryCollector = (options: {
         if (snapshot !== undefined) { toolPaths = boundToolPathTelemetry(snapshot); sourceToolPaths = snapshot; }
       } catch (error) { issues.push({ component: "toolPaths", code: "unavailable", error }); }
       const selectedVersion = (tool: "codex" | "copilot"): WorkerProbe<string> => {
-        const actual = sourceToolPaths?.entries.find(entry => entry.tool === tool && entry.context === options.toolPaths!.context)?.actual;
+        const actual = sourceToolPaths?.entries.find(entry => entry.tool === tool && entry.context === (typeof options.toolPaths!.context === "function" ? options.toolPaths!.context() : options.toolPaths!.context))?.actual;
         return actual === undefined || actual === null ? { state: "error", checkedAt: toolPaths?.observedAt ?? sampledAt, code: "unavailable" }
           : { state: "ok", checkedAt: actual.checkedAt, value: actual.version };
       };

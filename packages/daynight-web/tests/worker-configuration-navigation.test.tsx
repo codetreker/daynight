@@ -395,7 +395,7 @@ it('retains a confirmed prompt and later draft while leaving and returning to th
   const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { resume = pauseAuthRequests(); } }); scopes.push(scope);
   const save = promptApi.saveWorkerPrompt; const mismatch = workerResponse({}, workerId(99));
   const spy = vi.spyOn(promptApi, 'saveWorkerPrompt').mockImplementation((target, submission, signal, admission) => save(target, submission, signal, {
-    ...admission, onConfirmed: receipt => { admission.onConfirmed?.(receipt); try { assertResponsePrincipal(mismatch, WORKER_USER, scope.principalMismatch); } catch { /* The other principal is rejected. */ } },
+    ...admission, onReceipt: receipt => { admission.onReceipt?.(receipt); try { assertResponsePrincipal(mismatch, WORKER_USER, scope.principalMismatch); } catch { /* The other principal is rejected. */ } },
   }));
   vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
     if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));

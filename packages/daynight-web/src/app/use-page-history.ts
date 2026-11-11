@@ -154,11 +154,11 @@ export function useResourceHistory(userId: string, projectId: string, taskId: st
       if (fence !== null && entryId !== null) fence.entries.set(entryId, generation);
     } });
   }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, taskId, fence, generation, retired, readSelection]);
-  const select = (next: ResourcePageReading, replace = false) => {
+  const select = (next: ResourcePageReading, replace = false, onCommit?: () => void) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (fence !== null && entryId !== null) fence.entries.set(entryId, generation); };
     if (location.entryId !== null && selected === null) navigation.setView(resourceHistory(userId, projectId, taskId, selection), { replace: true, onCommit: record });
-    navigation.setView(resourceHistory(userId, projectId, taskId, next), { replace, onCommit: record });
+    navigation.setView(resourceHistory(userId, projectId, taskId, next), { replace, onCommit: () => { record(); onCommit?.(); } });
   };
   return { selection, select, error };
 }

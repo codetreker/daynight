@@ -19,11 +19,16 @@ import type { BotStore } from "./store.js";
 import type { BotDeletionStop, BotSessionApi } from "./session-api.js";
 import type { BotRecord } from "./types.js";
 import { botNativeConfiguration } from "./configuration.js";
+import { readLaunchToolSelection, writeLaunchToolSelection } from "../../controller/launch-tool-selection.js";
+import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import type { FrozenToolObservation } from "../types.js";
 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
   sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
+  selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
+  toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
   dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController };
 }) => {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
@@ -45,6 +50,9 @@ export const createBotProcess = (options: {
     const intent = record.intent;
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
     const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
+    const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
+    if (toolLaunch !== undefined && (intent.toolLaunch === undefined || controllerPayloadHash(toolLaunch) !== controllerPayloadHash(intent.toolLaunch))
+      || toolObservation !== undefined && (intent.toolObservation === undefined || controllerPayloadHash(toolObservation) !== controllerPayloadHash(intent.toolObservation))) throw new Error("Bot ticket tool selection differs from the original frozen intent.");
     if (config.selection !== undefined) {
       const requiresSelection = native.model !== null || parseProviderArguments(config.provider, native.args, true).effort !== undefined;
       if ((ticket.configuration.validateNativeSelection === true) !== requiresSelection) throw new Error("Bot ticket selection validation conflicts with its frozen configuration.");
@@ -55,8 +63,39 @@ export const createBotProcess = (options: {
       || ticket.provider !== config.provider || ticket.cwd !== config.cwd || ticket.initialInput !== "none" || ticket.initialPrompt !== ""
       || ticket.resumeNativeSessionId !== intent.nativeSessionId
       || ticket.initialOperationId !== intent.initialOperationId || ticket.instructions !== intent.roleConfiguration.instructions || ticket.credentialFile !== intent.credentialFile
-      || controllerPayloadHash(ticket.configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit, ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true } : {}) })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
+      || controllerPayloadHash(configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit, ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true } : {}) })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
     return ticket;
+  };
+  const missingSelection = (record: BotRecord): ToolSelectionError => new ToolSelectionError(record.definition!.resolvedConfiguration.provider as "codex" | "copilot", "web", "launch", "legacy_tool_identity_missing");
+  const assertUnsubmitted = (input: BotRecord): BotRecord => {
+    const record = current(input), intent = record.intent!, execution = options.executions.get(record);
+    if (intent.launchId !== input.intent!.launchId || intent.executionGeneration !== "1" || intent.nativeSessionId !== null
+      || execution !== null && (execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null
+        || execution.recoveryCount !== 0 || execution.restartAfterShutdown || execution.previous !== null || execution.retainedLaunchIds.length !== 0)
+      || readSnapshot(intent.journalPath) !== null) throw missingSelection(record);
+    return record;
+  };
+  const freezePendingSelection = async (input: BotRecord, signal: AbortSignal): Promise<BotRecord> => {
+    let record = current(input);
+    const provider = record.definition!.resolvedConfiguration.provider;
+    if (provider === "claude") return record;
+    let ticket: ControllerLaunchTicket | undefined;
+    try { await readLaunchTicket(options.homeDirectory, record.intent!.launchId); ticket = await checkedTicket(record); }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+    let selected = ticket === undefined ? record.intent!.toolLaunch : await readLaunchToolSelection(options.homeDirectory, ticket);
+    if (selected === undefined) {
+      record = assertUnsubmitted(record);
+      selected = record.intent!.toolLaunch ?? await options.selectToolLaunch?.(provider, signal);
+      if (selected === undefined) throw missingSelection(record);
+      signal.throwIfAborted(); assertUnsubmitted(record);
+      if (ticket !== undefined) await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(record); });
+    }
+    if (record.intent!.toolLaunch === undefined) {
+      assertUnsubmitted(record);
+      options.store.freezeToolLaunch(record, selected, options.toolObservationFor?.(selected));
+      record = current(record);
+    } else if (record.intent!.toolLaunch.selectionKey !== selected.selectionKey) throw new Error("The original Bot ticket tool selection differs from its frozen intent.");
+    return record;
   };
   const sessionRecord = (record: BotRecord): BotRecord => {
     const execution = record.intent === null ? null : options.executions.get(record);
@@ -108,6 +147,8 @@ export const createBotProcess = (options: {
         throw new Error("Bot original writer stop is unproven; IPC is unavailable or the process tree is still running.");
       }
       if (saved.nativeSessionId === null) throw new Error("Bot native session identity is missing; a blank replacement is forbidden.");
+      const toolLaunch = ticket.provider === "claude" ? undefined : record.intent!.toolLaunch ?? await readLaunchToolSelection(options.homeDirectory, ticket);
+      if (ticket.provider !== "claude" && toolLaunch === undefined) throw missingSelection(record);
       if (prior.recoveryBlocked !== null) throw new Error(prior.recoveryBlocked);
       if (!(prior.restartAfterShutdown && saved.error === null) && prior.recoveryCount >= record.intent!.recoveryLimit) {
         const reason = "Bot execution recovery budget is exhausted.";
@@ -117,7 +158,7 @@ export const createBotProcess = (options: {
       signal.throwIfAborted();
       const stopped = await recordStopped(record.intent!.journalPath, ticket);
       options.executions.update(record, { snapshot: stopped });
-      record = options.executions.beginRecovery(record, stopped, options.homeDirectory);
+      record = options.executions.beginRecovery(record, stopped, options.homeDirectory, toolLaunch);
       // A new launch must revalidate CLI owner/server configuration. Old aliases
       // remain listed in durable evidence for precise eventual deletion.
       environments.delete(record.botId);
@@ -126,8 +167,17 @@ export const createBotProcess = (options: {
     // registration only once the initial environment is known to be usable.
     const prepared = await prepareEnvironment(record, signal);
     try {
-      if (record.intent === null) options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: typeof options.recoveryLimit === "function" ? options.recoveryLimit() : options.recoveryLimit });
+      if (record.intent === null) {
+        const provider = record.definition!.resolvedConfiguration.provider;
+        const toolLaunch = provider === "claude" ? undefined : await options.selectToolLaunch?.(provider, signal);
+        if (provider !== "claude" && toolLaunch === undefined) throw missingSelection(record);
+        const toolObservation = toolLaunch === undefined ? undefined : options.toolObservationFor?.(toolLaunch);
+        signal.throwIfAborted(); current(record);
+        options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: typeof options.recoveryLimit === "function" ? options.recoveryLimit() : options.recoveryLimit,
+          ...(toolLaunch === undefined ? {} : { toolLaunch }), ...(toolObservation === undefined ? {} : { toolObservation }) });
+      }
       record = current(record);
+      record = await freezePendingSelection(record, signal);
       options.store.freezeRole(record.owner, record.botId, selectBotRole({ serverRole: record.definition!.roleConfiguration, preparedRole: record.intent!.roleConfiguration }));
       record = current(record);
       options.executions.prepare(record);
@@ -153,6 +203,7 @@ export const createBotProcess = (options: {
           controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, sessionId: intent.sessionId,
           executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId,
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
+            ...(intent.toolLaunch === undefined ? {} : { toolLaunch: intent.toolLaunch }), ...(intent.toolObservation === undefined ? {} : { toolObservation: intent.toolObservation }),
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
@@ -162,6 +213,7 @@ export const createBotProcess = (options: {
       const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };
       const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal, stopProof);
       current(record); signal.throwIfAborted();
+      if (ticket.provider !== "claude" && (await readLaunchToolSelection(options.homeDirectory, ticket))?.selectionKey !== record.intent!.toolLaunch?.selectionKey) throw missingSelection(record);
       await writeControllerCredential(ticket.credentialFile, grant);
       record = current(record);
       return await launch({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, env: prepared.environment, signal,

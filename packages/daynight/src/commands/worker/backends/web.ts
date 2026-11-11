@@ -5,6 +5,8 @@ import path from "node:path";
 import { lstat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { matchesLaunchConfiguration, readLaunchToolSelection } from "../../controller/launch-tool-selection.js";
+import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
@@ -125,6 +127,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const signature = (task: LocalTask, tuple: WorkerPromptTuple): string => JSON.stringify([tuple.user.revision, tuple.project.revision, tuple.worker.revision, task.configuration]);
   const current = (task: LocalTask): LocalTask => { const latest = options.store.getTask(task); if (latest === null || taskAgentControlMode(latest) !== "web") throw new Error("The frozen Web execution disappeared."); return latest; };
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
+  const recoverySelection = async (task: LocalTask, ticket: ControllerLaunchTicket) => {
+    if (task.configuration!.agent === "claude") return undefined;
+    const selected = task.configuration!.toolLaunch ?? await readLaunchToolSelection(options.homeDirectory, ticket);
+    if (selected === undefined) throw new ToolSelectionError(task.configuration!.agent, "web", "launch", "legacy_tool_identity_missing");
+    return selected;
+  };
   const remember = (input: LocalTask, snapshot: ControllerSnapshot): LocalTask => {
     let task = current(input);
     if (!matchesGeneration(task, snapshot)) throw new Error("Controller observation does not match the original execution generation.");
@@ -190,7 +198,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.workerId !== task.workerId || ticket.worktreeId !== task.worktreeId
       || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin || ticket.provider !== task.configuration?.agent
       || ticket.cwd !== task.resources.worktree!.worktreePath || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
-      || JSON.stringify(ticket.configuration) !== JSON.stringify(task.configuration)) throw new Error("Orchestration verification found conflicting original launch ownership.");
+      || !matchesLaunchConfiguration(ticket.configuration, task.configuration!)) throw new Error("Orchestration verification found conflicting original launch ownership.");
     success(task, { kind: "execution", phase: "preparing" }, "web-orchestration-ticket");
     phase(task, { kind: "execution", phase: "agent-observation" });
     const saved = readControllerSnapshot(journal(task));
@@ -294,8 +302,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             const proof = task.webExecution!.controllerProcess;
             if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("Web retry requires complete original controller and native process stop.");
             const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
+            const toolLaunch = await recoverySelection(task, ticket);
             const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
-            task = options.store.beginWebGeneration(task, stopped, options.now());
+            task = options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch);
           }
           success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
         } else if (!retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted" && task.recovery.count >= task.configuration!.recoveryLimit) {
@@ -363,11 +372,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           const proof = task.webExecution!.controllerProcess;
           if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("The original controller is unreachable; its native writer may still be alive and will not be replaced.", { cause: error });
           if (saved.nativeSessionId === null) throw new WebRecoveryBlockedError("native_identity_missing", "The stopped native launch has no proven session identity; recovery cannot create another conversation.");
+          const toolLaunch = await recoverySelection(task, ticket);
           const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
           if (!task.webExecution!.restartAfterShutdown) task = options.store.beginRecovery(task, options.now());
           if (task.recovery.pauseReason !== null) return task;
           recovering = true;
-          task = options.store.beginWebGeneration(task, stopped, options.now());
+          task = options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch);
           success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
           ticket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
           phase(task, { kind: "execution", phase: "agent-start" });

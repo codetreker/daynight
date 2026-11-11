@@ -15,6 +15,8 @@ import type { ControllerLaunchTicket } from "../../../src/commands/controller/la
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+
 export const createWebBackendFixtures = (storage: "memory" | "file") => {
   const children: ChildProcess[] = [];
 
@@ -29,15 +31,15 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
    const store=openWebExecutionStore(storage === "memory" ? createMemoryDatabase() : path.join(home,"worker.sqlite"));stores.push(store);
    const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};
    const identity={...project,taskId:randomUUID(),claimId:randomUUID(),workerId:randomUUID(),worktreeId:randomUUID()};
-   store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit}, userId: randomUUID() }, 1);
+   store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit,...(agent === "claude" ? {} : {toolLaunch:frozenToolLaunch(agent)})}, userId: randomUUID() }, 1);
    const binding={repositoryPath:home,commonDirectory:path.join(home,".git"),worktreePath:path.join(home,".worktrees","daynight",identity.taskId),branch:`daynight/${identity.taskId}`};
    const git={prepareWorktree:vi.fn(async()=>binding),verifyWorktree:vi.fn(async()=>binding),findWorktree:vi.fn(async()=>null),removeWorktree:vi.fn(async()=>{}),prepareRepository:vi.fn(),dispose:vi.fn()} as unknown as WorkerGitManager;
    return {home,store,identity,git};
   };
 
-  const cleanupSource = async (f: Awaited<ReturnType<typeof fixture>>, input: LocalTask) => {
+  const cleanupSource = async (f: Awaited<ReturnType<typeof fixture>>, input: LocalTask, launchSubmission: "acknowledged" | "unknown" = "acknowledged") => {
     let task = input.webExecution === null ? f.store.initializeWebExecution(input, 3) : input;
-    task = f.store.updateWebExecution(task, { sessionId: task.webExecution!.sessionId ?? randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged", controllerProcess: { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) } }, 4);
+    task = f.store.updateWebExecution(task, { sessionId: task.webExecution!.sessionId ?? randomUUID(), initialPrompt: "managed", launchSubmission, controllerProcess: { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) } }, 4);
     const execution = task.webExecution!;
     const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: task.configuration!.agent, cwd: task.resources.worktree?.worktreePath ?? f.home, nativeHome: path.join(f.home, ".native"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: task.resources.nativeSession?.sessionId ?? null, credentialFile: path.join(f.home, "grant.json"), ipcEndpoint: path.join(f.home, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date(0).toISOString() };
     task = f.store.updateWebExecution(task, { ticketPath: await launchTickets.writeLaunchTicket(f.home, ticket) }, 5);

@@ -50,7 +50,7 @@ payload只在明确请求时调用独立GET，不能凭endpoint可见性或已�
 
 delivery.redeliver descriptor固定endpointId、deliveryId、ifVersion、ifGeneration和原destinationRevision，请求body只添加操作元数据。仅202进入重投登记确认：configVersionAfter不变，generationAfter为原ifGeneration+1，目标revision不变。当前Delivery可已到更高generation，不能要求它等于原回执；页面分别显示原登记generation和当前generation，实际发送通过后续GET读取。原事件、body、目标、计划与手动机会由服务端[历史设计](webhook-history.md#重投与执行)裁决，浏览器不生成替代事件或重置预算。
 
-unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，显式核对继续使用原scope。sessionStorage仅存最小prepared metadata，body只在内存；重载后没有body不能重发。只有读取、解析并绑定scope成功的prepared metadata才恢复为unknown；存储不可读或损坏保留明确persistenceError，不宣称原操作回滚或记录已清理，当前文档的新明确提交仍保留完整固定意图和核对ID。删除pending记录核对原operationId，旧控制器不能清除另一个操作；dispose移除内存正文与私有投影。存储清理失败由认证壳继续完成身份隔离并保留可重试的opaque主体记录。
+每次写入或核对拥有独立取消信号，停止和dispose可结束摘要、准入或网络等待并接收迟到错误；尚未派发的操作按拒绝结束，已派发未确认保留unknown，已匹配回执继续为confirmed。停止后的原工作不能发布当前投影或启动核对，收尾只释放原pending。页面把后续读取绑定原操作及身份暂停代次，暂停、新操作和卸载取消该读取；控制器停止会通知其结果发布工作取消，并递增停止代次阻止已停止结果再创建延迟工作。跨暂停的已确认结果由页面持有可取消的延迟发布；恢复准入后仅在原操作、编辑实例、草稿和导航仍匹配时刷新、撤回、关闭或导航。现有临时身份暂停不主动停止在途写入，账户刷新入口负责在最终启用时调用停止入口。unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，显式核对继续使用原scope。sessionStorage仅存最小prepared metadata，body只在内存；重载后没有body不能重发。只有读取、解析并绑定scope成功的prepared metadata才恢复为unknown；存储不可读或损坏保留明确persistenceError，不宣称原操作回滚或记录已清理，当前文档的新明确提交仍保留完整固定意图和核对ID。删除pending记录核对原operationId，旧控制器不能清除另一个操作；dispose移除内存正文与私有投影。存储清理失败由认证壳继续完成身份隔离并保留可重试的opaque主体记录。
 
 回执nullable overlapUntil来自原持久化结果；逻辑到期由数据库时钟决定。GET404和重放410只说明回执当前不可确认，不能证明回滚，详见[回执决策](../../.agents/notes/implemented/bug-fix/2026-11-08-webhook-receipt-results.md)。[浏览器管理决策](../../.agents/notes/implemented/architecture/2026-11-08-webhook-web-management.md)记录共有基础，[投递资料决策](../../.agents/notes/implemented/architecture/2026-11-08-webhook-web-deliveries.md)记录共同观察与原字节验证的原因。
 

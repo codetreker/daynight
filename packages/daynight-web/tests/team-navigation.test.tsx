@@ -7,6 +7,7 @@ import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
+import * as teamsApi from "../src/api/teams";
 
 const render = createLocaleRender("en");
 const userId = "00000000-0000-4000-8000-000000000001", personal = "00000000-0000-4000-8000-000000000002", a = "00000000-0000-4000-8000-000000000003", b = "00000000-0000-4000-8000-000000000004", projectId = "00000000-0000-4000-8000-000000000005";
@@ -117,6 +118,15 @@ describe("Team workspace navigation", () => {
     let identities = 0, firstReads = 0, secondReads = 0, teamReads = 0, tailReads = 0;
     const ready = TaskCacheScope.prototype.ready;
     let listSignal: AbortSignal | undefined, teamSignal: AbortSignal | undefined;
+    const listTeams = teamsApi.listTeams, getTeam = teamsApi.getTeam;
+    vi.spyOn(teamsApi, "listTeams").mockImplementation((cursor, userId, signal, mismatch) => {
+      if (cursor === null && firstReads === 1) listSignal = signal;
+      return listTeams(cursor, userId, signal, mismatch);
+    });
+    vi.spyOn(teamsApi, "getTeam").mockImplementation((teamId, userId, signal, mismatch) => {
+      if (teamId === a && teamReads === 1) teamSignal = signal;
+      return getTeam(teamId, userId, signal, mismatch);
+    });
     let hold: { signal: AbortSignal; reached: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | null = null;
     vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementation(async function (this: TaskCacheScope, signal) {
       await ready.call(this, signal);
@@ -129,8 +139,8 @@ describe("Team workspace navigation", () => {
     };
     const fetcher = install((url, init) => {
       if (url === "/api/v1/me") return ++identities === 2 ? identity.promise : json(person);
-      if (url === `/api/v1/teams/${a}`) { if (++teamReads === 2) { teamSignal = init?.signal ?? undefined; return teamRead.promise; } return json(team(a, "Alpha")); }
-      if (url === "/api/v1/teams?limit=50") { if (++firstReads === 2) { listSignal = init?.signal ?? undefined; return firstPage.promise; } return json({ items: [team(a, "Alpha")], nextCursor: "next" }); }
+      if (url === `/api/v1/teams/${a}`) { if (++teamReads === 2) return teamRead.promise; return json(team(a, "Alpha")); }
+      if (url === "/api/v1/teams?limit=50") { if (++firstReads === 2) return firstPage.promise; return json({ items: [team(a, "Alpha")], nextCursor: "next" }); }
       if (url === "/api/v1/teams?limit=50&cursor=next") return ++secondReads === 2 ? secondPage.promise : json({ items: [team(b, "Beta")], nextCursor: "tail" });
       if (url === "/api/v1/teams?limit=50&cursor=tail-refreshed") { tailReads++; return json({ items: [], nextCursor: null }); }
       if (url.startsWith("/api/v1/projects?")) return json({ items: [project], nextCursor: null });
@@ -503,17 +513,23 @@ describe("Team workspace navigation", () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
     const identity = Promise.withResolvers<Response>(); let meReads = 0;
     const readyGate = Promise.withResolvers<void>(); let holdReady = false, heldReads = 0;
-    const teamReads: { signal: AbortSignal; result: PromiseWithResolvers<Response> }[] = [];
+    const teamReads: PromiseWithResolvers<Response>[] = [];
+    const teamSignals = new Set<AbortSignal>();
+    const getTeam = teamsApi.getTeam;
+    let deferTeam = false;
+    vi.spyOn(teamsApi, "getTeam").mockImplementation((teamId, userId, signal, mismatch) => {
+      if (deferTeam && teamId === a) teamSignals.add(signal);
+      return getTeam(teamId, userId, signal, mismatch);
+    });
     const ready = TaskCacheScope.prototype.ready;
     vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementation(async function (this: TaskCacheScope, signal) {
       await ready.call(this, signal);
-      if (holdReady && teamReads.some((read) => read.signal === signal)) { heldReads++; await readyGate.promise; signal.throwIfAborted(); }
+      if (holdReady && teamSignals.has(signal)) { heldReads++; await readyGate.promise; signal.throwIfAborted(); }
     });
-    let deferTeam = false;
     const fetcher = install((url, init) => {
       if (url === "/api/v1/me" && ++meReads === 2) return identity.promise;
       if (deferTeam && url === `/api/v1/teams/${a}` && !init?.method) {
-        const result = Promise.withResolvers<Response>(); teamReads.push({ signal: init!.signal as AbortSignal, result }); return result.promise;
+        const result = Promise.withResolvers<Response>(); teamReads.push(result); return result.promise;
       }
       return undefined;
     });
@@ -534,7 +550,7 @@ describe("Team workspace navigation", () => {
     await waitForState(() => expect(meReads).toBe(2)); check();
     await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
     await waitForState(() => expect(teamReads.length).toBeGreaterThanOrEqual(2)); check();
-    holdReady = true; await act(async () => { for (const read of teamReads) read.result.resolve(json(team(a, "  Alpha  "))); });
+    holdReady = true; await act(async () => { for (const read of teamReads) read.resolve(json(team(a, "  Alpha  "))); });
     await waitForState(() => expect(heldReads).toBeGreaterThanOrEqual(2)); check();
     holdReady = false; await act(async () => readyGate.resolve()); check();
   });

@@ -59,6 +59,14 @@ export const isAbortError = (error: unknown): boolean =>
 
 let authGeneration = 0;
 let authPauseRevision = 0;
+let authNetwork = new AbortController();
+const responseSignals = new WeakMap<Response, AbortSignal>();
+export const cancelAuthNetworkRequests = (): void => {
+  const previous = authNetwork;
+  authNetwork = new AbortController();
+  previous.abort();
+};
+export const responseSignal = (response: Response, fallback: AbortSignal): AbortSignal => responseSignals.get(response) ?? fallback;
 export const readAuthRequestGeneration = (): number => authGeneration;
 const unauthorizedListeners = new Set<() => void>();
 const authPauseListeners = new Set<() => void>();
@@ -114,6 +122,7 @@ export const waitForAuthRequests = async (signal: AbortSignal): Promise<void> =>
 };
 
 export const assertResponsePrincipal = (response: Response, expectedUserId: string, onMismatch?: () => void): void => {
+  responseSignals.get(response)?.throwIfAborted();
   const expected = requestId(expectedUserId);
   // Unauthenticated responses use the existing session-expiry lifecycle.
   if (response.status === 401) return;
@@ -128,7 +137,8 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
 export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void, onUnauthorized?: () => void): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
-  if (url !== "/api/v1/me" && url !== "/api/v1/auth/logout") {
+  const ordinary = url !== "/api/v1/me" && url !== "/api/v1/auth/logout";
+  if (ordinary) {
     while (authPause !== null) {
       await waitForIdentity(authPause, signal);
       signal.throwIfAborted();
@@ -138,42 +148,53 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   let response: Response;
   // Identity waits must not start a caller's network deadline.
   onDispatch?.();
+  const networkSignal = ordinary ? AbortSignal.any([signal, authNetwork.signal]) : signal;
+  networkSignal.throwIfAborted();
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
     const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
-    response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal, credentials: "same-origin", redirect: "error" });
+    response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal: networkSignal, credentials: "same-origin", redirect: "error" });
   } catch (error) {
-    signal.throwIfAborted();
+    networkSignal.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("network", null, "network", null, error);
   }
-  signal.throwIfAborted();
+  networkSignal.throwIfAborted();
+  responseSignals.set(response, networkSignal);
   if (response.status === 401 && generation === authGeneration) {
     onUnauthorized?.();
     for (const listener of unauthorizedListeners) listener();
   }
+  networkSignal.throwIfAborted();
   return response;
 };
 
 export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false, onServerError?: (error: ApiError) => void): Promise<T> => {
+  const lifetime = responseSignal(response, signal);
   let body: unknown;
   try {
+    lifetime.throwIfAborted();
     const contentType = response.headers.get("Content-Type");
     if (contentType === null || !/^application\/json(?:\s*;|\s*$)/i.test(contentType)) throw new Error("Invalid media type");
     body = await decode(response);
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
   } catch (error) {
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, error);
   }
   try {
-    if (response.ok) return parse(body);
+    if (response.ok) {
+      const result = parse(body);
+      lifetime.throwIfAborted();
+      return result;
+    }
     const serverError = parseServerError(body, includeStepsError);
     const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
     onServerError?.(error);
     throw error;
   } catch (error) {
+    lifetime.throwIfAborted();
     if (error instanceof ApiError) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, error);
   }
@@ -308,6 +329,7 @@ export const getTaskObservation = async (projectId: string, taskId: string, sign
   const header = response.headers.get("Daynight-Task-Epoch");
   if (header === null || canonicalId(header) !== header) throw new ApiError("protocol", response.status);
   const detail = await json(response, signal, (data) => parseTaskDetail(data, project, task));
+  responseSignal(response, signal).throwIfAborted();
   return { epoch: header, detail };
 };
 
@@ -330,7 +352,7 @@ export const deleteTask = async (
     body: stringifyApiJson({ version: exactVersion, removeDepends }),
   }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
-  if (response.status === 204) { admission.onWriteConfirmed?.(); return; }
+  if (response.status === 204) { admission.onWriteConfirmed?.(); responseSignal(response, signal).throwIfAborted(); return; }
   if (response.ok) throw new ApiError("protocol", response.status);
   await json(response, signal, () => { throw new ApiError("protocol", response.status); }, undefined, false, admission.onWriteRejected);
 };
@@ -516,20 +538,23 @@ export const putAttachment = async (
 
 export const removeAttachment = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<void> => {
   const response = await request(attachmentDownloadUrl(projectId, taskId, path), signal, { method: "DELETE", redirect: "error" });
+  responseSignal(response, signal).throwIfAborted();
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 204) throw new ApiError("protocol", response.status);
 };
 
 export const readAttachmentText = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<string> => {
   const response = await request(attachmentDownloadUrl(projectId, taskId, path), signal);
+  const lifetime = responseSignal(response, signal);
+  lifetime.throwIfAborted();
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 200) throw new ApiError("protocol", response.status);
   try {
     const text = await response.text();
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
     return text;
   } catch (error) {
-    signal.throwIfAborted();
+    lifetime.throwIfAborted();
     if (isAbortError(error)) throw error;
     throw new ApiError("network", response.status, "network", null, error);
   }
@@ -537,6 +562,7 @@ export const readAttachmentText = async (projectId: string, taskId: string, path
 
 export const checkAttachmentPreview = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<void> => {
   const response = await request(attachmentPreviewUrl(projectId, taskId, path), signal, { method: "HEAD" });
+  responseSignal(response, signal).throwIfAborted();
   if (!response.ok) {
     const header = response.headers.get("X-Request-ID");
     const requestId = header !== null && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(header) ? header : null;

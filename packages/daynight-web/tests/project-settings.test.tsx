@@ -2,7 +2,7 @@ import { directAccessFixture } from "./helpers/taskSync";
 import { TestTaskCacheBoundary } from "./helpers/taskCache";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, assertResponsePrincipal, getTask, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
+import { ApiError, assertResponsePrincipal, cancelAuthNetworkRequests, getTask, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import { getProject, saveProjectSettings } from "../src/api/project-settings";
 import * as settingsApi from "../src/api/project-settings";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
@@ -732,4 +732,29 @@ it('does not publish an old paused rejection into a replacement settings owner',
     expect(screen.getByText('no rejection')).toBeInTheDocument(); expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument();
     expect(oldRetention.mock.calls).toHaveLength(retentionCalls); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
   } finally { resume(); view.unmount(); oldScope.dispose(); newScope.dispose(); }
+});
+
+it('treats a cancelled dispatched settings write as unknown even if a late 404 arrives', async () => {
+  const saving = deferred<Response>();
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const fetcher = install((url, init) => init.method === 'PATCH' ? saving.promise : url.endsWith('/members') ? json(members()) : json(project()));
+  let completion: Promise<void> | undefined;
+  const Probe = () => {
+    const state = useProjectSettings(id, userId, true, true);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? 'pending' : 'idle'}</span><span>{state.uncertain ? 'unknown' : 'known'}</span><span>{state.unavailable ? 'unavailable' : 'available'}</span><span>{state.project?.name}</span></>;
+  };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  let resume = () => {};
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1));
+    const network = fetcher.mock.calls.find(([, init]) => init.method === 'PATCH')![1].signal as AbortSignal;
+    act(() => { resume = pauseAuthRequests(); cancelAuthNetworkRequests(); }); expect(network.aborted).toBe(true);
+    await act(async () => { saving.resolve(fail(404, 'not_found')); await completion; });
+    expect(screen.getByText('idle')).toBeInTheDocument(); expect(screen.getByText('unknown')).toBeInTheDocument();
+    expect(screen.getByText('available')).toBeInTheDocument(); expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    act(() => resume()); await act(async () => { await Promise.resolve(); });
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { resume(); view.unmount(); scope.dispose(); }
 });

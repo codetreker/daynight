@@ -289,7 +289,7 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 服务在同一事务中复核 Session，撤销按 grant、Session、access 锁序执行并在等待后重新检查到期。
 网页核对响应主体并独立维护授权列表与 PAT 状态。提交前按账户在 `sessionStorage` 保存无秘密的 grant ID；
 存储不可用时不派发撤销。撤销结果未知时保留目标并等待显式读取，即使离开页面或刷新也不自动重放。
-读取只说明当前状态，不推断原响应；账户变化时丢弃旧账户界面状态。
+读取只说明当前状态，不推断原响应；账户变化时丢弃旧账户界面状态。撤销操作持有自己的取消信号并记录实际派发，准入等待被暂停时取消尚未派发的操作；已派发但未确认的结果仍需显式核对。可信回执和本地 pending 先独立结算，不等待身份准入或列表读取。已确认结果的后续读取由原面板持有可取消的工作，在准入恢复后才能开始；暂停会取消进行中的核对读取，面板销毁或新工作替代时取消旧发布。普通列表读取的结果仍等待准入后安装。关闭对话框还需匹配原实例和可见上下文，避免旧结果覆盖后续交互。
 
 明确的 Authorization 优先；重复、格式错误或无效 Bearer 返回 401，不回退 Cookie。
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
@@ -513,6 +513,13 @@ Team 邀请提交捕获确认框实例与路由或分区可见性变化序号；
 [前台身份核验决策](../../.agents/notes/archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
+
+普通 API 请求另有独立的内存网络 lifetime。通过身份等待后，派发时组合调用方信号与当前
+网络信号；响应正文读取及返回检查使用同一组合信号并保留取消原因。显式调用
+`cancelAuthNetworkRequests()` 先轮换 lifetime，再取消旧 lifetime 中的在途请求和正文读取，
+因此同步取消回调中发出的新请求使用新 lifetime。该能力不改变身份 generation 或等待状态，
+也不由隐藏或失焦触发；`/me` 和退出继续使用各自的调用方 controller。取消已派发请求不能
+证明服务端写入回滚。决策及取舍见[普通请求网络取消](../../.agents/notes/implemented/architecture/2026-11-11-auth-network-cancellation.md)。
 
 `app/account-signal.ts` 提供独立的同源账户变化提示能力，尚未接入上述认证生命周期。它在 `daynight.activeUser` 保存 JSON 编码的规范小写 UUID 或明确的 `null`；缺失是未知，非法记录和存储失败保留错误，不作为认证证据。成功写入后通过 `daynight-identity` 频道发送固定的 `identity-changed` 提示；接收事件、storage clear 和前台恢复只通知订阅者读取当前记录。相同值不重复写入或发送。写入成功但通知失败时，补发先检查记录仍为预期值，仅发送通知；其他已知值表示被取代。释放 owner 会移除监听并关闭频道。完成结果只证明本地步骤，不保证其他标签页已处理；模块不调用 `/me` 或授予业务权限。[账户信号决策](../../.agents/notes/implemented/architecture/2026-11-11-account-change-signal.md)记录格式、分阶段失败及其取舍。
 

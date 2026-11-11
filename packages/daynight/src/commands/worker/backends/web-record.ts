@@ -2,6 +2,8 @@ import { parseSessionStartupReport } from "../../../session/startup.js";
 import path from "node:path";
 import { canonicalId } from "../../../api/parse.js";
 import { normalizeServerUrl } from "../../../config/server.js";
+import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
+import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration } from "../types.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, ExecutionSummary } from "./web-types.js";
 
@@ -43,12 +45,18 @@ const version = (value: unknown): string => {
 };
 const parseConfiguration = (value: unknown): FrozenExecutionConfiguration => {
   const selection = typeof value === "object" && value !== null && Object.hasOwn(value, "validateNativeSelection");
-  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : [])], "Frozen execution configuration");
+  const launch = typeof value === "object" && value !== null && Object.hasOwn(value, "toolLaunch");
+  const observation = typeof value === "object" && value !== null && Object.hasOwn(value, "toolObservation");
+  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : []), ...(launch ? ["toolLaunch"] : []), ...(observation ? ["toolObservation"] : [])], "Frozen execution configuration");
+  if (observation && !launch) throw new Error("Frozen tool observation requires its original recipe.");
   if (selection && data.validateNativeSelection !== true) throw new Error("Native selection validation must be enabled when present.");
   if (!Array.isArray(data.args)) throw new Error("Agent arguments must be an array.");
   const agentControlMode = oneOf(data.agentControlMode, ["web"], "Web agent control mode");
+  if (launch && data.agent !== "codex" && data.agent !== "copilot") throw new Error("A Web tool launch requires Codex or Copilot.");
   return { agent: oneOf(data.agent, ["copilot", "codex", "claude"], "Web execution agent"), agentControlMode, model: nullable(data.model, (entry) => text(entry, "Model")),
-    args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit"), ...(selection ? { validateNativeSelection: true as const } : {}) };
+    args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit"), ...(selection ? { validateNativeSelection: true as const } : {}),
+    ...(launch ? { toolLaunch: parseResolvedToolLaunch(data.toolLaunch, { tool: data.agent as "codex" | "copilot", context: "web" }) } : {}),
+    ...(observation ? { toolObservation: parseFrozenToolObservation(data.toolObservation) } : {}) };
 };
 const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");

@@ -14,13 +14,13 @@ export { captureToolEnvironment } from "./tool-environment.js";
 export { copilotExecutable } from "./tool-launchers.js";
 
 export type ToolArtifact = {
-  role: "entry" | "shim" | "interpreter" | "runtime" | "manifest";
+  role: "entry" | "shim" | "interpreter" | "runtime" | "manifest" | "support";
   path: string;
   realPath: string;
   size: string;
   sha256: string;
 };
-export type ResolvedToolLaunch = {
+export type PlainResolvedToolLaunch = {
   schemaVersion: 1;
   tool: Tool;
   context: ToolContext;
@@ -33,6 +33,17 @@ export type ResolvedToolLaunch = {
   artifacts: ToolArtifact[];
   selectionKey: string;
 };
+export type CopilotAuthorityProfile = {
+  kind: "copilot-read-authority-v1";
+  sourceLaunch: PlainResolvedToolLaunch;
+  materializationKey: string;
+  root: string;
+  manifestPath: string;
+  preloadPath: string;
+  sdkVersion: "1.0.11";
+  authorityProtocol: "daynight.copilot.read.v1";
+};
+export type ResolvedToolLaunch = PlainResolvedToolLaunch & { runtimeProfile?: CopilotAuthorityProfile };
 export type ToolSelectionCode = "not_found" | "permission_denied" | "not_executable" | "unsupported_launcher" | "unrecognized_output" |
   "incompatible_runtime" | "probe_timeout" | "cleanup_unknown" | "tool_identity_changed" | "legacy_tool_identity_missing" | "cancelled" | "invalid_path" | "io_error";
 export class ToolSelectionError extends Error {
@@ -60,14 +71,20 @@ const digestCapacity = 128;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const ordered = (artifacts: ToolArtifact[]) => [...artifacts].sort((a, b) => compare(a.role, b.role) || compare(a.path, b.path));
-const selectionKey = (launch: Omit<ResolvedToolLaunch, "selectionKey">): string => hash({
+export const toolSelectionKey = (launch: Omit<ResolvedToolLaunch, "selectionKey">): string => hash({
   schemaVersion: launch.schemaVersion, tool: launch.tool, context: launch.context,
   canonicalEntryPath: launch.canonicalEntryPath, executablePath: launch.executablePath, interpreterPath: launch.interpreterPath,
   command: launch.command, artifacts: ordered(launch.artifacts),
+  ...(launch.runtimeProfile === undefined ? {} : { runtimeProfile: {
+    kind: launch.runtimeProfile.kind, sourceSelectionKey: launch.runtimeProfile.sourceLaunch.selectionKey,
+    materializationKey: launch.runtimeProfile.materializationKey, root: launch.runtimeProfile.root,
+    manifestPath: launch.runtimeProfile.manifestPath, preloadPath: launch.runtimeProfile.preloadPath,
+    sdkVersion: launch.runtimeProfile.sdkVersion, authorityProtocol: launch.runtimeProfile.authorityProtocol,
+  } }),
 });
 
 /** Stream file content under the operation deadline and reject replacement during observation. */
-const fingerprint = async (input: Pick<ToolArtifact, "role" | "path"> & { parsedPrefix?: { bytes: number; sha256: string } }, operation: Operation): Promise<ToolArtifact> => {
+export const fingerprintToolArtifact = async (input: Pick<ToolArtifact, "role" | "path"> & { parsedPrefix?: { bytes: number; sha256: string } }, operation: Operation): Promise<ToolArtifact> => {
   operation.check();
   const realPath = await withinOperation(realpath(input.path), operation);
   const handle = await openRegularToolFile(realPath, operation);
@@ -149,7 +166,7 @@ export const resolveToolLaunch = async (input: {
     const artifacts: ToolArtifact[] = [];
     for (const candidate of sources) {
       if (candidate.role === "runtime") await executable(candidate.path, operation);
-      const artifact = await fingerprint(candidate, operation);
+      const artifact = await fingerprintToolArtifact(candidate, operation);
       if ("parsedSha256" in candidate && candidate.parsedSha256 !== undefined && artifact.sha256 !== candidate.parsedSha256) changed();
       if (!artifacts.some(item => item.role === artifact.role && item.path === artifact.path)) artifacts.push(artifact);
     }
@@ -158,17 +175,22 @@ export const resolveToolLaunch = async (input: {
     if (!artifacts.some(item => item.role === executableRole && item.realPath === launcher.executablePath)) changed();
     if (interpreterPath !== null && !artifacts.some(item => item.role === "interpreter" && item.realPath === interpreterPath)) changed();
     const value: Omit<ResolvedToolLaunch, "selectionKey"> = { schemaVersion: 1, tool, context, source, entryPath, canonicalEntryPath, executablePath: launcher.executablePath, interpreterPath, command, artifacts: ordered(artifacts) };
-    const launch = { ...value, selectionKey: selectionKey(value) };
+    const launch = { ...value, selectionKey: toolSelectionKey(value) };
     await verifyToolLaunch(launch, operation);
     return launch;
   } catch (error) { throw new ToolSelectionError(tool, context, "resolve", errorCode(operation.signal.aborted ? operation.signal.reason : error), { cause: error }); }
 };
 
 /** Recheck the frozen files and mappings without reading current configuration or searching PATH. */
-export const verifyToolLaunch = async (launch: ResolvedToolLaunch, operation: Operation): Promise<void> => {
+export const verifyToolLaunch = async (launch: ResolvedToolLaunch, operation: Operation, options: { trustedRuntimeRoot?: string } = {}): Promise<void> => {
   try {
     operation.check();
-    if (launch.schemaVersion !== 1 || selectionKey(launch) !== launch.selectionKey) changed();
+    if (launch.schemaVersion !== 1 || toolSelectionKey(launch) !== launch.selectionKey) changed();
+    if (launch.runtimeProfile !== undefined) {
+      const { verifyCopilotToolProfile } = await import("./tool-runtime-profile.js");
+      await verifyCopilotToolProfile(launch, operation, options.trustedRuntimeRoot);
+      return;
+    }
     if (await withinOperation(realpath(launch.entryPath), operation) !== launch.canonicalEntryPath) changed();
     // A loader can select a newly installed, higher-priority platform package
     // while every old file still exists. Recheck its static selection as well
@@ -180,7 +202,7 @@ export const verifyToolLaunch = async (launch: ResolvedToolLaunch, operation: Op
       JSON.stringify(mappings(launcher.artifacts)) !== JSON.stringify(mappings(launch.artifacts.filter(item => item.role !== "interpreter")))) changed();
     for (const artifact of launch.artifacts) {
       const parsed = launcher.artifacts.find(item => item.role === artifact.role && item.path === artifact.path);
-      const current = await fingerprint({ role: artifact.role, path: artifact.path, ...(parsed?.parsedPrefix === undefined ? {} : { parsedPrefix: parsed.parsedPrefix }) }, operation);
+      const current = await fingerprintToolArtifact({ role: artifact.role, path: artifact.path, ...(parsed?.parsedPrefix === undefined ? {} : { parsedPrefix: parsed.parsedPrefix }) }, operation);
       if (current.realPath !== artifact.realPath || current.size !== artifact.size || current.sha256 !== artifact.sha256) changed();
       if (parsed?.parsedSha256 !== undefined && parsed.parsedSha256 !== current.sha256) changed();
       if (artifact.role === "runtime") await executable(artifact.path, operation);
@@ -201,6 +223,7 @@ export const probeResourceKey = (launch: ResolvedToolLaunch, scope: { cwd: strin
   artifacts.sort((a, b) => compare(a.role, b.role) || compare(a.realPath, b.realPath));
   const environment = captureToolEnvironment(scope.environment);
   return hash({ tool: launch.tool, command: launch.command, artifacts, cwd: scope.cwd,
+    ...(launch.runtimeProfile === undefined ? {} : { runtimeProfile: launch.runtimeProfile.kind }),
     // PATH selects an entry only at resolution. Reintroducing it here would let
     // auto and an absolute alias evade the same unresolved cleanup owner.
     // Capture already normalizes Windows search keys; POSIX names stay case-sensitive.

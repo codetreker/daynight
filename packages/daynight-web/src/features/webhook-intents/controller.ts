@@ -1,4 +1,4 @@
-import { ApiError } from "../../api/client";
+import { ApiError, authRequestsPaused } from "../../api/client";
 import {
   decodeWebhookJson, getWebhookOperation, isWebhookIssuedAt, parseWebhookEventType, parseWebhookOwner, submitWebhookMutation, webhookVersion,
   type WebhookAdmission, type WebhookConfigurationInput, type WebhookMutationResult, type WebhookOperationKind, type WebhookOwner, type WebhookReceipt,
@@ -64,6 +64,15 @@ class WebhookIntentBusy extends Error {
     this.name = "WebhookIntentBusy";
   }
 }
+// Some preparation and transport dependencies cannot be interrupted themselves.
+// Detach their result on cancellation while retaining a rejection handler.
+const cancellable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  const abort = () => { cleanup(); reject(signal.reason); };
+  const cleanup = () => signal.removeEventListener("abort", abort);
+  if (signal.aborted) { void work.catch(() => {}); reject(signal.reason); return; }
+  signal.addEventListener("abort", abort, { once: true });
+  work.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+});
 const prefix = "daynight.webhook.pending:";
 const kindChoices: readonly WebhookOperationKind[] = ["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate", "delivery.redeliver"];
 const invalid = (): never => { throw new ApiError("protocol"); };
@@ -152,9 +161,12 @@ export class WebhookIntentController {
   readonly #key: string;
   readonly #lifetime = new AbortController();
   readonly #listeners = new Set<() => void>();
+  readonly #stopListeners = new Set<() => void>();
+  #stopRevision = 0;
   #state: WebhookIntentState = { phase: "idle", prepared: null, result: null, error: null, reconciling: false, persistenceError: null };
   #pending: Promise<WebhookIntentState> | null = null;
   #pendingKind: "write" | "reconcile" | null = null;
+  #activeOperation: AbortController | null = null;
   #body: string | null = null;
   #disposed = false;
 
@@ -196,7 +208,11 @@ export class WebhookIntentController {
     }
     catch (persistenceError) { this.#publish({ ...this.#state, persistenceError }); }
   }
-  #signal = (): AbortSignal => AbortSignal.any([this.#options.signal, this.#lifetime.signal]);
+  #operation = (): { signal: AbortSignal; release: () => void } => {
+    const controller = new AbortController();
+    this.#activeOperation = controller;
+    return { signal: AbortSignal.any([this.#options.signal, this.#lifetime.signal, controller.signal]), release: () => { if (this.#activeOperation === controller) this.#activeOperation = null; } };
+  };
 
   submit = (input: WebhookIntentInput): Promise<WebhookIntentState> => {
     if (this.#pending !== null) {
@@ -204,8 +220,8 @@ export class WebhookIntentController {
       return this.#pending;
     }
     if (this.#state.phase === "unknown") return Promise.resolve(this.#state);
-    const signal = this.#signal();
-    signal.throwIfAborted();
+    const lifetime = AbortSignal.any([this.#options.signal, this.#lifetime.signal]);
+    lifetime.throwIfAborted();
     const body = inputBody(input), create = input.kind === "endpoint.create", redeliver = input.kind === "delivery.redeliver";
     const endpointId = create ? null : uuid(input.endpointId), ifVersion = create ? null : webhookVersion(input.ifVersion);
     if (create && (input.endpointId !== undefined || input.ifVersion !== undefined)) return invalid();
@@ -220,11 +236,13 @@ export class WebhookIntentController {
     const bytes = new TextEncoder().encode(serializedBody);
     if (bytes.length > 262_144) return invalid();
     this.#body = serializedBody;
-    const pending = Promise.resolve().then(() => this.#prepareAndSubmit(kind, target, operationId, issuedAt, bytes, signal));
+    const operation = this.#operation();
+    const pending = Promise.resolve().then(() => this.#prepareAndSubmit(kind, target, operationId, issuedAt, bytes, operation.signal));
     this.#pending = pending;
     this.#pendingKind = "write";
     this.#publish({ ...this.#state, phase: "preparing", prepared: null, result: null, error: null, reconciling: false });
-    void pending.then(() => { if (this.#pending === pending) { this.#pending = null; this.#pendingKind = null; } });
+    const finish = () => { operation.release(); if (this.#pending === pending) { this.#pending = null; this.#pendingKind = null; } };
+    void pending.then(finish, finish);
     return pending;
   };
 
@@ -232,11 +250,14 @@ export class WebhookIntentController {
     const { endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision } = target;
     let dispatched = false;
     try {
-      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      signal.throwIfAborted();
+      const digest = await cancellable(crypto.subtle.digest("SHA-256", bytes), signal);
       signal.throwIfAborted();
       const prepared: WebhookPreparedMetadata = { serviceOrigin: this.#options.serviceOrigin, actorUserId: this.#options.admission.userId, owner: this.#options.owner, operationId, issuedAt, requestSha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join(""), kind, endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision };
       this.#publish({ ...this.#state, phase: "submitting", prepared });
+      signal.throwIfAborted();
       this.#persist(prepared);
+      signal.throwIfAborted();
       const admission: WebhookAdmission = { ...this.#options.admission, ready: async requestSignal => {
         await this.#options.admission.ready?.(requestSignal);
         requestSignal.throwIfAborted();
@@ -244,15 +265,18 @@ export class WebhookIntentController {
       } };
       const body = this.#body;
       if (body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
-      const result = await submitWebhookMutation(prepared.owner, kind, endpointId, operationId, body, signal, admission, receipt => {
+      const result = await cancellable(submitWebhookMutation(prepared.owner, kind, endpointId, operationId, body, signal, admission, receipt => {
+        signal.throwIfAborted();
         assertWebhookReceiptMatches(receipt, prepared);
         this.#publish({ ...this.#state, phase: "confirmed", result: { operation: receipt }, error: null });
         this.#persist(null);
       }, () => {
+        signal.throwIfAborted();
         if (this.#body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
         if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind, target)) throw new ApiError("server", 503, "webhooks_unavailable");
         dispatched = true;
-      }, deliveryId);
+      }, deliveryId), signal);
+      signal.throwIfAborted();
       this.#body = null;
       return this.#publish({ ...this.#state, phase: "confirmed", result, error: result.currentError ?? null });
     } catch (error) {
@@ -260,7 +284,7 @@ export class WebhookIntentController {
       const definite = !dispatched || error instanceof ApiError && error.kind === "server" && error.status !== null && error.status < 500;
       if (definite) { this.#body = null; this.#persist(null); }
       this.#publish({ ...this.#state, phase: definite ? "rejected" : "unknown", error });
-      if (!definite && !signal.aborted) return this.#observe(signal);
+      if (!definite && !signal.aborted && !authRequestsPaused()) return this.#observe(signal);
       return this.#state;
     }
   }
@@ -269,20 +293,26 @@ export class WebhookIntentController {
     if (this.#pending !== null) return this.#pending;
     const prepared = this.#state.prepared;
     if (prepared === null || this.#state.phase !== "unknown" && this.#state.phase !== "confirmed") return Promise.resolve(this.#state);
-    const signal = this.#signal();
-    signal.throwIfAborted();
-    const pending = Promise.resolve().then(() => this.#observe(signal));
+    const lifetime = AbortSignal.any([this.#options.signal, this.#lifetime.signal]);
+    lifetime.throwIfAborted();
+    if (authRequestsPaused()) return Promise.resolve(this.#state);
+    const operation = this.#operation();
+    const pending = Promise.resolve().then(() => this.#observe(operation.signal));
     this.#pending = pending;
     this.#pendingKind = "reconcile";
-    void pending.then(() => { if (this.#pending === pending) { this.#pending = null; this.#pendingKind = null; } });
+    const finish = () => { operation.release(); if (this.#pending === pending) { this.#pending = null; this.#pendingKind = null; } };
+    void pending.then(finish, finish);
     return pending;
   };
 
   #observe(signal: AbortSignal): Promise<WebhookIntentState> {
+    if (signal.aborted || authRequestsPaused()) return Promise.resolve(this.#state);
     const prepared = this.#state.prepared!;
     this.#pendingKind = "reconcile";
     this.#publish({ ...this.#state, reconciling: true });
-    return getWebhookOperation(prepared.owner, prepared.operationId, signal, this.#options.admission).then(receipt => {
+    if (signal.aborted || authRequestsPaused()) return Promise.resolve(this.#publish({ ...this.#state, reconciling: false }));
+    return cancellable(getWebhookOperation(prepared.owner, prepared.operationId, signal, this.#options.admission), signal).then(receipt => {
+      signal.throwIfAborted();
       assertWebhookReceiptMatches(receipt, prepared);
       const confirmed = this.#state.phase === "confirmed" ? this.#state.result : null;
       if (confirmed !== null) assertReceiptUnchanged(receipt, confirmed.operation);
@@ -300,10 +330,21 @@ export class WebhookIntentController {
     this.#publish({ ...this.#state, result: retained });
   };
 
+  getStopRevision = (): number => this.#stopRevision;
+  subscribeStop = (listener: () => void): (() => void) => { this.#stopListeners.add(listener); return () => this.#stopListeners.delete(listener); };
+  /** Stop the current intent and its owned publication; later operations have their own lifetime. */
+  stopPending = (): void => {
+    this.#stopRevision++;
+    this.#activeOperation?.abort();
+    for (const listener of this.#stopListeners) listener();
+  };
+
   dispose = (): void => {
     this.#disposed = true;
+    this.stopPending();
     this.#lifetime.abort();
     this.#listeners.clear();
+    this.#stopListeners.clear();
     this.#body = null;
     this.#state = { ...this.#state, result: this.#state.result === null ? null : { operation: this.#state.result.operation }, error: null };
   };

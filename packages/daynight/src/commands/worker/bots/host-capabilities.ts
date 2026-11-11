@@ -1,3 +1,5 @@
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { createWorkerToolInspector } from "../native-selection.js";
 import { constants, existsSync } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -65,6 +67,9 @@ export const createAssistantHostCollector = (options: {
   configuration: ExecutionConfiguration | (() => ExecutionConfiguration);
   environment: NodeJS.ProcessEnv;
   resolveExecutable?: (provider: WorkerAgent) => string;
+  selectToolLaunch?: (provider: WorkerAgent, operation: Operation) => Promise<ResolvedToolLaunch | undefined>;
+  toolRuntimeRoot?: string;
+  toolInspector?: ReturnType<typeof createWorkerToolInspector>;
   runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || !validText(options.workingDirectory, 4096)) throw new TypeError("Assistant host startup directory must be a valid absolute path of at most 4096 bytes.");
@@ -79,6 +84,7 @@ export const createAssistantHostCollector = (options: {
   const cleanupFailures = new Map<WorkerAgent, unknown>();
   const codexEnvironment = captureCodexProbeEnvironment(environment);
   const localCodexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory);
+  const toolInspectors = new Map<CodexProbeOwner, ReturnType<typeof createWorkerToolInspector>>();
   let pendingDirectory = false;
   const directory = async (operation: Operation): Promise<string> => {
     if (pendingDirectory) throw new OperationError("deadline");
@@ -93,6 +99,11 @@ export const createAssistantHostCollector = (options: {
     return observe(request, operation);
   };
   return {
+    close: async (): Promise<void> => {
+      const results = await Promise.allSettled([...toolInspectors.values()].map(inspector => inspector.close()).concat(localCodexProbes.close()));
+      const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Assistant tool probe cleanup remains unconfirmed.");
+    },
     collect: async (operation: Operation, codexProbes: CodexProbeOwner = localCodexProbes): Promise<AssistantHostSample> => {
       operation.check();
       const current = configuration();
@@ -122,6 +133,17 @@ export const createAssistantHostCollector = (options: {
           }
           try {
             collection.check();
+            if (options.selectToolLaunch && provider !== "claude") {
+              const launch = await options.selectToolLaunch(provider, collection);
+              if (!launch || launch.tool !== provider || launch.context !== "web") throw new Error("The assistant's selected Web tool is unavailable.");
+              let inspector = options.toolInspector ?? toolInspectors.get(codexProbes);
+              if (!inspector) {
+                inspector = createWorkerToolInspector({ cwd, environment, codexProbes, ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) });
+                toolInspectors.set(codexProbes, inspector);
+              }
+              await inspector.check(launch, collection); collection.check();
+              return { provider, available: true, reason: null, model, args };
+            }
             const file = resolveExecutable(provider);
             const probeEnvironment = provider === "codex" && file === "codex" ? codexEnvironment : environment;
             const observeProvider = async (): Promise<WorkerAssistantProvider> => {
