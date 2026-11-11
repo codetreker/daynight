@@ -13,10 +13,9 @@ import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import type { AttachmentApi } from './attachments/useAttachments';
 import type { AttachmentUrls } from './attachments/TaskAttachments';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { useBodyScrollLock } from '../../app/useBodyScrollLock';
+import { isTopOverlay, OverlayOwnerContext } from '../../app/overlay';
 import type { GraphSnapshot } from '../projects/useTaskGraph';
 import { isTaskStale } from './freshness';
-import { dialogFocusables } from './focus';
 import { useTaskDetail } from './useTaskDetail';
 import { useTaskRelations } from './useTaskRelations';
 import type { TaskObservationInput } from './TaskDetailSession';
@@ -41,12 +40,10 @@ import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
 import { TaskAssigneeSelect } from '../task-assignment/TaskAssigneeSelect';
 import { TaskAssignmentFeedback } from '../task-assignment/TaskAssignmentFeedback';
+import { DetailFrame, useDetailFullscreen, useDetailOverlay, type DetailFullscreen } from './DetailFrame';
 import '../../styles/task-detail.css';
 
-export type DetailFullscreen = {
-  readonly active: boolean;
-  readonly onChange: (active: boolean) => void;
-};
+export type { DetailFullscreen } from './DetailFrame';
 
 type TaskDetailCommonProps = {
   readonly fullscreen: DetailFullscreen;
@@ -107,7 +104,6 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const selection = navigation === undefined ? localNavigation.scope === scope ? localNavigation.value : { tab: 'overview', path: null } as const : navigation;
   const changeSelection = (next: TaskDetailNavigation) => { setLocalNavigation({ scope, value: next }); onNavigate?.(next); };
   const popout = detailUrl === undefined ? taskDetailUrl(projectId, taskId, selection) : detailUrl(taskId, selection);
-  const Surface = modal ? 'section' : 'main';
   const { messages, format } = useI18n();
   const m = messages.inspection.detail;
   const input: TaskObservationInput = observation ?? (snapshot === null ? { kind: 'direct' } : { kind: 'project-summary', revision: snapshot.revision, task: snapshot.index.nodes.get(taskId) });
@@ -186,23 +182,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const closeRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const fullscreenRef = useRef<HTMLButtonElement>(null);
-  const pendingLayout = useRef<readonly { readonly element: HTMLElement; readonly top: number; readonly left: number }[] | null>(null);
-  const changeFullscreen = (active: boolean) => {
-    // Capture before the browser clamps offsets to the new viewport's scroll range.
-    pendingLayout.current = Array.from(dialogRef.current!.querySelectorAll<HTMLElement>('*'))
-      .filter((element) => element instanceof HTMLElement && (element.scrollTop !== 0 || element.scrollLeft !== 0 || element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth))
-      .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }));
-    fullscreen.onChange(active);
-  };
-  useLayoutEffect(() => {
-    if (pendingLayout.current === null) return;
-    for (const { element, top, left } of pendingLayout.current) {
-      element.scrollTop = top;
-      element.scrollLeft = left;
-    }
-    pendingLayout.current = null;
-    if (!fullscreen.active) fullscreenRef.current!.focus({ preventScroll: true });
-  }, [fullscreen.active]);
+  const changeFullscreen = useDetailFullscreen(dialogRef, fullscreenRef, fullscreen);
   const onEscape = () => {
     if (confirmationOpen || threadDetailsOccupied.current) return;
     if (sessionFullscreenRef.current !== null) { sessionFullscreenRef.current.exit(); return; }
@@ -211,55 +191,13 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   };
   const callbacks = useRef({ onEscape, onRestoreFocus, confirmationOpen });
   callbacks.current = { onEscape, onRestoreFocus, confirmationOpen };
-  const keyboardOwner = useMemo<AttachmentKeyboardOwner>(() => ({ root: dialogRef, onEscape: () => callbacks.current.onEscape() }), []);
-  useBodyScrollLock(modal);
+  const keyboardOwner = useMemo<AttachmentKeyboardOwner>(() => ({ root: dialogRef, isActive: () => dialogRef.current !== null && isTopOverlay(dialogRef.current), onEscape: () => callbacks.current.onEscape() }), []);
+  useDetailOverlay({ root: dialogRef, initialFocus: closeRef, modal, fullscreen: fullscreen.active, scope: projectId,
+    blocked: () => callbacks.current.confirmationOpen || threadDetailsOccupied.current || sessionFullscreenRef.current !== null,
+    onEscape: () => callbacks.current.onEscape(), ...(onRestoreFocus === undefined ? {} : { onRestoreFocus }) });
 
   useLayoutEffect(() => {
-    if (!modal) { dialogRef.current!.focus(); return; }
-    const root = document.getElementById('root');
-    if (root === null) throw new Error('The application root is required for the task detail dialog.');
-    const wasInert = root.hasAttribute('inert');
-    root.setAttribute('inert', '');
-    closeRef.current!.focus();
-
-    return () => { if (!wasInert) root.removeAttribute('inert'); };
-  }, [projectId, modal]);
-
-  useLayoutEffect(() => {
-    if (!modal && !fullscreen.active) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (callbacks.current.confirmationOpen || threadDetailsOccupied.current || sessionFullscreenRef.current !== null || event.defaultPrevented) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        callbacks.current.onEscape();
-      } else if (event.key === 'Tab' && modal) {
-        const dialog = dialogRef.current!;
-        const buttons = dialogFocusables(dialog);
-        const first = buttons[0]!;
-        const last = buttons[buttons.length - 1]!;
-        const active = document.activeElement;
-        if (!dialog.contains(active) || (!event.shiftKey && active === last)) {
-          event.preventDefault();
-          first.focus();
-        } else if (event.shiftKey && active === first) {
-          event.preventDefault();
-          last.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [projectId, modal, fullscreen.active]);
-
-  useEffect(() => () => {
-    // Restore after sibling DOM removals so a disappearing trigger cannot capture focus.
-    if (modal) callbacks.current.onRestoreFocus!();
-  }, []);
-
-  useLayoutEffect(() => {
-    if (modal && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
+    if (modal && isTopOverlay(dialogRef.current!) && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
   }, [taskId, status, error, snapshot?.revision, confirmationOpen]);
 
   const snapshotNode = snapshot?.index.nodes.get(taskId);
@@ -284,8 +222,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
     );
   };
 
-  const content = <SessionFullscreenContext value={registerSessionFullscreen}>
-      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${sessionFullscreen === null ? '' : ' task-detail-session-fullscreen'}${sessionLayoutChanged ? ' task-detail-session-layout' : ''}${currentClaim === null ? '' : ' task-detail-has-claim'}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
+  const content = <OverlayOwnerContext value={dialogRef}><SessionFullscreenContext value={registerSessionFullscreen}>
+      <DetailFrame className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${sessionFullscreen === null ? '' : ' task-detail-session-fullscreen'}${sessionLayoutChanged ? ' task-detail-session-layout' : ''}${currentClaim === null ? '' : ' task-detail-has-claim'}`} root={dialogRef} modal={modal} headingId={headingId}>
         <TaskDetailNotifications fallbackFocus={titleRef}>
         {!modal && <div hidden={fullscreen.active}><TaskDetailPageBar projectId={projectId} /></div>}
         <header className="task-detail-header">
@@ -399,7 +337,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
           <div className="task-detail-graph-error" role="alert"><h2>{messages.workspace.project.refreshFailed}</h2><p>{messages.workspace.project.showingSnapshot}</p><ProjectGraphErrorDetail error={graphError} /><button className="button" type="button" onClick={onRefreshGraph}>{messages.workspace.project.retryRefresh}</button></div>
         </TaskDetailNotice>
         </TaskDetailNotifications>
-      </Surface>
+      </DetailFrame>
       <DraftNavigationConfirmation owner={dialogRef} fallbackFocus={titleRef} taskTitle={detail?.title ?? taskId} />
       {draftDecision === null && confirmation !== null && confirmationValid && (confirmation.kind === 'withdraw'
         ? <TaskWithdrawalConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} confirmDisabled={!confirmationAdmitted || authRequestsPaused()} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
@@ -410,8 +348,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
         : confirmation.kind === 'allowAgents'
           ? <TaskAgentPermissionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} confirmDisabled={!confirmationAdmitted || authRequestsPaused()} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
           : <TaskPlatformConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} confirmDisabled={!confirmationAdmitted || authRequestsPaused()} onCancel={() => setConfirmation(null)} onConfirm={confirm} />)}
-    </SessionFullscreenContext>;
-  return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null) requestClose(); }}>{content}</div> : content;
+    </SessionFullscreenContext></OverlayOwnerContext>;
+  return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && dialogRef.current !== null && isTopOverlay(dialogRef.current) && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null) requestClose(); }}>{content}</div> : content;
 };
 
 export const TaskDetailSurface = (props: TaskDetailSurfaceProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDraftBoundary projectId={props.projectId} taskId={props.taskId} page={props.presentation === 'page'}><TaskDetailContent {...props} /></TaskDraftBoundary></ProjectAccessBoundary>;
