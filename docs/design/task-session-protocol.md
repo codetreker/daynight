@@ -346,6 +346,8 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 浏览器将 scope/current 失效与 auth 暂停分开。身份待复核时最多保留 WebSocket 60 秒；新帧保存在最多 1000 条、合计 4 MiB 的内存缓冲中，不推进已消费 cursor 或发布新内容。HTTP 在途结果也等待复核，负面授权结果仍立即失效。确认同一身份后按原序消费缓冲，并继续原连接与历史；到期、缓存超限或真实断线则关闭连接，使用最后已消费 cursor 恢复。scope 撤销、principal 不符和执行失效不享受此宽限。Chatbox 与审批暂时禁用操作，但保留输入、阅读位置和连接呈现；只有实际失去同步才显示同步或连接提示。该策略继承[前台身份核验](daynight-auth.md)的账号隔离规则，不停止或重新创建原生 Agent。
 
+`TaskSessionClient.suspendForAccountRefresh()` 提供独立的同步、幂等停止：立即撤销此 client 的远程准入，取消在途读取和操作等待，关闭 channel 与媒体 reader，清理轮询、重连及暂停队列，并保持 `authPaused=true`。它保留当前 timeline、草稿、图片 scope 和已解码 lease，不推进认证 generation；迟到结果及后续 start、可见性变化不能恢复连接。本地草稿仍可编辑。可信 snapshot 的 userId 与当前账户不同时，client 先执行该停止，再通知根 owner，并拒绝安装该帧；缺失或畸形身份仍是协议错误。根 owner 决定是否继续原有破坏性清理。该停止不订阅临时前台暂停，也不替代真正撤权或离开时的失效与关闭。取舍见[Session 账户停止决策](../../.agents/notes/implemented/feature/2026-11-12-session-account-refresh-stop.md)。
+
 Claude SDK 不保证实时回显提交的 user message。Controller 在本地派发时按 `operationId:0` 投影用户文本，与以后原生 echo/history 的稳定 ID 相同，避免重复行。这条本地展示不调用 `onInputObserved`、不验证原生身份、不确认回执；原生受理及恢复对账仍必须有真实输入或响应证据。unknown 状态下可查看提交原文，不能因该行存在重发或消除 unknown。
 
 Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。Task 的当前 claim 将已验证的 `WorkerClaim.userId` 与 claim 身份一起传到 native client，客户端统一拒绝非 owner 的新交互，服务端仍使用持久 Session owner 作最终授权。Session View 将生命周期与交互权限分开：非 owner 保留 live timeline、历史、资源、Display、刷新和全屏，Chatbox 与请求回答不可操作；不能将权限只读当作 archived 而切换到归档等待。独立 Test/Bot 保留已有本人准入。`SessionMarkdown` 对消息和 reasoning 使用安全 Markdown，保留软换行，为每个实例生成脚注命名空间；只允许该实例生成的脚注内部链接，外链保留协议限制。工具文本用原始文本区域显示，参数和输出限高、可聚焦滚动，展开后才挂载内容。工具摘要从已有参数提取，不向模型补发请求。Copilot 投影去除相同的结果字段，保留不同结果与失败附带的错误/输出；工具状态取原生 `success`，不解释 shell 日志中的自由文本退出码。

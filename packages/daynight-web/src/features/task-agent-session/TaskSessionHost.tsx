@@ -5,7 +5,7 @@ import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration }
 import type { LoadedSessionArchive } from '../../api/sessions';
 import { createTerminalSessionApi, SessionDenialProtocolError, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import type { SyncTicket } from '../task-cache/project-cache';
+import type { SyncTicket, TaskCacheScope } from '../task-cache/project-cache';
 import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryOwnership, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination } from './session-history-cache';
 import { useCompletedTaskSession } from './automatic-task-session';
@@ -30,6 +30,20 @@ import './terminal-host.css';
 import type { AttachmentRecordSlots } from '../task-detail/attachments/TaskAttachments';
 
 type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly direct?: boolean };
+type StaticMediaOwners = { stopped: boolean; readonly owners: Set<() => void> };
+const staticMediaOwners = new WeakMap<TaskCacheScope, StaticMediaOwners>();
+function staticMediaFor(scope: TaskCacheScope): StaticMediaOwners {
+  let owners = staticMediaOwners.get(scope);
+  if (!owners) { owners = { stopped: false, owners: new Set() }; staticMediaOwners.set(scope, owners); }
+  return owners;
+}
+/** Stop direct record media reads while preserving the original image scopes and leases. */
+export function suspendStaticSessionMediaForAccountRefresh(scope: TaskCacheScope): void {
+  const owners = staticMediaFor(scope);
+  if (owners.stopped) return;
+  owners.stopped = true;
+  for (const stop of owners.owners) stop();
+}
 type Records = ReturnType<typeof useRecords>;
 type RecordsPage = { items: SessionHistoryItem[]; cursor: string | null };
 type RecordsState = { owner: object; api: TerminalSessionApi; page: RecordsPage | null; first: RecordsPage | null; error: unknown; loading: boolean; checking: boolean; denied: boolean };
@@ -593,10 +607,13 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
   const admission = useRef({ active, current }); admission.current = { active, current };
   const generation = readAuthRequestGeneration();
   const lifetime = useMemo(() => {
-    let retired = false, draining: Promise<void> | null = null;
+    const owners = staticMediaFor(authority);
+    const remote = new AbortController();
+    let retired = false, stopped = owners.stopped, draining: Promise<void> | null = null, readerDrain: Promise<void> | null = null;
     let reader: ReturnType<TerminalSessionApi['resources']> | null = null;
-    const admitted = () => !retired && admission.current.active && admission.current.current && !authority.isInvalidated && !authority.hasIdentityMismatch && !authRequestsPaused() && readAuthRequestGeneration() === generation && (projectId === undefined || !authority.isProjectSuspended(projectId));
+    const admitted = () => !retired && !stopped && !owners.stopped && admission.current.active && admission.current.current && !authority.isInvalidated && !authority.hasIdentityMismatch && !authRequestsPaused() && readAuthRequestGeneration() === generation && (projectId === undefined || !authority.isProjectSuspended(projectId));
     const read = async (id: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob> => {
+      signal = AbortSignal.any([signal, remote.signal]);
       signal.throwIfAborted();
       if (!admitted()) throw new ImageFailure('access_pending', 'Archived resource access is being checked.');
       try {
@@ -617,7 +634,7 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
         if (!admitted()) throw new ImageFailure('access_pending', 'Archived resource access is being checked.');
         return blob;
       } catch (error) {
-        if (!retired && !authority.hasIdentityMismatch && error instanceof ApiError && !(error.kind === 'protocol' && error.code === 'principal_mismatch') && [401, 403, 404, 410].includes(error.status ?? 0)) { void close(); onDenied(error); }
+        if (!retired && !stopped && !owners.stopped && !authority.hasIdentityMismatch && error instanceof ApiError && !(error.kind === 'protocol' && error.code === 'principal_mismatch') && [401, 403, 404, 410].includes(error.status ?? 0)) { void close(); onDenied(error); }
         throw error;
       }
     };
@@ -625,19 +642,29 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
       serverOrigin: window.location.origin, actorUserId: authority.userId, authorizationGeneration: String(generation + 1),
       owner: { kind: 'record', recordId: archive.sessionId, namespace: JSON.stringify(['task-record', projectId ?? null, sessionFenceKey(archive)]), revision: archiveRevision },
     }, read, canRead: admitted, canDownload: admitted });
+    function stopReader(): Promise<void> {
+      remote.abort();
+      return readerDrain ??= reader?.close() ?? Promise.resolve();
+    }
+    function suspend(): void {
+      if (stopped) return;
+      stopped = true;
+      void stopReader().catch(() => {});
+    }
     function close(): Promise<void> {
       if (draining) return draining;
       retired = true;
       const invalidated = images.invalidate();
-      const stopped = reader?.close() ?? Promise.resolve();
-      draining = Promise.allSettled([invalidated, stopped]).then(() => {});
+      draining = Promise.allSettled([invalidated, stopReader()]).then(() => {});
       return draining;
     }
-    return { images, read, close };
+    return { images, read, close, suspend, owners };
   }, [api, archive, archiveRevision, authority, generation, onDenied, projectId]);
   useLayoutEffect(() => {
     resourcesRef.current = lifetime.close;
-    return () => { if (resourcesRef.current === lifetime.close) resourcesRef.current = null; void lifetime.close(); };
+    lifetime.owners.owners.add(lifetime.suspend);
+    if (lifetime.owners.stopped) lifetime.suspend();
+    return () => { lifetime.owners.owners.delete(lifetime.suspend); if (resourcesRef.current === lifetime.close) resourcesRef.current = null; void lifetime.close(); };
   }, [lifetime, resourcesRef]);
   const state = useMemo(() => ({ ...emptySessionState(), entries: archive.entries, resources: new Map(archive.resources.map(item => [item.resource.resourceId, item.resource])) }), [archive]);
   return <SessionImageScope scope={lifetime.images} rootRef={rootRef} active={active} readAdmitted={current && !authRequestsPaused()}>

@@ -67,11 +67,16 @@ describe('session connection identity suspension', () => {
     const f = fixture(); await ready(f); f.pause(); f.client.syncAvailability(); f.channels[0]!.disconnect();
     expect(f.client.snapshot().connected).toBe(false); f.resume(); await flush(); expect(f.channels).toHaveLength(2);
   });
-  it('rejects a mismatched principal immediately even while suspended and discards buffered content', async () => {
-    const f = fixture(); await ready(f); f.pause(); f.client.syncAvailability(); f.channels[0]!.receive(f.event(1));
+  it('stops on a mismatched principal during suspension while preserving the original display', async () => {
+    const f = fixture(); await ready(f); f.channels[0]!.receive(f.event(1)); f.client.setDraft('retained');
+    f.pause(); f.client.syncAvailability(); f.channels[0]!.receive(f.event(2));
     const value = f.snapshot(); if (value.type !== 'snapshot') throw new Error('fixture');
-    f.channels[0]!.receive({ ...value, userId: '00000010-1111-4111-8111-111111111111' });
-    expect(f.mismatch).toHaveBeenCalledOnce(); expect(f.client.snapshot().state.snapshot).toBeNull(); f.resume(); expect(f.api.channel).toHaveBeenCalledOnce();
+    f.mismatch.mockImplementation(() => { expect(f.channels[0]!.close).toHaveBeenCalledOnce(); expect(f.client.snapshot().authPaused).toBe(true); });
+    f.channels[0]!.receive({ ...value, userId: '00000010-1111-4111-8111-111111111111', snapshot: { ...f.s, sessionRevision: '999' } });
+    expect(f.mismatch).toHaveBeenCalledOnce(); expect(f.client.snapshot().state.snapshot).toEqual(f.s);
+    expect(f.client.snapshot().state.entries.map(entry => entry.entryId)).toEqual(['entry-1']); expect(f.client.snapshot().draft.text).toBe('retained');
+    f.resume(); await flush(); expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.client.snapshot().authPaused).toBe(true);
+    expect(f.client.snapshot().state.entries.map(entry => entry.entryId)).toEqual(['entry-1']);
   });
   it('waits to publish an in-flight initial snapshot and starts its channel after verification', async () => {
     const f = fixture(); let resolve!: (value: Awaited<ReturnType<SessionApi['current']>>) => void;

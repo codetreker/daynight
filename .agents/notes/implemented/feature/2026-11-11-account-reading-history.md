@@ -19,7 +19,9 @@ credential and prompt owners independently of the entry identity. Worker detail
 uses the same mechanism with a Worker-bound selection; its configuration owner
 remains mounted after opening and cancellation restores that tab only after the
 original history position is admitted. Invalid
-recognized state is exposed rather than interpreted as another target.
+recognized state is exposed rather than interpreted as another target. Project
+uses the same entry model for section, view, graph and nested resource selections;
+its existing preference writes occur only after user-initiated changes are admitted.
 
 The [Web design](../../../../docs/design/daynight-web.md) owns the current
 consumer and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)

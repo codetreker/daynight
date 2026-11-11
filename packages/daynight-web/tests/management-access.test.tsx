@@ -444,6 +444,140 @@ it('keeps a confirmed self-removal receipt when access recovery fails and retrie
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });
 
+it('withdraws shared project admission after a confirmed self-removal while the members panel is inactive', async () => {
+  const heldWrite = Promise.withResolvers<Response>();
+  const heldAccess = Promise.withResolvers<Response>();
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const removed = vi.fn();
+  let deletes = 0;
+  let accessReads = 0;
+  let holdAccess = false;
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === root) return json(project);
+    if (url === `${root}/access`) { accessReads++; return holdAccess ? heldAccess.promise : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin')); }
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${TEST_VIEWER_ID}` && init?.method === 'DELETE') { deletes++; return heldWrite.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  let access!: ProjectAccessSession;
+  const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
+  const content = (active: boolean) => <ProjectAccessBoundary projectId={projectId}>
+    <CaptureAccess />
+    <input aria-label="Other draft" defaultValue="before" />
+    <MembersPanel projectId={projectId} user={user} onRemoved={removed} active={active} onRoute={active} />
+  </ProjectAccessBoundary>;
+  const view = renderWithLocale(content(true), { locale: 'en', taskCache: { scope } });
+  let resume = () => {};
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Alice' });
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(deletes).toBe(1));
+    const signal = new AbortController().signal;
+    const task = detailFixture(projectId, '30000000-0000-4000-8000-000000000001', { description: 'private cached detail' });
+    const snapshot = taskSyncFromGraph(graphFixture([task]), { versionForTask: () => task.version, propertiesForTask: () => task.properties });
+    const ticket = await scope.beginSync(projectId, signal);
+    await scope.applySync(ticket, snapshot, signal);
+    expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
+    view.rerender(content(false));
+    fireEvent.change(screen.getByLabelText('Other draft'), { target: { value: 'new draft' } });
+    const beforeReads = accessReads;
+    holdAccess = true;
+    resume = pauseAuthRequests();
+    await act(async () => { heldWrite.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); await nextEventLoopTurn(); });
+    expect(() => scope.getAuthorizedProject(projectId)).toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(scope.isProjectSuspended(projectId)).toBe(false);
+    expect(accessReads).toBe(beforeReads);
+    expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
+    expect(removed).not.toHaveBeenCalled();
+    resume();
+    await waitFor(() => expect(accessReads).toBeGreaterThan(beforeReads));
+    expect(scope.isProjectSuspended(projectId)).toBe(true);
+    expect(scope.getAuthorizedProject(projectId)).toBeNull();
+    expect(scope.canPreviewProject(projectId)).toBe(false);
+    await act(async () => { heldAccess.resolve(failure(404)); await nextEventLoopTurn(); });
+    await waitFor(() => expect(access.snapshot().status).toBe('unavailable'));
+    expect(scope.getAuthorizedProject(projectId)).toBeNull();
+    await expect(scope.applySync(ticket, snapshot, signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
+    expect(removed).not.toHaveBeenCalled();
+    expect(deletes).toBe(1);
+    resume = pauseAuthRequests();
+    const readsBeforeReturn = accessReads;
+    view.rerender(content(true));
+    await act(async () => { await nextEventLoopTurn(); });
+    expect(screen.queryByText('Direct grant for Alice removed.')).toBeNull();
+    expect(accessReads).toBe(readsBeforeReturn);
+    expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
+    resume();
+    expect(await screen.findByText('Direct grant for Alice removed.')).toBeVisible();
+    expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
+    expect(removed).not.toHaveBeenCalled();
+    expect(deletes).toBe(1);
+  } finally { resume(); view.unmount(); scope.dispose(); }
+});
+
+it('holds a non-self grant receipt with lost actor access until shared access is restored', async () => {
+  const heldWrite = Promise.withResolvers<Response>();
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const removed = vi.fn();
+  let phase: 'initial' | 'offline' | 'restored' = 'initial';
+  let writes = 0;
+  let accessReads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === root) return json(project);
+    if (url === `${root}/access`) { accessReads++; return phase === 'offline' ? failure(503) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin')); }
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${otherId}` && init?.method === 'DELETE') { writes++; return heldWrite.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  }));
+  let access!: ProjectAccessSession;
+  const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
+  const content = (active: boolean) => <ProjectAccessBoundary projectId={projectId}>
+    <CaptureAccess />
+    <input aria-label="Other draft" defaultValue="before" />
+    <MembersPanel projectId={projectId} user={user} onRemoved={removed} active={active} onRoute={active} />
+  </ProjectAccessBoundary>;
+  const view = renderWithLocale(content(true), { locale: 'en', taskCache: { scope } });
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Collaborator' });
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(writes).toBe(1));
+    const signal = new AbortController().signal;
+    const task = detailFixture(projectId, '30000000-0000-4000-8000-000000000001');
+    const snapshot = taskSyncFromGraph(graphFixture([task]), { versionForTask: () => task.version, propertiesForTask: () => task.properties });
+    const ticket = await scope.beginSync(projectId, signal);
+    await scope.applySync(ticket, snapshot, signal);
+    expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
+    view.rerender(content(false));
+    fireEvent.change(screen.getByLabelText('Other draft'), { target: { value: 'new draft' } });
+    const beforeReads = accessReads;
+    phase = 'offline';
+    await act(async () => { heldWrite.resolve(json({ projectId, userId: otherId, deleted: true, actorAccess: null })); await nextEventLoopTurn(); });
+    await waitFor(() => expect(accessReads).toBeGreaterThan(beforeReads));
+    await waitFor(() => expect(access.snapshot().status).toBe('error'));
+    expect(scope.getAuthorizedProject(projectId)).toBeNull();
+    expect(scope.canPreviewProject(projectId)).toBe(false);
+    expect(screen.queryByText('Direct grant for Collaborator removed.')).toBeNull();
+    view.rerender(content(true));
+    await act(async () => { await nextEventLoopTurn(); });
+    expect(screen.queryByText('Direct grant for Collaborator removed.')).toBeNull();
+    expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
+    phase = 'restored';
+    await focus(access);
+    expect(await screen.findByText('Direct grant for Collaborator removed.')).toBeVisible();
+    expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
+    expect(removed).not.toHaveBeenCalled();
+    expect(writes).toBe(1);
+  } finally { view.unmount(); scope.dispose(); }
+});
+
 it('ignores a pre-receipt access response that arrives after the confirmed removal and fresh denial', async () => {
   const heldWrite = Promise.withResolvers<Response>();
   const heldAccess = Promise.withResolvers<Response>();

@@ -3,7 +3,7 @@ import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAcce
 import { useEffect, useRef, useState } from 'react';
 import { createInvitation, listInvitations, listMembers, removeProjectGrant, revokeInvitation, setProjectGrant, type CurrentUser, type CreatedProjectInvitation, type ProjectInvitation, type ProjectParticipant } from '../../api/auth';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
+import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from '../../api/client';
 import { ManagementDialog } from './ManagementDialog';
 import { Identity, identityName, ManagementError, SecretDialog } from './feedback';
 import { InvitationList } from './InvitationList';
@@ -14,6 +14,19 @@ type MemberDialog = { readonly kind: 'role'; readonly member: ProjectParticipant
   | { readonly kind: 'revoke'; readonly invitation: ProjectInvitation }
   | { readonly kind: 'secret'; readonly secret: string };
 type MembersRead = { readonly invitations: boolean };
+
+// Some access checks share a session-owned read, so aborting the caller's
+// signal does not itself settle that read. The caller must stop waiting too.
+const abortable = <T,>(promise: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  if (signal.aborted) { void promise.catch(() => {}); reject(signal.reason); return; }
+  const abort = () => { cleanup(); reject(signal.reason); };
+  const cleanup = () => signal.removeEventListener('abort', abort);
+  signal.addEventListener('abort', abort, { once: true });
+  void promise.then((value) => { cleanup(); resolve(value); }, (failure: unknown) => { cleanup(); reject(failure); });
+});
+
+type SubmittedDialog = Exclude<MemberDialog, { readonly kind: 'secret' }>;
+type PresentationOwner = { readonly action: SubmittedDialog; readonly routeGeneration: number };
 
 const sameParticipant = (a: ProjectParticipant, b: ProjectParticipant) =>
   a.userId === b.userId && a.profile.name === b.profile.name && a.profile.email === b.profile.email && a.profile.avatarUrl === b.profile.avatarUrl &&
@@ -43,10 +56,16 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
   const [invitations, setInvitations] = useState<readonly ProjectInvitation[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [knownRejection, setKnownRejection] = useState<ApiError | null>(null);
+  const knownRejectionRef = useRef(knownRejection); knownRejectionRef.current = knownRejection;
   const [unavailable, setUnavailable] = useState(false);
   const [notice, setNotice] = useState<'permissionReloaded' | 'conflictReloaded' | 'permissionChecked' | 'identityChanged' | null>(null);
-  const [dialog, setDialog] = useState<MemberDialog | null>(null);
+  const [dialog, setDialogState] = useState<MemberDialog | null>(null);
   const dialogRef = useRef(dialog); dialogRef.current = dialog;
+  const setDialog = (next: MemberDialog | null | ((current: MemberDialog | null) => MemberDialog | null)) => {
+    const value = typeof next === 'function' ? next(dialogRef.current) : next;
+    dialogRef.current = value; setDialogState(value);
+  };
   const membersRef = useRef(members); membersRef.current = members;
   const invitationsRef = useRef(invitations); invitationsRef.current = invitations;
   const publishMembers = (value: readonly ProjectParticipant[] | null) => {
@@ -60,10 +79,10 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     invitationsRef.current = value; setInvitations(value);
   };
   const [hasHeldInvitation, setHasHeldInvitation] = useState(false);
-  const heldInvitation = useRef<CreatedProjectInvitation | null>(null);
+  const heldInvitation = useRef<{ readonly result: CreatedProjectInvitation; readonly owner: PresentationOwner } | null>(null);
   const [dialogError, setDialogError] = useState<unknown>(null);
   const [receipt, setReceipt] = useState<{ readonly name: string; readonly role: 'admin' | 'member' | null; readonly lostAccess: boolean } | null>(null);
-  const heldGrant = useRef<{ readonly name: string; readonly role: 'admin' | 'member' | null; readonly lostAccess: boolean } | null>(null);
+  const heldGrant = useRef<{ readonly receipt: { readonly name: string; readonly role: 'admin' | 'member' | null; readonly lostAccess: boolean }; readonly owner: PresentationOwner; readonly selfLoss: boolean } | null>(null);
   const [hasHeldGrant, setHasHeldGrant] = useState(false);
   const [pending, setPending] = useState(false);
   const [grantIssue, setGrantIssue] = useState<{ readonly error: unknown; readonly observed: boolean } | null>(null);
@@ -73,8 +92,12 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
   const invitationIssueRef = useRef(invitationIssue); invitationIssueRef.current = invitationIssue;
   const invitationSubmitting = useRef(false);
   const uncertainRevocations = useRef(new Set<string>());
+  const confirmedRevocations = useRef(new Set<string>());
   const controller = useRef<AbortController | null>(null);
   const admissionController = useRef<AbortController | null>(null);
+  const publicationController = useRef<AbortController | null>(null);
+  const grantPublicationController = useRef<AbortController | null>(null);
+  const operationGeneration = useRef(0);
   const readController = useRef<AbortController | null>(null);
   const readPromise = useRef<Promise<MembersRead | undefined> | null>(null);
   const latestRead = useRef<Promise<MembersRead | undefined> | null>(null);
@@ -97,6 +120,11 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
   const checkAccessForRead = () => {
     internalAccessRead.current = true;
     try { return access.session.revalidate(); }
+    finally { internalAccessRead.current = false; }
+  };
+  const checkAccessAfterMutation = () => {
+    internalAccessRead.current = true;
+    try { return access.session.revalidateAfterMutation(); }
     finally { internalAccessRead.current = false; }
   };
 
@@ -193,6 +221,9 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     });
     return result;
   };
+  const retireRead = () => {
+    ++generation.current; readController.current?.abort(); readController.current = null; refreshQueued.current = false; setLoading(false);
+  };
   const load = (lifetime: AbortSignal, requireInvitations = false, background = false): Promise<boolean> =>
     startRead(lifetime, background).then((observed) => observed !== undefined && (!requireInvitations || observed.invitations));
   useEffect(() => {
@@ -221,7 +252,7 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
   useEffect(() => {
     const active = new AbortController(); controller.current = active;
     publishMembers(null); publishInvitations(null); setDialog(null); setNotice(null);
-    return () => { active.abort(); admissionController.current?.abort(); readController.current?.abort(); ++generation.current; guardCallback.current?.(false); };
+    return () => { active.abort(); admissionController.current?.abort(); publicationController.current?.abort(); grantPublicationController.current?.abort(); readController.current?.abort(); ++generation.current; ++operationGeneration.current; guardCallback.current?.(false); };
   }, [projectId, user.id]);
   useEffect(() => {
     if (!active || controller.current === null) return;
@@ -237,99 +268,169 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     void load(controller.current.signal);
   }, [active, access.ready, access.access?.effectiveRole, unavailable, members, invitations, loading, error, access.session]);
   const admin = !access.session.scope.isInvalidated && access.access?.effectiveRole === 'admin';
+  const ownsDialog = (owner: PresentationOwner) => dialogRef.current === owner.action && route.current.onRoute && route.current.generation === owner.routeGeneration;
+  const revealHeldInvitation = () => {
+    const held = heldInvitation.current;
+    if (held === null || controller.current === null) return;
+    publicationController.current?.abort();
+    const publication = new AbortController(); publicationController.current = publication;
+    const signal = AbortSignal.any([controller.current.signal, access.session.scope.signal, publication.signal]);
+    const operation = operationGeneration.current;
+    const dialogAtRequest = dialogRef.current;
+    const routeAtRequest = route.current.generation;
+    void (async () => {
+      try {
+        await access.session.scope.ready(signal);
+        if (signal.aborted || access.session.scope.isInvalidated || !activeRef.current || !route.current.onRoute || route.current.generation !== routeAtRequest || dialogRef.current !== dialogAtRequest || heldInvitation.current !== held || operation !== operationGeneration.current) return;
+        heldInvitation.current = null; setHasHeldInvitation(false);
+        setDialog({ kind: 'secret', secret: held.result.link });
+        await abortable(checkAccessForRead(), signal);
+        const current = await abortable(access.session.waitForFreshAccess(signal), signal);
+        if (!signal.aborted && activeRef.current && current?.effectiveRole === 'admin') await abortable(load(signal), signal);
+      } catch (failure) {
+        if (!signal.aborted && !isAbortError(failure)) setError(failure);
+      } finally {
+        if (publicationController.current === publication) publicationController.current = null;
+      }
+    })();
+  };
   useEffect(() => {
-    if (!active || !hasHeldInvitation) return;
+    if (!active || pending || !hasHeldInvitation) return;
     const lifetime = new AbortController();
     const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
     void (async () => {
       try {
         await access.session.scope.ready(signal);
         if (signal.aborted || !activeRef.current || access.session.scope.isInvalidated || heldInvitation.current === null) return;
-        const { link } = heldInvitation.current;
-        heldInvitation.current = null; setHasHeldInvitation(false);
-        setDialog({ kind: 'secret', secret: link }); setPending(false);
-        const componentSignal = controller.current?.signal;
-        if (componentSignal !== undefined) void (async () => {
-          try {
-            await access.session.revalidate();
-            const current = await access.session.waitForFreshAccess(componentSignal);
-            if (!componentSignal.aborted && activeRef.current && current?.effectiveRole === 'admin') void load(componentSignal);
-          } catch { /* The owning scope or component ended before the refresh. */ }
-        })();
-      } catch { /* The owning scope or route ended before admission. */ }
+        const held = heldInvitation.current;
+        if (!ownsDialog(held.owner)) return;
+        revealHeldInvitation();
+      } catch (failure) { if (!signal.aborted && !isAbortError(failure)) setError(failure); }
     })();
     return () => lifetime.abort();
-  }, [active, hasHeldInvitation, access.session]);
+  }, [active, pending, hasHeldInvitation, access.session]);
   const heldRouteChecked = useRef(false);
+  const [heldGrantReady, setHeldGrantReady] = useState(false);
+  const refreshAfterGrant = () => {
+    if (controller.current === null) return;
+    grantPublicationController.current?.abort();
+    const publication = new AbortController(); grantPublicationController.current = publication;
+    const signal = AbortSignal.any([controller.current.signal, access.session.scope.signal, publication.signal]);
+    void (async () => {
+      try { await abortable(load(signal), signal); }
+      catch (failure) { if (!signal.aborted && !isAbortError(failure)) setError(failure); }
+      finally { if (grantPublicationController.current === publication) grantPublicationController.current = null; }
+    })();
+  };
   const releaseHeldGrant = (current: ReturnType<typeof access.session.snapshot>['access']) => {
-    if (!activeRef.current || authRequestsPaused() || access.session.scope.isInvalidated) return;
-    if (hasHeldGrant && current !== null && heldGrant.current !== null) {
-      const confirmed = heldGrant.current; heldGrant.current = null; setHasHeldGrant(false);
-      setDialog(null); setReceipt(confirmed); setPending(false); callbacks.current.onMembershipChange?.();
-      if (controller.current !== null) void load(controller.current.signal);
-    } else setPending(false);
+    if (!activeRef.current || !route.current.onRoute || authRequestsPaused() || access.session.scope.isInvalidated) return;
+    if (hasHeldGrant && heldGrant.current !== null && (current !== null || heldGrant.current.selfLoss)) {
+      const held = heldGrant.current; heldGrant.current = null; setHasHeldGrant(false);
+      setHeldGrantReady(false);
+      if (ownsDialog(held.owner)) setDialog(null);
+      setReceipt(held.receipt); callbacks.current.onMembershipChange?.();
+      if (held.selfLoss) {
+        publishMembers(null); publishInvitations(null); setUnavailable(true);
+        if (current !== null) { setUnavailable(false); refreshAfterGrant(); }
+      } else refreshAfterGrant();
+    }
   };
   useEffect(() => {
     heldRouteChecked.current = false;
-    if (!active || !hasHeldGrant) return;
+    if (!hasHeldGrant) return;
     const lifetime = new AbortController();
     const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
     void (async () => {
       try {
-        await access.session.revalidate();
-        const current = await access.session.waitForFreshAccess(signal);
-        if (signal.aborted || !activeRef.current) return;
-        heldRouteChecked.current = true; releaseHeldGrant(current);
-      } catch { /* The owning scope or route ended before admission. */ }
+        do { await access.session.scope.ready(signal); signal.throwIfAborted(); } while (authRequestsPaused());
+        const held = heldGrant.current;
+        if (signal.aborted || held === null) return;
+        if (held.receipt.lostAccess) access.session.scope.suspendProject(projectId);
+        await abortable(checkAccessAfterMutation(), signal);
+        await abortable(access.session.waitForFreshAccess(signal), signal);
+        if (signal.aborted || heldGrant.current !== held) return;
+        heldRouteChecked.current = true; setHeldGrantReady(true);
+      } catch (failure) { if (!signal.aborted && !isAbortError(failure)) setError(failure); }
     })();
     return () => { lifetime.abort(); heldRouteChecked.current = false; };
-  }, [active, hasHeldGrant, access.session]);
+  }, [hasHeldGrant, access.session]);
   useEffect(() => {
-    if (!active || !heldRouteChecked.current || !access.ready) return;
-    releaseHeldGrant(access.access);
-  }, [active, access.ready, hasHeldGrant]);
+    if (!active || !onRoute || pending || !heldGrantReady || !heldRouteChecked.current || !access.ready && heldGrant.current?.selfLoss !== true) return;
+    const lifetime = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
+    const held = heldGrant.current;
+    void (async () => {
+      try {
+        do { await access.session.scope.ready(signal); signal.throwIfAborted(); } while (authRequestsPaused());
+        if (!activeRef.current || !route.current.onRoute || heldGrant.current !== held || !heldRouteChecked.current) return;
+        const current = access.session.snapshot();
+        if (held?.selfLoss !== true && (current.status !== 'ready' || current.refreshing)) return;
+        releaseHeldGrant(current.status === 'ready' && !current.refreshing ? current.access : null);
+      } catch (failure) { if (!signal.aborted && !isAbortError(failure)) setError(failure); }
+    })();
+    return () => lifetime.abort();
+  }, [active, onRoute, pending, access.ready, heldGrantReady, hasHeldGrant]);
   const grantBlocked = grantIssue !== null && !grantIssue.observed;
   const participantIdentity = (member: ProjectParticipant) => ({ ...member.profile, userId: member.userId });
   const open = (next: MemberDialog) => { if ((next.kind === 'role' || next.kind === 'remove') && grantIssueRef.current !== null && !grantIssueRef.current.observed) return; setDialogError(null); setDialog(next); void access.session.revalidate(); };
 
-  const submit = async (action: Exclude<MemberDialog, { readonly kind: 'secret' }>) => {
+  const submit = async (action: SubmittedDialog) => {
     const admitted = access.session.snapshot();
-    if (!active || access.session.scope.isInvalidated || admitted.status !== 'ready' || admitted.access?.effectiveRole !== 'admin') return;
+    if (!active || knownRejectionRef.current !== null || access.session.scope.isInvalidated || admitted.status !== 'ready' || admitted.access?.effectiveRole !== 'admin') return;
     const grantAction = action.kind === 'role' || action.kind === 'remove';
     const invitationAction = !grantAction;
-    if (invitationAction && (heldInvitation.current !== null || invitationSubmitting.current || invitationIssueRef.current !== null && (!invitationIssueRef.current.observed || action.kind === 'revoke' && uncertainRevocations.current.has(action.invitation.id)))) return;
+    if (grantSubmitting.current || invitationSubmitting.current) return;
+    if (invitationAction && (heldInvitation.current !== null || action.kind === 'revoke' && confirmedRevocations.current.has(action.invitation.id) || invitationIssueRef.current !== null && (!invitationIssueRef.current.observed || action.kind === 'revoke' && uncertainRevocations.current.has(action.invitation.id)))) return;
+    if (grantAction && (heldGrant.current !== null || action.kind === 'remove' && action.member.directGrant === null || grantIssueRef.current !== null && !grantIssueRef.current.observed)) return;
     if (invitationAction) invitationSubmitting.current = true;
-    if (grantAction && (heldGrant.current !== null || grantSubmitting.current || action.kind === 'remove' && action.member.directGrant === null || grantIssueRef.current !== null && !grantIssueRef.current.observed)) return;
     if (grantAction) { grantSubmitting.current = true; grantIssueRef.current = null; setGrantIssue(null); }
+    publicationController.current?.abort();
+    grantPublicationController.current?.abort();
+    const operation = ++operationGeneration.current;
+    const owner = { action, routeGeneration: route.current.generation };
     guardCallback.current?.(true); setPending(true); setDialogError(null); setNotice(null); setReceipt(null);
-    const signal = controller.current!.signal;
-    const routeGeneration = route.current.generation;
+    const componentSignal = controller.current!.signal;
     const admission = new AbortController(); admissionController.current = admission;
-    const admissionSignal = AbortSignal.any([signal, admission.signal, access.session.scope.signal]);
+    const signal = AbortSignal.any([componentSignal, admission.signal, access.session.scope.signal]);
     let dispatched = false;
     let writeStarted = false;
+    const stopForPause = () => { if (!dispatched) admission.abort(); };
+    const unsubscribePause = subscribeAuthPause(stopForPause);
+    if (authRequestsPaused()) stopForPause();
+    const isCurrent = () => !componentSignal.aborted && !access.session.scope.isInvalidated && operation === operationGeneration.current;
+    const publishLater = (publish: (signal: AbortSignal) => Promise<void>) => {
+      const publication = new AbortController(); publicationController.current = publication;
+      const publicationSignal = AbortSignal.any([componentSignal, access.session.scope.signal, publication.signal]);
+      void (async () => {
+        try {
+          await access.session.scope.ready(publicationSignal);
+          if (publicationSignal.aborted || !isCurrent()) return;
+          await publish(publicationSignal);
+        } catch (failure) {
+          if (!publicationSignal.aborted && isCurrent() && !isAbortError(failure)) setError(failure);
+        } finally {
+          if (publicationController.current === publication) publicationController.current = null;
+        }
+      })();
+    };
     try {
-      let fresh = await access.session.waitForFreshAccess(admissionSignal, true);
+      let fresh = await abortable(access.session.waitForFreshAccess(signal, true), signal);
       if (fresh?.effectiveRole !== 'admin' || fresh.ownership.teamId !== admitted.access.ownership.teamId || fresh.ownership.version !== admitted.access.ownership.version) {
-        setDialogError(new Error('Project access changed before submission'));
+        if (ownsDialog(owner)) setDialogError(new Error('Project access changed before submission'));
         return;
       }
       while (readPromise.current !== null) {
         const reading = readPromise.current;
         const readSignal = readController.current?.signal;
-        const observed = await new Promise<MembersRead | undefined>((resolve) => {
-          const abort = () => resolve(undefined);
-          if (admissionSignal.aborted || readSignal?.aborted) { resolve(undefined); return; }
-          admissionSignal.addEventListener('abort', abort, { once: true });
-          readSignal?.addEventListener('abort', abort, { once: true });
-          void reading.then((value) => { admissionSignal.removeEventListener('abort', abort); readSignal?.removeEventListener('abort', abort); resolve(value); });
-        });
-        if (admissionSignal.aborted) return;
-        if (readPromise.current !== null && readPromise.current !== reading) { fresh = await access.session.waitForFreshAccess(admissionSignal, true); continue; }
-        if (!observed) { setDialogError(new Error('Unable to verify current project members')); return; }
-        fresh = await access.session.waitForFreshAccess(admissionSignal, true);
+        const waitingSignal = readSignal === undefined ? signal : AbortSignal.any([signal, readSignal]);
+        let observed: MembersRead | undefined;
+        try { observed = await abortable(reading, waitingSignal); }
+        catch (failure) { if (signal.aborted) throw failure; observed = undefined; }
+        if (readPromise.current !== null && readPromise.current !== reading) { fresh = await abortable(access.session.waitForFreshAccess(signal, true), signal); continue; }
+        if (!observed) { if (ownsDialog(owner)) setDialogError(new Error('Unable to verify current project members')); return; }
+        fresh = await abortable(access.session.waitForFreshAccess(signal, true), signal);
       }
-      if (admissionSignal.aborted || access.session.scope.isInvalidated || !activeRef.current || !route.current.onRoute || route.current.generation !== routeGeneration || dialogRef.current !== action) return;
+      if (signal.aborted || access.session.scope.isInvalidated || !activeRef.current || !ownsDialog(owner)) return;
       if (fresh?.effectiveRole !== 'admin' || fresh.ownership.teamId !== admitted.access.ownership.teamId || fresh.ownership.version !== admitted.access.ownership.version) {
         setDialogError(new Error('Project access changed before submission'));
         return;
@@ -339,80 +440,82 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
         if (currentMember === undefined || !sameParticipant(currentMember, action.member)) { setDialogError(new Error('The project grant changed before submission')); return; }
       } else if (action.kind === 'revoke' && !invitationsRef.current?.some((invitation) => sameInvitation(invitation, action.invitation))) { setDialogError(new Error('The invitation changed before submission')); return; }
       writeStarted = true;
-      if (admissionController.current === admission) admissionController.current = null;
       writeInFlight.current = true;
+      const onDispatch = () => { dispatched = true; if (admissionController.current === admission) admissionController.current = null; };
+      const onIdentityMismatch = () => {
+        access.session.scope.principalMismatch();
+        if (!componentSignal.aborted && operation === operationGeneration.current && !authRequestsPaused()) {
+          publishMembers(null); publishInvitations(null); if (ownsDialog(owner)) setDialog(null); setNotice('identityChanged');
+        }
+      };
       if (action.kind === 'role' || action.kind === 'remove') {
         const result = action.kind === 'role'
-          ? await setProjectGrant(projectId, action.member.userId, { version: action.member.directGrant?.version ?? null, role: action.role, expectedUserId: user.id }, signal, access.session.scope.principalMismatch)
-          : await removeProjectGrant(projectId, action.member.userId, { version: action.member.directGrant!.version, expectedUserId: user.id }, signal, access.session.scope.principalMismatch);
-        await access.session.scope.ready(signal);
-        if (signal.aborted || access.session.scope.isInvalidated) return;
-        ++generation.current; readController.current?.abort();
-        if (result.actorAccess === null) access.session.scope.suspendProject(projectId);
-        await access.session.revalidateAfterMutation();
-        const current = await access.session.waitForFreshAccess(signal);
-        if (signal.aborted || access.session.scope.isInvalidated) return;
+          ? await abortable(setProjectGrant(projectId, action.member.userId, { version: action.member.directGrant?.version ?? null, role: action.role, expectedUserId: user.id }, signal, onIdentityMismatch, onDispatch), signal)
+          : await abortable(removeProjectGrant(projectId, action.member.userId, { version: action.member.directGrant!.version, expectedUserId: user.id }, signal, onIdentityMismatch, onDispatch), signal);
+        if (!isCurrent()) return;
+        retireRead();
         const selfLoss = result.actorAccess === null && action.member.userId === user.id;
         const confirmed = { name: selfLoss ? user.name ?? user.email ?? user.id : identityName(participantIdentity(action.member)), role: action.kind === 'role' ? action.role : null, lostAccess: result.actorAccess === null };
-        if (current === null && !selfLoss) { heldGrant.current = confirmed; setHasHeldGrant(true); return; }
-        setDialog(null); setReceipt(confirmed);
-        callbacks.current.onMembershipChange?.();
-        if (result.actorAccess === null) {
-          publishMembers(null); publishInvitations(null); setUnavailable(true);
-          if (current !== null && !signal.aborted && !access.session.scope.isInvalidated) {
-            setUnavailable(false);
-            await load(signal);
-          }
-          return;
-        }
-        if (current?.effectiveRole !== 'admin') publishInvitations(null);
-        if (current !== null && activeRef.current) await load(signal); return;
+        heldGrant.current = { receipt: confirmed, owner, selfLoss }; setHasHeldGrant(true);
       } else if (action.kind === 'invite') {
-        const result = await createInvitation(projectId, user.id, signal, access.session.scope.principalMismatch, () => { dispatched = true; });
-        await access.session.scope.ready(signal);
-        if (signal.aborted || access.session.scope.isInvalidated) return;
-        heldInvitation.current = result; setHasHeldInvitation(true);
-        return;
-      } else await revokeInvitation(projectId, action.invitation.id, user.id, signal, access.session.scope.principalMismatch, () => { dispatched = true; });
-      await access.session.scope.ready(signal);
-      if (signal.aborted || access.session.scope.isInvalidated) return;
-      setDialog(null); if (activeRef.current) await load(signal);
+        const result = await abortable(createInvitation(projectId, user.id, signal, onIdentityMismatch, onDispatch), signal);
+        if (!isCurrent()) return;
+        retireRead();
+        heldInvitation.current = { result, owner }; setHasHeldInvitation(true);
+      } else {
+        await abortable(revokeInvitation(projectId, action.invitation.id, user.id, signal, onIdentityMismatch, onDispatch), signal);
+        if (!isCurrent()) return;
+        retireRead();
+        confirmedRevocations.current.add(action.invitation.id);
+        publishLater(async (publicationSignal) => {
+          if (ownsDialog(owner)) setDialog(null);
+          if (activeRef.current) await abortable(load(publicationSignal), publicationSignal);
+        });
+      }
     } catch (failure) {
       if (failure instanceof ApiError && (failure.code === 'identity_mismatch' || failure.code === 'principal_mismatch')) {
-        publishMembers(null); publishInvitations(null); setDialog(null); setNotice('identityChanged');
+        if (!componentSignal.aborted && operation === operationGeneration.current && !authRequestsPaused()) { publishMembers(null); publishInvitations(null); if (ownsDialog(owner)) setDialog(null); setNotice('identityChanged'); }
         return;
       }
-      if (!signal.aborted && !isAbortError(failure)) { try { await access.session.scope.ready(signal); } catch { return; } }
-      if (access.session.scope.isInvalidated) return;
-      if ((!isAbortError(failure) || invitationAction && dispatched) && !signal.aborted) {
-        if (!writeStarted) { setDialogError(failure); return; }
-        if (invitationAction && (!(failure instanceof ApiError) || failure.kind !== 'server' || failure.status === null || failure.status >= 500 || failure.code === 'write_outcome_unknown')) {
+      if (!isCurrent()) return;
+      if (!dispatched) {
+        if (!isAbortError(failure) && !signal.aborted && ownsDialog(owner)) setDialogError(failure);
+        return;
+      }
+      const unknown = !(failure instanceof ApiError) || failure.kind !== 'server' || failure.status === null || failure.status >= 500 || failure.code === 'write_outcome_unknown';
+      if (unknown) {
+        if (invitationAction) {
           if (action.kind === 'revoke') uncertainRevocations.current.add(action.invitation.id);
           const issue = { error: failure, observed: false, action: action.kind as 'invite' | 'revoke', ...(action.kind === 'revoke' ? { invitationId: action.invitation.id } : {}) };
-          invitationIssueRef.current = issue; setInvitationIssue(issue); setDialog(null); setDialogError(null);
-          return;
-        }
-        if (grantAction && (!(failure instanceof ApiError) || failure.kind !== 'server' || failure.status === null || failure.status >= 500 || failure.code === 'write_outcome_unknown')) {
+          invitationIssueRef.current = issue; setInvitationIssue(issue);
+        } else {
           const issue = { error: failure, observed: false };
-          grantIssueRef.current = issue; setGrantIssue(issue); setDialog(null); setDialogError(null);
-          return;
+          grantIssueRef.current = issue; setGrantIssue(issue);
         }
-        if (failure instanceof ApiError && (failure.status === 403 || failure.status === 409 || failure.status === 404)) {
-          publishMembers(null); publishInvitations(null); setDialog(null);
+        if (!authRequestsPaused() && ownsDialog(owner)) { setDialog(null); setDialogError(null); }
+        return;
+      }
+      if (failure instanceof ApiError && (failure.status === 403 || failure.status === 409 || failure.status === 404)) {
+        knownRejectionRef.current = failure; setKnownRejection(failure);
+        publishLater(async (publicationSignal) => {
+          publishMembers(null); publishInvitations(null); if (ownsDialog(owner)) setDialog(null);
           setNotice(failure.status === 409 ? 'conflictReloaded' : 'permissionChecked');
           callbacks.current.onMembershipChange?.();
-          await load(signal);
-        } else setDialogError(failure);
-      }
+          if (activeRef.current && await abortable(load(publicationSignal), publicationSignal) && knownRejectionRef.current === failure) { knownRejectionRef.current = null; setKnownRejection(null); }
+        });
+      } else if (ownsDialog(owner)) setDialogError(failure);
     } finally {
+      unsubscribePause();
       if (admissionController.current === admission) admissionController.current = null;
-      if (!writeStarted && !route.current.onRoute) setDialog(null);
-      if (writeStarted) writeInFlight.current = false;
-      if (grantAction) grantSubmitting.current = false;
-      if (invitationAction) invitationSubmitting.current = false;
-      if (!signal.aborted && heldInvitation.current === null && heldGrant.current === null) setPending(false);
-      if (refreshQueued.current && !writeInFlight.current && readController.current === null && activeRef.current && controller.current !== null && !controller.current.signal.aborted) {
-        refreshQueued.current = false; void load(controller.current.signal, false, true);
+      if (isCurrent()) {
+        if (!writeStarted && !route.current.onRoute && dialogRef.current === action) setDialog(null);
+        if (writeStarted) writeInFlight.current = false;
+        if (grantAction) grantSubmitting.current = false;
+        if (invitationAction) invitationSubmitting.current = false;
+        setPending(false);
+        if (!authRequestsPaused() && refreshQueued.current && !writeInFlight.current && readController.current === null && activeRef.current && controller.current !== null && !controller.current.signal.aborted) {
+          refreshQueued.current = false; void load(controller.current.signal, false, true);
+        }
       }
     }
   };
@@ -428,8 +531,11 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     {grantIssue !== null && <div className="notice warning" role="alert"><p>{grantIssue.observed ? m.grantObserved : m.grantUnknown}</p>{grantIssue.error instanceof ApiError && grantIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{grantIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal).then((observed) => { if (observed && grantIssueRef.current !== null) { const issue = { ...grantIssueRef.current, observed: true }; grantIssueRef.current = issue; setGrantIssue(issue); } }); }}>{m.readCurrentMembers}</button></div>}
     {invitationIssue !== null && <div className="notice warning" role="alert"><p>{invitationIssue.observed ? m.invitationObserved : m.invitationUnknown}</p>{!invitationIssue.observed && (access.status === 'unavailable' || access.status === 'ready' && !admin) && <p>{m.invitationUnreadable}</p>}{invitationIssue.error instanceof ApiError && invitationIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{invitationIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal, true).then((observed) => { if (observed && invitationIssueRef.current !== null) { const issue = { ...invitationIssueRef.current, observed: true }; invitationIssueRef.current = issue; setInvitationIssue(issue); } }); }}>{m.readCurrentInvitations}</button></div>}
     {hasHeldGrant && !pending && <div className="notice" role="status">{locale === 'zh-CN' ? '变更已确认；确认当前访问权限后可查看详情。' : 'The change was confirmed; its details are available after access is verified.'}</div>}
+    {invitations?.some((invitation) => confirmedRevocations.current.has(invitation.id)) && <div className="notice" role="status"><p>{locale === 'zh-CN' ? '邀请撤销已确认；列表等待更新。' : 'The invitation revocation was confirmed; the list is awaiting refresh.'}</p><button className="button" type="button" disabled={pending || loading} onClick={() => { if (controller.current !== null) void load(controller.current.signal, true); }}>{locale === 'zh-CN' ? '刷新邀请列表' : 'Refresh invitation list'}</button></div>}
+    {hasHeldInvitation && !pending && <div className="notice" role="status"><p>{locale === 'zh-CN' ? '邀请已创建；一次性链接等待查看。' : 'The invitation was created; its one-time link is ready to view.'}</p><button className="button" type="button" onClick={revealHeldInvitation}>{locale === 'zh-CN' ? '查看邀请链接' : 'View invitation link'}</button></div>}
     {receipt !== null && <div className="notice" role="status"><p>{receipt.role === null ? m.grantRemoved({ name: receipt.name }) : m.grantSaved({ name: receipt.name, role: receipt.role === 'admin' ? common.roleAdmin : common.roleMember })}</p>{receipt.lostAccess && <><p>{m.accessLost}</p>{access.status !== 'ready' && <button className="button" type="button" onClick={onRemoved}>{m.returnToProjects}</button>}</>}</div>}
     {notice !== null && <div className="notice" role="status">{m.notice[notice]}</div>}
+    {knownRejection !== null && <ManagementError error={knownRejection} retry={() => { const failure = knownRejection; void load(controller.current!.signal).then((observed) => { if (observed && knownRejectionRef.current === failure) { knownRejectionRef.current = null; setKnownRejection(null); } }); }} />}
     {(error !== null || access.error !== null && !(receipt?.lostAccess === true && access.error instanceof ApiError && access.error.kind === 'server' && access.error.status === 404 && access.error.code === 'not_found')) && <ManagementError error={error ?? access.error} retry={() => { void load(controller.current!.signal); }} />}
     {loading && <div className="empty-inline" role="status">{m.loading}</div>}
     {receipt?.lostAccess !== true && (unavailable || access.status === "unavailable") && error === null && access.error === null && <div className="notice error" role="alert">{common.notFound}</div>}
@@ -450,11 +556,11 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
           })}
         </div>
       </section>
-      {admin && <InvitationList invitations={invitations} disabled={pending || access.status !== 'ready' || invitationIssue !== null && !invitationIssue.observed} canRevoke={(invitation) => !uncertainRevocations.current.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} />}
+      {admin && <InvitationList invitations={invitations} disabled={pending || access.status !== 'ready' || invitationIssue !== null && !invitationIssue.observed} canRevoke={(invitation) => !uncertainRevocations.current.has(invitation.id) && !confirmedRevocations.current.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} />}
       <div className="role-legend"><div><h3>{common.roleAdmin}</h3><p>{m.adminDescription}</p></div><div><h3>{common.roleMember}</h3><p>{m.memberDescription}</p></div></div>
     </>}
     {dialog?.kind === 'secret' && <SecretDialog kind="invitation" secret={dialog.secret} suspended={!active} onClose={() => setDialog(null)} />}
-    {dialog !== null && dialog.kind !== 'secret' && !unavailable && access.status !== 'unavailable' && <ManagementDialog title={dialogTitle} busy={pending} suspended={!active || access.status === 'ready' && !admin} onClose={() => setDialog(null)} footer={<><button className="button" type="button" disabled={pending} onClick={() => setDialog(null)}>{common.cancel}</button><button className={`button${dialog.kind === 'remove' || dialog.kind === 'revoke' ? ' danger' : ' primary'}`} type="button" disabled={pending || access.status !== 'ready'} onClick={() => { void submit(dialog); }}>{pending ? common.submitPending : confirm}</button></>}>
+    {dialog !== null && dialog.kind !== 'secret' && !unavailable && access.status !== 'unavailable' && <ManagementDialog title={dialogTitle} busy={pending} suspended={!active || access.status === 'ready' && !admin} onClose={() => setDialog(null)} footer={<><button className="button" type="button" disabled={pending} onClick={() => setDialog(null)}>{common.cancel}</button><button className={`button${dialog.kind === 'remove' || dialog.kind === 'revoke' ? ' danger' : ' primary'}`} type="button" disabled={pending || knownRejection !== null || access.status !== 'ready'} onClick={() => { void submit(dialog); }}>{pending ? common.submitPending : confirm}</button></>}>
       {(dialog.kind === 'role' || dialog.kind === 'remove') && <p>{m.grantChange({ before: roleText(dialog.member.directGrant?.role ?? null), after: roleText(dialog.kind === 'role' ? dialog.role : null), effective: dialog.member.inheritedFrom === null && dialog.kind === 'remove' ? m.noAccess : roleText(dialog.member.inheritedFrom?.role === 'admin' || dialog.kind === 'role' && dialog.role === 'admin' ? 'admin' : 'member') })}</p>}
       {dialog.kind === 'remove' && <p>{dialog.member.userId === user.id ? m.selfRemovalBody : m.otherRemovalBody}</p>}
       {dialog.kind === 'invite' && <><p>{m.inviteBody}</p><div className="notice">{m.inviteTerms}</div></>}

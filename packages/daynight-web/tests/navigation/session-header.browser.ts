@@ -194,3 +194,50 @@ for (const entry of ['task', 'test'] as const) for (const hasTouch of [false, tr
     expect(observations.writes).toEqual([]);
   });
 });
+
+for (const mode of ['normal', 'dialog', 'fullscreen'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [1360, 320]) {
+  test(`account change banner preserves ${mode} interaction at ${width} in ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 700 });
+    await page.goto(`/tests/navigation/account-change-banner.html?mode=${mode}&lang=${locale}`);
+    if (mode === 'dialog') await page.getByRole('button', { name: 'Open dialog' }).click();
+    if (mode === 'fullscreen') {
+      await page.getByRole('button', { name: 'Fullscreen' }).click();
+      await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('fullscreen');
+    }
+    const input = page.getByRole('textbox', { name: 'Draft' });
+    await input.focus();
+    await input.evaluate((node: HTMLInputElement) => node.setSelectionRange(2, 8));
+    const before = await page.evaluate(() => ({ x: scrollX, y: scrollY }));
+    await page.evaluate(() => window.dispatchEvent(new Event('account-change')));
+    const status = page.locator('.account-change-banner[role=status]');
+    await expect(status).toHaveCount(1);
+    if (mode === 'dialog') await expect(page.locator('header[inert] [role=status]')).toBeEmpty();
+    await expect(status).toHaveText(locale === 'en' ? 'Account changedRefresh page' : '账户已变化刷新页面');
+    await expect(input).toBeFocused();
+    expect(await input.evaluate((node: HTMLInputElement) => [node.value, node.selectionStart, node.selectionEnd])).toEqual(['Retained draft text', 2, 8]);
+    expect(await page.evaluate(() => ({ x: scrollX, y: scrollY }))).toEqual(before);
+    await expect(page.getByText('Retained content')).toBeVisible();
+    if (mode === 'dialog') await expect(page.locator('dialog')).toHaveJSProperty('open', true);
+    if (mode === 'fullscreen') expect(await page.evaluate(() => document.fullscreenElement?.id)).toBe('fullscreen');
+    const button = status.getByRole('button', { name: locale === 'en' ? 'Refresh page' : '刷新页面' });
+    const style = await status.evaluate(node => {
+      const css = getComputedStyle(node), box = node.getBoundingClientRect();
+      const button = node.querySelector('button')!.getBoundingClientRect();
+      return { background: css.backgroundColor, color: css.color, border: css.borderTopColor, radius: css.borderRadius,
+        font: css.fontSize, padding: css.padding, fits: box.left >= 0 && box.right <= innerWidth && button.right <= box.right };
+    });
+    expect(style).toEqual({ background: 'rgb(255, 250, 241)', color: 'rgb(121, 98, 61)', border: 'rgb(231, 215, 194)', radius: '6px', font: '12px', padding: '6px 10px', fits: true });
+    await page.keyboard.press('Shift+Tab');
+    await expect(button).toBeFocused();
+    expect(await button.evaluate(node => getComputedStyle(node).outlineStyle)).not.toBe('none');
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('reloads')).toHaveText('1');
+    if (width === 320) {
+      await status.locator('span').evaluate(node => { node.textContent = 'LongAccountChangeMessage'.repeat(8); });
+      expect(await status.evaluate(node => {
+        const box = node.getBoundingClientRect(), button = node.querySelector('button')!.getBoundingClientRect();
+        return node.scrollWidth <= node.clientWidth && button.right <= box.right && box.height > 50;
+      })).toBe(true);
+    }
+  });
+}

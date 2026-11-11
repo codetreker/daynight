@@ -2,7 +2,7 @@ import { createContext, useContext, useLayoutEffect, useMemo, useRef, useSyncExt
 import { nearestOverlayOwner } from '../../app/overlay';
 import { browserNavigation, type DraftScope } from '../../app/navigation';
 import { parseRoute } from '../../app/router';
-import { readResourceHistory } from '../../app/page-history';
+import { readProjectHistory, readResourceHistory } from '../../app/page-history';
 import { isRetiredResourceEntry } from '../../app/use-page-history';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -10,6 +10,15 @@ import { TaskConfirmation } from './TaskConfirmation';
 
 type ResourceHost = { readonly projectId: string; readonly rootId: string; readonly kind: 'root' | 'root-child' | 'external' | 'external-child'; readonly parentId?: string };
 const ResourceHostContext = createContext<ResourceHost | null>(null);
+type ProjectHost = { readonly projectId: string; readonly rootId: string; readonly child: boolean; readonly source: 'summary' | 'direct'; readonly summaryType: 'task' | 'goal' | null | undefined; readonly insideProjectGraph: boolean; readonly graphWitness: string | null };
+const ProjectHostContext = createContext<ProjectHost | null>(null);
+
+export const ProjectDraftHost = ({ projectId, taskId, source, summaryType, insideProjectGraph, graphWitness, children }: {
+  readonly projectId: string; readonly taskId: string; readonly source: 'summary' | 'direct'; readonly summaryType: 'task' | 'goal' | null | undefined; readonly insideProjectGraph: boolean; readonly graphWitness: string | null; readonly children: ReactNode;
+}) => {
+  const host = useMemo<ProjectHost>(() => ({ projectId, rootId: taskId, child: false, source, summaryType, insideProjectGraph, graphWitness }), [projectId, taskId, source, summaryType, insideProjectGraph, graphWitness]);
+  return <ProjectHostContext.Provider value={host}>{children}</ProjectHostContext.Provider>;
+};
 
 export const ResourcePageDraftHost = ({ projectId, taskId, children }: { readonly projectId: string; readonly taskId: string; readonly children: ReactNode }) => {
   const host = useMemo<ResourceHost>(() => ({ projectId, rootId: taskId, kind: 'root' }), [projectId, taskId]);
@@ -25,21 +34,39 @@ export const ResourceExternalDraftHost = ({ parentId, children }: { readonly par
 export const ResourceChildDraftHost = ({ children }: { readonly children: ReactNode }) => {
   const host = useContext(ResourceHostContext);
   const value = useMemo<ResourceHost | null>(() => host === null ? null : { ...host, kind: host.kind === 'root' ? 'root-child' : 'external-child' }, [host]);
-  return <ResourceHostContext.Provider value={value}>{children}</ResourceHostContext.Provider>;
+  const projectHost = useContext(ProjectHostContext);
+  const projectValue = useMemo<ProjectHost | null>(() => projectHost === null ? null : { ...projectHost, child: true }, [projectHost]);
+  return <ProjectHostContext.Provider value={projectValue}><ResourceHostContext.Provider value={value}>{children}</ResourceHostContext.Provider></ProjectHostContext.Provider>;
 };
 
 type DraftContext = { readonly scope: DraftScope; readonly signal: AbortSignal; readonly survives: (url: URL, view?: unknown, entryId?: string) => boolean };
 const Context = createContext<DraftContext | null>(null);
 
-export const TaskDraftBoundary = ({ projectId, taskId, page, children }: {
-  readonly projectId: string; readonly taskId: string; readonly page: boolean; readonly children: ReactNode;
+export const TaskDraftBoundary = ({ projectId, taskId, page, projectSourceSensitive = true, children }: {
+  readonly projectId: string; readonly taskId: string; readonly page: boolean; readonly projectSourceSensitive?: boolean; readonly children: ReactNode;
 }) => {
   const identity = useTaskCacheScope();
   const host = useContext(ResourceHostContext);
+  const projectHost = useContext(ProjectHostContext);
   const value = useMemo<DraftContext>(() => ({
     scope: { identity, projectId, taskId }, signal: identity.signal,
     survives: (url, view, entryId) => {
       const target = parseRoute(url.pathname, url.search);
+      if (projectHost !== null) {
+        if (target.kind !== 'project' || target.projectId !== projectId || projectHost.projectId !== projectId || view === undefined) return false;
+        try {
+          const selection = readProjectHistory(view, identity.userId, projectId);
+          if (selection === null || entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
+          const detail = selection.detail;
+          if (detail === null || detail.id !== projectHost.rootId || !projectHost.child && projectSourceSensitive && detail.source !== projectHost.source || detail.insideProjectGraph !== projectHost.insideProjectGraph ||
+              projectHost.insideProjectGraph && selection.projectGraphWitness !== projectHost.graphWitness) return false;
+          // A Goal reader keeps its direct-qualified owner when the graph is absent,
+          // but an available graph must still identify the summary target as a Goal.
+          if (detail.source !== projectHost.source && detail.source === 'summary' &&
+              (projectHost.child || !projectSourceSensitive) && projectHost.summaryType !== undefined && projectHost.summaryType !== 'goal') return false;
+          return projectHost.child ? detail.goalChildren?.task?.id === taskId : taskId === projectHost.rootId;
+        } catch { return false; }
+      }
       const samePage = (target.kind === 'task' || target.kind === 'attachment') && target.projectId === projectId;
       if (host === null) return page && samePage && target.taskId === taskId;
       if (!samePage || target.taskId !== host.rootId || host.projectId !== projectId) return false;
@@ -56,7 +83,7 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, children }: {
         return host.kind === 'external' ? taskId === host.parentId : external.goalChildren?.task?.id === taskId;
       } catch { return false; }
     },
-  }), [identity, projectId, taskId, page, host]);
+  }), [identity, projectId, taskId, page, host, projectHost, projectSourceSensitive]);
   useLayoutEffect(() => identity.subscribe((event) => {
     if (event.projectId === projectId && event.accessRevoked) browserNavigation().retireScope(value.scope);
   }), [identity, projectId, value]);

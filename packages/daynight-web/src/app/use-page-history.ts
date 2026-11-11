@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { useBrowserLocation } from './browser-location';
 import { browserNavigation } from './navigation';
-import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type ResourcePageReading, type WorkerSection } from './page-history';
+import { accountHistory, emptyResourceReading, projectHistory, readAccountHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
 import { parseAuthRoute, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
@@ -23,6 +23,16 @@ const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence 
   scope.signal.addEventListener('abort', unsubscribe, { once: true });
   return fence;
 };
+
+/** Observe only Project history and access retirement, not ordinary cache changes. */
+export function useProjectHistoryGeneration(scope: TaskCacheScope, projectId: string): number {
+  const fence = resourceFence(scope, projectId);
+  const subscribe = useCallback((listener: () => void) => {
+    fence.listeners.add(listener);
+    return () => { fence.listeners.delete(listener); };
+  }, [fence]);
+  return useSyncExternalStore(subscribe, () => fence.generation);
+}
 
 /** A numbered entry may carry a selection from a retired project history. */
 export const isRetiredResourceEntry = (scope: TaskCacheScope, projectId: string, entryId: string): boolean => {
@@ -55,6 +65,52 @@ export function useAccountHistory(userId: string, active: boolean) {
     if (next !== tab) navigation.setView(accountHistory(userId, next), { replace });
   };
   return { tab, select, error };
+}
+
+/** Project entries hold the complete reading position, while preferences remain user actions. */
+export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope) {
+  const location = useBrowserLocation();
+  const navigation = browserNavigation();
+  const fence = resourceFence(scope, projectId);
+  const subscribe = useCallback((listener: () => void) => {
+    fence.listeners.add(listener);
+    return () => { fence.listeners.delete(listener); };
+  }, [fence]);
+  const generation = useSyncExternalStore(subscribe, () => fence.generation);
+  const key = `${userId}/${projectId}`;
+  const empty = (): ProjectReading => ({ ...defaults, projectGraphWitness: null, detail: null });
+  const retained = useRef<{ key: string; generation: number; selection: ProjectReading; onPage: boolean }>({ key, generation, selection: empty(), onPage: false });
+  if (retained.current.key !== key || retained.current.generation !== generation) retained.current = { key, generation, selection: empty(), onPage: false };
+  const route = parseRoute(location.pathname, location.search);
+  const onPage = active && route.kind === 'project' && route.projectId === projectId;
+  if (onPage && !retained.current.onPage) retained.current.selection = empty();
+  retained.current.onPage = onPage;
+  let selected: ProjectReading | null = null;
+  let error = false;
+  if (onPage) {
+    try { selected = readProjectHistory(location.view, userId, projectId); }
+    catch { error = true; }
+  }
+  const readSelection = selected;
+  const retired = location.entryId !== null && selected !== null && isRetiredResourceEntry(scope, projectId, location.entryId);
+  if (retired) selected = null;
+  const selection = !onPage || location.entryId === null ? retained.current.selection : selected ?? empty();
+  useLayoutEffect(() => {
+    if (!onPage || error) return;
+    retained.current.selection = selection;
+    if (retired && location.entryId !== null && readSelection?.projectGraphWitness === null && readSelection.detail === null) fence.entries.set(location.entryId, generation);
+    if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: () => {
+      const entryId = navigation.snapshot().entryId;
+      if (entryId !== null) fence.entries.set(entryId, generation);
+    } });
+  }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, fence, generation, retired, readSelection]);
+  const select = (next: ProjectReading, replace = false, onCommit?: () => void) => {
+    if (!onPage || error) return;
+    const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };
+    if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: record });
+    navigation.setView(projectHistory(userId, projectId, next), { replace, onCommit: () => { record(); onCommit?.(); } });
+  };
+  return { selection, select, error };
 }
 
 /** The URL owns the root tab and path; this state owns only nested readers. */
