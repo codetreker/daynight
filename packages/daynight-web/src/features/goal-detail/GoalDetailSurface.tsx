@@ -29,6 +29,7 @@ import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { isThreadScopeLoss } from '../task-thread/api';
 import { TaskChainDialog } from '../task-graph/TaskChainDialog';
 import { projectTaskScope } from '../task-graph/scope';
+import { TaskPausedBadge, TaskPauseProvider } from '../task-pause/TaskPause';
 import { GoalMutationError } from './GoalMutationError';
 import '../../styles/task-detail.css';
 import './goal-detail.css';
@@ -63,6 +64,7 @@ export type GoalDetailSurfaceProps = {
 };
 
 type Tab = 'overview' | 'attachments' | 'discussion';
+const emptyPausedTaskIds: ReadonlySet<string> = new Set();
 const normalize = (navigation: TaskDetailNavigation): TaskDetailNavigation & { readonly tab: Tab } => ({ ...navigation, tab: navigation.tab === 'attachments' || navigation.tab === 'discussion' ? navigation.tab : 'overview' });
 
 const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot, presentation, fullscreen, navigation, onNavigate, onSelectTask, onNavigateExternalTask, onClose, onRestoreFocus, onRefreshGraph, graphError, attachmentApi, attachmentUrls, renderNested, initialWitness, closeChain, goalChildren, onGoalChildrenChange, detailError, detailRefreshing = false, resourceUnavailable = false, onRetryDetail }: GoalDetailSurfaceProps) => {
@@ -161,9 +163,9 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   };
   const rows = (ids: readonly string[]) => <ul className="goal-detail-tasks">{ids.map((id) => {
     const task = snapshot!.index.nodes.get(id)!;
-    return <li key={id}><button type="button" className="goal-detail-task" data-goal-task-id={id} onClick={(event) => onSelectTask(id, event.currentTarget)}><span className={`goal-detail-dot graph-status-${task.status}`} aria-hidden="true" /><span className="goal-detail-task-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} compact /><span>{messages.common.status[task.status]}</span></button></li>;
+    return <li key={id}><button type="button" className="goal-detail-task" data-goal-task-id={id} onClick={(event) => onSelectTask(id, event.currentTarget)}><span className={`goal-detail-dot graph-status-${task.status}`} aria-hidden="true" /><span className="goal-detail-task-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} compact />{snapshot!.pausedTaskIds.has(id) && <TaskPausedBadge />}<span>{messages.common.status[task.status]}</span></button></li>;
   })}</ul>;
-  const content = <OverlayOwnerContext value={root}>
+  const content = <TaskPauseProvider taskIds={snapshot?.pausedTaskIds ?? emptyPausedTaskIds}><OverlayOwnerContext value={root}>
     <DetailFrame root={root} modal={modal} headingId={headingId} className={`${modal ? 'task-detail-dialog' : 'task-detail-page'} goal-detail-surface${fullscreen.active ? ' task-detail-fullscreen' : ''}`}>
       {!modal && !fullscreen.active && <TaskDetailPageBar projectId={projectId} />}
       <header className="task-detail-header"><div className="task-detail-title-row"><h2 id={headingId} className="task-detail-title" ref={heading} tabIndex={0}>{scopeLost ? messages.inspection.detail.failed : detail.title}</h2></div><div className="task-detail-header-actions"><button className="button" type="button" disabled={scopeLost || edit === null && !task.canEditGoal} onClick={() => { if (edit === null) setEdit({ title: detail.title, description: detail.description, version: detail.version, originalTitle: detail.title, originalDescription: detail.description }); setEditOpen(true); }}>{zh ? '编辑' : 'Edit'}</button><button className="button task-detail-fullscreen-toggle" type="button" ref={toggle} aria-label={fullscreen.active ? messages.inspection.detail.exitFullscreen : messages.inspection.detail.enterFullscreen} title={fullscreen.active ? messages.inspection.detail.exitFullscreen : messages.inspection.detail.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.active ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg></button>{modal && <button className="button task-detail-close" type="button" ref={close} aria-label={messages.inspection.detail.close} onClick={requestClose}>×</button>}</div></header>
@@ -189,7 +191,7 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
     {!scopeLost && confirmation !== null && <TaskConfirmation owner={root} fallbackFocus={heading} title={confirmation.kind === 'delete' ? (zh ? '删除这个 Goal？' : 'Delete this Goal?') : confirmation.status === 'done' ? (zh ? '完成这个 Goal？' : 'Complete this Goal?') : (zh ? '取消这个 Goal？' : 'Cancel this Goal?')} question={confirmation.kind === 'delete' ? (zh ? 'Goal 及其下的所有 Task 将不可见，Task 的 Parent 保留。正在执行的任务将在后续 Worker 观察中开始停止。' : 'The Goal and its tasks will become unavailable. Their Parent remains. Running tasks will begin stopping on a later Worker observation.') : (zh ? 'Task 的状态将保留；新的自动领取会跳过此 Goal，已领取的任务继续执行。' : 'Task statuses remain unchanged. New automatic claims skip this Goal; claimed tasks continue.')} explanation="" taskTitle={confirmation.detail.title} cancelLabel={zh ? '返回' : 'Back'} closeLabel={zh ? '关闭确认' : 'Close confirmation'} confirmLabel={confirmation.kind === 'delete' ? (zh ? '删除 Goal' : 'Delete Goal') : (zh ? '确认' : 'Confirm')} destructive={confirmation.kind === 'delete'} confirmDisabled={taskReviewKey(detail) !== taskReviewKey(confirmation.detail) || (confirmation.kind === 'delete' ? !task.canDelete : !task.canSetStatus)} onCancel={() => setConfirmation(null)} onConfirm={() => { if (authRequestsPaused() || taskReviewKey(detail) !== taskReviewKey(confirmation.detail)) return; if (confirmation.kind === 'delete') { if (!task.canDelete) return; task.deleteTask(confirmation.detail.version, false); } else { if (!task.canSetStatus) return; task.setStatus(confirmation.status, confirmation.detail.version); } setConfirmation(null); }} />}
     {!scopeLost && openChain !== null && admittedChain.current === openChain && snapshot !== null && snapshot.index.components.has(openChain) && <TaskChainDialog projectId={projectId} index={snapshot.index} summaries={snapshot.summaries} rootId={openChain} onOpenTask={openTask} onNavigateExternalTask={openTask} onClose={() => setOpenChain(null, true)} onRootChange={setChainRoot} onRestoreFocus={() => { if (root.current !== null && !isTopOverlay(root.current)) return; const opener = chainOpener.current; if (opener?.isConnected && !opener.closest('[inert], [hidden]')) opener.focus({ preventScroll: true }); else heading.current?.focus({ preventScroll: true }); }} />}
     {!scopeLost && <OverlayOwnerContext value={nestedOwner}>{renderNested?.(nestedOwner)}</OverlayOwnerContext>}
-  </OverlayOwnerContext>;
+  </OverlayOwnerContext></TaskPauseProvider>;
   return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && root.current !== null && isTopOverlay(root.current) && !threadDetails.current) requestClose(); }}>{content}</div> : content;
 };
 
