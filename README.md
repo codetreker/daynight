@@ -79,8 +79,8 @@ separate from command availability; the
 
 The public introduction explains the product before sign-in; its example can be
 used without an account. The **[setup guide](https://daynight.cc/setup)** walks
-through installation and agent setup. Use the latest patch of Node.js 22 or newer,
-then install the CLI and sign in:
+through independent MCP and CLI with Agent skill paths. To use the CLI, install
+the latest patch of Node.js 22 or newer, then install the CLI and sign in:
 
 ```bash
 npm install --global @codetreker/daynight

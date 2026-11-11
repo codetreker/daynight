@@ -32,6 +32,7 @@ export const browserConfigs = [
   'identity-cache-playwright.config.ts',
   'locale-continuity-playwright.config.ts',
   'landing-header-playwright.config.ts',
+  'setup-guide-playwright.config.ts',
   'create-project-mobile-playwright.config.ts',
   'task-view-continuity-playwright.config.ts',
   'graph-visibility-browser-playwright.config.ts',

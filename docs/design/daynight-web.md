@@ -578,32 +578,34 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 
 ## 日常使用引导页
 
-`features/setup/SetupGuidePage.tsx` 与 `styles/setup.css` 拥有静态五步指南。
 `Application` 响应当前地址，将精确 `/setup` 分流到公开静态外壳，query 不影响匹配；
-公开首页和认证页面分别由[公开入口设计](daynight-landing.md)定义。
-该外壳保留本地语言 Provider、语言选择器、面包屑、标题、跳过导航和正文聚焦，
-不挂载 `AuthenticatedApp` 的身份、provider、邀请、任务缓存或前台认证重检生命周期。
-工作空间顶栏语言选择器前的书本图标与文字链接使用 `target="_blank"`、
-`rel="noopener noreferrer"`，不拦截点击。引导页中的项目链接采用完整页面导航，
-项目链接进入 `/projects`，离开指南后由正常应用入口处理认证。
+公开首页和认证页面分别由[公开入口设计](daynight-landing.md)定义。外壳保留本地语言
+Provider、语言选择器、面包屑、标题、跳过导航和正文聚焦，不挂载 `AuthenticatedApp`
+的身份、provider、邀请、任务缓存或前台认证重检生命周期。工作空间顶栏的书本图标和
+文字链接使用 `target="_blank"`、`rel="noopener noreferrer"`，不拦截点击。项目和
+账户链接采用完整页面导航，离开指南后由正常应用入口处理认证。
 
-`messages.setup` 的类型化目录拥有五步标题、前置条件、成功标志、自然语言示例、
-复制与导航文案。终端命令以完整字符串呈现和复制，多行使用真实换行，不从 HTML 或
-零散翻译词语恢复。CLI 直接使用已发布的设备登录与项目发现能力，安装指令的公开契约
-继续由客户端和 skill 模块拥有。当前服务地址直接读取 `window.location.origin`；
-该展示不参与 CLI 服务配置。
+`features/setup/SetupGuidePage.tsx` 组合始终展开的 MCP 与 CLI 章节并拥有客户端选择和
+共享复制状态；`McpSetupGuide.tsx` 呈现三步 MCP 说明，`CliSetupGuide.tsx` 保留五步 CLI
+指南，`SetupCommand.tsx` 共享可选中内容与复制按钮。`mcp-configuration.ts` 以客户端和
+endpoint 纯生成命令、远程终端变体及官方链接。地址以
+`new URL("/mcp", window.location.origin).href` 从当前浏览器 origin 得出，shell 参数
+使用 POSIX 单引号编码。页面说明命令在 POSIX shell 中执行，Windows 可使用 Git Bash；
+该地址不改变 CLI 默认服务。`messages.setup` 类型化目录拥有两条路径的
+文案及可访问名称，完整文本用于显示和复制，多行保留真实换行。
 
-指南及其公开外壳没有 API 请求、完成度探测、凭据输入或本地引导状态。匿名访问、
-刷新、语言切换、复制与焦点/可见性恢复均不启动认证。五步全部展开，使命令可重复
-查阅且不需要保存向导位置。[公开指南决策](../../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md)记录了入口隔离的历史取舍；[引导决策](../../.agents/notes/archived/feature/2026-10-25-web-setup-guide.md)
-保留五步内容、复制和服务路由选择的理由。
+页面没有 API、fetch、XHR、完成度探测或凭据输入；安装手册和账户链接只在用户点击时
+导航。客户端选择仅存页面内存，切语言保留，重新打开恢复 Codex。两条展开路径无需保存
+向导位置；[接入路径决策](../../.agents/notes/implemented/feature/2026-11-11-setup-mcp-guide.md)
+记录路径和地址策略，[公开指南决策](../../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md)
+记录入口隔离的历史取舍。
 
 页面只允许当前 generation 的一次复制。同步防重锁在异步剪贴板调用前建立，等待时
 禁用全部复制按钮；结果保存语义，由当前目录生成浮动 `role=status` 反馈，提示不占据
-文档流。剪贴板不可用或拒绝时保留可选择命令并说明手动复制。语言切换推进 generation、
-清理原提示及当前等待状态，旧调用随后完成时不发布结果；卸载也使旧调用失效。
-切换本身不执行复制。页面、命令块与顶栏在公开阅读布局的可用宽度内自然换行或局部滚动，
-320px/390px 下没有整页横向溢出。
+文档流。剪贴板不可用或拒绝时保留可选择内容并说明手动复制。语言或客户端切换推进
+generation、清理提示与等待状态，旧调用的成功、失败和结束处理均不能影响新状态；卸载
+也使旧调用失效。切换本身不执行复制。页面、命令块与顶栏在公开阅读布局的可用宽度内
+自然换行或局部滚动，320px/390px 下没有整页横向溢出。
 
 `server/webui.UI.RegisterRoutes` 注册 `/setup`，与其他页面共享 GET/HEAD、
 `no-store`、方法拒绝和请求记录。`validateAuthSettings` 同时保留 `/setup` 根和后代
