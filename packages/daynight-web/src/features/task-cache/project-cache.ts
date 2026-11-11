@@ -43,7 +43,7 @@ export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TA
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true; readonly origin?: symbol };
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
-type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
+type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
 export class TaskCacheLifecycleChanged extends DOMException {
   constructor() { super("The task cache lifecycle changed.", "AbortError"); }
 }
@@ -157,6 +157,18 @@ export class TaskCacheScope {
       const hint = event.data;
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
+      if ("uncertainEpoch" in hint) {
+        if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
+          !("userFence" in hint) || hint.userFence !== this.userFence || typeof hint.uncertainEpoch !== "string" || canonicalId(hint.uncertainEpoch) !== hint.uncertainEpoch) return;
+        this.fenceGoalEpoch(hint.projectId);
+        return;
+      }
+      if ("retiredEpoch" in hint) {
+        if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
+          !("userFence" in hint) || hint.userFence !== this.userFence || typeof hint.retiredEpoch !== "string" || canonicalId(hint.retiredEpoch) !== hint.retiredEpoch) return;
+        this.retireKnownEpoch(hint.projectId, hint.retiredEpoch);
+        return;
+      }
       if ("directSessionDenied" in hint) {
         const denied = hint.directSessionDenied;
         if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
@@ -1049,6 +1061,48 @@ export class TaskCacheScope {
     return this.isTaskReadCurrent(fence);
   }
   getHistoryGeneration(projectId: string): number { return this.histories.get(projectId)?.generation ?? 0; }
+  // A confirmed Goal deletion rotates the project epoch even before a new
+  // snapshot is available. Fence old content immediately, including peers.
+  retireGoalHistory(projectId: string, epoch: string): void {
+    if (this.userFence === null) return;
+    this.channel?.postMessage({ userId: this.userId, projectId, userFence: this.userFence, retiredEpoch: epoch } satisfies Hint);
+    this.retireKnownEpoch(projectId, epoch);
+  }
+  // A 410 does not report its epoch. Fence rather than retire a potentially
+  // current history, and require an observation started after the response.
+  fenceGoalHistory(projectId: string, epoch: string): void {
+    if (this.userFence === null) return;
+    this.channel?.postMessage({ userId: this.userId, projectId, userFence: this.userFence, uncertainEpoch: epoch } satisfies Hint);
+    this.fenceGoalEpoch(projectId);
+  }
+  private fenceGoalEpoch(projectId: string): void {
+    if (this.isInvalidated) return;
+    this.uncertainHistories.add(projectId);
+    this.historyVersions.set(projectId, (this.historyVersions.get(projectId) ?? 0) + 1);
+    this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
+    this.fenceUncertainDirectHistory(projectId);
+    this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+    this.emit({ projectId, historyChanged: true, historyHint: true, cacheGenerationChanged: true });
+  }
+  private retireKnownEpoch(projectId: string, epoch: string): void {
+    const old = this.histories.get(projectId);
+    if (this.isInvalidated) return;
+    if (old?.epoch == null) { this.fenceGoalEpoch(projectId); return; }
+    if (old.epoch !== epoch) { this.fenceGoalEpoch(projectId); return; }
+    let retired = this.retiredEpochs.get(projectId);
+    if (retired === undefined) { retired = new Set(); this.retiredEpochs.set(projectId, retired); }
+    retired.add(epoch);
+    this.uncertainHistories.delete(projectId); this.uncertainDirectRevisions.delete(projectId);
+    this.historyVersions.set(projectId, (this.historyVersions.get(projectId) ?? 0) + 1);
+    this.histories.set(projectId, { epoch: null, generation: old.generation + 1 });
+    this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
+    this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
+    this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+    this.historyPurgeEpochs.set(projectId, epoch);
+    const purge = this.ensureHistoryPurged(projectId);
+    this.emit({ projectId, historyChanged: true, cacheGenerationChanged: true });
+    void purge.catch(() => {});
+  }
   captureTaskHistoryFence(projectId: string, taskId: string, openingSequence: number, requestGeneration: number): TaskReadFence | null {
     if (this.isInvalidated || this.userFence === null || this.isDirectProjectBlocked(projectId)) return null;
     return { userId: this.userId, userFence: this.userFence, projectId, taskId, scopeRevision: this.getDirectRevision(projectId),

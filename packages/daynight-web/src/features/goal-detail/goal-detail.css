@@ -1,4 +1,11 @@
 .goal-detail-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border, #e5e8ee); }
+.goal-detail-field, .goal-edit-form label { display: flex; flex-direction: column; gap: .35rem; }
+.goal-detail-field select, .goal-edit-form input, .goal-edit-form textarea { max-width: 100%; padding: .5rem; border: 1px solid var(--border, #d5dae2); border-radius: 6px; font: inherit; }
+.goal-edit-form { display: grid; gap: 1rem; }
+.goal-edit-form textarea { resize: vertical; }
+.goal-edit-recovery { margin: .75rem 1.25rem; padding: .75rem; border: 1px solid #d5a448; border-radius: 6px; }
+.goal-edit-recovery p { margin: 0 0 .5rem; }
+.goal-detail-footer { display: flex; justify-content: flex-end; padding: .75rem 1.25rem; border-top: 1px solid var(--border, #e5e8ee); }
 .goal-detail-content:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .goal-detail-overview { padding: 1rem 1.25rem; overflow: auto; }
 .goal-detail-overview > .task-description { margin-bottom: 1rem; overflow-wrap: anywhere; }

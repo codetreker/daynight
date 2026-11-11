@@ -36,12 +36,12 @@ export const TypedDetail = (props: Props) => {
   const goalKey = `${props.projectId}/${props.taskId}/${task.historyGeneration}`;
   activeGoal.current = goalKey;
   return props.presentation === 'dialog'
-    ? <QualifiedGoal key={goalKey} {...props} detail={detail} detailError={task.error} detailRefreshing={task.refreshing} detailFresh={!task.requiresFreshRead} onRetryDetail={task.retry} onRestoreFocus={() => { if (activeGoal.current === goalKey) props.onRestoreFocus(); }} />
-    : <QualifiedGoal key={goalKey} {...props} detail={detail} detailError={task.error} detailRefreshing={task.refreshing} detailFresh={!task.requiresFreshRead} onRetryDetail={task.retry} />;
+    ? <QualifiedGoal key={goalKey} {...props} resourceState={task} detail={detail} detailError={task.error} detailRefreshing={task.refreshing} detailFresh={!task.requiresFreshRead} onRetryDetail={task.retry} onRestoreFocus={() => { if (activeGoal.current === goalKey) props.onRestoreFocus(); }} />
+    : <QualifiedGoal key={goalKey} {...props} resourceState={task} detail={detail} detailError={task.error} detailRefreshing={task.refreshing} detailFresh={!task.requiresFreshRead} onRetryDetail={task.retry} />;
 };
 
 // The owner, including its child selection, expires with the resource history.
-const QualifiedGoal = (props: Props & { readonly detail: TaskDetail; readonly detailError: unknown; readonly detailRefreshing: boolean; readonly detailFresh: boolean; readonly onRetryDetail: () => void }) => {
+const QualifiedGoal = (props: Props & { readonly resourceState: ReturnType<typeof useTaskDetail>; readonly detail: TaskDetail; readonly detailError: unknown; readonly detailRefreshing: boolean; readonly detailFresh: boolean; readonly onRetryDetail: () => void }) => {
   const [nested, setNested] = useState<{ readonly id: string; readonly trigger: HTMLElement } | null>(null);
   useLayoutEffect(() => { if (props.fullscreen.active) props.fullscreen.onChange(false); }, []);
   const closeChain = useRef<(() => void) | null>(null);

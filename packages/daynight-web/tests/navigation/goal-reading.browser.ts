@@ -28,6 +28,14 @@ async function install(page: Page) {
   let currentGraph = graph;
   let forbiddenGoal = false;
   let goalReads = 0;
+  const statusWrites: { status: string; version: number }[] = [];
+  const creates: unknown[] = [];
+  const edits: unknown[] = [];
+  let editMode: 'pending' | 'conflict' | 'pending-conflict' | 'unknown' | 'unknown-read-failure' = 'pending';
+  let failGoalRead = false;
+  let failedGoalReads = 0;
+  let rejectGoalWrites = false;
+  let releaseEdit: (() => void) | null = null;
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
@@ -38,11 +46,39 @@ async function install(page: Page) {
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Long owner name '.repeat(8), avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
+    if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/status` && route.request().method() === 'PUT') {
+      if (rejectGoalWrites) return send({ error: { code: 'forbidden', message: 'secret SQL detail', requestId: 'goal-write-2' } }, 403);
+      const request = route.request().postDataJSON() as { status: 'todo' | 'in_progress' | 'done' | 'cancelled'; version: number };
+      statusWrites.push(request);
+      const current = details.find(item => item.id === goalId)!;
+      const changedAt = `2026-10-22T10:00:0${statusWrites.length}Z`;
+      const updated = { ...current, status: request.status, version: current.version + 1n, updatedAt: changedAt,
+        startedAt: request.status === 'in_progress' ? changedAt : request.status === 'done' && current.status === 'in_progress' ? current.startedAt : null, completedAt: request.status === 'done' ? changedAt : null, cancelledAt: request.status === 'cancelled' ? changedAt : null };
+      details = details.map(item => item.id === goalId ? updated : item);
+      currentGraph = { ...graphFixture(details), observedAt: changedAt };
+      return send(updated);
+    }
+    if (path === `/api/v1/projects/${projectId}/tasks/${goalId}` && route.request().method() === 'PATCH') {
+      edits.push(route.request().postDataJSON());
+      if (rejectGoalWrites) return send({ error: { code: 'invalid_input', message: 'secret SQL detail', requestId: 'goal-write-3' } }, 400);
+      if (editMode === 'unknown' || editMode === 'unknown-read-failure') { failGoalRead = editMode === 'unknown-read-failure'; return route.abort('failed'); }
+      if (editMode === 'pending' || editMode === 'pending-conflict') await new Promise<void>(resolve => { releaseEdit = resolve; });
+      if (editMode === 'conflict' || editMode === 'pending-conflict') {
+        const updated = { ...details.find(item => item.id === goalId)!, version: 2n, title: 'Changed elsewhere', updatedAt: '2026-10-22T10:00:01Z' };
+        details = details.map(item => item.id === goalId ? updated : item);
+        currentGraph = { ...graphFixture(details), observedAt: updated.updatedAt };
+      }
+      const conflict = editMode === 'conflict' || editMode === 'pending-conflict';
+      return send({ error: { code: conflict ? 'version_conflict' : 'invalid_input', message: 'secret SQL detail', requestId: 'goal-write-1' } }, conflict ? 409 : 422);
+    }
+    if (path === `/api/v1/projects/${projectId}/tasks/${goalId}` && route.request().method() === 'DELETE' && rejectGoalWrites) return send({ error: { code: 'forbidden', message: 'secret SQL detail', requestId: 'goal-write-4' } }, 403);
     const detail = details.find(item => path === `/api/v1/projects/${projectId}/tasks/${item.id}`);
     if (detail !== undefined) {
       if (detail.id === goalId) {
         goalReads++;
+        if (failGoalRead) { failedGoalReads++; return route.abort('failed'); }
         if (forbiddenGoal) return send({ error: { code: 'forbidden', message: 'Forbidden', requestId: '00000000-0000-4000-8000-000000000099' } }, 403);
       }
       return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -54,7 +90,7 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { addActiveChain: () => {
+  return { statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, addActiveChain: () => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
@@ -79,6 +115,176 @@ async function install(page: Page) {
     currentGraph = graphFixture(details);
   } };
 }
+
+test('Goal write errors identify refusals without exposing internal diagnostics', async ({ page }) => {
+  const fixture = await install(page); fixture.rejectWrites();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const dialog = page.getByRole('dialog', { name: 'Goal reading' });
+  await dialog.getByRole('combobox', { name: 'Goal status' }).selectOption('in_progress');
+  await expect(dialog.locator('p[role=alert]').filter({ hasText: 'goal-write-2' })).toContainText('You do not have permission');
+  await dialog.getByRole('button', { name: /^Assignee:/ }).click();
+  await dialog.locator('.assignee-menu').getByRole('option', { name: /Long owner name/ }).click();
+  await expect(dialog.locator('p[role=alert]').filter({ hasText: 'goal-write-3' })).toContainText('assignee is unavailable');
+  await dialog.getByRole('button', { name: 'Delete Goal' }).click();
+  await page.getByRole('alertdialog', { name: 'Delete this Goal?' }).getByRole('button', { name: 'Delete Goal' }).click();
+  await expect(dialog.locator('p[role=alert]').filter({ hasText: 'goal-write-4' })).toContainText('You do not have permission');
+  await expect(dialog).not.toContainText('secret SQL detail');
+});
+
+for (const mode of ['pending', 'conflict', 'unknown'] as const) test(`Goal editing preserves its draft on ${mode} result`, async ({ page }) => {
+  const fixture = await install(page); fixture.setEditMode(mode);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  await page.getByRole('dialog', { name: 'Goal reading' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  const title = editor.getByLabel('Name', { exact: true });
+  const description = editor.getByRole('textbox', { name: 'Description', exact: true });
+  await title.fill('Unsaved goal');
+  await description.fill('Keep this draft');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => fixture.edits().length).toBe(1);
+  if (mode === 'pending') {
+    await expect(title).toBeDisabled();
+    await expect(description).toBeDisabled();
+    await expect(editor.getByRole('button', { name: 'Save' })).toHaveAttribute('aria-disabled', 'true');
+    fixture.releaseEdit();
+    await expect(editor.getByRole('alert')).toContainText('invalid_input');
+    await expect(editor.getByRole('alert')).toContainText('goal-write-1');
+    await expect(editor).not.toContainText('secret SQL detail');
+    await expect(title).toBeEnabled();
+  } else if (mode === 'conflict') {
+    await expect(editor.getByRole('button', { name: 'Use latest version' })).toBeVisible();
+    await expect(editor.getByRole('alert').last()).toContainText('version_conflict');
+    await expect(editor).not.toContainText('secret SQL detail');
+  } else {
+    await expect(title).toBeEnabled();
+    await expect(editor).toContainText('The operation outcome is unknown');
+  }
+  await expect(title).toHaveValue('Unsaved goal');
+  await expect(description).toHaveValue('Keep this draft');
+  expect(fixture.edits()).toHaveLength(1);
+});
+
+test('a closed Goal editor retains an unknown draft and exposes read-only recovery after the automatic read fails', async ({ page }) => {
+  const fixture = await install(page); fixture.setEditMode('unknown-read-failure');
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const goalDialog = page.locator('.goal-detail-surface');
+  const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  await editor.getByRole('textbox', { name: 'Name' }).fill('Retained goal');
+  await editor.getByRole('textbox', { name: 'Description' }).fill('Retained description');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(fixture.failedGoalReads).toBeGreaterThan(0);
+  await expect(editor.getByRole('button', { name: 'Check state' })).toBeEnabled();
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  await expect(goalDialog.getByText(/draft is retained; checking state will not resend/i)).toBeVisible();
+  await expect(edit).toBeEnabled();
+  await edit.click();
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained goal');
+  await expect(editor.getByRole('textbox', { name: 'Description' })).toHaveValue('Retained description');
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  fixture.restoreGoalReads();
+  await goalDialog.getByRole('button', { name: 'Check state' }).click();
+  await expect(goalDialog.getByText(/draft is retained; checking state will not resend/i)).toHaveCount(0);
+  await expect(goalDialog.getByText(/original save outcome remains unknown/i)).toBeVisible();
+  await edit.click();
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained goal');
+  await expect(editor.getByRole('textbox', { name: 'Description' })).toHaveValue('Retained description');
+  expect(fixture.edits()).toHaveLength(1);
+});
+
+for (const mode of ['pending', 'pending-conflict'] as const) test(`a closed Goal editor retains its draft and shows a delayed ${mode} refusal`, async ({ page }) => {
+  const fixture = await install(page); fixture.setEditMode(mode);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const goalDialog = page.locator('.goal-detail-surface');
+  const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  await editor.getByRole('textbox', { name: 'Name' }).fill('Retained goal');
+  await editor.getByRole('textbox', { name: 'Description' }).fill('Retained description');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => fixture.edits().length).toBe(1);
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  fixture.releaseEdit();
+  await expect(goalDialog.getByText(mode === 'pending' ? /invalid_input/ : /version_conflict/)).toBeVisible();
+  await expect(edit).toBeEnabled();
+  await edit.click();
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained goal');
+  await expect(editor.getByRole('textbox', { name: 'Description' })).toHaveValue('Retained description');
+  if (mode === 'pending-conflict') await expect(editor.getByRole('button', { name: 'Use latest version' })).toBeVisible();
+  expect(fixture.edits()).toHaveLength(1);
+});
+
+test('unknown Goal creation retains its draft and blocks replay after leaving the tab', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.getByRole('button', { name: 'New Goal' }).click();
+  const form = page.getByRole('dialog', { name: 'New Goal' });
+  await form.getByLabel('Name', { exact: true }).fill('A new Goal');
+  await form.getByLabel('Description').fill('Keep this draft');
+  await form.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(form.getByRole('alert').first()).toContainText('outcome is unknown');
+  expect(fixture.creates()).toEqual([{ title: 'A new Goal', description: 'Keep this draft', type: 'goal', assignedTo: TEST_VIEWER_ID }]);
+  await form.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('tab', { name: /^Task chains/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.getByRole('button', { name: 'New Goal' }).click();
+  await expect(form.getByLabel('Name', { exact: true })).toHaveValue('A new Goal');
+  await expect(form.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
+  expect(fixture.creates()).toHaveLength(1);
+});
+
+for (const width of [1440, 390]) test(`Goal status confirmations preserve children and permit reopening at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
+  const status = goalDialog.getByRole('combobox', { name: 'Goal status' });
+  await status.selectOption('done');
+  const confirmation = page.getByRole('alertdialog', { name: 'Complete this Goal?' });
+  await expect(confirmation).toContainText('Task statuses remain unchanged');
+  await confirmation.getByRole('button', { name: 'Back' }).click();
+  expect(fixture.statusWrites()).toHaveLength(0);
+  await expect(status).toHaveValue('todo');
+  await status.selectOption('done');
+  await confirmation.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => fixture.statusWrites().length).toBe(1);
+  await expect(status).toHaveValue('done');
+  await expect(goalDialog.getByRole('button', { name: 'New Task' })).toBeEnabled();
+  await status.selectOption('todo');
+  await expect.poll(() => fixture.statusWrites().length).toBe(2);
+  await expect(status).toHaveValue('todo');
+  await status.selectOption('cancelled');
+  await page.getByRole('alertdialog', { name: 'Cancel this Goal?' }).getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => fixture.statusWrites().length).toBe(3);
+  await expect(status).toHaveValue('cancelled');
+  await status.selectOption('in_progress');
+  await expect.poll(() => fixture.statusWrites().length).toBe(4);
+  await expect(status).toHaveValue('in_progress');
+  expect(fixture.statusWrites()).toEqual([{ status: 'done', version: 1 }, { status: 'todo', version: 2 }, { status: 'cancelled', version: 3 }, { status: 'in_progress', version: 4 }]);
+  await goalDialog.getByRole('button', { name: 'Delete Goal' }).click();
+  const deletion = page.getByRole('alertdialog', { name: 'Delete this Goal?' });
+  await expect(deletion).toContainText('Their Parent remains');
+  await deletion.getByRole('button', { name: 'Back' }).click();
+  await expect(goalDialog).toBeVisible();
+});
 
 for (const width of [1366, 390, 320]) test(`active chain indicator remains usable at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });

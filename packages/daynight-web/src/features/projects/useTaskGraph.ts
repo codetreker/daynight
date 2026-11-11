@@ -1,5 +1,5 @@
 import { useProjectAccessSession } from "./ProjectAccess";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ApiError, authRequestsPauseRevision, getTaskSync, isAbortError } from "../../api/client";
 import { pollingInterval } from "../../app/polling";
 import type { TaskGraph, TaskSummary, WorkerClaim } from "../../api/types";
@@ -9,6 +9,10 @@ import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
 import type { CachedProject, TaskSyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { deriveTaskSyncBindings } from "../task-cache/execution-binding";
 import { TaskSessionSummaryStore } from "../task-session-summary/store";
+import { useOptionalTaskDetailSessions } from '../task-detail/TaskDetailSession';
+import { projectCommittedTasks, type CommittedTaskProjection } from './committed-task-projection';
+
+const emptyCommitted: ReadonlyMap<string, CommittedTaskProjection> = new Map();
 
 export type GraphSnapshot = {
   readonly graph: TaskGraph;
@@ -41,6 +45,10 @@ const initialState = (projectId: string, scope: TaskCacheScope): GraphState => (
 
 export const useTaskGraph = (projectId: string) => {
   const scope = useTaskCacheScope();
+  const sessions = useOptionalTaskDetailSessions();
+  const subscribeCommitted = useCallback((listener: () => void) => sessions?.subscribeCommitted(projectId, listener) ?? (() => {}), [sessions, projectId]);
+  const committedSnapshot = useCallback(() => sessions?.committedSnapshot(projectId) ?? emptyCommitted, [sessions, projectId]);
+  const committed = useSyncExternalStore(subscribeCommitted, committedSnapshot);
   const access = useProjectAccessSession(projectId);
   const sessionStore = useMemo(() => new TaskSessionSummaryStore(scope, projectId), [scope, projectId]);
   useEffect(() => { sessionStore.start(); return () => sessionStore.dispose(); }, [sessionStore]);
@@ -184,5 +192,10 @@ export const useTaskGraph = (projectId: string) => {
   }, [projectId, scope, request, publish]);
   const refresh = useCallback(() => { void request(); }, [request]);
   const visible = state.projectId === projectId && state.scope === scope ? state : initialState(projectId, scope);
-  return { snapshot: visible.snapshot, status: visible.status, refreshing: visible.refreshing, error: visible.error, refresh, sessionStore };
+  const cacheGeneration = sessions?.projectGeneration(projectId) ?? null;
+  const scopeRevision = scope.getProjectRevision(projectId);
+  const historyGeneration = scope.getHistoryGeneration(projectId);
+  const projection = useMemo(() => visible.snapshot === null ? null : projectCommittedTasks(visible.snapshot, committed, { cacheGeneration, scopeRevision, historyGeneration }),
+    [visible.snapshot, committed, cacheGeneration, scopeRevision, historyGeneration]);
+  return { snapshot: projection?.snapshot ?? visible.snapshot, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore };
 };

@@ -39,6 +39,7 @@ import { TaskPullRequests } from './TaskPullRequests';
 import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
 import { TaskAssigneeSelect } from '../task-assignment/TaskAssigneeSelect';
+import { TaskParentControl } from './TaskOrganization';
 import { TaskAssignmentFeedback } from '../task-assignment/TaskAssignmentFeedback';
 import { DetailFrame, useDetailFullscreen, useDetailOverlay, type DetailFullscreen } from './DetailFrame';
 import '../../styles/task-detail.css';
@@ -276,6 +277,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />}
                 </div>
                 <TaskPauseControl paused={readTaskPaused(detail.properties) === true} disabled={!task.canUnpause} mutation={task.mutation} onUnpause={() => task.unpause(detail.version)} fallbackFocus={titleRef} />
+                <TaskParentControl key={`${scope}/${task.historyGeneration}`} detail={detail} snapshot={snapshot} disabled={!task.canSetParent} mutation={task.mutation} onSelect={task.setParent} onReconcile={task.reconcile} />
                 {currentClaim !== null && access.error !== null && <div role="alert"><TaskDetailError error={access.error} /><button className="button" type="button" onClick={() => { void access.session.revalidate(); }}>{messages.workspace.projects.retry}</button></div>}
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry} profileRecoveryUrl={popout}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => { if (authRequestsPaused()) return; const review = { kind: 'withdraw' as const, detail, claimId: currentClaim.claimId }; void access.session.revalidate().then((fresh) => { if (fresh !== null && dialogRef.current?.isConnected && mayWithdrawClaim(currentClaim, viewer.userId, fresh.effectiveRole)) requestConfirmation(review); }); } } : {})} />}

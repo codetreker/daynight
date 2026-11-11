@@ -55,7 +55,7 @@ describe('confirmed status-row platform selection', () => {
   it('shows one header select and submits only confirmation while retaining the confirmed value', async () => {
     const { sync } = await open(); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise);
     expect(select().closest('.task-detail-status-row')).not.toBeNull();
-    expect(screen.getAllByRole('combobox')).toHaveLength(1);
+    expect(within(select().closest('.task-detail-status-row')!).getAllByRole('combobox', { name: 'Execution platform' })).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Save platform' })).toBeNull();
     expect(document.querySelector('.task-detail-badges .task-platform')).toBeNull();
     expect(select()).toHaveValue('');
