@@ -38,7 +38,7 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask }:
     <form className="task-search-form" role="search" aria-label={m.form} onSubmit={submit}>
       <div className="task-search-input-wrap">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
-        <input ref={inputRef} type="text" inputMode="search" value={search.draft} onChange={(event) => search.setDraft(event.currentTarget.value)} aria-label={m.input} placeholder={m.placeholder} autoComplete="off" spellCheck={false} aria-invalid={syntaxForDraft || undefined} aria-describedby={syntaxForDraft ? 'task-search-error' : undefined} />
+        <input ref={inputRef} type="text" inputMode="search" value={search.draft} onChange={(event) => { const value = event.currentTarget.value; if (value === '') clear(); else search.setDraft(value); }} aria-label={m.input} placeholder={m.placeholder} autoComplete="off" spellCheck={false} aria-invalid={syntaxForDraft || undefined} aria-describedby={syntaxForDraft ? 'task-search-error' : undefined} />
         {search.draft !== '' && <button className="task-search-clear" type="button" onClick={clear} aria-label={m.clear} title={m.clear}>×</button>}
       </div>
       <button className="button primary" type="submit" disabled={search.busy}>{m.submit}</button>
