@@ -20,12 +20,10 @@ collaborator boundary.
 
 ## Decision
 
-The [test-writing policy](../../../../docs/writing_tests.md) assigns mocks at the
-directly invoked lower operation. Server units execute HTTP adaptation with
-service or core use case mocks. Service units execute their own dependency
-assembly, orchestration, transaction coordination and shared-resource lifetime
-with mocks of directly invoked core and other lower business operations. DAO
-mocks beneath real lower business decisions do not establish either boundary.
+This decision originally assigned mocks at the directly invoked lower operation
+for server and service units. The later [component test ownership decision](2026-11-11-go-component-test-ownership.md)
+replaces that universal boundary with behavior and cost based selection while
+preserving the reasons and specific fixture designs recorded here.
 
 The regular `internal/server/task` suite uses
 consumer-owned `TaskService`, `StepService` and `ThreadService` contracts plus
@@ -54,13 +52,13 @@ without constructing unrelated account services or replacing `Require` with a
 principal-only wrapper. The [Authentication consumer decision](2026-11-10-auth-identity-consumer.md)
 records the direct operation contract for the complete adapter.
 
-Core tests synthesize domain facts and control required DAO results while
-executing their business rules. Service tests supply explicit core-operation
-results, errors and blocking, checking principal, IDs, inputs, context, bound
-capabilities, call counts and required order. They execute their actual scope
-callback while configuring lower results, completion and cleanup independently.
-This exposes coordination, completion precedence and error propagation without
-repeating the lower business-rule matrix.
+Controlled Core tests synthesize domain facts and DAO results while executing
+business rules. Service tests can supply explicit core-operation results, errors
+and blocking, checking principal, IDs, inputs, context, bound capabilities, call
+counts and required order. They execute their actual scope callback while
+configuring lower results, completion and cleanup independently. This exposes
+coordination, completion precedence and error propagation without repeating the
+lower business-rule matrix.
 
 When production construction or resource lifetime is the subject, assembly
 tests control collaborators and external resources while retaining that
@@ -146,11 +144,10 @@ PostgreSQL implementation. Business rules, exact storage changes and normal
 full-application collaboration retain different owners. The [MCP ownership decision](2026-11-09-mcp-use-case-test-ownership.md) applies
 the same direct operation boundary to MCP protocol tests and preserves their
 lower admission, transfer and physical proofs in their actual owners. Other
-domain and process fixtures still carry their own existing scopes; adoption of
-the common policy does not claim that every historical suite has been migrated.
-Database isolation and direct operation isolation are separate properties.
-Changing a mock boundary requires preserving each lower rule and mechanism in
-its actual owner before removing the original assertion.
+domain and process fixtures carry their own scopes. Database isolation and direct
+operation isolation are separate properties; neither alone determines the right
+component boundary. Changing a boundary requires preserving each lower rule and
+mechanism in its actual owner before removing the original assertion.
 
 Socket timeout expiration and exact encoded boundaries retain their real
 mechanisms. The Step timeout interval is selected per handler, avoiding shared

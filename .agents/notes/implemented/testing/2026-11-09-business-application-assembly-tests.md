@@ -57,8 +57,8 @@ That flow exercises the production Server, authentication, database and default
 construction. Module and Store owners retain their rule and persistence proofs;
 assembly units do not manufacture business state or simulate a database.
 
-The [Go dependency decision](2026-11-08-go-test-dependency-boundaries.md)
-owns the direct-operation policy. The
+The [component test ownership decision](2026-11-11-go-component-test-ownership.md)
+owns the common boundary selection rule. The
 [outer service assembly decision](2026-11-09-root-service-test-ownership.md)
 owns opening and closing external resources; these inner construction bindings
 do not replace or expose its resource openers.

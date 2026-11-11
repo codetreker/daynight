@@ -12,9 +12,9 @@ The same fixtures also repeated schema initialization and tool registration.
 
 Some protocol scenarios were the only callers of lower admission and cleanup
 branches. Replacing their fixtures without identifying those observations would
-lose defect detection even if package coverage remained high. The common
-[dependency decision](2026-11-08-go-test-dependency-boundaries.md) establishes the
-required collaborator boundary.
+lose defect detection even if package coverage remained high. The earlier
+[dependency decision](2026-11-08-go-test-dependency-boundaries.md) established
+the direct-operation boundary used by these tests.
 
 ## Decision
 
