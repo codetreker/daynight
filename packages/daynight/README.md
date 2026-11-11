@@ -910,17 +910,6 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
-Repository Git commands share the invocation deadline, cap each command at
-30 seconds, and bound each output stream to 1 MiB. On Windows, native creation
-assigns Git to a private Job before its first instruction. Cancellation and
-command failures
-that require stopping retain the original cause when cleanup is uncertain;
-root or pipe closure alone does not establish descendant completion. Unforced
-Git completion joins the real output streams and releases its own ownership
-without terminating ordinary background work. The
-[repository Git design](../../docs/design/daynight-project-task.md#git-定位与仓库身份)
-defines the lifecycle and failure rules.
-
 Task resources require `type` (`task` or `goal`) and a nullable `parentId`. A Goal has no parent, uses `todo`, `in_progress`, `done` or `cancelled`, and is never ready. Full Goal reads include progress; its Session registration is `not_applicable`. Graph nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources without exposing their details.
 
 Before setting a Goal to `done` or `cancelled`, the CLI explains on stderr that child Task states are retained and future automatic claims are excluded. Before deleting a Goal, it explains that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or supply `--force`; noninteractive calls without it do not submit. Both commands read the target type and identity even with `--if-version`, and retain the caller’s exact version for the write. `--force` skips only the Goal prompt; the service still applies its business and version checks.
