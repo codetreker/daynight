@@ -79,9 +79,9 @@ func (d failureDAO) ProjectAccess(ctx context.Context, u, p string) (model.Proje
 	}
 	return d.SessionDAO.ProjectAccess(ctx, u, p)
 }
-func (d failureDAO) LockTaskRegistration(ctx context.Context, p, id string) error {
-	if d.point == "registration_lock" {
-		return errSessionDAO
+func (d failureDAO) LockTaskRegistration(ctx context.Context, p, id string) (store.SessionTask, error) {
+	if d.point == "registration_lock" || d.point == "task" {
+		return store.SessionTask{}, errSessionDAO
 	}
 	return d.SessionDAO.LockTaskRegistration(ctx, p, id)
 }

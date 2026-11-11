@@ -40,7 +40,7 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 		if err := dao.LockCredential(ctx, pat, now); err != nil {
 			return err
 		}
-		if err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
+		if _, err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
 			return err
 		}
 		if _, err := dao.LockTask(ctx, project.ID, task.ID); err != nil {
@@ -252,7 +252,7 @@ func TestSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T) {
 	operationID, evidenceID, finalID, client := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-		if err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
+		if _, err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
 			return err
 		}
 		if err := dao.InsertTerminal(ctx, store.TerminalRegistration{SessionID: id, ProjectID: project.ID, TaskID: task.ID, ClaimID: claim, OwnerID: principal.UserID, RegistrationID: registration, Registration: []byte(`{}`), State: []byte(`{"revision":1}`), LastSeen: now, ServerInstance: instance}); err != nil {
@@ -375,7 +375,7 @@ func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
 	for name, run := range map[string]func() error{
 		"credential":                func() error { return dao.LockCredential(ctx, principal, now) },
 		"task":                      func() error { _, e := dao.LockTask(ctx, id, other); return e },
-		"task registration lock":    func() error { return dao.LockTaskRegistration(ctx, id, other) },
+		"task registration lock":    func() error { _, e := dao.LockTaskRegistration(ctx, id, other); return e },
 		"test owner lock":           func() error { return dao.LockTestOwner(ctx, id) },
 		"task registration":         func() error { _, e := dao.FindTaskRegistration(ctx, id, other, id, other); return e },
 		"test registration":         func() error { _, _, e := dao.FindTestRegistration(ctx, id, other, id); return e },

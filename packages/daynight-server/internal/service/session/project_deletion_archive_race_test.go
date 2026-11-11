@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,6 +60,10 @@ func waitArchiveLock(ctx context.Context, db *postgres.Store, query string) erro
 }
 
 func readyTerminalArchive(t *testing.T, f serviceFixture) (string, []byte) {
+	return readyTerminalArchiveWithDeletion(t, f, nil, nil, "")
+}
+
+func readyTerminalArchiveWithDeletion(t *testing.T, f serviceFixture, afterStart func(string), writer *completionWriter, completion string) (string, []byte) {
 	t.Helper()
 	ctx := t.Context()
 	f.service.SetOrigin("https://daynight.example")
@@ -104,6 +109,13 @@ func readyTerminalArchive(t *testing.T, f serviceFixture) (string, []byte) {
 		t.Fatal(err)
 	}
 	ledger.Payload = v2.GenerationLedger{Runs: doc.Runs}
+	if afterStart != nil {
+		afterStart(m.SessionID)
+		writer.inject(completion, nil)
+		if _, err = f.service.UpdateTerminalLedger(ctx, f.owner, f.project, f.task, m.SessionID, "1", ledger); !errors.Is(err, errInjectedCompletion) {
+			t.Fatalf("unknown stopped ledger outcome lost: %v", err)
+		}
+	}
 	if _, err = f.service.UpdateTerminalLedger(ctx, f.owner, f.project, f.task, m.SessionID, "1", ledger); err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +129,10 @@ func readyTerminalArchive(t *testing.T, f serviceFixture) (string, []byte) {
 	if _, err = f.service.UpdateTerminalRecording(ctx, f.owner, f.project, f.task, m.SessionID, "1", evidence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET status='done' WHERE id=$1`, f.task); err != nil {
-		t.Fatal(err)
+	if afterStart == nil {
+		if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET status='done' WHERE id=$1`, f.task); err != nil {
+			t.Fatal(err)
+		}
 	}
 	final := m
 	final.Type = "finalization"
@@ -260,7 +274,7 @@ func TestProjectDeletionSerializesWithSessionArchives(t *testing.T) {
 						t.Fatal(ctx.Err())
 					}
 					go upload()
-					if err = waitArchiveLock(ctx, f.db, "SELECT status,deleted_at IS NOT NULL FROM tasks"); err != nil {
+					if err = waitArchiveLock(ctx, f.db, "SELECT id::text FROM tasks WHERE project_id=$1 AND id=$2 FOR SHARE"); err != nil {
 						t.Fatal(err)
 					}
 					releaseDelete()

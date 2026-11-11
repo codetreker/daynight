@@ -126,7 +126,7 @@ func (d *sessionHTTPDAO) verify() {
 		}
 		return
 	case "LockTaskRegistration":
-		required = map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1}
+		required = map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1}
 	case "SessionLocation":
 		required = map[string]int{"SessionLocation": 1, "LockTask": 1, "SessionBotID": 1, "LockSession": 1, "LockCredential": 1, "ProjectAccess": 1}
 	case "SessionLocationByGrant":
@@ -214,12 +214,12 @@ func (d *sessionHTTPDAO) LockArchiveTask(ctx context.Context, project, id string
 	}
 	return d.task, false, ctx.Err()
 }
-func (d *sessionHTTPDAO) LockTaskRegistration(ctx context.Context, project, id string) error {
+func (d *sessionHTTPDAO) LockTaskRegistration(ctx context.Context, project, id string) (store.SessionTask, error) {
 	d.called(ctx, "LockTaskRegistration")
 	if project != d.f.task.ProjectID || id != d.f.task.ID {
 		d.fail("registration lock changed address")
 	}
-	return ctx.Err()
+	return d.task, ctx.Err()
 }
 func (d *sessionHTTPDAO) FindTaskRegistration(ctx context.Context, project, registration, task, claim string) (string, error) {
 	d.called(ctx, "FindTaskRegistration")

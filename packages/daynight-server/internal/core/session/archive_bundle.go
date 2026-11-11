@@ -179,7 +179,7 @@ func archiveStopped(r *record, t task) error {
 		if r.Snapshot.Lifecycle != "archived" {
 			return conflict()
 		}
-	} else if active(t, r) || (r.Snapshot.Lifecycle == "active" && t.Status == "in_progress") {
+	} else if active(t, r) || (r.Snapshot.Lifecycle == "active" && !t.Deleted && t.Status == "in_progress") {
 		return conflict()
 	}
 	return nil
