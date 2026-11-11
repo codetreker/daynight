@@ -32,6 +32,7 @@ const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebB
 
 const mockPosixControllerStop = () => vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
   confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
+  recheck: () => {},
   stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
   commit: async hooks => { hooks?.onVerified(); return lifecycle.recordStoppedControllerGeneration(journalPath, ticket); },
   close: async () => {},
@@ -71,6 +72,75 @@ it.each(["identity conflict", "ordinary read failure"] as const)("handles a Wind
     expect(capacity.commitObservation(observationTicket, observed)).toBe(true);
     expect(capacity.isStopped(execution.owner)).toBe(kind === "ordinary read failure");
   } finally { operation.dispose(); }
+});
+
+it.each(["identity conflict", "ordinary read failure"] as const)("retains cleanup responsibility when stop evidence has an %s after handle close", async kind => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const execution = webExecutionRef(source.task), attempt = { owner: execution.owner, attemptId: "attempt" };
+  const capacity = createExecutionCapacity(() => {}); capacity.beginAttempt(attempt);
+  const fault = kind === "identity conflict" ? new controllerStop.ControllerStopIdentityError("Original source changed") : new Error("Original source temporarily unavailable");
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+  const recheck = vi.fn(() => { throw fault; });
+  vi.spyOn(controllerStop, "openControllerStop").mockResolvedValue({
+    confirm: async () => true, stop: async () => {}, recheck,
+    commit: async hooks => { hooks?.onVerified(); return source.snapshot; },
+    close: async () => { enter(); await barrier; },
+  });
+  const archive = vi.fn(), stopped = vi.fn(notice => capacity.notify(notice)), conflict = vi.fn(notice => capacity.notifyConflict(notice));
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: source.request, archive });
+  const result = backend.cleanup(source.task, { kind: "terminal", deadline: Date.now(), immediateStop: true, scope: { attempt, onExecutionStopped: stopped, onExecutionConflict: conflict } });
+  void result.catch(() => {});
+  try {
+    await entered;
+    expect(stopped).toHaveBeenCalledOnce(); expect(capacity.isStopped(execution.owner)).toBe(true);
+    expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    release();
+    await expect(result).rejects.toThrow();
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(conflict).toHaveBeenCalledTimes(kind === "identity conflict" ? 1 : 0);
+    expect(capacity.isStopped(execution.owner)).toBe(kind === "ordinary read failure");
+    expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  } finally { release(); }
+});
+
+it.each(["identity conflict", "ordinary read failure"] as const)("does not start recovery when stop evidence has an %s after handle close", async kind => {
+  const f = await recoveryFixture(3);
+  const fault = kind === "identity conflict" ? new controllerStop.ControllerStopIdentityError("Original source changed") : new Error("Original source temporarily unavailable");
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+  const recheck = vi.fn(() => { throw fault; }), commit = vi.fn();
+  vi.spyOn(controllerStop, "openControllerStop").mockResolvedValue({
+    confirm: async () => true, stop: async () => {}, recheck,
+    commit: async () => { commit(); return f.snapshot; },
+    close: async () => { enter(); await barrier; },
+  });
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  const result = f.backend.advance(authorized, new AbortController().signal); void result.catch(() => {});
+  try {
+    await entered;
+    expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+    release();
+    await expect(result).rejects.toThrow(fault.message);
+    expect(recheck).toHaveBeenCalledOnce(); expect(commit).not.toHaveBeenCalled();
+    expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("1");
+  } finally { release(); }
+});
+
+it("does not hide a cleanup stop identity conflict with a later positive confirmation", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const fault = new controllerStop.ControllerStopIdentityError("Original stop identity changed");
+  const confirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+  const stop = vi.fn().mockRejectedValue(fault), commit = vi.fn(async () => source.snapshot), close = vi.fn(async () => {});
+  vi.spyOn(controllerStop, "openControllerStop").mockResolvedValue({ confirm, stop, commit, close, recheck: () => {} });
+  const notice = vi.fn(), conflict = vi.fn(), archive = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: source.request, archive });
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: Date.now(), immediateStop: true, scope: { attempt: { owner: source.task, attemptId: "attempt" }, onExecutionStopped: notice, onExecutionConflict: conflict } })).rejects.toThrow(fault.message);
+  expect(confirm).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+  expect(commit).not.toHaveBeenCalled(); expect(notice).not.toHaveBeenCalled(); expect(conflict).toHaveBeenCalledOnce();
+  expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.store.getTask(source.task)?.webExecution?.executionGeneration).toBe("1");
 });
 
 it.skipIf(process.platform === "win32").each(["observe", "cleanup"] as const)("does not publish a POSIX stop when native evidence changes during %s", async mode => {
@@ -382,7 +452,9 @@ const osWriterScript = (moduleUrl: string, launchId: string, failCapture = false
     import { spawn } from "node:child_process";
     const { captureControllerProcessProof } = await import(${JSON.stringify(moduleUrl)});
     const proof = await captureControllerProcessProof(${JSON.stringify(launchId)}, ${JSON.stringify(context)});
-    const descendant = spawn(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(descendant)}], { stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true });
+    // Detached avoids libuv's separate kill-on-parent-exit Job on Windows
+    // without breaking away from the original Controller Job.
+    const descendant = spawn(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(descendant)}], { detached: process.platform === "win32", stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true });
     let failure = null;
     descendant.on("error", error => { throw error; });
     descendant.on("message", message => {

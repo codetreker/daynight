@@ -41,6 +41,7 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
     if (!await stop.confirm()) throw new Error("The original controller or its descendants are still running.");
     return stop.commit();
   });
+  stop.recheck();
   const proofPath = path.join(execution, "stop-proof.json");
   let body: unknown;
   if (existsSync(proofPath)) {

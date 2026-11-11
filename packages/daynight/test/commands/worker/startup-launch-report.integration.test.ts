@@ -10,7 +10,7 @@ import { openControllerLifecycleStore, readControllerSnapshot } from "../../../s
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
-import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory, writeLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
@@ -60,6 +60,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     });
     vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ controller, native: descendants }) => ({
       confirm: () => processProof.confirmControllerProcessesStopped(controller, descendants),
+      recheck: () => {},
       stop: async () => { throw new Error("Unexpected stop in startup observation."); },
       commit: async () => { throw new Error("Unexpected commit in startup observation."); },
       close: async () => {},
@@ -93,7 +94,8 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const journalFile = path.join(directory, "journal.sqlite");
   const journal = openControllerLifecycleStore(journalFile, { ...ticket, ...journalIdentity }, { onMigration() {} });
   disposals.push(async () => { journal.close(); });
-  journal.patchSnapshot({ lifecycle: "working", activity: "initializing" });
+  journal.patchSnapshot({ lifecycle: "starting", activity: "initializing" });
+  await writeLaunchTicket(home, ticket);
   // Simulate an abrupt pre-hello exit that leaves the last durable journal unfinished.
   await mkdir(path.join(home, "dist"));
   await writeFile(path.join(home, "dist/main.js"), "process.exit(1);\n");

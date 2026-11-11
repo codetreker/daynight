@@ -8,7 +8,7 @@ import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTi
 import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof } from "../../controller/process-proof.js";
-import { openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
+import { isControllerStopIdentityConflict, openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
 import { withControllerStop } from "../../controller/controller-stop-scope.js";
 import { selectedWorktreePath, WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
@@ -131,6 +131,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const confirmSaved = async (task: LocalTask, saved: ControllerSnapshot): Promise<boolean> => {
     const proof = saved.controllerProcess ?? task.webExecution?.controllerProcess ?? null;
     if (process.platform !== "win32" && proof !== null && proof.processGroupId !== null && proof.jobObjectName === undefined) {
+      if (saved.executionGeneration === task.webExecution!.executionGeneration) {
+        const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
+        return confirmWebStop(journal(task), ticket, saved, proof);
+      }
       const stopped = await confirmControllerProcessesStopped(proof, saved.nativeProcesses);
       if (stopped && JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(saved)) throw new ExecutionSourceConflictError("The original controller journal changed during stop observation.");
       return stopped;
@@ -500,6 +504,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (proof === null) throw new Error("The original controller process identity is missing; cleanup cannot infer stop.");
             if (saved === null) throw new Error("The original controller journal is unavailable; cleanup cannot infer complete native stop.");
             const stop = await openControllerStop({ journalPath: journal(task), ticket, controller: proof, native });
+            const notifyConflict = (error: unknown) => {
+              if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionConflict?.({ attempt: cleanupRequest.scope.attempt, execution: webExecutionRef(task), error: new ExecutionSourceConflictError("The original stop evidence conflicts with its recorded source.", { cause: error }), observedAt: options.now() });
+            };
             const completedStop = await withControllerStop(stop, async () => {
               let stopped = await stop.confirm();
               if (!immediateStop && task.status !== "done" && !stopped && options.now() < intent.deadline) {
@@ -520,10 +527,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                 if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return false;
               }
               if (!stopped) {
-                if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + CLEANUP_OPERATION_MS }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); } catch { /* OS process observation remains authoritative after an IPC loss. */ }
+                let graceful = false;
+                if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + CLEANUP_OPERATION_MS }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); graceful = true; } catch { /* OS process observation remains authoritative after an IPC loss. */ }
                 signal.throwIfAborted();
-                try { await stop.stop(Date.now() + CLEANUP_OPERATION_MS); }
-                catch (error) { if (!await stop.confirm()) throw error; }
+                try { await stop.stop(Date.now() + CLEANUP_OPERATION_MS, { graceful }); }
+                catch (error) { if (isControllerStopIdentityConflict(error)) { notifyConflict(error); throw error; } if (!await stop.confirm()) throw error; }
                 stopped = await stop.confirm();
               }
               if (!stopped) throw new Error("The original controller or its native processes still exist.");
@@ -532,13 +540,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               };
               await stop.commit({
                 onVerified: notifyStopped,
-                onConflict: error => {
-                  if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionConflict?.({ attempt: cleanupRequest.scope.attempt, execution: webExecutionRef(task), error: new ExecutionSourceConflictError("The original Windows stop evidence conflicts with its recorded source.", { cause: error }), observedAt: options.now() });
-                },
+                onConflict: notifyConflict,
               });
               return true;
             });
             if (!completedStop) return { task, complete: false };
+            try { stop.recheck(); }
+            catch (error) { if (isControllerStopIdentityConflict(error)) notifyConflict(error); throw error; }
             success(task, { kind: "cleanup", phase: "agent-stop" });
             phase(task, { kind: "cleanup", phase: "agent-stop" }, true);
             stage = "backend-close";

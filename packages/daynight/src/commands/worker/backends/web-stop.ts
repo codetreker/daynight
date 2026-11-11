@@ -23,17 +23,21 @@ export const confirmWebStop = async (file: string, ticket: ControllerLaunchTicke
   const controller = snapshot.controllerProcess ?? fallback ?? recoverWindowsControllerProof(file, ticket);
   if (!controller) throw new Error("The original Controller identity is missing.");
   const stop = await openControllerStop({ journalPath: file, ticket, controller, native: snapshot.nativeProcesses });
-  return withControllerStop(stop, () => stop.confirm());
+  const stopped = await withControllerStop(stop, () => stop.confirm());
+  if (stopped) stop.recheck();
+  return stopped;
 };
 
 export const settleWebStop = async (file: string, ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot): Promise<ControllerSnapshot> => {
   const controller = snapshot.controllerProcess ?? recoverWindowsControllerProof(file, ticket);
   if (!controller) throw new Error("The original Controller identity is missing.");
   const stop = await openControllerStop({ journalPath: file, ticket, controller, native: snapshot.nativeProcesses });
-  return withControllerStop(stop, async () => {
+  const stopped = await withControllerStop(stop, async () => {
     if (!await stop.confirm()) throw new Error("The original Controller or its descendants are still running.");
     return stop.commit();
   });
+  stop.recheck();
+  return stopped;
 };
 
 export const webExecutionRef = (task: LocalTask) => {

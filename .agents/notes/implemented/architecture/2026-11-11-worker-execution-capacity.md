@@ -26,6 +26,12 @@ an ordinary read failure does not erase an otherwise valid proof. The runtime wa
 its serial reconciliation loop when occupancy changes. Historical Web archive
 backfill runs as one managed job and is cancelled and joined before stores close.
 
+Web stop verification joins the original process boundary and final journal
+evidence before notifying. The notification and source-fenced stop commit share
+one synchronous turn, so a commit-time source conflict revokes that attempt's
+notice before its wake can admit another execution. After closing the stop scope,
+the caller rechecks the original source before recovery or file cleanup.
+
 This partially supersedes the capacity statements in the
 [recovery evidence decision](../bug-fix/2026-11-10-worker-recovery-evidence.md):
 quarantine and archive repair retain file ownership, while an independently proven

@@ -229,6 +229,63 @@ test("POSIX observation requires the journal and limits pre-hello proof to a com
   } finally { if (moved) renameSync(`${f.file}.moved`, f.file); Object.defineProperty(process, "platform", platform); }
 });
 
+test.each(["unchanged", "native changed", "ticket changed", "journal missing"] as const)("POSIX stop recheck after close handles %s", async scenario => {
+  const f = await posixFixture(), platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  let moved = false;
+  try {
+    const stop = await openControllerStop({ journalPath: f.file, ticket: f.ticket, controller: f.controller, native: [] });
+    expect(() => stop.recheck()).toThrow("not been confirmed");
+    expect(await stop.confirm()).toBe(true); await stop.close();
+    if (scenario === "journal missing") { renameSync(f.file, `${f.file}.moved`); moved = true; }
+    else if (scenario !== "unchanged") {
+      const current = readControllerSnapshot(f.file)!, db = new Database(f.file);
+      try {
+        if (scenario === "native changed") db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...current, nativeProcesses: [f.native] }));
+        else db.prepare("UPDATE execution SET ticket_hash=?").run("0".repeat(64));
+      } finally { db.close(); }
+    }
+    if (scenario === "unchanged") expect(() => stop.recheck()).not.toThrow();
+    else {
+      let failure: unknown; try { stop.recheck(); } catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      expect(isControllerStopIdentityConflict(failure)).toBe(scenario !== "journal missing");
+    }
+  } finally { if (moved) renameSync(`${f.file}.moved`, f.file); Object.defineProperty(process, "platform", platform); }
+});
+
+test.each(["unchanged", "source missing", "source changed", "native changed", "receipt missing", "receipt changed", "journal missing"] as const)("Windows stop recheck after close handles %s", async scenario => {
+  const f = await fixture(), platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  vi.spyOn(guardian, "wakeWindowsJobGuardian").mockResolvedValue(undefined);
+  let moved = false;
+  try {
+    const stop = await openControllerStop({ journalPath: f.file, ticket: f.ticket, controller: f.controller, native: [] });
+    expect(() => stop.recheck()).toThrow("not been confirmed");
+    expect(await stop.confirm()).toBe(true);
+    if (scenario === "receipt missing" || scenario === "receipt changed") await stop.commit();
+    await stop.close();
+    if (scenario === "journal missing") { renameSync(f.file, `${f.file}.moved`); moved = true; }
+    else if (scenario !== "unchanged") {
+      const current = readControllerSnapshot(f.file)!, db = new Database(f.file);
+      try {
+        if (scenario === "source missing") db.prepare("DELETE FROM windows_job_evidence WHERE launch_id=?").run(f.ticket.launchId);
+        if (scenario === "source changed") db.prepare("UPDATE windows_job_evidence SET source=json_set(source,'$.jobHandle','101') WHERE launch_id=?").run(f.ticket.launchId);
+        if (scenario === "native changed") db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...current, nativeProcesses: [f.native] }));
+        if (scenario === "receipt missing") db.prepare("UPDATE windows_job_evidence SET receipt=NULL WHERE launch_id=?").run(f.ticket.launchId);
+        if (scenario === "receipt changed") db.prepare("UPDATE windows_job_evidence SET receipt=json_set(receipt,'$.source.jobHandle','101') WHERE launch_id=?").run(f.ticket.launchId);
+      } finally { db.close(); }
+    }
+    if (scenario === "unchanged") expect(() => stop.recheck()).not.toThrow();
+    else {
+      let failure: unknown; try { stop.recheck(); } catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      expect(isControllerStopIdentityConflict(failure)).toBe(!["journal missing", "source missing", "receipt missing"].includes(scenario));
+    }
+  } finally { if (moved) renameSync(`${f.file}.moved`, f.file); Object.defineProperty(process, "platform", platform); }
+});
+
 test.each(["posix", "windows"] as const)("%s stop observation rejects a changed original ticket hash during process inspection", async platformKind => {
   const f = platformKind === "posix" ? await posixFixture() : await fixture();
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;

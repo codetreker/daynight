@@ -32,6 +32,7 @@ const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = create
 beforeEach(() => {
   vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
     confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
+    recheck: () => {},
     stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
     commit: async hooks => { hooks?.onVerified(); return lifecycle.recordStoppedControllerGeneration(journalPath, ticket); },
     close: async () => {},
@@ -1068,6 +1069,7 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
   vi.mocked(lifecycle.recordStoppedControllerGeneration).mockResolvedValue(snapshot);
   const openStop = vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
     confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
+    recheck: () => {},
     stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
     commit: () => lifecycle.recordStoppedControllerGeneration(journalPath, ticket),
     close: async () => {},

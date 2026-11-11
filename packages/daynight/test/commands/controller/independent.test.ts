@@ -13,7 +13,7 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 250 ? 1 : milliseconds, value, options);
   } };
 });
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), openStop: vi.fn(), closeStop: vi.fn(), recover: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), openStop: vi.fn(), closeStop: vi.fn(), recheck: vi.fn(), recover: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
@@ -91,7 +91,8 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   f.recover.mockReturnValue(null);
   f.stop.mockResolvedValue(undefined);
   f.closeStop.mockResolvedValue(undefined);
-  f.openStop.mockImplementation(async ({ journalPath, ticket, controller, native }) => ({ confirm: async () => true, stop: (deadline: number) => f.stop(controller, native, deadline), commit: () => f.record(journalPath, ticket), close: f.closeStop }));
+  f.recheck.mockReset();
+  f.openStop.mockImplementation(async ({ journalPath, ticket, controller, native }) => ({ confirm: async () => true, recheck: f.recheck, stop: (deadline: number) => f.stop(controller, native, deadline), commit: () => f.record(journalPath, ticket), close: f.closeStop }));
   f.archive.mockResolvedValue({ state: "ready" });
   f.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "stop") { child.exitCode = 0; child.emit("exit", 0); return {}; }
@@ -126,6 +127,17 @@ test("acquires the original stop responsibility before IPC and releases it after
   expect(stopRequest).toBeGreaterThanOrEqual(0);
   expect(f.openStop.mock.invocationCallOrder[0]).toBeLessThan(f.request.mock.invocationCallOrder[stopRequest]!);
   expect(f.record.mock.invocationCallOrder[0]).toBeLessThan(f.closeStop.mock.invocationCallOrder[0]!);
+  expect(f.closeStop.mock.invocationCallOrder[0]).toBeLessThan(f.recheck.mock.invocationCallOrder[0]!);
+});
+
+test("a source conflict after close prevents Test Session stop publication", async () => {
+  const v = await setup(null);
+  f.recheck.mockImplementation(() => { throw new Error("Original stop source changed"); });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow("Original stop source changed");
+  expect(f.closeStop).toHaveBeenCalledOnce();
+  expect(v.requests.some(request => /\/(archive|stop)$/.test(request.url))).toBe(false);
+  expect(f.archive).not.toHaveBeenCalled();
+  expect(f.release).not.toHaveBeenCalled();
 });
 
 test("an unavailable original stop responsibility cannot send IPC stop or publish a stopped proof", async () => {
@@ -548,6 +560,18 @@ test("archive-only retry reuses saved stop proof without starting a process or r
   expect(f.archive).toHaveBeenCalledTimes(2);
   expect(v.requests.filter(request => request.url.endsWith("/stop")).map(request => request.body)).toEqual([oldProof, oldProof]);
   expect(v.out.join("")).toContain(`Test Session history archived: https://daynight.example/test-sessions/${id}`);
+});
+
+test("archive retry does not publish after a source conflict during close", async () => {
+  const v = await setup(null);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const requestsBefore = v.requests.length, uploadsBefore = f.archive.mock.calls.length;
+  f.recheck.mockImplementation(() => { throw new Error("Original stop source changed"); });
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  await expect(retryIndependentArchive({ provider: "codex", sessionId: id }, v.context)).rejects.toThrow("Original stop source changed");
+  expect(f.closeStop).toHaveBeenCalledTimes(2);
+  expect(v.requests).toHaveLength(requestsBefore);
+  expect(f.archive).toHaveBeenCalledTimes(uploadsBefore);
 });
 
 test("publishes pending history only after native stop and before closing the server session", async () => {

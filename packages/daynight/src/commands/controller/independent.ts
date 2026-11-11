@@ -202,6 +202,7 @@ export const runIndependentController = async (input: IndependentControllerInput
           if (stopFailures.length > 1) throw new AggregateError(stopFailures, "Controller journal observation and local stopping failed.");
           return stop.commit();
         });
+        stop.recheck();
         nativeStopped = true;
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };

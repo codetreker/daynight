@@ -48,6 +48,7 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
   const { journalPath: file, ticket, controller } = input;
   const windowsSource = process.platform === "win32" || controller.processGroupId === null || controller.jobObjectName !== undefined;
   if (!windowsSource) {
+    let confirmed: ControllerSnapshot | undefined;
     const checkedSnapshot = (): ControllerSnapshot => {
       const snapshot = snapshotFor(file, ticket);
       if (snapshot.controllerProcess === null) {
@@ -58,21 +59,30 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
     };
     return {
     confirm: async () => {
+      confirmed = undefined;
       const snapshot = checkedSnapshot();
       const stopped = await confirmControllerProcessesStopped(controller, snapshot.nativeProcesses);
       if (!stopped) return false;
       const current = checkedSnapshot();
       if (!isDeepStrictEqual(snapshot.controllerProcess, current.controllerProcess) || !isDeepStrictEqual(snapshot.nativeProcesses, current.nativeProcesses)) throw new ControllerStopIdentityError("The original Controller process evidence changed during stop observation.");
+      confirmed = current;
       return stopped;
     },
-    stop: (deadline: number) => stopControllerProcesses(controller, input.native, deadline),
+    recheck: () => {
+      if (!confirmed) throw new Error("The original Controller stop has not been confirmed.");
+      const current = checkedSnapshot();
+      if (!isDeepStrictEqual(confirmed.controllerProcess, current.controllerProcess) || !isDeepStrictEqual(confirmed.nativeProcesses, current.nativeProcesses)) throw new ControllerStopIdentityError("The original Controller process evidence changed after stop observation.");
+    },
+    stop: (deadline: number, _options?: { graceful?: boolean }) => stopControllerProcesses(controller, input.native, deadline),
     commit: async (hooks?: CommitHooks) => {
       try {
         const snapshot = checkedSnapshot();
         if (snapshot.controllerProcess === null) throw new Error("The original Controller stop evidence is unavailable.");
         if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses)) throw new Error("The original Controller or its descendants are still running.");
         hooks?.onVerified();
-        return commitPosixControllerStop(file, ticket, snapshot);
+        const stopped = commitPosixControllerStop(file, ticket, snapshot);
+        confirmed = stopped;
+        return stopped;
       } catch (error) {
         if (isControllerStopIdentityConflict(error)) hooks?.onConflict(error);
         throw error;
@@ -105,25 +115,55 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
     }
     forget(held);
   }
-  let closed = false;
+  let closed = false, confirmed: ControllerSnapshot | undefined;
   const check = () => { if (closed) throw new Error("The original Controller stop operation is closed."); };
   const checkNativePrefix = (snapshot: ControllerSnapshot): void => {
     if (current.nativeProcesses.length > snapshot.nativeProcesses.length || !current.nativeProcesses.every((proof, index) => isDeepStrictEqual(proof, snapshot.nativeProcesses[index]))) throw new ControllerStopIdentityError("The original Windows native process evidence changed during stop observation.");
   };
+  const checkReceipt = (): void => {
+    const latest = readWindowsJobReceipt(file, ticket);
+    if (latest === null) throw new Error("The original Windows Job stop receipt is unavailable.");
+    if (!isDeepStrictEqual(latest, receipt)) throw new ControllerStopIdentityError("The original Windows Job stop receipt changed.");
+  };
   const confirm = async (): Promise<boolean> => {
     check();
+    confirmed = undefined;
     const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller); checkNativePrefix(snapshot);
-    if (receipt !== null) return isDeepStrictEqual(snapshot, receipt.snapshot);
+    if (receipt !== null) { checkReceipt(); if (!isDeepStrictEqual(snapshot, receipt.snapshot)) return false; confirmed = snapshot; return true; }
     if (!held?.lease || !empty(held.lease) || !await allStopped(snapshot, source)) return false;
+    const latestSource = readWindowsJobSource(file, ticket);
+    if (latestSource === null) throw new Error("The original Windows Job source is unavailable.");
+    if (!isDeepStrictEqual(latestSource, source)) throw new ControllerStopIdentityError("The original Windows Job source changed during stop observation.");
     const latest = snapshotFor(file, ticket); sameOriginal(latest, source, controller); checkNativePrefix(latest);
     if (!isDeepStrictEqual(snapshot.controllerProcess, latest.controllerProcess) || !isDeepStrictEqual(snapshot.nativeProcesses, latest.nativeProcesses)) throw new ControllerStopIdentityError("The original Windows process evidence changed during stop observation.");
+    confirmed = latest;
     return true;
   };
-  const stop = async (deadline: number): Promise<void> => {
+  const recheck = (): void => {
+    if (!confirmed) throw new Error("The original Controller stop has not been confirmed.");
+    const latestSource = readWindowsJobSource(file, ticket);
+    if (latestSource === null) throw new Error("The original Windows Job source is unavailable.");
+    if (!isDeepStrictEqual(latestSource, source)) throw new ControllerStopIdentityError("The original Windows Job source changed after stop observation.");
+    const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller); checkNativePrefix(snapshot);
+    if (!isDeepStrictEqual(confirmed.controllerProcess, snapshot.controllerProcess) || !isDeepStrictEqual(confirmed.nativeProcesses, snapshot.nativeProcesses)) throw new ControllerStopIdentityError("The original Windows process evidence changed after stop observation.");
+    const latestReceipt = readWindowsJobReceipt(file, ticket);
+    if (receipt !== null) {
+      if (latestReceipt === null) throw new Error("The original Windows Job stop receipt is unavailable.");
+      if (!isDeepStrictEqual(latestReceipt, receipt)) throw new ControllerStopIdentityError("The original Windows Job stop receipt changed.");
+    } else if (latestReceipt !== null && (!isDeepStrictEqual(latestReceipt.source, source) || !isDeepStrictEqual(latestReceipt.snapshot, snapshot))) throw new ControllerStopIdentityError("The original Windows Job stop receipt conflicts with its source.");
+  };
+  const stop = async (deadline: number, options?: { graceful?: boolean }): Promise<void> => {
     check();
     if (receipt !== null) { if (!await confirm()) throw new Error("The original stopped generation no longer matches its receipt."); return; }
     const lease = held?.lease;
     if (!lease) throw new Error("The original Windows Job handle is unavailable.");
+    // IPC stop starts shutdown asynchronously. Give the original Controller a
+    // bounded opportunity to close its journal before forced Job termination.
+    const graceful = options?.graceful ? Math.min(deadline, Date.now() + 2000) : Date.now();
+    while (Date.now() < graceful) {
+      if (await confirm()) return;
+      await delay(Math.min(25, Math.max(1, graceful - Date.now())));
+    }
     lease.seal(); lease.terminate();
     while (Date.now() < deadline) {
       if (await confirm()) return;
@@ -134,7 +174,7 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
   const commit = async (hooks?: CommitHooks): Promise<ControllerSnapshot> => {
     check();
     try {
-      if (receipt !== null) { if (!await confirm()) throw new ControllerStopIdentityError("The original stopped generation no longer matches its receipt."); hooks?.onVerified(); return receipt.snapshot; }
+      if (receipt !== null) { if (!await confirm()) throw new ControllerStopIdentityError("The original stopped generation no longer matches its receipt."); checkReceipt(); hooks?.onVerified(); return receipt.snapshot; }
       if (!held?.lease || !await confirm()) throw new Error("The original Windows Job stop remains unconfirmed.");
       const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller); checkNativePrefix(snapshot);
       if (!empty(held.lease) || !await allStopped(snapshot, source)) throw new Error("The original Windows Job changed before its stop receipt.");
@@ -150,11 +190,13 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
         catch (cause) { throw new AggregateError([error, cause], "Windows Job stop commit and receipt reconciliation failed.", { cause: error }); }
         if (!observedReceipt || !isDeepStrictEqual(observedReceipt.source, source) || !isDeepStrictEqual(observedReceipt.observedSnapshot, snapshot)) throw error;
         receipt = observedReceipt;
+        confirmed = receipt.snapshot;
         return receipt.snapshot;
       }
       receipt = readWindowsJobReceipt(file, ticket);
       if (!receipt) throw new Error("The original Windows Job stop receipt could not be read back.");
       if (!isDeepStrictEqual(receipt.snapshot, stopped)) throw new ControllerStopIdentityError("The original Windows Job stop receipt conflicts with its committed snapshot.");
+      confirmed = receipt.snapshot;
       return stopped;
     } catch (error) {
       if (isControllerStopIdentityConflict(error)) hooks?.onConflict(error);
@@ -181,7 +223,7 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
     }
     closed = true;
   };
-  return { confirm, stop, commit, close };
+  return { confirm, recheck, stop, commit, close };
 };
 
 export type ControllerStop = Awaited<ReturnType<typeof openControllerStop>>;

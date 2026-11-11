@@ -5,6 +5,7 @@ import type { BotConfiguration, BotRecord } from "../../../src/commands/worker/b
 import { BotEnvironmentCleanupError } from "../../../src/commands/worker/bots/environment.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
+import { ControllerStopIdentityError } from "../../../src/commands/controller/controller-stop.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
 
@@ -74,9 +75,13 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}) => {
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, starting = false) => {
   const f = fixture("codex", configuration), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+  if (starting) {
+    const launch = f.launch.getMockImplementation()!;
+    f.launch.mockImplementationOnce(options => launch({ ...options, onObserved: (snapshot: ControllerSnapshot) => options.onObserved({ ...snapshot, startup: { state: "starting", reasonCode: "initializing" } }) }));
+  }
   await f.process.advance(f.current(), signal);
   let saved: ControllerSnapshot = { ...f.executions.get(f.current())!.snapshot!, controllerProcess: proof };
   f.executions.update(f.current(), { snapshot: saved });
@@ -85,13 +90,15 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}) =>
   const request = vi.fn(async () => ({ snapshot: saved }));
   const recordStopped = vi.fn(async (..._args: unknown[]) => (saved = { ...saved, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" }));
   const closeStop = vi.fn(async () => {});
+  const recheck = vi.fn(() => {});
   const openStop = vi.fn(async ({ journalPath, ticket, controller, native }: any) => ({
     confirm: () => confirmStopped(controller, native),
+    recheck,
     stop: (deadline: number) => stopProcesses(controller, native, deadline),
     commit: () => recordStopped(journalPath, ticket), close: closeStop,
   }));
   f.observe.mockImplementation(async () => { if (saved.nativeStopped) throw new Error("IPC unavailable"); return saved; });
-  const deps = { openStop, closeStop, confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved };
+  const deps = { openStop, closeStop, recheck, confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved };
   return { ...f, signal, deps, manager: f.createProcess(deps), saved: () => saved,
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps) };
@@ -122,11 +129,47 @@ test("shutdown fails visibly when its stop receipt cannot prove the process tree
   expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.current().intent!.executionGeneration).toBe("1");
 });
 
+test("Bot shutdown propagates a stop identity conflict even if a later confirmation would report stopped", async () => {
+  const f = await recoveryFixture();
+  const fault = new ControllerStopIdentityError("Original Bot stop identity changed");
+  f.deps.confirmStopped.mockResolvedValueOnce(false).mockResolvedValue(true);
+  f.deps.stopProcesses.mockRejectedValue(fault);
+  await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toBe(fault);
+  expect(f.deps.confirmStopped).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.deps.closeStop).toHaveBeenCalledOnce();
+  expect(f.executions.get(f.current())!.snapshot!.nativeStopped).toBe(false);
+  expect(f.current().intent!.executionGeneration).toBe("1"); expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
 test("Bot shutdown retains the original stop responsibility before IPC through receipt commit", async () => {
   const f = await recoveryFixture();
   await f.manager.shutdown(f.current(), f.signal);
   expect(f.deps.openStop.mock.invocationCallOrder[0]).toBeLessThan(f.deps.request.mock.invocationCallOrder[0]!);
   expect(f.deps.recordStopped.mock.invocationCallOrder[0]).toBeLessThan(f.deps.closeStop.mock.invocationCallOrder[0]!);
+  expect(f.deps.closeStop.mock.invocationCallOrder[0]).toBeLessThan(f.deps.recheck.mock.invocationCallOrder[0]!);
+});
+
+test.each(["shutdown", "recovery"] as const)("Bot %s retains its original generation when source changes during close", async action => {
+  const f = await recoveryFixture();
+  if (action === "recovery") { f.patch({ lifecycle: "failed", error: "writer exited" }); f.deps.confirmStopped.mockResolvedValue(true); }
+  f.deps.recheck.mockImplementation(() => { throw new Error("Original stop source changed"); });
+  const operation = action === "shutdown" ? f.manager.shutdown(f.current(), f.signal) : f.restart().advance(f.current(), f.signal);
+  await expect(operation).rejects.toThrow("Original stop source changed");
+  expect(f.deps.closeStop).toHaveBeenCalledOnce();
+  expect(f.current().intent!.executionGeneration).toBe("1");
+  expect(f.launch).toHaveBeenCalledTimes(1);
+  expect(f.executions.get(f.current())!.snapshot!.nativeStopped).toBe(false);
+});
+
+test("Bot startup failure with an unconfirmed stop closes without rechecking", async () => {
+  const f = await recoveryFixture({}, true);
+  f.patch({ lifecycle: "failed", startup: { state: "failed", reasonCode: "controller_launch_failed" } });
+  const result = await f.restart().advance(f.current(), f.signal);
+  expect(result.startup?.state).toBe("failed");
+  expect(f.deps.closeStop).toHaveBeenCalledOnce();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled();
+  expect(f.deps.recheck).not.toHaveBeenCalled();
+  expect(f.current().intent!.executionGeneration).toBe("1");
 });
 
 test("Bot cannot stop or release files when the original stop responsibility is unknown", async () => {
@@ -147,7 +190,7 @@ test("Bot recovery uses an assigned guardian when the Controller snapshot was no
   const stopped = { ...saved, controllerProcess: controller, lifecycle: "stopped" as const, activity: "stopped" as const, nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" };
   f.observe.mockRejectedValue(new Error("IPC unavailable"));
   const recoverProof = vi.fn(() => controller), close = vi.fn(async () => {});
-  const openStop = vi.fn(async () => ({ confirm: async () => true, stop: async () => {}, commit: async () => stopped, close }));
+  const openStop = vi.fn(async () => ({ confirm: async () => true, recheck: () => {}, stop: async () => {}, commit: async () => stopped, close }));
   await f.createProcess({ recoverProof, openStop, readSnapshot: () => saved }).advance(f.current(), signal);
   expect(recoverProof).toHaveBeenCalledOnce();
   expect(openStop).toHaveBeenCalledWith(expect.objectContaining({ controller }));

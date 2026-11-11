@@ -237,6 +237,7 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
     if (input.ticket.launchId !== ticket.launchId) return openOriginal(input);
     return {
       confirm: () => processProof.confirmControllerProcessesStopped(input.controller, input.native),
+      recheck: () => {},
       stop: deadline => processProof.stopControllerProcesses(input.controller, input.native, deadline),
       commit: async hooks => { hooks?.onVerified(); return lifecycle.recordStoppedControllerGeneration(input.journalPath, input.ticket); },
       close: async () => {},
@@ -2392,7 +2393,7 @@ it.each(["conflict", "io"] as const)("handles %s during Web stop commit without 
   const monitor = createMonitoringObserver({ now: f.options.now }), completed = Promise.withResolvers<void>();
   const occupied: boolean[] = [], conflict = new controllerStop.ControllerStopIdentityError("Job source changed");
   vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async () => ({
-    confirm: async () => true, stop: async () => {}, close: async () => {},
+    confirm: async () => true, recheck: () => {}, stop: async () => {}, close: async () => {},
     commit: async hooks => {
       hooks!.onVerified();
       occupied.push(monitor.capture("before").reservations.find(value => "claimId" in value.scope && value.scope.claimId === owner.claimId)!.occupied);

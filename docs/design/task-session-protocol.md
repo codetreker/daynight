@@ -474,6 +474,8 @@ Controller 自身只能报告 stopping。独立停止所有者确认原进程树
 
 Windows Controller 在启动 provider 前建立不属于目标 Job 的 guardian，设置并读回 kill-on-close，按原 ticket、generation、Controller 与 guardian 进程实例及原句柄在 journal 分别记录 prepared 和 assigned。执行停止前从经核验的 guardian 复制原 Job 句柄并持有，不能凭同名对象或名称缺失判断原对象。停止所有者封闭新成员准入、终止并观察该 Job 为空，再读取同代 journal 的最终 native 列表，逐个核验原进程实例停止；已开始的 native 调用必须真实结束。完整证据与同代 snapshot 在 SQLite CAS 事务中提交为版本化停证，随后 guardian 读回匹配收据并释放原句柄。guardian 或句柄失去前的身份、权限、查询、提交和释放错误保留责任；即使 kill-on-close 已尽力终止，缺少真实 join 与收据仍为 unknown。旧版 nativeStopped、PID 消失及 Job 名称不存在均不能替代收据，跨平台恢复仍依原 Windows 来源校验。机制与历史取舍见[Windows Controller Job 责任决策](../../.agents/notes/implemented/bug-fix/2026-11-11-windows-controller-job-ownership.md)。
 
+Windows 的 stop IPC 已确认时，停止所有者在原期限内最多等待两秒，让 Controller 有机会正常关闭 journal；期间继续持有原 Job 句柄并核对完整停止。未停止则封闭并终止原 Job；IPC 回执或等待超时均不能单独证明停止。
+
 ## 升级与安全失败
 
 Task API 通过 `Daynight-Worker-Protocol: 2` 显式协商扩展 WorkerClaim。新 CLI 与 Web 发送此请求头，响应包含 `agentControlMode`。未发送或不能识别的版本按旧协议投影：Herdr Codex/Copilot 保留原 WorkerClaim 字段并省略 mode；Web 或 Claude claim 的 worker 键被省略，任务本身的状态、版本、依赖和资格不变。该投影仅表示客户端没有可用的 worker 摘要，持久 claim 与实际控制归属不受影响。

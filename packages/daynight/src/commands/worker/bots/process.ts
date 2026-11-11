@@ -6,7 +6,7 @@ import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, 
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { readControllerSnapshot, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
-import { openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
+import { isControllerStopIdentityConflict, openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
 import { withControllerStop } from "../../controller/controller-stop-scope.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
@@ -125,6 +125,7 @@ export const createBotProcess = (options: {
         return stop.commit();
       });
       if (stopped === null) return remember(record, saved);
+      stop.recheck();
       options.executions.update(record, { snapshot: stopped });
       record = options.executions.beginRecovery(record, stopped, options.homeDirectory);
       // A new launch must revalidate CLI owner/server configuration. Old aliases
@@ -224,17 +225,19 @@ export const createBotProcess = (options: {
       // A stale ready journal cannot erase an earlier abnormal failure.
       options.executions.markShutdown(record, observed !== null && matchesCurrent(observed) && ["ready", "working"].includes(observed.lifecycle)
         && observed.error === null && observed.startup?.state === "ready" && !observed.nativeStopped);
-      try { await request(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { signal, timeoutMs: 10_000 }); }
+      let graceful = false;
+      try { await request(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { signal, timeoutMs: 10_000 }); graceful = true; }
       catch { signal.throwIfAborted(); }
       signal.throwIfAborted();
-      try { await stop.stop(Date.now() + 10_000); }
-      catch (error) { if (!await stop.confirm()) throw error; }
+      try { await stop.stop(Date.now() + 10_000, { graceful }); }
+      catch (error) { if (isControllerStopIdentityConflict(error) || !await stop.confirm()) throw error; }
       if (!await stop.confirm()) throw new Error("Bot original process tree did not stop; recovery evidence is retained.");
     }
     // Records stop through the journal's process verification + snapshot CAS;
     // operation receipts and pending user input remain in that same journal.
     return stop.commit();
     });
+    stop.recheck();
     options.executions.update(record, { snapshot: stopped });
     environments.delete(record.botId);
   };

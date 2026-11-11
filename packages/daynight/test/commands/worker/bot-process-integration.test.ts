@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -22,9 +22,9 @@ import { openBotExecutionStore } from "../../../src/commands/worker/bots/executi
 import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
 import { controllerExecutionDirectory, controllerTicketPath } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
-import { readControllerSnapshot, readControllerOperation, readWindowsJobSource } from "../../../src/commands/controller/lifecycle-store.js";
+import { readControllerSnapshot, readControllerOperation, readWindowsJobReceipt, readWindowsJobSource } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
-import { openControllerStop } from "../../../src/commands/controller/controller-stop.js";
+import { openControllerStop, type ControllerStop } from "../../../src/commands/controller/controller-stop.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
@@ -47,6 +47,16 @@ const waitForProcessesStopped = async (controller: ProcessProof, native: readonl
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("Original fixture processes did not stop within the observation window.");
     await delay(Math.min(100, remaining));
+  }
+};
+const stopFixtureProcesses = async (operation: Pick<ControllerStop, "stop">, proof: ProcessProof, native: readonly ProcessProof[], graceful: boolean): Promise<void> => {
+  try { await operation.stop(Date.now() + 10_000, { graceful }); }
+  catch (error) {
+    // The original process may exit between the group inventory and identity
+    // checks. Do not signal an unattributed group; wait for it to empty.
+    if (process.platform === "win32" || !(error instanceof Error) || error.message !== "The remaining process group has no original process-instance proof; resources are retained.") throw error;
+    try { await waitForProcessesStopped(proof, native, 2000); }
+    catch (cause) { throw new AggregateError([error, cause], "Original fixture stop remains unconfirmed.", { cause: error }); }
   }
 };
 const readEvidence = async (file: string) => {
@@ -120,6 +130,17 @@ test("joins the final process observation before rejecting its expired window", 
   const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
   await expect(waitForProcessesStopped(proof, [], 1)).rejects.toThrow("Original fixture processes did not stop within the observation window.");
   expect(active).toBe(0);
+});
+
+test.skipIf(process.platform === "win32")("fixture cleanup only accepts an unattributed group after it is confirmed empty", async () => {
+  const proof: ProcessProof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+  const original = new Error("The remaining process group has no original process-instance proof; resources are retained.");
+  const stop = vi.fn(async () => { throw original; });
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("group inventory unavailable"));
+  await expect(stopFixtureProcesses({ stop }, proof, [], true)).resolves.toBeUndefined();
+  expect(stop).toHaveBeenCalledWith(expect.any(Number), { graceful: true });
+  expect(confirm).toHaveBeenCalledWith(proof, []);
+  await expect(stopFixtureProcesses({ stop }, proof, [], false)).rejects.toMatchObject({ errors: [original, expect.objectContaining({ message: "group inventory unavailable" })] });
 });
 
 const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean } = {}) => {
@@ -220,13 +241,50 @@ catch (error) {
     const retained = aliasDirectory;
     return { environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory, bindings: [], release: async () => { if (retained !== null) await rm(retained, { recursive: true, force: true }); } };
   };
+  let sqliteFailureObserved = false;
   const openStop: typeof openControllerStop = async input => {
+    // A missing receipt forces openControllerStop to retain the original Job.
+    // If this independent read fails, skip the writable diagnostic entirely.
+    let beforeReceiptMissing = false;
+    if (process.platform === "win32") try { beforeReceiptMissing = readWindowsJobReceipt(input.journalPath, input.ticket) === null; } catch { /* Diagnostic eligibility is unknown. */ }
     const operation = await openControllerStop(input);
-    return { ...operation, stop: async deadline => {
+    let holdsOriginalJob = false;
+    if (beforeReceiptMissing) try { holdsOriginalJob = readWindowsJobReceipt(input.journalPath, input.ticket) === null; } catch { /* Diagnostic eligibility is unknown. */ }
+    const inspectFailure = async (error: unknown) => {
+      const hasTruncateError = (value: unknown, seen = new Set<unknown>()): boolean => {
+        if (!(value instanceof Error) || seen.has(value)) return false;
+        seen.add(value);
+        return (value as Error & { code?: string }).code === "SQLITE_IOERR_TRUNCATE"
+          || hasTruncateError(value.cause, seen)
+          || value instanceof AggregateError && value.errors.some(child => hasTruncateError(child, seen));
+      };
+      if (process.platform !== "win32" || sqliteFailureObserved || !hasTruncateError(error)) return;
+      sqliteFailureObserved = true;
+      const files = await Promise.all([input.journalPath, `${input.journalPath}-wal`, `${input.journalPath}-shm`].map(async file => {
+        try { const metadata = await stat(file); return { file, exists: true, size: metadata.size }; }
+        catch (cause) { return { file, exists: false, error: cause instanceof Error && "code" in cause ? cause.code : String(cause) }; }
+      }));
+      const controllerState = await inspectProcessProof(input.controller).catch(() => "unconfirmed" as const);
+      let writableProbe: unknown = { attempted: false };
+      if (holdsOriginalJob && controllerState === "stopped") {
+        let db: Database.Database | undefined;
+        try { db = new Database(input.journalPath, { fileMustExist: true, timeout: 5000 }); writableProbe = { attempted: true, userVersion: db.pragma("user_version", { simple: true }) }; }
+        catch (cause) { writableProbe = { attempted: true, error: cause instanceof Error ? { name: cause.name, message: cause.message, code: "code" in cause ? cause.code : undefined } : String(cause) }; }
+        finally { if (db) try { db.close(); } catch (cause) { diagnostic("sqlite-writable-probe-close", 0, cause); } }
+      }
+      diagnostic("sqlite-truncate-original-error", 0, error);
+      console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "sqlite-truncate-evidence", files, controllerState, holdsOriginalJob, writableProbe }));
+    };
+    return { ...operation, confirm: async () => {
+      try { return await operation.confirm(); } catch (error) { await inspectFailure(error).catch(cause => diagnostic("sqlite-truncate-diagnostic", 0, cause)); throw error; }
+    }, commit: async hooks => {
+      try { return await operation.commit(hooks); } catch (error) { await inspectFailure(error).catch(cause => diagnostic("sqlite-truncate-diagnostic", 0, cause)); throw error; }
+    }, stop: async (deadline, options) => {
     const started = Date.now();
-    try { await operation.stop(deadline); }
+    try { await operation.stop(deadline, options); }
     catch (error) {
       diagnostic("stop-original-processes", Date.now() - started, error);
+      await inspectFailure(error).catch(cause => diagnostic("sqlite-truncate-diagnostic", 0, cause));
       // Only inspect identities created by this fixture; retain the original
       // failure even if a diagnostic probe also fails.
       const identities = await Promise.all([input.controller, ...input.native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
@@ -329,14 +387,16 @@ catch (error) {
         saved = journal() ?? saved;
         const proof = saved?.controllerProcess ?? execution.controllerProcess;
         if (proof !== null) {
-          const ticket = await botProcess.readTicket(record), operation = await openControllerStop({ journalPath: record.intent!.journalPath, ticket, controller: proof, native: saved?.nativeProcesses ?? [] });
+          const ticket = await botProcess.readTicket(record), operation = await openStop({ journalPath: record.intent!.journalPath, ticket, controller: proof, native: saved?.nativeProcesses ?? [] });
           try {
-            try { await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* The held original Job owns cleanup completion. */ }
-            await operation.stop(Date.now() + 10_000);
+            let graceful = false;
+            try { await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); graceful = true; } catch { /* OS evidence still owns cleanup completion. */ }
+            await stopFixtureProcesses(operation, proof, saved?.nativeProcesses ?? [], graceful);
             stopped = await operation.confirm();
             expect(stopped).toBe(true);
             await operation.commit();
           } finally { await operation.close(); }
+          operation.recheck();
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }
       }
       const recordNow = current();
@@ -354,7 +414,7 @@ catch (error) {
       await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
       if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
       executions.close(); store.close();
-      if (stopped) {
+      if (stopped && !sqliteFailureObserved) {
         if (socketDirectory !== null) await rm(socketDirectory, { recursive: true, force: true });
         await rm(home, { recursive: true, force: true });
       }

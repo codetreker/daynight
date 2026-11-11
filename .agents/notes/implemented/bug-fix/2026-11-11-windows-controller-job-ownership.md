@@ -31,6 +31,11 @@ that commit or remains retained if safe release cannot be established. The
 guardian releases its handle only after reading its matching receipt and
 confirming the original Job is sealed and empty.
 
+After an acknowledged IPC stop, the stop owner gives the Controller a bounded
+opportunity to close its journal normally before forcing the Job to terminate.
+The original handle remains held throughout; neither the acknowledgement nor a
+timeout establishes that the execution stopped.
+
 A receipt is checked against its original source, ticket, generation and
 process evidence before recovery or archive. Legacy `nativeStopped` state,
 missing names, missing guardians, identity mismatches and unconfirmed native
