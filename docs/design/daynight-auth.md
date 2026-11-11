@@ -514,6 +514,13 @@ Team 邀请提交捕获确认框实例与路由或分区可见性变化序号；
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
 
+普通 API 请求另有独立的内存网络 lifetime。通过身份等待后，派发时组合调用方信号与当前
+网络信号；响应正文读取及返回检查使用同一组合信号并保留取消原因。显式调用
+`cancelAuthNetworkRequests()` 先轮换 lifetime，再取消旧 lifetime 中的在途请求和正文读取，
+因此同步取消回调中发出的新请求使用新 lifetime。该能力不改变身份 generation 或等待状态，
+也不由隐藏或失焦触发；`/me` 和退出继续使用各自的调用方 controller。取消已派发请求不能
+证明服务端写入回滚。决策及取舍见[普通请求网络取消](../../.agents/notes/implemented/architecture/2026-11-11-auth-network-cancellation.md)。
+
 `app/account-signal.ts` 提供独立的同源账户变化提示能力，尚未接入上述认证生命周期。它在 `daynight.activeUser` 保存 JSON 编码的规范小写 UUID 或明确的 `null`；缺失是未知，非法记录和存储失败保留错误，不作为认证证据。成功写入后通过 `daynight-identity` 频道发送固定的 `identity-changed` 提示；接收事件、storage clear 和前台恢复只通知订阅者读取当前记录。相同值不重复写入或发送。写入成功但通知失败时，补发先检查记录仍为预期值，仅发送通知；其他已知值表示被取代。释放 owner 会移除监听并关闭频道。完成结果只证明本地步骤，不保证其他标签页已处理；模块不调用 `/me` 或授予业务权限。[账户信号决策](../../.agents/notes/implemented/architecture/2026-11-11-account-change-signal.md)记录格式、分阶段失败及其取舍。
 
 `app/AccountSessionProvider.tsx` 是尚未接入业务根的账户初始化 owner。它先订阅上述信号，再以可取消的 generation 发起 `/me`；只有有效服务端结果建立 authenticated 或 anonymous，其他身份读取失败保留错误并由 `retryInitialization()` 显式重试。初始化捕获共享记录基线并在接纳前重读：初始陈旧记录可以被真实结果更新，但请求期间出现不同已知记录且最新值与结果不符时，拒绝结果并要求刷新。已确认身份观察到不同已知值后，`requiresRefresh` 持续为真，后续相同值或恢复原值不能解除；事件不发起 `/me`。

@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import * as configurationApi from '../src/api/worker-configuration';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
@@ -343,6 +343,27 @@ describe('Worker configuration editing lifetime', () => {
       expect(result.current.draft?.maxConcurrent).toBe('3'); expect(fetch).toHaveBeenCalledTimes(2);
     } finally { resume(); spy.mockRestore(); }
   });
+  it.each([{ status: 409, code: 'version_conflict' }, { status: 400, code: 'invalid_input' }])('settles a trusted $status rejection when its callback cancels the shared network', async ({ status, code }) => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
+      .mockResolvedValueOnce(configurationError(status, code)).mockResolvedValue(configurationResponse(configurationResource()));
+    vi.stubGlobal('fetch', fetch);
+    const originalSave = configurationApi.saveWorkerConfiguration;
+    const rejected = vi.fn();
+    const spy = vi.spyOn(configurationApi, 'saveWorkerConfiguration').mockImplementation((workerId, revision, value, signal, admission) => originalSave(workerId, revision, value, signal, {
+      ...admission, onRejected: error => { admission.onRejected?.(error); rejected(error); cancelAuthNetworkRequests(); },
+    }));
+    try {
+      const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+      await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+      await act(async () => result.current.save()); await flush();
+      expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status, code }));
+      expect((fetch.mock.calls[1]![1].signal as AbortSignal).aborted).toBe(true);
+      expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false);
+      expect(result.current.error).toMatchObject({ status, code }); expect(result.current.notice).toBe(status === 409 ? 'conflict' : null);
+      expect(result.current.draft?.maxConcurrent).toBe('3');
+      expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+    } finally { spy.mockRestore(); }
+  });
   it('keeps an untrusted malformed error unknown when identity pauses during decoding', async () => {
     let resume = () => {};
     const malformed = new Response('{', { status: 409, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER } });
@@ -461,6 +482,27 @@ describe('Worker configuration editing lifetime', () => {
       expect(result.current.notice).toBe('saved'); expect(result.current.baselineRevision).toBe('2');
       expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
     } finally { resume(); spy.mockRestore(); }
+  });
+  it('settles a confirmed save when its callback cancels the shared network', async () => {
+    const saved = configurationResource('2', { ...configurationValue(), maxConcurrent: 3 });
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockResolvedValueOnce(configurationResponse(saved));
+    vi.stubGlobal('fetch', fetch);
+    const originalSave = configurationApi.saveWorkerConfiguration;
+    const confirmed = vi.fn();
+    const spy = vi.spyOn(configurationApi, 'saveWorkerConfiguration').mockImplementation((workerId, revision, value, signal, admission) => originalSave(workerId, revision, value, signal, {
+      ...admission, onConfirmed: receipt => { admission.onConfirmed?.(receipt); confirmed(receipt); cancelAuthNetworkRequests(); },
+    }));
+    try {
+      const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+      await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+      await act(async () => result.current.save()); await flush();
+      expect(confirmed).toHaveBeenCalledExactlyOnceWith(saved);
+      expect((fetch.mock.calls[1]![1].signal as AbortSignal).aborted).toBe(true);
+      expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false);
+      expect(result.current.notice).toBe('saved'); expect(result.current.baselineRevision).toBe('2');
+      expect(result.current.draft?.maxConcurrent).toBe('3');
+      expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+    } finally { spy.mockRestore(); }
   });
   it('settles a confirmed PUT while publication is paused and retains a later draft edit', async () => {
     const put = deferred<Response>(), enteringPublication = deferred<void>(), releasePublication = deferred<void>(), scope = makeScope();
