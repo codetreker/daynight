@@ -117,7 +117,11 @@ describe("Team settings workspace", () => {
     else await screen.findByRole("heading", { name: "Projects shared with me" });
     const link = screen.getByRole("link", { name: "Shared with me" }); link.focus();
     await act(async () => receipt.resolve(json({ ...team("Unsaved name"), version: 2n })));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit Team name", hidden: true })).toBeNull());
+    await screen.findByText("Team name saved.");
+    if (destination === members) {
+      expect(screen.getByRole("dialog", { name: "Edit Team name", hidden: true })).toBe(editor);
+      expect(within(editor).getByLabelText("Team name")).toHaveValue("Unsaved name");
+    } else await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit Team name", hidden: true })).toBeNull());
     expect(window.location.pathname).toBe(destination); expect(link).toHaveFocus();
     expect(screen.getByText("Team name saved.")).toBeVisible();
   });
@@ -134,7 +138,8 @@ describe("Team settings workspace", () => {
     if (destination === members) await screen.findByRole("button", { name: "Leave Team" });
     else await screen.findByRole("heading", { name: "Projects shared with me" });
     await act(async () => receipt.resolve(json({ teamId, deleted: true })));
-    await waitFor(() => expect(window.location.pathname).toBe(destination === members ? `/teams/${personal}` : destination));
+    await screen.findByText("Team deleted", { selector: ".notice" });
+    expect(window.location.pathname).toBe(destination);
     expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(personal);
   });
 

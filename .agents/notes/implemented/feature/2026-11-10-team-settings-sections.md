@@ -40,8 +40,9 @@ scope. Background checks follow the
 [stable Team management decision](../bug-fix/2026-11-05-stable-team-management-checks.md).
 
 A confirmed leave or delete updates directories. Deletion safely clears the
-affected Team choice and returns to Personal when the live location is either
-settings section. A member departure resets the selection and navigates only
+affected Team choice and returns to Personal only when the submitted form and
+navigation context remain current; the [Team form decision](../bug-fix/2026-11-11-team-late-presentation.md)
+owns that protection. A member departure resets the selection and navigates only
 while its submitted confirmation and navigation context remain current; see the
 [member result ownership decision](../bug-fix/2026-11-11-team-member-result-ownership.md).
 A hidden section cannot take focus on completion. The

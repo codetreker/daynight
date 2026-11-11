@@ -33,6 +33,7 @@ type Props = {
   readonly setTeamGuard: (id: string, source: "settings" | "members", guarded: boolean) => void;
   readonly onIdentityMismatch: () => void;
   readonly onNameSaved: (id: string) => void;
+  readonly onDeletedResult: (id: string) => void;
   readonly onMemberResult: (id: string, kind: "changed" | "left") => void;
   readonly onMemberStart: (id: string) => void;
 };
@@ -69,7 +70,7 @@ const DepartureStatus = ({ id, version, admission, active, confirmedTeam, onIden
   return <div className="notice error" role="alert">{detail} <button type="button" className="button" onClick={() => retry(value => value + 1)}>{m.retry}</button></div>;
 };
 
-export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identityChecking, workspaceVisible, slot, guardedTeam, setTeamGuard, onIdentityMismatch, onNameSaved, onMemberResult, onMemberStart }: Props) => {
+export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identityChecking, workspaceVisible, slot, guardedTeam, setTeamGuard, onIdentityMismatch, onNameSaved, onDeletedResult, onMemberResult, onMemberStart }: Props) => {
   const teams = useTeams(), confirmedTeam = useCurrentTeamPreference().confirmedTeam, m = useTeamMessages();
   // Stable hosts keep dispatched operations alive when standalone navigation detaches the workspace.
   const owners = useRef<Owner[]>([]);
@@ -108,8 +109,8 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
     if (result === "forgotten") navigate("/projects");
     return result;
   };
-  const departed = (id: string) => {
-    const current = onCurrentTeam(id);
+  const departed = (id: string, finish = true) => {
+    const current = finish && onCurrentTeam(id);
     teams.leaveTeam(id);
     teams.refreshList();
     if (current) navigate(`/teams/${user.personalTeam.id}`);
@@ -128,7 +129,7 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
         <a className="button" href={`/teams/${owner.id}/members`} onClick={followSection} aria-current={owner.section === "members" ? "page" : undefined}>{m.membersAndInvitations}</a>
       </nav>
       {owner.departed !== null && <DepartureStatus id={owner.id} version={owner.departed} admission={admission} active={visible && !identityChecking} confirmedTeam={confirmedTeam} onIdentityMismatch={onIdentityMismatch} onRejoined={team => { teams.acceptTeam(team); if (onCurrentTeam(owner.id)) teams.refreshDetail(); }} onConfirmed={() => { owner.departed = null; setTeamGuard(owner.id, "members", owner.guarded.members); updateOwners(previous => previous + 1); }} />}
-      {owner.opened.general && <div hidden={!generalActive} inert={!generalActive}><TeamSettingsPanel teamId={owner.id} active={generalActive && owner.departed === null} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "general", value)} onDeleted={() => departed(owner.id)} onUnavailable={() => owner.departed !== null ? "changed" : unavailable(owner.id)} onUpdated={team => { onNameSaved(team.id); teams.acceptTeam(team); teams.refreshList(); }} /></div>}
+      {owner.opened.general && <div hidden={!generalActive} inert={!generalActive}><TeamSettingsPanel teamId={owner.id} active={generalActive && owner.departed === null} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "general", value)} onDeleted={finish => { onDeletedResult(owner.id); departed(owner.id, finish); }} onUnavailable={() => owner.departed !== null ? "changed" : unavailable(owner.id)} onUpdated={team => { onNameSaved(team.id); teams.acceptTeam(team); teams.refreshList(); }} /></div>}
       {owner.opened.members && <div hidden={!membersActive} inert={!membersActive}><TeamMembersPanel teamId={owner.id} active={membersActive} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} onRoute={onRoute} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "members", value)} onUnavailable={() => owner.departed !== null ? "changed" : unavailable(owner.id)} onStart={() => onMemberStart(owner.id)} onChanged={confirmed => { if (confirmed) onMemberResult(owner.id, "changed"); if (onCurrentTeam(owner.id)) teams.refreshDetail(); teams.refreshList(); }} onLeft={(unchangedContext, version) => { onMemberResult(owner.id, "left"); if (unchangedContext) departed(owner.id); else { owner.departed = version; setTeamGuard(owner.id, "members", true); updateOwners(previous => previous + 1); teams.refreshList(); } }} /></div>}
     </div>, owner.host, owner.id);
   });

@@ -44,8 +44,62 @@ it('displays the secret once and retains a dispatched result across navigation',
   view.setLocale('en');
   view.rerender(panel(false, false));
   await act(async () => pending.resolve({ ...invitation, link })); expect(screen.getByDisplayValue(link)).not.toBeVisible();
-  view.rerender(panel()); expect(await screen.findByDisplayValue(link)).toBeInTheDocument();
+  view.rerender(panel());
+  expect(dialog).not.toBeVisible();
+  expect(await screen.findByDisplayValue(link)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' })); expect(screen.queryByDisplayValue(link)).toBeNull();
+});
+
+it('preserves the confirmation when switching Team settings sections during creation', async () => {
+  const pending = Promise.withResolvers<TeamInvitation & { link: string }>();
+  vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return pending.promise; });
+  const view = render(panel()); await openInvite();
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation link' }));
+  await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce());
+  view.rerender(panel(false, true));
+  await act(async () => pending.resolve({ ...invitation, link }));
+  view.rerender(panel());
+  expect(dialog).not.toBeVisible();
+  expect(await screen.findByDisplayValue(link)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('retains the original revoke dialog after leaving and returning before its receipt', async () => {
+  const pending = Promise.withResolvers<{ teamId: string; invitationId: string; changed: boolean }>();
+  vi.mocked(revokeTeamInvitation).mockImplementation(async (_team, _id, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return pending.promise; });
+  const view = render(panel());
+  fireEvent.click(await screen.findByRole('button', { name: `Revoke invitation ${id}` }));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke invitation' }));
+  await waitFor(() => expect(revokeTeamInvitation).toHaveBeenCalledOnce());
+  view.rerender(panel(false, false)); view.rerender(panel());
+  await act(async () => pending.resolve({ teamId, invitationId: id, changed: true }));
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(screen.getByText('Invitation revoked.')).toBeInTheDocument();
+  expect(within(dialog).getByRole('button', { name: 'Revoke invitation' })).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  await openInvite();
+  expect(screen.getByRole('dialog', { name: 'Create Team invitation' })).toBeVisible();
+  expect(revokeTeamInvitation).toHaveBeenCalledOnce();
+});
+
+it('does not deliver an old owner receipt to a replacement owner', async () => {
+  const pending = Promise.withResolvers<TeamInvitation & { link: string }>();
+  vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return pending.promise; });
+  const old = render(panel()); await openInvite();
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
+  await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce());
+  old.unmount();
+  render(panel()); await openInvite();
+  const dialog = screen.getByRole('dialog', { name: 'Create Team invitation' });
+  await act(async () => pending.resolve({ ...invitation, link }));
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(screen.queryByDisplayValue(link)).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  await openInvite();
+  expect(screen.getByRole('dialog', { name: 'Create Team invitation' })).toBeVisible();
 });
 it('keeps an unknown revoke from replaying even after reading current invitations', async () => {
   vi.mocked(revokeTeamInvitation).mockImplementation(async (_team, _id, _user, _signal, _mismatch, dispatch) => { dispatch?.(); throw new ApiError('network'); });
