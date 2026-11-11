@@ -163,6 +163,8 @@ it('checks an unknown assistant submission by its original operation and preserv
   fireEvent.change(input, { target: { value: 'Deliver once' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   const check = await screen.findByRole('button', { name: 'Check original operation' });
+  // The recovery row can appear before the composer finishes the rejected send.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled());
   const command = vi.mocked(bot.api.command).mock.calls[0]![1];
   fireEvent.keyDown(input, { key: 'Enter' });
   expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
