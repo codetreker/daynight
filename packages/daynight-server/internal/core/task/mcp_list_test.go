@@ -86,15 +86,17 @@ func TestMCPListCursorGroupsAndMalformedFences(t *testing.T) {
 			t.Fatalf("%s group=%d", test.status, decoded.query.After.Group)
 		}
 	}
-	legacyScope := selection.scope
-	legacyScope.Version = 1
-	legacy, err := json.Marshal(mcpListCursor{Scope: legacyScope, Fence: page.fence, Position: store.TaskPriorityPosition{Group: 3, CreatedAt: task.CreatedAt, ID: task.ID}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyCursor := base64.RawURLEncoding.EncodeToString(legacy)
-	if _, err := SelectMCPList(project, actor, MCPListRequest{Limit: 1, Cursor: &legacyCursor}); err == nil {
-		t.Fatal("old terminal cursor was interpreted as a proposed group")
+	for _, version := range []int{1, 2} {
+		legacyScope := selection.scope
+		legacyScope.Version = version
+		legacy, err := json.Marshal(mcpListCursor{Scope: legacyScope, Fence: page.fence, Position: store.TaskPriorityPosition{Group: 3, CreatedAt: task.CreatedAt, ID: task.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyCursor := base64.RawURLEncoding.EncodeToString(legacy)
+		if _, err := SelectMCPList(project, actor, MCPListRequest{Limit: 1, Cursor: &legacyCursor}); err == nil {
+			t.Fatalf("accepted cursor version %d", version)
+		}
 	}
 	for _, bad := range []string{"", "01", "-1", "12x"} {
 		c := mcpListCursor{Scope: selection.scope, Fence: store.TaskListFence{Count: bad, VersionSum: "1"}, Position: store.TaskPriorityPosition{Group: 1, CreatedAt: task.CreatedAt, ID: task.ID}}

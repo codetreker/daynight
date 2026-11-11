@@ -10,7 +10,7 @@ Read this topic to identify the Account, Team, Project and resource an operation
 | Team | Membership and Project ownership context. Each account has a Personal Team and can join ordinary Teams. |
 | Project | A registered repository, its owning Team, settings and Task/access scope; identified by a Project UUID. |
 | Task | Ordinary work identified by a Task UUID within its Project, with `type: "task"` and nullable Goal `parentId`. |
-| Goal | A stored objective with `type: "goal"`, its own resource UUID and child progress. Parent ownership and dependency edges are different relationships. See [Tasks](daynight://manuals/tasks.md). |
+| Goal | A stored objective with `type: "goal"`, its own resource UUID and child progress. A Goal is flat within a Project; its direct ordinary Task ownership and dependency edges are different relationships. See [Tasks](daynight://manuals/tasks.md). |
 | Step | A Task-owned ordered work record, identified by parent scope and a complete eight-hex-digit ID. See [Steps](daynight://manuals/steps.md). |
 | Thread | Immutable participant messages and same-Task replies, identified by Task and message UUID. See [Threads](daynight://manuals/threads.md). |
 | Attachment | Independent Task file bytes and metadata, identified by the complete case-sensitive relative path. See [Attachment reads](daynight://manuals/attachment-reads.md). |

@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a proposed Task with automation disabled; explicit status may be proposed or todo; omitted assignee is the current account.",
+    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or dependencies.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -16,15 +16,22 @@
           "type": "string"
         },
         "assignedTo": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "uuid"
         },
         "requiredPlatform": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "enum": [
             "windows",
             "linux",
-            "macos"
+            "macos",
+            null
           ]
         },
         "dependsOn": {
@@ -56,16 +63,95 @@
           "type": "string",
           "enum": [
             "proposed",
-            "todo"
+            "todo",
+            "in_progress",
+            "done",
+            "cancelled"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "task",
+            "goal"
           ],
-          "default": "proposed"
+          "default": "task"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
         }
       },
       "required": [
         "projectId",
         "title"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "goal"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "todo",
+                  "in_progress",
+                  "done",
+                  "cancelled"
+                ]
+              },
+              "parentId": {
+                "type": "null"
+              },
+              "dependsOn": {
+                "maxItems": 0
+              },
+              "externalDependsOn": {
+                "maxItems": 0
+              }
+            },
+            "not": {
+              "required": [
+                "requiredPlatform"
+              ]
+            }
+          },
+          "else": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "proposed",
+                  "todo"
+                ]
+              },
+              "assignedTo": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "requiredPlatform": {
+                "type": "string",
+                "enum": [
+                  "windows",
+                  "linux",
+                  "macos"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "annotations": {
       "readOnlyHint": false,
@@ -1289,6 +1375,14 @@
             "full"
           ],
           "default": "summary"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Omit to retain, null to clear, or a Goal UUID to assign."
         }
       },
       "required": [
@@ -1330,6 +1424,11 @@
         {
           "required": [
             "externalDependsOn"
+          ]
+        },
+        {
+          "required": [
+            "parentId"
           ]
         }
       ]

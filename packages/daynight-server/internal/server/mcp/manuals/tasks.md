@@ -35,7 +35,7 @@ Normal list/show and non-dependency-only graph add ephemeral Session observation
 
 ## Stored Task and Goal projections
 
-`type: "task"` identifies ordinary work; `type: "goal"` identifies a stored Goal. Nullable `parentId` is an ordinary Task's Goal ownership link, not a dependency edge or something inferred from a title. Summary/full resources expose these fields. Full Goal resources additionally contain `progress: {total, done, cancelled, unfinished}`; ordinary Task resources omit progress. These field excerpts illustrate the distinction:
+`type: "task"` identifies ordinary work; `type: "goal"` identifies a stored Goal. Nullable `parentId` is an ordinary Task's Goal ownership link, not a dependency edge or something inferred from a title. Summary/full resources expose these fields. Full Goal resources additionally contain `progress: {total, done, cancelled, unfinished}` for its current direct children; Goal summaries and ordinary Task resources omit progress. Child changes do not increment the Goal version. These field excerpts illustrate the distinction:
 
 ```json
 {"type":"task","parentId":"33333333-3333-4333-8333-333333333333"}
@@ -47,7 +47,7 @@ Normal list/show and non-dependency-only graph add ephemeral Session observation
 
 A Goal has no parent, `ready: false`, `allowAgents: false`, `requiredPlatform: null` and empty dependency/blocked sets. Do not interpret these constants as ordinary scheduling fields. Child completion accounting does not prove acceptance of the full Goal.
 
-Current MCP creation registers ordinary Tasks: no creation `type` or `parentId` input is advertised, and `task_list` has no type/parent filter. Reading a Goal does not imply unsupported Goal creation/parent selection operations. Normal dependency graph nodes remain `type: "task"` with nullable `parentId`; dependency-only nodes omit those fields.
+Normal dependency graph nodes remain `type: "task"` with nullable `parentId`; dependency-only nodes omit those fields. Goal is not a dependency-graph member or target, and a Goal cannot contain another Goal.
 
 ## Ready batches and inventories
 
@@ -65,13 +65,33 @@ Ready limit defaults to 5, maximum 20. Permission/platform filters precede the l
 {"name":"task_list","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","ready":true,"assignedTo":"me","limit":50,"view":"summary"}}
 ```
 
+`task_list` defaults to `type: "task"`; select `type: "goal"` to list Goals. `parentId` on `task_list` and `task_ready` may be omitted for any parent, null for unowned Tasks, or a Goal UUID for its direct children. Filters apply before pagination or the ready limit. For example:
+
+```json
+{"name":"task_list","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","parentId":"33333333-3333-4333-8333-333333333333","all":true,"view":"summary"}}
+```
+
 List filters combine before pagination. Without `all: true` or explicit `status`, done/cancelled are excluded. `all: true` and a selected status are mutually exclusive. `assignedTo` accepts a user UUID, `me` or `unassigned`; readiness, automatic permission and platform are independent filters. List limit defaults to 50, maximum 100. Ordering groups in-progress, ready todo, blocked todo, proposed and selected terminal work, then creation time/UUID; it is not relevance ranking.
 
-List data contains `items`, `nextCursor` and `projection`. Pass a non-null opaque `nextCursor` as `cursor`, preserving caller/Project/filters/view; continue until null. The cursor binds ordering and a Project task-version fence. Malformed/mismatched tokens fail `invalid_input`; a changed Project fence returns `list_changed`. Discard that traversal and restart without a cursor before claiming a complete inventory. There is no promised reusable cursor lifetime.
+List data contains `items`, `nextCursor` and `projection`. Pass a non-null opaque `nextCursor` as `cursor`, preserving caller/Project/type/parent/filters/view; continue until null. The cursor binds ordering and a Project-wide typed resource revision fence, including changes outside the selected type or Parent that affect the result. Malformed/mismatched tokens fail `invalid_input`; a changed Project fence returns `list_changed`. Discard that traversal and restart without a cursor before claiming a complete inventory. There is no promised reusable cursor lifetime.
 
 Task show, graph and material reads are new observations outside the list fence. Do not present an old list version and later-read content as one snapshot. Scope changes require a new traversal.
 
-## Creation, fields and ordinary lifecycle
+## Create and organize Tasks and Goals
+
+`task_create` defaults to `type: "task"`; supply `type: "goal"` to create a Goal. Goal status defaults to `todo` and may initially be `todo`, `in_progress`, `done` or `cancelled`. Its omitted `assignedTo` selects the current account; explicit null leaves it unassigned. A Goal has no parent, dependencies or execution platform. It owns its description, properties, Thread and attachments independently of its children.
+
+```json
+{"name":"task_create","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","type":"goal","title":"Ship the project","returnView":"full"}}
+```
+
+Set an ordinary Task's `parentId` at creation or with `task_update`; it must name a visible Goal in the same Project. On update, omission preserves ownership, null removes it, and a UUID assigns or transfers it. A Parent-only update is valid and uses the child's exact decision version. Parent changes do not alter dependencies, assignment or child status. A terminal Goal still accepts organization changes, subject to the Task's own rules.
+
+```json
+{"name":"task_update","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"22222222-2222-4222-8222-222222222222","ifVersion":"12","parentId":null}}
+```
+
+## Ordinary Task lifecycle
 
 New Tasks default to `proposed`, automatic execution disabled, and omitted assignee set to the current account. Explicit creation status supports proposed/todo; use todo when registering confirmed work. Registration does not start execution. `task_create` has no allowAgents input; later automatic permission requires its separate authorized update. Dependencies follow [Dependencies](daynight://manuals/dependencies.md).
 
@@ -105,13 +125,19 @@ This ordinary operation omits claimId; it does not launch a process or acquire a
 
 `assignedTo` is a nullable local user UUID; `requiredPlatform` is unrestricted null or the advertised platform. A real assignee change disables allowAgents; same-assignee preserves it. Actual assignment/platform/permission changes are refused during in_progress; current-version same-values remain no-ops. Assignment grants neither Project access nor control of another claim.
 
+## Goal lifecycle
+
+A Goal moves freely among `todo`, `in_progress`, `done` and `cancelled`, including reopening. `task_set_status` submits the desired status and exact version in one call; MCP does not require a separate confirmation token. The Goal's status is explicit and independent of child progress. Starting a new `in_progress` interval records a new start; returning to `todo` clears its interval times. `done` and `cancelled` record their respective time and retain a nullable start. A same-status request is a no-op at the current version.
+
+A Goal in `done` or `cancelled` prevents new automatic claims of its children. Existing claims continue, and manual Task changes remain governed by the child's own rules. Goal assignment is independent of child assignment. Goal execution controls, Steps and Worker claims are not supported.
+
 ## Cancellation and deletion
 
 Cancellation retains readable Task material, history and dependencies under current access checks. It neither closes PRs/branches, marks deletion nor accepts work. An active Worker must be released by its authorized management owner before ordinary cancellation; Task status is not process control.
 
 `task_delete` hides stored resources from ordinary reads/list/ready/graph while retaining stored records and attachment bytes. Ordinary Task deletion is refused for an active Worker claim and, by default, when undeleted dependents exist. Explicitly authorized `removeDepends: true` removes incoming ordinary/external references in the same transaction, changing dependent versions and possibly readiness. Authority to delete one Task does not automatically cover this additional effect.
 
-Deleting a Goal hides it and its children without removing their parent links; active executions stop later through existing cleanup. Deletion is separate from completion/cancellation and synchronous process termination. A `task_deleted` response is distinct from not_found or inaccessible; authentication, permission and transport failures leave absence/deletion unconfirmed. Preserve original completion facts under [Write safety](daynight://manuals/write-safety.md).
+Deleting a Goal hides it and its children without removing their parent links or changing their states, versions or dependencies; `removeDepends: true` is rejected for Goal deletion. Active executions stop later through existing cleanup. Deletion is separate from completion/cancellation and synchronous process termination. A `task_deleted` response is distinct from not_found or inaccessible; authentication, permission and transport failures leave absence/deletion unconfirmed. Preserve original completion facts under [Write safety](daynight://manuals/write-safety.md).
 
 ## Properties
 

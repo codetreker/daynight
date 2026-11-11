@@ -7,7 +7,7 @@ requirements and results belong.
 
 ## Identity, order and lifecycle
 
-A Step belongs to one Task resource. Its ID has eight hexadecimal characters:
+A Step belongs to one ordinary Task; Goal Steps are not supported. Its ID has eight hexadecimal characters:
 input accepts either case, output is lowercase, and leading zeros matter.
 `0000000a` is a complete ID, not display position 10. IDs may repeat in different
 Tasks; retain the Project, Task and Step together.
