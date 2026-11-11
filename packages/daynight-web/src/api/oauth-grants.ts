@@ -39,9 +39,9 @@ export const listOwnerGrants = async (signal: AbortSignal, expectedUserId: strin
   });
 };
 
-export const revokeOwnerGrant = async (grantId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<boolean> => {
+export const revokeOwnerGrant = async (grantId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<boolean> => {
   const expected = requestId(expectedUserId);
-  const response = await request(`/api/v1/oauth/grants/${requestId(grantId)}/revoke`, signal, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ expectedUserId: expected }) });
+  const response = await request(`/api/v1/oauth/grants/${requestId(grantId)}/revoke`, signal, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ expectedUserId: expected }) }, onDispatch);
   assertResponsePrincipal(response, expected, onIdentityMismatch);
   return json(response, signal, (value) => {
     if (response.status !== 200) throw new ApiError("protocol", response.status);
