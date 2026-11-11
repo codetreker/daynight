@@ -12,7 +12,7 @@ import { StepStatusMenu } from "./StepStatusMenu";
 import "../../../styles/task-steps.css";
 
 const PAGE_SIZE = 100;
-type StepDraft = { key: number; revision: number; submittedRevision: number | null; submittedNavigation: number | null; submittedContent: { title: string; description: string; status: StepStatus; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null } | null; addReceipt: { version: bigint; publicationPending: boolean; createdAt: string | null } | null; review: { version: bigint; acknowledged: boolean } | null; standalone: boolean; kind: "add" | "edit"; id: string; title: string; description: string; status: StepStatus; originalTitle: string; originalDescription: string; originalCreatedAt: string | null; retired: boolean; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null; initialPlacement: "last" | "before" | "after"; initialAnchorId: string | null; initialAnchorCreatedAt: string | null; requestId: string | null; confirmed: boolean; uncertain: boolean };
+type StepDraft = { key: number; revision: number; submittedRevision: number | null; submittedNavigation: number | null; submittedContent: { title: string; description: string; status: StepStatus; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null } | null; addReceipt: { version: bigint; publicationPending: boolean; createdAt: string | null } | null; review: { version: bigint; acknowledged: boolean } | null; standalone: boolean; holdForTarget: boolean; kind: "add" | "edit"; id: string; title: string; description: string; status: StepStatus; originalTitle: string; originalDescription: string; originalCreatedAt: string | null; retired: boolean; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null; initialPlacement: "last" | "before" | "after"; initialAnchorId: string | null; initialAnchorCreatedAt: string | null; requestId: string | null; confirmed: boolean; uncertain: boolean };
 const isDirty = (draft: StepDraft | null) => draft !== null && (draft.title !== draft.originalTitle || draft.description !== draft.originalDescription || draft.kind === "add" && (draft.status !== "todo" || draft.placement !== draft.initialPlacement || draft.anchorId !== draft.initialAnchorId || draft.anchorCreatedAt !== draft.initialAnchorCreatedAt) || draft.requestId !== null);
 const invalidText = (value: string) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
 // Textareas normalize CR and CRLF for display. Preserve untouched source spans when editing.
@@ -108,14 +108,18 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   if (previousActive.current !== active) { previousActive.current = active; navigationRevision.current++; }
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [draft, setDraft] = useState<StepDraft | null>(null);
+  const draftOwner = useRef<{ key: number; kind: StepDraft["kind"] } | null>(null);
+  const activeRef = useRef(active);
+  draftOwner.current = draft === null ? null : { key: draft.key, kind: draft.kind };
+  activeRef.current = active;
   const draftKey = useRef(0);
   const deferredOperations = useRef(new Set<string>());
   const [deleting, setDeleting] = useState<{ step: TaskStep; version: bigint } | null>(null);
   const [deleteChanged, setDeleteChanged] = useState(false);
   const [submittedDelete, setSubmittedDelete] = useState<{ requestId: string; stepId: string; version: bigint; draftKey: number | null; draftRevision: number | null; navigation: number; next: readonly Pick<TaskStep, "id" | "createdAt">[]; previous: readonly Pick<TaskStep, "id" | "createdAt">[] } | null>(null);
   const [preview, setPreview] = useState(false);
-  const [discard, setDiscard] = useState(false);
-  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
+  const [discard, setDiscard] = useState<{ key: number; kind: StepDraft["kind"] } | null>(null);
+  const [switchTarget, setSwitchTarget] = useState<{ id: string; createdAt: string } | null>(null);
   const [invalidTitle, setInvalidTitle] = useState(false);
   const [invalidDescription, setInvalidDescription] = useState(false);
   const [undoUnavailable, setUndoUnavailable] = useState(false);
@@ -127,7 +131,11 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const skipEditFocus = useRef<number | null>(null);
   const restoreEditSelection = useRef<{ key: number; start: number; end: number } | null>(null);
   const chooseTarget = useRef<HTMLButtonElement>(null);
-  const [choosingTarget, setChoosingTarget] = useState(false);
+  const restoreTargetFocus = (key: number) => requestAnimationFrame(() => {
+    const button = chooseTarget.current;
+    if (draftOwner.current?.key === key && draftOwner.current.kind === "add" && activeRef.current && button?.isConnected && !button.closest("[hidden], [inert]")) button.focus();
+  });
+  const [choosingTarget, setChoosingTarget] = useState<{ key: number; selected: { id: string; createdAt: string | null } | null } | null>(null);
   const [anchorNeedsDecision, setAnchorNeedsDecision] = useState(false);
   const rejectedAnchorRequest = useRef<string | null>(null);
   const descriptionInput = useRef<HTMLTextAreaElement>(null);
@@ -145,9 +153,9 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     if (description && descriptionBefore) description.addEventListener("beforeinput", descriptionBefore);
     return () => { if (title && titleBefore) title.removeEventListener("beforeinput", titleBefore); if (description && descriptionBefore) description.removeEventListener("beforeinput", descriptionBefore); };
   });
-  useDirtyTaskDraft({ isDirty: () => isDirty(draft), discard: () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setDiscard(false); onConfirmationChange?.(false); } });
+  useDirtyTaskDraft({ isDirty: () => isDirty(draft), discard: () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setChoosingTarget(null); setDiscard(null); onConfirmationChange?.(false); } });
   useEffect(() => () => { onConfirmationChange?.(false); }, [onConfirmationChange]);
-  useLayoutEffect(() => { if (!available) { setDiscard(false); onConfirmationChange?.(false); } }, [available, onConfirmationChange]);
+  useLayoutEffect(() => { if (!available) { setDiscard(null); onConfirmationChange?.(false); } }, [available, onConfirmationChange]);
   useLayoutEffect(() => sessions.subscribe(projectId, taskId, () => {
     const mutation = sessions.snapshot(projectId, taskId).mutation;
     if (mutation.publicationPending && mutation.operation !== null && "requestId" in mutation.operation) deferredOperations.current.add(mutation.operation.requestId);
@@ -166,18 +174,26 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const [movingId, setMovingId] = useState<string | null>(null);
   const navigationDecision = useDraftNavigationDecision();
   const interruptedMove = useRef(false);
+  const observedDecision = useRef<typeof navigationDecision>(null);
   useLayoutEffect(() => {
     if (navigationDecision !== null) {
+      if (observedDecision.current !== navigationDecision) {
+        observedDecision.current = navigationDecision;
+        setDraft((current) => current === null || current.requestId === null ? current : { ...current, revision: current.revision + 1, holdForTarget: current.kind === "add" || current.holdForTarget });
+      }
       if (movingId !== null) interruptedMove.current = true;
-      if (choosingTarget) interruptedMove.current = true;
       setMovingId(null); setDeleting(null);
-      setChoosingTarget(false);
-      setDiscard(false); onConfirmationChange?.(false);
-    } else if (interruptedMove.current) {
-      interruptedMove.current = false;
-      if (draft !== null && active) titleInput.current?.focus();
+      onConfirmationChange?.(false);
+    } else {
+      const resumed = observedDecision.current !== null;
+      observedDecision.current = null;
+      if (resumed && discard && available) onConfirmationChange?.(true);
+      if (interruptedMove.current) {
+        interruptedMove.current = false;
+        if (draft !== null && active) titleInput.current?.focus();
+      }
     }
-  }, [navigationDecision, movingId, choosingTarget, draft, active, onConfirmationChange]);
+  }, [navigationDecision, movingId, choosingTarget, draft, active, discard, available, onConfirmationChange]);
   const resource = state.resource;
   const total = resource?.steps.length ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -225,11 +241,12 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     }
   }, [ownAdd, draft?.kind, draft?.requestId]);
   const dirty = isDirty(draft);
-  const closeDraft = () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setChoosingTarget(false); setDiscard(false); setSwitchTarget(null); onConfirmationChange?.(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
-  const cancelDraft = () => { if (dirty) { setDiscard(true); onConfirmationChange?.(true); } else { const target = draft?.kind === "edit" ? draft.id : ""; closeDraft(); setFocusStep(target); } };
+  const closeDraft = () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setChoosingTarget(null); setDiscard(null); setSwitchTarget(null); onConfirmationChange?.(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
+  const preserveDraftInteraction = () => setDraft((current) => current === null || current.requestId === null ? current : { ...current, revision: current.revision + 1, holdForTarget: current.kind === "add" || current.holdForTarget });
+  const cancelDraft = () => { if (dirty && draft !== null) { preserveDraftInteraction(); setDiscard({ key: draft.key, kind: draft.kind }); onConfirmationChange?.(true); } else { const target = draft?.kind === "edit" ? draft.id : ""; closeDraft(); setFocusStep(target); } };
   useEffect(() => {
     const confirmedAdd = draft?.kind === "add" && draft.addReceipt !== null;
-    if (draft === null || !confirmedAdd && ownAdd?.phase !== "confirmed" || confirmedAdd && (draft.addReceipt!.publicationPending || mutation.phase === "pending" || mutation.reconciling) || ownAdd?.publicationPending || ownAdd?.reconciling || ownAdd?.reconciliationError != null || resource === null || state.stale || state.error !== null || draft.submittedContent === null || unappliedAddChoices || !interruptedDraftNavigation && draft.revision === draft.submittedRevision) return;
+    if (draft === null || choosingTarget?.key === draft.key || draft.holdForTarget || discard || navigationDecision !== null || deleting !== null || movingId !== null || !confirmedAdd && ownAdd?.phase !== "confirmed" || confirmedAdd && (draft.addReceipt!.publicationPending || mutation.phase === "pending" || mutation.reconciling) || ownAdd?.publicationPending || ownAdd?.reconciling || ownAdd?.reconciliationError != null || resource === null || state.stale || state.error !== null || draft.submittedContent === null || unappliedAddChoices || !interruptedDraftNavigation && draft.revision === draft.submittedRevision) return;
     const operation = confirmedAdd ? { action: "stepAdd" as const, version: draft.addReceipt!.version } : ownAdd!.operation;
     if (operation === null || (operation.action !== "stepAdd" && operation.action !== "stepEdit") || resource.version < operation.version) return;
     const saved = resource.steps.find((step) => step.id === draft.id);
@@ -242,14 +259,14 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       if (input !== null && document.activeElement === input) restoreEditSelection.current = { key: draft.key, start: input.selectionStart ?? 0, end: input.selectionEnd ?? 0 };
     }
     setDraft((current) => current !== draft ? current : { ...current, kind: "edit", standalone: current.kind === "add" || current.standalone, originalTitle: matches && sameInstance ? saved!.title : current.submittedContent!.title, originalDescription: matches && sameInstance ? saved!.description : current.submittedContent!.description, originalCreatedAt: sameInstance ? saved!.createdAt : current.originalCreatedAt, retired: !sameInstance, review: sameInstance && !matches ? { version: resource.version, acknowledged: false } : null, requestId: null, addReceipt: null, submittedRevision: null, submittedNavigation: null, submittedContent: null, confirmed: false, uncertain: false });
-  }, [draft, ownAdd, resource, state.stale, state.error, interruptedDraftNavigation, unappliedAddChoices, originalAddCurrent]);
+  }, [draft, ownAdd, resource, state.stale, state.error, interruptedDraftNavigation, unappliedAddChoices, originalAddCurrent, choosingTarget, discard, navigationDecision, deleting, movingId]);
   useEffect(() => {
-    if (draft === null || !draft.confirmed || interruptedDraftNavigation || draft.revision !== draft.submittedRevision || resource === null || state.stale || state.error !== null || draft.kind === "edit" && (draft.retired || !resource.steps.some((step) => step.id === draft.id && step.createdAt === draft.originalCreatedAt))) return;
+    if (draft === null || choosingTarget?.key === draft.key || draft.holdForTarget || discard || navigationDecision !== null || deleting !== null || movingId !== null || !draft.confirmed || interruptedDraftNavigation || draft.revision !== draft.submittedRevision || resource === null || state.stale || state.error !== null || draft.kind === "edit" && (draft.retired || !resource.steps.some((step) => step.id === draft.id && step.createdAt === draft.originalCreatedAt))) return;
     const index = resource.steps.findIndex((step) => step.id === draft.id);
     if (index < 0) { setAddedMissing(true); setFocusStep(""); }
     else { setPage(Math.floor(index / PAGE_SIZE) + 1); setFocusStep(draft.id); }
     closeDraft();
-  }, [draft, resource, state.stale, state.error, interruptedDraftNavigation]);
+  }, [draft, resource, state.stale, state.error, interruptedDraftNavigation, choosingTarget, discard, navigationDecision, deleting, movingId]);
   useLayoutEffect(() => {
     if (focusStep === null || !active) return;
     const target = focusStep === "" ? (addButton.current?.disabled ? titleInput.current : addButton.current) : workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${focusStep}"] .step-disclosure`);
@@ -289,7 +306,6 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   useLayoutEffect(() => {
     if (!active || resource === null) {
       setMovingId(null);
-      setChoosingTarget(false);
       if (active) { submittedMove.current = null; focusMove.current = null; }
     }
   }, [active, resource]);
@@ -323,7 +339,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     setAnchorNeedsDecision(false);
     titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setUndoUnavailable(false);
     const anchorCreatedAt = resource?.steps.find((step) => step.id === anchorId)?.createdAt ?? null;
-    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, submittedContent: null, addReceipt: null, review: null, standalone: false, kind: "add", id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", originalTitle: "", originalDescription: "", originalCreatedAt: null, retired: false, placement, anchorId, anchorCreatedAt, initialPlacement: placement, initialAnchorId: anchorId, initialAnchorCreatedAt: anchorCreatedAt, requestId: null, confirmed: false, uncertain: false });
+    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, submittedContent: null, addReceipt: null, review: null, standalone: false, holdForTarget: false, kind: "add", id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", originalTitle: "", originalDescription: "", originalCreatedAt: null, retired: false, placement, anchorId, anchorCreatedAt, initialPlacement: placement, initialAnchorId: anchorId, initialAnchorCreatedAt: anchorCreatedAt, requestId: null, confirmed: false, uncertain: false });
   }, [hasDraft, pages, resource]);
   const authPaused = authRequestsPaused();
   const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
@@ -352,7 +368,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     const step = resource?.steps.find((item) => item.id === stepId);
     if (!step) return;
     titleHistory.current = newHistory(step.title); descriptionHistory.current = newHistory(step.description); setUndoUnavailable(false);
-    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, submittedContent: null, addReceipt: null, review: null, standalone: false, kind: "edit", id: step.id, title: step.title, description: step.description, status: step.status, originalTitle: step.title, originalDescription: step.description, originalCreatedAt: step.createdAt, retired: false, placement: "last", anchorId: null, anchorCreatedAt: null, initialPlacement: "last", initialAnchorId: null, initialAnchorCreatedAt: null, requestId: null, confirmed: false, uncertain: false });
+    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, submittedContent: null, addReceipt: null, review: null, standalone: false, holdForTarget: false, kind: "edit", id: step.id, title: step.title, description: step.description, status: step.status, originalTitle: step.title, originalDescription: step.description, originalCreatedAt: step.createdAt, retired: false, placement: "last", anchorId: null, anchorCreatedAt: null, initialPlacement: "last", initialAnchorId: null, initialAnchorCreatedAt: null, requestId: null, confirmed: false, uncertain: false });
     setExpanded((previous) => new Set(previous).add(step.id));
     setPreview(false); setInvalidTitle(false); setInvalidDescription(false); setAddedMissing(false);
   }, [resource]);
@@ -362,15 +378,15 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const currentDraftCreatedAt = currentDraftStep?.createdAt;
   const selectEdit = useCallback((stepId: string) => {
     if (editDraftId === stepId && !editDraftRetired && currentDraftCreatedAt === editDraftCreatedAt) { titleInput.current?.focus(); return; }
-    if (dirty) { setSwitchTarget(stepId); setDiscard(true); onConfirmationChange?.(true); }
+    if (dirty && draft !== null) { const target = resource?.steps.find((step) => step.id === stepId); if (target === undefined) return; preserveDraftInteraction(); setSwitchTarget({ id: stepId, createdAt: target.createdAt }); setDiscard({ key: draft.key, kind: draft.kind }); onConfirmationChange?.(true); }
     else beginEdit(stepId);
-  }, [editDraftId, editDraftRetired, currentDraftCreatedAt, editDraftCreatedAt, dirty, beginEdit, onConfirmationChange]);
+  }, [editDraftId, editDraftRetired, currentDraftCreatedAt, editDraftCreatedAt, dirty, draft, resource, beginEdit, onConfirmationChange]);
   const move = useCallback((stepId: string, index: number, action: MoveAction) => {
     if (resource === null) return;
     if (action === "addBefore" || action === "addAfter") { startAdd(action === "addBefore" ? "before" : "after", stepId); return; }
     if (action === "edit") { selectEdit(stepId); return; }
-    if (action === "delete") { const target = resource.steps.find((step) => step.id === stepId); if (target) { setDeleteChanged(false); setDeleting({ step: target, version: resource.version }); onConfirmationChange?.(true); } return; }
-    if (action === "relative") { setMovingId(stepId); return; }
+    if (action === "delete") { const target = resource.steps.find((step) => step.id === stepId); if (target) { preserveDraftInteraction(); setDeleteChanged(false); setDeleting({ step: target, version: resource.version }); onConfirmationChange?.(true); } return; }
+    if (action === "relative") { preserveDraftInteraction(); setMovingId(stepId); return; }
     if (action === "first" || action === "last") submitMove(stepId, { position: action });
     else if (action === "up" && index > 0) submitMove(stepId, { before: resource.steps[index - 1]!.id });
     else if (action === "down" && index + 1 < resource.steps.length) submitMove(stepId, { after: resource.steps[index + 1]!.id });
@@ -389,9 +405,11 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       {invalidTitle && <p className="step-field-error" id={`${id}-title-error`} role="alert">{invalidText(draft.title) ? m.invalidText : m.titleRequired}</p>}
       {draft.kind === "add" && <label>{m.initialStatus}<select value={draft.status} disabled={frozen} onChange={(event) => setDraft({ ...draft, revision: draft.revision + 1, status: event.currentTarget.value as StepStatus })}>{(["todo", "in_progress", "done", "skipped"] as const).map((value) => <option key={value} value={value}>{m.status[value]}</option>)}</select></label>}
       {draft.kind === "add" && <label>{m.placement}<select value={draft.placement} disabled={frozen} onChange={(event) => { const placement = event.currentTarget.value as StepDraft["placement"]; setDraft({ ...draft, revision: draft.revision + 1, placement, anchorId: placement === "last" ? null : draft.anchorId, anchorCreatedAt: placement === "last" ? null : draft.anchorCreatedAt }); if (placement === "last") setAnchorNeedsDecision(false); }}><option value="last">{m.addEnd}</option><option value="before">{m.before}</option><option value="after">{m.after}</option></select></label>}
-      {draft.kind === "add" && draft.placement !== "last" && <div className="step-add-target">{anchor !== null && <div className="step-target-selected"><span>{m.target}</span><strong>{anchor.title}</strong><code className="step-id">{anchor.id}</code></div>}{(missingAnchor || anchorNeedsDecision && ownAdd?.phase !== "refused") && <p role="alert">{m.targetMissing} <code>{draft.anchorId}</code></p>}<button ref={chooseTarget} className="button" type="button" disabled={frozen || resource === null} onClick={() => setChoosingTarget(true)}>{m.chooseTarget}</button></div>}
-      {unappliedAddChoices && addReceipt !== null && addReceipt !== undefined && draft.submittedContent !== null && <div className="steps-error" role="status"><p>{originalAddCurrent ? m.addChoicesRetained : m.addChoicesUnverified}</p>{originalAddCurrent && <button className="button" type="button" onClick={() => { const submitted = draft.submittedContent!; setDraft({ ...draft, revision: draft.revision + 1, status: submitted.status, placement: submitted.placement, anchorId: submitted.anchorId, anchorCreatedAt: submitted.anchorCreatedAt }); setAnchorNeedsDecision(false); }}>{m.restoreAddChoices}</button>}</div>}
-      <div className="step-editor-heading"><span>{m.description}</span><div><button type="button" aria-pressed={!preview} onClick={() => setPreview(false)}>{m.edit}</button><button type="button" aria-pressed={preview} onClick={() => setPreview(true)}>{m.preview}</button></div></div>
+      {draft.kind === "add" && draft.placement !== "last" && <div className="step-add-target">{anchor !== null && <div className="step-target-selected"><span>{m.target}</span><strong>{anchor.title}</strong><code className="step-id">{anchor.id}</code></div>}{(missingAnchor || anchorNeedsDecision && ownAdd?.phase !== "refused") && <p role="alert">{m.targetMissing} <code>{draft.anchorId}</code></p>}<button ref={chooseTarget} className="button" type="button" disabled={frozen || resource === null} onClick={() => { preserveDraftInteraction(); setChoosingTarget({ key: draft.key, selected: draft.anchorId === null ? null : { id: draft.anchorId, createdAt: draft.anchorCreatedAt } }); }}>{m.chooseTarget}</button></div>}
+      {unappliedAddChoices && addReceipt !== null && addReceipt !== undefined && draft.submittedContent !== null && <div className="steps-error" role="status"><p>{originalAddCurrent ? m.addChoicesRetained : m.addChoicesUnverified}</p>{originalAddCurrent && <button className="button" type="button" onClick={() => { const submitted = draft.submittedContent!; setDraft({ ...draft, revision: draft.revision + 1, status: submitted.status, placement: submitted.placement, anchorId: submitted.anchorId, anchorCreatedAt: submitted.anchorCreatedAt, holdForTarget: false }); setAnchorNeedsDecision(false); }}>{m.restoreAddChoices}</button>}</div>}
+      {draft.kind === "add" && draft.holdForTarget && !unappliedAddChoices && addReceipt !== null && originalAddCurrent && <div className="steps-error" role="status"><p>{m.addReadyToEdit}</p><button className="button" type="button" onClick={() => { restoreEditSelection.current = { key: draft.key, start: draft.title.length, end: draft.title.length }; setDraft({ ...draft, revision: draft.revision + 1, holdForTarget: false }); }}>{m.editCreatedStep}</button></div>}
+      {draft.kind === "add" && draft.holdForTarget && !unappliedAddChoices && addReceipt !== null && !originalAddCurrent && <div className="steps-error" role="status"><p>{m.addIdentityUnverified}</p></div>}
+      <div className="step-editor-heading"><span>{m.description}</span><div><button type="button" aria-pressed={!preview} onClick={() => { if (preview) preserveDraftInteraction(); setPreview(false); }}>{m.edit}</button><button type="button" aria-pressed={preview} onClick={() => { if (!preview) preserveDraftInteraction(); setPreview(true); }}>{m.preview}</button></div></div>
       <textarea ref={descriptionInput} aria-label={m.description} aria-invalid={invalidDescription} aria-describedby={invalidDescription ? `${id}-description-error` : undefined} hidden={preview} value={draft.description} disabled={frozen} onChange={(event) => { const result = editText(descriptionHistory.current, draft.description, event.currentTarget.value, descriptionSelection.current); setDraft({ ...draft, revision: draft.revision + 1, description: result.value }); setUndoUnavailable(result.blocked); descriptionSelection.current = null; setInvalidDescription(false); }} />
       {invalidDescription && <p className="step-field-error" id={`${id}-description-error`} role="alert">{m.invalidText}</p>}
       {preview && <div className="step-add-preview">{draft.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(draft.description)}</div>}
@@ -466,7 +484,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
         renderMarkdown={renderMarkdown} onToggle={toggle} onStatus={state.setStatus} onMove={move} onEdit={selectEdit} />)}
     </ol>}
     {draft !== null && (draft.kind === "add" || draft.standalone || resource !== null && !editTargetAvailable) && editor}
-    {discard && available && navigationDecision === null && <TaskConfirmation title={m.discardTitle} question={draft?.kind === "edit" ? m.discardEditQuestion : m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft?.title ?? ""} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDiscard(false); setSwitchTarget(null); onConfirmationChange?.(false); }} onConfirm={() => { const target = switchTarget; const previous = draft?.kind === "edit" ? draft.id : ""; closeDraft(); if (target !== null) beginEdit(target); else setFocusStep(previous); }} />}
+    {discard !== null && draft !== null && draft.key === discard.key && draft.kind === discard.kind && available && navigationDecision === null && <TaskConfirmation title={m.discardTitle} question={draft.kind === "edit" ? m.discardEditQuestion : m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft.title} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} confirmDisabled={switchTarget !== null && !resource?.steps.some((step) => step.id === switchTarget.id && step.createdAt === switchTarget.createdAt)} content={switchTarget !== null && !resource?.steps.some((step) => step.id === switchTarget.id && step.createdAt === switchTarget.createdAt) ? <p role="alert">{m.editMissing}</p> : undefined} onCancel={() => { if (draftOwner.current?.key !== discard.key || draftOwner.current.kind !== discard.kind) return; setDiscard(null); setSwitchTarget(null); onConfirmationChange?.(false); }} onConfirm={() => { if (draftOwner.current?.key !== discard.key || draftOwner.current.kind !== discard.kind) return; const target = switchTarget; if (target !== null && !resource?.steps.some((step) => step.id === target.id && step.createdAt === target.createdAt)) return; const previous = draft.kind === "edit" ? draft.id : ""; closeDraft(); if (target !== null) beginEdit(target.id); else setFocusStep(previous); }} />}
     {navigationDecision === null && available && deleting !== null && <TaskConfirmation title={m.deleteTitle} question={m.deleteQuestion} explanation={m.deleteExplanation} taskTitle={`${deleting.step.title} (${deleting.step.id})`} content={<><p>{m.deleteExplanation}</p>{draft?.kind === "edit" && draft.id === deleting.step.id && dirty && <p>{m.deleteDraft}</p>}</>} confirmLabel={m.deleteStep} cancelLabel={m.cancel} closeLabel={m.cancel} destructive confirmDisabled={!state.canDelete || authRequestsPaused()} owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDeleting(null); onConfirmationChange?.(false); }} onConfirm={() => {
       if (!state.canDelete || authRequestsPaused()) return;
       setDeleting(null); onConfirmationChange?.(false);
@@ -477,6 +495,6 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       else setDeleteChanged(true);
     }} />}
     {navigationDecision === null && moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { if (!state.canMove || authRequestsPaused()) return; setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}
-    {navigationDecision === null && choosingTarget && draft !== null && resource !== null && <StepAddTargetDialog steps={resource.steps} selectedId={draft.anchorId} onCancel={() => { setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} onConfirm={(target) => { const selected = resource.steps.find((step) => step.id === target); if (!selected) return; setDraft({ ...draft, revision: draft.revision + 1, anchorId: target, anchorCreatedAt: selected.createdAt }); setAnchorNeedsDecision(false); setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} />}
+    {active && navigationDecision === null && choosingTarget !== null && draft?.kind === "add" && draft.key === choosingTarget.key && resource !== null && <StepAddTargetDialog key={choosingTarget.key} steps={resource.steps} selected={choosingTarget.selected} onSelect={(id, createdAt) => setChoosingTarget((current) => current?.key === choosingTarget.key ? { ...current, selected: { id, createdAt } } : current)} onCancel={() => { if (draftOwner.current?.key !== choosingTarget.key || draftOwner.current.kind !== "add") return; setChoosingTarget((current) => current?.key === choosingTarget.key ? null : current); restoreTargetFocus(choosingTarget.key); }} onConfirm={(target, createdAt) => { if (draftOwner.current?.key !== choosingTarget.key || draftOwner.current.kind !== "add") return; const selected = resource.steps.find((step) => step.id === target && step.createdAt === createdAt); if (!selected) return; setDraft((current) => current?.kind === "add" && current.key === choosingTarget.key ? { ...current, revision: current.revision + 1, anchorId: target, anchorCreatedAt: createdAt } : current); setAnchorNeedsDecision(false); setChoosingTarget((current) => current?.key === choosingTarget.key ? null : current); restoreTargetFocus(choosingTarget.key); }} />}
   </section>;
 };
