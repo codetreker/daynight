@@ -2,24 +2,14 @@ import path from "node:path";
 import { chmod, copyFile, link, mkdir, mkdtemp, open, realpath, readFile, rm, stat, symlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
 import { fstatSync, writeFileSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../src/api/operation.js";
 import { probeResourceKey, resolveToolLaunch, toolCommand, verifyToolLaunch } from "../../src/platform/tool-executables.js";
+import { removeFixtureRoot } from "../helpers/tool-fixture-cleanup.js";
 
 const execute = promisify(execFile);
-const removeFixtureRoot = async (root: string, remove: typeof rm = rm, wait: (ms: number) => Promise<void> = delay): Promise<void> => {
-  // Node's recursive retries apply at every depth; keep one budget for the root.
-  for (let retry = 0; ; retry++) {
-    try { await remove(root, { recursive: true, force: true, maxRetries: 0 }); return; }
-    catch (error) {
-      if (retry === 3 || !(error instanceof Error) || !("code" in error) || error.code !== "EBUSY") throw error;
-      await wait(100 * (retry + 1));
-    }
-  }
-};
 const roots: string[] = [], operations: Operation[] = [];
 const scratch = path.resolve(import.meta.dirname, "../../../../.tmp/tool-executables-tests");
 const fixture = async () => { await mkdir(scratch, { recursive: true }); const root = await mkdtemp(path.join(scratch, "launch-")); roots.push(root); return root; };
