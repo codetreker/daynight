@@ -378,3 +378,25 @@ it('reconciles a confirmed identity after its publishing form closes during paus
   expect(assistantCreateSubmit()).toBeEnabled();
   expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
 });
+
+it('retries confirmed identity admission when another pause starts at the ready boundary', async () => {
+  const { pauseAuthRequests } = await import('../src/api/client');
+  const { rememberConfirmedBotCreation } = await import('../src/features/bots/pending-creation');
+  const request = { id: wid(3), name: 'Helper' };
+  let resume!: () => void;
+  function RaceHarness() {
+    const scope = useTaskCacheScope();
+    const [unresolved, setUnresolved] = useState<api.CreateBotInput | null>(() => {
+      rememberBotCreation(scope, request); rememberConfirmedBotCreation(scope, request, bot);
+      vi.spyOn(scope, 'ready').mockImplementationOnce(async () => { resume = pauseAuthRequests(); });
+      return request;
+    });
+    return <BotCreateDialog unresolvedRequest={unresolved} onUnresolvedRequestChange={value => { rememberBotCreation(scope, value); setUnresolved(value); }} onClose={onClose} onCreated={onCreated} />;
+  }
+  renderWithLocale(<RaceHarness />, { locale: 'en', taskCache: { viewerId: owner } });
+  await flush();
+  expect(assistantCreateSubmit()).toBeDisabled();
+  act(() => resume()); await flush();
+  expect(assistantCreateSubmit()).toBeEnabled();
+  expect(api.getBot).not.toHaveBeenCalled(); expect(onCreated).not.toHaveBeenCalled();
+});

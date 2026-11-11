@@ -44,9 +44,17 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   useEffect(() => {
     if (confirmedRequestId === null) return;
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
-    void scope.ready(signal).then(() => {
-      if (!signal.aborted && !authRequestsPaused() && !scope.isInvalidated && pendingBotCreation(scope)?.id === confirmedRequestId && confirmedBotCreations(scope).some(result => result.request.id === confirmedRequestId)) unresolvedChange.current(null);
-    }).catch(cause => { if (!signal.aborted && !isAbortError(cause)) setError(cause); });
+    void (async () => {
+      try {
+        while (!signal.aborted && !scope.isInvalidated) {
+          try { await scope.ready(signal); }
+          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause)) continue; throw cause; }
+          if (authRequestsPaused()) continue;
+          if (!signal.aborted && pendingBotCreation(scope)?.id === confirmedRequestId && confirmedBotCreations(scope).some(result => result.request.id === confirmedRequestId)) unresolvedChange.current(null);
+          return;
+        }
+      } catch (cause) { if (!signal.aborted && !isAbortError(cause)) setError(cause); }
+    })();
     return () => controller.abort();
   }, [scope, confirmedRequestId]);
   const unknown = unresolvedRequest !== null && confirmedRequestId === null;
