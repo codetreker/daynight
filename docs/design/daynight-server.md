@@ -148,7 +148,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 | 对象 | 字段与含义 |
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
-| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
+| Task | `id`、`projectId`、资源类型 `type`、可空 `parentId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 | WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
@@ -162,6 +162,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 - project 按 `(created_at, id)` 列表；
 - task 按 `(project_id, created_at, id)` 列表及按状态筛选；
+- 类型和直接父资源分别按 `(project_id, type, created_at, id)` 与 `(project_id, parent_id, created_at, id)` 排序；
 - 未删除 task 的原生负责人按 `(project_id, assigned_to, created_at, id)` 索引；
 - 依赖按 `(project_id, task_id)` 查询前置任务；
 - 依赖按 `(project_id, depends_on_task_id)` 查询直接下游任务。
@@ -179,6 +180,8 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 `013_task_required_platform.sql` 增加 task 同行的 `required_platform` 可空 text，CHECK 仅接受 windows/linux/macos；既有和未指定值的新行均为 null，不重写任务版本、业务时间或其他字段。完整任务、图精简投影、创建/更新候选和生命周期写入都显式携带平台；API 资源始终输出 `requiredPlatform`，不以字段缺失表达任意平台。
 
 `028_task_assignment.sql` 增加 `assigned_to uuid NULL` 和未删除任务的项目/负责人/keyset 索引。全部既有及软删除任务取得 NULL，version、业务时间、properties、worker 和 Session 保持。完整 Task、同步摘要和图 projection/scanner 显式读取同一原生列，不从属性或执行者推断责任。
+
+`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。普通创建显式使用 `task` 和空 Parent；公开写入不接受这两个字段。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
 
 `032_personal_project_ownership.sql` 建立真实 `teams`、`team_members` 与 `project_ownership`，
 并原地重命名 `project_members` 及其 sequence/约束/索引为 `project_grants`。

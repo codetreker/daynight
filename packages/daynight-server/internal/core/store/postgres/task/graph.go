@@ -31,7 +31,7 @@ const taskGraphSelection = `WITH RECURSIVE chain(id) AS (
 ) `
 
 func (s *Reader) TaskGraphTasks(ctx context.Context, projectID, taskID string, selection store.TaskGraphSelection, previewCharacters int) ([]model.GraphTask, error) {
-	rows, err := s.tx.Query(ctx, taskGraphSelection+`SELECT t.id::text, t.version, left(t.title, $7), char_length(t.title) > $7,
+	rows, err := s.tx.Query(ctx, taskGraphSelection+`SELECT t.id::text, t.type, t.parent_id::text, t.version, left(t.title, $7), char_length(t.title) > $7,
 		t.status, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`, `+pg.TaskBlockedBy+`, `+pg.TaskReady+`
 		FROM tasks t JOIN selected ON selected.id = t.id WHERE t.project_id = $1 AND (NOT $6::boolean OR t.deleted_at IS NULL) ORDER BY t.created_at, t.id`, projectID, taskID, selection.OrdinaryPrerequisites, selection.OrdinaryDependents, selection.DirectExternal, selection.LiveOnly, previewCharacters)
 	if err != nil {
@@ -41,7 +41,7 @@ func (s *Reader) TaskGraphTasks(ctx context.Context, projectID, taskID string, s
 	tasks := make([]model.GraphTask, 0)
 	for rows.Next() {
 		var task model.GraphTask
-		if err := rows.Scan(&task.ID, &task.Version, &task.TitlePreview, &task.TitleTruncated, &task.Status,
+		if err := rows.Scan(&task.ID, &task.Type, &task.ParentID, &task.Version, &task.TitlePreview, &task.TitleTruncated, &task.Status,
 			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready); err != nil {
 			return nil, pg.QueryError("read task graph", err)
 		}

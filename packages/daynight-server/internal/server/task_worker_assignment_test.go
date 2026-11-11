@@ -25,7 +25,7 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 			plan.check()
 			f.expectRead(current)
 			actual := readHTTPTask(t, f.handler, api.Task{ID: current.ID, ProjectID: current.ProjectID})
-			expected := api.Task{ID: current.ID, ProjectID: current.ProjectID, Title: current.Title, Description: current.Description,
+			expected := api.Task{ID: current.ID, Type: current.Type, ParentID: current.ParentID, ProjectID: current.ProjectID, Title: current.Title, Description: current.Description,
 				Status: "todo", Version: current.Version, CreatedAt: current.CreatedAt, UpdatedAt: current.UpdatedAt,
 				Properties: api.TaskProperties{}, AssignedTo: assigned, AllowAgents: true, Ready: true,
 				DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}}

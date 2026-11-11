@@ -37,7 +37,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 	readerExec(t, s, `CREATE FUNCTION reject_description() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'description must not be selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
-		CREATE VIEW tasks AS SELECT id, project_id, title, reject_description() AS description,
+		CREATE VIEW tasks AS SELECT id, project_id, type, parent_id, title, reject_description() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, readerID(11), readerGraphSelection(), 160)
@@ -79,11 +79,11 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 	}{
 		{"query", "DROP TABLE tasks"},
 		{"decode", `ALTER TABLE tasks RENAME TO task_source;
-			CREATE VIEW tasks AS SELECT id, project_id, title, status, version, 1::bigint AS created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`},
+			CREATE VIEW tasks AS SELECT id, project_id, type, parent_id, title, status, version, 1::bigint AS created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`},
 		{"iteration", `CREATE FUNCTION fail_graph_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$
 			BEGIN RAISE EXCEPTION USING ERRCODE = 'P1003', MESSAGE = 'private graph failure'; END $$;
 			ALTER TABLE tasks RENAME TO task_source;
-			CREATE VIEW tasks AS SELECT id, project_id, title, status, version, created_at, fail_graph_stamp() AS updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`},
+			CREATE VIEW tasks AS SELECT id, project_id, type, parent_id, title, status, version, created_at, fail_graph_stamp() AS updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := readerStore(t)

@@ -35,10 +35,11 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	handler := newHTTPFixture(t, &logs)
 	stamp := testTime.Add(time.Hour)
 	platform := model.TaskPlatform("linux")
+	parent := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	result := syncModel()
 	result.Tasks = []model.TaskViewRecord{
-		{ID: testTaskID, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
-		{ID: "55555555-5555-4555-8555-555555555555", TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
+		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 	}
 	calls := 0
 	handler.ExpectCalls("Sync", 4)
@@ -57,7 +58,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	}
 	for i, value := range result.Tasks {
 		item := got.Tasks[i]
-		if item.ID != value.ID || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
+		if item.ID != value.ID || item.Type != value.Type || !reflect.DeepEqual(item.ParentID, value.ParentID) || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
 			t.Fatalf("intrinsic projection %d=%+v want=%+v", i, item, value)
 		}
 	}
@@ -71,7 +72,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, item := range raw.Tasks {
-		if len(item) != 16 {
+		if len(item) != 18 {
 			t.Fatalf("unexpected summary fields: %+v", item)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {
@@ -79,6 +80,9 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 				t.Fatalf("summary exposes %s", field)
 			}
 		}
+	}
+	if string(raw.Tasks[0]["type"]) != `"task"` || string(raw.Tasks[0]["parentId"]) != `"`+parent+`"` || string(raw.Tasks[1]["parentId"]) != "null" {
+		t.Fatalf("typed sync fields: %+v %+v", raw.Tasks[0], raw.Tasks[1])
 	}
 	expected = taskservice.TaskSyncRequest{Epoch: result.Epoch}
 	decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID)+"?epoch="+result.Epoch, ""), http.StatusOK)

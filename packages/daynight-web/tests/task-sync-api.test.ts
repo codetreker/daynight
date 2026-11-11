@@ -117,6 +117,9 @@ describe("assignee version manifest", () => {
 });
 
 describe("strict summary protocol", () => {
+  it("accepts the additional ordinary resource type and parent fields", () => {
+    expect(parseTaskSummary({ ...task, type: "task", parentId: null })).toEqual(parseTaskSummary(task));
+  });
   it("preserves proposed in complete sync facts without treating it as executable", () => {
     const result = parseTaskSync({ ...sync, tasks: [{ ...task, status: "proposed" }] }, projectId);
     expect(result.tasks[0]!.status).toBe("proposed");

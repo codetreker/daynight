@@ -12,7 +12,7 @@ import (
 )
 
 func lifecycleTaskValues(task model.Task) store.TaskWrite {
-	return copyTaskHTTPWrite(store.TaskWrite{AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform, AllowAgents: task.AllowAgents, Title: task.Title, Description: task.Description, Properties: task.Properties, Status: task.Status, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn})
+	return copyTaskHTTPWrite(store.TaskWrite{Type: task.Type, ParentID: task.ParentID, AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform, AllowAgents: task.AllowAgents, Title: task.Title, Description: task.Description, Properties: task.Properties, Status: task.Status, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn})
 }
 
 func (f *taskCredentialFixture) expectLifecycleMutation(before, after model.Task, prerequisite model.Task, patch bool, accessError error) {
@@ -112,7 +112,7 @@ func lifecycleMutationCalls(patch bool) map[string]int {
 func assertLifecycleTask(t *testing.T, actual api.Task, expected model.Task) {
 	t.Helper()
 	expected = copyTaskHTTPTask(expected)
-	resource := api.Task{ID: expected.ID, ProjectID: expected.ProjectID, Title: expected.Title, Description: expected.Description, Properties: api.TaskProperties(expected.Properties), Status: string(expected.Status), Version: expected.Version, CreatedAt: expected.CreatedAt, UpdatedAt: expected.UpdatedAt, StartedAt: expected.StartedAt, CompletedAt: expected.CompletedAt, CancelledAt: expected.CancelledAt, DependsOn: expected.DependsOn, ExternalDependsOn: expected.ExternalDependsOn, BlockedBy: expected.BlockedBy, AssignedTo: expected.AssignedTo, AllowAgents: expected.AllowAgents, Ready: expected.Ready}
+	resource := api.Task{ID: expected.ID, Type: expected.Type, ParentID: expected.ParentID, ProjectID: expected.ProjectID, Title: expected.Title, Description: expected.Description, Properties: api.TaskProperties(expected.Properties), Status: string(expected.Status), Version: expected.Version, CreatedAt: expected.CreatedAt, UpdatedAt: expected.UpdatedAt, StartedAt: expected.StartedAt, CompletedAt: expected.CompletedAt, CancelledAt: expected.CancelledAt, DependsOn: expected.DependsOn, ExternalDependsOn: expected.ExternalDependsOn, BlockedBy: expected.BlockedBy, AssignedTo: expected.AssignedTo, AllowAgents: expected.AllowAgents, Ready: expected.Ready}
 	if !reflect.DeepEqual(actual, resource) {
 		t.Fatalf("lifecycle result=%#v want=%#v", actual, resource)
 	}

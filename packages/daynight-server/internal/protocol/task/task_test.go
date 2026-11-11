@@ -16,7 +16,8 @@ import (
 
 func TestTaskWireMatchesProductionEncoding(t *testing.T) {
 	now := time.Date(2026, 11, 7, 9, 0, 0, 0, time.FixedZone("other", 3600))
-	task := model.Task{ID: "id", ProjectID: "project", Title: "<&世界", Description: "line\nquote\"", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<","title":"&"}]`), "paused": json.RawMessage(`false`)}, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: []string{"d"}}
+	parent := "d41a4e82-6bf0-4c7f-b519-47076dafc425"
+	task := model.Task{ID: "id", ProjectID: "project", Type: model.TaskTypeTask, ParentID: &parent, Title: "<&世界", Description: "line\nquote\"", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<","title":"&"}]`), "paused": json.RawMessage(`false`)}, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: []string{"d"}}
 	for _, extended := range []bool{false, true} {
 		value, err := RESTTask(task, extended)
 		if err != nil {
@@ -48,6 +49,46 @@ func TestTaskWireMatchesProductionEncoding(t *testing.T) {
 	}
 	if !strings.Contains(string(want), `"version":"9223372036854775807"`) {
 		t.Fatal("MCP version is not a decimal string")
+	}
+	if !strings.Contains(string(want), `"type":"task","parentId":"`+parent+`"`) {
+		t.Fatalf("MCP type and parent missing: %s", want)
+	}
+}
+
+func TestTypedTaskProjectionsAndByteCost(t *testing.T) {
+	parent := "d41a4e82-6bf0-4c7f-b519-47076dafc425"
+	for _, parentID := range []*string{nil, &parent} {
+		task := model.Task{Type: model.TaskTypeTask, ParentID: parentID}
+		rest, err := RESTTask(task, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]any{"rest": rest, "mcp-full": MCPTask(task), "mcp-summary": MCPTaskSummary(task), "sync": RESTSyncRecord(model.TaskViewRecord{Type: task.Type, ParentID: parentID})} {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal(raw, &obj); err != nil {
+				t.Fatal(err)
+			}
+			if obj["type"] != "task" || (parentID == nil && obj["parentId"] != nil) || (parentID != nil && obj["parentId"] != parent) {
+				t.Fatalf("%s: %s", name, raw)
+			}
+			delete(obj, "type")
+			delete(obj, "parentId")
+			without, err := json.Marshal(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 30
+			if parentID != nil {
+				want = 64
+			}
+			if len(raw)-len(without) != want {
+				t.Fatalf("%s added %d bytes, want %d", name, len(raw)-len(without), want)
+			}
+		}
 	}
 }
 

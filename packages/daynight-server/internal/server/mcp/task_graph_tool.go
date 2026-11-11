@@ -26,6 +26,8 @@ type graphNode struct {
 	Session           *sp.TaskSessionObservation `json:"session,omitempty"`
 	Relation          string                     `json:"relation,omitempty"`
 	ID                string                     `json:"id"`
+	Type              model.TaskType             `json:"type"`
+	ParentID          *string                    `json:"parentId"`
 	TitlePreview      string                     `json:"titlePreview"`
 	TitleTruncated    bool                       `json:"titleTruncated"`
 	Status            model.TaskStatus           `json:"status"`
@@ -101,7 +103,7 @@ func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader gr
 			item = dependencyNode{task.ID, deps, ext}
 		} else {
 			observation := observed.Sessions[task.ID]
-			item = graphNode{Session: &observation, Relation: observed.Relations[task.ID], ID: task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: task.Status,
+			item = graphNode{Session: &observation, Relation: observed.Relations[task.ID], ID: task.ID, Type: task.Type, ParentID: task.ParentID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: task.Status,
 				DependsOn: deps, ExternalDependsOn: ext, BlockedBy: append([]string{}, task.BlockedBy...),
 				RequiredPlatform: task.RequiredPlatform, AssignedTo: task.AssignedTo, AllowAgents: task.AllowAgents, Ready: task.Ready,
 				CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(), StartedAt: utcTime(task.StartedAt), CompletedAt: utcTime(task.CompletedAt), CancelledAt: utcTime(task.CancelledAt)}
