@@ -523,11 +523,11 @@ func relayRead(ctx context.Context, conn *websocket.Conn, timeout time.Duration)
 	}
 	return value, nil
 }
-func (h *Routes) channelFailure(ctx context.Context, conn *websocket.Conn, fence sp.ControllerFence, err error) {
+func (h *Routes) channelFailure(ctx context.Context, conn *websocket.Conn, fence sp.ControllerFence, phase, messageType string, err error) {
 	if ctx.Err() != nil {
 		return
 	}
-	httpx.LogFailure(h.logger, ctx, "session", "channel", err)
+	h.logControllerFailure(ctx, phase, messageType, err)
 	code, message := "internal_error", "Session channel failed."
 	if fault, ok := httpx.KnownFault(err); ok {
 		code, message = fault.Code, fault.Message
@@ -582,6 +582,7 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, err := h.service.Connect(ctx, token, hello, h.instance, readVersion)
 	if err != nil {
+		h.logControllerFailure(ctx, "controller_connect", "", err)
 		return
 	}
 	fence := snapshot.ControllerFence
@@ -592,7 +593,7 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 	}()
 	seq, err := h.service.SourceSeq(ctx, fence)
 	if err != nil {
-		h.channelFailure(ctx, conn, fence, err)
+		h.channelFailure(ctx, conn, fence, "controller_source", "", err)
 		return
 	}
 	if err = relayWrite(ctx, conn, map[string]any{"type": "welcome", "requiresLiveSync": true, "protocol": sp.Protocol, "connectionEpoch": fence.ConnectionEpoch, "session": snapshot, "lastAckedSourceSeq": strconv.FormatInt(seq, 10), "limits": map[string]any{"maxFrameBytes": sp.MaxFrameBytes, "maxBatchEvents": sp.MaxBatchEvents, "maxResourceBytes": sp.MaxResourceBytes, "pollIntervalMs": 250}}); err != nil {
@@ -631,12 +632,12 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if input.message.Type == "hello" || input.message.ControllerFence != fence {
-				h.channelFailure(ctx, conn, fence, &model.Fault{Code: "session_conflict", Message: "Controller connection fence changed."})
+				h.channelFailure(ctx, conn, fence, "controller_fence", "", &model.Fault{Code: "session_conflict", Message: "Controller connection fence changed."})
 				return
 			}
 			response, err := h.service.Handle(ctx, input.message)
 			if err != nil {
-				h.channelFailure(ctx, conn, fence, err)
+				h.channelFailure(ctx, conn, fence, "controller_handle", input.message.Type, err)
 				return
 			}
 			if response != nil {
@@ -647,7 +648,7 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			offers, err := h.service.Poll(ctx, fence)
 			if err != nil {
-				h.channelFailure(ctx, conn, fence, err)
+				h.channelFailure(ctx, conn, fence, "controller_poll", "", err)
 				return
 			}
 			for _, offer := range offers {

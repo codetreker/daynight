@@ -123,3 +123,33 @@ test("connection changes and cancellation retain the original frozen identity", 
     expect(joined).toBe(true); expect(f.journal.prepareImageHistorySync()).toEqual(intent); expect(await readFile(intent.filename)).not.toHaveLength(0);
   } finally { f.journal.close(); }
 });
+
+test.each(["GET", "PUT"] as const)("history %s failure preserves safe diagnostics and the frozen intent without another submission", async method => {
+  const f = await fixture(), calls: string[] = [];
+  try {
+    const intent = f.journal.prepareImageHistorySync()!;
+    const request: typeof fetch = async (_input, init) => {
+      calls.push(init!.method!);
+      if (init!.method === "GET" && method === "PUT") return new Response(null, { status: 404 });
+      return Response.json({ error: { code: "archive_conflict", requestId: "REQ_123-abc", message: "private-response-canary" } }, { status: 409 });
+    };
+    await expect(syncControllerImageHistory({ ...f, request })).rejects.toMatchObject({ status: 409, message: `Controller history synchronization ${method === "GET" ? "GET status" : "PUT chunk"} failed (409; code=archive_conflict; requestId=REQ_123-abc).` });
+    expect(calls).toEqual(method === "GET" ? ["GET"] : ["GET", "PUT"]);
+    expect(f.journal.prepareImageHistorySync()).toEqual(intent);
+    expect(await readFile(intent.filename)).not.toHaveLength(0);
+  } finally { f.journal.close(); }
+});
+
+test("history HTTP failure body shares caller cancellation without retrying its request", async () => {
+  const f = await fixture(), abort = new AbortController(), reading = Promise.withResolvers<void>(); let calls = 0, canceled = 0;
+  try {
+    const request: typeof fetch = async (_input, init) => {
+      calls++; expect(init!.signal).toBeInstanceOf(AbortSignal);
+      return new Response(new ReadableStream<Uint8Array>({ pull() { reading.resolve(); }, cancel() { canceled++; } }), { status: 409 });
+    };
+    const pending = syncControllerImageHistory({ ...f, signal: abort.signal, request });
+    const rejected = expect(pending).rejects.toMatchObject({ status: 409, message: "Controller history synchronization GET status failed (409)." });
+    await reading.promise; abort.abort(new Error("private-call-abort-canary")); await rejected;
+    expect(calls).toBe(1); expect(canceled).toBe(1); expect(f.journal.prepareImageHistorySync()).not.toBeNull();
+  } finally { f.journal.close(); }
+});
