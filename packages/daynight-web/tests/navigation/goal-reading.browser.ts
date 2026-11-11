@@ -24,7 +24,7 @@ async function expectHit(target: Locator) {
   await target.scrollIntoViewIfNeeded();
   expect(await target.evaluate(element => { const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === element || element.contains(hit); })).toBe(true);
 }
-async function install(page: Page) {
+async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   let details = all;
   let currentGraph = graph;
   let epoch = taskSyncEpoch(projectId);
@@ -38,7 +38,7 @@ async function install(page: Page) {
   let failedGoalReads = 0;
   let rejectGoalWrites = false;
   let releaseEdit: (() => void) | null = null;
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
@@ -92,7 +92,10 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addActiveChain: () => {
+  return { setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
+    details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
+    currentGraph = graphFixture(details);
+  }, addActiveChain: () => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
@@ -251,6 +254,90 @@ test('Task parent link returns a Goal URL with a different query to overview', a
   await expect(task).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
   await expect(goalPage.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal pause presentation and navigation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.addPausedTask();
+  const zh = locale === 'zh-CN';
+  const badgeLabel = zh ? '已暂停' : 'Paused';
+  const viewDependencies = zh ? '查看依赖关系' : 'View dependencies';
+  const closeGraph = zh ? '关闭依赖图' : 'Close dependency graph';
+  const fullscreen = zh ? '进入全屏' : 'Enter fullscreen';
+  const exitFullscreen = zh ? '退出全屏' : 'Exit fullscreen';
+
+  async function checkGoal(mode: 'dialog' | 'page') {
+    const surface = page.locator('.goal-detail-surface');
+    await expect(surface).toBeVisible();
+    const disclosure = surface.locator('.goal-detail-disclosure');
+    await disclosure.click();
+    const row = surface.locator(`[data-goal-task-id="${secondId}"]`);
+    await row.scrollIntoViewIfNeeded();
+    const badge = row.locator('.task-paused-badge');
+    await expect(badge).toHaveText(badgeLabel);
+    await expect(badge).toBeVisible();
+    await expect(row.locator('.goal-detail-task-title')).toContainText('A very long paused task title');
+    const status = row.locator('span').last();
+    await expect(status).toHaveText(zh ? '待处理' : 'To do');
+    await expect(status).toBeVisible();
+    expect(await row.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return element.scrollWidth <= element.clientWidth && [...element.children].every(child => {
+        const rect = child.getBoundingClientRect();
+        return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+      });
+    })).toBe(true);
+    expect(await row.evaluate(element => {
+      const parts = [...element.children].map(child => child.getBoundingClientRect());
+      return parts.every((a, i) => parts.slice(i + 1).every(b => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));
+    })).toBe(true);
+    expect(await surface.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`goal-${mode}.png`) });
+    await row.click();
+    const pausedChild = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+    await expect(pausedChild.locator('.task-detail-title')).toContainText('A very long paused task title');
+    await page.keyboard.press('Escape');
+    await expect(pausedChild).toHaveCount(0);
+    await expect(row).toBeFocused();
+    await surface.getByRole('button', { name: fullscreen }).click();
+    await expect(badge).toBeVisible();
+    await surface.getByRole('button', { name: exitFullscreen }).click();
+    const graphOpener = surface.getByRole('button', { name: viewDependencies });
+    await graphOpener.click();
+    const graphDialog = page.locator('.task-chain-dialog');
+    await expect(graphDialog.locator('.task-pause-count')).toHaveText(zh ? '1 已暂停' : '1 paused');
+    const graphBadge = graphDialog.locator('.task-node-paused .task-paused-badge');
+    await expect(graphBadge).toHaveText(badgeLabel);
+    await expect(graphBadge).toHaveClass(/compact/);
+    await expect(graphBadge).toBeVisible();
+    expect(await graphBadge.evaluate(element => {
+      const badge = element.getBoundingClientRect(), node = element.closest('.task-node')!.getBoundingClientRect();
+      return badge.width > 0 && badge.height > 0 && badge.left >= node.left - 1 && badge.right <= node.right + 1 && badge.top >= node.top - 1 && badge.bottom <= node.bottom + 1;
+    })).toBe(true);
+    await graphDialog.getByRole('button', { name: zh ? '适应画布' : 'Fit to canvas' }).click();
+    await expect.poll(() => graphBadge.evaluate(element => {
+      const badge = element.getBoundingClientRect(), canvas = element.closest('.task-graph-canvas')!.getBoundingClientRect();
+      return badge.left >= canvas.left && badge.right <= canvas.right && badge.top >= canvas.top && badge.bottom <= canvas.bottom;
+    })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`graph-${mode}.png`) });
+    await graphDialog.getByRole('button', { name: zh ? 'First task，详情' : 'First task, Details' }).click();
+    const child = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+    await expect(child).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(child).toHaveCount(0);
+    await graphDialog.getByRole('button', { name: closeGraph }).click();
+    await expect(graphDialog).toHaveCount(0);
+    await expect(graphOpener).toBeFocused();
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+  }
+
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  await checkGoal('dialog');
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await checkGoal('page');
 });
 
 test('Goal write errors identify refusals without exposing internal diagnostics', async ({ page }) => {

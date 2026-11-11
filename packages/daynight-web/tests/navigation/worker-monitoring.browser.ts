@@ -52,8 +52,8 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   if (width === 320) { await card.focus(); await page.keyboard.press('Enter'); }
   else await card.click();
   await expect(page.getByText('清理占用容量')).toBeVisible();
-  const tabs = page.locator('#worker-tab-overview'); await tabs.focus(); await page.keyboard.press('ArrowRight');
-  await expect(page.locator('#worker-tab-configuration')).toHaveAttribute('aria-selected', 'true');
+  const tabs = page.locator('[data-worker-tab="overview"]:visible'); await tabs.focus(); await page.keyboard.press('ArrowRight');
+  await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true');
   const issue = page.locator('.monitoring-issue'); await issue.locator('summary').click();
   await expect(issue).toHaveAttribute('open', ''); await expect(issue).toContainText('所需命令失败。');

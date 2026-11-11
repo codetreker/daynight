@@ -297,7 +297,6 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                       <h4>{m.description}</h4>
                       {description}
                     </section>
-                    <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                   </div>
                   <aside className="task-detail-aside" aria-label={m.relationsMetadata}>
                     <section className="task-detail-section" aria-label={m.currentGoal}>
@@ -309,6 +308,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                       })()}
                     </section>
                     {direct && relations.error !== null && <div role="alert"><ProjectGraphErrorDetail error={relations.error} /><button className="button" type="button" onClick={refreshRelations}>{m.retry}</button></div>}
+                    <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                     <section className="task-detail-section" aria-label={m.dependencies}>
                       <h4>{m.countedHeading({ label: m.dependencies, count: format.number(detail.dependsOn.length) })}</h4>
                       {detail.dependsOn.length === 0 ? <p className="task-detail-description">{m.noDependencies}</p> : <ul className="task-detail-relations">{detail.dependsOn.map((id) => relation(id, detail.externalDependsOn.includes(id)))}</ul>}

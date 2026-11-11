@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, checkAttachmentPreview, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, checkAttachmentPreview, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment, subscribeAuthPause, waitForAuthRequests } from "../../../api/client";
 import type { Attachment } from "../../../api/types";
 import { attachmentKind, attachmentTree } from "./model";
 
@@ -35,26 +35,59 @@ type AttachmentOptions = { readonly requireCompleteInventory?: boolean; readonly
 
 export const useAttachments = (projectId: string, taskId: string, api: AttachmentApi = attachmentApi, options: AttachmentOptions = {}) => {
   const enabled = options.enabled !== false;
-  const scope = enabled ? `${projectId}/${taskId}` : "";
-  const currentScope = useRef(scope);
-  currentScope.current = scope;
+  const scope = `${projectId}/${taskId}`;
+  const currentScope = useRef(enabled ? scope : "");
+  currentScope.current = enabled ? scope : "";
   const [list, setList] = useState(() => initialList(scope));
+  const currentList = useRef(list);
+  currentList.current = list;
   const [selection, setSelection] = useState<{ readonly scope: string; readonly path: string | null }>({ scope, path: null });
   const [preview, setPreview] = useState(() => initialPreview(scope, null));
   const [previewRevision, setPreviewRevision] = useState(0);
   const [write, setWrite] = useState<WriteState>({ scope, status: "idle", error: null });
+  const [paused, setPaused] = useState(authRequestsPaused);
+  const [resumeRevision, setResumeRevision] = useState(0);
   const listRequest = useRef<AbortController | null>(null);
+  const previewRequest = useRef<AbortController | null>(null);
+  const preservePreviewOnResume = useRef(false);
+  const recoverList = useRef(false);
   const writeRequest = useRef<AbortController | null>(null);
   const listGeneration = useRef(0);
   const writeGeneration = useRef(0);
 
-  const reload = useCallback(() => {
-    if (!enabled) return;
+  useEffect(() => {
+    const lifetime = new AbortController();
+    const pause = () => {
+      setPaused(true);
+      ++listGeneration.current;
+      ++writeGeneration.current;
+      listRequest.current?.abort();
+      previewRequest.current?.abort();
+      preservePreviewOnResume.current = true;
+      recoverList.current = true;
+      writeRequest.current?.abort();
+      listRequest.current = null;
+      writeRequest.current = null;
+      setList((prior) => ({ ...prior, loading: false }));
+      setWrite((prior) => ({ ...prior, status: "idle" }));
+      setPreview((prior) => prior.status === "loading" ? { ...prior, status: "idle" } : prior);
+      void waitForAuthRequests(lifetime.signal).then(() => {
+        if (!lifetime.signal.aborted) { setPaused(authRequestsPaused()); setResumeRevision((value) => value + 1); }
+      }).catch(() => undefined);
+    };
+    const unsubscribe = subscribeAuthPause(pause);
+    if (authRequestsPaused()) pause();
+    return () => { lifetime.abort(); unsubscribe(); };
+  }, []);
+
+  const load = useCallback((retainPublished: boolean) => {
+    if (!enabled || authRequestsPaused()) return;
     listRequest.current?.abort();
     const controller = new AbortController();
     listRequest.current = controller;
     const generation = ++listGeneration.current;
-    const owns = () => !controller.signal.aborted && generation === listGeneration.current && currentScope.current === scope;
+    const pauseRevision = authRequestsPauseRevision();
+    const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && generation === listGeneration.current && currentScope.current === scope;
     setList((prior) => ({ ...(prior.scope === scope ? prior : initialList(scope)), loading: true, complete: false, error: null }));
     void (async () => {
       const items: Attachment[] = [];
@@ -69,7 +102,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
           if (page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
           if (page.nextCursor !== null) cursors.add(page.nextCursor);
           cursor = page.nextCursor === null ? undefined : page.nextCursor;
-          setList({ scope, items: [...items], loading: cursor !== undefined, complete: cursor === undefined, error: null });
+          if (!retainPublished || cursor === undefined) setList({ scope, items: [...items], loading: cursor !== undefined, complete: cursor === undefined, error: null });
         } while (cursor !== undefined);
       } catch (error) {
         if (!owns() || isAbortError(error)) return;
@@ -80,6 +113,8 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     })();
   }, [api, projectId, taskId, scope, enabled]);
 
+  const reload = useCallback(() => load(false), [load]);
+
   useLayoutEffect(() => {
     if (!enabled) {
       setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
@@ -88,7 +123,12 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   }, [enabled, scope]);
 
   useEffect(() => {
-    if (enabled) reload();
+    if (enabled && !paused) {
+      const recovering = recoverList.current;
+      recoverList.current = false;
+      if (!recovering) reload();
+      else if (currentList.current.scope !== scope || !currentList.current.complete) load(true);
+    }
     return () => {
       ++listGeneration.current;
       ++writeGeneration.current;
@@ -97,7 +137,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       listRequest.current = null;
       writeRequest.current = null;
     };
-  }, [reload, enabled]);
+  }, [load, reload, enabled, paused, resumeRevision, scope]);
 
   const selectedPath = selection.scope === scope ? selection.path : null;
   const visibleList = list.scope === scope ? list : initialList(scope);
@@ -112,34 +152,43 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const selectedUpdatedAt = selected?.updatedAt;
   useEffect(() => {
     const controller = new AbortController();
+    previewRequest.current = controller;
+    const cleanup = () => { controller.abort(); if (previewRequest.current === controller) previewRequest.current = null; };
     const path = selectedPath;
+    if (paused || authRequestsPaused()) return cleanup;
+    if (preservePreviewOnResume.current) {
+      preservePreviewOnResume.current = false;
+      if (preview.scope === scope && preview.path === path && preview.status === "ready") return cleanup;
+    }
     setPreview(initialPreview(scope, path));
-    if (!enabled || path === null || selectedKind === undefined) return () => controller.abort();
+    if (!enabled || path === null || selectedKind === undefined) return cleanup;
+    const pauseRevision = authRequestsPauseRevision();
     const usesText = selectedKind === "text" || selectedKind === "markdown";
     if (!usesText && selectedKind !== "html" && selectedKind !== "pdf") {
       setPreview({ scope, path, status: "ready", text: null, error: null });
-      return () => controller.abort();
+      return cleanup;
     }
     void (async () => {
       try {
         const text = usesText ? await api.readText(projectId, taskId, path, controller.signal) : null;
         if (!usesText) await api.checkPreview(projectId, taskId, path, controller.signal);
-        if (!controller.signal.aborted && currentScope.current === scope) setPreview({ scope, path, status: "ready", text, error: null });
+        if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope) setPreview({ scope, path, status: "ready", text, error: null });
       } catch (error) {
-        if (!controller.signal.aborted && currentScope.current === scope && !isAbortError(error)) setPreview({ scope, path, status: "error", text: null, error });
+        if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope && !isAbortError(error)) setPreview({ scope, path, status: "error", text: null, error });
       }
     })();
-    return () => controller.abort();
-  }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision, enabled]);
+    return cleanup;
+  }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision, enabled, paused, resumeRevision]);
 
   const select = useCallback((path: string | null) => setSelection({ scope, path }), [scope]);
   const retryPreview = useCallback(() => setPreviewRevision((value) => value + 1), []);
   const mutate = useCallback(async (path: string, file: File | null): Promise<boolean> => {
-    if (!enabled || writeRequest.current !== null) return false;
+    if (!enabled || authRequestsPaused() || writeRequest.current !== null) return false;
     const controller = new AbortController();
     writeRequest.current = controller;
     const generation = ++writeGeneration.current;
-    const owns = () => !controller.signal.aborted && generation === writeGeneration.current && currentScope.current === scope;
+    const pauseRevision = authRequestsPauseRevision();
+    const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && generation === writeGeneration.current && currentScope.current === scope;
     setWrite({ scope, status: file === null ? "deleting" : "saving", error: null });
     try {
       if (file === null) await api.remove(projectId, taskId, path, controller.signal);
@@ -162,9 +211,9 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   }, [api, projectId, taskId, scope, reload, enabled]);
   const put = useCallback((path: string, file: File) => mutate(path, file), [mutate]);
   const remove = useCallback((path: string) => mutate(path, null), [mutate]);
-  const visiblePreview = preview.scope === scope && preview.path === selectedPath ? preview : initialPreview(scope, selectedPath);
+  const visiblePreview = preview.scope === scope && preview.path === selectedPath ? preview : paused ? { ...initialPreview(scope, selectedPath), status: "idle" as const } : initialPreview(scope, selectedPath);
   const visibleWrite = write.scope === scope ? write : { scope, status: "idle" as const, error: null };
-  return { ...visibleList, selected, selectedPath, select, preview: visiblePreview, retryPreview, write: visibleWrite, put, remove, reload };
+  return { ...visibleList, paused, selected, selectedPath, select, preview: visiblePreview, retryPreview, write: visibleWrite, put, remove, reload };
 };
 
 export type AttachmentController = ReturnType<typeof useAttachments>;

@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { useTaskGraph } from '../src/features/projects/useTaskGraph';
@@ -22,8 +22,13 @@ const Probe = ({ direct }: { readonly direct: boolean }) => {
   const subscribe = useCallback((listener: () => void) => owner.subscribe(project, task, listener), [owner]);
   const get = useCallback(() => owner.snapshot(project, task), [owner]);
   const detail = useSyncExternalStore(subscribe, get);
+  const opened = useRef(false);
   useEffect(() => owner.subscribeProject(project, graph.refresh), [owner, graph.refresh]);
-  useEffect(() => { if (!direct && graph.snapshot !== null) owner.observe(project, task, graph.snapshot.index.nodes.get(task)); }, [owner, graph.snapshot, direct]);
+  useEffect(() => {
+    if (direct || graph.snapshot === null) return;
+    owner.observe(project, task, graph.snapshot.index.nodes.get(task));
+    if (!opened.current) { opened.current = true; owner.load(project, task, 1, 'open'); }
+  }, [owner, graph.snapshot, direct]);
   const pair = `${graph.snapshot?.index.nodes.get(task)?.status ?? 'loading'}:${detail.detail?.status ?? 'loading'}`;
   useLayoutEffect(() => { rendered.push(pair); }, [pair]);
   return <output data-testid="status-pair">{pair}</output>;
@@ -48,8 +53,10 @@ it.each(['summary', 'direct'] as const)('publishes the %s Goal Task detail befor
     return committed ? held : Promise.resolve(resourceResponse(before, TEST_VIEWER_ID));
   }));
   render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Probe direct={mode === 'direct'} /></TaskDetailSessionProvider></TaskCacheProvider>);
-  await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('todo:loading'));
-  act(() => { if (mode === 'direct') sessions!.openDirect(project, task); else sessions!.load(project, task, 1, 'open'); });
+  if (mode === 'direct') {
+    await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('todo:loading'));
+    act(() => sessions!.openDirect(project, task));
+  }
   await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('todo:todo'));
   act(() => sessions!.setStatus(project, task, 'done', before.version));
   await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('done:done'));
@@ -75,8 +82,10 @@ it.each(['summary', 'direct-closed'] as const)('keeps the unassigned Task snapsh
     return Promise.resolve(resourceResponse(before, TEST_VIEWER_ID));
   }));
   const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Probe direct={mode === 'direct-closed'} /></TaskDetailSessionProvider></TaskCacheProvider>);
-  await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('todo:loading'));
-  act(() => { if (mode === 'direct-closed') sessions!.openDirect(project, task); else sessions!.load(project, task, 1, 'open'); });
+  if (mode === 'direct-closed') {
+    await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('todo:loading'));
+    act(() => sessions!.openDirect(project, task));
+  }
   await waitFor(() => expect(screen.getByTestId('status-pair')).toHaveTextContent('todo:todo'));
   act(() => sessions!.setStatus(project, task, 'done', before.version));
   await waitFor(() => expect(committed).toBe(true));

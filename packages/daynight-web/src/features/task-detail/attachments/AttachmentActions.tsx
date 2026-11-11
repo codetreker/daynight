@@ -62,6 +62,7 @@ export const AttachmentActionMenu = ({ target, onDelete, onDismiss }: {
 type AttachmentDeleteProps = {
   readonly target: AttachmentActionTarget;
   readonly busy: boolean;
+  readonly paused?: boolean;
   readonly error: unknown;
   readonly fallback: RefObject<HTMLElement | null>;
   readonly onConfirm: () => void;
@@ -74,7 +75,7 @@ export const AttachmentDeleteDialog = (props: AttachmentDeleteProps) => {
   return decision === null ? <DeleteDialog {...props} /> : null;
 };
 
-const DeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: AttachmentDeleteProps) => {
+const DeleteDialog = ({ target, busy, paused, error, fallback, onConfirm, onDismiss }: AttachmentDeleteProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const id = useId();
@@ -125,6 +126,6 @@ const DeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: A
       {busy && <p role="status">{m.deleting}</p>}
       {attempted && !busy && error !== null && <div className="attachment-error" role="alert"><p>{m.writeError}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{messages.common.requestId}{' '}<code>{error.requestId}</code></p>}</div>}
     </div>
-    <footer className="dialog-footer"><button className="button" ref={cancel} type="button" disabled={busy} onClick={onDismiss}>{m.cancelDelete}</button><button className="button danger" type="button" disabled={busy} onClick={() => { setAttempted(true); onConfirm(); }}>{busy ? m.deleting : m.confirmDelete}</button></footer>
+    <footer className="dialog-footer"><button className="button" ref={cancel} type="button" disabled={busy} onClick={onDismiss}>{m.cancelDelete}</button><button className="button danger" type="button" disabled={busy || paused} onClick={() => { setAttempted(true); onConfirm(); }}>{busy ? m.deleting : m.confirmDelete}</button></footer>
   </dialog>;
 };

@@ -21,8 +21,8 @@ A same-value publication is a no-op unless a failed notification remains pending
 Notification retry rereads the record and sends only while it still matches the
 expected value, without rewriting it. A different known value supersedes retry.
 The signal closes its channel and listeners on disposal and cannot authorize a
-session or call an identity API. The existing authentication lifecycle has not
-yet adopted this independent module.
+session or call an identity API. The independent [account session owner](2026-11-12-account-session-initialization.md)
+adopts this module; the existing business authentication lifecycle does not yet use it.
 
 ## Alternatives
 
