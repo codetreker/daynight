@@ -13,8 +13,7 @@ single owner of shared modules and partial-startup cleanup.
 ## Decision
 
 The [authentication activation decision](../../archived/architecture/2026-10-22-authentication-activation.md)
-records the original mandatory route composition. The neutral configuration
-package validates inputs before resources are opened.
+records the original mandatory route composition. The configuration aggregate invokes module-owned validation before resources are opened; the [configuration ownership decision](2026-11-11-server-module-configuration.md) describes that division.
 The application assembly creates one identity client, file root, persistence
 resource and shared modules. The HTTP runtime owns listener and request admission;
 the application owns the Session engine and underlying resources. The

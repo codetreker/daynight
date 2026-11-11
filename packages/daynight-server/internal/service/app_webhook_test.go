@@ -14,7 +14,7 @@ func TestOpenAppWebhookCurrentReferencesWithoutKeyring(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	c := appTestConfig(t)
-	c.WebhookEnabled = true
+	c.Webhook.Enabled = true
 	app, _, err := openTestApp(t, ctx, c, nil)
 	if err != nil {
 		t.Fatalf("open enabled webhooks without keyring: %v", err)

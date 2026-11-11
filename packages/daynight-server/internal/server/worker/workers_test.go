@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
@@ -86,7 +86,7 @@ func projectTestHandler(t *testing.T, database *httpTestStore, output io.Writer)
 			return model.Principal{}, authhttp.Failure()
 		}
 		return h.principal, nil
-	}, config.AuthSettings{PublicOrigin: workerTestOrigin}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: workerTestOrigin}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

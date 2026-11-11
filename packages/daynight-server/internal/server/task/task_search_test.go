@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
@@ -68,7 +69,7 @@ func TestTaskSearchRoutesApplyDefaultOperationDeadline(t *testing.T) {
 			t.Errorf("credential input=%s %s", kind, credential)
 		}
 		return principal, nil
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

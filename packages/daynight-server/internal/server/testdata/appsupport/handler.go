@@ -16,7 +16,7 @@ func NewHandler(c config.Config, database store.Transactions, ready func(context
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	client, err := service.NewIdentityClient(c)
+	client, err := service.NewIdentityClient(c.UniAuth)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,10 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
 		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 	}
+	result.DependencyStates = map[string]model.TaskDependencyState{
+		testTaskID:         {TaskVersion: 3, BlockedBy: nil, Ready: false},
+		result.Tasks[1].ID: {TaskVersion: 9007199254740993, BlockedBy: []string{testTaskID}, Ready: false},
+	}
 	calls := 0
 	handler.ExpectCalls("Sync", 4)
 	expected := taskservice.TaskSyncRequest{}
@@ -65,11 +70,23 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	if got.Tasks[1].Version != "9007199254740993" || got.Tasks[1].TitlePreview != strings.Repeat("😀", 160) || !got.Tasks[1].TitleTruncated || got.Tasks[0].RequiredPlatform != nil {
 		t.Fatalf("exact projection: %+v", got.Tasks)
 	}
+	if got.DependencyStates[testTaskID].BlockedBy == nil || got.DependencyStates[result.Tasks[1].ID].TaskVersion != "9007199254740993" || !slices.Equal(got.DependencyStates[result.Tasks[1].ID].BlockedBy, []string{testTaskID}) {
+		t.Fatalf("dependency projection=%+v", got.DependencyStates)
+	}
 	var raw struct {
-		Tasks []map[string]json.RawMessage `json:"tasks"`
+		Tasks            []map[string]json.RawMessage          `json:"tasks"`
+		DependencyStates map[string]map[string]json.RawMessage `json:"dependencyStates"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
+	}
+	if len(raw.DependencyStates) != 2 {
+		t.Fatalf("dependency states: %+v", raw.DependencyStates)
+	}
+	for _, state := range raw.DependencyStates {
+		if len(state) != 3 || state["taskVersion"] == nil || state["blockedBy"] == nil || state["ready"] == nil {
+			t.Fatalf("unexpected dependency fields: %+v", state)
+		}
 	}
 	for _, item := range raw.Tasks {
 		if len(item) != 18 {
@@ -107,6 +124,28 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	if strings.Contains(logs.String(), "private-") || strings.Contains(logs.String(), "😀") {
 		t.Fatalf("sync values leaked: %s", &logs)
 	}
+}
+
+func TestTaskSyncHTTPDependencyStateResponseSize(t *testing.T) {
+	handler := newHTTPFixture(t, io.Discard)
+	result := syncModel()
+	handler.ExpectCalls("Sync", 2)
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		return result, nil
+	}
+	empty := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+	result.DependencyStates = make(map[string]model.TaskDependencyState)
+	for i := 0; i < 128; i++ {
+		id := fmt.Sprintf("%08x-0000-4000-8000-000000000000", i)
+		result.DependencyStates[id] = model.TaskDependencyState{TaskVersion: 9007199254740993, BlockedBy: []string{testTaskID}}
+	}
+	response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+	got := decodeResponse[api.TaskSync](t, response, http.StatusOK)
+	encoded, err := json.Marshal(got.DependencyStates)
+	if err != nil || len(got.DependencyStates) != 128 || response.Body.Len()-empty.Body.Len() != len(encoded)-2 {
+		t.Fatalf("size or completeness: response=%d empty=%d states=%d encoded=%d err=%v", response.Body.Len(), empty.Body.Len(), len(got.DependencyStates), len(encoded), err)
+	}
+	t.Logf("128 dependency states add %d bytes to the HTTP response", len(encoded)-2)
 }
 
 func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
@@ -154,7 +193,7 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 		return syncModel(), nil
 	}
 	empty := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(testProjectID), ""), http.StatusOK)
-	if empty.Tasks == nil || len(empty.Tasks) != 0 || empty.Sessions == nil || len(empty.Sessions) != 0 {
+	if empty.Tasks == nil || len(empty.Tasks) != 0 || empty.DependencyStates == nil || len(empty.DependencyStates) != 0 || empty.Sessions == nil || len(empty.Sessions) != 0 {
 		t.Fatalf("empty=%+v", empty)
 	}
 	for _, stamp := range []string{"2026-10-24T00:00:00Z", "2026-10-24T00:00:00.1Z", "2026-10-24T00:00:00.123456789Z"} {
@@ -182,6 +221,36 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 	assertProjectError(t, projectRequest(handler, http.MethodGet, syncPath("00000000-0000-4000-8000-000000000099"), ""), http.StatusNotFound, "not_found")
 	if strings.Contains(logs.String(), "secret") {
 		t.Fatalf("validation input leaked: %s", &logs)
+	}
+}
+
+func TestTaskSyncHTTPCancellationPropagates(t *testing.T) {
+	var logs bytes.Buffer
+	handler := newHTTPFixture(t, &logs)
+	started, finished, served := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	handler.ExpectCalls("Sync", 1)
+	handler.Sync = func(ctx context.Context, _ model.Principal, _ string, _ taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		close(started)
+		<-ctx.Done()
+		close(finished)
+		return model.TaskSync{}, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, syncPath(testProjectID), nil).WithContext(ctx)
+	authorizeResourceRequest(handler, request)
+	response := httptest.NewRecorder()
+	go func() { handler.ServeHTTP(response, request); close(served) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync did not start")
+	}
+	cancel()
+	await(t, finished)
+	await(t, served)
+	if response.Body.Len() != 0 || !strings.Contains(logs.String(), `"cause":"canceled"`) {
+		t.Fatalf("canceled response=%s logs=%s", response.Body, &logs)
 	}
 }
 

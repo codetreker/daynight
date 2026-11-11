@@ -1,12 +1,13 @@
 package server
 
 import (
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"io"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
@@ -16,7 +17,7 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	member := model.Principal{UserID: "b6666666-6666-4666-8666-666666666666", CredentialID: "c7777777-7777-4777-8777-777777777777", Kind: model.SessionCredential}
 	outsider := model.Principal{UserID: "d8888888-8888-4888-8888-888888888888", CredentialID: "e9999999-9999-4999-8999-999999999999", Kind: model.SessionCredential}
 	anonymous := model.Principal{}
-	origin := configuredTestConfig().PublicOrigin
+	origin := configuredTestConfig().Server.PublicOrigin
 	path := taskPath(task) + "/steps"
 	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: 1}
 	current := []model.TaskStep{}

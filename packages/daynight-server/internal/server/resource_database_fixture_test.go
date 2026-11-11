@@ -29,13 +29,13 @@ func resourceDatabaseTestServer(t *testing.T, database *postgres.Store, files fi
 	callback := origin + "/api/v1/auth/callback"
 	gateway := testauth.StartGateway(t, callback)
 	config := configuredTestConfig()
-	config.PublicOrigin = origin
-	config.UniAuthCallbackURL = callback
-	config.UniAuthURL = gateway.Origin
-	config.UniAuthAppID = gateway.AppID
-	config.UniAuthAppSecret = gateway.AppSecret
-	config.AllowHTTPTestOrigin = true
-	config.AllowLoopbackHTTP = true
+	config.Server.PublicOrigin = origin
+	config.UniAuth.CallbackURL = callback
+	config.UniAuth.URL = gateway.Origin
+	config.UniAuth.AppID = gateway.AppID
+	config.UniAuth.AppSecret = gateway.AppSecret
+	config.Server.AllowHTTPTestOrigin = true
+	config.UniAuth.AllowLoopbackHTTP = true
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := newTestHandler(Dependencies{Store: database, Ready: database.Ready, Files: files}, config, logger)
 	if err != nil {
@@ -53,7 +53,7 @@ func resourceDatabaseTestServer(t *testing.T, database *postgres.Store, files fi
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, origin, "alice")
 	token := testauth.CreatePAT(t, browser, origin)
-	client, err := service.NewIdentityClient(config)
+	client, err := service.NewIdentityClient(config.UniAuth)
 	if err != nil {
 		t.Fatal(err)
 	}

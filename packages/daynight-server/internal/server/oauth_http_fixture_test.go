@@ -17,7 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -47,7 +48,7 @@ func newOAuthHTTPFixture(t *testing.T) *oauthHTTPFixture {
 	f.Other = model.Principal{Kind: model.SessionCredential, UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444"}
 	identity := identityservice.New(f.Store, nil, f.Origin+"/api/v1/auth/callback")
 	var err error
-	f.Auth, err = authhttp.NewAuthentication(identity, config.AuthSettings{PublicOrigin: f.Origin, AllowHTTPTestOrigin: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	f.Auth, err = authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: f.Origin, AllowHTTPTestOrigin: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

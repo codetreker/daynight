@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
@@ -60,7 +61,7 @@ func newBotExpiryFixture(t *testing.T, principal model.Principal) *botExpiryFixt
 			return model.Principal{}, authhttp.Failure()
 		}
 		return principal, nil
-	}, config.AuthSettings{PublicOrigin: configuredTestConfig().PublicOrigin}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: configuredTestConfig().Server.PublicOrigin}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func (f *botExpiryFixture) dispatch(ctx context.Context, method, path, body stri
 	r.Header.Set("Content-Type", contentType)
 	r.Header.Set("X-Request-ID", "project-test")
 	if method == http.MethodDelete {
-		r.Header.Set("Origin", configuredTestConfig().PublicOrigin)
+		r.Header.Set("Origin", configuredTestConfig().Server.PublicOrigin)
 	}
 	if f.principal.Kind == model.PATCredential {
 		r.Header.Set("Authorization", "Bearer "+httpTestToken(f.principal.Kind))

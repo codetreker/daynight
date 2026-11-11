@@ -47,7 +47,7 @@ func TestCurrentStartupNegotiationFiltersStaleReports(t *testing.T) {
 	if _, exists := before["startupReport"]; exists {
 		t.Fatal("unregistered response changed shape")
 	}
-	ctx = f.dao.ContextPhase(ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1, "InsertTaskSession": 1})
+	ctx = f.dao.ContextPhase(ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1, "InsertTaskSession": 1})
 	v, err := f.s.Register(ctx, f.p, f.project, f.task, f.r)
 	f.dao.FinishContext(ctx)
 	if err != nil {

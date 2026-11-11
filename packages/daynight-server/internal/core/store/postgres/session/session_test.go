@@ -117,7 +117,7 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 		if err := dao.LockCredential(ctx, pat, now); err != nil {
 			return err
 		}
-		if err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
+		if _, err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
 			return err
 		}
 		if _, err := dao.LockTask(ctx, project.ID, task.ID); err != nil {
@@ -254,7 +254,7 @@ func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
 	for name, run := range map[string]func() error{
 		"credential":                func() error { return dao.LockCredential(ctx, principal, now) },
 		"task":                      func() error { _, e := dao.LockTask(ctx, id, other); return e },
-		"task registration lock":    func() error { return dao.LockTaskRegistration(ctx, id, other) },
+		"task registration lock":    func() error { _, e := dao.LockTaskRegistration(ctx, id, other); return e },
 		"test owner lock":           func() error { return dao.LockTestOwner(ctx, id) },
 		"task registration":         func() error { _, e := dao.FindTaskRegistration(ctx, id, other, id, other); return e },
 		"test registration":         func() error { _, _, e := dao.FindTestRegistration(ctx, id, other, id); return e },

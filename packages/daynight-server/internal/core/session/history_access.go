@@ -85,7 +85,7 @@ func (s *Execution) TaskCurrentIdentity(ctx context.Context, p model.Principal, 
 	}
 	err = reader.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, t *TaskAccess, _ func(string) (*Access, error)) error {
 		w := t.task.Worker
-		if w == nil {
+		if t.task.Type == model.TaskTypeGoal || w == nil {
 			return nil
 		}
 		out.ClaimID = observationPointer(w.ClaimID)

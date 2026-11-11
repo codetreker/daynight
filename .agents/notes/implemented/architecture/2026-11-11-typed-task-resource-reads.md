@@ -39,5 +39,6 @@ remain physically retained.
 Visible reads agree on deletion without rewriting child rows or versions, and
 progress is derived from the same snapshot as its Goal. The view adds a parent
 join to resource reads; dependency decisions deliberately retain a separate
-physical path. Parent mutation and the final lock plan for independent material
-and Session operations remain separate capabilities.
+physical path. Independent material and Session operations use the
+[resource lifecycle lock plan](2026-11-11-parent-resource-lifecycle.md) for
+their physical rows. Parent mutation remains a separate capability.

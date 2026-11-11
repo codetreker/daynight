@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -91,7 +92,7 @@ func newHTTPFixture(t *testing.T, output io.Writer) *resourceTestHandler {
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, credential string) (model.Principal, error) {
 		return handler.AuthenticateFunc(ctx, kind, credential)
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

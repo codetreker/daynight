@@ -209,7 +209,7 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	member := credential{principal: model.Principal{UserID: "a2222222-2222-4222-8222-222222222222", CredentialID: "b3333333-3333-4333-8333-333333333333", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
 	outsider := credential{principal: model.Principal{UserID: "a3333333-3333-4333-8333-333333333333", CredentialID: "b4444444-4444-4444-8444-444444444444", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
 	anonymous := credential{}
-	origin := configuredTestConfig().PublicOrigin
+	origin := configuredTestConfig().Server.PublicOrigin
 	initial := projectHTTPRecord("00000000-0000-4000-8000-000000000001", "Project settings authorization", "https://example.com/settings", "00000000-0000-4000-8000-000000000101")
 	project := projecthttp.ProjectResponse(initial)
 	call := func(c credential, method, path, body string, headers map[string]string, status int, code string) []byte {

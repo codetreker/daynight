@@ -12,7 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
@@ -115,7 +116,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 			kind = "database"
 		}
 	}
-	var configurationError *config.ConfigurationError
+	var configurationError *configvalue.ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *RuntimeError
 	if failure := runtimeComponent(err); failure != nil {

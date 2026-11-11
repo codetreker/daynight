@@ -19,7 +19,7 @@
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
-提供事务内授权、私有创建和邀请。`internal/config` 负责读取和验证中立配置；`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
+提供事务内授权、私有创建和邀请。`internal/config` 组合各模块拥有的强类型启动配置并协调环境变量加载和跨模块验证；各模块拥有自身字段、默认值和纯校验，通用配置错误和标量解析归 `utils/configvalue`。`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
@@ -183,7 +183,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。普通创建显式使用 `task` 和空 Parent；公开写入不接受这两个字段。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
 
-`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。带锁入口仍锁定物理行；资料和 Session 的完整父行锁序由其自身生命周期负责。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。资料和 Session 的带锁入口先预读 Parent，按 UUID 顺序锁目标与 Parent 的物理行，再以新语句复核 Parent 和有效删除。Session 注册对目标直接取得 UPDATE，其他资源锁使用 SHARE；Parent 变化返回 `resource_conflict`，不补锁或重放。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
 `032_personal_project_ownership.sql` 建立真实 `teams`、`team_members` 与 `project_ownership`，
 并原地重命名 `project_members` 及其 sequence/约束/索引为 `project_grants`。

@@ -155,7 +155,7 @@ func TestSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T) {
 	operationID, evidenceID, finalID, client := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-		if err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
+		if _, err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
 			return err
 		}
 		if err := dao.InsertTerminal(ctx, store.TerminalRegistration{SessionID: id, ProjectID: project.ID, TaskID: task.ID, ClaimID: claim, OwnerID: principal.UserID, RegistrationID: registration, Registration: []byte(`{}`), State: []byte(`{"revision":1}`), LastSeen: now, ServerInstance: instance}); err != nil {

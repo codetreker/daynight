@@ -16,7 +16,7 @@ func terminalRunFixture(t *testing.T, enabled bool) (fixture, v2.Message, v2.Run
 	f, m := terminalFixture(t)
 	ctx := context.Background()
 	if _, err := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
 		})
 	}); err != nil {
@@ -292,7 +292,7 @@ func TestTerminalReconnectKeepsGenerationAndRejectsOldConnection(t *testing.T) {
 	request := m
 	request.Payload = reg
 	ack, err := terminalRegistrationStep(t, f, request.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, request)
 		})
 	})
@@ -300,7 +300,7 @@ func TestTerminalReconnectKeepsGenerationAndRejectsOldConnection(t *testing.T) {
 		t.Fatal(ack, err)
 	}
 	if got, err := terminalRegistrationStep(t, f, request.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, request)
 		})
 	}); err != nil || !reflect.DeepEqual(got, ack) {
@@ -326,7 +326,7 @@ func TestTerminalReconnectKeepsGenerationAndRejectsOldConnection(t *testing.T) {
 	reg.Binding.TerminalID = "replacement"
 	request.Payload = reg
 	if _, err = terminalRegistrationStep(t, f, request.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, request)
 		})
 	}); err == nil {
@@ -340,7 +340,7 @@ func TestTerminalReconnectKeepsGenerationAndRejectsOldConnection(t *testing.T) {
 	reg.ConnectionEpoch = &epoch
 	request.Payload = reg
 	if _, err = terminalRegistrationStep(t, f, request.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return remote.RegisterTerminal(phase, f.p, f.project, f.task, request)
 		})
 	}); err == nil {
@@ -348,7 +348,7 @@ func TestTerminalReconnectKeepsGenerationAndRejectsOldConnection(t *testing.T) {
 	}
 	remote.now = func() time.Time { return time.Now().Add(HeartbeatTimeout + time.Second) }
 	if _, err = terminalRegistrationStep(t, f, request.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return remote.RegisterTerminal(phase, f.p, f.project, f.task, request)
 		})
 	}); err != nil {
@@ -520,7 +520,7 @@ func TestTerminalHistoryPaginationFindsOldClaimsAndHonorsDeletion(t *testing.T) 
 		t.Fatal(current, err)
 	}
 	if _, err = terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
 		})
 	}); err != nil {
