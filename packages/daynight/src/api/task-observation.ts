@@ -104,7 +104,7 @@ export const parseObservedTaskGraph = (value: unknown, projectId: string, taskId
     changed = false;
     for (const task of graph.tasks) for (const dependency of task.dependsOn) {
       if (task.externalDependsOn.includes(dependency)) continue;
-      if (members.has(task.id) && !members.has(dependency)) { members.add(dependency); changed = true; }
+      if (members.has(task.id) && !members.has(dependency) && graph.tasks.some(candidate => candidate.id === dependency)) { members.add(dependency); changed = true; }
       if (members.has(dependency) && !members.has(task.id)) { members.add(task.id); changed = true; }
     }
   }
