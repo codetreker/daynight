@@ -6,6 +6,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
 import { expect, it, vi } from "vitest";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
@@ -69,6 +70,57 @@ it.each(["identity conflict", "ordinary read failure"] as const)("handles a Wind
     expect(observed.error instanceof ExecutionSourceConflictError).toBe(kind === "identity conflict");
     expect(capacity.commitObservation(observationTicket, observed)).toBe(true);
     expect(capacity.isStopped(execution.owner)).toBe(kind === "ordinary read failure");
+  } finally { operation.dispose(); }
+});
+
+it.skipIf(process.platform === "win32").each(["observe", "cleanup"] as const)("does not publish a POSIX stop when native evidence changes during %s", async mode => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  vi.restoreAllMocks();
+  const controller = { pid: 1234, parentPid: 1, processGroupId: 1234, startedAt: "original-controller", commandHash: "a".repeat(64) };
+  const native = { ...controller, pid: 1235, parentPid: controller.pid, startedAt: "original-native", commandHash: "b".repeat(64) };
+  const later = { ...native, pid: 1236, startedAt: "later-native", commandHash: "c".repeat(64) };
+  const task = f.store.updateWebExecution(source.task, { controllerProcess: controller, nativeProcesses: [native] }, 6);
+  const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(journalPath), { recursive: true });
+  const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
+  journal.patchSnapshot({ controllerProcess: controller, nativeProcesses: [native], lifecycle: "working", nativeStopped: false, stoppedAt: null }); journal.close();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (proof, descendants) => {
+    expect(proof).toEqual(controller); expect(descendants).toEqual([native]); enter(); await barrier; return true;
+  });
+  const archive = vi.fn(), notice = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: process.platform === "darwin" ? "macos" : "linux", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: vi.fn().mockRejectedValue(new Error("Original IPC unavailable.")), archive });
+  const operation = createOperation({ limits: { totalMs: 30_000 } });
+  const result = mode === "observe" ? backend.observeExecutionStop(task, operation) : backend.cleanup(task, { kind: "terminal", deadline: Date.now(), immediateStop: true, scope: { attempt: { owner: task, attemptId: "attempt" }, onExecutionStopped: notice } });
+  void result.catch(() => {});
+  try {
+    await entered;
+    const snapshot = lifecycle.readControllerSnapshot(journalPath)!;
+    const db = new Database(journalPath);
+    try { db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...snapshot, nativeProcesses: [native, later] })); } finally { db.close(); }
+    release();
+    if (mode === "observe") {
+      const observation = await result;
+      expect(observation).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
+    } else await expect(result).rejects.toThrow();
+    expect(confirm).toHaveBeenCalledOnce(); expect(notice).not.toHaveBeenCalled(); expect(archive).not.toHaveBeenCalled();
+    expect(lifecycle.readControllerSnapshot(journalPath)).toMatchObject({ nativeStopped: false, nativeProcesses: [native, later] });
+  } finally { release(); operation.dispose(); }
+});
+
+it.skipIf(process.platform === "win32")("retains an acknowledged POSIX launch when its journal is missing", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  vi.restoreAllMocks();
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const notice = vi.fn(), archive = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: process.platform === "darwin" ? "macos" : "linux", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: vi.fn().mockRejectedValue(new Error("Original IPC unavailable.")), archive });
+  const operation = createOperation({ limits: { totalMs: 30_000 } });
+  try {
+    expect(await backend.observeExecutionStop(source.task, operation)).toMatchObject({ kind: "unknown" });
+    await expect(backend.cleanup(source.task, { kind: "terminal", deadline: Date.now(), immediateStop: true, scope: { attempt: { owner: source.task, attemptId: "attempt" }, onExecutionStopped: notice } })).rejects.toThrow(/journal.*unavailable/);
+    expect(confirm).not.toHaveBeenCalled(); expect(notice).not.toHaveBeenCalled(); expect(archive).not.toHaveBeenCalled();
   } finally { operation.dispose(); }
 });
 

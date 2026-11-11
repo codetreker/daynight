@@ -25,6 +25,8 @@ import { sessionBinding, type SessionBinding, type InitialInputState, type Opera
 import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
+import { isDeepStrictEqual } from "node:util";
+import { ControllerStopIdentityError } from "./controller-stop-identity.js";
 import { matchesWindowsJobController, parseWindowsJobReceipt, parseWindowsJobSource, windowsJobStoppedController, WindowsJobEvidenceConflictError, type WindowsJobAssignedSource, type WindowsJobPreparedSource, type WindowsJobSource, type WindowsJobStopReceipt } from "./windows-job-evidence.js";
 export type ControllerSnapshot = SessionBinding & {
   executionId: string; sessionId: string; executionGeneration: string; controllerInstanceId: string;
@@ -405,6 +407,16 @@ export const readControllerSnapshot = (file: SqliteDatabaseSource): ControllerSn
   return row === undefined ? null : checkedSnapshot(json<ControllerSnapshot>(row.snapshot));
 });
 
+/** Read the generation and its immutable launch fence in the same journal view. */
+export const readControllerSnapshotForTicket = (file: SqliteDatabaseSource, ticket: ControllerLaunchTicket): ControllerSnapshot | null => readSqliteDatabase({
+  file, format: controllerJournalFormat, onMissing: () => null, assertMigrationAllowed: assertJournalMigrationAllowed,
+}, db => {
+  const row = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
+  if (!row) return null;
+  if (row.ticket_hash !== controllerPayloadHash(ticket)) throw new ControllerStopIdentityError("The original Controller ticket fence changed.");
+  return checkedSnapshot(json<ControllerSnapshot>(row.snapshot));
+});
+
 /** Guardian writes do not migrate or claim the Controller's journal. */
 const writeWindowsJobEvidence = (file: string, ticket: ControllerLaunchTicket, action: (db: Database.Database) => void): void => {
   parseLaunchTicket(ticket);
@@ -461,18 +473,19 @@ export const commitWindowsJobStop = (file: string, ticket: ControllerLaunchTicke
   return stopped!;
 };
 
-/** Only an independent worker may commit complete process-tree stop after the writer exits. */
-export const recordStoppedControllerGeneration = async (file: string, ticket: ControllerLaunchTicket): Promise<ControllerSnapshot> => {
-  const observed = readControllerSnapshot(file);
-  if (observed === null || observed.controllerProcess === null || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Original controller stop evidence is unavailable.");
+/** Commit the independently verified POSIX snapshot without yielding after notification. */
+export const commitPosixControllerStop = (file: string, ticket: ControllerLaunchTicket, observed: ControllerSnapshot): ControllerSnapshot => {
   if (process.platform === "win32") throw new Error("Windows controller stop requires the original held Job and a versioned stop receipt.");
-  if (!await confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses)) throw new Error("The original controller or its descendants are still running.");
+  if (observed.controllerProcess === null || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId || observed.sessionId !== ticket.sessionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId) throw new ControllerStopIdentityError("Original controller stop evidence conflicts with its ticket.");
   const db = new Database(file, { fileMustExist: true });
   let stopped: ControllerSnapshot | undefined;
   closeJournal(db, file, () => {
     stopped = runSqliteImmediate(db, () => {
       assertCurrentSqlite(db, controllerJournalFormat);
-      const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+      const row = db.prepare("SELECT ticket_hash,snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; snapshot: string } | undefined;
+      if (!row) throw new Error("Original controller stop evidence is unavailable.");
+      const current = json<ControllerSnapshot>(row.snapshot);
+      if (row.ticket_hash !== controllerPayloadHash(ticket) || current.executionId !== observed.executionId || current.claimId !== observed.claimId || current.testExecutionId !== observed.testExecutionId || current.sessionId !== observed.sessionId || current.executionGeneration !== observed.executionGeneration || current.controllerInstanceId !== observed.controllerInstanceId || !isDeepStrictEqual(current.controllerProcess, observed.controllerProcess) || !isDeepStrictEqual(current.nativeProcesses, observed.nativeProcesses)) throw new ControllerStopIdentityError("The controller source changed during stop verification.");
       if (row.snapshot !== JSON.stringify(observed)) throw new Error("The controller state changed during stop verification.");
       const value: ControllerSnapshot = { ...observed, lifecycle: "stopped", nativeStopped: true, stoppedAt: observed.stoppedAt ?? new Date().toISOString(), activity: "stopped", capabilities: { send: false, steer: false, cancel: false, respond: false } };
       db.prepare("UPDATE execution SET snapshot=?,owner_pid=NULL WHERE id=1").run(JSON.stringify(value));
@@ -480,6 +493,14 @@ export const recordStoppedControllerGeneration = async (file: string, ticket: Co
     });
   });
   return stopped!;
+};
+/** Only an independent worker may commit complete process-tree stop after the writer exits. */
+export const recordStoppedControllerGeneration = async (file: string, ticket: ControllerLaunchTicket): Promise<ControllerSnapshot> => {
+  const observed = readControllerSnapshot(file);
+  if (observed === null || observed.controllerProcess === null) throw new Error("Original controller stop evidence is unavailable.");
+  if (process.platform === "win32") throw new Error("Windows controller stop requires the original held Job and a versioned stop receipt.");
+  if (!await confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses)) throw new Error("The original controller or its descendants are still running.");
+  return commitPosixControllerStop(file, ticket, observed);
 };
 export const readControllerOperation = (file: SqliteDatabaseSource, operationId: string): ControllerOperation | null => readSqliteDatabase({
   file, format: controllerJournalFormat,

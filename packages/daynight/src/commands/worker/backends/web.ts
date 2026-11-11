@@ -130,7 +130,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
   const confirmSaved = async (task: LocalTask, saved: ControllerSnapshot): Promise<boolean> => {
     const proof = saved.controllerProcess ?? task.webExecution?.controllerProcess ?? null;
-    if (process.platform !== "win32" && proof !== null && proof.processGroupId !== null && proof.jobObjectName === undefined) return confirmControllerProcessesStopped(proof, saved.nativeProcesses);
+    if (process.platform !== "win32" && proof !== null && proof.processGroupId !== null && proof.jobObjectName === undefined) {
+      const stopped = await confirmControllerProcessesStopped(proof, saved.nativeProcesses);
+      if (stopped && JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(saved)) throw new ExecutionSourceConflictError("The original controller journal changed during stop observation.");
+      return stopped;
+    }
     const ticket = saved.executionGeneration === task.webExecution!.executionGeneration
       ? await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId)
       : await previousWebTicket(options.homeDirectory, saved);
@@ -494,6 +498,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             const proof = saved?.controllerProcess ?? execution.controllerProcess ?? (process.platform === "win32" && saved !== null ? recoverWindowsControllerProof(journal(task), ticket) : null);
             const native = saved?.nativeProcesses ?? execution.nativeProcesses;
             if (proof === null) throw new Error("The original controller process identity is missing; cleanup cannot infer stop.");
+            if (saved === null) throw new Error("The original controller journal is unavailable; cleanup cannot infer complete native stop.");
             const stop = await openControllerStop({ journalPath: journal(task), ticket, controller: proof, native });
             const completedStop = await withControllerStop(stop, async () => {
               let stopped = await stop.confirm();
@@ -525,13 +530,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               const notifyStopped = () => {
                 if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "stopped", execution: webExecutionRef(task), observedAt: options.now() } });
               };
-              if (saved !== null) await stop.commit({
+              await stop.commit({
                 onVerified: notifyStopped,
                 onConflict: error => {
                   if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionConflict?.({ attempt: cleanupRequest.scope.attempt, execution: webExecutionRef(task), error: new ExecutionSourceConflictError("The original Windows stop evidence conflicts with its recorded source.", { cause: error }), observedAt: options.now() });
                 },
               });
-              else notifyStopped();
               return true;
             });
             if (!completedStop) return { task, complete: false };

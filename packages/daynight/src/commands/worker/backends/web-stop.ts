@@ -1,8 +1,9 @@
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Operation } from "../../../api/operation.js";
 import { controllerExecutionDirectory, LaunchTicketIdentityError, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
+import { confirmControllerProcessesStopped, type ProcessProof } from "../../controller/process-proof.js";
 import { isControllerStopIdentityConflict, openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
 import { withControllerStop } from "../../controller/controller-stop-scope.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
@@ -18,10 +19,9 @@ export const previousWebTicket = async (home: string, snapshot: ControllerSnapsh
   return readLaunchTicket(home, match[1]!);
 };
 
-export const confirmWebStop = async (file: string, ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot): Promise<boolean> => {
-  const controller = snapshot.controllerProcess ?? recoverWindowsControllerProof(file, ticket);
+export const confirmWebStop = async (file: string, ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot, fallback?: ProcessProof): Promise<boolean> => {
+  const controller = snapshot.controllerProcess ?? fallback ?? recoverWindowsControllerProof(file, ticket);
   if (!controller) throw new Error("The original Controller identity is missing.");
-  if (process.platform !== "win32" && controller.processGroupId !== null && controller.jobObjectName === undefined) return confirmControllerProcessesStopped(controller, snapshot.nativeProcesses);
   const stop = await openControllerStop({ journalPath: file, ticket, controller, native: snapshot.nativeProcesses });
   return withControllerStop(stop, () => stop.confirm());
 };
@@ -71,6 +71,7 @@ export const observeWebExecutionStop = async (target: CleanupTarget, task: Local
       if (saved === null) return { kind: "not-started", owner: webExecutionRef(task).owner, observedAt: now() };
       if (saved.executionGeneration !== execution.executionGeneration) {
         if (saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.sessionId !== execution.sessionId || BigInt(saved.executionGeneration) + 1n !== BigInt(execution.executionGeneration) || saved.controllerProcess === null || !(process.platform === "win32" || saved.controllerProcess.processGroupId === null || saved.controllerProcess.jobObjectName !== undefined ? await confirmWebStop(path.join(controllerExecutionDirectory(homeDirectory, execution.executionId), "journal.sqlite"), await previousWebTicket(homeDirectory, saved), saved) : await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses))) throw new ExecutionSourceConflictError("The preceding controller generation is not confirmed stopped.");
+        if (!isDeepStrictEqual(readControllerSnapshot(path.join(controllerExecutionDirectory(homeDirectory, execution.executionId), "journal.sqlite")), saved)) throw new ExecutionSourceConflictError("The preceding controller generation changed during stop observation.");
         operation.check();
         return { kind: "not-started", owner: webExecutionRef(task).owner, observedAt: now() };
       }
@@ -92,7 +93,8 @@ export const observeWebExecutionStop = async (target: CleanupTarget, task: Local
       const recovered = recoverWindowsControllerProof(path.join(controllerExecutionDirectory(homeDirectory, execution.executionId), "journal.sqlite"), ticket);
       if (recovered !== null && !preservesControllerProcessProof(proof, recovered, ticket.launchId)) throw new ExecutionSourceConflictError("The original controller process identity conflicts with the Job source.");
     }
-    const stopped = process.platform === "win32" || proof.processGroupId === null || proof.jobObjectName !== undefined ? saved !== null && await confirmWebStop(path.join(controllerExecutionDirectory(homeDirectory, execution.executionId), "journal.sqlite"), ticket, saved) : await confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
+    if (saved === null) throw new Error("The original controller journal is unavailable; complete native evidence is unknown.");
+    const stopped = await confirmWebStop(path.join(controllerExecutionDirectory(homeDirectory, execution.executionId), "journal.sqlite"), ticket, saved, proof);
     operation.check();
     return { kind: stopped ? "stopped" : "running", execution: webExecutionRef(task), observedAt: now() };
   } catch (error) {

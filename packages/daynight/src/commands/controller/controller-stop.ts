@@ -1,13 +1,14 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { readControllerSnapshot, readWindowsJobReceipt, readWindowsJobSource, commitWindowsJobStop, type ControllerSnapshot } from "./lifecycle-store.js";
+import { readControllerSnapshotForTicket, readWindowsJobReceipt, readWindowsJobSource, commitWindowsJobStop, commitPosixControllerStop, type ControllerSnapshot } from "./lifecycle-store.js";
+import { ControllerStopIdentityError } from "./controller-stop-identity.js";
+export { ControllerStopIdentityError } from "./controller-stop-identity.js";
 import { matchesWindowsJobController, WindowsJobEvidenceConflictError, type WindowsJobAssignedSource, type WindowsJobStopReceipt } from "./windows-job-evidence.js";
 import { openWindowsGuardianJob, recoverWindowsGuardianJob, wakeWindowsJobGuardian, WindowsGuardianLeaseError, type RetainedWindowsGuardianJob } from "./windows-job-guardian.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 
 type Lease = Awaited<ReturnType<typeof openWindowsGuardianJob>>;
-export class ControllerStopIdentityError extends Error {}
 export const isControllerStopIdentityConflict = (error: unknown, seen = new Set<unknown>()): boolean => {
   if (typeof error !== "object" || error === null || seen.has(error)) return false;
   seen.add(error);
@@ -27,7 +28,7 @@ const retained = new Map<string, Held[]>();
 const keep = (entry: Held): void => { const items = retained.get(entry.source.launchId) ?? []; if (!items.includes(entry)) items.push(entry); retained.set(entry.source.launchId, items); };
 const forget = (entry: Held): void => { const items = retained.get(entry.source.launchId)?.filter(item => item !== entry) ?? []; if (items.length) retained.set(entry.source.launchId, items); else retained.delete(entry.source.launchId); };
 const snapshotFor = (file: string, ticket: ControllerLaunchTicket): ControllerSnapshot => {
-  const value = readControllerSnapshot(file);
+  const value = readControllerSnapshotForTicket(file, ticket);
   if (!value) throw new Error("The original Controller generation is unavailable.");
   if (value.executionId !== ticket.executionId || value.claimId !== ticket.claimId || value.testExecutionId !== ticket.testExecutionId || value.sessionId !== ticket.sessionId || value.executionGeneration !== ticket.executionGeneration || value.controllerInstanceId !== ticket.controllerInstanceId) throw new ControllerStopIdentityError("The original Controller generation changed.");
   return value;
@@ -46,12 +47,40 @@ const empty = (lease: Lease): boolean => { const value = lease.inspect(); return
 export const openControllerStop = async (input: { journalPath: string; ticket: ControllerLaunchTicket; controller: ProcessProof; native: readonly ProcessProof[] }) => {
   const { journalPath: file, ticket, controller } = input;
   const windowsSource = process.platform === "win32" || controller.processGroupId === null || controller.jobObjectName !== undefined;
-  if (!windowsSource) return {
-    confirm: () => confirmControllerProcessesStopped(controller, input.native),
+  if (!windowsSource) {
+    const checkedSnapshot = (): ControllerSnapshot => {
+      const snapshot = snapshotFor(file, ticket);
+      if (snapshot.controllerProcess === null) {
+        if (snapshot.nativeProcesses.length !== 0 || !["starting", "paused", "stopping", "failed"].includes(snapshot.lifecycle) || snapshot.nativeStopped || snapshot.stoppedAt !== null || !["not_submitted", "not_required"].includes(snapshot.initialInputState)) throw new ControllerStopIdentityError("The original Controller startup snapshot cannot be reconciled with its process evidence.");
+      } else if (snapshot.controllerProcess.pid !== controller.pid || snapshot.controllerProcess.processGroupId !== controller.processGroupId || snapshot.controllerProcess.startedAt !== controller.startedAt || snapshot.controllerProcess.commandHash !== controller.commandHash || snapshot.controllerProcess.jobObjectName !== controller.jobObjectName) throw new ControllerStopIdentityError("The original Controller process identity changed.");
+      if (input.native.length > snapshot.nativeProcesses.length || !input.native.every((proof, index) => isDeepStrictEqual(proof, snapshot.nativeProcesses[index]))) throw new ControllerStopIdentityError("The original native process evidence changed.");
+      return snapshot;
+    };
+    return {
+    confirm: async () => {
+      const snapshot = checkedSnapshot();
+      const stopped = await confirmControllerProcessesStopped(controller, snapshot.nativeProcesses);
+      if (!stopped) return false;
+      const current = checkedSnapshot();
+      if (!isDeepStrictEqual(snapshot.controllerProcess, current.controllerProcess) || !isDeepStrictEqual(snapshot.nativeProcesses, current.nativeProcesses)) throw new ControllerStopIdentityError("The original Controller process evidence changed during stop observation.");
+      return stopped;
+    },
     stop: (deadline: number) => stopControllerProcesses(controller, input.native, deadline),
-    commit: async (hooks?: CommitHooks) => { const { recordStoppedControllerGeneration } = await import("./lifecycle-store.js"); hooks?.onVerified(); return recordStoppedControllerGeneration(file, ticket); },
+    commit: async (hooks?: CommitHooks) => {
+      try {
+        const snapshot = checkedSnapshot();
+        if (snapshot.controllerProcess === null) throw new Error("The original Controller stop evidence is unavailable.");
+        if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses)) throw new Error("The original Controller or its descendants are still running.");
+        hooks?.onVerified();
+        return commitPosixControllerStop(file, ticket, snapshot);
+      } catch (error) {
+        if (isControllerStopIdentityConflict(error)) hooks?.onConflict(error);
+        throw error;
+      }
+    },
     close: async () => {},
-  };
+    };
+  }
   const source = readWindowsJobSource(file, ticket);
   if (!source || source.phase !== "assigned") throw new Error("The original Windows Job assignment is unavailable.");
   const current = snapshotFor(file, ticket);
@@ -85,7 +114,10 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
     check();
     const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller); checkNativePrefix(snapshot);
     if (receipt !== null) return isDeepStrictEqual(snapshot, receipt.snapshot);
-    return held?.lease !== undefined && empty(held.lease) && await allStopped(snapshot, source);
+    if (!held?.lease || !empty(held.lease) || !await allStopped(snapshot, source)) return false;
+    const latest = snapshotFor(file, ticket); sameOriginal(latest, source, controller); checkNativePrefix(latest);
+    if (!isDeepStrictEqual(snapshot.controllerProcess, latest.controllerProcess) || !isDeepStrictEqual(snapshot.nativeProcesses, latest.nativeProcesses)) throw new ControllerStopIdentityError("The original Windows process evidence changed during stop observation.");
+    return true;
   };
   const stop = async (deadline: number): Promise<void> => {
     check();

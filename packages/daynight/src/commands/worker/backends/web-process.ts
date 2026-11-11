@@ -26,9 +26,12 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"));
     if (saved !== null && (saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId)) throw new Error("Controller credential renewal has conflicting cleanup evidence.");
     const proof = saved?.controllerProcess ?? execution.controllerProcess;
-    if (proof === null) return false;
-    if (process.platform !== "win32" && proof.processGroupId !== null && proof.jobObjectName === undefined) return confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
-    if (saved === null) return false;
+    if (proof === null || saved === null) return false;
+    if (process.platform !== "win32" && proof.processGroupId !== null && proof.jobObjectName === undefined) {
+      const stopped = await confirmControllerProcessesStopped(proof, saved.nativeProcesses);
+      if (stopped && JSON.stringify(readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"))) !== JSON.stringify(saved)) throw new Error("Controller credential renewal found changed cleanup evidence.");
+      return stopped;
+    }
     const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
     return confirmWebStop(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), ticket, saved);
   };
