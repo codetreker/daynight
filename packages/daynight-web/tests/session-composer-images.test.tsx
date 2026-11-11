@@ -76,3 +76,32 @@ it('does not consume image paste or submit during IME composition', () => {
   expect(props.attachments.addFiles).not.toHaveBeenCalled();
   expect(props.onSend).not.toHaveBeenCalled();
 });
+
+it('reserves input space without counting a nested image error or resizing during observer delivery', () => {
+  const observers: { callback: ResizeObserverCallback; targets: Set<Element> }[] = [];
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal('ResizeObserver', class {
+    readonly entry: typeof observers[number];
+    constructor(callback: ResizeObserverCallback) { this.entry = { callback, targets: new Set() }; observers.push(this.entry); }
+    observe(target: Element) { this.entry.targets.add(target); }
+    disconnect() {}
+  });
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  try {
+    setup('retained draft', false);
+    const surface = screen.getByRole('textbox').closest<HTMLElement>('.session-composer-surface')!;
+    const input = screen.getByRole('textbox'), footer = surface.querySelector<HTMLElement>('.session-composer-footer')!;
+    const nestedError = surface.querySelector<HTMLElement>('.session-draft-attachments .session-error')!;
+    input.style.minHeight = '44px';
+    Object.defineProperty(footer, 'offsetHeight', { configurable: true, value: 44 });
+    Object.defineProperty(nestedError, 'offsetHeight', { configurable: true, value: 80 });
+    const observer = observers.find(entry => entry.targets.has(surface) && entry.targets.has(footer))!;
+    const before = surface.style.minHeight;
+    observer.callback([], {} as ResizeObserver);
+    expect(surface.style.minHeight).toBe(before);
+    expect(frames).toHaveLength(1);
+    frames[0]!(0);
+    expect(surface.style.minHeight).toBe('88px');
+  } finally { vi.unstubAllGlobals(); }
+});

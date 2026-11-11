@@ -123,6 +123,7 @@ export class TaskSessionClient {
   private replayThrough = '0';
   private retries = 0;
   private draftKey: string | null = null;
+  private imageDraftProjected = false;
   private operationPolls = new Set<ReturnType<typeof setTimeout>>();
   private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
   private draftAdmission = { active: false, current: false };
@@ -154,7 +155,13 @@ export class TaskSessionClient {
         // receipt routing now so a reload cannot query it as an unrelated operation.
         this.persist();
       }
-      if (draft.active) this.view = { ...this.view, draft: { text: draft.text, revision: draft.revision, submission: draft.submission ? { operationId: draft.submission.operationId, revision: draft.submission.draftRevision, kind: 'send_message' } : null } };
+      if (draft.active) {
+        this.imageDraftProjected = true;
+        this.view = { ...this.view, draft: { text: draft.text, revision: draft.revision, submission: draft.submission ? { operationId: draft.submission.operationId, revision: draft.submission.draftRevision, kind: 'send_message' } : null } };
+      } else if (this.imageDraftProjected) {
+        this.imageDraftProjected = false;
+        this.view = { ...this.view, draft: emptyDraft() };
+      }
       for (const listener of this.listeners) listener();
     });
   }
@@ -333,6 +340,9 @@ export class TaskSessionClient {
     const previous = this.view.state.snapshot, next = change.state?.snapshot;
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.identity.nativeSessionId !== next.identity.nativeSessionId)) {
       void this.images?.scope.invalidate(); this.images = null;
+      // The visible text belongs to the same exact owner as its image items.
+      // Retire that projection before publishing a different native target.
+      if (this.imageDraftProjected) { this.imageDraftProjected = false; change = { ...change, draft: emptyDraft() }; }
     }
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.historyEpoch !== next.historyEpoch)) {
       this.cancelOlder(); this.cancelHydration(); this.before = null; this.beforeCursors.clear();
@@ -387,6 +397,7 @@ export class TaskSessionClient {
     const key = `${prefix}${sessionFenceKey(snapshot)}`;
     if (key === this.draftKey) return;
     this.draftKey = key;
+    this.imageDraftProjected = false;
     this.view = { ...this.view, settingIntents: new Map() };
     let draft = emptyDraft();
     try {
@@ -846,7 +857,7 @@ export class TaskSessionClient {
     if (this.imageDrafts.getSnapshot().loading) throw new Error('image_draft_loading');
     if (this.draftAdmission.active) (await this.prepareDraftInput())();
     const images = this.imageDrafts.getSnapshot();
-    if (images.loading || images.active && (images.readOnly || images.items.length || images.rejectedCandidates.length || images.overflowRejectedCount)) return Promise.reject(new Error('Resolve the saved image draft before executing a command.'));
+    if (images.loading || images.executionBlocked || images.active && (images.readOnly || images.items.length || images.rejectedCandidates.length || images.overflowRejectedCount)) return Promise.reject(new Error('Resolve the saved image draft before executing a command.'));
     this.admitted();
     const s = this.view.state.snapshot, command = s?.controls?.commands.find(command => command.id === commandId);
     if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));

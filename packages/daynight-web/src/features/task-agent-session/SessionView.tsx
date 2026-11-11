@@ -37,11 +37,11 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     view: imageDraft,
     addFiles: (files, text) => client.imageDrafts.addFiles(files, text), remove: id => client.imageDrafts.remove(id),
     discardRejected: () => client.imageDrafts.discardRejected(), retrySave: () => client.imageDrafts.retrySave(),
-    retryUpload: id => client.imageDrafts.retryUpload(id), checkStatus: () => client.imageDrafts.checkStatus(),
+    retryUpload: id => client.imageDrafts.retryUpload(id), checkStatus: ref => client.imageDrafts.checkStatus(ref),
     continueEditing: () => client.imageDrafts.continueEditing(), resolveConflict: choice => client.imageDrafts.resolveConflict(choice),
-    resolveFailure: choice => client.imageDrafts.resolveFailure(choice),
+    resolveFailure: (ref, choice) => client.imageDrafts.resolveFailure(ref, choice),
     resumePrepared: () => client.imageDrafts.resumePrepared(),
-    cancelPrepared: () => client.imageDrafts.cancelPrepared(),
+    cancelPrepared: ref => client.imageDrafts.cancelPrepared(ref),
   } : undefined;
   const m = useSessionMessages();
   const statusId = useId();

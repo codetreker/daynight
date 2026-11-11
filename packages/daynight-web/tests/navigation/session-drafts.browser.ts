@@ -85,6 +85,59 @@ test('preserves image drafts and unknown submissions through the actual Session 
   await info.attach('client-fullscreen-draft-unknown', { body: JSON.stringify({ boundary: `${boundary} Actual SessionView/useSessionFullscreen controls and preview Escape ownership.`, saved, original, frozen, retained, observations: api.observations }), contentType: 'application/json' });
 });
 
+test('resolves an earlier native target failure without replacing the current target draft', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setDispatch('lost'); api.setQuery('404');
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.getByRole('textbox').fill('original submitted text'); await page.locator('input[type=file]').setInputFiles(file('Original-target.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.state)).toBe('unknown');
+  const operationId = api.observations.commands[0]!.operationId;
+  await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('old target later edits');
+  await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
+  api.changeTarget('native-thread-2');
+  await expect(page.getByRole('textbox')).toHaveValue('');
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.some(entry => !entry.currentOwner && entry.currentExecution))).toBe(true);
+  await page.getByRole('textbox').fill('new target retained'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
+  api.setQuery('rejected');
+  await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  const keep = page.getByRole('button', { name: 'Keep later edits and discard failed draft', exact: true }); await expect(keep).toBeVisible();
+  const choices = await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries);
+  expect(choices[0]).toMatchObject({ currentOwner: false, state: 'rejected', frozen: { text: 'original submitted text' }, successor: { text: 'old target later edits' } });
+  await keep.click(); await page.getByRole('group', { name: 'Confirm', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.length)).toBe(0);
+  await expect(page.getByRole('textbox')).toHaveValue('new target retained');
+  api.changeTarget('native-thread-1'); await expect(page.getByRole('textbox')).toHaveValue('old target later edits');
+  const retained = await page.evaluate(() => window.sessionDraftClient.storage.read());
+  expect(retained?.submission).toBeNull(); expect(retained?.frozen).toBeNull(); expect(retained?.editable?.text).toBe('old target later edits');
+  expect(api.observations.commands).toHaveLength(1); expect(api.observations.queries.every(id => id === operationId)).toBe(true);
+  expect(await page.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
+  await info.attach('old-native-failure-choice', { body: JSON.stringify({ boundary, choices, retained, observations: api.observations }), contentType: 'application/json' });
+});
+
+test('queries an earlier generation without importing its frozen draft or operation into the current generation', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setDispatch('lost'); api.setQuery('404');
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.getByRole('textbox').fill('generation one frozen'); await page.locator('input[type=file]').setInputFiles(file('Generation-one.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.state)).toBe('unknown');
+  const operationId = api.observations.commands[0]!.operationId, nextGeneration = String(BigInt(api.observations.commands[0]!.executionGeneration) + 1n);
+  api.changeTarget('next-generation-native', nextGeneration);
+  await expect(page.getByRole('textbox')).toHaveValue('');
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.some(entry => !entry.currentExecution))).toBe(true);
+  await page.getByRole('textbox').fill('generation two edit'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
+  const before = await page.evaluate(() => { const draft = window.sessionDraftClient.client.imageDrafts.getSnapshot(); return { submission: draft.submission, executionBlocked: draft.executionBlocked, recoveries: draft.recoveries }; });
+  expect(before.submission).toBeNull(); expect(before.executionBlocked).toBe(false); expect(before.recoveries[0]?.frozen?.text).toBe('generation one frozen');
+  api.setQuery('confirmed'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.length)).toBe(0);
+  await expect(page.getByRole('textbox')).toHaveValue('generation two edit');
+  expect(await page.evaluate(id => window.sessionDraftClient.client.snapshot().state.operations.has(id), operationId)).toBe(false);
+  expect(api.observations.commands).toHaveLength(1); expect(api.observations.queries.every(id => id === operationId)).toBe(true);
+  expect(await page.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
+  await info.attach('historical-generation-recovery', { body: JSON.stringify({ boundary, before, current: await page.evaluate(() => window.sessionDraftClient.storage.read()), observations: api.observations }), contentType: 'application/json' });
+});
+
 test('reopens a durably prepared message without claiming or dispatching it until explicit resume', async ({ page, context }, info) => {
   const api = await installDraftAPI(context);
   await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();

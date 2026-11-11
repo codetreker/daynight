@@ -33,7 +33,7 @@ export type DraftSendOptions = {
   readonly query: (fence: SessionFence, operationId: string, signal?: AbortSignal) => Promise<SessionOperation>;
   readonly signal?: AbortSignal;
   readonly isDefinitiveNotDispatched?: (error: unknown) => boolean;
-  readonly changed: (snapshot: DraftSnapshot) => void;
+  readonly changed: (snapshot: DraftSnapshot) => void | Promise<void>;
 };
 
 /** Never regenerates an ID after freezing, including recovery of a claimed dispatch. */
@@ -55,14 +55,14 @@ export class DraftSender {
       if (issue) {
         if (submission) {
           this.live(); const restored = await o.store.refusePrepared(handle, submission.operationId);
-          this.live(); o.changed(restored);
+          this.live(); await o.changed(restored);
         }
         throw new Error(issue);
       }
       if (!submission) {
         const draft = snapshot.editable!;
         snapshot = await o.store.freeze(handle, { draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, command: o.command(snapshot) });
-        this.live(); o.changed(snapshot); submission = snapshot.submission!;
+        this.live(); await o.changed(snapshot); submission = snapshot.submission!;
       }
       const claim = await o.store.claimDispatch(handle, submission.operationId);
       if (!claim) { this.live(); await this.check(handle, submission); return; }
@@ -75,7 +75,7 @@ export class DraftSender {
       if (!o.isCurrent() || o.admit(snapshot, claimed)) {
         // The request has not been called, so this is a proven local refusal.
         const restored = await o.store.refuseClaimed(handle, claim.authority);
-        if (o.isCurrent()) o.changed(restored);
+        if (o.isCurrent()) await o.changed(restored);
         return;
       }
       let operation: SessionOperation;
@@ -85,12 +85,12 @@ export class DraftSender {
         if (o.isDefinitiveNotDispatched?.(error)) {
           const restored = await o.store.refuseClaimed(handle, claim.authority);
           if (!o.isCurrent()) return;
-          o.changed(restored);
+          await o.changed(restored);
           throw error;
         }
         if (!o.isCurrent()) return;
         const command = claimed.command!;
-        o.changed(await o.store.observeSubmission(handle, claimed.operationId, { ...claimed.fence, protocol: command.protocol, operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null }));
+        await o.changed(await o.store.observeSubmission(handle, claimed.operationId, { ...claimed.fence, protocol: command.protocol, operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null }));
         return;
       }
       this.live();
@@ -117,6 +117,6 @@ export class DraftSender {
     const snapshot = outcome === 'pending'
       ? await o.store.observeSubmission(handle, submission.operationId, operation)
       : await o.store.settleSubmission(handle, { operationId: submission.operationId, outcome, operation });
-    this.live(); o.changed(snapshot);
+    this.live(); await o.changed(snapshot);
   }
 }

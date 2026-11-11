@@ -11,7 +11,8 @@ const en = {
   cancelPrepared: 'Cancel the pending message and keep its draft', retryPrepare: 'Retry the original upload',
   rejected: 'Images not added', discardRejected: 'Discard these images', moreRejected: 'Additional images not added',
   pending: 'Awaiting the original message result', continueEditing: 'Continue editing', frozen: 'Submitted draft',
-  failedChoice: 'Choose which draft to keep', keepCurrent: 'Keep current draft and discard failed draft', restoreFailed: 'Restore failed draft and discard current draft',
+  failedChoice: 'Choose which draft to keep', keepCurrent: 'Keep later edits and discard failed draft', restoreFailed: 'Restore failed draft and discard later edits',
+  previousMessage: 'Earlier message', successor: 'Later edits to that draft', imageCount: 'Images',
   confirm: 'Confirm', cancel: 'Cancel', upload: 'Upload progress', unknown: 'Unable to confirm the upload. Check its status.',
 };
 type Messages = { readonly [K in keyof typeof en]: string };
@@ -25,7 +26,8 @@ const zh: Messages = {
   cancelPrepared: '取消待发消息并保留原草稿', retryPrepare: '重试原上传',
   rejected: '未加入的图片', discardRejected: '放弃这些图片', moreRejected: '其他未加入的图片数量',
   pending: '等待原消息发送结果', continueEditing: '继续编辑', frozen: '已提交草稿', failedChoice: '选择要保留的草稿',
-  keepCurrent: '保留当前编辑，放弃失败稿', restoreFailed: '恢复失败稿，放弃当前编辑', confirm: '确认', cancel: '取消',
+  keepCurrent: '保留后续编辑，放弃失败稿', restoreFailed: '恢复失败稿，放弃后续编辑', confirm: '确认', cancel: '取消',
+  previousMessage: '先前的消息', successor: '该草稿的后续编辑', imageCount: '图片数量',
   upload: '上传进度', unknown: '无法确认上传结果，请检查状态。',
 };
 const issues: Readonly<Record<string, readonly [string, string]>> = {

@@ -3,7 +3,7 @@ import { IDBObjectStore } from 'fake-indexeddb';
 import { openDB } from 'idb';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SESSION_PROTOCOL, type ImageTarget, type SessionCommand } from '../../daynight/src/session/protocol';
-import { SessionDraftStore, SESSION_DRAFT_DATABASE, SESSION_DRAFT_SCHEMA, draftOwnerKey, draftExecutionKey } from '../src/features/task-agent-session/drafts/draft-store';
+import { SessionDraftStore, SESSION_DRAFT_DATABASE, SESSION_DRAFT_SCHEMA, draftOwnerKey, draftExecutionKey, draftRecoveryRef } from '../src/features/task-agent-session/drafts/draft-store';
 import type { DraftBlobInput, DraftOwnerIdentity, DraftRecord, DraftSnapshot } from '../src/features/task-agent-session/drafts/draft-types';
 
 const stores: SessionDraftStore[] = [];
@@ -12,7 +12,7 @@ const store = () => { const result = new SessionDraftStore(); stores.push(result
 const target: ImageTarget = { serverOrigin: 'https://daynight.test', actorUserId: 'actor', fence: { sessionId: 'session', claimId: 'claim', executionGeneration: '1' }, expectedNativeSessionId: null };
 const identity = (native: string | null = null): DraftOwnerIdentity => ({ target: { ...target, expectedNativeSessionId: native }, resolver: { kind: 'task', projectId: 'project', taskId: 'task' } });
 const write = (draft: DraftRecord, text: string) => ({ draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, text, items: draft.items, rejectedCandidates: draft.rejectedCandidates, overflowRejectedCount: draft.overflowRejectedCount });
-const command = (snapshot: DraftSnapshot): SessionCommand => ({ protocol: SESSION_PROTOCOL, ...target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: { content: [{ type: 'text', text: snapshot.editable!.text }], expectedTurnId: null } });
+const command = (snapshot: DraftSnapshot): SessionCommand => ({ protocol: SESSION_PROTOCOL, ...snapshot.owner.identity.target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: { content: [{ type: 'text', text: snapshot.editable!.text }], expectedTurnId: null } });
 const freeze = async (db: SessionDraftStore, snapshot: DraftSnapshot) => db.freeze(snapshot.owner, { draftId: snapshot.editable!.draftId, expectedStoreVersion: snapshot.editable!.storeVersion, command: command(snapshot) });
 const acceptedOperation = (operationId: string) => ({ protocol: SESSION_PROTOCOL, ...target.fence, operationId, kind: 'send_message' as const, state: 'provider_accepted' as const, providerResult: null, error: null });
 const blobInput = (): DraftBlobInput => ({ blobId: 'blob', blob: new Blob(['image']) as unknown as globalThis.Blob, byteLength: 5, sha256: 'a'.repeat(64), mediaType: 'image/png', width: 1, height: 1, frameCount: 1, byteRevision: '1' });
@@ -105,7 +105,7 @@ it('preserves both drafts on a proven rejection until the user chooses the one t
   const operationId = state.submission!.operationId; state = await db.startSuccessor(state.owner, operationId); state = await db.saveDraft(state.owner, write(state.editable!, 'successor'));
   state = await db.refusePrepared(state.owner, operationId);
   expect(state.frozen).toMatchObject({ text: 'failed', state: 'detached' }); expect(state.editable?.text).toBe('successor'); expect(state.executionBlocked).toBe(true);
-  state = await db.resolveFailure(state.owner, operationId, 'restore_failed');
+  state = await db.resolveFailure(state.owner, operationId, 'restore_failed', draftRecoveryRef(state)!.choiceRevision);
   expect(state.editable?.text).toBe('failed'); expect(state.frozen).toBeNull(); expect(state.executionBlocked).toBe(false);
 });
 
@@ -287,4 +287,63 @@ it('does not issue dispatch authority if the store closes before claim completio
   });
   expect(await db.claimDispatch(state.owner, state.submission!.operationId)).toBeNull(); vi.restoreAllMocks();
   expect((await db.read(state.owner)).submission?.state).toBe('dispatch_claimed'); expect((await db.read(state.owner)).executionBlocked).toBe(true);
+});
+
+
+it('checks the displayed failure revisions inside the resolving transaction', async () => {
+  const db = store(), other = store(); let state = await db.openOwner(identity());
+  state = await db.saveDraft(state.owner, write(state.editable!, 'failed message')); state = await freeze(db, state);
+  const operationId = state.submission!.operationId;
+  state = await db.startSuccessor(state.owner, operationId); state = await db.saveDraft(state.owner, write(state.editable!, 'displayed successor'));
+  state = await db.refusePrepared(state.owner, operationId); const ref = draftRecoveryRef(state)!;
+  await other.saveDraft(state.owner, write(state.editable!, 'unseen successor'));
+  await expect(db.resolveFailure(state.owner, operationId, 'restore_failed', ref.choiceRevision)).rejects.toMatchObject({ code: 'conflict' });
+  const current = await other.read(state.owner);
+  expect(current.editable?.text).toBe('unseen successor'); expect(current.frozen?.text).toBe('failed message'); expect(current.executionBlocked).toBe(true);
+  await db.resolveFailure(current.owner, operationId, 'keep_current', draftRecoveryRef(current)!.choiceRevision);
+  expect((await db.read(state.owner)).editable?.text).toBe('unseen successor'); expect((await db.read(state.owner)).executionBlocked).toBe(false);
+});
+
+it('discovers authorized earlier-generation intents without extending their barrier into the current generation', async () => {
+  const db = store(); let state = await db.openOwner(identity());
+  state = await db.saveDraft(state.owner, write(state.editable!, 'original generation')); state = await freeze(db, state);
+  const next = { ...identity('next-native'), target: { ...identity('next-native').target, serverOrigin: 'https://daynight.test/', fence: { ...target.fence, executionGeneration: '2' } } };
+  const current = await db.openOwner(next);
+  expect(current.executionBlocked).toBe(false); expect(current.editable?.text).toBe('');
+  const entries = await db.readRecoverableSubmissions(next);
+  expect(entries).toHaveLength(1); expect(entries[0]?.frozen?.text).toBe('original generation');
+  expect(entries[0]?.submission.fence).toEqual({ sessionId: 'session', claimId: 'claim', executionGeneration: '1' });
+  expect(entries[0]?.owner.ownerKey).toBe(state.owner.ownerKey);
+});
+
+it.each([
+  ['origin', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, target: { ...value.target, serverOrigin: 'https://another.test' } })],
+  ['actor', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, target: { ...value.target, actorUserId: 'another-actor' } })],
+  ['session', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, target: { ...value.target, fence: { ...value.target.fence, sessionId: 'another-session' } } })],
+  ['claim', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, target: { ...value.target, fence: { sessionId: value.target.fence.sessionId, executionGeneration: value.target.fence.executionGeneration, claimId: 'another-claim' } } })],
+  ['project', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, resolver: { kind: 'task', projectId: 'another-project', taskId: 'task' } })],
+  ['task', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, resolver: { kind: 'task', projectId: 'project', taskId: 'another-task' } })],
+  ['resolver', (value: DraftOwnerIdentity): DraftOwnerIdentity => ({ ...value, resolver: { kind: 'session', sessionId: 'session', testExecutionId: 'execution' } })],
+] as const)('does not expose historical intents across a different %s recovery scope', async (_name, change) => {
+  const db = store(); let state = await db.openOwner(identity());
+  state = await db.saveDraft(state.owner, write(state.editable!, 'private original')); await freeze(db, state);
+  const next = { ...identity(), target: { ...target, fence: { ...target.fence, executionGeneration: '2' } } };
+  expect(await db.readRecoverableSubmissions(change(next))).toEqual([]);
+});
+
+it('does not expose a newer generation to an older generation context', async () => {
+  const db = store(); const next = { ...identity(), target: { ...target, fence: { ...target.fence, executionGeneration: '2' } } };
+  let state = await db.openOwner(next); state = await db.saveDraft(state.owner, write(state.editable!, 'newer private draft'));
+  await db.freeze(state.owner, { draftId: state.editable!.draftId, expectedStoreVersion: state.editable!.storeVersion, command: command(state) });
+  expect(await db.readRecoverableSubmissions(identity())).toEqual([]);
+});
+
+it.each(['revoked', 'account_changed', 'deleted'] as const)('does not renew %s historical authorization while opening a new generation', async reason => {
+  const db = store(); let state = await db.openOwner(identity());
+  state = await db.saveDraft(state.owner, write(state.editable!, 'revoked original')); state = await freeze(db, state);
+  await db.blockOwner(state.owner, reason);
+  const next = { ...identity(), target: { ...target, fence: { ...target.fence, executionGeneration: '2' } } };
+  await db.reauthorizeOwner(next);
+  expect(await db.readRecoverableSubmissions(next)).toEqual([]);
+  expect((await db.readExisting(next))?.editable?.text).toBe('');
 });

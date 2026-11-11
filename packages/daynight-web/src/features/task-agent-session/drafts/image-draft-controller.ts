@@ -1,8 +1,8 @@
 import { SESSION_PROTOCOL, type ImageCapabilities, type ImageTarget, type SessionCommand, type SessionFence, type SessionOperation } from '../../../../../daynight/src/session/protocol';
 import type { SessionResourceClient } from '../../../../../daynight/src/session/resource-client';
 import type { LocalImageAssetAdapter, LocalImageMetadata } from '../images/image-store';
-import { DraftStoreError, SessionDraftStore, draftOwnerKey } from './draft-store';
-import type { DraftBlobInput, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftSnapshot, DraftSubmission, LegacyDraftImport } from './draft-types';
+import { DraftStoreError, SessionDraftStore, draftOwnerKey, draftRecoveryRef } from './draft-store';
+import type { DraftBlobInput, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSnapshot, DraftSubmission, LegacyDraftImport } from './draft-types';
 import { DraftSender } from './draft-send';
 import { DraftUploader } from './draft-uploads';
 import { imageSetIssue, safeImageLabel, sameImageTarget } from './draft-validation';
@@ -20,12 +20,21 @@ export type ImageDraftContext = {
   readonly authorizationGeneration: string;
 };
 export type ImageDraftItemView = DraftImageItem & { readonly asset: LocalImageAssetAdapter | null; readonly progress: number; readonly status: string; readonly canRetryPrepare: boolean };
+export type ImageDraftRecoveryRef = DraftRecoveryRef;
+export type ImageDraftRecoveryDraft = { readonly text: string; readonly items: readonly Pick<DraftImageItem, 'draftImageId' | 'label'>[] };
+export type ImageDraftRecovery = {
+  readonly ref: ImageDraftRecoveryRef; readonly state: DraftSubmission['state']; readonly error: string | null;
+  readonly currentOwner: boolean; readonly currentExecution: boolean;
+  readonly frozen: ImageDraftRecoveryDraft | null; readonly successor: ImageDraftRecoveryDraft | null;
+  readonly canCheck: boolean; readonly canCancelPrepared: boolean; readonly canResolveFailure: boolean;
+};
 export type ImageDraftView = {
   readonly active: boolean; readonly loading: boolean; readonly text: string; readonly revision: string; readonly draftId: string | null;
   readonly items: readonly ImageDraftItemView[]; readonly frozenItems: readonly ImageDraftItemView[];
   readonly rejectedCandidates: readonly { readonly id: string; readonly label: string; readonly error: string }[];
   readonly overflowRejectedCount: number; readonly saving: boolean; readonly error: string | null; readonly conflict: boolean;
   readonly frozen: boolean; readonly readOnly: boolean; readonly failureChoice: boolean; readonly submission: DraftSubmission | null;
+  readonly recoveries: readonly ImageDraftRecovery[]; readonly executionBlocked: boolean;
   readonly canSend: boolean; readonly canResumePrepared: boolean; readonly canCancelPrepared: boolean; readonly disabledReason: string | null; readonly checking: boolean;
 };
 export type ImageDraftOptions = {
@@ -37,12 +46,13 @@ export type ImageDraftOptions = {
   readonly store?: SessionDraftStore; readonly locks?: LockManager | null;
   readonly legacy?: () => (LegacyDraftImport & { readonly onImported: () => void }) | null;
 };
-const emptyView = (): ImageDraftView => ({ active: false, loading: false, text: '', revision: '1', draftId: null, items: [], frozenItems: [], rejectedCandidates: [], overflowRejectedCount: 0, saving: false, error: null, conflict: false, frozen: false, readOnly: false, failureChoice: false, submission: null, canSend: false, canResumePrepared: false, canCancelPrepared: false, disabledReason: null, checking: false });
+const emptyView = (): ImageDraftView => ({ active: false, loading: false, text: '', revision: '1', draftId: null, items: [], frozenItems: [], rejectedCandidates: [], overflowRejectedCount: 0, saving: false, error: null, conflict: false, frozen: false, readOnly: false, failureChoice: false, submission: null, recoveries: [], executionBlocked: false, canSend: false, canResumePrepared: false, canCancelPrepared: false, disabledReason: null, checking: false });
 const message = (error: unknown): string => {
   if (error instanceof DraftStoreError) return `image_draft_${error.code}`;
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return error.code;
   return error instanceof Error && /^image_[a-z_]+$/.test(error.message) ? error.message : 'image_draft_failed';
 };
+const recoveryKey = (ref: Pick<ImageDraftRecoveryRef, 'ownerKey' | 'operationId'>): string => JSON.stringify([ref.ownerKey, ref.operationId]);
 const itemKey = (item: Pick<DraftImageItem, 'draftImageId' | 'byteRevision'>): string => JSON.stringify([item.draftImageId, item.byteRevision]);
 const sameProfile = (a: ImageCapabilities | null, b: ImageCapabilities | null): boolean => !!a && !!b && a.expectedNativeSessionId === b.expectedNativeSessionId && a.modelId === b.modelId && a.controlsRevision === b.controlsRevision;
 type PendingDraftWrite = { readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly DraftBlobInput[]; readonly preceding: Promise<void> };
@@ -89,7 +99,8 @@ export class ImageDraftController {
   private readonly pendingFiles = new Map<string, { readonly item: DraftImageItem; readonly file: File }>();
   private validationPaused = false;
   private readonly uploadFlights = new Map<string, Promise<void>>();
-  private originals: readonly { readonly owner: DraftOwner; readonly submission: DraftSubmission }[] = [];
+  private originals: readonly DraftRecoverySnapshot[] = [];
+  private readonly recoveryErrors = new Map<string, string>();
   private freshCapability: ImageCapabilities | null = null;
   private capabilityBaseRevision: string | null = null;
   private channel: BroadcastChannel | null = null;
@@ -150,7 +161,7 @@ export class ImageDraftController {
     if (!c || !this.networkAllowed() || !c.canSend || !this.current(this.epoch)) return 'image_session_unavailable';
     if (!snapshot || !draft || this.loading || this.loadFailed || this.dirty || this.conflict) return 'image_draft_unsaved';
     if (!prepared && (snapshot.editable?.draftId !== this.local?.draftId || snapshot.editable?.storeVersion !== this.local?.storeVersion)) return 'image_draft_conflict';
-    if (!prepared && (snapshot.executionBlocked || snapshot.submission || this.originals.length)) return 'image_submission_pending';
+    if (!prepared && (snapshot.executionBlocked || snapshot.submission)) return 'image_submission_pending';
     if (draft.rejectedCandidates.length || draft.overflowRejectedCount) return 'image_rejected_candidates';
     if (!draft.items.length) return draft.text.trim() ? null : 'image_draft_empty';
     if (!this.locks) return 'image_locks_unavailable';
@@ -165,20 +176,37 @@ export class ImageDraftController {
     })) return 'image_upload_incomplete';
     return null;
   }
+  private recoverySnapshots(): readonly DraftRecoverySnapshot[] {
+    return [...(this.saved?.submission ? [{ ...this.saved, submission: this.saved.submission }] : []), ...this.originals];
+  }
+  private recoveryViews(): readonly ImageDraftRecovery[] {
+    if (!this.current(this.epoch)) return [];
+    const summary = (draft: DraftRecord | null): ImageDraftRecoveryDraft | null => draft && { text: draft.text, items: draft.items.map(({ draftImageId, label }) => ({ draftImageId, label })) };
+    return this.recoverySnapshots().map(snapshot => {
+      const currentOwner = snapshot.owner.ownerKey === this.scopeKey, state = snapshot.submission.state;
+      const available = this.networkAllowed() && !this.loading;
+      return { ref: draftRecoveryRef(snapshot)!, state, error: this.recoveryErrors.get(recoveryKey(snapshot.submission)) ?? null, currentOwner, currentExecution: snapshot.owner.executionKey === this.saved?.owner.executionKey,
+        frozen: summary(snapshot.frozen), successor: summary(snapshot.editable),
+        canCheck: available && !['prepared', 'rejected', 'local_not_dispatched'].includes(state),
+        canCancelPrepared: available && !currentOwner && state === 'prepared',
+        canResolveFailure: available && !!snapshot.frozen && !!snapshot.editable && ['rejected', 'local_not_dispatched'].includes(state) && (!currentOwner || !this.dirty && !this.conflict) };
+    });
+  }
   private publish(): void {
     if (this.closed) return;
     if (!this.options.getContext()) {
       if (this.view.active || this.view.loading) { this.view = emptyView(); for (const listener of this.listeners) listener(); }
       return;
     }
-    const draft = this.local ?? this.saved?.frozen ?? null, submission = this.saved?.submission ?? this.originals[0]?.submission ?? null;
+    const draft = this.local ?? this.saved?.frozen ?? null, submission = this.saved?.submission ?? null;
     const readOnly = !!this.loading || this.freezing || (!!this.saved || this.view.active) && !this.local || !this.options.getContext()?.canEdit;
     const next: ImageDraftView = { active: !!this.saved || this.view.active, loading: !!this.loading, text: draft?.text ?? this.view.text, revision: draft?.revision ?? '1', draftId: draft?.draftId ?? null,
       items: this.items(draft), frozenItems: this.items(this.saved?.frozen ?? null), rejectedCandidates: draft?.rejectedCandidates.map(item => ({ id: item.candidateId, label: item.label, error: item.reason })) ?? [], overflowRejectedCount: draft?.overflowRejectedCount ?? 0,
       saving: this.dirty && !this.error, error: this.error, conflict: this.conflict, frozen: !!this.saved?.frozen && !this.local, readOnly,
       failureChoice: !!this.saved?.frozen && !!this.saved.editable && (this.saved.submission?.state === 'rejected' || this.saved.submission?.state === 'local_not_dispatched'), submission,
+      recoveries: this.recoveryViews(), executionBlocked: this.saved?.executionBlocked ?? false,
       canSend: this.gate(this.saved) === null, canResumePrepared: this.saved?.submission?.state === 'prepared' && !this.loading && !!this.options.getContext()?.active && !!this.options.getContext()?.canSend && !this.dirty && !this.conflict,
-      canCancelPrepared: this.originals.some(entry => entry.submission.state === 'prepared') && this.networkAllowed(),
+      canCancelPrepared: this.recoveryViews().some(entry => entry.canCancelPrepared),
       disabledReason: this.gate(this.saved), checking: this.checking };
     const comparable = (value: ImageDraftView) => JSON.stringify({ ...value, items: value.items.map(({ asset, ...item }) => ({ ...item, asset: asset?.key })), frozenItems: value.frozenItems.map(({ asset, ...item }) => ({ ...item, asset: asset?.key })) });
     if (comparable(this.view) === comparable(next)) return;
@@ -235,7 +263,7 @@ export class ImageDraftController {
     if (key !== this.scopeKey) {
       const retired = this.retireWrite(this.capturePendingWrite());
       this.epoch++; this.lifetime.abort(); this.network.abort(); this.lifetime = new AbortController(); this.network = new AbortController(); this.clearAssets();
-      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.freshCapability = null; this.pendingLegacy = null; this.view = emptyView();
+      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = null; this.view = emptyView();
       this.restoreComplete = false; this.loadFailed = false;
       if (typeof indexedDB === 'undefined') { this.restoreComplete = true; this.loading = null; this.publish(); return; }
       await this.startLoad(c, this.epoch, retired);
@@ -273,7 +301,7 @@ export class ImageDraftController {
     }
     if (!this.current(epoch)) return;
     this.loadFailed = false;
-    const originals = await this.store.readExecutionSubmissions(c.identity);
+    const originals = await this.store.readRecoverableSubmissions(c.identity);
     if (!this.current(epoch)) return;
     this.originals = originals.filter(entry => entry.owner.ownerKey !== this.scopeKey);
     if (!snapshot && this.originals.length) snapshot = await this.store.openOwner(c.identity);
@@ -478,11 +506,18 @@ export class ImageDraftController {
     return readback;
   }
   /** Called only while owning the local persistence queue. */
-  private async adoptReadback(epoch: number, ownUpload = false): Promise<void> {
+  private async adoptReadback(epoch: number): Promise<void> {
     if (!this.current(epoch) || !this.saved) return;
     const snapshot = await this.store.read(this.saved.owner);
     if (!this.current(epoch)) return;
-    if (this.dirty && this.saved.editable?.storeVersion !== snapshot.editable?.storeVersion && !(ownUpload && this.saved.editable && snapshot.editable?.storeVersion === this.saved.editable.storeVersion + 1)) { this.conflict = true; this.error = 'image_draft_conflict'; this.publish(); return; }
+    const base = this.saved.editable;
+    if (this.dirty && (base?.draftId !== snapshot.editable?.draftId || base?.revision !== snapshot.editable?.revision)) {
+      // Operation receipts may settle the frozen intent, but cannot grant an
+      // unsaved successor the CAS version of another window's content.
+      this.conflict = true; this.error = 'image_draft_conflict';
+      this.adopt({ ...snapshot, editable: base });
+      return;
+    }
     this.adopt(snapshot);
   }
   private async refresh(): Promise<void> {
@@ -519,7 +554,7 @@ export class ImageDraftController {
         if (!item || item.uploadId) continue;
         const original = this.blobs.get(item.blobId!)!;
         await this.store.createUpload(this.saved!.owner, { draftImageId: item.draftImageId, byteRevision: item.byteRevision, blobId: original.blobId, spec: { uploadId: crypto.randomUUID(), imageId: item.imageId, target: c.target, name: item.label, mediaType: original.mediaType, byteLength: String(original.byteLength), sha256: original.sha256 } });
-        if (!this.current(epoch)) return; await this.adoptReadback(epoch, true);
+        if (!this.current(epoch)) return; await this.adoptReadback(epoch);
       }
     };
     // Binding an upload advances the draft CAS version. Adopt it before another
@@ -567,7 +602,7 @@ export class ImageDraftController {
     await this.flush(); if (this.current(epoch)) await this.prepareUploads();
   };
   private sender(epoch: number, owner = this.saved?.owner): DraftSender {
-    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch), admit: (snapshot, prepared) => this.gate(snapshot, prepared),
+    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), admit: (snapshot, prepared) => this.gate(snapshot, prepared),
       command: snapshot => {
         const c = this.context(), draft = snapshot.editable!;
         return { protocol: SESSION_PROTOCOL, ...c.target.fence, contentRevision: 2, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: {
@@ -575,7 +610,7 @@ export class ImageDraftController {
           ...(draft.items.length ? { target: c.target, expectedImageCapabilityRevision: this.capability(c)!.revision, draftId: draft.draftId, draftRevision: draft.revision } : {}) } };
       }, dispatch: this.options.dispatch, query: this.options.query, signal: this.network.signal,
       ...(this.options.isDefinitiveNotDispatched ? { isDefinitiveNotDispatched: this.options.isDefinitiveNotDispatched } : {}),
-      changed: snapshot => { if (owner?.ownerKey === this.scopeKey && this.current(epoch)) { if (snapshot.submission) this.freezing = false; if (!this.dirty && !this.conflict) this.error = null; this.adopt(snapshot); } } });
+      changed: async snapshot => { if (owner?.ownerKey === this.scopeKey && this.current(epoch)) { if (snapshot.submission) this.freezing = false; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } } });
   }
   send = async (): Promise<void> => {
     if (this.freezing) return;
@@ -594,29 +629,61 @@ export class ImageDraftController {
     finally { if (this.current(epochAtStart)) { this.freezing = false; this.publish(); } }
   };
   resumePrepared = async (): Promise<void> => { if (this.saved?.submission?.state === 'prepared') await this.send(); };
-  cancelPrepared = async (): Promise<void> => {
-    this.context(); const entry = this.originals.find(candidate => candidate.submission.state === 'prepared'); if (!entry) return;
-    const epoch = this.epoch; await this.store.refusePrepared(entry.owner, entry.submission.operationId);
+  private async recovery(ref: ImageDraftRecoveryRef, epoch: number): Promise<DraftRecoverySnapshot> {
+    if (!this.current(epoch) || !this.networkAllowed()) throw new Error('image_access_unavailable');
+    const entries = await this.store.readRecoverableSubmissions(this.context().identity);
+    if (!this.current(epoch) || !this.networkAllowed()) throw new Error('image_access_unavailable');
+    const entry = entries.find(candidate => candidate.owner.ownerKey === ref.ownerKey && candidate.submission.operationId === ref.operationId);
+    if (!entry || draftRecoveryRef(entry)?.choiceRevision !== ref.choiceRevision) throw new DraftStoreError('conflict', 'The original recovery changed after it was displayed.');
+    return entry;
+  }
+  private async refreshRecoveries(epoch: number): Promise<void> {
     if (!this.current(epoch)) return;
-    const originals = await this.store.readExecutionSubmissions(this.context().identity);
+    const entries = await this.store.readRecoverableSubmissions(this.context().identity);
+    if (this.current(epoch)) this.originals = entries.filter(entry => entry.owner.ownerKey !== this.scopeKey);
+  }
+  private async recoveryFailed(ref: ImageDraftRecoveryRef, epoch: number, error: unknown): Promise<void> {
     if (!this.current(epoch)) return;
-    this.originals = originals.filter(candidate => candidate.owner.ownerKey !== this.scopeKey); await this.reload();
+    this.recoveryErrors.set(recoveryKey(ref), message(error));
+    // Keep the original action failure visible even if the storage read also
+    // fails. Recovery conflicts belong to their original owner, not this input.
+    if (this.networkAllowed()) {
+      await this.refreshRecoveries(epoch).catch(() => {});
+      if (this.current(epoch)) await this.reload().catch(() => {});
+    }
+    this.publish();
+  }
+  cancelPrepared = async (ref: ImageDraftRecoveryRef): Promise<void> => {
+    this.context(); const epoch = this.epoch;
+    try {
+      const entry = await this.recovery(ref, epoch);
+      if (!this.current(epoch) || !this.networkAllowed()) throw new Error('image_access_unavailable');
+      if (entry.owner.ownerKey === this.scopeKey || entry.submission.state !== 'prepared') throw new DraftStoreError('conflict', 'The original prepared operation is no longer available.');
+      await this.store.refusePrepared(entry.owner, entry.submission.operationId);
+      if (!this.current(epoch)) return;
+      this.recoveryErrors.delete(recoveryKey(ref));
+      await this.refreshRecoveries(epoch); await this.reload();
+    } catch (error) { await this.recoveryFailed(ref, epoch, error); throw error; }
   };
-  private async checkSubmissions(): Promise<void> {
+  private async checkSubmissions(ref?: ImageDraftRecoveryRef): Promise<void> {
     if (!this.saved || !this.networkAllowed()) return;
     const epoch = this.epoch;
-    for (const entry of [...(this.saved.submission ? [{ owner: this.saved.owner, submission: this.saved.submission }] : []), ...this.originals]) {
+    const entries = await this.store.readRecoverableSubmissions(this.context().identity);
+    if (!this.current(epoch) || !this.networkAllowed()) return;
+    for (const entry of entries) {
+      if (ref && (entry.owner.ownerKey !== ref.ownerKey || entry.submission.operationId !== ref.operationId)) continue;
       if (entry.submission.state === 'prepared' || entry.submission.state === 'rejected' || entry.submission.state === 'local_not_dispatched') continue;
-      try { await this.sender(epoch, entry.owner).check(entry.owner, entry.submission); } catch (error) { if (this.current(epoch)) this.fail(error); }
+      try {
+        await this.sender(epoch, entry.owner).check(entry.owner, entry.submission);
+        if (this.current(epoch)) this.recoveryErrors.delete(recoveryKey(entry.submission));
+      } catch (error) { if (this.current(epoch)) this.recoveryErrors.set(recoveryKey(entry.submission), message(error)); }
+      if (!this.current(epoch) || !this.networkAllowed()) return;
     }
-    if (!this.current(epoch)) return;
-    const originals = await this.store.readExecutionSubmissions(this.context().identity);
-    if (!this.current(epoch)) return;
-    this.originals = originals.filter(entry => entry.owner.ownerKey !== this.scopeKey); await this.reload();
+    await this.refreshRecoveries(epoch); await this.reload();
   }
-  checkStatus = async (): Promise<void> => {
+  checkStatus = async (ref?: ImageDraftRecoveryRef): Promise<void> => {
     if (this.checking || !this.saved || !this.networkAllowed()) return; this.checking = true; this.publish();
-    try { await this.checkSubmissions(); await this.prepareUploads(true); } finally { this.checking = false; this.publish(); }
+    try { await this.checkSubmissions(ref); await this.prepareUploads(true); } finally { this.checking = false; this.publish(); }
   };
   private stopObserving(): void { if (this.observeTimer) clearTimeout(this.observeTimer); this.observeTimer = null; this.observeStarted = 0; this.observeAttempt = 0; }
   private observeLater(reset = false): void {
@@ -630,7 +697,22 @@ export class ImageDraftController {
     this.observeTimer = setTimeout(() => { this.observeTimer = null; void this.backgroundWork(this.checkStatus().then(() => this.observeLater())); }, delay);
   }
   continueEditing = async (): Promise<void> => { this.context(); if (!this.saved?.submission || this.local) return; const epoch = this.epoch, snapshot = await this.store.startSuccessor(this.saved.owner, this.saved.submission.operationId); if (this.current(epoch)) this.adopt(snapshot); };
-  resolveFailure = async (choice: 'current' | 'failed'): Promise<void> => { this.context(); if (!this.saved?.submission) return; const epoch = this.epoch; await this.flush(); if (!this.current(epoch)) return; const snapshot = await this.store.resolveFailure(this.saved.owner, this.saved.submission.operationId, choice === 'current' ? 'keep_current' : 'restore_failed'); if (!this.current(epoch)) return; this.adopt(snapshot); await this.prepareUploads(); };
+  resolveFailure = async (ref: ImageDraftRecoveryRef, choice: 'current' | 'failed'): Promise<void> => {
+    this.context(); const epoch = this.epoch;
+    const resolve = async () => {
+      const entry = await this.recovery(ref, epoch);
+      if (!this.current(epoch) || !this.networkAllowed()) throw new Error('image_access_unavailable');
+      if (entry.owner.ownerKey === this.scopeKey && (this.dirty || this.conflict)) throw new DraftStoreError('conflict', 'Save or resolve the current draft before choosing a failed draft.');
+      await this.store.resolveFailure(entry.owner, entry.submission.operationId, choice === 'current' ? 'keep_current' : 'restore_failed', ref.choiceRevision);
+      if (!this.current(epoch)) return;
+      this.recoveryErrors.delete(recoveryKey(ref));
+      await this.refreshRecoveries(epoch); await this.adoptReadback(epoch);
+    };
+    const resolution = this.writes.catch(() => {}).then(resolve); this.writes = resolution;
+    try { await resolution; }
+    catch (error) { await this.recoveryFailed(ref, epoch, error); throw error; }
+    if (this.current(epoch)) { await this.restore(epoch); await this.prepareUploads(); }
+  };
   resolveConflict = async (choice: 'saved' | 'local'): Promise<void> => {
     this.context(); if (!this.saved) return;
     const epoch = this.epoch, latest = await this.store.read(this.saved.owner); if (!this.current(epoch)) return; this.saved = latest;
@@ -642,7 +724,7 @@ export class ImageDraftController {
     await this.prepareUploads();
   };
   revoke = async (reason: 'revoked' | 'account_changed' | 'deleted' = 'revoked'): Promise<void> => {
-    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.saved = null; this.local = null; this.originals = []; this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
+    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.saved = null; this.local = null; this.originals = []; this.recoveryErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
     for (const listener of this.listeners) listener();
     if (owner) try { await this.store.blockOwner(owner, reason); } catch (error) { this.fail(error); }
   };

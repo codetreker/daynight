@@ -147,15 +147,19 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     const reserveInput = () => {
       const style = getComputedStyle(surface), field = getComputedStyle(input), actions = getComputedStyle(footer);
       const pixels = (value: string) => Number.parseFloat(value) || 0;
-      const error = surface.querySelector<HTMLElement>('.session-error');
+      const error = surface.querySelector<HTMLElement>(':scope > .session-error');
       const errorStyle = error ? getComputedStyle(error) : null;
       const minimum = pixels(field.minHeight) + footer.offsetHeight + pixels(actions.marginTop) + pixels(style.paddingTop) + pixels(style.paddingBottom) + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth) + (error ? error.offsetHeight + pixels(errorStyle!.marginTop) : 0);
       surface.style.minHeight = `${minimum}px`;
     };
     reserveInput();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserveInput);
+    let frame: number | null = null;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      // The measured surface is also observed; publish its minimum next frame.
+      if (frame === null) frame = requestAnimationFrame(() => { frame = null; reserveInput(); });
+    });
     observer?.observe(surface); observer?.observe(footer);
-    return () => observer?.disconnect();
+    return () => { observer?.disconnect(); if (frame !== null) cancelAnimationFrame(frame); };
   }, [active, error]);
   const snapshot = state.snapshot;
   const controls = snapshot?.controls;

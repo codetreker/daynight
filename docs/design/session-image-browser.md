@@ -33,7 +33,7 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 
 草稿归属 key 是规范 service origin + 真实 actorUserId + resolver owner kind/ID + 完整 SessionFence + expectedNativeSessionId（null 为精确值）。Task resolver 附带 projectId/taskId，独立 Session 使用 sessionId/testExecutionId；Test URL 和 Bot URL 若解析为同一实际独立 Session，应共享草稿 owner，不各建一个竞争草稿。botId 仅作为已验证关联，不进入内容身份。key 使用有版本的结构化数组编码，不能用含原生字符串的冒号拼接产生碰撞。
 
-公共协议 `ImageTarget` 从当前已认证 snapshot 生成，不接受用户可编辑的 target。连接 epoch、historyEpoch、sessionRevision、React mount、全屏及无变化权限复核不改变草稿归属；native/generation/account 的真实变化使旧目标脱离当前发送资格。旧草稿只在其原账户和原 Session 访问权限重新确认后作为旧目标草稿可读，不自动移到新目标。跨 Session 搬运不提供产品入口。
+公共协议 `ImageTarget` 从当前已认证 snapshot 生成，不接受用户可编辑的 target。连接 epoch、historyEpoch、sessionRevision、React mount、全屏及无变化权限复核不改变草稿归属；native/generation/account 的真实变化使旧目标脱离当前发送资格。旧草稿只在其原账户和原 Session 访问权限重新确认后作为旧目标草稿可读，不自动移到新目标。owner 切换时文字与附件作为完整草稿同步切换；新 owner 没有草稿时不得留下旧图片草稿的文字作为可发送的纯文字输入。跨 Session 搬运不提供产品入口。
 
 选择、发送及恢复读取均捕获开始时的 owner 和授权代次。异步结果先检查原身份仍有效，再更新当前状态；阻止旧结果发布不足以防止它先污染新 owner 的内存。发送准备返回后，调用方在进入发送路径的同一同步续段再次核对目标、能力与用户已查看的完整内容，身份检查之后不能跨过未校验的异步间隙。
 
@@ -57,7 +57,7 @@ revision 从 `"1"` 起，对文字、附件增删/替换、显式目标重新准
 
 写入使用覆盖相关 stores 的短 readwrite 事务，按 observed storeVersion/accessEpoch 比较；Blob 和引用、草稿内容一起提交。hash/解码和网络在事务外，完成后再核对原 owner、byteRevision 和 observed revision。只以 transaction `complete` 确认保存，不以单次 put request 成功确认；关键冻结和清理请求 strict durability，仍不把浏览器存储当不可被用户删除的备份。[IndexedDB 标准](https://www.w3.org/TR/IndexedDB-3/#transaction-durability-hint)明确其耐久提示和完成语义。
 
-同一草稿 controller 的内容写入、上传身份分配及版本读回共用本地串行队列，包括上传回执触发的草稿读回。排队动作开始后重新核对 owner、附件字节版本和已有 uploadId，避免同时选图或恢复触发重复分配，也避免本地写入或回执读回使用自己刚推进前的旧 storeVersion。成功内容写入在队列外恢复当前草稿的上传准备，避免暂因未保存编辑退出的上传永久停留；等待已有上传后重新核对最新状态，未知请求仍沿原查询和显式恢复规则。网络上传在该队列外运行，用户编辑不等待上传完成；跨标签页竞争仍由实际 IDB CAS 决定。
+同一草稿 controller 的内容写入、上传身份分配及版本读回共用本地串行队列，包括上传回执触发的草稿读回。排队动作开始后重新核对 owner、附件字节版本和已有 uploadId，避免同时选图或恢复触发重复分配，也避免本地写入或回执读回使用自己刚推进前的旧 storeVersion。成功内容写入在队列外恢复当前草稿的上传准备，避免暂因未保存编辑退出的上传永久停留；等待已有上传后重新核对最新状态，未知请求仍沿原查询和显式恢复规则。网络上传在该队列外运行，用户编辑不等待上传完成；跨标签页竞争仍由实际 IDB CAS 决定。操作查询与结算的读回也经过同一内容冲突判定；远端操作状态推进不能把另一标签页已提交的 successor 版本授予本地旧内容。检测到竞争内容时，保留本地未保存版本及其原写入基线，显示冲突，直到用户明确选择。
 
 正文输入立即更新本地显示，按每次 input 排序提交，合并尚未启动的连续文本写（最长 250ms）；IME 组合期间不改选区，保存原 text 值，compositionend 刷新。添加 Blob、Send、切换 owner、正常导航前 flush 已排队写；不依赖 unload/pagehide 最后一刻异步写保证恢复。尚未完成时是“正在保存”，失败时为“草稿未保存，刷新可能丢失”，提供“重试保存”。默认成功不显示常驻说明；只有所有最新内容提交才能撤销失败提示。
 
@@ -75,7 +75,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 每个 upload 的网络变更由一个 `navigator.locks` exclusive 锁持有者运行，同 owner 的发送冻结另有锁；它们配合 IDB 持久 intent，不能以锁取代持久事实。锁名仅用 ownerKey 的本地摘要和 uploadId。禁止 steal/超时强抢；冻结 tab 仍持锁时其他 tab显示“另一窗口正在处理”，允许其他本地编辑。锁释放/页面关闭后接手者先查持久状态和原服务身份。Web Locks 不可用时图片网络变更禁用，保留文字与本地草稿，不能用不安全的 localStorage 心跳模拟互斥。[Web Locks 标准](https://www.w3.org/TR/web-locks/#introduction)规定同源 exclusive 访问及生命周期；跨进程服务去重仍由公共协议与服务存储承担。
 
-发送屏障另以 origin+actor+SessionFence 的执行key建立跨owner索引；expectedNativeSessionId从null变为值不能绕过原未决提交。相同执行的任一旧target unresolved存在时，新owner只准本地编辑，不发新命令；原operation接受后按确切初始化关联结算并解除。新的generation不读取旧target为当前输入，旧结果保持单独查询入口。
+发送屏障另以 origin+actor+SessionFence 的执行key建立跨owner索引；expectedNativeSessionId从null变为值不能绕过原未决提交。相同执行的任一旧target unresolved存在时，新owner只准本地编辑，不发新命令；原operation接受后按确切初始化关联结算并解除。新的generation不读取旧target为当前输入。历史未决操作按相同 origin、actor、resolver、实际 Session 及其原 claimId/testExecutionId 独立发现，保留原 owner、fence 和 operationId 的只读查询入口；该恢复查找不依赖当前 executionGeneration，也不把旧内容绑定到新 owner。普通消息和原生命令的准入均检查持久屏障，不能因当前内存 operation 列表为空或旧查询404绕过。
 
 上传锁持有至本次变更已返回或等待取消完成并把 unknown 写入 IDB；即使浏览器取消 fetch，下一持有者也先 GET，不能认为服务撤回。发送只允许事务中的 `prepared → dispatch_claimed` 单次转换者发原命令；状态提交后崩溃即当可能已派发，仅查询。这样暂停旧 tab 恢复也不能与新 tab 同时拿到 dispatch 权。浏览器局部锁不取代服务 operationId/intent 去重。
 
@@ -138,7 +138,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 原生接受结算在单事务中为原 submission 记已接受、清理仅匹配的 frozen draft、移除它的本地引用、释放 owner 屏障；已有 successor 的文本/图片/revision完全不改。界面立即与持久状态一致更新，存储结算失败时显示“已发送，草稿清理未保存”，保持发送屏障并重试本地结算/查询，不再派发。恢复原 frozen 后查询同 operation 得到接受再幂等清理。同一提交不存在按“文字相同/摘要相同”认领的规则。
 
-明确未派发失败：没有 successor 时恢复原 editable；已有 successor 时保留两份内容，原 frozen 变为待处理失败稿。提供两个有明确放弃对象的操作：“保留当前编辑，放弃失败稿”或“恢复失败稿，放弃当前编辑”；提交选择前展示两份内容的文本摘要和图片数量，允许展开查看，取消不修改任何一份。第一项删除失败稿引用并保留successor，第二项删除successor引用并将失败稿恢复editable；不自动合并、不产生第三份草稿。在处理失败稿前不建立第二个提交。服务释放原 operation 占用由公共协议与服务存储完成，客户端 DELETE不能假冒结算。原生失败终态如无法保证未接受，按 unknown处理。
+明确未派发失败：没有 successor 时恢复原 editable；已有 successor 时保留两份内容，原 frozen 变为待处理失败稿。提供两个有明确放弃对象的操作：“保留当前编辑，放弃失败稿”或“恢复失败稿，放弃当前编辑”；提交选择前展示两份内容的文本摘要和图片数量，允许展开查看，取消不修改任何一份。恢复项绑定原 owner、operationId 及两份草稿的内容版本；确认期间条目、权限或版本改变则要求重新查看，事务内再次比较后才处理引用。旧 native 或旧 generation 的失败稿也保留此入口；只更新原 owner 的两份草稿及其屏障，不将任何一份自动替换当前 owner 的输入。第一项删除失败稿引用并保留successor，第二项删除successor引用并将失败稿恢复editable；不自动合并、不产生第三份草稿。在处理失败稿前不建立第二个提交。服务释放原 operation 占用由公共协议与服务存储完成，客户端 DELETE不能假冒结算。原生失败终态如无法保证未接受，按 unknown处理。
 
 unknown 时保留完整 intent、快照、bytes、引用和原操作入口；前后台使用原 operation 查询，轮询超时不解除发送屏障。页面关闭、刷新、Bot pane 驱逐只结束当前观察。权限或目标改变时，通过原 owner 的正式只读查询入口观察，不能对新 base 查询旧 ID，不能从旧 404 判定未发送。
 
@@ -156,7 +156,7 @@ unknown 时保留完整 intent、快照、bytes、引用和原操作入口；前
 
 ## 响应式与入口一致性
 
-桌面和390px共享 DOM与交互。附件区 flex/grid可换行，限制自身高度并内部滚动，给 textarea、动作栏和时间线保留空间；软键盘/visualViewport变化重新计算可用高度，不把全页撑出横向滚动。长名省略但键盘焦点可读完整安全label；主要图片操作目标≥44px，缩略预览、移除、重试均有文字可访问名称。进度 aria-valuenow按确认偏移更新并节流公告；校验中用aria-busy，失败有具体修复动作，不逐块刷屏朗读。遵守prefers-reduced-motion，不依赖hover查看失败理由。
+桌面和390px共享 DOM与交互。附件区 flex/grid可换行，限制自身高度并内部滚动，给 textarea、动作栏和时间线保留空间；输入区最小高度只计入自己的直接错误提示，不重复计入附件或历史恢复条目的内部错误。尺寸观察回调引起的最小高度写入合并到下一动画帧，并在卸载时取消，避免在观察器分发期间再次改变被观察元素的尺寸；软键盘/visualViewport变化重新计算可用高度，不把全页撑出横向滚动。长名省略但键盘焦点可读完整安全label；主要图片操作目标≥44px，缩略预览、移除、重试均有文字可访问名称。进度 aria-valuenow按确认偏移更新并节流公告；校验中用aria-busy，失败有具体修复动作，不逐块刷屏朗读。遵守prefers-reduced-motion，不依赖hover查看失败理由。
 
 Enter/Shift+Enter及平台快捷键沿主线，IME期间不提交；纯图点击/快捷键走同一gate。Send只表达当前准备/提交资格；原因不明显时提供可聚焦说明，真实失败保留行内错误。既有session状态提示只显示一次；不向用户暴露uploadId、fence、hash、数据库或块协调术语。取消回合仍是独立原控件，不移除草稿或替代取消上传。
 

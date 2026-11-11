@@ -1,7 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction } from 'idb';
 import type { ImageUploadReceipt, SessionOperation } from '../../../../../daynight/src/session/protocol';
-import { canonicalDraftOrigin, draftAccountKey, draftExecutionKey, draftOwnerKey, sameDraftFence, sameDraftTarget } from './draft-store-identity';
-import type { DraftBlob, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
+import { canonicalDraftOrigin, draftAccountKey, draftExecutionKey, draftOwnerKey, sameDraftFence, sameDraftRecoveryScope, sameDraftTarget } from './draft-store-identity';
+import type { DraftBlob, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
 export { draftExecutionKey, draftOwnerKey } from './draft-store-identity';
 export const SESSION_DRAFT_DATABASE = 'daynight-session-drafts';
 export const SESSION_DRAFT_SCHEMA = 1;
@@ -32,6 +32,13 @@ const newDraft = (ownerKey: string): DraftRecord => ({ ownerKey, draftId: crypto
 const increment = (version: number): number => { if (!Number.isSafeInteger(version) || version >= Number.MAX_SAFE_INTEGER) return fail('invalid', 'Draft storage version is exhausted.'); return version + 1; };
 const revision = (value: string): string => { if (!/^[1-9][0-9]*$/.test(value) || BigInt(value) >= MAX_REVISION) return fail('revision_exhausted', 'Create a new draft before editing this revision.'); return String(BigInt(value) + 1n); };
 const immutable = <T>(value: T): T => structuredClone(value);
+
+export function draftRecoveryRef(snapshot: Pick<DraftSnapshot, 'owner' | 'submission' | 'frozen' | 'editable'>): DraftRecoveryRef | null {
+  if (!snapshot.submission) return null;
+  const version = (draft: DraftRecord | null) => draft ? [draft.draftId, draft.revision, draft.storeVersion] : null;
+  return { ownerKey: snapshot.owner.ownerKey, operationId: snapshot.submission.operationId,
+    choiceRevision: JSON.stringify([snapshot.owner.accessEpoch, snapshot.submission.state, version(snapshot.frozen), version(snapshot.editable)]) };
+}
 
 export class SessionDraftStore {
   private connection: Promise<IDBPDatabase<SessionDraftSchema>> | null = null;
@@ -124,6 +131,20 @@ export class SessionDraftStore {
         if (owner.blocked || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !owner.unresolvedSubmissionId) continue;
         const submission = await tx.objectStore('submissions').get([owner.ownerKey, owner.unresolvedSubmissionId]);
         if (submission) results.push({ owner, submission });
+      }
+      return results;
+    });
+  }
+  async readRecoverableSubmissions(identity: DraftOwnerIdentity): Promise<readonly DraftRecoverySnapshot[]> {
+    return this.transaction('readonly', async (tx) => {
+      await this.assertIdentityAvailable(tx, identity);
+      const current = await this.readOwner(tx, draftOwnerKey(identity));
+      if (current) await this.owner(tx, current);
+      const results: DraftRecoverySnapshot[] = [];
+      for (const owner of (await tx.objectStore('owners').index('account').getAll(draftAccountKey(identity))).filter(isOwner)) {
+        if (owner.blocked || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !owner.unresolvedSubmissionId || !sameDraftRecoveryScope(owner.identity, identity)) continue;
+        const snapshot = await this.snapshot(tx, await this.owner(tx, owner));
+        if (snapshot.submission) results.push({ ...snapshot, submission: snapshot.submission });
       }
       return results;
     });
@@ -375,12 +396,13 @@ export class SessionDraftStore {
       return this.snapshot(tx, owner);
     });
   }
-  async resolveFailure(handle: DraftHandle, operationId: string, choice: 'keep_current' | 'restore_failed'): Promise<DraftSnapshot> {
+  async resolveFailure(handle: DraftHandle, operationId: string, choice: 'keep_current' | 'restore_failed', expectedChoiceRevision: string): Promise<DraftSnapshot> {
     return this.transaction('readwrite', async (tx) => {
       let owner = await this.owner(tx, handle); const submission = await tx.objectStore('submissions').get([owner.ownerKey, operationId]);
       if (!submission || pending(submission) || submission.state === 'accepted' || owner.unresolvedSubmissionId !== operationId || !owner.editableDraftId) return fail('conflict', 'No failed draft is waiting for a choice.');
       const failed = await tx.objectStore('drafts').get([owner.ownerKey, submission.draftId]); const current = await tx.objectStore('drafts').get([owner.ownerKey, owner.editableDraftId]);
       if (!failed || !current) return fail('invalid', 'A draft needed for the choice is missing.');
+      if (draftRecoveryRef({ owner, submission, frozen: failed, editable: current })?.choiceRevision !== expectedChoiceRevision) return fail('conflict', 'The drafts changed after the failure choice was displayed.');
       const removed = choice === 'keep_current' ? failed : current; const kept = choice === 'keep_current' ? current : failed;
       await this.releaseRemoved(tx, owner.ownerKey, removed, null); await tx.objectStore('drafts').delete([owner.ownerKey, removed.draftId]);
       await tx.objectStore('drafts').put({ ...kept, state: 'editable', storeVersion: increment(kept.storeVersion) });

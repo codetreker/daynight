@@ -98,6 +98,8 @@ export type DraftSnapshot = {
   readonly uploads: readonly DraftUpload[];
   readonly executionBlocked: boolean;
 };
+export type DraftRecoveryRef = { readonly ownerKey: string; readonly operationId: string; readonly choiceRevision: string };
+export type DraftRecoverySnapshot = DraftSnapshot & { readonly submission: DraftSubmission };
 export type DraftWrite = {
   readonly draftId: string;
   readonly expectedStoreVersion: number;

@@ -33,11 +33,22 @@ Network transfers remain outside that queue so editing does not wait for them;
 successful content writes resume eligible uploads after temporary dirty-state
 admission pauses. Waiting upload work rechecks the latest state before resuming;
 unknown requests retain their explicit recovery rules, and
-cross-tab writes still require the database's version checks.
+cross-tab writes still require the database's version checks. Operation observation
+and settlement use the same content-conflict check: a new operation receipt cannot
+advance the write baseline of unsaved content over another tab's successor edit.
 
 An explicit successor draft permits local editing without changing the frozen
 submission. Native acceptance settles only the original draft identity and
-revision. Scoped adapters provide verified leases to one preview host per real
+revision. Text and attachments switch together when the owner changes; an old
+image draft cannot become a new target's text-only input. Native commands observe
+the same durable submission barrier as messages, including after a fresh tab
+receives no operation receipt. Historical intents remain discoverable for the
+same authenticated actor, resolver, actual Session and original claim or test
+execution across execution generations. They
+retain their original fence for observation without entering the new editable
+draft. Failure recovery binds the original owner, operation and displayed draft
+versions; a competing edit invalidates confirmation before either draft is
+discarded. Scoped adapters provide verified leases to one preview host per real
 Session or read-only record. Bounded page caches remain separate from durable
 service references and browser draft storage. Preview lives inside the actual
 Session presentation root, with explicit coordination for higher authentication
@@ -118,7 +129,11 @@ send and steer remain unavailable until their complete service and native profil
 qualifications are established. Controlled browser transport proves draft,
 persistence and UI behavior, not native image acceptance.
 
-Image operations use at least 44px touch targets. Media anchors retain a 2 CSS px
+Composer height reservation counts only its own direct error, while attachment
+and historical recovery errors stay inside their bounded content area. Resize
+observation schedules dimension writes for the next animation frame rather than
+changing the observed surface during delivery. Image operations use at least 44px
+touch targets. Media anchors retain a 2 CSS px
 bound without weakening the existing 1 CSS px text-prepend guarantee. Responsive
 browser fixtures cannot establish physical mobile behavior or native Provider
 acceptance. Carousel navigation, image editing, automatic resend and cross-device

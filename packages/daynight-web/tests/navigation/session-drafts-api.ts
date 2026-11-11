@@ -45,8 +45,10 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   const held: Route[] = [];
   const budget = { revision: '1', maxBytes: '1073741824', committedBytes: '0', reservedBytes: '0', maxResources: 1000, committedResources: 0, reservedResources: 0 };
   const snapshot = { ...snapshotJson, contentRevision: 2, imageBudget: budget, capabilities: { ...snapshotJson.capabilities, images: capability }, lastEventSeq: '0', lastTimelineSeq: '0' };
+  const publishSnapshots = new Set<() => void>();
   await context.routeWebSocket('**/api/v1/**/channel*', socket => {
-    socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }));
+    const publish = () => socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }));
+    publishSnapshots.add(publish); socket.onClose(() => { publishSnapshots.delete(publish); }); publish();
   });
   const operation = (command: SessionCommand, state: SessionOperation['state']): SessionOperation => ({ protocol: command.protocol, sessionId: command.sessionId, ...('claimId' in command ? { claimId: command.claimId! } : { testExecutionId: command.testExecutionId! }), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state, providerResult: null, error: null });
   const handle = async (route: Route) => {
@@ -98,7 +100,14 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   };
   await context.route('**/draft-fixture-api/**', handle);
   await context.route('**/api/v1/projects/**/sessions/**', handle);
-  return { observations, uploads, capability, setDispatch: (mode: typeof dispatchMode) => { dispatchMode = mode; }, setQuery: (state: typeof queryState) => { queryState = state; }, seedOperation: (value: SessionOperation) => { originalOperations.set(value.operationId, value); }, cleanup: async () => { await Promise.all(held.splice(0).map(route => route.abort().catch(() => {}))); } };
+  return { observations, uploads, capability,
+    changeTarget: (nativeSessionId: string, executionGeneration = snapshot.executionGeneration) => {
+      snapshot.identity = { ...snapshot.identity, nativeSessionId }; snapshot.executionGeneration = executionGeneration;
+      snapshot.sessionRevision = String(BigInt(snapshot.sessionRevision) + 1n);
+      Object.assign(capability, { expectedNativeSessionId: nativeSessionId, revision: String(BigInt(capability.revision) + 1n) });
+      publishSnapshots.forEach(publish => publish());
+    },
+    setDispatch: (mode: typeof dispatchMode) => { dispatchMode = mode; }, setQuery: (state: typeof queryState) => { queryState = state; }, seedOperation: (value: SessionOperation) => { originalOperations.set(value.operationId, value); }, cleanup: async () => { await Promise.all(held.splice(0).map(route => route.abort().catch(() => {}))); } };
 }
 export async function openDraft(page: Page) {
   await page.goto(fixtureUrl);

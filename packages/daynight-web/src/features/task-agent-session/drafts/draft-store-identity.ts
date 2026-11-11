@@ -16,3 +16,14 @@ export const draftOwnerKey = (identity: DraftOwnerIdentity): string => {
 export const draftAccountKey = (identity: DraftOwnerIdentity): string => JSON.stringify(['daynight-draft-account', 1, canonicalDraftOrigin(identity.target.serverOrigin), identity.target.actorUserId]);
 export const sameDraftFence = (a: SessionFence, b: SessionFence): boolean => JSON.stringify(draftFenceParts(a)) === JSON.stringify(draftFenceParts(b));
 export const sameDraftTarget = (a: ImageTarget, b: ImageTarget): boolean => canonicalDraftOrigin(a.serverOrigin) === canonicalDraftOrigin(b.serverOrigin) && a.actorUserId === b.actorUserId && sameDraftFence(a.fence, b.fence) && a.expectedNativeSessionId === b.expectedNativeSessionId;
+
+/** Recovery may observe an older generation, without granting it a new owner. */
+export const sameDraftRecoveryScope = (a: DraftOwnerIdentity, b: DraftOwnerIdentity): boolean => {
+  const resolver = (value: DraftOwnerIdentity) => value.resolver.kind === 'task'
+    ? ['task', value.resolver.projectId, value.resolver.taskId]
+    : ['session', value.resolver.sessionId, value.resolver.testExecutionId];
+  return draftAccountKey(a) === draftAccountKey(b)
+    && JSON.stringify(resolver(a)) === JSON.stringify(resolver(b))
+    && JSON.stringify(draftFenceParts(a.target.fence).slice(0, 3)) === JSON.stringify(draftFenceParts(b.target.fence).slice(0, 3))
+    && BigInt(a.target.fence.executionGeneration) <= BigInt(b.target.fence.executionGeneration);
+};

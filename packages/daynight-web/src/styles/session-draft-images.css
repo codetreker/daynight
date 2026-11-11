@@ -10,6 +10,7 @@
 .session-draft-name, .session-draft-rejected, .session-draft-frozen-text { overflow-wrap: anywhere; white-space: pre-wrap; }
 .session-draft-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
 .session-draft-recovery details { width: 100%; }
+.session-draft-recovery-content summary { overflow-wrap: anywhere; white-space: pre-wrap; }
 .session-draft-attachments .button, .session-add-images { min-height: 44px; min-width: 44px; }
 .session-draft-attachments .session-error { margin: .25rem 0; }
 .session-draft-saving, .session-draft-disabled { display: block; font-size: .85em; }
