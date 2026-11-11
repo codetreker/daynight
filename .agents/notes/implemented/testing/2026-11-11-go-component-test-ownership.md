@@ -41,8 +41,12 @@ packages is not itself a saving.
 The Root fixture retains its existing shared names and semantics for ordinary
 and tagged consumers. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
-and protected API proofs. Worker HTTP protocol matrices live with their Worker
-registrar, with real Service and Core where appropriate and narrow controlled
+and protected API proofs. UniAuth identity, browser binding and result transport
+scenarios live with the Authentication adapter, using real Identity components,
+the SDK and an isolated gateway with controlled DAO facts. Root retains the
+production constructor and configured callback assembly witness. Worker HTTP
+protocol matrices live with their Worker registrar, with real Service and Core
+where appropriate and narrow controlled
 capabilities for precise outcomes; HTTP fault classification belongs to httpx.
 Project and Team HTTP organization scenarios use their real registrars and
 Service/Core with controlled DAO facts. Project, Team and Invitation MCP

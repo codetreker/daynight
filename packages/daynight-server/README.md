@@ -1764,9 +1764,11 @@ completion as explicit test inputs. Callback writes do not determine future read
 state. Configuration validation and startup ordering live with Config and App;
 `internal/server/webui` owns the static route and request-log matrix. Root retains
 actual `New` route composition, API protection and representative shell and asset
-wiring. Tests of UniAuth result/browser binding and SDK wire loss retain their
-isolated gateway, real proxy and sockets; prepare the pinned auth fixture as
-described in [validation](#validate).
+wiring. The `internal/server/auth` tests of UniAuth identity, result/browser
+binding and SDK wire loss use real Authentication and Identity components with
+controlled DAO facts, an isolated gateway, real proxy and sockets. Root retains
+the production `New` and configured callback assembly proof. Prepare the pinned
+auth fixture as described in [validation](#validate).
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
@@ -2082,7 +2084,16 @@ controlled external provider responses and owns its temporary resources. For
 focused integration tests, source `scripts/env.sh`, set
 `DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
 output of that preparation script. Both coverage entries perform their required
-preparation themselves. The real archive upload and response socket deadlines
+preparation themselves. The UniAuth identity, browser binding and wire-loss
+selection in `internal/server/auth` runs with the gateway fixture and
+`DAYNIGHT_TEST_DATABASE_URL` unset. The complete auth package still requires an
+isolated PostgreSQL database for its other fixtures:
+
+```bash
+env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/server/auth -run '^TestAuthentication(UniAuthIdentityAndCredentials|UniAuthBrowserBindingAndConsumption|RealUniAuthResultWireLoss)$' -count=1
+```
+
+The real archive upload and response socket deadlines
 can be checked separately with
 `DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`;
 each test waits for the production 120-second deadline.
@@ -2090,7 +2101,7 @@ The shared fixture cleanup waits for process exit and reports forced termination
 an unconfirmed service, database-session or gateway exit retains dependent owned
 resources. `scripts/check.sh` explicitly tests `testdata/testauth`, which `./...`
 does not discover. The real wire-loss test in
-[`auth_transport_acceptance_test.go`](internal/server/auth_transport_acceptance_test.go)
+[`auth_transport_test.go`](internal/server/auth/auth_transport_test.go)
 checks the SDK-side connection and subsequent login recovery; controlled-provider
 evidence does not establish a live human login.
 
