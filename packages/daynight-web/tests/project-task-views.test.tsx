@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { TEST_VIEWER_ID, taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
@@ -5,7 +6,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, getTask, getTaskSync } from '../src/api/client';
-import type { GraphTask, TaskGraph } from '../src/api/types';
+import type { GraphTask, TaskGraph, WorkerClaim } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview';
 import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
@@ -28,7 +29,7 @@ const project = '00000000-0000-4000-8000-000000000100';
 const otherProject = '00000000-0000-4000-8000-000000000200';
 const canonicalTask = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
+const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false,
   createdAt: timestamp, updatedAt: timestamp,
 });
@@ -54,7 +55,7 @@ const mockSessionStore = () => {
 afterEach(() => { for (const { scope, store } of mockedSessionStores.splice(0)) { store.dispose(); scope.dispose(); } });
 const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
   const graph = snapshot(tasks);
-  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
+  return { graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
 };
 const sectionTabs = () => within(root.querySelector<HTMLElement>('.project-section-tabs')!);
 const taskTabs = () => within(root.querySelector<HTMLElement>('.project-task-tabs')!);
@@ -62,7 +63,7 @@ const titleActions = () => within(root.querySelector<HTMLElement>('.project-titl
 const filters = () => within(root.querySelector<HTMLElement>('#project-section-panel-tasks .task-list-filters:not(.task-search-filters)')!);
 const overviewProgress = () => within(document.getElementById('project-overview-progress')!);
 const sectionTab = (section: 'overview' | 'tasks') => sectionTabs().getByRole('tab', { name: section === 'overview' ? '概览' : '任务列表' });
-const tab = (view: 'chains' | 'standalone') => taskTabs().getByRole('tab', { name: view === 'chains' ? '任务链' : '独立任务' });
+const tab = (view: 'chains' | 'standalone' | 'goals') => taskTabs().getByRole('tab', { name: view === 'chains' ? '任务链' : view === 'standalone' ? '独立任务' : 'Goal' });
 const findTab = (view: 'chains' | 'standalone') => waitFor(() => tab(view));
 const expectUnfinishedCounts = (chains: number, standalone: number) => {
   expect(tab('chains').querySelector('.graph-count-pill')).toHaveTextContent(new RegExp(`^${chains}$`));
@@ -86,11 +87,12 @@ let root: HTMLDivElement;
 
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
-const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
+const workerClaims = new Map<string, WorkerClaim>();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: (task) => ({ pullRequests: [], ...(workerClaims.has(task.id) ? { worker: workerClaims.get(task.id)! } : {}) }) });
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
-  syncFixture.reset();
+  syncFixture.reset(); workerClaims.clear();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
@@ -128,6 +130,84 @@ const openStandalone = async (id: string) => {
 };
 
 describe('project task views', () => {
+  it('shows real Goal summaries separately from scoped tasks and keeps an empty Goal visible', async () => {
+    const goal = canonicalTask(500), emptyGoal = canonicalTask(501), rootId = canonicalTask(1), outsideId = canonicalTask(2), singleId = canonicalTask(3);
+    graphRequest.mockResolvedValue(snapshot([
+      { ...seed(goal, 'done'), type: 'goal' }, { ...seed(emptyGoal), type: 'goal' },
+      { ...seed(rootId, 'done'), parentId: goal }, seed(outsideId, 'todo', [rootId]), { ...seed(singleId, 'cancelled'), parentId: goal },
+    ]));
+    mount(); await findTab('chains');
+    const chain = await findChainRow(rootId);
+    expect(chain).toHaveTextContent('0/1');
+    fireEvent.click(chain);
+    expect(document.getElementById(`chain-task-${rootId}-${outsideId}`)).toBeVisible();
+    expect(document.getElementById(`chain-task-${rootId}-${rootId}`)).toBeNull();
+    fireEvent.click(tab('standalone'));
+    expect(row(singleId)).toBeNull();
+    fireEvent.click(tab('goals'));
+    expect(document.getElementById(`project-goal-${goal}`)).toHaveTextContent('1 完成 · 1 取消');
+    expect(document.getElementById(`project-goal-${emptyGoal}`)).toHaveTextContent('0/0 已完成');
+  });
+
+  it('paginates Goal summaries by twenty without counting children', async () => {
+    const goals = Array.from({ length: 21 }, (_, position) => ({ ...seed(canonicalTask(500 + position)), type: 'goal' as const }));
+    const children = Array.from({ length: 25 }, (_, position) => ({ ...seed(canonicalTask(700 + position)), parentId: goals[0]!.id }));
+    graphRequest.mockResolvedValue(snapshot([...goals, ...children]));
+    mount(); await findTab('chains'); fireEvent.click(tab('goals'));
+    expect(document.querySelectorAll('.goal-list-row')).toHaveLength(20);
+    const first = [...document.querySelectorAll('.goal-list-row')].map((element) => element.id);
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Goal分页' })).getByRole('button', { name: '下一页' }));
+    const second = [...document.querySelectorAll('.goal-list-row')].map((element) => element.id);
+    expect(second).toHaveLength(1);
+    expect(new Set([...first, ...second]).size).toBe(21);
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it('restores focus to a current entry after a previous detail and cross-Goal graph navigation', async () => {
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+    try {
+    const rootId = canonicalTask(1), child = canonicalTask(2), witness = canonicalTask(3), previous = canonicalTask(4), goal = canonicalTask(5);
+    graphRequest.mockResolvedValue(snapshot([
+      seed(rootId, 'done'), seed(child, 'todo', [rootId, witness], [witness]),
+      { ...seed(witness, 'done'), parentId: goal }, seed(previous), { ...seed(goal), type: 'goal' },
+    ]));
+    mount(); await findTab('standalone');
+    const { trigger: previousTrigger, dialog } = await openStandalone(previous);
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(previousTrigger).toHaveFocus());
+    fireEvent.click(tab('chains'));
+    await openChain(rootId);
+    fireEvent.click(screen.getByTestId(`external-${witness}`));
+    const goalDialog = await screen.findByRole('dialog', { name: `任务 ${goal}` });
+    await waitFor(() => expect(goalDialog.querySelector(`[data-goal-task-id="${witness}"]`)).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(screen.getByTestId(`external-${witness}`)).toHaveFocus());
+    expect(previousTrigger).not.toHaveFocus();
+    expect(dialog.isConnected).toBe(false);
+    } finally {
+      if (scroll === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+      else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+    }
+  });
+  it('locates the real Goal when a graph Details target is a cross-scope ordinary member', async () => {
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+    try {
+      const representative = canonicalTask(1), outside = canonicalTask(2), goal = canonicalTask(5);
+      graphRequest.mockResolvedValue(snapshot([
+        { ...seed(representative, 'done'), parentId: goal }, seed(outside, 'todo', [representative]), { ...seed(goal), type: 'goal' },
+      ]));
+      mount(); await findTab('chains');
+      fireEvent.click(await openChain(representative));
+      const dialog = await screen.findByRole('dialog', { name: `任务 ${goal}` });
+      await waitFor(() => expect(dialog.querySelector(`[data-goal-task-id="${representative}"]`)).toHaveFocus());
+      expect(dialog.querySelector('.goal-detail-disclosure')).toHaveAttribute('aria-expanded', 'true');
+    } finally {
+      if (scroll === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+      else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+    }
+  });
   it('shows completed children of an unfinished Goal', async () => {
     graphRequest.mockResolvedValue(snapshot([
       seed(canonicalTask(1), 'done'),
@@ -288,6 +368,29 @@ describe('project task views', () => {
     expectUnfinishedCounts(0, 0);
   });
 
+  it('updates the chain claim indicator through project sync without per-row reads', async () => {
+    const child = canonicalTask(2);
+    const claim: WorkerClaim = { claimId: canonicalTask(201), state: 'active', userId: canonicalTask(202), workerId: canonicalTask(203), machine: { id: canonicalTask(204), name: 'host' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: canonicalTask(205), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: timestamp };
+    workerClaims.set(child, claim);
+    graphRequest.mockResolvedValue(snapshot(seeds.map((task) => task.id === child ? { ...task, status: 'in_progress', startedAt: timestamp } : task)));
+    mount(); const header = await findChainRow();
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+    expect(getTask).not.toHaveBeenCalled();
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+    expect(getTask).not.toHaveBeenCalled();
+    workerClaims.set(child, { ...claim, state: 'released' });
+    graphRequest.mockResolvedValue(snapshot());
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(header).not.toHaveAccessibleName(/自动执行中/));
+    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(getTask).not.toHaveBeenCalled();
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('updates counts and categories from one successful snapshot and retains them while refreshing or after failure', async () => {
     let resolve!: (value: TaskGraph) => void;
     const refreshed = new Promise<TaskGraph>((done) => { resolve = done; });
@@ -330,12 +433,15 @@ describe('project task views', () => {
   it('uses roving tab focus with wrapping arrows, Home and End without requesting another snapshot', async () => {
     mount(); await findTab('chains'); tab('chains').focus();
     fireEvent.keyDown(tab('chains'), { key: 'ArrowRight' });
+    expect(tab('goals')).toHaveFocus();
+    fireEvent.keyDown(tab('goals'), { key: 'ArrowRight' });
     expect(tab('standalone')).toHaveFocus(); expect(tab('standalone')).toHaveAttribute('tabindex', '0');
     expect(tab('chains')).toHaveAttribute('tabindex', '-1');
     expect(screen.getByRole('tabpanel', { name: '独立任务' })).toBeVisible();
-    fireEvent.keyDown(tab('standalone'), { key: 'ArrowLeft' }); expect(tab('chains')).toHaveFocus();
+    fireEvent.keyDown(tab('standalone'), { key: 'ArrowLeft' }); expect(tab('goals')).toHaveFocus();
     fireEvent.keyDown(tab('chains'), { key: 'Home' }); expect(tab('standalone')).toHaveFocus();
-    fireEvent.keyDown(tab('standalone'), { key: 'End' }); expect(tab('chains')).toHaveFocus();
+    fireEvent.keyDown(tab('standalone'), { key: 'End' }); expect(tab('goals')).toHaveFocus();
+    tab('chains').focus();
     fireEvent.keyDown(tab('chains'), { key: 'ArrowDown' }); expect(tab('chains')).toHaveFocus();
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
@@ -364,7 +470,7 @@ describe('project task views', () => {
     scroll = 540; fireEvent.scroll(window); fireEvent.click(tab('chains'));
     expect(scroll).toBe(540);
     fireEvent.keyDown(tab('chains'), { key: 'ArrowRight' });
-    expect(tab('standalone')).toHaveFocus();
+    expect(tab('goals')).toHaveFocus();
     expect(scroll).toBe(540);
     expect(window.scrollTo).not.toHaveBeenCalled();
     expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(540);
@@ -392,8 +498,10 @@ describe('project task views', () => {
     expectUnfinishedCounts(0, 0);
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
-    fireEvent.click(titleActions().getByRole('button', { name: '刷新' })); await screen.findByRole('heading', { name: '还没有任务' });
-    expect(screen.queryByRole('tab', { name: '任务链' })).toBeNull();
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' })); await screen.findByRole('heading', { name: '暂无独立任务' });
+    expect(tab('chains')).toBeVisible();
+    fireEvent.click(tab('goals'));
+    expect(screen.getByRole('heading', { name: '暂无 Goal' })).toBeVisible();
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -522,6 +630,24 @@ describe('project overview and task workspace', () => {
     expect(scroll).toBe(760);
     expect(scrollIntoView).toHaveBeenCalledOnce();
     expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it('clears a status filter that only matches a different Goal scope before locating an overview chain', async () => {
+    const rootId = canonicalTask(1), childId = canonicalTask(2), goalId = canonicalTask(3);
+    graphRequest.mockResolvedValue(snapshot([
+      seed(rootId, 'done'), { ...seed(childId, 'todo', [rootId]), parentId: goalId }, { ...seed(goalId), type: 'goal' },
+    ]));
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    expect(chainRow(rootId)).toBeNull();
+    fireEvent.click(sectionTab('overview'));
+    fireEvent.click(progressButton(`任务 ${rootId}`));
+    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('all');
+    expect(chainRow(rootId)).toBeVisible();
+    expect(chainRow(rootId)).toHaveFocus();
+    expect(screen.queryByText('无法定位所选任务')).toBeNull();
   });
 
   it('locates the standalone list from its overview aggregate and expires the temporary highlight', async () => {
@@ -763,7 +889,7 @@ describe('project overview and task workspace', () => {
     await screen.findByRole('heading', { name: project });
     expect(screen.getAllByRole('tab')).toHaveLength(2);
     fireEvent.click(sectionTab('tasks'));
-    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     view.rerender(<ProjectPage projectId={otherProject} />);
     await screen.findByRole('heading', { name: otherProject });
     expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
@@ -773,7 +899,7 @@ describe('project overview and task workspace', () => {
     view.rerender(<ProjectPage projectId={project} />);
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('heading', { name: project });
-    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     fireEvent.click(sectionTab('overview'));
     expect(window.localStorage.getItem(key('project-section'))).toBe('"overview"');
     cleanup();
@@ -884,12 +1010,12 @@ describe('recent task browsing and pagination', () => {
     expect(within(overview).getByRole('button', { name: /^独立任务，/ })).toHaveTextContent('1 / 1');
   });
 
-  it.each((['standalone', 'chains'] as const).flatMap((category) => [0, 1, 15, 16, 30, 31].map((count) => [category, count] as const)))('paginates %s with %i entries without losing or repeating entries', async (category, count) => {
+  it.each((['standalone', 'chains'] as const).flatMap((category) => [0, 1, 20, 21, 40, 41].map((count) => [category, count] as const)))('paginates %s with %i entries without losing or repeating entries', async (category, count) => {
     graphRequest.mockClear();
     graphRequest.mockResolvedValue(snapshot(category === 'standalone' ? manyStandalone(count) : manyChains(count)));
     mount(); await screen.findByRole('heading', { name: project });
     if (count === 0) {
-      expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+      expect(tab('goals')).toBeVisible();
       expect(document.querySelectorAll('.standalone-row, .goal-toggle')).toHaveLength(0);
       return;
     }
@@ -897,15 +1023,15 @@ describe('recent task browsing and pagination', () => {
     const selector = category === 'standalone' ? '.standalone-row' : '.goal-toggle';
     const label = category === 'standalone' ? '独立任务列表' : '任务链列表';
     const seen: string[] = [];
-    const pageCount = Math.ceil(count / 15);
+    const pageCount = Math.ceil(count / 20);
     for (let page = 1; page <= pageCount; page++) {
       const entries = [...document.querySelectorAll(selector)];
-      expect(entries).toHaveLength(Math.min(15, count - (page - 1) * 15));
+      expect(entries).toHaveLength(Math.min(20, count - (page - 1) * 20));
       seen.push(...entries.map((entry) => entry.id));
       if (pageCount === 1) expect(screen.queryByRole('navigation', { name: `${label}分页` })).toBeNull();
       else {
         const controls = pagination(label);
-        expect(controls).toHaveTextContent(`第 ${(page - 1) * 15 + 1}–${Math.min(page * 15, count)} 条，共 ${count} 条`);
+        expect(controls).toHaveTextContent(`第 ${(page - 1) * 20 + 1}–${Math.min(page * 20, count)} 条，共 ${count} 条`);
         expect(within(controls).getByRole('button', { name: '上一页' }).hasAttribute('disabled')).toBe(page === 1);
         const nextPage = within(controls).getByRole('button', { name: '下一页' });
         expect(nextPage.hasAttribute('disabled')).toBe(page === pageCount);
@@ -1071,19 +1197,19 @@ describe('recent task browsing and pagination', () => {
   });
 
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {
-    const initial = snapshot(manyStandalone(31));
-    const reduced = resetSnapshot(snapshot(manyStandalone(15)));
+    const initial = snapshot(manyStandalone(41));
+    const reduced = resetSnapshot(snapshot(manyStandalone(20)));
     graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(reduced).mockResolvedValueOnce(reduced).mockResolvedValueOnce(resetSnapshot({ ...initial }));
     mount(); await findTab('standalone'); fireEvent.click(tab('standalone'));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
-    await waitFor(() => expect(document.querySelectorAll('.standalone-row')).toHaveLength(15));
+    await waitFor(() => expect(document.querySelectorAll('.standalone-row')).toHaveLength(20));
     expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
+    expect(document.querySelectorAll('.standalone-row')).toHaveLength(20);
   });
 
   it('keeps every Goal child visible inside one top-level page entry', async () => {
@@ -1164,13 +1290,14 @@ describe('status-first project presentation', () => {
     if (view === 'standalone') fireEvent.click(tab('standalone'));
     const unfinished = [0, ...Array.from({ length: 20 }, (_, position) => 20 - position)];
     const ids = (positions: number[]) => positions.map((position) => canonicalTask(taskNumber(position)));
-    const firstPage = ids(unfinished.slice(0, 15));
+    const firstPage = ids(unfinished.slice(0, 20));
     expect(presentedIds(view)).toEqual(firstPage);
-    expect(pagination(view)).toHaveTextContent('第 1–15 条，共 23 条');
+    expect(pagination(view)).toHaveTextContent('第 1–20 条，共 23 条');
     fireEvent.click(within(pagination(view)).getByRole('button', { name: '下一页' }));
-    expect(presentedIds(view)).toEqual(ids([...unfinished.slice(15), 22, 21]));
+    expect(presentedIds(view)).toEqual(ids([...unfinished.slice(20), 22, 21]));
     fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
-    expect(pagination(view)).toHaveTextContent(view === 'chains' ? '第 1–15 条，共 21 条' : '第 1–15 条，共 20 条');
+    if (view === 'chains') expect(pagination(view)).toHaveTextContent('第 1–20 条，共 21 条');
+    else expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     expect(graphRequest).toHaveBeenCalledOnce();
   });
 

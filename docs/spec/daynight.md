@@ -92,7 +92,13 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 显示各自帮助；裸 `skill`、`project`、`task` 与 `task step` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本与 `--skill` 选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
-`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties、attachments 与 Step list/show 读取与 add 的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册与安装后的 `using-daynight` 使用同一权威来源，不依赖本地引用文件，不承载仓库任务编排工作流。
+`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到
+stdout 并成功退出，保留构建产物的 YAML frontmatter、换行和全部字节，不添加包装。
+该完整手册由公开 `using-daynight` 的同一组主题源按确定顺序生成，内部主题和章节链接
+转换为有效锚点；不维护手写汇总副本。安装后的 skill 可独立按主题读取，离线输出自身
+包含完整内容，不依赖独立主题文件、已安装 skill 或源码仓库。手册说明产品概念、项目与
+任务、Steps、资料、写安全、Sessions、Webhooks 和 Worker 操作的前提、结果与失败；
+详细参数通过对应子命令的 `--help` 查询，不承载仓库任务编排工作流。
 
 `--skill` 必须是唯一参数；额外参数、其他选项和内联赋值按 usage error 以状态码 2 拒绝，且在读取手册前停止。手册文件缺失、读取失败或非法 UTF-8 以状态码 1 退出并保留原因。读取与校验完成后才输出；输出失败可能留下部分 stdout。
 

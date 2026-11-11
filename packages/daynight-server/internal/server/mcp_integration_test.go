@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,13 +13,10 @@ import (
 	"testing"
 	"time"
 
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
-	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
-	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -87,26 +83,6 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 		return value
 	}
-	uploadMetadata := model.Attachment{ProjectID: project.ID, TaskID: created.ID, Path: "upload.txt", ContentType: "text/plain", SizeBytes: 5, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt}
-	mcpIsolationInline(t, database, principals[0], uploadMetadata, true)
-	upload := call(productionClient, "task_attachment_put", map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "inline", "path": "upload.txt", "contentType": "text/plain", "contentBase64": "aGVsbG8="}, false)
-	data := upload["data"].(map[string]any)
-	if data["writeOutcome"] != "confirmed" || data["created"] != true {
-		t.Fatalf("upload receipt: %#v", upload)
-	}
-	address, err := attachmentcore.NewAddress(project.ID, created.ID, "upload.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	object, err := files.Open(t.Context(), attachmentcore.Bucket, address.StoragePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content, readErr := io.ReadAll(object.Body)
-	closeErr := object.Body.Close()
-	if readErr != nil || closeErr != nil || string(content) != "hello" || object.Info.Size != 5 {
-		t.Fatalf("uploaded content=%q info=%#v read=%v close=%v", content, object.Info, readErr, closeErr)
-	}
 	for _, name := range []string{"task_list", "task_ready"} {
 		for _, view := range []string{"summary", "full"} {
 			mcpIsolationTaskRead(t, database, principals[0], project, created, name, view)
@@ -154,55 +130,6 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	if value := call(bobQueries, "task_list", map[string]any{"projectId": project.ID}, true); value["error"] == nil {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
-	attachments := attachmentservice.NewAttachments(database, database, files)
-	sample := model.Attachment{ProjectID: project.ID, TaskID: created.ID, Path: "sample.txt", ContentType: "text/plain", SizeBytes: 13, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt}
-	put := func(content string) {
-		t.Helper()
-		item := sample
-		item.SizeBytes = int64(len(content))
-		isNew := content == "first content"
-		if !isNew {
-			item.UpdatedAt = item.UpdatedAt.Add(time.Second)
-		}
-		mcpIsolationInline(t, database, principals[0], item, isNew)
-		if _, _, err := attachments.Put(t.Context(), principals[0], project.ID, created.ID, "sample.txt", "text/plain", strings.NewReader(content)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	put("first content")
-	base := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt"}
-	mcpIsolationSource(t, database, principals[0], sample, 1)
-	mcpTransferPlan(t, database, mcpIsolationAuthorize(t, principals[0], project.ID, created.ID, 1), mcpIsolationAuthorize(t, principals[0], project.ID, created.ID, 1))
-	inspect := call(productionClient, "task_attachment_read", base, false)["data"].(map[string]any)
-	if inspect["contentIncluded"] != false || inspect["sizeBytes"] != "13" || inspect["contentRef"] == nil {
-		t.Fatalf("attachment inspect: %#v", inspect)
-	}
-	transferID := uuid.NewString()
-	open := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt", "action": "open", "transferId": transferID}
-	readable := mcpIsolationDownloadOpen(t, database, principals[0], sample, transferID, time.Now().UTC())
-	opened := call(productionClient, "task_attachment_read", open, false)["data"].(map[string]any)
-	if opened["transferId"] != transferID || opened["state"] != "readable" || opened["totalBytes"] != "13" || opened["sha256"] == nil {
-		t.Fatalf("attachment open: %#v", opened)
-	}
-	put("replacement")
-	chunk := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "chunk", "transferId": transferID, "offset": "0", "format": "base64"}
-	touched := mcpIsolationDownloadChunk(t, database, principals[0], readable)
-	downloadData := call(productionClient, "task_attachment_read", chunk, false)["data"].(map[string]any)
-	if downloadData["contentBase64"] != base64.StdEncoding.EncodeToString([]byte("first content")) || downloadData["nextOffset"] != "13" || downloadData["eof"] != true {
-		t.Fatalf("attachment snapshot: %#v", downloadData)
-	}
-	mcpTransferPlan(t, database, mcpTransferRead(t, principals[1], 0, 0, mcpTransferRow(touched)))
-	if value := call(bobQueries, "task_attachment_read", chunk, true); value["error"] == nil {
-		t.Fatalf("unauthorized snapshot: %#v", value)
-	}
-	closeInput := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "close", "transferId": transferID}
-	mcpIsolationDownloadClose(t, database, principals[0], touched)
-	closed := call(productionClient, "task_attachment_read", closeInput, false)["data"].(map[string]any)
-	if closed["state"] != "cleanup_pending" || closed["cleanupState"] != "pending" {
-		t.Fatalf("attachment close: %#v", closed)
-	}
-
-	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.

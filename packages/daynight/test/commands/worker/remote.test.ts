@@ -483,8 +483,8 @@ describe("worker remote API", () => {
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
     expect(result.map(({ id }) => id)).toEqual([uuid(9), uuid(8)]);
     expect(urls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
+      { ready: "true", allowAgents: "true", automaticCandidate: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
+      { ready: "true", allowAgents: "true", automaticCandidate: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
     ]);
   });
 
@@ -497,6 +497,7 @@ describe("worker remote API", () => {
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "macos", signal(), platformSpecific));
     expect(result.map(({ id }) => id)).toEqual([uuid(9)]);
+    expect(queries.map(query => query.get("automaticCandidate"))).toEqual(["true", "true"]);
     expect(queries.map(query => query.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
     expect(queries.every(query => query.get("compatiblePlatform") === "macos" && query.get("assignedTo") === "me")).toBe(true);
   });

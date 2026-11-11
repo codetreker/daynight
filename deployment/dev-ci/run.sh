@@ -39,6 +39,9 @@ project="daynight-dev-ci-$run_id"
 receipt_dir="$receipt_root/$run_id"
 manifest="$receipt_dir/manifest.json"
 private_dir="$repository_dir/.tmp/dev-ci-private/$run_id"
+config_dir="$repository_dir/.tmp/dev-ci-config/$run_id"
+owned_config=false
+if $cleanup_only; then owned_config=true; fi
 if { $cleanup_only || $reconfigure_only; } && [[ ! -f $manifest ]]; then
   printf '%s\n' 'The dev-ci receipt does not exist; no Docker operations were performed.' >&2
   exit 2
@@ -52,6 +55,7 @@ unset DAYNIGHT_DEV_CI_FIXTURE_BINARY DAYNIGHT_DEV_CI_FIXTURE_DIRECTORY \
   DAYNIGHT_DEV_CI_FIXTURE_PORT DAYNIGHT_DEV_CI_FIXTURE_UID DAYNIGHT_DEV_CI_FIXTURE_GID \
   DAYNIGHT_UNIAUTH_CALLBACK_URL
 export DAYNIGHT_DEV_CI_AUTH_ENV_FILE="$private_dir/auth.env"
+export DAYNIGHT_DEV_CI_CONFIG_DIRECTORY="$config_dir"
 export DAYNIGHT_AUTH_FIXTURE_DESCRIPTOR="$private_dir/auth-fixture.json"
 compose=(docker compose --env-file "$DAYNIGHT_DEV_CI_AUTH_ENV_FILE" --project-directory "$runner_dir" \
   --file "$runner_dir/compose.yaml" --project-name "$project")
@@ -215,6 +219,7 @@ cleanup() {
       bounded 10 node "$runner_dir/auth.mts" redact "$private_dir" --keep-fixture || cleanup_status=1
     fi
   fi
+  if [[ $cleanup_status -eq 0 ]] && $owned_config; then rm -rf -- "$config_dir" || cleanup_status=1; fi
   if [[ $cleanup_status -eq 0 ]]; then cleanup_result=passed; else cleanup_result=failed; fi
   phase=finished
   write_manifest || cleanup_status=1
@@ -299,8 +304,8 @@ finish_reconfigure() {
 }
 
 if $reconfigure_only; then
-  [[ -f $private_dir/auth-state.json ]] || {
-    printf '%s\n' 'The private dev-ci authentication state does not exist.' >&2
+  [[ -f $private_dir/auth-state.json && -f $config_dir/config.yml ]] || {
+    printf '%s\n' 'The dev-ci authentication state or run configuration does not exist.' >&2
     exit 2
   }
   trap finish_reconfigure EXIT
@@ -321,6 +326,21 @@ if $cleanup_only; then
   result=recovered
   exit 0
 fi
+
+mkdir -p -- "${config_dir%/*}"
+# Defer cancellation until ownership is recorded, without claiming an existing
+# directory when mkdir fails. Cleanup must never remove another run's files.
+config_signal=0
+trap 'config_signal=130' INT
+trap 'config_signal=143' TERM
+config_status=0
+if mkdir -m 755 -- "$config_dir"; then owned_config=true; else config_status=$?; fi
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+if [[ $config_signal -ne 0 ]]; then on_signal "$config_signal"; fi
+[[ $config_status -eq 0 ]] || exit "$config_status"
+cp "$runner_dir/config/config.yml" "$config_dir/config.yml"
+chmod 644 "$config_dir/config.yml"
 
 fixture_binary=${DAYNIGHT_UNIAUTH_FIXTURE_BINARY:-}
 if [[ -z $fixture_binary ]]; then

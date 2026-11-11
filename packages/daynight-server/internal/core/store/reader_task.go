@@ -45,4 +45,5 @@ type TaskReader interface {
 	TaskGraphTasks(context.Context, string, string, TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpoch(context.Context, string) (string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }

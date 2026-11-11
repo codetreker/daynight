@@ -35,17 +35,22 @@ type TaskPropertySchema struct {
 }
 
 type CreateTaskRequest struct {
-	Status            *string                `json:"status,omitempty"`
-	AssignedTo        *string                `json:"assignedTo,omitempty"`
-	RequiredPlatform  *string                `json:"requiredPlatform,omitempty"`
-	ExternalDependsOn []string               `json:"externalDependsOn,omitempty"`
-	Properties        TaskWritableProperties `json:"properties"`
-	Title             string                 `json:"title"`
-	Description       string                 `json:"description"`
-	DependsOn         []string               `json:"dependsOn"`
+	Type                    *string                `json:"type,omitempty"`
+	ParentID                **string               `json:"parentId,omitempty"`
+	AssignedToPresent       bool                   `json:"-"`
+	RequiredPlatformPresent bool                   `json:"-"`
+	Status                  *string                `json:"status,omitempty"`
+	AssignedTo              *string                `json:"assignedTo,omitempty"`
+	RequiredPlatform        *string                `json:"requiredPlatform,omitempty"`
+	ExternalDependsOn       []string               `json:"externalDependsOn,omitempty"`
+	Properties              TaskWritableProperties `json:"properties"`
+	Title                   string                 `json:"title"`
+	Description             string                 `json:"description"`
+	DependsOn               []string               `json:"dependsOn"`
 }
 
 type UpdateTaskRequest struct {
+	ParentID          **string             `json:"parentId,omitempty"`
 	AssignedTo        **string             `json:"assignedTo,omitempty"`
 	RequiredPlatform  **string             `json:"requiredPlatform,omitempty"`
 	ExternalDependsOn *[]string            `json:"externalDependsOn,omitempty"`

@@ -512,7 +512,7 @@ stale indicator, without admission reasons or monitoring timestamps and age.
 Detail shows scheduling and admission, actual capacity, parallel
 activities, current failures and the latest recovery before host resources. Task
 associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines.
+retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and
@@ -720,8 +720,10 @@ Versions above 2^53 remain exact bigint values and mutation encoding sends JSON
 numbers. Missing contract fields do not acquire defaults.
 
 Project synchronization merges intrinsic summaries by ID and exact business
-version in the current durable collection, then derives task readiness,
-statistics and GraphIndex. Duplicate summaries retain task and index references;
+version in the current durable collection, then merges authoritative dependency
+states whose taskVersion matches the current Task. These states supply readiness
+and statistics to the ordinary-task GraphIndex. Unchanged summaries and states
+retain task and index references;
 settings and ownership merge independently by their exact versions within one
 epoch. Equal ownership versions must identify the same Team; contradictions fail
 synchronization. Metadata-only changes preserve task projection. A new epoch
@@ -748,20 +750,12 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 9 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 9 rebuilds incompatible project,
-summary and detail records and their watermarks for required nullable cancelledAt,
-while preserving unchanged profile and compatible Session-history formats. Missing
-fields are not filled with null. Upgrading schema 7 clears its Session
-records, which lack the complete-empty proof, and preserves compatible project,
-task, profile and lifecycle data. Upgrading schema 6 adds the Session records
-store while retaining compatible task and profile data and lifecycle.
-Upgrading the ownership-complete schema 5 adds profiles while
-preserving compatible task records, user fences and watermarks. Upgrades from
-schema 1, 2, 3 or 4 rebuild incompatible projects, summaries and details, rotate
-user fences and clear old epochs/watermarks before a complete snapshot. Missing
-properties, assignedTo or Project ownership in old records cannot receive
-defaults.
+schema 10 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 10 rebuilds incompatible project, summary and detail records and their
+watermarks for required type, parentId and dependency states, preserving user
+fences, profiles and compatible Session-history formats. Upgrades from schema 1
+through 4 rotate user fences; schema 7 Session records lack the complete-empty
+proof and are cleared. Missing fields are not supplied with defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and actual counts for both active and invalidated manifests.
@@ -778,21 +772,27 @@ that immutable request baseline in memory; snapshot observations use only
 returned Tasks, while delta observations overlay returned Tasks on the baseline.
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
-required nullable assignedTo/cancelledAt and complete current properties from the task row's
-database snapshot. Higher task
+required type, nullable parentId/assignedTo/cancelledAt and complete current
+properties from the task row's database snapshot. Each ordinary Task has a
+separate same-version dependency state; Goal records have no dependency state. Higher task
 versions replace whole summaries and property maps; missing keys remove old
 values without property tombstones or ordinary epoch changes. Equal-version
 content must match all intrinsic fields, including assignedTo, and all own
 property keys and JSON values: object order is
 irrelevant, array order matters, and missing differs from null or an empty array.
-Older responses cannot revive removed properties. Graph projections explicitly
-drop properties while retaining assignedTo; the summary map keeps complete properties. Only project-sync summaries
+Older responses cannot revive removed properties. Snapshot states replace the
+collection; delta states patch only matching owner versions. A readiness-only
+change is persisted and published, including across tabs. A late state for the
+same owner version can temporarily replace a newer prerequisite observation.
+Graph projections omit properties and Goal resources; the typed summary map
+retains both complete properties and Goal existence. Only project-sync summaries
 advance the watermark.
 Details, mutations, request time, Project time and `observedAt` cannot establish
 project coverage. UTC seconds plus nine fractional digits preserve ordering;
 business versions remain bigint. The default ten-second server overlap can
-repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
-invalidate detail records, replace published indexes or broadcast. Network,
+repeat its final rows indefinitely. Old/equal intrinsic rows with unchanged
+dependency states do not rewrite storage, invalidate detail records, replace
+published indexes or broadcast. Network,
 HTTP, decoding, quota and IDB-completion errors preserve the prior valid cache
 and watermark without partial publication. Server reads trust canonical stored
 properties without repeated normalization, field or capacity checks; natural
@@ -916,8 +916,7 @@ Task, summary and graph consumers require an explicit assignedTo field containin
 null or a canonical local user UUID. Equality, freshness, review keys and material
 preservation include the field. Its native storage, atomic permission reset and
 in-progress write policy belong to the [assignment contract](../../docs/spec/daynight-task-assignment.md).
-Schema 6 preserves strict task parsing and stores versioned profile content in a
-separate store; profile data never enters task records or task versions.
+The cache stores versioned profile content in a separate store; profile data never enters task records or task versions.
 
 The detail places status and assignee in one 24px compact group, followed by
 platform and readiness, with automatic execution on the right. The assignee
@@ -1332,8 +1331,10 @@ ordinary writable storage directory and does not require an APFS image. Names
 that alias another file or directory on that filesystem are refused; Linux CI
 owns case-coexistence coverage. Vite proxies `/api` to that address
 and listens on loopback. For real login through Vite, set the same
-`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite and Go environments, registered with
-UniAuth for the development browser origin. Vite proxies exactly that callback
+`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite environment to the same public callback
+URL configured for Go, registered with UniAuth for the development browser origin.
+Go can receive this value through YAML or its environment; Vite does not read the
+server configuration file. Vite proxies exactly that callback
 path through the same Go API target. When unset, no callback proxy is added. The five required
 backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser
@@ -1721,8 +1722,9 @@ alter the complete project counters or prerequisites. The [preference decision](
 records the original persistence rules; the
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for the shared offset and category-switch behavior.
 
-The generic task and summary decoders require nullable assignedTo and a properties
-object, preserving all property keys. Graph decoders also require assignedTo.
+The generic task and summary decoders require type, nullable parentId and
+assignedTo, and a properties object, preserving all property keys. Graph decoders
+require type and parentId and accept ordinary Tasks only.
 The PR business reader accepts an absent pullRequests key; a present
 value must be an array of objects with string `url` and `title` fields. Missing
 pullRequests and an empty array share the existing empty presentation while
@@ -1737,7 +1739,7 @@ requires the external set to be a subset; missing or null fields are protocol
 errors. Graph equality and detail freshness include classification, so a
 marker-only change invalidates the corresponding content without inventing a
 new timestamp. Clock-only samples still retain graph/index identity. Chain
-membership uses ordinary-edge weak components. A Goal projection contains all
+membership uses ordinary-edge weak components. A chain projection contains all
 ordinary members plus their direct external prerequisites, deduplicated by task
 ID, and all real edges whose endpoints are in that projection. It does not follow
 ordinary or external ancestry from contextual tasks. Complete prerequisite
@@ -1757,9 +1759,10 @@ unchanged receipts do not cause GETs or detail writes. Receipt-driven recovery
 still retries failed reads and raw graph disagreements. `GraphSnapshot.revision`
 is zero for local-only summaries; positive values are the successful mount-local
 receipt and online-admission signal, not a task version or durable commit counter. Equivalent
-task data retains its index and layout; settings-only changes update Project
-metadata without rebuilding task projections, and changed intrinsic data replaces
-statistics and both task-category lists together. The
+task data and dependency states retain their index and layout; settings-only
+changes update Project metadata without rebuilding task projections. Changes
+to intrinsic data or dependency states replace the affected projection and
+statistics together. The
 [automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md)
 records the rationale for the scheduling and scope.
 
@@ -2451,8 +2454,9 @@ undefined positions. Frozen installs and container builds must include the patch
 API errors expose fixed safe text and a validated request ID; raw response bodies
 and server diagnostics do not reach the page. Project names and addresses render
 as text. The API parser verifies DTO shape and resource identity. The implemented graph
-model separately verifies dependency closure, acyclicity, status/readiness and
-summary consistency. It derives ordinary-edge weak components and their current
+model separately verifies visible-edge acyclicity, status/readiness and summary
+consistency. References to unavailable prerequisites remain in the Task, but
+only visible endpoints form adjacency; the server supplies their satisfaction. It derives ordinary-edge weak components and their current
 representatives. `mainIds` contains the complete ordinary component;
 `externalIds` contains only its direct external prerequisites outside that
 component, deduplicated by task ID. Projection P is their union and retains every
@@ -2501,9 +2505,9 @@ unmount aborts owned work. Attachments have independent scoped list, write and
 preview state, while project statistics continue to use complete graph snapshots. The
 project hook owns its visible-page timer; navigation and unmount clear the timer
 and cancel owned reads. Automatic graph reads never overlap, and same-task detail
-refreshes coalesce an in-flight follow-up. There is no global task cache or
-task-field editor. Push subscriptions remain deferred; they can trigger the same
-complete-snapshot refresh without changing graph projection. Production
+refreshes coalesce an in-flight follow-up. The authenticated task cache owns shared project summaries. Push subscriptions
+remain deferred; they can trigger the same synchronization without changing graph
+projection. Production
 `AuthenticatedApp` owns identity loading, authentication and account/membership
 flows under the persistent locale Provider. New identities discard user-owned
 requests and content; project 404 and discovery failures retain their distinct

@@ -12,8 +12,9 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { assignedTo: null, id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
-const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task], sessions: {} };
+const task = { type: "task", parentId: null, assignedTo: null, id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const dependencyStates = { [taskId]: { taskVersion: task.version, blockedBy: [], ready: true } };
+const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task], dependencyStates, sessions: {} };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
 
@@ -28,8 +29,16 @@ it("loads exact wire versions and encodes only epoch and the unmodified maximum 
   expect(fetch.mock.calls[0]![1]).toMatchObject({ cache: "no-store", credentials: "same-origin", redirect: "error" });
 });
 
+it("reads the server's authoritative dependency states with exact versions", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(sync)));
+  const result = await getTaskSync(projectId, {}, userId, signal());
+  expect(result.sync).toEqual(parseTaskSync(sync, projectId, userId));
+  expect(result.sync.dependencyStates[taskId]).toEqual({ taskVersion: 9_007_199_254_740_993n, blockedBy: [], ready: true });
+  expect(result.sync.tasks[0]!.version).toBe(9_007_199_254_740_993n);
+});
+
 it("requests a first snapshot and preserves known empty epochs without inventing since", async () => {
-  const fetch = vi.fn().mockImplementation(() => Promise.resolve(response({ ...sync, tasks: [] }))); vi.stubGlobal("fetch", fetch);
+  const fetch = vi.fn().mockImplementation(() => Promise.resolve(response({ ...sync, tasks: [], dependencyStates: {} }))); vi.stubGlobal("fetch", fetch);
   await getTaskSync(projectId, {}, userId, signal());
   await getTaskSync(projectId, { epoch }, userId, signal());
   expect(fetch.mock.calls.map((call) => call[0])).toEqual([`/api/v1/projects/${projectId}/task-sync`, `/api/v1/projects/${projectId}/task-sync?epoch=${epoch}`]);
@@ -53,7 +62,8 @@ describe("complete lightweight Session snapshot", () => {
     const ids = Array.from({ length: 1001 }, (_, index) => `20000000-0000-0000-0000-${index.toString().padStart(12, "0")}`);
     const tasks = ids.map((id, index) => ({ ...task, id, dependsOn: ids.slice(Math.max(0, index - 6), index) }));
     const sessions = Object.fromEntries(ids.map((id) => [id, "pending"]));
-    const result = parseTaskSync({ ...sync, tasks, sessions }, projectId);
+    const dependencyStates = Object.fromEntries(ids.map((id) => [id, { taskVersion: task.version, blockedBy: [], ready: true }]));
+    const result = parseTaskSync({ ...sync, tasks, dependencyStates, sessions }, projectId);
     expect(result.tasks).toEqual(tasks.map((task) => ({ ...task, version: 9_007_199_254_740_993n })));
     expect(result.sessions).toEqual(sessions);
   });
@@ -117,11 +127,15 @@ describe("assignee version manifest", () => {
 });
 
 describe("strict summary protocol", () => {
-  it("accepts the additional ordinary resource type and parent fields", () => {
-    expect(parseTaskSummary({ ...task, type: "task", parentId: null })).toEqual(parseTaskSummary(task));
+  it("requires and preserves resource type and parent fields", () => {
+    expect(parseTaskSummary({ ...task, parentId: projectId })).toMatchObject({ type: "task", parentId: projectId });
+    expect(parseTaskSummary({ ...task, type: "goal", allowAgents: false })).toMatchObject({ type: "goal", parentId: null });
+    for (const change of [{ type: undefined }, { type: "other" }, { parentId: undefined }, { type: "goal", parentId: projectId }]) {
+      expect(() => parseTaskSummary({ ...task, ...change })).toThrow("invalid response");
+    }
   });
   it("preserves proposed in complete sync facts without treating it as executable", () => {
-    const result = parseTaskSync({ ...sync, tasks: [{ ...task, status: "proposed" }] }, projectId);
+    const result = parseTaskSync({ ...sync, tasks: [{ ...task, status: "proposed" }], dependencyStates: { [taskId]: { ...dependencyStates[taskId], ready: false } } }, projectId);
     expect(result.tasks[0]!.status).toBe("proposed");
   });
 
@@ -143,6 +157,25 @@ describe("strict summary protocol", () => {
       expect(() => parseTaskSync({ ...sync, ...changed }, projectId)).toThrow();
     }
   });
+});
+
+describe("dependency state protocol", () => {
+  it("accepts state-only delta patches and a Goal without a state", () => {
+    expect(parseTaskSync({ ...sync, mode: "delta", tasks: [] }, projectId).dependencyStates[taskId]?.taskVersion).toBe(9_007_199_254_740_993n);
+    expect(parseTaskSync({ ...sync, tasks: [{ ...task, type: "goal", allowAgents: false }], dependencyStates: {} }, projectId).tasks[0]?.type).toBe("goal");
+  });
+  it.each([undefined, null, [], { invalid: dependencyStates[taskId] }, { ["AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"]: dependencyStates[taskId] },
+    { [taskId]: null }, { [taskId]: { taskVersion: "0", blockedBy: [], ready: true } },
+    { [taskId]: { taskVersion: "9223372036854775808", blockedBy: [], ready: true } },
+    { [taskId]: { taskVersion: task.version, blockedBy: [projectId, projectId], ready: false } },
+    { [taskId]: { taskVersion: task.version, blockedBy: [], ready: "true" } },
+  ])("rejects malformed state maps %#", (states) => expect(() => parseTaskSync({ ...sync, dependencyStates: states }, projectId)).toThrow("invalid response"));
+  it.each([
+    {}, { [taskId]: { ...dependencyStates[taskId], taskVersion: "1" } },
+    { [taskId]: { ...dependencyStates[taskId], ready: false } },
+    { [taskId]: { ...dependencyStates[taskId], blockedBy: [projectId], ready: false } },
+    { ...dependencyStates, [projectId]: dependencyStates[taskId] },
+  ])("rejects incomplete or inconsistent snapshot projections %#", (states) => expect(() => parseTaskSync({ ...sync, dependencyStates: states }, projectId)).toThrow("invalid response"));
 });
 
 it("checks principal before decoding successful or resource-error payloads", async () => {

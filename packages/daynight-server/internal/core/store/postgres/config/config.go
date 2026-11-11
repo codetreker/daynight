@@ -10,11 +10,22 @@ type Config struct {
 	URL string `yaml:"url"`
 }
 
+type Patch struct {
+	URL *string `yaml:"url"`
+}
+
+func (p Patch) ApplyTo(c *Config) error {
+	if p.URL != nil {
+		c.URL = *p.URL
+	}
+	return nil
+}
+
 func DefaultConfig() Config { return Config{} }
 
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.URL) == "" {
-		return &configvalue.ConfigurationError{Field: "DAYNIGHT_DATABASE_URL", Rule: "is required"}
+		return &configvalue.ConfigurationError{Field: "url", Rule: "is required"}
 	}
 	return nil
 }

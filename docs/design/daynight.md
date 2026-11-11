@@ -120,9 +120,19 @@ src/
       install.ts
       read.ts
       manual.ts
+      manual-assembly.ts
       skills/using-daynight/
         SKILL.md
-        references/manual.md
+        references/
+          setup-and-projects.md
+          tasks.md
+          steps.md
+          materials.md
+          write-safety.md
+          session-reads.md
+          session-messages.md
+          webhooks.md
+          worker-operations.md
     task/
       definition.ts
       command.ts
@@ -210,7 +220,12 @@ src/
 登记 `dn`，供两种补全生成器使用。`cli/context.ts` 只描述客户端上下文：版本、包目录、输入输出，以及
 用户主目录和工作目录的惰性查询函数；不放入已解析的 review 路径、配置或运行函数。
 `cli/commands.ts` 组合各命令的轻量定义并保存异步执行入口；`cli/application.ts`
-只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取后通过共享 `validateManualContents` 校验 fatal UTF-8 和非空白正文，经 `stdoutBytes` 输出原始 Buffer。它不导入安装器或配置。`usage.md` 是从公共 bundle 的 `references/manual.md` 同源原字节复制的构建产物，覆盖产品操作及边界；参数以 `daynight --help` 和子命令帮助为准。
+只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。
+该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取后通过共享
+`validateManualContents` 校验 fatal UTF-8 和非空白正文，经 `stdoutBytes` 输出原始 Buffer。
+它不导入安装器、主题组合器或配置。`usage.md` 由公共 bundle 的固定主题源在构建时生成，
+顺序、标题和内部链接转换由[主题手册设计](daynight-agent-skill.md#一个入口与按需加载)
+拥有。读取完整离线产物不依赖独立主题文件；参数以 `daynight --help` 和子命令帮助为准。
 
 `cli/schema.ts` 定义命令、别名、选项和值类型、位置
 参数及固定候选；选项元数据表达 required、allowEmpty、choices 和 repeatable，
@@ -479,7 +494,9 @@ SQLite 使用 Node-API 10，实际运行需要 Node.js 22.14.0 或更新版本�
 开发工具与直接执行的 TypeScript 脚本有独立于发布产物的运行要求。构建先执行
 `node scripts/clean-dist.ts` 删除包的 `dist/`，再通过 `tsc -p tsconfig.build.json`
 生成产物，防止模块移动后保留旧的可执行文件。随后 `node scripts/copy-resources.ts` 明确复制 review 与
-公开 using-daynight 两个完整 skill bundle，以及五个数据库 owner 的 SQL 资源目录；公共 manual.md 同时原字节复制到 dist 的 usage.md。
+公开 using-daynight 两个完整 skill bundle，以及五个数据库 owner 的 SQL 资源目录；
+公共主题经固定清单与链接校验后生成完整 `dist/commands/skill/usage.md`。缺少或损坏主题、
+标题及引用不合法时，在复制任何资源前失败。
 SQL 目录只复制 `.sql` 文件，skill bundle 保留完整资源树；脚本不扫描仓库来发现其他资源。既有 `dist` 发布
 规则将这些文件纳入安装包。清理和资源复制脚本从自身位置定位目录，调用者工作目录不会改变目标。
 SQL 资源与来源检查的关系由 [SQLite 升级设计](cli-sqlite-migrations.md#sql-资源与参考结构)拥有。
@@ -528,7 +545,14 @@ registry，发布子进程继承其配置与 GitHub OIDC 环境。公开仓库�
 
 ## 验证与交付
 
-安装入口须对实际 npm pack 与安装后的 `daynight`、`dn` 比较使用手册原始字节。CLI 模块验证仓库外、无配置、无 launcher 与非交互终端，以及额外参数先于文件读取拒绝、缺失、读取错误和非法 UTF-8 的原因链。当前安装入口保留双 launcher 和资源字节检查，模块现有覆盖尚需逐项核对。手册 frontmatter、自包含内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/archived/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
+安装验收比较实际 npm pack 产物与安装后的 `daynight`、`dn` 离线手册字节，并核验安装的
+全部主题与源码一致。主题组合验证固定顺序、内容完整、标题与链接转换、LF/CRLF 输入，
+以及缺少、空白、非法编码和损坏引用在资源发布前失败。CLI 模块验证仓库外、无配置、
+无 launcher 与非交互终端，以及额外参数先于文件读取拒绝、缺失、读取错误和非法 UTF-8
+的原因链。完整输出不需要独立主题文件；结构和字节校验不代表模型遵循指令。
+[主题手册决策](../../.agents/notes/implemented/architecture/2026-11-11-daynight-topic-manual.md)
+拥有按需引用和完整离线输出的取舍；[原使用手册决策](../../.agents/notes/archived/feature/2026-11-03-cli-skill-reading.md)
+保留单文件输出的历史理由。
 
 根入口与每个命令的参数验证需覆盖正常调用、裸组、帮助、版本、使用手册输出和错误结果；构建后入口
 必须保留 shebang、bin 路径和版本输出。依赖隔离验证通过不可用的 SQLite 加载、缺失的

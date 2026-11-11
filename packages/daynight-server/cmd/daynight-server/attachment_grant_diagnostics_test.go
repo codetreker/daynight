@@ -123,7 +123,7 @@ func (l *grantLogs) diagnostics() grantLogEvidence {
 			result.Listening = true
 			continue
 		}
-		if entry.Type != "operation_error" || !(entry.Component == "configuration" && (entry.Phase == "arguments" || entry.Phase == "load") || entry.Component == "server" && (entry.Phase == "startup" || entry.Phase == "shutdown")) {
+		if entry.Type != "operation_error" || !(entry.Component == "configuration" && (entry.Phase == "arguments" || entry.Phase == "read" || entry.Phase == "decode" || entry.Phase == "override" || entry.Phase == "validate") || entry.Component == "server" && (entry.Phase == "startup" || entry.Phase == "shutdown")) {
 			result.Ignored = true
 			continue
 		}

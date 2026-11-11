@@ -3,13 +3,20 @@ package team
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -197,4 +204,338 @@ func TestTeamHTTPPageCountAndCursor(t *testing.T) {
 	if len(next.Items) != 1 || !reflect.DeepEqual(next.Items[0], teams[1]) || next.NextCursor != nil {
 		t.Fatalf("continuation: %+v", next)
 	}
+}
+
+func TestTeamHTTPProductionCompositionAndLifecycle(t *testing.T) {
+	db := newHTTPTestStore(t)
+	var logs bytes.Buffer
+	handler := teamComponentHost(t, db, &logs)
+	actor := handler.principal.UserID
+	rawName := " \t研发😀\u2003 " + strings.Repeat("x", 180)
+	body := jsonBody(t, api.CreateTeamRequest{Name: rawName, ExpectedUserID: actor})
+	expected := teamHTTPCreate(t, db, handler.principal, rawName)
+	response := teamComponentRequest(handler, "POST", "/api/v1/teams", body)
+	team := decodeResponse[api.Team](t, response, 201)
+	if team.Name == nil || *team.Name != rawName || team.ID != expected.ID || team.Kind != "ordinary" || team.Membership.UserID != actor || team.Membership.TeamID != team.ID || team.Membership.Role != "admin" || team.Membership.Version < 1 || team.Version != 1 {
+		t.Fatalf("Team DTO %#v", team)
+	}
+	if response.Header().Get("Location") != "/api/v1/teams/"+team.ID || response.Header().Get("Daynight-User-ID") != actor || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Team headers %v", response.Header())
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 7 {
+		t.Fatalf("Team shape %s %v", response.Body, err)
+	}
+	teamHTTPRead(t, db, handler.principal, team.ID, *expected, nil)
+	got := decodeResponse[api.Team](t, teamComponentRequest(handler, "GET", "/api/v1/teams/"+team.ID, ""), 200)
+	if !reflect.DeepEqual(got, team) {
+		t.Fatal("Team GET differs")
+	}
+	change := api.ChangeTeamRequest{Name: *team.Name, Version: team.Version, ExpectedUserID: actor}
+	teamHTTPWrite(t, db, handler.principal, *expected, nil, false)
+	same := decodeResponse[api.Team](t, teamComponentRequest(handler, "PATCH", "/api/v1/teams/"+team.ID, jsonBody(t, change)), 200)
+	if !reflect.DeepEqual(same, team) {
+		t.Fatal("no-op changed Team")
+	}
+	change.Version = 2
+	teamHTTPWrite(t, db, handler.principal, *expected, nil, false)
+	assertProjectError(t, teamComponentRequest(handler, "PATCH", "/api/v1/teams/"+team.ID, jsonBody(t, change)), 409, "version_conflict")
+	change.Version = 1
+	change.Name = " Renamed "
+	renamedName := " Renamed "
+	renamedExpected := *expected
+	renamedExpected.Name = &renamedName
+	renamedExpected.Version = 2
+	renamedExpected.UpdatedAt = expected.UpdatedAt.Add(time.Second)
+	teamHTTPWrite(t, db, handler.principal, *expected, &renamedExpected, false)
+	renamed := decodeResponse[api.Team](t, teamComponentRequest(handler, "PATCH", "/api/v1/teams/"+team.ID, jsonBody(t, change)), 200)
+	if renamed.Version != 2 || *renamed.Name != change.Name || !reflect.DeepEqual(renamed.Membership, team.Membership) {
+		t.Fatalf("renamed %#v", renamed)
+	}
+	change.Version = renamed.Version
+	change.Name = "Renamed"
+	teamHTTPWrite(t, db, handler.principal, renamedExpected, nil, false)
+	assertProjectError(t, teamComponentRequest(handler, "DELETE", "/api/v1/teams/"+team.ID, jsonBody(t, change)), 409, "version_conflict")
+	change.Name = *renamed.Name
+	teamHTTPWrite(t, db, handler.principal, renamedExpected, nil, true)
+	deleted := teamComponentRequest(handler, "DELETE", "/api/v1/teams/"+team.ID, jsonBody(t, change))
+	receipt := decodeResponse[api.DeleteTeamReceipt](t, deleted, 200)
+	if receipt.TeamID != team.ID || !receipt.Deleted {
+		t.Fatalf("delete receipt %#v", receipt)
+	}
+	fields = nil
+	if err := json.Unmarshal(deleted.Body.Bytes(), &fields); err != nil || len(fields) != 2 {
+		t.Fatalf("delete leaked other resource %s %v", deleted.Body, err)
+	}
+	teamHTTPRead(t, db, handler.principal, team.ID, model.Team{}, model.ErrNotFound)
+	assertProjectError(t, teamComponentRequest(handler, "GET", "/api/v1/teams/"+team.ID, ""), 404, "not_found")
+	personal := model.Team{TeamRef: model.TeamRef{ID: "c3333333-3333-4333-8333-333333333333", Kind: "personal"}, Version: 1, CreatedAt: expected.CreatedAt, UpdatedAt: expected.CreatedAt, Membership: model.TeamMember{TeamID: "c3333333-3333-4333-8333-333333333333", UserID: actor, Role: model.ProjectAdmin, Version: 1, CreatedAt: expected.CreatedAt, UpdatedAt: expected.CreatedAt}}
+	teamHTTPList(t, db, handler.principal, []model.Team{personal})
+	page := decodeResponse[api.TeamPage](t, teamComponentRequest(handler, "GET", "/api/v1/teams?limit=1", ""), 200)
+	if page.Items == nil || len(page.Items) != 1 || page.Items[0].Kind != "personal" || page.Items[0].Name != nil || page.NextCursor != nil {
+		t.Fatalf("Personal list %#v", page)
+	}
+	change.Name = "Personal"
+	change.Version = page.Items[0].Version
+	for _, method := range []string{"PATCH", "DELETE"} {
+		teamHTTPWrite(t, db, handler.principal, personal, nil, false)
+		assertProjectError(t, teamComponentRequest(handler, method, "/api/v1/teams/"+page.Items[0].ID, jsonBody(t, change)), 409, "personal_team_immutable")
+	}
+}
+
+type teamHTTPReader struct {
+	store.TeamReader
+	t    *testing.T
+	Read func(context.Context, string, string) (model.Team, error)
+	List func(context.Context, string, store.Page) (store.TeamPage, error)
+}
+
+func (d teamHTTPReader) Team(ctx context.Context, user, id string) (model.Team, error) {
+	return d.Read(ctx, user, id)
+}
+func (d teamHTTPReader) Teams(ctx context.Context, user string, page store.Page) (store.TeamPage, error) {
+	return d.List(ctx, user, page)
+}
+
+type teamHTTPSnapshot struct {
+	store.SnapshotScope
+	reader store.TeamReader
+}
+
+func (s teamHTTPSnapshot) TeamDAO() store.TeamReader { return s.reader }
+
+type teamHTTPCreator struct {
+	store.TeamCreationDAO
+	insert func(context.Context, string, string) (model.Team, error)
+}
+
+func (d teamHTTPCreator) InsertTeam(ctx context.Context, id, name string) (model.Team, error) {
+	return d.insert(ctx, id, name)
+}
+
+type teamHTTPWriter struct {
+	store.TeamWriteDAO
+	read         func(context.Context, string) (model.Team, error)
+	rename       func(context.Context, string, string) (model.Team, error)
+	occupied     func(context.Context) (bool, error)
+	delete       func(context.Context) error
+	member       func(context.Context, string) (model.TeamMember, error)
+	removeMember func(context.Context, string) error
+}
+
+func (d teamHTTPWriter) Team(ctx context.Context, user string) (model.Team, error) {
+	return d.read(ctx, user)
+}
+func (d teamHTTPWriter) Rename(ctx context.Context, user, name string) (model.Team, error) {
+	return d.rename(ctx, user, name)
+}
+func (d teamHTTPWriter) HasProjects(ctx context.Context) (bool, error) { return d.occupied(ctx) }
+func (d teamHTTPWriter) Delete(ctx context.Context) error              { return d.delete(ctx) }
+
+func (d teamHTTPWriter) Member(ctx context.Context, user string) (model.TeamMember, error) {
+	return d.member(ctx, user)
+}
+func (d teamHTTPWriter) RemoveMember(ctx context.Context, user string) error {
+	return d.removeMember(ctx, user)
+}
+
+type teamHTTPWriteScope struct {
+	store.TeamWriteScope
+	dao         store.TeamWriteDAO
+	eligibility store.WebhookEligibilityDAO
+}
+
+func (s teamHTTPWriteScope) TeamDAO() store.TeamWriteDAO                 { return s.dao }
+func (s teamHTTPWriteScope) EligibilityDAO() store.WebhookEligibilityDAO { return s.eligibility }
+
+type teamHTTPEligibility struct {
+	store.WebhookEligibilityDAO
+	lock func(context.Context, store.WebhookEligibilityFilter) ([]store.WebhookAuthorization, error)
+}
+
+func (d teamHTTPEligibility) LockAffected(ctx context.Context, f store.WebhookEligibilityFilter) ([]store.WebhookAuthorization, error) {
+	return d.lock(ctx, f)
+}
+
+func teamHTTPCreate(t *testing.T, tx *httpTestStore, p model.Principal, name string) *model.Team {
+	t.Helper()
+	result := new(model.Team)
+	writer, insert := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	tx.CreateTeamCall = func(ctx context.Context, owner string, op func(store.TeamCreationDAO) error) (store.Completion, error) {
+		writer()
+		projectHTTPCheck(t, owner, p.UserID)
+		err := op(teamHTTPCreator{insert: func(ctx context.Context, id, raw string) (model.Team, error) {
+			insert()
+			projectHTTPCheck(t, raw, name)
+			parsed, err := uuid.Parse(id)
+			if err != nil || parsed.Version() != 4 {
+				t.Errorf("Team ID is not allocated UUIDv4: %s %v", id, err)
+				panic("invalid Team ID")
+			}
+			at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			*result = model.Team{TeamRef: model.TeamRef{ID: id, Kind: "ordinary", Name: &name}, Version: 1, CreatedAt: at, UpdatedAt: at, Membership: model.TeamMember{TeamID: id, UserID: p.UserID, Role: model.ProjectAdmin, Version: 1, CreatedAt: at, UpdatedAt: at}}
+			return projectHTTPCopyTeam(*result), nil
+		}})
+		return store.Completion{Outcome: store.TransactionCommitted}, err
+	}
+	return result
+}
+func teamHTTPRead(t *testing.T, tx *httpTestStore, p model.Principal, id string, result model.Team, readErr error) {
+	t.Helper()
+	snapshot, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+		snapshot()
+		return op(teamHTTPSnapshot{reader: teamHTTPReader{t: t, Read: func(ctx context.Context, user, gotID string) (model.Team, error) {
+			read()
+			projectHTTPCheck(t, user, p.UserID)
+			projectHTTPCheck(t, gotID, id)
+			return projectHTTPCopyTeam(result), readErr
+		}}})
+	}
+}
+func teamHTTPList(t *testing.T, tx *httpTestStore, p model.Principal, items []model.Team) {
+	t.Helper()
+	snapshot, list := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+		snapshot()
+		return op(teamHTTPSnapshot{reader: teamHTTPReader{t: t, List: func(ctx context.Context, user string, page store.Page) (store.TeamPage, error) {
+			list()
+			projectHTTPCheck(t, user, p.UserID)
+			projectHTTPCheck(t, page, store.Page{Limit: 1})
+			returned := slices.Clone(items)
+			for index := range returned {
+				returned[index] = projectHTTPCopyTeam(returned[index])
+			}
+			return store.TeamPage{Items: returned}, nil
+		}}})
+	}
+}
+func teamHTTPWrite(t *testing.T, tx *httpTestStore, p model.Principal, current model.Team, rename *model.Team, remove bool) {
+	t.Helper()
+	writer, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	dao := teamHTTPWriter{read: func(ctx context.Context, user string) (model.Team, error) {
+		read()
+		projectHTTPCheck(t, user, p.UserID)
+		return projectHTTPCopyTeam(current), nil
+	}}
+	if rename != nil {
+		called := projectHTTPCount(t, 1)
+		dao.rename = func(ctx context.Context, user, name string) (model.Team, error) {
+			called()
+			projectHTTPCheck(t, user, p.UserID)
+			projectHTTPCheck(t, name, *rename.Name)
+			return projectHTTPCopyTeam(*rename), nil
+		}
+	}
+	var eligibility store.WebhookEligibilityDAO
+	if remove {
+		occupied, deleted, locked := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+		dao.occupied = func(context.Context) (bool, error) { occupied(); return false, nil }
+		dao.delete = func(context.Context) error { deleted(); return nil }
+		eligibility = teamHTTPEligibility{lock: func(ctx context.Context, f store.WebhookEligibilityFilter) ([]store.WebhookAuthorization, error) {
+			locked()
+			projectHTTPCheck(t, f, store.WebhookEligibilityFilter{TeamID: current.ID, TeamOwner: true})
+			return nil, nil
+		}}
+	}
+	tx.WriteTeamCall = func(ctx context.Context, id string, op func(store.TeamWriteScope) error) (store.Completion, error) {
+		writer()
+		projectHTTPCheck(t, id, current.ID)
+		err := op(teamHTTPWriteScope{dao: dao, eligibility: eligibility})
+		return store.Completion{Outcome: store.TransactionCommitted}, err
+	}
+}
+
+func projectHTTPCheck(t *testing.T, got, want any) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unexpected Project DAO argument/result: got %#v, want %#v", got, want)
+		panic("Project DAO contract violated")
+	}
+}
+func projectHTTPCount(t *testing.T, want int) func() {
+	t.Helper()
+	calls := 0
+	t.Cleanup(func() {
+		if calls != want {
+			t.Errorf("Project DAO call count: got %d, want %d", calls, want)
+		}
+	})
+	return func() {
+		calls++
+		if calls > want {
+			t.Errorf("extra Project DAO call: %d > %d", calls, want)
+			panic("extra Project DAO call")
+		}
+	}
+}
+func projectHTTPCopyPointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+func projectHTTPCopyTeam(value model.Team) model.Team {
+	value.Name = projectHTTPCopyPointer(value.Name)
+	return value
+}
+
+type httpTestStore struct {
+	t                *testing.T
+	ReadSnapshotCall func(context.Context, func(store.SnapshotScope) error) error
+	CreateTeamCall   func(context.Context, string, func(store.TeamCreationDAO) error) (store.Completion, error)
+	WriteTeamCall    func(context.Context, string, func(store.TeamWriteScope) error) (store.Completion, error)
+}
+
+func (s *httpTestStore) ReadSnapshot(ctx context.Context, op func(store.SnapshotScope) error) error {
+	if s.ReadSnapshotCall == nil {
+		s.t.Fatal("unexpected ReadSnapshot")
+	}
+	return s.ReadSnapshotCall(ctx, op)
+}
+func (s *httpTestStore) CreateTeam(ctx context.Context, owner string, op func(store.TeamCreationDAO) error) (store.Completion, error) {
+	if s.CreateTeamCall == nil {
+		s.t.Fatal("unexpected CreateTeam")
+	}
+	return s.CreateTeamCall(ctx, owner, op)
+}
+func (s *httpTestStore) WriteTeam(ctx context.Context, id string, op func(store.TeamWriteScope) error) (store.Completion, error) {
+	if s.WriteTeamCall == nil {
+		s.t.Fatal("unexpected WriteTeam")
+	}
+	return s.WriteTeamCall(ctx, id, op)
+}
+func newHTTPTestStore(t *testing.T) *httpTestStore { return &httpTestStore{t: t} }
+
+type teamComponentHandler struct {
+	http.Handler
+	principal model.Principal
+}
+
+func teamComponentHost(t *testing.T, db *httpTestStore, output io.Writer) *teamComponentHandler {
+	t.Helper()
+	principal := model.Principal{UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222", Kind: model.PATCredential}
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	auth, err := authhttp.NewRequestAuthentication(func(_ context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+		if kind != model.PATCredential || token != "team-controlled-token" {
+			return model.Principal{}, authhttp.Failure()
+		}
+		return principal, nil
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, teamservice.NewTeams(db), &authhttp.Authentication{RequestAuthentication: auth}, logger)
+	return &teamComponentHandler{Handler: httpx.RequestLogging(logger, mux), principal: principal}
+}
+func teamComponentRequest(handler *teamComponentHandler, method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer team-controlled-token")
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("X-Request-ID", "project-test")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
 }

@@ -33,8 +33,9 @@ Three repository skills divide the responsibilities:
   holds the contract shared by every investigation topic: authorization
   boundaries, coverage records, the evidence standard with freshness checks and
   private-data screening, classification, the finding package and its validator,
-  routing to `dispatch-small-change` or the Goal protocol, read-only review of
-  registered tasks against their packages, and closing the loop after delivery.
+  routing to the development workflow for task creation and handoff or the Goal
+  protocol, read-only review of registered tasks against their packages, and
+  closing the loop after delivery.
 - [audit-daynight-ui](../../../skills/audit-daynight-ui/SKILL.md) is the first
   topic skill. It owns UI finding criteria including unreasonable layout, default
   phone and desktop coverage, the Session View checklist, designed solutions with
@@ -56,7 +57,9 @@ implementers also use it to verify delivered UI fixes outside any investigation.
 
 The [local development environment decision](2026-11-05-local-development-environment-skill.md)
 keeps its environment rationale. This note replaces its placement of the
-experience audit inside the environment skill.
+experience audit inside the environment skill. The [small-change skill removal
+decision](2026-11-11-remove-small-change-skill.md) replaces the original routing
+through the independent dispatcher with the existing development workflow.
 
 ## Alternatives
 
@@ -71,11 +74,11 @@ standard, package and handoff rules would be repeated in each topic skill or
 written by the first one in its own terms. The UI-specific prototype requirement
 reaching CLI and Provider findings showed this failure.
 
-**Put the shared contract into `dispatch-small-change`.** That skill registers and
-hands off one bounded change. It does not cover coverage records, evidence
-standards across many findings, or requirement candidates that belong to the Goal
-protocol. Keeping its scope and referencing it from the contract avoids widening
-a skill that other workflows use for ordinary changes.
+**Put the shared contract into the small-change dispatcher.** At the time, that
+skill registered and handed off one bounded change. It did not cover coverage
+records, evidence standards across many findings, or requirement candidates that
+belong to the Goal protocol. Keeping its scope and referencing it from the
+contract avoided widening a skill that other workflows used for ordinary changes.
 
 **Create performance and competitor skills now.** Without a real run, their
 methods could not be checked against actual failures. Creating each one from its

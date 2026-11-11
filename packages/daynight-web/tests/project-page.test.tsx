@@ -57,7 +57,7 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",
@@ -114,7 +114,7 @@ beforeEach(() => {
   graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
-    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+    if (id === X) return { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
       id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
     return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
@@ -399,10 +399,9 @@ describe("project dashboard", () => {
     fireEvent.click(await findNodeButton("节点 后续任务"));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
-    await screen.findByRole("heading", { name: "还没有任务" });
-    await waitFor(() => expect(document.activeElement).toBe(sectionTabs().getByRole("tab", { name: "任务列表" })));
-    expect(number("任务总数")).toBe("0");
-    expect(screen.queryByTestId("root-list")).toBeNull();
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
+    await waitFor(() => expect(document.activeElement).toBe(taskTabs().getByRole("tab", { name: "任务链" })));
+    expect(screen.getByTestId("root-list")).toBeEmptyDOMElement();
   });
 
   it("clears project-specific display immediately when the project prop changes", async () => {
@@ -420,7 +419,8 @@ describe("project dashboard", () => {
   it("renders an empty project as zero statistics and an explicit empty state", async () => {
     graphRequest.mockResolvedValue(graph([]));
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "还没有任务" });
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
+    expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
     expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
     expect(screen.getByText("完成比例 0%")).toBeTruthy();
   });
@@ -441,7 +441,7 @@ describe("project dashboard", () => {
 
   it("shows generic read failures and rejects malformed graph snapshots", async () => {
     graphRequest.mockRejectedValueOnce(new ApiError("server", 500, "internal_error", "graph-read-failed"))
-      .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [X] } : task) });
+      .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [B] } : task) });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByRole("heading", { name: "项目加载失败" })).toBeTruthy();
@@ -591,7 +591,7 @@ describe("transient task chain dialogs", () => {
   it("does not auto-open a chain when an empty project gains tasks", async () => {
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "还没有任务" });
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);

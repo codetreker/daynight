@@ -616,6 +616,7 @@ export const createApiClient = (options: {
     if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
+    if (filters.automaticCandidate !== undefined && typeof filters.automaticCandidate !== "boolean") throw new Error("Automatic candidate filter must be boolean.");
     if (filters.platformSpecific !== undefined && typeof filters.platformSpecific !== "boolean") throw new Error("Platform-specific filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
     let workerId: string | undefined;
@@ -626,13 +627,14 @@ export const createApiClient = (options: {
       workerId = parsed;
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
-    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
     const worker = readWorkerClaim(task.properties);
     if (
-      (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
+      (filters.automaticCandidate === true && task.type !== "task")
+      || (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
       || (filters.status !== undefined && task.status !== filters.status)
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)

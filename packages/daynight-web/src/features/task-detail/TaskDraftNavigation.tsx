@@ -1,4 +1,5 @@
 import { createContext, useContext, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { nearestOverlayOwner } from '../../app/overlay';
 import { browserNavigation, type DraftScope } from '../../app/navigation';
 import { parseRoute } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -36,6 +37,12 @@ export const useDirtyTaskDraft = (draft: { readonly isDirty: () => boolean; read
   }), [context]);
 };
 
+export const useRequestTaskDraftAction = () => {
+  const context = useContext(Context);
+  if (context === null) throw new Error('Task drafts require the current task draft boundary.');
+  return (action: () => void): void => browserNavigation().requestScopeAction(context.scope, action);
+};
+
 export const useDraftNavigationDecision = () => {
   const owner = browserNavigation();
   return useSyncExternalStore(owner.subscribeDecision, owner.decision);
@@ -46,12 +53,15 @@ export const useRetireTaskDraft = (retired: boolean): void => {
   useLayoutEffect(() => { if (retired) browserNavigation().retireScope(context.scope); }, [retired, context]);
 };
 
+const confirmationOwners = new Set<HTMLElement>();
+
 export const DraftNavigationConfirmation = ({ owner, fallbackFocus, taskTitle }: {
   readonly owner: RefObject<HTMLElement | null>; readonly fallbackFocus: RefObject<HTMLElement | null>; readonly taskTitle: string;
 }) => {
   const decision = useDraftNavigationDecision();
+  useLayoutEffect(() => { const element = owner.current; if (element === null) return; confirmationOwners.add(element); return () => { confirmationOwners.delete(element); }; }, [owner]);
   const { messages: { inspection: { draftNavigation: m } } } = useI18n();
-  if (decision === null) return null;
+  if (decision === null || owner.current === null || nearestOverlayOwner(confirmationOwners) !== owner.current) return null;
   return <TaskConfirmation title={m.title} question={m.question} explanation={m.explanation} taskTitle={taskTitle}
     confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.close} destructive owner={owner} fallbackFocus={fallbackFocus}
     onCancel={browserNavigation().cancel} onConfirm={browserNavigation().confirm} />;

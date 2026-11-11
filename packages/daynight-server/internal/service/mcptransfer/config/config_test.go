@@ -24,7 +24,11 @@ func TestCapacityEnvironmentAndValidation(t *testing.T) {
 			values = map[string]string{field: value}
 			err := c.ApplyEnvironment(lookup, func(string, string) {})
 			var failure *configvalue.ConfigurationError
-			if !errors.As(err, &failure) || failure.Field != field {
+			expected := "temp_budget_bytes"
+			if field == "DAYNIGHT_MCP_RESERVED_FREE_BYTES" {
+				expected = "reserved_free_bytes"
+			}
+			if !errors.As(err, &failure) || failure.Field != expected {
 				t.Fatalf("accepted %s=%q: %v", field, value, err)
 			}
 		}
@@ -33,10 +37,13 @@ func TestCapacityEnvironmentAndValidation(t *testing.T) {
 	if err := c.ApplyEnvironment(lookup, func(string, string) {}); err == nil {
 		t.Fatal("zero environment budget accepted")
 	}
-	if err := (Config{}).Validate(); err != nil {
-		t.Fatalf("manual zero budget rejected: %v", err)
+	if err := (Config{}).Validate(); err == nil {
+		t.Fatal("zero budget accepted")
 	}
-	if err := (Config{ReservedFreeBytes: -1}).Validate(); err == nil {
+	if err := (Config{TempBudgetBytes: 1, ReservedFreeBytes: -1}).Validate(); err == nil {
 		t.Fatal("negative capacity accepted")
+	}
+	if err := (Config{TempBudgetBytes: 1, ReservedFreeBytes: 0}).Validate(); err != nil {
+		t.Fatalf("zero reserve: %v", err)
 	}
 }

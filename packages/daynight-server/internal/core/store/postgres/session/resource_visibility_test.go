@@ -9,11 +9,12 @@ import (
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
-func TestSavedResourceVisibilityRequiresActorOrPublishedReference(t *testing.T) {
-	db, _, session := sessionArchiveLockFixture(t)
+func testSavedResourceVisibilityRequiresActorOrPublishedReference(t *testing.T, db *postgres.Store) {
+	_, session := prepareArchiveSession(t, db)
 	actor, other, resource, upload, prepare, migration := "", uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	if err := db.Pool.QueryRow(t.Context(), `SELECT owner_user_id::text FROM task_sessions WHERE id=$1`, session).Scan(&actor); err != nil {
 		t.Fatal(err)

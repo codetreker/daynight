@@ -150,7 +150,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"title":"x","dependsOn":null}`, `{"title":"x","dependsOn":{}}`, `{"title":"x","dependsOn":"id"}`,
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
 		`{"title":"x","status":null}`, `{"title":"x","status":1}`, `{"title":"x","status":[]}`, `{"title":"x","status":{}}`, `{"title":"x","version":1}`, `{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
-		`{"title":"x","type":"goal"}`, `{"title":"x","type":"task"}`, `{"title":"x","parentId":null}`, `{"title":"x","parentId":"` + testTaskID + `"}`,
+		`{"title":"x","type":null}`, `{"title":"x","type":""}`, `{"title":"x","type":true}`, `{"title":"x","parentId":true}`, `{"title":"x","parentId":[]}`,
 		"{\"title\":\"" + string([]byte{0xff}) + "\"}",
 	} {
 		t.Run("create_"+body[:min(len(body), 70)], func(t *testing.T) {
@@ -165,7 +165,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"version":1,"Title":"x"}`, `{"version":1,"version":1,"title":"x"}`, `{"version":1,"id":"readonly"}`, `{"version":1,"title":null}`, `{"version":1,"title":1}`,
 		`{"version":1,"description":null}`, `{"version":1,"description":false}`, `{"version":1,"status":null}`, `{"version":1,"status":[]}`, `{"version":1,"status":"blocked"}`, `{"version":1,"status":"todo"}`, `{"version":1,"status":"done","title":"Changed"}`,
 		`{"version":1,"dependsOn":null}`, `{"version":1,"dependsOn":true}`, `{"version":1,"dependsOn":[null]}`, `{"version":1,"unknown":"private-body-secret"}`,
-		`{"version":1,"type":"goal"}`, `{"version":1,"title":"x","type":"task"}`, `{"version":1,"parentId":null}`, `{"version":1,"parentId":"` + testTaskID + `"}`,
+		`{"version":1,"type":"goal"}`, `{"version":1,"title":"x","type":"task"}`, `{"version":1,"parentId":true}`, `{"version":1,"parentId":[]}`,
 	} {
 		t.Run("patch_"+body[:min(len(body), 70)], func(t *testing.T) {
 			assertProjectError(t, projectRequest(h, http.MethodPatch, path, body), http.StatusBadRequest, "invalid_input")

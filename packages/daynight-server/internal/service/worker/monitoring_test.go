@@ -374,6 +374,54 @@ func TestMonitoringServiceReads(t *testing.T) {
 	})
 }
 
+func TestMonitoringServiceWorktreePersistenceAndCurrentPermission(t *testing.T) {
+	events := []string{}
+	s, reader := monitorFixture(t, &events)
+	visible := true
+	reader.sources = func(_ context.Context, _ string, projects, tasks []string) (store.WorkerMonitoringSources, error) {
+		if !reflect.DeepEqual(projects, []string{serviceProject}) || !reflect.DeepEqual(tasks, []string{serviceTask}) {
+			t.Fatalf("incorrect permission inputs: %v %v", projects, tasks)
+		}
+		if !visible {
+			return store.WorkerMonitoringSources{}, nil
+		}
+		return store.WorkerMonitoringSources{Projects: map[string]string{serviceProject: "Project"}, Tasks: map[string]store.WorkerTaskSource{serviceTask: {Task: model.Task{ID: serviceTask, ProjectID: serviceProject, Title: "Task"}, ProjectName: "Project"}}}, nil
+	}
+	o := serviceObservation(t)
+	o["currentFailures"] = []any{map[string]any{
+		"operationId": serviceRun, "component": "cleanup", "phase": "archive", "scope": map[string]any{"kind": "claim", "projectId": serviceProject, "taskId": serviceTask, "claimId": serviceRun},
+		"error":           map[string]any{"type": "operation", "code": "unknown", "cause": "The operation failed; inspect local Worker diagnostics for details.", "causeTruncated": false},
+		"firstObservedAt": "2026-01-01T00:00:00Z", "lastObservedAt": "2026-01-01T00:00:00Z", "occurrencesInRun": 1, "retryState": "none", "nextAttemptAt": nil,
+		"worktree": map[string]any{"kind": "project-relative", "path": "../tree/<>&"},
+	}}
+	receipt := store.MonitoringReceipt{Revision: serviceRevision, RunID: serviceRun, Sequence: "1", ReceivedAt: serviceNow, ExpiresAt: serviceNow.Add(time.Hour)}
+	var saved store.MonitoringCandidate
+	s.SetMonitoringStore(monitorStore{
+		cas: func(_ context.Context, _ store.MonitoringIdentity, _ *string, c store.MonitoringCandidate) (store.MonitoringCASResult, error) {
+			saved = c
+			return store.MonitoringCASResult{Kind: store.MonitoringAccepted, Receipt: &receipt}, nil
+		},
+		read: func(context.Context, store.MonitoringIdentity) (store.MonitoringReadResult, error) {
+			return store.MonitoringReadResult{ObservedAt: serviceNow, Value: &store.MonitoringValue{Receipt: receipt, Body: saved.Body, Summary: saved.Summary}}, nil
+		},
+	})
+	if _, err := s.PutMonitoring(context.Background(), servicePrincipal(), serviceWorker, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved.Summary), "worktree") || !strings.Contains(string(saved.Body), `"worktree"`) {
+		t.Fatalf("incorrect storage: body=%s summary=%s", saved.Body, saved.Summary)
+	}
+	out, err := s.GetMonitoring(context.Background(), servicePrincipal(), serviceWorker)
+	if err != nil || out.Data["currentFailures"].([]any)[0].(map[string]any)["worktree"].(map[string]any)["path"] != "../tree/<>&" {
+		t.Fatalf("visible detail: %+v %v", out, err)
+	}
+	visible = false
+	out, err = s.GetMonitoring(context.Background(), servicePrincipal(), serviceWorker)
+	if err != nil || out.PermissionProjection != "restricted" || len(out.Data["currentFailures"].([]any)) != 0 {
+		t.Fatalf("revoked detail: %+v %v", out, err)
+	}
+}
+
 func TestMonitoringServiceContextAndSnapshotCompletion(t *testing.T) {
 	t.Run("cancellation reaches Redis and preserves cause", func(t *testing.T) {
 		events := []string{}

@@ -16,9 +16,23 @@ description 全文/适用章节、真实附件完整路径或已核验不可变�
 
 ## 一个入口与按需加载
 
-公开 `using-daynight` 由短 `SKILL.md` 与唯一 `references/manual.md` 组成。构建将同一手册
-原字节复制到 bundle 和 `dist/commands/skill/usage.md`；终端读取不依赖配置、Git 或登录。
-入口按能力导航，不选择任务工作流。手册保持 YAML metadata、自包含主题和本地锚点。
+公开 `using-daynight` 由短 `SKILL.md` 与九份独立主题引用组成。入口按操作目的直接导航
+相关文件，并明确写操作需同时读取通用写安全规则和对应资源的前提与例外；它不选择任务
+工作流。主题分别拥有连接与项目、任务、Steps、资料、写入安全、Session 读取、Session
+消息、Webhook 与 Worker 操作，通用解释保持单一归属。
+
+`commands/skill/manual.ts` 的 `manualTopicFiles` 固定主题清单和顺序；
+`manual-assembly.ts` 的 `assembleManual` 从这些唯一内容源生成
+`dist/commands/skill/usage.md`。每份主题以单一一级标题开始，章节使用普通 Markdown
+标题；内容、围栏代码和内联链接按当前主题格式处理。汇总将标题下降一级，为主题和章节
+生成带主题前缀的显式锚点，并将相对文件及章节链接改为汇总内链接。缺少主题、非法
+UTF-8、空白内容、标题冲突、未关闭代码围栏或无效内部引用使构建失败；资源复制前先完成
+校验。该机制只承担固定主题的组合，不解析任意文档格式。
+
+安装 bundle 保留每份主题的原字节；离线汇总是构建产物，不维护第二套手写正文。
+`--skill` reader 只读取该产物，保留完整离线输出与原有错误边界，不依赖配置、Git、登录
+或安装后的引用文件。[主题手册决策](../../.agents/notes/implemented/architecture/2026-11-11-daynight-topic-manual.md)
+记录独立读取与构建转换的取舍。
 
 本仓库的 [development-workflow](../../.agents/skills/development-workflow/SKILL.md) 按需导航
 任务内容、创建、Goal、依赖、handoff、执行、交付与终验收。Worker 的编译运行约束独立于
@@ -157,7 +171,7 @@ WSL Linux 仍为 Linux。普通指定任务保留人工路径，但不借此把�
 | 轻量命令登记 | [命令表](../../packages/daynight/src/cli/commands.ts)延迟加载运行时，帮助只访问元数据 |
 | 交互输入 | [CliPrompt](../../packages/daynight/src/cli/prompts.ts)共享 ask/select/selectMany，选择器按需加载 |
 | 取消生命周期 | [cancellation.ts](../../packages/daynight/src/cli/cancellation.ts)管理终端信号、取消与关闭 |
-| 资源打包 | [copy-resources.ts](../../packages/daynight/scripts/copy-resources.ts)明确列举公开与 review 两个完整 bundle，并复制数据库 owner 的 SQL 目录；不扫描仓库 skill |
+| 资源打包 | [copy-resources.ts](../../packages/daynight/scripts/copy-resources.ts)明确列举公开与 review 两个完整 bundle，并复制数据库 owner 的 SQL 目录；公共主题生成完整离线手册，不扫描仓库 skill |
 | 物理路径 | [filesystem.ts](../../packages/daynight/src/platform/filesystem.ts)解析已有祖先和未创建部分 |
 | worktree 定位 | [git.ts](../../packages/daynight/src/repository/git.ts)只定位根，安装不依赖 origin 或服务 |
 | 打包验收 | [installed-cli.ts](../../packages/daynight/test/fixtures/installed-cli.ts)真实打包安装与 launcher fixture |
@@ -211,8 +225,10 @@ server/review 配置，不要求 origin 或项目关联。支持目录和重载�
 随原设计 PR 保留，仅为历史观察，不是跨宿主版本的保证。
 
 安装先捕获包内完整 bundle 一次，验证 SKILL.md UTF-8、固定 frontmatter 名称
-`using-daynight`、非空 description 和仅目录/普通文件的树，并要求精确 `references/manual.md` 是有效 UTF-8 的非空白普通文件；其他文件保持原始字节。
-构建与验收校验相对引用，运行时不引入 Markdown 解析器。所有目标使用相同捕获字节。
+`using-daynight`、非空 description 和仅目录/普通文件的树。固定主题清单中的每份引用都须
+为有效 UTF-8 的非空白普通文件，并通过与构建相同的标题及内部链接校验；其他文件保持
+原始字节。验证失败时尚未替换任何目标。所有目标使用相同捕获字节，安装与离线输出均
+不依赖额外 Markdown 库。
 
 预检后按 Agent 顺序串行处理唯一物理目标：
 
@@ -295,8 +311,12 @@ sibling 与另一 scope。迁移增加旧名称存在、leaf 链接、清理失�
 parent/leaf 链接、安装/清理路径嵌套、部分失败、监听清理和 completion 回归。Windows
 必须有原生结果；Linux 投影不能替代 `.cmd`、ConPTY 或平台链接证据。
 
-静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
-作为 bundle 资源链接；打包产物和安装副本保留这些内容，并与源码完整字节比较。既有
+静态打包检查验证入口 frontmatter、固定主题清单、打包 allowlist，以及全部实际本地链接的
+存在和 bundle 内归属。主题组合另验证标题、章节锚点、代码围栏和完整离线输出的内部
+链接；这些是资源结构检查，不以正文特定措辞证明指令有效。验证边界见
+[skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。
+围栏代码中的任务 Markdown 示例属于写作示例，不作为 bundle 资源链接；打包产物和安装
+副本保留这些内容，并与源码完整字节比较。既有
 project/task/attachment 套件验证命令语义，创建、更新和 JSON 读取包含中英文、CRLF、
 围栏代码、GFM 与链接的描述，确认原始字符串及精确版本完整替换。独立情境演练另外核对
 裸调用、缺少创建许可、已有范围内许可、普通指定执行与显式 managed 路由、

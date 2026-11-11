@@ -772,6 +772,25 @@ describe("worker runtime configuration reporting", () => {
 });
 
 
+it("reports historical Web archive failures against the original frozen checkout", async () => {
+  const f = await fixture();
+  const originalRoot = path.join(f.homeDirectory, "original-checkout");
+  const originalWorktree = path.join(f.homeDirectory, "retained-worktree");
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", repositoryPath: originalRoot, resources: { worktree: { repositoryPath: originalRoot, worktreePath: originalWorktree } }, webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, updateConfiguration: update, shutdown }));
+  const running = start(f);
+  try {
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry" })));
+    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    expect(options.store.getProject({ projectId: uuid(1) })?.localPath).toBe(path.join(f.homeDirectory, "repo"));
+    const failure = options.monitoring!.capture("1").currentFailures.find(item => item.phase === "archive-backfill")!;
+    expect(failure.worktree).toEqual({ kind: "project-relative", path: "../retained-worktree" });
+    expect(JSON.stringify(failure)).not.toContain(f.homeDirectory);
+  } finally { f.signal.abort(); await running; }
+});
+
 it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] as const)("backfill performs only low-frequency archive condition probes: %s", async outcome => {
   const f = await fixture();
   target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };

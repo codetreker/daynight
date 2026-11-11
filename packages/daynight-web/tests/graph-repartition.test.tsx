@@ -18,7 +18,7 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { ...optio
 const time = '2026-10-20T12:00:00Z';
 const projectId = '10000000-0000-0000-0000-000000000001';
 const [A, B, C, X] = [1, 2, 3, 4].map((value) => `20000000-0000-0000-0000-${String(value).padStart(12, '0')}`) as [string, string, string, string];
-const node = (id: string, titlePreview: string, dependsOn: readonly string[]): GraphTask => ({ assignedTo: null,
+const node = (id: string, titlePreview: string, dependsOn: readonly string[]): GraphTask => ({ type: 'task', parentId: null, assignedTo: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, externalDependsOn: [], blockedBy: dependsOn,
   ready: dependsOn.length === 0, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
@@ -63,19 +63,19 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   const initial = before.find((task) => task.id === B)!;
   vi.mocked(getTask).mockResolvedValueOnce({ ...initial, blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { pullRequests: [] }, version: 1n })
     .mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { pullRequests: [] }, version: 2n });
-  const view = render(<ProjectPage projectId={projectId} />, { container: root });
+  render(<ProjectPage projectId={projectId} />, { container: root });
   await selectTaskList();
   await screen.findByRole('button', { name: /Root.*查看依赖关系/ });
   fireEvent.click(document.getElementById(`task-chain-graph-${A}`)!);
-  await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(4));
+  await waitFor(() => expect(document.body.querySelectorAll('.react-flow__node')).toHaveLength(4));
   fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-  const fullscreen = view.container.querySelector<HTMLElement>('.task-chain-dialog-fullscreen')!;
-  const canvas = view.container.querySelector('.task-graph-canvas');
-  const body = view.container.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${B}"] .task-node-body`)!;
+  const fullscreen = document.body.querySelector<HTMLElement>('.task-chain-dialog-fullscreen')!;
+  const canvas = document.body.querySelector('.task-graph-canvas');
+  const body = document.body.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${B}"] .task-node-body`)!;
   body.focus();
   fireEvent.click(body);
   expect(body).toHaveAttribute('aria-pressed', 'true');
-  fireEvent.click(view.container.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${B}"] .task-node-details`)!);
+  fireEvent.click(document.body.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${B}"] .task-node-details`)!);
   const dialog = await screen.findByRole('dialog', { name: 'Detached branch' });
   await within(dialog).findByRole('heading', { name: 'Detached branch' });
   const close = within(dialog).getByRole('button', { name: '关闭任务详情' });
@@ -87,10 +87,10 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
   expect(automaticRefresh.aborted).toBe(true);
   refreshed.resolve(graph(after));
-  await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
+  await waitFor(() => expect(document.body.querySelectorAll('.react-flow__node')).toHaveLength(2));
   expect(fullscreen).toBeVisible();
-  expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
-  expect(view.container.querySelectorAll('.task-node-selected')).toHaveLength(0);
+  expect(document.body.querySelector('.task-graph-canvas')).toBe(canvas);
+  expect(document.body.querySelectorAll('.task-node-selected')).toHaveLength(0);
   expect(dialog).toBeVisible();
   expect(close).toHaveFocus();
   expect(root).toHaveAttribute('inert');
@@ -100,16 +100,17 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   expect(fullscreen).toBeVisible();
   const closeGraph = fullscreen.querySelector<HTMLButtonElement>('.task-chain-close')!;
   expect(closeGraph).toHaveFocus();
-  expect(root).not.toHaveAttribute('inert');
+  expect(root).toHaveAttribute('inert');
   expect(document.body.style.overflow).toBe('hidden');
   fireEvent.keyDown(closeGraph, { key: 'Escape' });
-  expect(view.container.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
-  expect(view.container.querySelector('.task-chain-dialog')).toBe(fullscreen);
-  expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
+  expect(document.body.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
+  expect(document.body.querySelector('.task-chain-dialog')).toBe(fullscreen);
+  expect(document.body.querySelector('.task-graph-canvas')).toBe(canvas);
   expect(document.body.style.overflow).toBe('hidden');
   expect(screen.getByRole('button', { name: '全屏查看' })).toHaveFocus();
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
-  expect(view.container.querySelector('.task-chain-dialog')).toBeNull();
+  expect(document.body.querySelector('.task-chain-dialog')).toBeNull();
+  expect(root).not.toHaveAttribute('inert');
   expect(document.body.style.overflow).toBe('scroll');
   expect(document.getElementById(`task-chain-graph-${A}`)).toHaveFocus();
 });

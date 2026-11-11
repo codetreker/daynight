@@ -1,9 +1,20 @@
-Daynight provides tools for projects, tasks, Steps, discussion Threads and attachments. Use `tools/list` for the available tools and their input schemas.
+Daynight provides MCP tools for Projects, Tasks/Goals, Steps, Threads, attachments, Bots and Session observations. Use `tools/list` for current tool schemas; use `resources/list` to discover the current product manual catalog and `resources/read` with a returned URI. Read complete required topics, reusing already-read guidance only while it remains applicable. Every write requires write-safety plus the operation's resource-specific conditions.
 
-Use `resources/list` to discover the product manuals, then call `resources/read` with a returned URI. Read the topics needed for the current operation: product concepts; queries and lifecycle; dependencies; safe writes; material organization; files and references; operation boundaries.
+| Purpose | Manual Resource name |
+| --- | --- |
+| Establish Account/Team/Project context; resolve a repository | concepts |
+| Query Task/Goal projections, readiness, lifecycle or properties | tasks |
+| Interpret graphs; create or replace dependencies | dependencies; tasks for creation rules |
+| Interpret versions, authorization and write outcomes | write-safety |
+| Organize requirements, accepted conclusions, references and results | materials |
+| Read or maintain ordered Steps | steps |
+| Read or post durable discussion | threads |
+| Read attachment metadata or complete bytes | attachment-reads |
+| Upload or remove attachments | attachment-writes; attachment-reads if path rules are unknown |
+| Observe activity/grouped work; locate Sessions; read history | session-reads |
+| Send to an exact Session; query or recover its original operation | session-messages; session-reads if target identity is unknown |
+| Hand off work or complete an explicit owned Worker claim | worker-operations |
 
-Establish the target Project from an explicit ID/link, a valid assignment or the host's repository context. Resolve a known `repoUrl` with `project_resolve` and use the returned Project ID; without target context, list Projects for an explicit user selection. A connection has no implicit current Project.
+A connection has no implicit current Project. Establish the intended target from an explicit ID/link, a verified assignment or host repository context; resolve a known repository address with `project_resolve`. Without target context, list Projects for explicit user selection. Task/Step summaries omit full definitions; read full content when needed and attachments separately. Full Task lists still omit descriptions.
 
-Task and Step reads default to summaries. Request complete content when a decision requires it, and read attachments separately. A full Task list still omits descriptions. Preserve the exact version used for a write decision; reassess conflicts and inspect write outcomes before deciding whether another submission is appropriate.
-
-Reading documentation or task records does not start work, enable automation or establish a Worker assignment. Apply the current user's authorized scope and the target project's rules. Task status, responsibility and readiness describe the work; they do not supply missing delivery authorization.
+Documentation reads, status, assignment, readiness and automatic permission do not supply missing execution or delivery authorization or establish a Worker assignment. Apply the current user's scope and target project's rules. Preserve decision versions exactly; reassess conflicts and inspect completion facts before deciding on another submission.

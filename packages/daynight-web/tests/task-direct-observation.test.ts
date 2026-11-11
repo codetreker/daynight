@@ -626,7 +626,7 @@ it("expires an active summary review when the persisted summary advances before 
   const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   const record = await db.get("summaries", [TEST_VIEWER_ID, project, task]);
   expect(record).toBeDefined();
-  await db.put("summaries", { ...record, summary: { ...record.summary, version: 2n } }); db.close();
+  await db.put("summaries", { ...record, summary: { ...record.summary, version: 2n }, dependencyState: { ...record.dependencyState!, taskVersion: 2n } }); db.close();
   preparation.resolve();
   await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe("conflict"));
   expect(writes).toBe(0); expect(sessions.snapshot(project, task).requiresFreshRead).toBe(true); unsubscribe();

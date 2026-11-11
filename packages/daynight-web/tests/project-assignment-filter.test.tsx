@@ -272,7 +272,7 @@ describe('project assignee filtering', () => {
   });
 
   it('resets both category pages on every filter change even when both result sets still have multiple pages', async () => {
-    install(Array.from({ length: 32 }, (_, position) => {
+    install(Array.from({ length: 41 }, (_, position) => {
       const root = position * 2 + 1;
       return [task(root, TEST_VIEWER_ID), task(root + 1, TEST_VIEWER_ID, { dependsOn: [id(root)] }), task(1000 + position, TEST_VIEWER_ID)];
     }).flat());

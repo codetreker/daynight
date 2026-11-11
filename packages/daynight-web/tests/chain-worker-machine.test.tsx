@@ -1,7 +1,9 @@
+import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project, TaskSummary, WorkerClaim } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
@@ -12,20 +14,21 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const time = '2026-11-04T00:00:00Z';
 const project: Project = { id: id(100), name: 'Project', repoUrl: 'https://example.com/project', ownership: { teamId: id(101), version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: 'task', parentId: null, id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const claim = (name: string, state: WorkerClaim['state'], agentControlMode: WorkerClaim['agentControlMode'] = 'web'): WorkerClaim => ({
   claimId: id(201), state, userId: id(202), workerId: id(203), machine: { id: id(204), name }, platform: 'linux', agent: 'codex', agentControlMode, worktreeId: id(205), phase: 'executing', herdr: agentControlMode === 'web' ? null : { session: 'session', workspaceId: 'workspace', paneId: 'pane' }, nativeSessionId: null, claimedAt: time,
 });
 const root = task(1, { status: 'done' });
 const child = (n: number, changes: Partial<TaskSummary> = {}) => task(n, { dependsOn: [root.id], ...changes });
-const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, time), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
+const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 let sessionScope: TaskCacheScope;
 let sessionStore: TaskSessionSummaryStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
 afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
-const workspace = (value: GraphSnapshot, onOpenTask = noop) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
-  chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
+const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
+  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
+  chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
 
@@ -65,4 +68,75 @@ describe('chain worker machine presentation', () => {
     expect(row(4)).toHaveTextContent('No machine record');
     expect(row(4)).not.toHaveTextContent('live host');
   });
+
+  it('shows only active claims in the root accessible name and preserves keyboard disclosure', async () => {
+    const user = userEvent.setup();
+    const items = [root, child(2)];
+    const view = renderWithLocale(workspace(snapshot(items)), { locale: 'zh-CN', taskCache: true });
+    const header = document.getElementById(`task-root-${root.id}`)!;
+    expect(header).not.toHaveAccessibleName(/自动执行中/);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+
+    view.rerender(workspace(snapshot([{ ...root, status: 'in_progress', properties: { worker: claim('root', 'active') } }, child(2)])));
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(within(header).queryByRole('button')).toBeNull();
+    header.focus();
+    await user.keyboard('{Enter}');
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(header).toHaveAccessibleName(/自动执行中/);
+
+    view.rerender(workspace(snapshot([root, child(2, { status: 'in_progress', properties: { worker: claim('child', 'active') } })])));
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    view.setLocale('en');
+    expect(header).toHaveAccessibleName(/Automatic execution active/);
+    await user.keyboard(' ');
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(header).toHaveAccessibleName(/Automatic execution active/);
+
+    for (const state of ['released', 'completed'] as const) {
+      view.rerender(workspace(snapshot([root, child(2, { status: state === 'completed' ? 'done' : 'todo', properties: { worker: claim('historical', state) } })])));
+      expect(header).not.toHaveAccessibleName(/Automatic execution active/);
+    }
+    view.rerender(workspace(snapshot(items)));
+    expect(header).not.toHaveAccessibleName(/Automatic execution active/);
+  });
+
+  it('ignores external claims and Session working, while following member and claim changes', () => {
+    const external = task(9, { status: 'in_progress', properties: { worker: claim('outside', 'active') } });
+    const inside = child(2, { dependsOn: [root.id, external.id], externalDependsOn: [external.id] });
+    const remaining = child(3, { status: 'in_progress' });
+    vi.spyOn(sessionStore, 'snapshot').mockReturnValue(new Map([[remaining.id, { indicator: 'working' }]]));
+    const view = renderWithLocale(workspace(snapshot([root, inside, remaining, external])), { locale: 'zh-CN', taskCache: true });
+    const header = document.getElementById(`task-root-${root.id}`)!;
+    expect(header).not.toHaveAccessibleName(/自动执行中/);
+    expect(header.parentElement!.querySelector('[data-session-indicator]')).toHaveAttribute('data-session-indicator', 'working');
+
+    const active = { ...inside, status: 'in_progress' as const, dependsOn: [root.id], externalDependsOn: [], properties: { worker: claim('inside', 'active') } };
+    view.rerender(workspace(snapshot([root, active, remaining, external])));
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    view.rerender(workspace(snapshot([root, { ...active, status: 'todo', properties: { worker: claim('inside', 'released') } }, remaining, external])));
+    expect(header).not.toHaveAccessibleName(/自动执行中/);
+    view.rerender(workspace(snapshot([root, active, remaining, external])));
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    view.rerender(workspace(snapshot([root, { ...active, dependsOn: [], externalDependsOn: [] }, remaining, external])));
+    expect(header).not.toHaveAccessibleName(/自动执行中/);
+  });
+
+  it('aggregates the full ordinary component when the displayed chain has a narrower scope', () => {
+    const hiddenRoot = { ...root, status: 'in_progress' as const, parentId: id(50), properties: { worker: claim('other scope', 'active') } };
+    const inScope = child(2);
+    const scope = new Map([[root.id, [inScope.id]]]);
+    const view = renderWithLocale(workspace(snapshot([hiddenRoot, inScope]), noop, scope), { locale: 'zh-CN', taskCache: true });
+    const header = document.getElementById(`task-root-${root.id}`)!;
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(header).toHaveTextContent('子任务 · 1');
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(row(2)).toBeVisible();
+    view.rerender(workspace(snapshot([{ ...hiddenRoot, properties: {} }, inScope]), noop, scope));
+    expect(header).not.toHaveAccessibleName(/自动执行中/);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+  });
+
 });

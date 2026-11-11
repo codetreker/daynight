@@ -7,9 +7,16 @@ import { createThreadController } from './controller';
 import { DiscussionComposer } from './DiscussionComposer';
 import { DiscussionTimeline } from './DiscussionTimeline';
 import { ThreadMessageDetails } from './ThreadMessageDetails';
+import { useDirtyTaskDraft } from '../task-detail/TaskDraftNavigation';
+import type { ThreadController } from './controller';
 import '../../styles/task-discussion.css';
 
-export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpenChange, parentUnavailable = false }: { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly owner: RefObject<HTMLElement | null>; readonly onDetailsOpenChange: (open: boolean) => void; readonly parentUnavailable?: boolean }) => {
+const DiscussionDraft = ({ controller }: { readonly controller: ThreadController }) => {
+  useDirtyTaskDraft({ isDirty: () => { const view = controller.snapshot(); return view.draft !== '' || view.replyTo !== null; }, discard: () => { controller.setDraft(''); controller.setReply(null); } });
+  return null;
+};
+
+export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpenChange, parentUnavailable = false, trackDraft = false }: { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly owner: RefObject<HTMLElement | null>; readonly onDetailsOpenChange: (open: boolean) => void; readonly parentUnavailable?: boolean; readonly trackDraft?: boolean }) => {
   const account = useCurrentAccount(), cacheScope = useTaskCacheScope();
   const { messages: { inspection: { discussion: messages } } } = useI18n();
   const controller = useMemo(() => createThreadController({ scope: { userId: account.user.id, projectId, taskId }, lifetime: cacheScope.signal, ready: (signal) => cacheScope.ready(signal), principalMismatch: cacheScope.principalMismatch }), [account.user.id, projectId, taskId, cacheScope]);
@@ -25,6 +32,7 @@ export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpen
     return () => { unsubscribe(); controller.retire(); document.removeEventListener('visibilitychange', afterIdentityEvent); window.removeEventListener('focus', afterIdentityEvent); window.removeEventListener('blur', afterIdentityEvent); };
   }, [controller, cacheScope, projectId]);
   return <section className="task-discussion" aria-label={messages.title}>
+    {trackDraft && <DiscussionDraft controller={controller} />}
     <DiscussionTimeline controller={controller} view={view} active={active} identity={`${account.user.id}/${projectId}/${taskId}`} timelineRef={timeline} inputRef={input} messages={messages} />
     {!view.retired && <DiscussionComposer controller={controller} view={view} account={account} active={active} inputRef={input} messages={messages} />}
     {view.detailsMessage !== null && active && <ThreadMessageDetails message={view.detailsMessage} messages={messages} owner={owner} fallbackFocus={timeline} onClose={controller.closeDetails} onOpenChange={onDetailsOpenChange} canRestoreFocus={() => current.current.active && !current.current.account.admissionBlocked && !controller.snapshot().retired && !current.current.view.authPaused && document.visibilityState === 'visible'} />}

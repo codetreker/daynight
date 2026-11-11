@@ -1,4 +1,3 @@
-import path from "node:path";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
@@ -8,14 +7,14 @@ import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
 import type { ManagedAssignment } from "./prompts.js";
-import { appendWorkerPrompts, workerPingPrompt } from "./prompts.js";
+import { appendWorkerPrompts, workerContinuationPrompt, workerPingPrompt } from "./prompts.js";
 import type { WorkerPromptTuple } from "./prompt-source.js";
 import { PromptInputLimitError } from "./prompt-input-limit.js";
 import { validateHerdrPromptInput } from "./herdr/rpc.js";
 import { validateMacosPromptInput } from "./herdr/terminal-input.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
-import type { createWorkerGitManager } from "./worktrees.js";
+import { selectedWorktreePath, type createWorkerGitManager } from "./worktrees.js";
 
 export type WorkerEvent = { kind: string; message: string; task?: LocalTask; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
@@ -74,7 +73,7 @@ export const actualTaskPane = (owner: ResourceOwner, resources: readonly HerdrOw
 export const liveAgent = (pane: { kind: string | null; launchPending: boolean; interactiveReady: boolean }): boolean =>
   pane.kind !== null || pane.launchPending || pane.interactiveReady;
 export const executionContext = (input: Pick<ExecutionInput, "owner" | "project"> & { task: Pick<LocalTask, "agent"> }): HerdrExecutionContext => ({
-  ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId), agent: input.task.agent,
+  ...input.owner, cwd: selectedWorktreePath(input.project.localPath, input.owner.taskId), agent: input.task.agent,
 });
 export const settleWorkerStops = async (deps: Pick<ExecutionDependencies, "herdr">, owner: ResourceOwner, signal?: AbortSignal, runOperation = workerOperation): Promise<boolean> => {
   const pending = deps.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner));
@@ -319,7 +318,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
           configuration: input.configuration, prompt,
           ...(deps.herdr.lifecycle === undefined ? {} : { preparePrompt: (recovery: boolean) => {
-            return preparePrompt(task!, input.configuration, binding, recovery ? "recovery" : "startup", () => recovery ? "Continue the original assigned task under its existing authorization." : deps.buildPrompt(assignment, deps.platform));
+            return preparePrompt(task!, input.configuration, binding, recovery ? "recovery" : "startup", () => recovery ? workerContinuationPrompt(task!) : deps.buildPrompt(assignment, deps.platform));
           }, ...(deps.preparePromptSource === undefined ? {} : { preparePromptSource: (operation: Operation) => prepareSource(task!, operation.signal) }),
           onPromptPrepared: (prepared: string, recovery: boolean) => { pendingInput.set(identity, { binding, prompt: prepared, continuation: recovery }); observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-start" }, false); } }),
           ...(assignment.sessionId === null ? {} : { resumeSessionId: assignment.sessionId }),

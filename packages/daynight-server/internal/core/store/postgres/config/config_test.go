@@ -6,7 +6,7 @@ func TestConfiguration(t *testing.T) {
 	c := DefaultConfig()
 	for _, value := range []string{"", " \t"} {
 		c.URL = value
-		if err := c.Validate(); err == nil || err.Error() != "DAYNIGHT_DATABASE_URL is required" {
+		if err := c.Validate(); err == nil || err.Error() != "url is required" {
 			t.Fatalf("invalid URL %q: %v", value, err)
 		}
 	}

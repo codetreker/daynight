@@ -20,6 +20,7 @@ func (status TaskStepStatus) Valid() bool {
 type TaskHeader struct {
 	ProjectID string
 	ID        string
+	Type      TaskType
 	Version   int64
 	DeletedAt *time.Time
 }

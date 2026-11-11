@@ -52,11 +52,23 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
 	}
+	config.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
+	application, ok := handler.(interface{ Shutdown(context.Context) error })
+	if !ok {
+		t.Fatal("stress application does not support shutdown")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := application.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 	instance.Config.Handler = httpx.RequestLogging(logger, handler)
 	instance.Start()
 	browser := testauth.Browser(t)

@@ -337,3 +337,11 @@ func TestTaskStatusPreparationRetainsUnsafeCompletionFacts(t *testing.T) {
 		})
 	}
 }
+
+func (d *writeWitnessTaskDAO) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	panic(d.f.unexpected("TaskWriteDAO.GoalProgresses"))
+}
+
+func (d *writeWitnessTaskDAO) ParentTask(context.Context, string) (model.Task, error) {
+	panic(d.f.unexpected("TaskWriteDAO.ParentTask"))
+}

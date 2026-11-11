@@ -18,7 +18,7 @@ created_at 与 head 时间为 timestamptz(3)，INSERT 使用 `date_trunc('millis
 
 `WriteThread(ctx, func(ThreadScope) error) (Completion, error)` 使用 ReadCommitted；作用域的 DAO 仅在回调期间有效，并为当前任务串行化：
 
-1. 按 project/task 锁父 Task `FOR SHARE`，保留 missing/deleted 信息。
+1. 无锁预读目标的 Parent，按 UUID 顺序对目标和存在的 Parent 分别取得 `FOR SHARE`，以新语句复读并核对 Parent，保留 missing/有效删除信息。Parent 变化返回 `resource_conflict`，不补锁或重放。
 2. 锁当前 credential `FOR SHARE`，再通过 `ThreadScope.ProjectDAO().LockProjectAuthorization` 调用 canonical `store.LockProjectAuthorization`，依次锁真实 ownership、当前 owner Team member 和 direct grant `FOR SHARE`。验证认证身份与访问权后才分类任务存在性。
 3. 查询作者名称；仅提供 claimId 时读取当前 worker，复用 core/task 的 ActiveWorker 校验，另验 worker.UserID 与 principal 一致。
 4. 先独立执行 lazy head INSERT ON CONFLICT DO NOTHING，再独立 SELECT FOR UPDATE。不能合成 CTE，否则 ReadCommitted 并发首写可看不到冲突赢家。
@@ -26,7 +26,7 @@ created_at 与 head 时间为 timestamptz(3)，INSERT 使用 `date_trunc('millis
 6. 准备前进位置，分别编码默认/详细资源并校验 64 KiB，最后用数据库实际时钟检查 credential expiry，再更新 head。
 7. 只有 commit 确认后向调用方暴露资源。
 
-锁顺序为 Task share → credential share → ownership share → owner Team member share → direct grant share → head update，不取得 Project 行锁。普通删除已持 Project 锁并等待 Task 时，反向 Project 锁会导致死锁。ownership 是真实归属数据行，缺失时报告完整性错误；只锁实际存在的 Team member 与 grant，不制造来源或 gap lock。强准入从每个来源实际锁定后的当前值合并，至少一条实际锁定来源仍须提供访问；真实 DirectGrant 保留自己的角色与版本，只有继承访问时为 null。查询不读取人员资料，不采用等待前别名中的角色，也不追加非锁定查询让并发新来源成为唯一准入依据。ownership share 阻止并发归属变化越过这次读取，来源 share 阻止撤销跨过提交。普通 Task 与 Session 准入不借用这些长期 share 锁。Task 变更需 Task 排他锁，来源撤销与 credential 删除/修改需各自排他锁；共享锁持有至事务结束。锁不能阻止自然过期，所以等待和编码之后仍须重验 expiry。
+锁顺序为按 UUID 排序的目标及 Parent share → credential share → ownership share → owner Team member share → direct grant share → head update，不取得 Project 行锁。普通删除已持 Project 锁并等待 Task 时，反向 Project 锁会导致死锁。ownership 是真实归属数据行，缺失时报告完整性错误；只锁实际存在的 Team member 与 grant，不制造来源或 gap lock。强准入从每个来源实际锁定后的当前值合并，至少一条实际锁定来源仍须提供访问；真实 DirectGrant 保留自己的角色与版本，只有继承访问时为 null。查询不读取人员资料，不采用等待前别名中的角色，也不追加非锁定查询让并发新来源成为唯一准入依据。ownership share 阻止并发归属变化越过这次读取，来源 share 阻止撤销跨过提交。普通 Task 与 Session 准入不借用这些长期 share 锁。Task 变更需 Task 排他锁，来源撤销与 credential 删除/修改需各自排他锁；共享锁持有至事务结束。锁不能阻止自然过期，所以等待和编码之后仍须重验 expiry。
 
 没有 claimId 的普通发言不解析无关 worker 属性。Thread 不写 Task、task_properties、依赖、epoch 或 task-sync 的任何字段。
 

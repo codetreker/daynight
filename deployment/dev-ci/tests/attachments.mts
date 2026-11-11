@@ -70,6 +70,8 @@ const projectCheck = async (name: string, root: string) => {
   const project = `daynight-dev-ci-${runId}`;
   const authEnvironment = process.env.DAYNIGHT_DEV_CI_AUTH_ENV_FILE;
   assert.ok(authEnvironment, 'dev-ci runner must provide its private authentication environment');
+  const configDirectory = process.env.DAYNIGHT_DEV_CI_CONFIG_DIRECTORY;
+  assert.equal(configDirectory, path.join(repository, '.tmp/dev-ci-config', runId!));
   assert.ok(process.env.DAYNIGHT_AUTH_FIXTURE_DESCRIPTOR, 'dev-ci runner must provide its private authentication fixture descriptor');
   const compose = ['compose', '--env-file', authEnvironment, '--project-directory', deployment,
     '--file', path.join(deployment, 'compose.yaml'), '--project-name', project];
@@ -116,6 +118,16 @@ const projectCheck = async (name: string, root: string) => {
     assert.equal(mount.Name, `${project}_attachment-data`);
     assert.equal(await composeCommand(['exec', '-T', 'server', 'id', '-u']), '10001');
     assert.equal(await composeCommand(['exec', '-T', 'server', 'stat', '-c', '%u:%g', storageRoot]), '10001:10001');
+    const configMount = container.Mounts.find((entry: { Destination: string }) => entry.Destination === '/var/lib/daynight/config');
+    assert.equal(configMount.Type, 'bind');
+    assert.equal(configMount.Source, configDirectory);
+    assert.equal(configMount.RW, false);
+    const sourceHash = hash(await readFile(path.join(deployment, 'config/config.yml')));
+    const copyHash = hash(await readFile(path.join(configDirectory!, 'config.yml')));
+    const containerHash = (await composeCommand(['exec', '-T', 'server', 'sha256sum', '/var/lib/daynight/config/config.yml'])).split(/\s+/)[0];
+    assert.equal(copyHash, sourceHash);
+    assert.equal(containerHash, sourceHash);
+    await json(path.join(directory, 'configuration.json'), { sourceHash, copyHash, containerHash, readOnly: !configMount.RW });
     await json(path.join(directory, 'volume.json'), {
       project, serverId, imageId: container.Image, user: container.Config.User,
       entrypoint: container.Config.Entrypoint, volumeName: mount.Name, destination: mount.Destination,
@@ -125,7 +137,7 @@ const projectCheck = async (name: string, root: string) => {
   };
   const attachmentVolume = await volumeCheck();
   const volumes = (await command(['volume', 'ls', '--quiet', '--filter', `label=com.docker.compose.project=${project}`])).split('\n').sort();
-  assert.deepEqual(volumes, [`${project}_attachment-data`, `${project}_postgres-data`]);
+  assert.deepEqual(volumes, [`${project}_attachment-data`, `${project}_postgres-data`, `${project}_server-logs`]);
   for (const volume of volumes) {
     const [state] = JSON.parse(await command(['volume', 'inspect', volume]));
     assert.equal(state.Labels['com.docker.compose.project'], project);
@@ -222,7 +234,7 @@ const projectCheck = async (name: string, root: string) => {
       assert.equal(await discoverOrigin(), origin);
       assert.equal((await taskSync('after restart')).epoch, initialSync.epoch);
       await verify();
-      await act('force recreate production stack while retaining both volumes');
+      await act('force recreate production stack while retaining project volumes');
       await composeCommand(['down', '--remove-orphans', '--timeout', '20']);
       await reconfigure();
       origin = await discoverOrigin();
@@ -304,7 +316,7 @@ const main = async () => {
   const root = await mkdtemp(path.join(repository, '.tmp/attachment-deployment-'));
   const sources = [
     'deployment/dev-ci/tests/attachments.mts', 'deployment/dev-ci/run.sh', 'deployment/dev-ci/auth.mts',
-    'deployment/dev-ci/compose.yaml', 'deployment/localhost/compose.yaml',
+    'deployment/dev-ci/compose.yaml', 'deployment/dev-ci/config/config.yml', 'deployment/localhost/compose.yaml',
     'deployment/localhost/Dockerfile', 'deployment/localhost/nginx.conf',
     'packages/daynight-server/scripts/auth-fixture.mts',
     'packages/daynight-server/scripts/prepare-uniauth-fixture.mts',

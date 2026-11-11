@@ -589,3 +589,13 @@ func (d *strictWriteCaptureDAO) SaveCapture(context.Context, store.WebhookCaptur
 	d.f.unexpected("SaveCapture")
 	return nil
 }
+
+func (f *strictStepWrite) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	f.t.Fatal("unexpected GoalProgresses")
+	return nil, nil
+}
+
+func (f *strictStepWrite) ParentTask(context.Context, string) (model.Task, error) {
+	f.t.Fatal("unexpected ParentTask")
+	return model.Task{}, nil
+}

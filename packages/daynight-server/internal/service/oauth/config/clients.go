@@ -12,7 +12,7 @@ import (
 const oauthClientsField = "DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS"
 
 func invalidOAuthClients() error {
-	return &configvalue.ConfigurationError{Field: oauthClientsField, Rule: "must be a JSON object of valid public client metadata keyed by client_id"}
+	return &configvalue.ConfigurationError{Field: "preregistered_clients", Rule: "must be a JSON object of valid public client metadata keyed by client_id"}
 }
 
 func parseOAuthClients(value string) (map[string][]byte, error) {

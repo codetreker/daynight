@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,7 +19,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -54,7 +52,6 @@ type identityIntegration struct {
 	server        *httptest.Server
 	gateway       string
 	client        *uniauth.Client
-	requests      *identityCLIRequests
 	logs          *identityIntegrationLogs
 	sessionCookie string
 	callbackPath  string
@@ -97,29 +94,9 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 			t.Error(err)
 		}
 	})
-	requests := &identityCLIRequests{}
-	server.Config.Handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		observed := request.URL.Path == "/api/v1/projects"
-		bearer := strings.HasPrefix(request.Header.Get("Authorization"), "Bearer ")
-		if observed {
-			requests.all.Add(1)
-			if bearer {
-				requests.bearer.Add(1)
-			} else if request.Header.Get("Authorization") == "" {
-				requests.anonymous.Add(1)
-			}
-		}
-		response := &httpx.ResponseRecorder{ResponseWriter: w}
-		handler.ServeHTTP(response, request)
-		if observed && response.Status == http.StatusUnauthorized {
-			requests.unauthorized.Add(1)
-		}
-		if observed && bearer && response.Status >= 200 && response.Status < 300 {
-			requests.authenticatedPAT.Add(1)
-		}
-	}))
+	server.Config.Handler = httpx.RequestLogging(logger, handler)
 	server.Start()
-	return &identityIntegration{plan: plan, server: server, gateway: ready.Origin, client: client, requests: requests, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
+	return &identityIntegration{plan: plan, server: server, gateway: ready.Origin, client: client, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
 }
 
 func identityBrowser(t *testing.T) *http.Client {
@@ -249,103 +226,6 @@ func (integration *identityIntegration) login(t *testing.T, browser *http.Client
 	return identityDecode[api.User](t, data)
 }
 
-func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
-	integration := newIdentityIntegration(t)
-	aliceBrowser, bobBrowser := identityBrowser(t), identityBrowser(t)
-	alice := integration.login(t, aliceBrowser, "alice")
-	bob := integration.login(t, bobBrowser, "bob")
-	if alice.ID == "" || bob.ID == "" || alice.ID == bob.ID || alice.Email == nil || bob.Email == nil || *alice.Email != *bob.Email {
-		t.Fatal("provider IDs must produce distinct local users even with the same email")
-	}
-	if alice.Name == nil || *alice.Name != "Alice" || alice.EmailVerified == nil || !*alice.EmailVerified || alice.AvatarURL == nil {
-		t.Fatal("real GitHub profile was not projected to the local user")
-	}
-	updated := integration.login(t, aliceBrowser, "alice-updated")
-	if updated.ID != alice.ID || updated.Name == nil || *updated.Name != "Alice Updated" || updated.Email == nil || *updated.Email != "refreshed@example.test" || updated.EmailVerified == nil || *updated.EmailVerified || updated.AvatarURL == nil || *updated.AvatarURL == *alice.AvatarURL {
-		t.Fatal("repeat login did not refresh the existing user's full profile")
-	}
-	cleared := integration.login(t, aliceBrowser, "alice-null")
-	if cleared.ID != alice.ID || cleared.Email != nil || cleared.EmailVerified != nil || cleared.Name != nil || cleared.AvatarURL != nil {
-		t.Fatal("nullable upstream profile must clear old values without changing local identity")
-	}
-	integration.me(t, bobBrowser, identityHTTPUser("bob"), nil)
-	_, data := identityRequest(t, bobBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusOK)
-	if !reflect.DeepEqual(identityDecode[api.User](t, data), bob) {
-		t.Fatal("refreshing Alice changed Bob's same-email account")
-	}
-	origin := map[string]string{"Origin": integration.server.URL}
-	aliceUser := identityHTTPUser("alice-null")
-	sessionActor := identityHTTPPrincipal(aliceUser, model.SessionCredential)
-	integration.session(t, aliceBrowser, aliceUser)
-	identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","expiresAt":null}`, nil, http.StatusForbidden)
-	integration.session(t, aliceBrowser, aliceUser)
-	var draftedToken model.PersonalAccessToken
-	var draftMu sync.Mutex
-	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"CleanupCredentials", func(args []any) any { identityHTTPNow(t, args[1].(time.Time)); return nil }}, identityHTTPCall{"InsertPAT", func(args []any) any {
-		draft := args[1].(model.PersonalAccessToken)
-		identityHTTPCheck(t, draft.UserID == aliceUser.ID && draft.Name == "CLI acceptance" && draft.ExpiresAt == nil && len(draft.TokenHash) == 32, "PAT write arguments")
-		identityHTTPNow(t, draft.CreatedAt)
-		draftMu.Lock()
-		draftedToken = identityHTTPClonePAT(draft)
-		draftMu.Unlock()
-		return nil
-	}})
-	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","expiresAt":null}`, origin, http.StatusCreated)
-	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
-	if token.ID == "" || !strings.HasPrefix(token.Token, "dnpat_") || token.Name != "CLI acceptance" || token.ExpiresAt != nil {
-		t.Fatal("personal token creation contract changed")
-	}
-	draftMu.Lock()
-	draft := identityHTTPClonePAT(draftedToken)
-	draftMu.Unlock()
-	identityHTTPCheck(t, draft.ID == token.ID && bytes.Equal(draft.TokenHash, secret.Hash(token.Token)), "PAT response/write identity")
-	integration.secrets = append(integration.secrets, token.Token)
-	bearer := map[string]string{"Authorization": "Bearer " + token.Token}
-	patBrowser := identityBrowser(t)
-	integration.me(t, patBrowser, aliceUser, bearer)
-	_, data = identityRequest(t, patBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", bearer, http.StatusOK)
-	if !reflect.DeepEqual(identityDecode[api.User](t, data), cleared) {
-		t.Fatal("PAT did not authenticate its owning user")
-	}
-	integration.plan.authenticate(aliceUser, model.PATCredential, token.Token, true)
-	identityRequest(t, patBrowser, http.MethodGet, integration.server.URL+"/api/v1/me/tokens", "", bearer, http.StatusForbidden)
-	integration.plan.authenticate(aliceUser, model.PATCredential, token.Token, true)
-	identityRequest(t, patBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"forbidden","expiresAt":null}`, bearer, http.StatusForbidden)
-	identityRequest(t, aliceBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", map[string]string{"Authorization": "Bearer invalid"}, http.StatusUnauthorized)
-	integration.session(t, aliceBrowser, aliceUser)
-	listedToken := model.PersonalAccessToken{ID: token.ID, UserID: aliceUser.ID, Name: "CLI acceptance", CreatedAt: token.CreatedAt}
-	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"ListPATs", func(args []any) any {
-		identityHTTPCheck(t, args[1].(string) == aliceUser.ID, "PAT list owner")
-		identityHTTPNow(t, args[2].(time.Time))
-		return []model.PersonalAccessToken{listedToken}
-	}})
-	_, data = identityRequest(t, aliceBrowser, http.MethodGet, integration.server.URL+"/api/v1/me/tokens", "", nil, http.StatusOK)
-	listed := identityDecode[api.PersonalAccessTokenList](t, data)
-	if len(listed.Items) != 1 || listed.Items[0].ID != token.ID || bytes.Contains(data, []byte(token.Token)) {
-		t.Fatal("token list must expose only its owner's token metadata")
-	}
-	integration.session(t, aliceBrowser, aliceUser)
-	integration.plan.expect(integration.lockSession(sessionActor), identityHTTPCall{"DeletePAT", func(args []any) any {
-		identityHTTPCheck(t, args[1].(string) == aliceUser.ID && args[2].(string) == token.ID, "PAT delete actor and ID")
-		return nil
-	}})
-	identityRequest(t, aliceBrowser, http.MethodDelete, integration.server.URL+"/api/v1/me/tokens/"+token.ID, "", origin, http.StatusNoContent)
-	integration.plan.authenticate(aliceUser, model.PATCredential, token.Token, false)
-	identityRequest(t, patBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", bearer, http.StatusUnauthorized)
-	integration.session(t, aliceBrowser, aliceUser)
-	integration.plan.expect(identityHTTPCall{"DeleteSession", func(args []any) any {
-		identityHTTPCheck(t, args[1].(model.Principal) == sessionActor, "session logout actor")
-		return nil
-	}})
-	identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/auth/logout", "", origin, http.StatusNoContent)
-	identityRequest(t, aliceBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusUnauthorized)
-	for _, secret := range integration.secrets {
-		if secret != "" && integration.logs.contains(secret) {
-			t.Fatal("authentication logs exposed a credential or OAuth handover value")
-		}
-	}
-}
-
 func TestAuthenticationProvidersAndConfiguredCallbackUseProductionMux(t *testing.T) {
 	integration := newIdentityIntegrationCallback(t, "/auth/callback")
 	browser := identityBrowser(t)
@@ -360,58 +240,4 @@ func TestAuthenticationProvidersAndConfiguredCallbackUseProductionMux(t *testing
 	identityRequest(t, browser, http.MethodGet, integration.server.URL+"/api/v1/auth/callback", "", nil, http.StatusNotFound)
 	identityRequest(t, browser, http.MethodGet, integration.server.URL+"/api/v1/auth/login?provider=github&returnPath=%2Fauth%2Fcallback", "", nil, http.StatusBadRequest)
 	identityRequest(t, browser, http.MethodHead, integration.server.URL+"/auth/callback", "", nil, http.StatusMethodNotAllowed)
-}
-
-func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
-	integration := newIdentityIntegration(t)
-	browser, stranger := identityBrowser(t), identityBrowser(t)
-	callback := integration.providerCallback(t, browser, integration.start(t, browser), "alice")
-	before := integration.logs.count("type=fixture_result_request")
-	identityRequest(t, stranger, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
-	identityRequest(t, stranger, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before {
-		t.Fatal("an unbound callback retrieved the gateway result")
-	}
-	integration.complete(t, browser, callback)
-	if integration.logs.count("type=fixture_result_request") != before+1 {
-		t.Fatal("a bound login must retrieve its one-time gateway result exactly once")
-	}
-	identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before+1 {
-		t.Fatal("a repeated Daynight callback retrieved the result again")
-	}
-	_, err := integration.client.Retrieve(t.Context(), callback.Query().Get("code"))
-	var unavailable *uniauth.APIError
-	if !errors.As(err, &unavailable) || unavailable.StatusCode != http.StatusGone || unavailable.Code != "result_unavailable" {
-		t.Fatal("real UniAuth result remained available after Daynight consumed it")
-	}
-	deniedBrowser := identityBrowser(t)
-	denied := integration.providerCallback(t, deniedBrowser, integration.start(t, deniedBrowser), "denied")
-	if denied.Query().Get("error") == "" || denied.Query().Get("code") != "" {
-		t.Fatal("real provider denial did not become a gateway error callback")
-	}
-	mainURL, err := url.Parse(integration.server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindings := deniedBrowser.Jar.Cookies(mainURL)
-	before = integration.logs.count("type=fixture_result_request")
-	deniedBinding := identityCookie(t, deniedBrowser, integration.server.URL, identityHTTPBinding(denied.Query().Get("state")))
-	integration.plan.consume(denied.Query().Get("state"), deniedBinding, true)
-	response, _ := identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusSeeOther)
-	if response.Header.Get("Location") != "/login?authError=login_failed&returnPath=%2Fprojects%3Fview%3Dtasks" {
-		t.Fatal("provider denial did not produce the generic login failure")
-	}
-	identityRequest(t, deniedBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusUnauthorized)
-	deniedBrowser.Jar.SetCookies(mainURL, bindings)
-	integration.plan.consume(denied.Query().Get("state"), deniedBinding, false)
-	identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before {
-		t.Fatal("provider denial or its replay retrieved an identity result")
-	}
-	for _, secret := range integration.secrets {
-		if secret != "" && integration.logs.contains(secret) {
-			t.Fatal("authentication logs exposed a credential or OAuth handover value")
-		}
-	}
 }

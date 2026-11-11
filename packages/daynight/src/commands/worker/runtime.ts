@@ -38,6 +38,8 @@ import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/ty
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
 import { createMonitoringObserver } from "./monitoring/observer.js";
+import { encodeWorktree } from "./monitoring/worktree.js";
+import type { FailureWorktree } from "./monitoring/types.js";
 import { createMonitoringSender } from "./monitoring/sender.js";
 import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
@@ -189,13 +191,13 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
     const archiveFailures = new Map<string, string>();
     const archiveObservations = new Map<string, string>();
     const archiveActivities = new Map<string, string>();
-    const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown): void => {
+    const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown, worktree?: FailureWorktree): void => {
       const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
       const next = new Date(nextAttemptAt).toISOString();
       try {
         const operationId = archiveFailures.get(identity.executionId) ?? randomUUID();
         if (!archiveFailures.has(identity.executionId) || error !== undefined) {
-          monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, error: repairCode === undefined ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
+          monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, ...(worktree === undefined ? {} : { worktree }), error: repairCode === undefined ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
           archiveFailures.set(identity.executionId, operationId);
         }
         if (repairCode !== undefined) {
@@ -207,7 +209,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
           if (error !== undefined && !(error instanceof ArchiveRepairRequiredError)) {
             const observationId = archiveObservations.get(identity.executionId) ?? randomUUID();
             archiveObservations.set(identity.executionId, observationId);
-            monitoring?.fail({ operationId: observationId, component: "archive", phase: "archive-backfill", scope, error, retryState: "scheduled", nextAttemptAt: next });
+            monitoring?.fail({ operationId: observationId, component: "archive", phase: "archive-backfill", scope, ...(worktree === undefined ? {} : { worktree }), error, retryState: "scheduled", nextAttemptAt: next });
           }
         } else {
           const activity = archiveActivities.get(identity.executionId);
@@ -228,12 +230,14 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         lastArchiveAttempt = execution.executionId;
         const identity = { serverOrigin: serverUrl, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
           executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
+        let worktree: FailureWorktree | undefined;
+        try { if (task.resources.worktree !== null) worktree = encodeWorktree(task.repositoryPath, task.resources.worktree.worktreePath); } catch { /* Monitoring cannot change archival. */ }
         try {
           const retained = store.getArchiveBackfillSchedule(identity);
           if (retained !== null) {
             archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
             archiveRetryAt.set(execution.executionId, retained.nextAttemptAt);
-            observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode);
+            observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode, undefined, worktree);
             if (retained.nextAttemptAt > Date.now()) continue;
           }
           const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
@@ -267,7 +271,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
             try { store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: repairCode, nextAttemptAt }); }
             catch (persistenceError) { reportedError = new AggregateError([error, persistenceError], "Archive backfill schedule was not persisted; in-memory condition backoff remains active."); }
           }
-          observeBackfill(identity, nextAttemptAt, repairCode, reportedError);
+          observeBackfill(identity, nextAttemptAt, repairCode, reportedError, worktree);
           emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
         }
         // Bound historical catch-up per reconciliation round.

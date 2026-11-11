@@ -89,7 +89,7 @@ func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testi
 	reg.Binding.NativeSessionID = &native
 	reg.Capabilities = v2.Capabilities{}
 	f.message.Payload = reg
-	f.expect(t, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1})
+	f.expect(t, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1})
 	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
 	if f.inserted == nil || f.inserted.OwnerID != f.h.principal.UserID || f.inserted.SessionID != f.message.SessionID || !bytes.Equal(f.inserted.Registration, []byte(jsonBody(t, reg))) || f.inserted.ServerInstance == "" || f.inserted.LastSeen.IsZero() {
 		t.Fatal("terminal registration changed declared identity")
@@ -224,10 +224,9 @@ func (d *terminalRecoveryDAO) ProjectAccess(ctx context.Context, user, project s
 	}
 	return model.ProjectAccess{UserID: user, ProjectID: project, Role: model.ProjectAdmin}, ctx.Err()
 }
-func (d *terminalRecoveryDAO) LockTaskRegistration(ctx context.Context, project, id string) error {
+func (d *terminalRecoveryDAO) LockTaskRegistration(ctx context.Context, project, id string) (store.SessionTask, error) {
 	d.f.plan.Called("LockTaskRegistration")
-	_, err := d.task(ctx, project, id)
-	return err
+	return d.task(ctx, project, id)
 }
 func (d *terminalRecoveryDAO) FindTerminalRegistration(ctx context.Context, id, project, registration, task, claim string) (string, error) {
 	d.f.plan.Called("FindTerminalRegistration")

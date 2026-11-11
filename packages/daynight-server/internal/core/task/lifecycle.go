@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -43,6 +44,25 @@ func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 // StatusCandidate requires the current Task and compatible claim to be read under
 // the project write lock. A false changed result preserves a same-status no-op.
 func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal model.Principal, current model.Task, input SetTaskStatus, worker *model.WorkerClaim) (store.TaskWrite, bool, error) {
+	if current.Type == model.TaskTypeGoal {
+		if input.Status == model.TaskProposed || !input.Status.Valid() {
+			return store.TaskWrite{}, false, invalidInput("Goal status must be todo, in_progress, done or cancelled.")
+		}
+		if input.ClaimID != nil {
+			return store.TaskWrite{}, false, invalidInput("Goal does not support worker claims.")
+		}
+		if current.Status == input.Status {
+			return store.TaskWrite{}, false, nil
+		}
+		now, err := dao.ObservedAt(ctx)
+		if err != nil {
+			return store.TaskWrite{}, false, err
+		}
+		values := CurrentWrite(current)
+		values.Status = input.Status
+		values.GoalTiming = goalTiming(input.Status, current.StartedAt, now)
+		return values, true, nil
+	}
 	if current.Status == input.Status {
 		return store.TaskWrite{}, false, nil
 	}
@@ -100,6 +120,12 @@ func ClaimConflict() error {
 }
 
 func ValidateDelete(ctx context.Context, dao store.TaskWriteDAO, current model.Task, removeDepends bool) error {
+	if current.Type == model.TaskTypeGoal {
+		if removeDepends {
+			return invalidInput("Goal does not support dependency removal.")
+		}
+		return nil
+	}
 	worker, err := taskproperty.Worker(current.Properties)
 	if err != nil {
 		return err
@@ -126,7 +152,7 @@ func AssignmentCandidate(current model.Task, values store.TaskWrite) (store.Task
 	if model.EqualOptional(current.AssignedTo, values.AssignedTo) {
 		return values, false, nil
 	}
-	if current.Status == model.TaskInProgress {
+	if current.Type != model.TaskTypeGoal && current.Status == model.TaskInProgress {
 		return store.TaskWrite{}, false, &model.Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
 	}
 	values.AllowAgents = false
@@ -134,6 +160,9 @@ func AssignmentCandidate(current model.Task, values store.TaskWrite) (store.Task
 }
 
 func ActiveWorker(current model.Task, claimID string) (*model.WorkerClaim, error) {
+	if current.Type == model.TaskTypeGoal {
+		return nil, invalidInput("Goal does not support worker execution.")
+	}
 	worker, err := taskproperty.Worker(current.Properties)
 	if err != nil {
 		return nil, err
@@ -142,4 +171,20 @@ func ActiveWorker(current model.Task, claimID string) (*model.WorkerClaim, error
 		return nil, ClaimConflict()
 	}
 	return worker, nil
+}
+
+// goalTiming describes the complete current lifecycle round at one authority time.
+func goalTiming(status model.TaskStatus, started *time.Time, now time.Time) *store.GoalTiming {
+	timing := &store.GoalTiming{ObservedAt: now, StartedAt: started}
+	switch status {
+	case model.TaskTodo:
+		timing.StartedAt = nil
+	case model.TaskInProgress:
+		timing.StartedAt = &now
+	case model.TaskDone:
+		timing.CompletedAt = &now
+	case model.TaskCancelled:
+		timing.CancelledAt = &now
+	}
+	return timing
 }

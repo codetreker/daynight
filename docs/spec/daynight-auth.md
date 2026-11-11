@@ -459,16 +459,17 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 
 ## 配置与运行边界
 
-下列五项服务端鉴权配置均必填，缺少或无效时启动失败；App Secret 不下发到前端。
+下列五项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
+对应环境变量显式设置时覆盖文件。App Secret 不下发到前端。
 数据库、存储根目录和既有生命周期配置继续遵守服务要求。
 
 | 配置 | 要求 |
 |---|---|
-| `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
-| `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
-| `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
-| `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
-| `DAYNIGHT_UNIAUTH_CALLBACK_URL` | 与主站同源的完整精确 callback；无凭据、query、fragment，使用 canonical 非根路径。 |
+| `server.public_origin` / `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
+| `uniauth.url` / `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
+| `uniauth.app_id` / `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
+| `uniauth.app_secret` / `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
+| `uniauth.callback_url` / `DAYNIGHT_UNIAUTH_CALLBACK_URL` | 与主站同源的完整精确 callback；无凭据、query、fragment，使用 canonical 非根路径。 |
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
 挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
@@ -479,7 +480,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 路径，避免认证循环。callback URL 与 UniAuth App 登记值精确匹配，主站 origin
 及 callback 不从 Host、转发 header 或随机 listener 推导。
 
-生产默认 HTTPS。两个开关分别接受未设置/`0` 或 `1`，其他值明确拒绝：
+生产默认 HTTPS。两个开关默认关闭；YAML 接受布尔值，环境变量接受 `0` 或 `1`，其他值明确拒绝：
 
 | 开关 | 唯一作用 |
 |---|---|

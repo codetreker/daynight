@@ -1,6 +1,8 @@
 # Goal protocol
 
-A Goal expresses a multi-stage objective through ordinary tasks, attachments, dependencies, and PR properties without adding resources, commands, or statuses.
+The Goal workflow organizes a multi-stage objective through ordinary tasks,
+attachments, dependencies and PR properties. It adds no workflow-specific
+resources, commands or statuses.
 Follow [create task](create-task.md) for creation, the [task content standard](task-content.md) for material, and [authorization and scope](authorization.md) for operational permissions.
 This file covers only stage progression and Goal-specific requirements.
 
@@ -41,7 +43,7 @@ Before requesting user confirmation, upload the complete current spec and necess
 Confirmation applies to that current readable spec and applicable prototypes.
 Missing, incomplete, failed, or unreadable uploads cannot pass the requirements gate.
 Coherently update the spec and affected description, prototypes, and references after substantive requirement changes, and obtain renewed confirmation before progression.
-Attachments do not change the task version; follow [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#materials-and-files) rather than treating an unchanged version as proof that confirmation remains valid.
+Attachments do not change the task version; follow [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md#independent-resources-and-operations) rather than treating an unchanged version as proof that confirmation remains valid.
 
 ### Register the next discussion before completion
 
@@ -51,7 +53,7 @@ Its description must directly identify the requirements task ID, the full `spec.
 Keep the shared spec in its owning requirements task.
 
 Read back the solution task, its required sources, and the actual dependency graph before completing the requirements task under the [shared completion conditions](task-execution.md#completion-conditions).
-If registration or verification fails or its result is uncertain, keep the requirements task `in_progress`, reconcile actual resources, and resume with the confirmed IDs under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
+If registration or verification fails or its result is uncertain, keep the requirements task `in_progress`, reconcile actual resources, and resume with the confirmed IDs under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md).
 Once the successor is verified and all requirements-stage conditions are met, complete the requirements task and verify it is done.
 Ordinary execution may then start the solution discussion at the user's explicit direction; a managed assignment completes only its original task and returns to the controller without starting the successor.
 If completion is uncertain, reconcile it before starting the solution task.
@@ -108,7 +110,7 @@ Source indexes do not create additional execution dependencies.
 
 Read back every delivery task and its required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task boundaries, whole-breakdown coverage and handovers, architecture indexes, and source readability.
 Check dependencies through [post-change verification](dependencies.md#verify-dependency-changes).
-Keep the solution task in progress while gaps remain; recover partial registration under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
+Keep the solution task in progress while gaps remain; recover partial registration under [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md).
 Registration and solution completion do not start delivery or enable automatic-execution permission.
 
 ## Whole-Goal completion

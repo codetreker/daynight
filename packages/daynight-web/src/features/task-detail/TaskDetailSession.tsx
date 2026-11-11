@@ -609,7 +609,7 @@ export class TaskDetailSessions {
       cacheGeneration !== entry.deletedGeneration && version !== null && task !== undefined;
     // The rendered graph can lag the already committed cache generation.
     const removed = admitted && cacheGeneration !== null && entry.observedVersion !== null && version === null &&
-      this.scope.getAuthorizedProject(projectId)?.index.nodes.has(taskId) === false;
+      this.scope.getAuthorizedProject(projectId)?.summaries.has(taskId) === false;
     if (removed && entry.state.status !== "deleted") {
       this.markDeleted(projectId, taskId, cacheGeneration, null, "reconciled");
     }

@@ -76,11 +76,17 @@ UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含�
 但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
 不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
 
-MCP 认证客户端可以通过标准 Resources 目录发现七篇英文产品手册，并按固定
-`daynight://manuals/<主题>.md` URI 读取完整 Markdown。服务器 instructions 提供简短导航；
+MCP 认证客户端可以通过标准 `resources/list` 发现十二篇英文产品手册，并按目录返回的
+`daynight://manuals/<主题>.md` URI 读取完整 Markdown。主题按对象与 Project 上下文、Task、
+依赖、写入安全、正式材料、Steps、Thread、附件读取、附件写入、Session 读取、Session 消息和
+Worker assignment 操作划分，精确目录由服务源码拥有。服务器 instructions 按操作提供简短导航；
+每个主题说明必要的额外读取条件，写入需取得完整公共写入安全规则及操作自身的约束。
+
 无 Project 的有效账户也可读取。手册不修改业务数据，不建立 Worker assignment 或操作授权。
-文稿随服务版本发布，内部主题引用指向可读取的固定 URI；重新请求取得当前服务的内容。
-未知 URI 返回协议错误，不返回空正文或替代内容。公开 GET/HEAD 安装说明保持独立。
+文稿随服务版本发布，内部主题引用指向可读取的绝对 URI。更新服务后，客户端重新发现目录并请求
+当前正文；`queries-and-lifecycle`、`files-and-references` 和 `operation-boundaries` 的旧混合主题 URI
+由独立操作主题取代。未知或移除的 URI 返回协议错误，不返回空正文或替代内容。
+公开 GET/HEAD 安装说明保持独立。
 
 MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调用者可见项目。唯一匹配返回普通 Project，
 其 ID 位于 `data.id`；零匹配返回 `not_found`，多个匹配返回 `resource_conflict`，非法或超限地址返回

@@ -38,12 +38,12 @@ func TestObservedReadsPreserveSelectedTaskAndCoreOperationBoundaries(t *testing.
 		t.Fatalf("get %#v %v calls=%d", got, err, calls)
 	}
 	service.operations.list = func(_ context.Context, _ taskcore.ReadDAO, pid string, selection taskcore.ListSelection) (store.TaskPage, *model.Fault, error) {
-		if pid != workProject || selection.Query.Page.Limit != 1 {
+		if pid != workProject || selection.Query.Page.Limit != 1 || !selection.Query.AutomaticCandidate || !selection.Scope.AutomaticCandidate {
 			t.Fatal("wrong list selection")
 		}
 		return store.TaskPage{Items: []model.Task{task}, HasMore: true}, nil, nil
 	}
-	list, err := service.ObserveList(t.Context(), actor, workProject, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
+	list, err := service.ObserveList(t.Context(), actor, workProject, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AutomaticCandidate: true})
 	if err != nil || len(list.Items) != 1 || list.Items[0].Task.ID != task.ID || list.NextCursor == nil || list.Partial {
 		t.Fatalf("list %#v %v", list, err)
 	}

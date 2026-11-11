@@ -91,7 +91,7 @@ func attachmentWitnessWait(t *testing.T, ctx context.Context, reached <-chan str
 func attachmentWitnessPID(t *testing.T, ctx context.Context, database *Store) int32 {
 	t.Helper()
 	var pid int32
-	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE '%FOR SHARE%' LIMIT 1),0)`).Scan(&pid)
+	err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT parent_id::text,type,parent_type,effective_deleted_at FROM task_resource_rows%' LIMIT 1),0)`).Scan(&pid)
 	if err != nil || pid == 0 {
 		t.Fatalf("attachment lifecycle transaction not found: %d %v", pid, err)
 	}

@@ -244,14 +244,15 @@ daynight --skill
 dn --skill
 ```
 
-`--skill` prints one standalone English CLI usage manual from the
-current package. It covers project selection, task queries and writes,
-dependencies, properties, attachments and ordered Step list/show reads, Add, Update,
-Set-status, Move and Delete, and Webhook management. Other capabilities are discovered
-through `daynight --help`, with exact options in each subcommand's help. The
-output preserves the manual's original bytes, including YAML
-frontmatter and the final newline. The document has no package-relative
-references to read separately.
+`--skill` prints the complete standalone English CLI usage manual from the
+current package. The build generates it from the same topic sources installed
+with `using-daynight`, in a fixed order with topic and section links converted
+to internal anchors. It covers connection and Projects, Tasks, Steps, materials,
+write safety, Session reads and messages, Webhooks and Worker operations. Exact
+arguments remain in each subcommand's help. The output preserves the generated
+artifact's bytes, including YAML frontmatter and the final newline. The document
+has no package-relative references to read separately and requires no installed
+skill or individual topic files.
 
 The option must be the sole argument. Extra arguments or another option exit
 with status 2 and empty stdout before the manual is read. A missing file, read
@@ -260,15 +261,22 @@ validation complete before output; an output failure can leave partial stdout.
 The command requires no login, Git repository, configuration, launcher or
 interactive terminal, and creates no files.
 
-The `using-daynight` skill installs the same product manual for an Agent. Repository
-workflow and Worker execution constraints remain separate from this manual.
+The topic files are the only edited product-manual source; there is no separately
+maintained aggregate. Repository workflow and Worker execution constraints remain
+separate from this manual.
 
 ## Agent skill installation
 
-The public skill contains a short navigation entry and the complete manual, also
-available offline with `daynight --skill`. The Worker supplies its execution
-constraints and original assignment in its prompt; each repository's rules and
-actual authorization govern delivery.
+The public skill contains a short navigation entry and independently readable
+topic files. The entry directs an Agent to the files needed for its requested
+operation; writes also require the common write-safety rules and the target
+resource's conditions and recovery rules. `daynight --skill` exposes the complete
+generated manual offline. Installation validates every required topic and its
+internal file and section links before replacing a target. Whole-directory
+replacement removes obsolete references as well as local edits.
+
+The Worker supplies its execution constraints and original assignment in its
+prompt; each repository's rules and actual authorization govern delivery.
 
 Install the skill through an interactive terminal:
 
@@ -819,11 +827,11 @@ does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
 Search reads and validates every page before producing output, preserving the
-server's order. Text shows the full Task ID and title, status, chain representative
-or `none`, positive match fields, and a description snippet when present. A
+server's order. Text shows the full Task ID and title, type, parent, status, actual
+parent Goal or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
+`type`, `parentId`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -913,7 +921,7 @@ without terminating ordinary background work. The
 [repository Git design](../../docs/design/daynight-project-task.md#git-定位与仓库身份)
 defines the lifecycle and failure rules.
 
-Task resources require `type` (`task` or `goal`) and a nullable `parentId`. A Goal has no parent, uses `todo`, `in_progress`, `done` or `cancelled`, and is never ready. Full Goal reads include progress; its Session observation is `not_applicable`. Graph nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources without exposing their details.
+Task resources require `type` (`task` or `goal`) and a nullable `parentId`. A Goal has no parent, uses `todo`, `in_progress`, `done` or `cancelled`, and is never ready. Full Goal reads include progress; its Session registration is `not_applicable`. Graph nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources without exposing their details.
 
 Before setting a Goal to `done` or `cancelled`, the CLI explains on stderr that child Task states are retained and future automatic claims are excluded. Before deleting a Goal, it explains that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or supply `--force`; noninteractive calls without it do not submit. Both commands read the target type and identity even with `--if-version`, and retain the caller’s exact version for the write. `--force` skips only the Goal prompt; the service still applies its business and version checks.
 
@@ -922,7 +930,7 @@ Ordinary task creation defaults to `proposed`; `--status proposed|todo` explicit
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
 sets `proposed`, `todo`, `in_progress`, `done` or `cancelled` for ordinary Tasks. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
 reopening and direct completion; ordinary Task cancellation is irreversible and does not prove
-delivery. Goals support the other four statuses and can be reopened. Cancelled records and materials remain readable.
+delivery. Goals use the other four read statuses; Goal-specific lifecycle effects are not implemented by the CLI and remain subject to the service's business checks. Cancelled records and materials remain readable unless effective parent deletion hides them.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
@@ -1285,7 +1293,7 @@ User signal cancellation exits 130. JSON retains the
 original body or explicit content reference; text retains readable line breaks
 while escaping terminal controls. Session reads do not execute message content,
 start Agents, change claims or grant sending permission. The bundled
-[Session inspection guide](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
+[Session inspection guide](src/commands/skill/skills/using-daynight/references/session-reads.md)
 describes the Agent workflow and equivalent MCP read tools.
 
 ### Task Session messages and recovery
@@ -1342,7 +1350,7 @@ identity in bounded output. Provider acceptance and confirmation do not mean the
 Agent completed the requested work. Local receipt-save or output failure does
 not undo service acceptance or authorize another POST.
 
-The [Session intervention reference](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-messages.md)
 describes authorized use, unknown recovery and the corresponding MCP tools.
 
 ## Task properties
@@ -1935,7 +1943,7 @@ service uses its last valid report time for the 120-second offline threshold and
 task status.
 
 Current execution monitoring is reported separately every 30 seconds. It shows
-observed scheduling, activities, capacity and bounded failure summaries; unknown
+observed scheduling, activities, capacity and bounded failure summaries. Claim failures with trusted bindings may include a project-relative worktree location or a fixed unavailable reason; unknown
 or stale data does not mean the Worker is idle. Monitoring failures do not stop
 heartbeats or task execution. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 defines its freshness, permissions and retention.
@@ -2484,16 +2492,26 @@ They do not create another generation or send the assignment. A successful
 launch still requires durable native process identity before input admission;
 an unknown response or a crash cannot authorize another launch or replay.
 
-Startup, recovery and continuation prompts require autonomous decisions within
-the task scope and existing authorization. Human intervention requires specific
-information, a decision, authorization or an action that the agent cannot supply
-within that scope and authority. Before waiting for that intervention, the
-managed agent sets its own task's `paused` property to true with an observed
-exact version and confirms the same assignment and pause before waiting. It
-reports the issue and retains session context; the user chooses how to respond.
-After verifying resolution, the original assignment and permission to resume,
-it clears the pause and confirms false or absence before continuing. Independent
-user restrictions still apply. The [Worker execution contract](../../docs/spec/daynight-worker.md)
+Startup, macOS recovery or continuation, and periodic ping prompts share an
+autonomous execution policy. The agent checks the task, repository constraints
+and evidence, adjusts its approach, steps and task decisions, investigates failed
+approaches and chooses feasible alternatives, and records significant deviations
+and their reasons. It preserves confirmed business goals, scope, acceptance,
+external commitments and authorization. Ordinary information gaps, unavailable
+tools, failed approaches, recoverable errors and obsolete steps alone do not
+trigger a pause.
+
+A request for a specific human decision requires an evidenced severe design
+conflict: confirmed requirements or architecture constraints cannot all be met,
+no feasible compatible alternative exists, and resolution requires changing a
+confirmed constraint. Before waiting, the agent records the evidence, affected
+requirements, alternatives considered and decision needed, then sets its own
+task's `paused` property to true with an observed exact version and confirms the
+same assignment and pause. It retains session context; the user chooses how to
+respond. After verifying resolution, the original assignment and permission to
+resume, it clears the pause and confirms false or absence before continuing.
+Independent user pauses, restrictions and revocations, `allowAgents=false`, and
+claim or assignment changes remain binding. The [Worker execution contract](../../docs/spec/daynight-worker.md)
 owns readback, failure and conflict handling.
 
 The Worker appends the latest confirmed personal user, project and Worker prompt

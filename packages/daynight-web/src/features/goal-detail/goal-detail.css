@@ -1,0 +1,18 @@
+.goal-detail-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border, #e5e8ee); }
+.goal-detail-content:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.goal-detail-overview { padding: 1rem 1.25rem; overflow: auto; }
+.goal-detail-overview > .task-description { margin-bottom: 1rem; overflow-wrap: anywhere; }
+.goal-detail-chain { border: 1px solid var(--border, #e5e8ee); border-radius: 8px; margin-bottom: .75rem; }
+.goal-detail-chain-header { display: flex; align-items: center; gap: .75rem; padding: .6rem .75rem; }
+.goal-detail-disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: .6rem; border: 0; background: transparent; text-align: left; cursor: pointer; color: inherit; }
+.goal-detail-disclosure > span:last-child { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.goal-detail-disclosure small { display: block; color: #737d8e; font-weight: 400; }
+.goal-detail-tasks { list-style: none; margin: 0; padding: 0; }
+.goal-detail-task { width: 100%; display: flex; align-items: center; gap: .65rem; padding: .75rem; border: 0; border-top: 1px solid var(--border, #e5e8ee); background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.goal-detail-task:hover { background: #f7f8fa; }
+.goal-detail-task-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.goal-detail-dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; flex: none; }
+@media (max-width: 600px) { .goal-detail-meta { gap: .5rem; } .goal-detail-task { flex-wrap: wrap; } .goal-detail-task-title { flex-basis: calc(100% - 1.5rem); } .goal-detail-chain-header { flex-wrap: wrap; } }
+/* The chain and Task portals must stack above their Goal owner. */
+.task-chain-backdrop-nested { z-index: 31; }
+body:has(.goal-detail-surface) > .task-detail-backdrop:has(.task-detail-dialog:not(.goal-detail-surface)) { z-index: 32; }

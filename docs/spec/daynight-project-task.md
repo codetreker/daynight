@@ -461,9 +461,9 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 不提供 `--all`。显式 `--project` 直接搜索，省略时解析当前仓库项目。
 
 CLI 自动读取并校验全部分页，保留服务顺序，所有页成功前不输出 stdout。文本显示
-完整 ID、标题、状态、真实链代表及正向命中字段；纯否定显示 `negative condition`，
+完整 ID、标题、类型、parent、状态、实际父 Goal 及正向命中字段；纯否定显示 `negative condition`，
 仅在正向描述命中时显示摘要，终端控制字符可见转义。JSON 为以换行结束的完整有序
-数组，每项仅包含 `id`、`projectId`、`title`、`status`、`cancelledAt`、`context`和`match`；
+数组，每项仅包含 `id`、`type`、`parentId`、`projectId`、`title`、`status`、`cancelledAt`、`context`和`match`；
 两种格式均不显示负责人和更新时间。无命中文本显示 `No matching tasks.`，JSON 为
 `[]`，退出 0。参数和表达式语法错误退出 2；`search_changed`、读取、权限、协议、
 取消及预算失败退出 1。失败写 stderr，JSON 模式也不向 stdout 写错误或部分结果。

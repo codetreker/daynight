@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
@@ -278,7 +281,7 @@ func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
 func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.TaskAssigneeFact, lower *time.Time) {
 	f.t.Helper()
 	rows, facts, lower = copyTaskHTTPSyncRows(rows), copyTaskHTTPAssigneeFacts(facts), copyTaskHTTPPointer(lower)
-	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
 			f.require(ctx, id)
 			plan.Called("epoch")
@@ -292,6 +295,14 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.
 			}
 			return copyTaskHTTPSyncRows(rows), nil
 		}
+		reader.TaskSyncDependencyStatesFn = func(ctx context.Context, id string, since *time.Time) (map[string]model.TaskDependencyState, error) {
+			f.require(ctx, id)
+			plan.Called("dependencies")
+			if !reflect.DeepEqual(since, lower) {
+				unexpectedHTTPCall(f.t, "TaskSync dependency arguments")
+			}
+			return map[string]model.TaskDependencyState{}, nil
+		}
 		reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 			f.require(ctx, id)
 			plan.Called("people")
@@ -302,5 +313,51 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.
 			plan.Called("sessions")
 			return []store.TaskSessionSource{}, nil
 		}
+	})
+}
+
+func graphPath(projectID, taskID string) string {
+	return "/api/v1/projects/" + projectID + "/task-graph?taskId=" + taskID
+}
+
+func syncPath(projectID string) string { return "/api/v1/projects/" + projectID + "/task-sync" }
+
+func rawProperty(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func apiWorker(t *testing.T, properties api.TaskProperties) *api.WorkerClaim {
+	t.Helper()
+	raw, exists := properties["worker"]
+	if !exists {
+		return nil
+	}
+	var value *api.WorkerClaim
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		t.Fatalf("invalid worker property: %s: %v", raw, err)
+	}
+	return value
+}
+
+func claimHTTPWorker(t *testing.T, handler http.Handler, task api.Task, body map[string]any) api.Task {
+	t.Helper()
+	body["version"] = task.Version
+	response := projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim", jsonBody(t, body))
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("worker claim response can be cached")
+	}
+	return decodeResponse[api.Task](t, response, http.StatusOK)
+}
+
+func extendedWorkerTestHandler(handler *resourceTestHandler) {
+	original := handler.Handler
+	handler.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		request.Header.Set("Daynight-Worker-Protocol", "2")
+		original.ServeHTTP(w, request)
 	})
 }

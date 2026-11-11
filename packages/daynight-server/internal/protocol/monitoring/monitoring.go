@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -348,6 +349,54 @@ func activity(raw json.RawMessage) (any, error) {
 	}
 	return object(map[string]parser{"kind": enum(kind), "phase": phase, "operationId": id, "status": enum("queued", "running", "waiting", "paused"), "scope": scope, "startedAt": timestamp, "lastProgressAt": nullable(timestamp), "elapsedMs": number(0, safeInt), "deadlineAt": nullable(timestamp), "waitReason": nullable(wait), "nextAttemptAt": nullable(timestamp)})(raw)
 }
+
+func worktreePath(raw json.RawMessage) (any, error) {
+	value, err := text(4096)(raw)
+	if err != nil {
+		return nil, err
+	}
+	path := value.(string)
+	if strings.HasPrefix(path, "/") || strings.ContainsRune(path, '\\') ||
+		len(path) >= 2 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' {
+		return nil, bad()
+	}
+	for _, r := range path {
+		if unicode.IsControl(r) {
+			return nil, bad()
+		}
+	}
+	if path == "." {
+		return value, nil
+	}
+	normal := false
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." && normal {
+			return nil, bad()
+		}
+		if part != ".." {
+			normal = true
+		}
+	}
+	return value, nil
+}
+
+func worktree(raw json.RawMessage) (any, error) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil, bad()
+	}
+	var kind string
+	_ = json.Unmarshal(fields["kind"], &kind)
+	switch kind {
+	case "project-relative":
+		return object(map[string]parser{"kind": enum(kind), "path": worktreePath})(raw)
+	case "unavailable":
+		return object(map[string]parser{"kind": enum(kind), "reason": enum("different-volume", "invalid-path", "limit-exceeded")})(raw)
+	default:
+		return nil, bad()
+	}
+}
+
 func failure(raw json.RawMessage) (any, error) {
 	var f map[string]json.RawMessage
 	if json.Unmarshal(raw, &f) != nil {
@@ -368,11 +417,18 @@ func failure(raw json.RawMessage) (any, error) {
 	default:
 		return nil, bad()
 	}
-	v, e := object(map[string]parser{"operationId": id, "component": enum(component), "phase": phase, "scope": scope, "error": structured, "firstObservedAt": timestamp, "lastObservedAt": timestamp, "occurrencesInRun": number(0, safeInt), "retryState": enum("none", "scheduled", "running", "manual"), "nextAttemptAt": nullable(timestamp)})(raw)
+	fields := map[string]parser{"operationId": id, "component": enum(component), "phase": phase, "scope": scope, "error": structured, "firstObservedAt": timestamp, "lastObservedAt": timestamp, "occurrencesInRun": number(0, safeInt), "retryState": enum("none", "scheduled", "running", "manual"), "nextAttemptAt": nullable(timestamp)}
+	if _, present := f["worktree"]; present {
+		fields["worktree"] = worktree
+	}
+	v, e := object(fields)(raw)
 	if e != nil {
 		return nil, e
 	}
 	m := v.(map[string]any)
+	if _, present := m["worktree"]; present && m["scope"].(map[string]any)["kind"] != "claim" {
+		return nil, bad()
+	}
 	if component == "project" && m["scope"].(map[string]any)["kind"] == "worker" {
 		return nil, bad()
 	}

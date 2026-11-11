@@ -9,6 +9,37 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
+type taskWriteMetadataKey struct{}
+
+// TaskWriteMetadata records resource identity from the project write scope.
+type TaskWriteMetadata struct {
+	Type          model.TaskType
+	ParentID      *string
+	OldParentID   *string
+	NewParentID   *string
+	ParentChanged bool
+}
+
+func WithTaskWriteMetadata(ctx context.Context, metadata *TaskWriteMetadata) context.Context {
+	return context.WithValue(ctx, taskWriteMetadataKey{}, metadata)
+}
+
+func recordTaskWriteMetadata(ctx context.Context, mutation taskcore.Mutation) {
+	metadata, ok := ctx.Value(taskWriteMetadataKey{}).(*TaskWriteMetadata)
+	if !ok || metadata == nil {
+		return
+	}
+	metadata.Type = mutation.Current.Type
+	metadata.ParentID = mutation.Current.ParentID
+	if mutation.Create {
+		metadata.Type, metadata.ParentID = mutation.Values.Type, mutation.Values.ParentID
+	} else if !mutation.Delete {
+		metadata.NewParentID, metadata.OldParentID = mutation.Values.ParentID, mutation.Current.ParentID
+		metadata.ParentChanged = !model.EqualOptional(metadata.OldParentID, metadata.NewParentID)
+		metadata.ParentID = mutation.Values.ParentID
+	}
+}
+
 func taskWriteFault(err error) *model.Fault {
 	if failed, _ := store.DatabaseErrorFacts(err); failed {
 		return nil

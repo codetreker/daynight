@@ -1,0 +1,4 @@
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from '@playwright/test';
+const root = fileURLToPath(new URL('../..', import.meta.url));
+export default defineConfig({ testDir: '.', testMatch: '**/goal-reading.browser.ts', workers: 1, retries: 0, timeout: 45_000, globalTimeout: 240_000, reporter: 'line', outputDir: fileURLToPath(new URL('../../../../.tmp/goal-reading-results', import.meta.url)), use: { baseURL: 'http://127.0.0.1:4209', locale: 'en-US', screenshot: 'only-on-failure' }, webServer: { command: 'pnpm exec vite build --config tests/navigation/goal-reading-vite.config.ts && pnpm exec vite preview --config tests/navigation/goal-reading-vite.config.ts', cwd: root, url: 'http://127.0.0.1:4209/projects', reuseExistingServer: false, timeout: 90_000 } });

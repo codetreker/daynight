@@ -8,7 +8,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func decorateGoalProgress(ctx context.Context, reader store.TaskReader, projectID string, tasks []model.Task) error {
+type goalProgressReader interface {
+	GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error)
+}
+
+func decorateGoalProgress(ctx context.Context, reader goalProgressReader, projectID string, tasks []model.Task) error {
 	ids := make([]string, 0, len(tasks))
 	for _, task := range tasks {
 		if task.Type == model.TaskTypeGoal {

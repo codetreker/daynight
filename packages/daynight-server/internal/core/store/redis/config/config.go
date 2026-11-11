@@ -9,12 +9,23 @@ type Config struct {
 	RedisURL string `yaml:"redis_url"`
 }
 
+type Patch struct {
+	RedisURL *string `yaml:"redis_url"`
+}
+
+func (p Patch) ApplyTo(c *Config) error {
+	if p.RedisURL != nil {
+		c.RedisURL = *p.RedisURL
+	}
+	return nil
+}
+
 func DefaultConfig() Config { return Config{} }
 
 func (c Config) Validate() error {
 	if c.RedisURL != "" {
 		if err := redis.ValidateURL(c.RedisURL); err != nil {
-			return &configvalue.ConfigurationError{Field: "DAYNIGHT_REDIS_URL", Rule: "must be a valid redis or rediss URL", Cause: err}
+			return &configvalue.ConfigurationError{Field: "redis_url", Rule: "must be a valid redis or rediss URL", Cause: err}
 		}
 	}
 	return nil

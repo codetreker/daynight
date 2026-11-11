@@ -45,6 +45,17 @@ describe("worker monitoring HTTP contract", () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(body));
     await expect(fixture(fetch).readWorkerMonitoring(worker, requestId)).rejects.toMatchObject({ phase: "protocol" });
   });
+  it("accepts only scoped, closed worktree values", async () => {
+    const failure = { operationId: uuid(6), component: "execution", phase: "executing", scope: { kind: "claim", projectId: uuid(7), taskId: uuid(8), claimId: uuid(9) }, error: { type: "operation", code: "unknown", cause: "The operation failed; inspect local Worker diagnostics for details.", causeTruncated: false }, firstObservedAt: now, lastObservedAt: now, occurrencesInRun: 1, retryState: "none", nextAttemptAt: null, association: { kind: "labels-omitted" } };
+    const read = async (item: unknown) => fixture(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ...available, data: { ...observation, currentFailures: [item] } }))).readWorkerMonitoring(worker, requestId);
+    for (const worktree of [undefined, { kind: "project-relative", path: "../工作" }, { kind: "unavailable", reason: "different-volume" }]) {
+      await expect(read(worktree === undefined ? failure : { ...failure, worktree })).resolves.toMatchObject({ state: "available" });
+    }
+    for (const worktree of [null, { kind: "project-relative", path: "/secret" }, { kind: "project-relative", path: "a/../b" }, { kind: "project-relative", path: "\ud800" }, { kind: "unavailable", reason: "other" }, { kind: "unavailable", reason: "invalid-path", extra: true }]) {
+      await expect(read({ ...failure, worktree })).rejects.toMatchObject({ phase: "protocol" });
+    }
+    await expect(read({ ...failure, scope: { kind: "worker" }, association: null, worktree: { kind: "project-relative", path: "." } })).rejects.toMatchObject({ phase: "protocol" });
+  });
   it("exposes a confirmed CAS conflict and leaves 503 write outcome unknown", async () => {
     const error = (code: string) => ({ error: { code, message: "unavailable", requestId } });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(error("monitoring_revision_conflict"), 409)).mockResolvedValueOnce(response(error("monitoring_write_outcome_unknown"), 503));

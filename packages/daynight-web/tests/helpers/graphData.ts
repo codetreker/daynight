@@ -16,7 +16,7 @@ const graph = (number: number, name: string, seeds: readonly TaskSeed[]): TaskGr
     const blockedBy = task.dependencies.filter((dependency) => statuses.get(dependency) !== 'done').map(id).sort();
     const createdAt = new Date(Date.UTC(2026, 9, 21, 9, task.number * 10)).toISOString();
     return {
-      id: id(task.number), titlePreview: task.title, titleTruncated: false, status: task.status,
+      id: id(task.number), type: 'task', parentId: null, titlePreview: task.title, titleTruncated: false, status: task.status,
       assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
       dependsOn: task.dependencies.map(id).sort(), externalDependsOn: task.externalDependencies.map(id).sort(), blockedBy,
       ready: task.status === 'todo' && blockedBy.length === 0, createdAt, updatedAt: createdAt,

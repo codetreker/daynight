@@ -172,7 +172,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       return { tasks: result, coveredProjectIds, unavailableProjectIds };
     },
     candidates: async function* (projectId, platform, signal, platformSpecific) {
-      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }) }, signal)) {
+      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, automaticCandidate: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }) }, signal)) {
         if (readWorkerClaim(task.properties)?.state === "released") continue;
         if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;

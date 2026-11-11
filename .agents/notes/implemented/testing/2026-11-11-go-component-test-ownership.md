@@ -22,6 +22,14 @@ authentication protocol and lifecycle mechanisms remain real when they are the
 subject. Mocks do not establish persistence or replace parsing, encoding or the
 mechanism under test.
 
+Task HTTP reads, writes and sync run with their real Task components and
+narrowly controlled snapshot and project-write capabilities. Task deletion
+retains a Root cross-route tombstone proof. The Task assignee stress sample
+retains the real application, SQL capture and query plans at the Task adapter.
+Step and Thread HTTP scenarios use their real registrars and services with
+controlled DAO facts; file-effect witnesses use local files. Root retains the
+assembled Step-to-Attachment authorization proof.
+
 Go tests live in the package and directory of the tested object, normally in
 `xxx_test.go` for `xxx.go`. Files over about 1000 lines may be split by cohesive
 responsibility, and small related helpers are consolidated. Before removing a
@@ -33,9 +41,36 @@ packages is not itself a saving.
 The Root fixture retains its existing shared names and semantics for ordinary
 and tagged consumers. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
-and protected API proofs. Worker HTTP protocol matrices live with their Worker
-registrar, with real Service and Core where appropriate and narrow controlled
+and protected API proofs. UniAuth identity, browser binding and result transport
+scenarios live with the Authentication adapter, using real Identity components,
+the SDK and an isolated gateway with controlled DAO facts. Root retains the
+production constructor and configured callback assembly witness. Worker HTTP
+protocol matrices live with their Worker registrar, with real Service and Core
+where appropriate and narrow controlled
 capabilities for precise outcomes; HTTP fault classification belongs to httpx.
+Public OAuth authorization and token HTTP lifecycle scenarios live with their
+adapters, using real local Service and Core components, sockets and narrowly
+controlled DAO facts. Root retains the public profile and error-page assembly
+proofs and the fixture capabilities still used by its OAuth consumers. OAuth
+access admission follows its Authenticator, MCP Entry, Task Thread and Bot
+service owners. Controlled credential refusals preserve the Task presence
+barrier and the Bot deletion recheck after mutation; they do not simulate a
+database lock, elapsed expiry or revocation during a wait. Root retains default
+OAuth admission, Team wiring, REST exclusion and concurrent cross-service
+refusal.
+Project and Team HTTP organization scenarios use their real registrars and
+Service/Core with controlled DAO facts. Project, Team and Invitation MCP
+scenarios use a focused Entry host with those real collaborators and the SDK;
+Root retains full catalog, default authentication and cross-route proofs.
+Step MCP lifecycle scenarios use the same focused host with controlled Step
+operations, and Thread scenarios retain the real service with controlled DAO
+facts. Attachment, upload and download MCP scenarios use their real services,
+Core, SDK and local files with controlled DAO facts through a focused host;
+Root retains the assembled PAT isolation and revocation path. Controlled DAO
+results do not prove database persistence. The separate Step stress test uses
+PostgreSQL and real Step services.
+The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
+records why those operation-level observations were introduced.
 The Webhook Runner process-recovery and takeover witnesses live with the Runner
 and retain real PostgreSQL, TLS, subprocess and lease fencing mechanisms under
 their existing explicit tags. The [takeover fixture decision](2026-11-08-webhook-takeover-fixture.md)

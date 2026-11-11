@@ -24,16 +24,17 @@ type MCPConfig struct {
 	Transfer transferconfig.Config `yaml:",inline"`
 }
 type Config struct {
-	Server       serverconfig.Config              `yaml:"server"`
-	Database     databaseconfig.Config            `yaml:"database"`
-	Storage      storageconfig.Config             `yaml:"storage"`
-	Monitoring   MonitoringConfig                 `yaml:"monitoring"`
-	UniAuth      identityconfig.Config            `yaml:"uniauth"`
-	MCP          MCPConfig                        `yaml:"mcp"`
-	OAuth        oauthconfig.Config               `yaml:"oauth"`
-	Webhook      webhookconfig.Config             `yaml:"webhook"`
-	TaskSync     applicationconfig.TaskSyncConfig `yaml:"task_sync"`
-	ImageDecoder imageconfig.Config               `yaml:"image_decoder"`
+	LocalOverrideLoaded bool                             `yaml:"-"`
+	Server              serverconfig.Config              `yaml:"server"`
+	Database            databaseconfig.Config            `yaml:"database"`
+	Storage             storageconfig.Config             `yaml:"storage"`
+	Monitoring          MonitoringConfig                 `yaml:"monitoring"`
+	UniAuth             identityconfig.Config            `yaml:"uniauth"`
+	MCP                 MCPConfig                        `yaml:"mcp"`
+	OAuth               oauthconfig.Config               `yaml:"oauth"`
+	Webhook             webhookconfig.Config             `yaml:"webhook"`
+	TaskSync            applicationconfig.TaskSyncConfig `yaml:"task_sync"`
+	ImageDecoder        imageconfig.Config               `yaml:"image_decoder"`
 }
 
 func DefaultConfig() Config {

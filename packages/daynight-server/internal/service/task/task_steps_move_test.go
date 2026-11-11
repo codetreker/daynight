@@ -537,3 +537,13 @@ func TestTaskStepsOrderingCompletionFailures(t *testing.T) {
 		}
 	}
 }
+
+func (f *orderedWrite) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	f.t.Fatal("unexpected GoalProgresses")
+	return nil, nil
+}
+
+func (f *orderedWrite) ParentTask(context.Context, string) (model.Task, error) {
+	f.t.Fatal("unexpected ParentTask")
+	return model.Task{}, nil
+}

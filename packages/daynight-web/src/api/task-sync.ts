@@ -4,8 +4,8 @@ import { isTaskVersion } from "./json";
 import { parseTaskProperties, readTaskPaused, readWorkerClaim } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { ProjectPersonVersion } from "./auth-types";
-import type { TaskListSessionState, TaskSummary, TaskSync } from "./types";
-import { nullableId, taskStatusFields } from "./validation";
+import type { TaskDependencyState, TaskListSessionState, TaskSummary, TaskSync } from "./types";
+import { nullableId, taskStatusFields, taskTypeFields } from "./validation";
 
 const ids = (value: unknown): string[] => {
   const result = array(value, id);
@@ -25,6 +25,31 @@ const parseTaskSessions = (value: unknown): Readonly<Record<string, TaskListSess
   return sessions;
 };
 
+export const parseDependencyState = (value: unknown): TaskDependencyState => {
+  const data = record(value);
+  const encodedVersion = string(data.taskVersion);
+  if (!/^[1-9][0-9]*$/.test(encodedVersion)) return malformed();
+  const taskVersion = BigInt(encodedVersion);
+  if (!isTaskVersion(taskVersion)) return malformed();
+  return { taskVersion, blockedBy: ids(data.blockedBy), ready: boolean(data.ready) };
+};
+
+export const validateDependencyState = (task: TaskSummary, state: TaskDependencyState): void => {
+  if (task.type !== "task" || state.blockedBy.some((dependency) => !task.dependsOn.includes(dependency)) ||
+    state.ready !== (task.status === "todo" && state.blockedBy.length === 0)) malformed();
+};
+
+const parseDependencyStates = (value: unknown): Readonly<Record<string, TaskDependencyState>> => {
+  const data = record(value);
+  if (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) return malformed();
+  const states: Record<string, TaskDependencyState> = {};
+  for (const [taskId, state] of Object.entries(data)) {
+    if (id(taskId) !== taskId) return malformed();
+    states[taskId] = parseDependencyState(state);
+  }
+  return states;
+};
+
 export const parseTaskSummary = (value: unknown): TaskSummary => {
   const data = record(value);
   const encodedVersion = string(data.version);
@@ -38,8 +63,9 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   readTaskPaused(properties);
   const worker = readWorkerClaim(properties);
   if (worker?.state === "active" && data.status !== "in_progress" || worker?.state === "released" && data.status !== "todo" && data.status !== "cancelled") return malformed();
-  return {
+  const result: TaskSummary = {
     id: id(data.id), version, properties,
+    ...taskTypeFields(data),
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     ...taskStatusFields(data), dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),
@@ -49,6 +75,8 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
     completedAt: data.completedAt === null ? null : timestamp(data.completedAt),
     createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt),
   };
+  if (result.type === "goal" && (result.status === "proposed" || result.dependsOn.length !== 0 || result.allowAgents || result.requiredPlatform !== null)) return malformed();
+  return result;
 };
 
 export const parseTaskSync = (value: unknown, projectId: string, userId?: string): TaskSync => {
@@ -63,11 +91,22 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
     actorAccess: parseProjectAccess(data.actorAccess, projectId, userId),
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
     observedAt: timestamp(data.observedAt), tasks: array(data.tasks, parseTaskSummary),
+    dependencyStates: parseDependencyStates(data.dependencyStates),
     sessions: parseTaskSessions(data.sessions),
   };
   if (new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
     result.project.id !== projectId || result.actorAccess.ownership.teamId !== result.project.ownership.teamId ||
     result.actorAccess.ownership.version !== result.project.ownership.version ||
     new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length) return malformed();
+  for (const task of result.tasks) {
+    const state = result.dependencyStates[task.id];
+    if (task.type === "goal") {
+      if (state !== undefined) return malformed();
+    } else {
+      if (state === undefined || state.taskVersion !== task.version) return malformed();
+      validateDependencyState(task, state);
+    }
+  }
+  if (result.mode === "snapshot" && Object.keys(result.dependencyStates).length !== result.tasks.filter((task) => task.type === "task").length) return malformed();
   return result;
 };

@@ -658,8 +658,9 @@ cp deployment/localhost/.env.example deployment/localhost/.env
 bash deployment/localhost/up.sh
 ```
 
-The command requires the five authentication settings in that private file,
-builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
+The command uses the public base YAML mounted read-only under the selected
+server root and requires the five authentication settings in that private file.
+Explicit server environment variables override YAML. It builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
 `/readyz`. Open the configured public origin and log in through UniAuth. APIs and
 trusted attachment previews share that origin. For CLI access to this local test
 deployment, set `serverUrl` to its public origin in `~/.daynight/config.yml`,

@@ -761,3 +761,8 @@ func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []string
 	s.reject("TaskWorkTargets")
 	panic("unreachable")
 }
+
+func (s *unexpectedTaskReader) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
+	s.reject("TaskSyncDependencyStates")
+	panic("unreachable")
+}

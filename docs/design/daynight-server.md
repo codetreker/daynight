@@ -19,7 +19,7 @@
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
-提供事务内授权、私有创建和邀请。`internal/config` 组合各模块拥有的强类型启动配置并协调环境变量加载和跨模块验证；各模块拥有自身字段、默认值和纯校验，通用配置错误和标量解析归 `utils/configvalue`。`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
+提供事务内授权、私有创建和邀请。`internal/config` 组合各模块拥有的强类型启动配置并协调两层 YAML、显式环境变量加载和跨模块验证；各模块拥有自身字段、默认值和纯校验，通用配置错误和标量解析归 `utils/configvalue`。`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
@@ -163,7 +163,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 - project 按 `(created_at, id)` 列表；
 - task 按 `(project_id, created_at, id)` 列表及按状态筛选；
 - 类型和直接父资源分别按 `(project_id, type, created_at, id)` 与 `(project_id, parent_id, created_at, id)` 排序；
-- 未删除 task 的原生负责人按 `(project_id, assigned_to, created_at, id)` 索引；
+- task 的原生负责人按 `(project_id, assigned_to, created_at, id)` 完整索引，并保留未删除行的部分索引；
 - 依赖按 `(project_id, task_id)` 查询前置任务；
 - 依赖按 `(project_id, depends_on_task_id)` 查询直接下游任务。
 
@@ -181,9 +181,11 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `028_task_assignment.sql` 增加 `assigned_to uuid NULL` 和未删除任务的项目/负责人/keyset 索引。全部既有及软删除任务取得 NULL，version、业务时间、properties、worker 和 Session 保持。完整 Task、同步摘要和图 projection/scanner 显式读取同一原生列，不从属性或执行者推断责任。
 
-`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。普通创建显式使用 `task` 和空 Parent；公开写入不接受这两个字段。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
+`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type` 和可空 `parentId`；省略类型为普通 Task，类型创建后不可修改。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
 
-`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。带锁入口仍锁定物理行；资料和 Session 的完整父行锁序由其自身生命周期负责。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。资料和 Session 的带锁入口先预读 Parent，按 UUID 顺序锁目标与 Parent 的物理行，再以新语句复核 Parent 和有效删除。Session 注册对目标直接取得 UPDATE，其他资源锁使用 SHARE；Parent 变化返回 `resource_conflict`，不补锁或重放。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+
+`063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
 
 `032_personal_project_ownership.sql` 建立真实 `teams`、`team_members` 与 `project_ownership`，
 并原地重命名 `project_members` 及其 sequence/约束/索引为 `project_grants`。
@@ -235,7 +237,7 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 
 ## 状态与依赖不变量
 
-Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。
+普通 Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。Goal 使用四态及独立的状态时间和负责人策略，详见 [Goal 需求](../spec/daynight-goals.md)。
 `014_task_status_assignment.sql` 将旧 proposed 行归类为 todo，对转换行 version+1、更新 updatedAt，
 保留执行时间及所有其他事实；默认、数据、CHECK 与 ledger 同一事务。已应用历史迁移保持不变。
 [状态架构](daynight-task-status.md)拥有五态转换、迁移和计时的完整机制与理由。
@@ -245,18 +247,18 @@ Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建�
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
 同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
 
-普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人和属性。完整候选校验保证
+普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人、Parent 和属性。完整候选校验保证
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
-blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
+Goal 不进入依赖图，其 blockedBy 为空且 ready=false。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
 external=true 的排序子集；数组明确为空。ready 当且仅当 todo 且 blockedBy 为空。
 派生值不持久化，前置变化不修改本任务版本或更新时间；因此同版本读取可有新 ready/blockedBy。
 POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[外部依赖架构](daynight-external-dependencies.md)。
 
 ## 写事务与并发
 
-所有 task 创建、元数据更新及生命周期操作，包括语义空更新，都遵循相同事务协议：
+所有 Task 与 Goal 创建、元数据更新及生命周期操作，包括语义空更新，都遵循相同事务协议：
 
 1. 以 `READ COMMITTED` 开启事务，用 `SELECT ... FOR UPDATE` 查找并锁定 project
    行；不存在时返回 `not_found`。获得锁后检查当前成员关系，非成员同样返回
@@ -286,6 +288,8 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 `task → predecessor`，若 predecessor 能在候选图中到达 task，则拒绝。校验基于本次
 锁内读取的数据，不依赖请求前查询或进程缓存。
 
+Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 排除父 Goal 已结束的孩子；自有库存不使用该筛选，显式 resume 保持自身规则。Goal 删除只标记 Goal 并同事务轮换 epoch，不修改子项；其有效删除使库存缺失进入既有 cleanup。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值。写后 Goal progress 在同一事务内聚合并参与精确响应准入。Goal 不发布现有可执行 Task Webhook。
+
 中性 `currentTaskWrite` 统一复制普通编辑、状态、属性与 worker 写入的全部字段。AssignedTo 先规范化再参与 changed 值比较；明确 no-op 和删除分支先于负责人策略，不能把空候选当作清空。实际变化时检查执行状态和新目标访问，强制候选 allowAgents=false；共享领域错误分类保持暂存拒绝与事务失败优先级。
 
 PATCH 的语义空操作仍检查版本及输入，返回当前资源，保持 `version` 和 `updatedAt`
@@ -310,12 +314,23 @@ Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHead
 
 确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
-MCP 产品手册以 Go embed 和固定七项目录随服务发布。Entry 在注册前校验目录、UTF-8
-正文、大小及内部 URI 引用，构造失败保留错误；SDK 原生 Resources 提供目录和完整正文，
-独立 instructions 同时供两版协议使用。静态 Resources capability 不承诺订阅或变更通知。
-每次读取创建独立结果，并在构造前非阻塞取得共享 Control 名额，直到 handler 与 HTTP 交付
-均结束才释放。饱和返回顶层协议内部错误；该限制不覆盖 SDK 内置列表或整个 batch 的内存。
-HTTP 保持 no-store，现代协议结果使用 private、零 TTL；未知 URI 沿用 SDK 协议错误净化。
+MCP 产品手册以 Go embed 和固定十二项目录随服务发布。`productManualManifest` 是生产目录的
+唯一所有者，注册、正文加载和引用校验使用同一组声明；路径、Name 和 URI 保持一致，Title、
+Description、MIMEType 和严格 UTF-8 byte Size 随正文同步。Entry 在注册前校验完整目录、非空有效
+UTF-8 正文、大小及 instructions 与正文中的绝对内部 URI 引用，构造失败保留错误链。
+SDK 原生 Resources 提供目录和每个主题的完整原文，独立 instructions 同时供两版协议使用。
+
+入口按操作选择主题。公共 write-safety 拥有精确版本、授权和写完成规则；各资源拥有其分页、
+身份、完整性、失败和恢复的具体条件。Session 读取与发送、Steps、Thread 和附件读取与写入
+各自可独立取得，不需要从混合长文截取章节。正式材料的用途与充分性由 materials 拥有。
+内部链接直接指向当前目录的 `daynight://manuals/...` URI，不在运行时聚合文稿或转换链接。
+客户端在服务更新后重新发现目录；移除的混合主题 URI 沿用未知 URI 的协议错误。
+[主题决策](../../.agents/notes/implemented/architecture/2026-11-11-mcp-topic-manuals.md)记录划分理由。
+
+静态 Resources capability 不承诺订阅或变更通知。每次读取创建独立结果，并在构造前非阻塞取得
+共享 Control 名额，直到 handler 与 HTTP 交付均结束才释放。饱和返回顶层协议内部错误；该限制
+不覆盖 SDK 内置列表或整个 batch 的内存。HTTP 保持 no-store，现代协议结果使用 private、
+零 TTL；未知 URI 沿用 SDK 协议错误净化。
 
 MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读并交给 SDK。名额持续到 HTTP 与 SDK handler 均不再持有输入，与 Control 和 Large 工具预算独立。失败、取消、初始化和关闭均释放名额。详细额度及适用状态见[输入规范](../spec/daynight-api-input-limits.md)。
 
@@ -333,7 +348,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/projects/{projectId}/deletion-preview` | 当前 owner Team admin 的有界影响及阻塞观察 |
 | `DELETE /api/v1/projects/{projectId}` | 锁内复核权限和全部 claim，提交删除屏障并返回回执 |
 | `PATCH /api/v1/projects/{projectId}/settings` | 管理员按观察设置版本保存分钟阈值，返回完整 Project |
-| `POST /api/v1/projects/{projectId}/tasks` | 创建默认 `proposed` task，可显式指定 `todo` |
+| `POST /api/v1/projects/{projectId}/tasks` | 创建普通 Task 或 Goal，默认分别为 `proposed` 和 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
@@ -351,7 +366,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。
 创建 task 的输入为 `title`、可省略的
-`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 与 `properties`；省略描述表示空字符串，省略依赖和
+`type`、`parentId`、`status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 与 `properties`；省略描述表示空字符串，省略依赖和
 属性表示没有对应行，完整属性对象为空时返回 {}。创建成功
 返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。
 
@@ -362,7 +377,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 并用锁后的 statement 时间更新 project.updatedAt。响应在该事务内构造完整 Project，沿用已有提交/清理错误优先规则。
 
 Task PATCH 必须提交期望的 `version`，并至少提供 `title`、`description`、
-`dependsOn`、`externalDependsOn`、`allowAgents`、`requiredPlatform`、`assignedTo` 或一个已定义属性。只有 `version` 或空 `properties` 的请求返回
+`dependsOn`、`externalDependsOn`、`allowAgents`、`requiredPlatform`、`assignedTo`、`parentId` 或一个已定义属性。只有 `version` 或空 `properties` 的请求返回
 `invalid_input`；
 提供字段但值未变的请求采用前述语义空操作规则。例如：
 
@@ -381,7 +396,7 @@ status 是输入错误，含其他合法字段也不写入。HTTP 与日志保�
 
 省略可更新字段表示保持原值；`description: ""` 清空描述，`dependsOn: []` 清空
 依赖，`properties.pullRequests: []` 清空 PR 引用。`allowAgents` 使用可选布尔输入保留 omitted/false 的区别，创建严格拒绝该字段。`requiredPlatform` 使用明确的字段存在性和可空值区分省略、设置与清除：PATCH 省略保持、枚举设置、null 清除；创建省略或 null 均不限制。`model.TaskPlatform.Valid()` 验证枚举，`model.PlatformCompatible(required, actual)` 以 null/同值规则匹配，不读取服务进程的平台。PATCH 的双层指针明确区分未提供和显式 null，不把清除转换为省略。属性数组按序比较并整体替换，
-具体记录只有字符串 `url` 和 `title`；保留原始文本语义并执行各自字节额度。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
+具体记录只有字符串 `url` 和 `title`；保留原始文本语义并执行各自字节额度。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台、负责人和 Parent 字段允许清除外，显式 `null`、嵌套未知或
 重复字段、不合理的类型及非法枚举均为输入错误。`id`、
 `projectId`、创建时间及更新时间不可由调用者写入。任务返回结构包含模型字段及
 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`；外部子集是必填读取字段，也是创建/PATCH 的可选分类输入。
@@ -402,16 +417,16 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
 普通列表按原 keyset 和请求条数在同一快照一次读取 `limit+1` 候选，再批量加载选中任务的完整属性。指定 workerId 时，store 用一次关联查询按原 keyset 顺序扫描候选及其唯一 worker 属性，在 Go 中普通解码并匹配 active/userId/workerId；最终分页和 lookahead 在归属筛选后计算。cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。读取不执行结构、字段或容量复查，也不按字节裁页。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)记录职责与查询成本。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 
-Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
+Task cursor 版本3绑定 type、parent、解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本3。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
-校验格式和范围，拒绝旧版本1任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
+校验格式和范围，拒绝旧版本任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
 cursor 不承担身份授权或加密职责。列表不承诺跨多次请求维持同一数据库快照；新增
 或更新后的任务可能影响后续页中按筛选条件可见的集合。
 
@@ -420,7 +435,7 @@ cursor 不承担身份授权或加密职责。列表不承诺跨多次请求维�
 `ready` 筛选在数据库中使用同一状态条件，`allowAgents`、`requiredPlatform` 和 `assignedTo` 使用 task 同行值；不能取一页后在应用中删掉 blocked、许可不匹配或平台不兼容的任务。
 分页边界应用于筛选后的结果，`nextCursor` 根据该结果中是否还有记录产生。仅 workerId 筛选的全部项目/页成功汇总后，调用者才可按自有 claim 清单缺席对账；带额外条件（包括 assignedTo）或部分页不是完整归属集合。
 
-人员读取复用 Tasks/ReadSnapshot 和项目读取权限。完整目录从原始成员ID与未删除任务的DISTINCT assigned_to做UNION；限定模式从最多100个请求UUID出发，以成员主键及原生任务索引探测资格，再按资格LEFT JOIN users。保留原始候选ID与nullable users.id，使缺失资料行成为内部完整性错误，而合法nullable姓名/头像原样返回。所有结果与授权属于同一RR快照，事务完成错误优先于领域拒绝，失败不返回部分集合。[负责人设计](daynight-task-assignment.md#项目内人员读取)拥有完整请求与组装机制。
+人员读取复用 Tasks/ReadSnapshot 和项目读取权限。完整目录从原始成员ID与有效可见任务的DISTINCT assigned_to做UNION；限定模式从最多100个请求UUID出发，以成员主键及原生任务索引探测资格，再按资格LEFT JOIN users。保留原始候选ID与nullable users.id，使缺失资料行成为内部完整性错误，而合法nullable姓名/头像原样返回。所有结果与授权属于同一RR快照，事务完成错误优先于领域拒绝，失败不返回部分集合。[负责人设计](daynight-task-assignment.md#项目内人员读取)拥有完整请求与组装机制。
 
 ## 错误与诊断
 
@@ -456,14 +471,22 @@ service 在 snapshot callback 内保留缺失结果但返回成功，待只读�
 信息、请求体及仓库地址中的认证材料；不直接记录原始
 driver 错误或完整请求体。成功日志提供方法、路由模板、状态和耗时。
 
+普通服务在 root 选定后先独占 `logs/.writer.lock`，再打开追加日志并加载配置。
+一个 JSON handler 同步写 stderr 与 `logs/daynight-server.log`，文件达到 100 MiB
+时按编号保留十个旧文件；超大单条记录保持完整。不同进程须使用不同日志目录，
+可通过绝对 storage 路径共享数据。文件或 stderr 失败会取消服务并导致非零退出，
+安全的 `logging_failed` 诊断直接写 stderr。生产者停止后关闭文件并释放锁；锁文件
+保留供下次启动使用。stderr 管道断开时，普通服务将 SIGPIPE 转为写入错误，仍尝试
+文件输出并完成关闭。HTTP 和 metrics 的 drain 覆盖整个日志包装器，包括已劫持连接的
+完成记录。`verify-storage` 只写 stderr，不创建日志或获取锁。
+
 诊断服务失败时，先以响应 `requestId` 定位日志，再沿组件和阶段定位失败；数据库
 问题另外检查迁移版本及 PostgreSQL 日志。验收应通过非法状态、版本冲突和受控
 数据库故障确认错误码、日志关联和脱敏内容，不能只检查健康请求的输出。
 
 ## 启动、迁移与关闭
 
-启动配置明确提供 PostgreSQL 连接信息、`DAYNIGHT_STORAGE_ROOT` 及五个必填鉴权
-变量：`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
+启动配置通过模块默认值、root 下两层 YAML 和显式环境变量依次覆盖。root 由 `--root`、`DAYNIGHT_ROOT` 或 `/var/lib/daynight` 选择，相对文件路径以 root 为基准，默认存储目录为 `storage`。配置加载不创建业务资源；`verify-storage` 只对数据库和存储执行语义验证。PostgreSQL 连接信息及五个鉴权字段必须由 YAML 或环境变量提供；鉴权字段对应的环境变量为：`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
 `DAYNIGHT_UNIAUTH_APP_SECRET`、`DAYNIGHT_UNIAUTH_CALLBACK_URL`。公开 origin 与
 callback 必须同 origin；callback 无 query/fragment，使用规范的非根路径，并在
 创建登录事务前拒绝路由冲突和返回循环。仅该配置路径接收 callback，不保留旧路径
