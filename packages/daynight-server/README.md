@@ -459,14 +459,24 @@ configuration, browser authorization and connection verification. A normal HEAD
 returns the same headers without a body. Reading the manual does not authenticate
 or invoke business operations.
 
-Authenticated MCP clients can list seven product manual Resources and read a
-complete topic at `daynight://manuals/<topic>.md`. The server instructions guide
-clients to the catalog; reading it does not select a Project or authorize work.
+Authenticated MCP clients use `resources/list` to discover twelve product manual
+Resources and `resources/read` to obtain a complete topic at its returned
+`daynight://manuals/<topic>.md` URI. The short server instructions route by
+operation. Steps, Thread, Session reads and messages, and attachment reads and
+writes have separate guides. Every write requires the common write-safety guide
+and its operation's conditions; related topics retain explicit reading prerequisites.
+Reading guidance does not select a Project or authorize work.
+
 The manuals are embedded with the server and require no Project membership.
-Their fixed URIs link related topics; a new server version serves its own content.
-Resource reads share the Control permit through response delivery and refuse
-immediately when it is exhausted. They do not change business data. The public
-installation manual remains a separate entry.
+The explicit catalog validates complete nonempty UTF-8 bodies, strict byte sizes
+and absolute topic references before registration. Rediscover the catalog and
+read current content after a server update: the former `queries-and-lifecycle`,
+`files-and-references` and `operation-boundaries` URIs have been replaced by the
+operation guides. Unknown or removed URIs return protocol errors. Resource reads
+share the Control permit through response delivery and refuse immediately when
+it is exhausted. They do not change business data. The public installation manual
+remains a separate entry. The [server design](../../docs/design/daynight-server.md#http-传输准入)
+explains content ownership and transport boundaries.
 
 Configure a client with the service's HTTPS URL ending in `/mcp`. Standard clients
 discover OAuth from the unauthenticated protocol challenge and request the

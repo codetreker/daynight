@@ -140,7 +140,7 @@ func TestProductManualProtocol(t *testing.T) {
 				if transport.bad.Load() {
 					t.Fatal("an MCP response lacked Cache-Control: no-store")
 				}
-				if version == "2026-07-28" && (transport.badResultType.Load() || transport.checked.Load() != 15) {
+				if version == "2026-07-28" && (transport.badResultType.Load() || transport.checked.Load() != int32(1+2*len(productManualManifest))) {
 					t.Fatalf("modern wire resultType checks: count=%d, failed=%v", transport.checked.Load(), transport.badResultType.Load())
 				}
 			})
