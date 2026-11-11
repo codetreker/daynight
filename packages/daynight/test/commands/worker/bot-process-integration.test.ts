@@ -150,11 +150,18 @@ import { appendFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 const originalSpawn = childProcess.spawn;
 let guardianExit;
+let guardianIdentity;
 childProcess.spawn = (...args) => {
   const child = originalSpawn(...args);
   if (typeof args[1]?.[0] === 'string' && args[1][0].endsWith('windows-job-guardian-child.js')) {
+    guardianIdentity = new Promise(resolve => child.once('spawn', () => {
+      appendFileSync(${JSON.stringify(guardianExitLog)}, JSON.stringify({ launchId: process.argv[5], pid: child.pid, started: true }) + '\\n');
+      void captureProcessProof(child.pid).then(proof => {
+        appendFileSync(${JSON.stringify(guardianExitLog)}, JSON.stringify({ launchId: process.argv[5], pid: child.pid, proof }) + '\\n');
+      }).catch(() => {}).finally(resolve);
+    }));
     guardianExit = new Promise(resolve => child.once('exit', (code, signal) => {
-      appendFileSync(${JSON.stringify(guardianExitLog)}, JSON.stringify({ launchId: process.argv[5], pid: child.pid, code, signal }) + '\\n');
+      appendFileSync(${JSON.stringify(guardianExitLog)}, JSON.stringify({ launchId: process.argv[5], pid: child.pid, exited: true, code, signal }) + '\\n');
       resolve();
     }));
   }
@@ -172,6 +179,7 @@ appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, 
 const { runController } = await import(${JSON.stringify(runtimeURL)});
 try { await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] }); }
 catch (error) {
+  if (guardianIdentity) await Promise.race([guardianIdentity, new Promise(resolve => setTimeout(resolve, 2000))]);
   if (guardianExit) await Promise.race([guardianExit, new Promise(resolve => setTimeout(resolve, 2000))]);
   throw error;
 }
@@ -248,6 +256,7 @@ catch (error) {
   });
   const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(path.join(controllerExecutionDirectory(home, intent.executionId), "journal.sqlite")); };
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number; proof: ProcessProof; argv: string[] }) : [];
+  const guardianEvents = async () => existsSync(guardianExitLog) ? (await readFile(guardianExitLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { launchId: string; pid: number; proof?: ProcessProof; started?: boolean; exited?: boolean }) : [];
   const guardianExitFailure = async (): Promise<Error | null> => {
     const record = current(), intent = record.intent, saved = journal();
     if (intent === null || saved?.controllerProcess != null || !saved?.error || !["Original Windows guardian exited before its startup was confirmed.", "Windows guardian startup failed:"].some(value => saved.error!.startsWith(value)) || saved.nativeProcesses.length !== 0) return null;
@@ -255,10 +264,23 @@ catch (error) {
     if (!launch || launch.pid !== launch.proof?.pid || await inspectProcessProof(launch.proof) === "running") return null;
     const ticket = await botProcess.readTicket(record);
     if (readWindowsJobSource(intent.journalPath, ticket) !== null) return null;
-    const exits = existsSync(guardianExitLog) ? (await readFile(guardianExitLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { launchId: string; pid: number }) : [];
-    if (!exits.some(value => value.launchId === intent.launchId && Number.isSafeInteger(value.pid) && value.pid > 0)) return null;
     const log = await readEvidence(path.join(path.dirname(intent.journalPath), `guardian-${intent.launchId}.log`));
     return new Error(`Original fixture Controller exited after guardian startup failed; source remains unknown. ${log.exists ? log.text : "Guardian log unavailable."}`);
+  };
+  const stopUnassignedGuardian = async (): Promise<void> => {
+    const intent = current().intent;
+    if (!intent) throw new Error("Original fixture guardian identity is unavailable.");
+    const events = (await guardianEvents()).filter(event => event.launchId === intent.launchId);
+    const started = events.filter(event => event.started === true && Number.isSafeInteger(event.pid) && event.pid > 0);
+    if (started.length === 0) throw new Error("Original fixture guardian launch is unconfirmed; its responsibility is retained.");
+    for (const event of started) {
+      if (events.some(item => item.exited === true && item.pid === event.pid)) continue;
+      const original = events.find(item => item.pid === event.pid && item.proof?.pid === event.pid)?.proof;
+      if (!original) throw new Error("Original fixture guardian exit or process identity is unconfirmed; its responsibility is retained.");
+      if (await inspectProcessProof(original) !== "running") continue;
+      process.kill(original.pid, "SIGKILL");
+      await vi.waitFor(async () => expect(await inspectProcessProof(original)).not.toBe("running"), { timeout: 15_000, interval: 100 });
+    }
   };
   const collectEvidence = async () => {
     const record = current(), intent = record.intent;
@@ -297,7 +319,11 @@ catch (error) {
           }
           if (saved?.controllerProcess == null) throw new Error("Original fixture process proof is not durable yet.");
         } catch (error) {
-          if (await guardianExitFailure()) throw error;
+          if (await guardianExitFailure()) {
+            try { await stopUnassignedGuardian(); }
+            catch (cause) { throw new AggregateError([error, cause], "Guardian startup and fixture process cleanup remain unconfirmed.", { cause: error }); }
+            throw error;
+          }
           diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error);
         }
         saved = journal() ?? saved;
