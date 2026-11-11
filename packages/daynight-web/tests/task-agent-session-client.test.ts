@@ -58,23 +58,26 @@ describe('task session transport lifecycle', () => {
     const f = fixture();
     const identity = { target: { serverOrigin: window.location.origin, actorUserId: userId, fence: sessionFence(f.s), expectedNativeSessionId: f.s.identity.nativeSessionId }, resolver: { kind: 'task' as const, projectId: f.s.identity.projectId, taskId: f.s.identity.taskId } };
     const store = new SessionDraftStore();
-    const held = Promise.withResolvers<Awaited<ReturnType<SessionDraftStore['readExisting']>>>();
+    const held = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
     let pending: Promise<unknown> | null = null;
     try {
       const owner = await store.openOwner(identity);
-      const saved = await store.saveDraft(owner.owner, { draftId: owner.editable!.draftId, expectedStoreVersion: owner.editable!.storeVersion, text: 'Original image text', items: [{ draftImageId: 'original-image', imageId: 'image', byteRevision: '1', label: 'missing.png', blobId: null, validation: 'bytes_missing', error: 'bytes_missing', uploadId: null }], rejectedCandidates: [], overflowRejectedCount: 0 });
+      await store.saveDraft(owner.owner, { draftId: owner.editable!.draftId, expectedStoreVersion: owner.editable!.storeVersion, text: 'Original image text', items: [{ draftImageId: 'original-image', imageId: 'image', byteRevision: '1', label: 'missing.png', blobId: null, validation: 'bytes_missing', error: 'bytes_missing', uploadId: null }], rejectedCandidates: [], overflowRejectedCount: 0 });
       await ready(f); f.client.setImageDraftAdmission(true, true); await f.client.imageDrafts.sync();
-      const read = vi.spyOn(SessionDraftStore.prototype, 'readExisting').mockReturnValueOnce(held.promise);
+      const reconcile = SessionDraftStore.prototype.reconcileAuthorizedOwner;
+      const read = vi.spyOn(SessionDraftStore.prototype, 'reconcileAuthorizedOwner').mockImplementationOnce(async function (this: SessionDraftStore, ...args) {
+        const result = await reconcile.apply(this, args); entered.resolve(); await held.promise; return result;
+      });
       pending = f.client.imageDrafts.refreshForSend().catch((error: unknown) => error);
-      await vi.waitFor(() => expect(read).toHaveBeenCalled());
+      await entered.promise; expect(read).toHaveBeenCalledWith(identity, expect.any(Function));
       const next = { ...f.s, sessionRevision: String(BigInt(f.s.sessionRevision) + 1n), identity: { ...f.s.identity, nativeSessionId: 'native-new' } };
       f.receive({ protocol: next.protocol, type: 'snapshot', userId, snapshot: next, cursor: 'next' });
       expect(f.client.snapshot().draft.text).toBe('');
-      held.resolve(saved); await expect(pending).resolves.toMatchObject({ message: 'image_access_unavailable' }); await f.client.imageDrafts.sync();
+      held.resolve(); await expect(pending).resolves.toMatchObject({ message: 'image_access_unavailable' }); await f.client.imageDrafts.sync();
       expect(f.client.snapshot().draft.text).toBe('');
       expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ active: true, text: '', items: [], detachedDrafts: [{ draft: { text: 'Original image text' } }] });
       expect(f.api.command).not.toHaveBeenCalled();
-    } finally { held.resolve(null); await pending; f.client.close(); await f.client.imageDrafts.close(); store.close(); }
+    } finally { held.resolve(); await pending; f.client.close(); await f.client.imageDrafts.close(); store.close(); }
   });
   it('does not import the old text again after its image draft changes native owners', async () => {
     const storage = window.sessionStorage; storage.clear();
@@ -199,10 +202,11 @@ describe('task session transport lifecycle', () => {
   it.each(['send', 'command'].flatMap(action => ['read', 'resume'].map(phase => ({ action, phase }))))('rejects a pending $action click when its native owner changes during $phase', async ({ action, phase }) => {
     const f = fixture(null, userId, userId, { controls: { revision: '1', settings: [], commands: [{ id: 'compact', name: 'compact', description: 'Compact', argumentHint: null, available: true }], settingsError: null, commandsError: null } });
     const identity = { target: { serverOrigin: window.location.origin, actorUserId: userId, fence: sessionFence(f.s), expectedNativeSessionId: f.s.identity.nativeSessionId }, resolver: { kind: 'task' as const, projectId: f.s.identity.projectId, taskId: f.s.identity.taskId } };
-    const store = new SessionDraftStore();
+    const store = new SessionDraftStore(), held = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    let sending: Promise<unknown> | undefined;
     try {
       const owner = await store.openOwner(identity);
-      const saved = await store.saveDraft(owner.owner, { draftId: owner.editable!.draftId, expectedStoreVersion: owner.editable!.storeVersion, text: 'Original target text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+      await store.saveDraft(owner.owner, { draftId: owner.editable!.draftId, expectedStoreVersion: owner.editable!.storeVersion, text: 'Original target text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
       await ready(f); f.client.setImageDraftAdmission(true, true); await f.client.imageDrafts.sync();
       expect(f.client.snapshot().draft.text).toBe('Original target text');
       const next = { ...f.s, sessionRevision: String(BigInt(f.s.sessionRevision) + 1n), identity: { ...f.s.identity, nativeSessionId: 'native-new' } };
@@ -210,8 +214,10 @@ describe('task session transport lifecycle', () => {
       const nextOwner = await store.openOwner(nextIdentity);
       await store.saveDraft(nextOwner.owner, { draftId: nextOwner.editable!.draftId, expectedStoreVersion: nextOwner.editable!.storeVersion, text: 'New target text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
       vi.mocked(f.api.command).mockImplementation(async (_id, command) => ({ protocol: command.protocol, ...sessionFence(command), operationId: command.operationId, kind: command.kind, state: 'provider_accepted', providerResult: null, error: null }));
-      const held = Promise.withResolvers<typeof saved>();
-      const read = phase === 'read' ? vi.spyOn(SessionDraftStore.prototype, 'readExisting').mockReturnValueOnce(held.promise) : null;
+      const reconcile = SessionDraftStore.prototype.reconcileAuthorizedOwner;
+      const read = phase === 'read' ? vi.spyOn(SessionDraftStore.prototype, 'reconcileAuthorizedOwner').mockImplementationOnce(async function (this: SessionDraftStore, ...args) {
+        const result = await reconcile.apply(this, args); entered.resolve(); await held.promise; return result;
+      }) : null;
       const replace = () => f.receive({ protocol: next.protocol, type: 'snapshot', userId, snapshot: next, cursor: 'next' });
       if (phase === 'resume') {
         const refresh = f.client.imageDrafts.refreshForSend;
@@ -222,16 +228,16 @@ describe('task session transport lifecycle', () => {
           queueMicrotask(() => queueMicrotask(replace));
         });
       }
-      const sending = (action === 'send' ? f.client.send('Original target text') : f.client.executeCommand('compact', '', '1', 'Original target text')).catch((error: unknown) => error);
+      sending = (action === 'send' ? f.client.send('Original target text') : f.client.executeCommand('compact', '', '1', 'Original target text')).catch((error: unknown) => error);
       if (read) {
-        await vi.waitFor(() => expect(read).toHaveBeenCalled()); replace();
-        await f.client.imageDrafts.sync(); expect(f.client.snapshot().draft.text).toBe('New target text'); held.resolve(saved);
+        await entered.promise; expect(read).toHaveBeenCalledWith(identity, expect.any(Function)); replace();
+        await f.client.imageDrafts.sync(); expect(f.client.snapshot().draft.text).toBe('New target text'); held.resolve();
       }
       await expect(sending).resolves.toMatchObject({ message: 'image_access_unavailable' });
       await f.client.imageDrafts.sync();
       expect(f.api.command).not.toHaveBeenCalled();
       expect((await store.readExisting(nextIdentity))?.editable?.text).toBe('New target text');
-    } finally { f.client.close(); await f.client.imageDrafts.close(); store.close(); }
+    } finally { held.resolve(); await sending; f.client.close(); await f.client.imageDrafts.close(); store.close(); }
   });
   it.each(['send_message', 'execute_command'] as const)('restores draft operation ownership for %s and applies a later original acceptance to the current gate', async kind => {
     const storage = window.sessionStorage; storage.clear();
