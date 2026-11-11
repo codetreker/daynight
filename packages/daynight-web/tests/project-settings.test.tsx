@@ -6,7 +6,9 @@ import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/
 import { getProject, saveProjectSettings } from "../src/api/project-settings";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import { ProjectSettingsPanel } from "../src/features/management/ProjectSettingsPanel";
-import { parseWarningDraft } from "../src/features/management/useProjectSettings";
+import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from "../src/features/projects/ProjectAccess";
+import { TaskCacheLifecycleChanged, TaskCacheScope } from "../src/features/task-cache/project-cache";
+import { parseWarningDraft, useProjectSettings } from "../src/features/management/useProjectSettings";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { wireResponse } from "./helpers/wireJson";
 
@@ -129,19 +131,18 @@ describe("project settings form", () => {
     expect(screen.getByLabelText("提醒阈值")).toBe(field); expect(document.activeElement).toBe(field); expect(field).toHaveValue(96);
   });
 
-  it("waits for identity and access revalidation before saving exactly once", async () => {
+  it("waits for fresh access before saving exactly once", async () => {
     const permission = deferred<Response>(); let holdPermission = false;
     const fetcher = install((url, init) => init.method === "PATCH" ? json(project(95, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
     mount(); await ready(); change("95");
     const field = screen.getByLabelText("提醒阈值"); field.focus();
     const initialProjectReads = fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/projects/${id}`) && !init.method).length;
-    const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
+    const initialAccessReads = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+    holdPermission = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(initialAccessReads));
     expect(screen.getByLabelText("提醒阈值")).toBe(field); expect(document.activeElement).toBe(field);
     const form = screen.getByRole("button", { name: "保存设置" }).closest("form")!;
     fireEvent.submit(form); fireEvent.submit(form);
-    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
-    resume();
-    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1));
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
     expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/projects/${id}`) && !init.method)).toHaveLength(initialProjectReads);
     await act(async () => permission.resolve(json(members())));
@@ -183,6 +184,25 @@ describe("project settings form", () => {
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
   });
 
+  it("cancels a save waiting for access when requests pause without dispatch or replay", async () => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(90, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    mount(); await ready(); change();
+    const before = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+    holdPermission = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(before));
+    submit(); expect(screen.getByRole("button", { name: "正在保存…" })).toBeDisabled();
+    const resume = pauseAuthRequests();
+    try {
+      await waitFor(() => expect(screen.queryByRole("button", { name: "正在保存…" })).toBeNull());
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+      expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
+      holdPermission = false; await act(async () => permission.resolve(json(members())));
+      resume(); await act(async () => { await Promise.resolve(); });
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+    } finally { resume(); }
+  });
+
   it("does not dispatch a queued save after its project generation ends", async () => {
     const permission = deferred<Response>(); let holdPermission = false;
     const fetcher = install((url, init) => init.method === "PATCH" ? json(project(90, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
@@ -209,21 +229,178 @@ describe("project settings form", () => {
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
   });
 
-  it("holds a dispatched settings receipt until identity and project access are confirmed", async () => {
-    const saving = deferred<Response>(), permission = deferred<Response>(); let holdPermission = false;
-    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+  it("resolves the original save promise while receipt publication is paused", async () => {
+    const saving = deferred<Response>();
+    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
+    let completion: Promise<void> | undefined;
+    const Probe = () => {
+      const state = useProjectSettings(id, userId, true, true);
+      return <><input aria-label="draft" value={state.draft} onChange={(event) => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? "pending" : "idle"}</span></>;
+    };
+    render(<ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary>);
+    await waitFor(() => expect(screen.getByLabelText("draft")).toHaveValue("60"));
+    fireEvent.change(screen.getByLabelText("draft"), { target: { value: "90" } }); fireEvent.click(screen.getByRole("button", { name: "submit" }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
+    const resolved = vi.fn(); void completion!.then(resolved);
+    const resume = pauseAuthRequests();
+    try {
+      await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+      await waitFor(() => expect(resolved).toHaveBeenCalledOnce());
+      expect(screen.getByText("idle")).toBeInTheDocument();
+      expect(screen.getByLabelText("draft")).toHaveValue("90");
+    } finally { resume(); }
+  });
+
+  it.each(["returned", "interrupted", "resumed-before-catch"] as const)("resumes receipt publication across scope admission: %s", async (admission) => {
+    const saving = deferred<Response>();
+    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
     mount(); await ready(); change(); submit();
-    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init.method === "PATCH")).toBe(true));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
+    let resume: (() => void) | undefined;
+    const originalReady = TaskCacheScope.prototype.ready;
+    const barrier = vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementationOnce(async function (this: TaskCacheScope, signal) {
+      await originalReady.call(this, signal);
+      resume = pauseAuthRequests();
+      if (admission === "resumed-before-catch") resume();
+      if (admission !== "returned") throw new TaskCacheLifecycleChanged();
+    });
+    try {
+      await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+      await waitFor(() => expect(resume).toBeDefined());
+      await waitFor(() => expect(screen.queryByRole("button", { name: "正在保存…" })).toBeNull());
+      if (admission === "resumed-before-catch") {
+        await waitFor(() => expect(screen.getByRole("button", { name: "取消" })).toBeDisabled());
+        expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
+      } else {
+        expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
+        change("110");
+        act(() => resume!());
+        await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
+        expect(screen.getByLabelText("提醒阈值")).toHaveValue(110);
+      }
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+    } finally { barrier.mockRestore(); resume?.(); }
+  });
+
+  it("waits for a new access check begun after the first fresh observation before dispatch", async () => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(90, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    let session: ProjectAccessSession;
+    let completion: Promise<void> | undefined;
+    const Probe = () => {
+      session = useProjectAccess(id).session;
+      const state = useProjectSettings(id, userId, true, true);
+      return <><input aria-label="draft" value={state.draft} onChange={(event) => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button></>;
+    };
+    render(<ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary>);
+    await waitFor(() => expect(screen.getByLabelText("draft")).toHaveValue("60"));
+    fireEvent.change(screen.getByLabelText("draft"), { target: { value: "90" } });
+    const before = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+    const originalReady = TaskCacheScope.prototype.ready;
+    const originalSnapshot = session!.snapshot;
+    const barrier = vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementationOnce(async function (this: TaskCacheScope, signal) {
+      await originalReady.call(this, signal);
+      session.snapshot = () => {
+        session.snapshot = originalSnapshot;
+        const observed = originalSnapshot();
+        holdPermission = true; void session.revalidate();
+        return observed;
+      };
+    });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "submit" }));
+      await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(before));
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+      holdPermission = false; await act(async () => permission.resolve(json(members("member"))));
+      await act(async () => completion);
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+      expect(screen.getByLabelText("draft")).toHaveValue("90");
+    } finally { barrier.mockRestore(); session!.snapshot = originalSnapshot; }
+  });
+
+  it("retains a newer draft when an unknown save is reconciled after a pause", async () => {
+    const saving = deferred<Response>(); let reads = 0;
+    const fetcher = install((url, init) => {
+      if (init.method === "PATCH") return saving.promise;
+      if (url.endsWith("/members")) return json(members());
+      reads++; return json(project(reads === 1 ? 60 : 90, reads === 1 ? 9_007_199_254_740_993n : 9_007_199_254_740_994n));
+    });
+    let completion: Promise<void> | undefined;
+    const Probe = () => {
+      const state = useProjectSettings(id, userId, true, true);
+      return <><input aria-label="draft" value={state.draft} onChange={(event) => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? "pending" : "idle"}</span><span>{state.uncertain ? "unknown" : "known"}</span></>;
+    };
+    render(<ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary>);
+    await waitFor(() => expect(screen.getByLabelText("draft")).toHaveValue("60"));
+    fireEvent.change(screen.getByLabelText("draft"), { target: { value: "90" } }); fireEvent.click(screen.getByRole("button", { name: "submit" }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
+    const resume = pauseAuthRequests();
+    try {
+      await act(async () => { saving.reject(new TypeError("response lost")); await completion; });
+      expect(screen.getByText("unknown")).toBeInTheDocument(); expect(screen.getByText("idle")).toBeInTheDocument();
+      const before = reads;
+      fireEvent.change(screen.getByLabelText("draft"), { target: { value: "110" } });
+      expect(reads).toBe(before);
+      resume();
+      await waitFor(() => expect(reads).toBeGreaterThan(before));
+      await waitFor(() => expect(screen.getByText("known")).toBeInTheDocument());
+      expect(screen.getByLabelText("draft")).toHaveValue("110");
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+    } finally { resume(); }
+  });
+
+  it("settles a confirmed save during a pause and preserves a newer draft when it publishes", async () => {
+    const saving = deferred<Response>(), permission = deferred<Response>(); let holdPermission = false, writes = 0, saved = false;
+    const fetcher = install((url, init) => {
+      if (init.method === "PATCH") return ++writes === 1 ? saving.promise : json(project(110, 9_007_199_254_740_995n));
+      return url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project(saved ? 90 : 60, saved ? 9_007_199_254_740_994n : 9_007_199_254_740_993n));
+    });
+    mount(); await ready(); change(); submit();
+    await waitFor(() => expect(writes).toBe(1));
+    const reads = fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/projects/${id}`) && !init.method).length;
     const resume = pauseAuthRequests(); holdPermission = true;
     fireEvent(window, new Event("focus"));
-    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+    await act(async () => { saved = true; saving.resolve(json(project(90, 9_007_199_254_740_994n))); });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "正在保存…" })).toBeNull());
     expect(screen.queryByText("设置已保存。")).toBeNull();
-    expect(screen.getByRole("button", { name: "正在保存…" })).toBeDisabled();
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
+    expect(screen.getByLabelText("提醒阈值")).toBeEnabled();
+    change("110");
+    expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/projects/${id}`) && !init.method)).toHaveLength(reads);
+    expect(writes).toBe(1);
     resume();
     await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1));
     expect(screen.queryByText("设置已保存。")).toBeNull();
-    await act(async () => permission.resolve(json(members())));
+    holdPermission = false; await act(async () => permission.resolve(json(members())));
     await screen.findByText("设置已保存。");
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(110);
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
+    submit();
+    await waitFor(() => expect(writes).toBe(2));
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")[1]![1].body).toBe('{"version":9007199254740994,"executionWarningMinutes":110}');
+  });
+
+  it.each([new TypeError("response lost"), new DOMException("network cancelled", "AbortError")])("settles a dispatched unknown save after %s without automatically reading or replaying", async (failure) => {
+    const saving = deferred<Response>(), permission = deferred<Response>(); let holdPermission = false, reads = 0;
+    const fetcher = install((url, init) => {
+      if (init.method === "PATCH") return saving.promise;
+      if (url.endsWith("/members")) return holdPermission ? permission.promise : json(members());
+      reads++; return json(project(reads === 1 ? 60 : 90, reads === 1 ? 9_007_199_254_740_993n : 9_007_199_254_740_994n));
+    });
+    mount(); await ready(); change(); submit();
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
+    const initialReads = reads;
+    const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
+    await act(async () => saving.reject(failure));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "正在保存…" })).toBeNull());
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
+    expect(reads).toBe(initialReads);
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+    resume();
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1));
+    holdPermission = false; await act(async () => permission.resolve(json(members())));
+    await screen.findByText(/已读取当前保存设置/);
+    expect(reads).toBeGreaterThan(initialReads);
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
   });
 
