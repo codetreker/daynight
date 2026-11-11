@@ -498,7 +498,9 @@ Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
 property values use `valueText`. Task and Step reads default to marked
-summaries; request `full` for complete content. Step page cursors bind the parent
+summaries; request `full` for complete content. Task full and summary schemas
+require `type` and nullable `parentId`; the Goal full schema also describes
+`progress`. Current public Task writes create ordinary tasks only. Step page cursors bind the parent
 version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete
@@ -1297,15 +1299,15 @@ records these proof owners and the distinct read/completion behavior.
 
 ### Business rules and DAO mocks
 
-The [test-writing rules](../../docs/writing_tests.md) define the dependency
-boundary of each test. Core tests execute business rules over constructed domain
-facts and narrow `core/store` DAO, scope or transaction mocks. Service tests
-execute their own assembly, orchestration, transaction coordination and shared
-resource lifetime, mocking directly invoked core and other lower business
-operations. They also control DAO, scope, transaction and external-resource
-calls made by the service itself. Server units execute the real HTTP adapter
-with directly invoked service or core use case mocks. DAO-only mocks that still
-execute lower business decisions do not isolate service or server behavior.
+The [test-writing rules](../../docs/writing_tests.md) choose component boundaries
+by behavior and total cost. Core tests execute business rules over constructed
+domain facts and required controlled dependencies. Service tests execute their
+own assembly, orchestration, transaction coordination and shared resource
+lifetime; Server tests execute the real HTTP adapter. Inexpensive, deterministic
+Service and Core collaborators may remain real. Control only the capability
+needed for expensive or unpredictable dependencies or precise outcomes, errors,
+blocking and cancellation. Go tests live with their tested object; consider splitting files
+by cohesive responsibility after about 1000 lines and consolidate small helpers.
 
 Check exact principal, IDs, inputs, context, transaction-bound capabilities,
 expected calls and order, results and error chains. Service transaction callbacks
@@ -1315,9 +1317,9 @@ resources while executing production construction, wiring and the real lifetime
 mechanism under test. Shared types and pure data remain ordinary values, and pure/protocol
 code executes at its owner. Store tests own physical database mechanisms; API
 integration tests own representative normal assembled flows. Unconfigured access
-must fail immediately. Unit selections must execute without
-`DAYNIGHT_TEST_DATABASE_URL`; database isolation alone does not establish the
-direct operation boundary.
+must fail immediately. Selections designed without a database must execute
+without `DAYNIGHT_TEST_DATABASE_URL`; real database mechanisms use an isolated
+PostgreSQL instance.
 
 The regular `internal/server/task` suite uses direct Task, Step and Thread
 service mocks plus Search and Sync operations. It exercises production routing,
@@ -1708,10 +1710,12 @@ construction; its Service, Core, Capturer and Store receivers retain lower
 coordination, rules and persistence proofs. Other DAO/scope fixtures supply fixed
 domain records, query results, proposed writes, call counts and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
-state. The complete ordinary root selection executes with
-`DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
-SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
-pinned auth fixture as described in [validation](#validate).
+state. Configuration validation and startup ordering live with Config and App;
+`internal/server/webui` owns the static route and request-log matrix. Root retains
+actual `New` route composition, API protection and representative shell and asset
+wiring. Tests of UniAuth result/browser binding and SDK wire loss retain their
+isolated gateway, real proxy and sockets; prepare the pinned auth fixture as
+described in [validation](#validate).
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and

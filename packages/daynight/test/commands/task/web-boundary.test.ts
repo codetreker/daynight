@@ -12,7 +12,7 @@ const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 const dependentId = "cccccccc-3333-4333-8333-333333333333";
 const time = "2026-10-20T00:00:00.123456Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: dependentId, version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const json = (body: unknown, status = 200) => new Response(stringifyApiJson(body), { status, headers: { "Content-Type": "application/json" } });
 const cleanups: (() => void)[] = [];
 afterEach(() => { cleanups.splice(0).forEach((cleanup) => cleanup()); });
@@ -58,12 +58,12 @@ describe("task CLI protocol outcomes", () => {
   });
 
   it("reports a dependency refusal and rejects an invalid status before dispatch", async () => {
-    const f = fixture(() => json({ error: { code: "dependency_unsatisfied", message: "Dependent task is active.", requestId: "dependency-refused", details: { taskIds: [dependentId] } } }, 409));
+    const f = fixture((_url, init) => init.method === "GET" ? json(task) : json({ error: { code: "dependency_unsatisfied", message: "Dependent task is active.", requestId: "dependency-refused", details: { taskIds: [dependentId] } } }, 409));
     expect(await f.run(["set-status", taskId, "todo", "--if-version", "9007199254740993", "--project", projectId])).toBe(1);
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stderr.mock.calls[0]![0]).toContain("dependency_unsatisfied");
     expect(f.context.stderr.mock.calls[0]![0]).toContain(dependentId);
-    expect(f.fetch).toHaveBeenCalledTimes(2);
-    expect(f.fetch.mock.calls[1]![1]!.body).toBe('{"version":9007199254740993,"status":"todo"}');
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.fetch.mock.calls[2]![1]!.body).toBe('{"version":9007199254740993,"status":"todo"}');
     f.context.stderr.mockClear(); f.fetch.mockClear();
     expect(await f.run(["set-status", taskId, "unknown", "--project", projectId])).toBe(2);
     expect(f.context.stderr.mock.calls[0]![0]).toContain('Unknown status "unknown"');

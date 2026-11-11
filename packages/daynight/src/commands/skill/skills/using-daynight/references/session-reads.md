@@ -6,6 +6,9 @@ or resume Agents, take control, change claims or alter Task state.
 
 ## Observations
 
+Goals have Session registration `not_applicable`; this is a complete observation,
+not a partial failure.
+
 Ordinary `task list`, `task show` and `task graph` include a versioned `session`,
 not history. Identify it by owning Project, Task and platform `sessionId`, never
 Provider `nativeSessionId`. Registration, execution generation, connection epoch,

@@ -113,6 +113,8 @@ Task 包含以下持久化字段：
 |---|---|
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
+| `type` | 必填资源类型；当前公开创建只产生 `task` |
+| `parentId` | 必填、可空的父资源 UUID；当前公开创建为 null，公开写入不接受此字段 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
 | `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
@@ -124,6 +126,8 @@ Task 包含以下持久化字段：
 | `createdAt`、`updatedAt` | UTC 创建和最后实际变更时间 |
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
+
+完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。现有公开写入口不接受 `type` 或 `parentId`，不产生 Goal。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
 

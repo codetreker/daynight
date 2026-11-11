@@ -1,8 +1,7 @@
-package server
+package webui
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,24 +11,33 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 )
 
 const uiTestShell = "<html><body>server test shell</body></html>\n"
-
 const uiTestScriptPath = "/assets/app-12345678.js"
 
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = handler.(Handler).Shutdown(context.Background()) })
-	return httpx.RequestLogging(logger, handler)
+	mux := http.NewServeMux()
+	New(testUIResources()).RegisterRoutes(mux, logger)
+	return httpx.RequestLogging(logger, mux)
+}
+
+func projectRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	request.Header.Set("X-Request-ID", "project-test")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	testsupport.AssertProjectError(t, response, status, code)
 }
 
 func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
@@ -86,8 +94,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
 	} {
 		response := projectRequest(handler, http.MethodGet, target, "")
-		assertProjectError(t, response, http.StatusNotFound, "not_found")
-		if strings.Contains(response.Body.String(), "<html") {
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "<html") {
 			t.Fatalf("unknown path returned SPA HTML: %s", target)
 		}
 	}
@@ -218,44 +225,7 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	}
 }
 
-func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
-	f := newTaskHTTPFixture(t)
-	path := taskCollection(f.project.ID) + "/" + f.target.ID
-	graph := graphPath(f.project.ID, f.target.ID)
-	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + f.project.ID, "/api/v1/projects/" + f.project.ID + "/members", taskCollection(f.project.ID), path, graph} {
-		switch target {
-		case "/api/v1/projects":
-			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "list", nil, nil)
-		case "/api/v1/projects/" + f.project.ID:
-			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "project", nil, nil)
-		case "/api/v1/projects/" + f.project.ID + "/members":
-			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
-		case taskCollection(f.project.ID):
-			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{f.target}}})
-		case path:
-			f.expectRead(f.target)
-		case graph:
-			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}})
-		}
-		response := projectRequest(f.handler, http.MethodGet, target, "")
-		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
-			t.Fatalf("UI registration changed API response: %s %d %+v", target, response.Code, response.Header())
-		}
-		if (target == path || target == graph) && response.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("latest task read may be cached: %s %+v", target, response.Header())
-		}
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project.ID+"/members", nil)
-	request.Header.Set("X-Request-ID", "project-test")
-	response := httptest.NewRecorder()
-	f.handler.ServeHTTP(response, request)
-	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
-	if response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
-		t.Fatal("member API must retain authenticated JSON behavior")
-	}
-}
-
-func TestUITestSessionDeepLinkLoadsShellWithoutAuthorizingData(t *testing.T) {
+func TestUITestSessionDeepLinkLoadsShell(t *testing.T) {
 	handler := uiTestHandler(t, io.Discard)
 	request := func(method, path string) *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
@@ -283,13 +253,9 @@ func TestUITestSessionDeepLinkLoadsShellWithoutAuthorizingData(t *testing.T) {
 			t.Fatal("unknown route became SPA", unknown, response.Code)
 		}
 	}
-	// Public shell loading leaves the authenticated Test Session API protected.
-	if response := request(http.MethodGet, "/api/v1/test-sessions/10000000-0000-0000-0000-000000000001"); response.Code != http.StatusUnauthorized {
-		t.Fatal("anonymous data access", response.Code)
-	}
 }
 
-func TestTestSessionListShellKeepsAPIProtected(t *testing.T) {
+func TestTestSessionListShell(t *testing.T) {
 	handler := uiTestHandler(t, io.Discard)
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		response := httptest.NewRecorder()
@@ -304,7 +270,7 @@ func TestTestSessionListShellKeepsAPIProtected(t *testing.T) {
 	for _, target := range []struct {
 		method, path string
 		status       int
-	}{{http.MethodPost, "/test-sessions", http.StatusMethodNotAllowed}, {http.MethodGet, "/api/v1/test-sessions", http.StatusUnauthorized}} {
+	}{{http.MethodPost, "/test-sessions", http.StatusMethodNotAllowed}} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(target.method, target.path, nil))
 		if response.Code != target.status {
@@ -313,7 +279,7 @@ func TestTestSessionListShellKeepsAPIProtected(t *testing.T) {
 	}
 }
 
-func TestUIAssistantDirectLoadAndReloadKeepAPIProtected(t *testing.T) {
+func TestUIAssistantDirectLoadAndReload(t *testing.T) {
 	handler := uiTestHandler(t, io.Discard)
 	request := func(method, path string) *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
@@ -347,10 +313,24 @@ func TestUIAssistantDirectLoadAndReloadKeepAPIProtected(t *testing.T) {
 			t.Fatalf("unknown assistant route became SPA: %s %d", path, response.Code)
 		}
 	}
-	for _, path := range []string{"/api/v1/me/bots", "/api/v1/me/bots/10000000-0000-0000-0000-000000000001"} {
-		response := request(http.MethodGet, path)
-		if response.Code != http.StatusUnauthorized || response.Header().Get("Content-Type") != "application/json" {
-			t.Fatalf("assistant API lost authentication: %s %d", path, response.Code)
+}
+
+func TestDevicePageRoutingAndSafeLog(t *testing.T) {
+	var logs bytes.Buffer
+	handler := uiTestHandler(t, &logs)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		w := projectRequest(handler, method, "/device?user_code=BCDFG-HJKLM", "")
+		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+			t.Fatalf("device page routing: %d", w.Code)
 		}
+	}
+	if strings.Contains(logs.String(), "BCDFG-HJKLM") {
+		t.Fatal("device code leaked through page request log")
+	}
+	if w := projectRequest(handler, http.MethodPost, "/device", ""); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("device page accepted write: %d", w.Code)
+	}
+	if w := projectRequest(handler, http.MethodGet, "/device/extra", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("device page routing overlap: %d", w.Code)
 	}
 }

@@ -23,7 +23,7 @@ func platformHTTPCheck(t *testing.T, actual, expected any) {
 
 func platformHTTPValues(task model.Task) store.TaskWrite {
 	task = copyTaskHTTPTask(task)
-	return store.TaskWrite{AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform, AllowAgents: task.AllowAgents,
+	return store.TaskWrite{Type: task.Type, ParentID: task.ParentID, AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform, AllowAgents: task.AllowAgents,
 		Title: task.Title, Description: task.Description, Properties: task.Properties, Status: task.Status,
 		DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn}
 }
@@ -35,7 +35,7 @@ func platformHTTPAPI(task model.Task) api.Task {
 		value := string(*task.RequiredPlatform)
 		platform = &value
 	}
-	return api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
+	return api.Task{ID: task.ID, Type: task.Type, ParentID: task.ParentID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
 		Status: string(task.Status), Properties: api.TaskProperties(task.Properties), Version: task.Version,
 		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, StartedAt: task.StartedAt, CompletedAt: task.CompletedAt, CancelledAt: task.CancelledAt,
 		DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn, BlockedBy: task.BlockedBy,
@@ -240,7 +240,7 @@ func platformHTTPStatus(f *taskHTTPFixture, before model.Task, to model.TaskStat
 
 func platformHTTPProjection(row model.Task) model.GraphTask {
 	row = copyTaskHTTPTask(row)
-	return model.GraphTask{ID: row.ID, TitlePreview: row.Title, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy,
+	return model.GraphTask{ID: row.ID, Type: row.Type, ParentID: row.ParentID, TitlePreview: row.Title, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy,
 		AllowAgents: row.AllowAgents, RequiredPlatform: row.RequiredPlatform, AssignedTo: row.AssignedTo, Ready: row.Ready,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt}
 }

@@ -3,6 +3,8 @@ package model
 import "time"
 
 type GraphTask struct {
+	Type              TaskType
+	ParentID          *string
 	Version           int64
 	ID                string
 	TitlePreview      string

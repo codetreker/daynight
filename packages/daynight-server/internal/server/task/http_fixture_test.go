@@ -38,7 +38,7 @@ func testPrincipal() model.Principal {
 
 func testTask(title string) model.Task {
 	return model.Task{
-		ID: testTaskID, ProjectID: testProjectID, Title: title,
+		ID: testTaskID, Type: model.TaskTypeTask, ProjectID: testProjectID, Title: title,
 		Description: "Task-owned Markdown", Properties: model.TaskProperties{},
 		Status: model.TaskTodo, Version: 1, CreatedAt: testTime, UpdatedAt: testTime,
 		DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true,

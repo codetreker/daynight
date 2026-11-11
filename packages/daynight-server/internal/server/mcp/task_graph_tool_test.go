@@ -23,7 +23,8 @@ func (s *graphStub) Graph(_ context.Context, p model.Principal, _, _ string) (mo
 }
 
 func TestGraphToolCompleteProjectionAndErrors(t *testing.T) {
-	reader := &graphStub{graph: model.TaskGraph{Summary: model.TaskGraphSummary{Total: 1, Proposed: 1}, Tasks: []model.GraphTask{{Status: model.TaskProposed, ID: "task", TitlePreview: "title", TitleTruncated: true, DependsOn: []string{"dependency"}}}}}
+	parent := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	reader := &graphStub{graph: model.TaskGraph{Summary: model.TaskGraphSummary{Total: 1, Proposed: 1}, Tasks: []model.GraphTask{{Type: model.TaskTypeTask, ParentID: &parent, Status: model.TaskProposed, ID: "task", TitlePreview: "title", TitleTruncated: true, DependsOn: []string{"dependency"}}}}}
 	actor := RequestActor{Principal: model.Principal{UserID: "caller"}, RequestID: "request"}
 	result, err := graphTool(context.Background(), actor, graphInput{DependsOnly: true}, reader)
 	if err != nil {
@@ -33,6 +34,10 @@ func TestGraphToolCompleteProjectionAndErrors(t *testing.T) {
 	node := graph.Tasks[0].(dependencyNode)
 	if graph.Summary.Proposed != 1 || graph.Summary.Total != 1 || graph.Projection != "summary" || node.ID != "task" || len(node.DependsOn) != 1 || reader.actor.UserID != "caller" {
 		t.Fatalf("result: %#v", graph)
+	}
+	encodedNode, err := json.Marshal(node)
+	if err != nil || string(encodedNode) != `{"id":"task","dependsOn":["dependency"],"externalDependsOn":[]}` {
+		t.Fatalf("dependency projection: %s %v", encodedNode, err)
 	}
 	for i := 1; i < 70; i++ {
 		reader.graph.Tasks = append(reader.graph.Tasks, model.GraphTask{ID: fmt.Sprint(i), TitlePreview: "title"})
@@ -45,6 +50,18 @@ func TestGraphToolCompleteProjectionAndErrors(t *testing.T) {
 		data := result.Data.(graphData)
 		if data.Tasks[0].(graphNode).TitleTruncated != true || len(data.Tasks) != 70 || data.ReturnedNodes != 70 || data.TotalNodes != 70 {
 			t.Fatalf("complete graph: %#v", data)
+		}
+		typed := data.Tasks[0].(graphNode)
+		if typed.Type != model.TaskTypeTask || typed.ParentID == nil || *typed.ParentID != parent {
+			t.Fatalf("typed graph node: %+v", typed)
+		}
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil || fields["type"] != "task" || fields["parentId"] != parent {
+			t.Fatalf("typed graph JSON: %s %v", raw, err)
 		}
 		encoded, err := json.Marshal(envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}})
 		if err != nil || len(encoded) <= 16<<10 {

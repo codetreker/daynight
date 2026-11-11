@@ -16,6 +16,7 @@ export type AttachmentPreviewState = {
 export type AttachmentKeyboardOwner = {
   readonly root: RefObject<HTMLElement | null>;
   readonly onEscape: () => void;
+  readonly isActive?: () => boolean;
 };
 
 type AttachmentPreviewProps = {
@@ -55,6 +56,7 @@ const TrustedFrame = ({ url, title, keyboardOwner }: { readonly url: string; rea
         release();
         if (event.defaultPrevented) return;
         const currentOwner = owner.current!;
+        if (currentOwner.root.current === null || currentOwner.isActive?.() === false) return;
         if (event.key === 'Escape') {
           event.preventDefault();
           currentOwner.onEscape();

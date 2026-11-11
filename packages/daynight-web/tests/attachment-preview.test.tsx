@@ -102,6 +102,22 @@ describe('attachment preview', () => {
     expect(onEscape).toHaveBeenCalledTimes(2);
   });
 
+  it('yields iframe keys while a child layer owns the keyboard', () => {
+    const rootRef = createRef<HTMLElement>();
+    const onEscape = vi.fn();
+    let active = false;
+    const file = attachment('index.html', 'text/html');
+    render(<section ref={rootRef}><AttachmentPreview attachment={file} preview={ready} url={`${root}index.html`} previewRoot={root} onRetry={vi.fn()} keyboardOwner={{ root: rootRef, onEscape, isActive: () => active }} /></section>);
+    const frame = screen.getByTitle('HTML 预览：index.html') as HTMLIFrameElement;
+    fireEvent.load(frame);
+    expect(fireEvent.keyDown(frame.contentDocument!, { key: 'Escape' })).toBe(true);
+    expect(fireEvent.keyDown(frame.contentDocument!, { key: 'Tab' })).toBe(true);
+    expect(onEscape).not.toHaveBeenCalled();
+    active = true;
+    expect(fireEvent.keyDown(frame.contentDocument!, { key: 'Escape' })).toBe(false);
+    expect(onEscape).toHaveBeenCalledOnce();
+  });
+
   it('handles empty frames within the owner and leaves unowned frames to the browser', () => {
     const ownerRoot = createRef<HTMLElement>();
     const file = attachment('index.html', 'text/html');

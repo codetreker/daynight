@@ -57,7 +57,7 @@ func newWriteWitness(t *testing.T, method string, outcome store.TransactionOutco
 		prepareCreate: func(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite) (taskcore.Mutation, error) {
 			f.prepare("create", ctx, dao)
 			parsed, err := uuid.Parse(id)
-			want := store.TaskWrite{Title: "Unwritten task", Status: model.TaskTodo, Properties: model.TaskProperties{}, DependsOn: []string{}, ExternalDependsOn: []string{}}
+			want := store.TaskWrite{Type: model.TaskTypeTask, Title: "Unwritten task", Status: model.TaskTodo, Properties: model.TaskProperties{}, DependsOn: []string{}, ExternalDependsOn: []string{}}
 			if err != nil || parsed.String() != id || parsed.Version() != 4 || !reflect.DeepEqual(values, want) {
 				t.Fatalf("PrepareCreate arguments changed: id=%q values=%#v want=%#v", id, values, want)
 			}

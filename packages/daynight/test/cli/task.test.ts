@@ -19,9 +19,9 @@ const thirdId = "b1b2c3d4-1111-4222-8333-123456789abe";
 const accountId = "a1b2c3d4-1111-4222-8333-123456789abe";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
+const task = (partial: Partial<Task> = {}): Task => ({ type: "task", parentId: null, id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
 const taskListItem = (value: Task) => withTaskObservation({
-  id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
+  type: value.type, parentId: value.parentId, id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
   status: value.status, allowAgents: value.allowAgents, assignedTo: value.assignedTo, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, cancelledAt: value.cancelledAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
   dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
 });
@@ -29,7 +29,7 @@ const graph = (): TaskGraph => ({
   observedAt: time,
   project,
   summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
-  tasks: [{ id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }],
+  tasks: [{ type: "task", parentId: null, id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }],
 });
 const taskPath = `/api/v1/projects/${projectId}/tasks`;
 const projectPath = `/api/v1/projects/${projectId}`;
@@ -520,7 +520,7 @@ describe("compiled task commands", () => {
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout).toBe(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
         expect(requests.slice(before).map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([
-          `GET ${projectPath}`, ...(version === undefined ? [`GET ${taskPath}/${taskId}`] : []), `DELETE ${taskPath}/${taskId}`,
+          `GET ${projectPath}`, `GET ${taskPath}/${taskId}`, `DELETE ${taskPath}/${taskId}`,
         ]);
         expect(requests.at(-1)!.bodyText).toBe(`{"version":${version === undefined ? current.version : version}${removeDepends ? ",\"removeDepends\":true" : ""}}`);
       }
@@ -553,7 +553,7 @@ describe("compiled task commands", () => {
         expect(result.stdout).toContain(`Version: ${expectedVersion}`);
         expect(result.stdout).toContain("Description: Status details");
         expect(result.stdout).toContain("Required platform: windows");
-        expect(requests.slice(before).map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, ...(explicitVersion ? [] : [`GET ${taskPath}/${taskId}`]), `PUT ${taskPath}/${taskId}/status`]);
+        expect(requests.slice(before).map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, `GET ${taskPath}/${taskId}`, `PUT ${taskPath}/${taskId}/status`]);
         expect(requests.at(-1)!.body).toEqual({ version, status });
         expect(requests.at(-1)!.bodyText).toBe(`{"version":${version},"status":"${status}"}`);
       }
@@ -930,9 +930,9 @@ describe("compiled task commands", () => {
       const conflict = await f.invoke(["set-status", taskId, "done", "--if-version", "9223372036854775807", ...explicit]);
       expect(conflict.code).toBe(1); expect(conflict.stdout).toBe("");
       expect(conflict.stderr).toContain("version_conflict"); expect(conflict.stderr).toContain("task-version-conflict");
-      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, `PUT ${taskPath}/${taskId}/status`]);
-      expect(requests[1]!.bodyText).toContain('"version":9223372036854775807');
-      expect(requests[1]!.body).toEqual({ version: 9_223_372_036_854_775_807n, status: "done" });
+      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, `GET ${taskPath}/${taskId}`, `PUT ${taskPath}/${taskId}/status`]);
+      expect(requests[2]!.bodyText).toContain('"version":9223372036854775807');
+      expect(requests[2]!.body).toEqual({ version: 9_223_372_036_854_775_807n, status: "done" });
 
       requests.length = 0; refusal = "dependencies";
       const rejected = await f.invoke(["update", taskId, "--if-version", "2", "--depends-on", thirdId, "--depends-on", secondId, ...explicit]);

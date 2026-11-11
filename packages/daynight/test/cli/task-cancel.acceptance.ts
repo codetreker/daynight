@@ -23,7 +23,7 @@ it("cancels through both installed native launchers and reconciles an unknown re
   const principal = "cccccccc-3333-4333-8333-333333333333";
   const time = "2026-11-06T00:00:00.123456789Z";
   const cancelledAt = "2026-11-07T00:00:00.987654321Z";
-  const original: Task = {
+  const original: Task = { type: "task", parentId: null,
     id: taskId, projectId, title: "  Existing <result&> 中文😀  ", description: "# Preserved\n\nTask materials",
     properties: { pullRequests: [{ url: "opaque", title: "Existing result" }] }, status: "done", allowAgents: true,
     requiredPlatform: "windows", assignedTo: principal, version: 9_007_199_254_740_993n,
@@ -111,7 +111,7 @@ it("cancels through both installed native launchers and reconciles an unknown re
       expect(result.code, result.stderr).toBe(0); expect(result.stderr).toBe("");
       expect(result.stdout).toContain("Status: cancelled"); expect(result.stdout).toContain(`Cancelled at: ${cancelledAt}`);
       expect(current).toEqual({ ...original, status: "cancelled", cancelledAt, updatedAt: cancelledAt, version: original.version + 1n });
-      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PUT"]);
+      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
       expect(requests.at(-1)!.body).toEqual({ version: original.version, status: "cancelled" });
       const version = current.version;
       const same = await invoke(launcher, cancel(version));
@@ -126,6 +126,18 @@ it("cancels through both installed native launchers and reconciles an unknown re
       expect(rejected.code).toBe(1); expect(rejected.stdout).toBe(""); expect(rejected.stderr).toContain("invalid_transition:");
       expect(current).toBe(active);
     }
+    for (const launcher of [receipt.launcherPath, alias]) {
+      mode = "write";
+      current = { ...original, type: "goal", status: "todo", allowAgents: false, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, ready: false, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
+      const before = requests.length;
+      const refused = await invoke(launcher, cancel(current.version));
+      expect(refused.code).toBe(1); expect(refused.stderr).toContain("automatic claims");
+      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "GET"]);
+      const accepted = await invoke(launcher, [...cancel(current.version), "--force"]);
+      expect(accepted.code, accepted.stderr).toBe(0); expect(accepted.stdout).toContain("Status: cancelled");
+      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "GET", "GET", "GET", "PUT"]);
+      expect(requests.at(-1)!.body).toEqual({ version: original.version, status: "cancelled" });
+    }
     mode = "write";
     current = { ...original, status: "todo", startedAt: null, completedAt: null, cancelledAt: null, ready: true, properties: { ...original.properties, worker } };
     const released = await invoke(receipt.launcherPath, cancel(current.version));
@@ -139,6 +151,7 @@ it("cancels through both installed native launchers and reconciles an unknown re
     expect(read.code, read.stderr).toBe(0); expect(parseApiJson(read.stdout)).toEqual(withTaskObservation(current));
     expect(requests.slice(beforeUnknown).map(({ method, path }) => ({ method, path }))).toEqual([
       { method: "GET", path: `/api/v1/projects/${projectId}` },
+      { method: "GET", path: resourcePath },
       { method: "PUT", path: `${resourcePath}/status` },
       { method: "GET", path: `/api/v1/projects/${projectId}` },
       { method: "GET", path: `${resourcePath}?include=session` },

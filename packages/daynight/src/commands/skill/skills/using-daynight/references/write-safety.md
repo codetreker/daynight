@@ -28,10 +28,16 @@ Before Task metadata, status, property or deletion decisions, read
 version source. Submit it with `--if-version`; reread before the next change.
 
 Where omission supports a pre-submission read, it fetches the latest version
-immediately before writing; failure prevents the write. It cannot protect an earlier decision;
+before writing; failure prevents the write. It cannot protect an earlier decision;
 commands requiring an explicit version have no default. On conflict, reread and
 reassess content, dependencies and authorization. Never substitute a newer
 version to replay the old decision.
+
+Task status/deletion commands always read target type and identity, even with
+`--if-version` or `--force`. This read retains the caller's exact supplied version;
+omission uses the observed version. Failed identity/type reads prevent writing.
+The read can precede a Goal confirmation prompt; it does not refresh an earlier
+decision's version. See [Goal impact confirmation](tasks.md#status-and-timing).
 
 ## Uncertain results
 

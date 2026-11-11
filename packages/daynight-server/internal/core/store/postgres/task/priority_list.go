@@ -47,7 +47,7 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	default:
 		return store.TaskPriorityPage{}, fmt.Errorf("invalid assignment")
 	}
-	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, left(t.title,513), octet_length(t.title)>512, t.status, t.version,
+	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.type, t.parent_id::text, left(t.title,513), octet_length(t.title)>512, t.status, t.version,
  t.created_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskReady+`,
  `+pg.TaskBlockedCount+`
  FROM tasks t WHERE t.project_id=$1 AND t.deleted_at IS NULL
@@ -63,7 +63,7 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	for rows.Next() {
 		var item store.TaskPriorityItem
 		t := &item.Task
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Title, &item.TitleTruncated, &t.Status, &t.Version, &t.CreatedAt, &t.AllowAgents, &t.RequiredPlatform, &t.AssignedTo, &t.Ready, &item.BlockedByCount); err != nil {
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Type, &t.ParentID, &t.Title, &item.TitleTruncated, &t.Status, &t.Version, &t.CreatedAt, &t.AllowAgents, &t.RequiredPlatform, &t.AssignedTo, &t.Ready, &item.BlockedByCount); err != nil {
 			rows.Close()
 			return store.TaskPriorityPage{}, pg.QueryError("list priority tasks", err)
 		}

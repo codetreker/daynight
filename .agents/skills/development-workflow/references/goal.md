@@ -1,6 +1,8 @@
 # Goal protocol
 
-A Goal expresses a multi-stage objective through ordinary tasks, attachments, dependencies, and PR properties without adding resources, commands, or statuses.
+The Goal workflow organizes a multi-stage objective through ordinary tasks,
+attachments, dependencies and PR properties. It adds no workflow-specific
+resources, commands or statuses.
 Follow [create task](create-task.md) for creation, the [task content standard](task-content.md) for material, and [authorization and scope](authorization.md) for operational permissions.
 This file covers only stage progression and Goal-specific requirements.
 

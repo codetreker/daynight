@@ -113,7 +113,7 @@ func ScanProject(row pgx.Row) (model.Project, error) {
 	return project, err
 }
 
-const TaskProjection = `t.id::text, t.project_id::text, t.title, t.description,
+const TaskProjection = `t.id::text, t.project_id::text, t.type, t.parent_id::text, t.title, t.description,
 	t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, ` + TaskDependsOn + `, ` + TaskExternalDependsOn + `, ` + TaskBlockedBy + `, ` + TaskReady
 
 const TaskDependsOn = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
@@ -139,7 +139,7 @@ const TaskReady = `(t.status = 'todo' AND NOT EXISTS (
 
 func ScanTask(row pgx.Row, trailing ...any) (model.Task, error) {
 	var task model.Task
-	destinations := []any{&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Status,
+	destinations := []any{&task.ID, &task.ProjectID, &task.Type, &task.ParentID, &task.Title, &task.Description, &task.Status,
 		&task.Version, &task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready}
 	err := row.Scan(append(destinations, trailing...)...)
 	if err != nil {

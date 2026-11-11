@@ -1,6 +1,6 @@
 # Test-Writing Rules
 
-Assign tests by the behavior they prove. CLI, Web and Go each own their module's normal behavior, boundaries, errors and concurrency guarantees. Go server unit tests mock the directly invoked service or core use case. Go service unit tests mock the directly invoked core and other lower business operations while executing their own assembly, orchestration and shared-resource lifetime. Go core unit tests execute business rules with controlled DAO dependencies. Store contract unit tests construct inputs directly; DAO implementation tests verify real PostgreSQL. Go API integration and independent product E2E tests cover representative normal flows only.
+Assign tests by the behavior they prove. CLI, Web and Go each own their module's normal behavior, boundaries, errors and concurrency guarantees. Choose Go component boundaries by the behavior and cost: retain inexpensive, deterministic real Handler, Service and Core collaborators when useful, and control narrow dependencies when cost or exact outcomes, errors, timing or cancellation require it. Store contract unit tests construct inputs directly; DAO implementation tests verify real PostgreSQL. Go API integration and independent product E2E tests cover representative normal flows only.
 
 This document owns test responsibilities, dependency boundaries and migration conditions. `docs/development.md` and module READMEs own executable commands, environment requirements and CI configuration. The directories and entry points specified here are organizational requirements; verify their actual implementation, runners and CI selection through source and execution results.
 
@@ -11,15 +11,15 @@ This document owns test responsibilities, dependency boundaries and migration co
 | CLI module tests | Arguments, configuration, request construction, output, client state, error handling and local mechanisms | Controlled product API responses; real resources when testing local mechanisms |
 | Installed CLI tests | Packaging, installation, bundled resources, command entry points, runtime and platform compatibility | Real installed packages on Linux, Windows and macOS ARM64; controlled fixtures for product HTTP services |
 | Web module tests | Components, interactions, state, caching, response handling, asynchronous races and browser behavior | Controlled product API responses; frontend-only fixtures when a real browser is required |
-| Go server unit tests | Routing, HTTP request parsing, argument propagation, response encoding, error mapping, protocol authentication and request lifetime, including boundaries, errors and races | Mock the directly invoked service or core use case, with controlled identity dependencies; execute the real HTTP adapter without a real database |
-| Go service unit tests | Cross-module orchestration, dependency assembly, transaction coordination and shared-resource lifetime, including call order, errors and completion outcomes | Mock directly invoked core and other lower business operations, plus the service's required DAO, scope, transaction and external-resource boundaries; no real database |
-| Go core unit tests | Module business rules, permissions, state transitions and operations, including boundaries, errors and races | Synthetic domain data and required DAO mocks for data-access results; no real database |
+| Go server unit tests | Routing, HTTP request parsing, argument propagation, response encoding, error mapping, protocol authentication and request lifetime, including boundaries, errors and races | Execute the real HTTP adapter with inexpensive real collaborators or controlled capabilities as the behavior requires; avoid unrelated application setup |
+| Go service unit tests | Cross-module orchestration, dependency assembly, transaction coordination and shared-resource lifetime, including call order, errors and completion outcomes | Execute real coordination and inexpensive collaborators; control the narrow operations, DAO, scope, transaction or resources needed for the scenario |
+| Go core unit tests | Module business rules, permissions, state transitions and operations, including boundaries, errors and races | Synthetic domain data and controlled DAO dependencies where needed; real mechanisms when those are the subject |
 | Go store contract unit tests | Database-independent interface capabilities, pure functions and error contracts | Directly constructed inputs; no database or concrete driver dependency |
 | Go store implementation tests | SQL, mapping, persistence, constraints, locks, snapshots, transactions and migrations, including boundaries, errors and concurrency guarantees | An isolated real PostgreSQL instance; DAO mocks cannot replace database mechanisms |
 | Go API integration tests | Normal feature flows through a fully assembled Go Server | A real Go Server process, HTTP requests and isolated PostgreSQL, driven sequentially by Go HTTP clients |
 | Product E2E | Normal flows connecting the complete CLI, Web, Server and persistence | Linux only; build the complete Server, CLI and production Web from the same source revision and run them with real PostgreSQL in an isolated environment |
 
-Using real HTTP, a browser, a database or a subprocess does not itself make a test product E2E. Browser layout tests with controlled API responses belong to Web; PostgreSQL lock and transaction tests belong to Go store implementations. Ownership follows the behavior being proved and the dependency restrictions of that layer.
+Using real HTTP, a browser, a database or a subprocess does not itself make a test product E2E. Browser layout tests with controlled API responses belong to Web; PostgreSQL lock and transaction tests belong to Go store implementations. Ownership follows the behavior being proved. Use real SQL, filesystem, SDK, socket, authentication protocol and resource lifetimes when their mechanisms are the subject.
 
 A "real database" means a PostgreSQL instance actually started inside an isolated test environment. That environment owns preparation, bounded readiness and cleanup, including the data directory and connection configuration. Do not connect to an existing development, shared or production database. Separate schemas inside a shared instance do not satisfy this environment-isolation requirement.
 
@@ -27,7 +27,7 @@ A "real database" means a PostgreSQL instance actually started inside an isolate
 
 CLI, Web and Go must verify complete behavior in their unit and owned mechanism tests, including applicable normal operations, invalid input, capacity boundaries, permission refusals, timeouts, cancellation, version conflicts, concurrency and recovery. Go API integration and product E2E cover normal flows, without taking over these boundary, fault or race matrices.
 
-Place assertions with the implementation that can explain their failure. Tests may use several packages in the same product module, but must respect their layer's dependency restrictions. Mocks control collaborators outside the tested responsibility; they cannot replace the parsing, encoding, timing, I/O or resource-lifetime mechanism under test. Pure functions use directly constructed inputs, without extra dependencies introduced merely to support mocks.
+Place assertions with the implementation that can explain their failure. Go tests belong in the same package and directory as the object under test, normally in `xxx_test.go` for `xxx.go`; consider splitting by cohesive responsibility when a file exceeds about 1000 lines, and consolidate small helpers by responsibility. Choose collaborators from the behavior and total preparation, execution and cleanup cost, rather than treating each layer as a mandatory mock boundary. Mocks cannot replace the parsing, encoding, timing, I/O or resource-lifetime mechanism under test. Pure functions use directly constructed inputs, without extra dependencies introduced merely to support mocks.
 
 ### CLI
 
@@ -43,7 +43,7 @@ Web module tests do not start Go Server, prepare PostgreSQL or install CLI. Web 
 
 ### Go server
 
-Follow the server organization rules in `docs/daynight-server.md`. Server unit tests execute production routing, request parsing, DTO conversion, response encoding and error mapping. Configure return values, domain errors, completion outcomes and controlled blocking at the service or core use case directly invoked by the handler. Mocking only DAO access while running real service/core decisions does not isolate the HTTP adapter's responsibility. Ordinary handler fixtures assemble the adapter and its controlled collaborators, without starting unrelated modules or registering unrelated protocols to obtain fixed results.
+Follow the server organization rules in `docs/daynight-server.md`. Server tests execute production routing, request parsing, DTO conversion, response encoding and error mapping. Keep inexpensive and deterministic real Service or Core collaborators when they support the proof; control the narrow capability needed for expensive or nondeterministic dependencies, or for precise outcomes, errors, blocking and cancellation. Fixtures assemble only relevant collaborators, without starting unrelated modules or registering unrelated protocols to obtain fixed results.
 
 Verify exact propagation of principal, canonical IDs, input, protocol headers and context, including call counts and required order. Protocol refusals must verify that the lower business operation was not called. Normal domain results and refusals separately verify HTTP status, headers, response content, log classification and redaction. Core or service tests own the business rules themselves.
 
@@ -55,11 +55,11 @@ Exact HTTP input and server-owned response envelopes and newlines must pass thro
 
 ### Go service and core
 
-Service unit tests execute production dependency assembly, cross-module orchestration, transaction coordination and shared-resource lifetime. Mock the core operations and other lower business operations directly invoked by the service, supplying explicit domain results, refusals, failures and controlled blocking. Mocking only DAO access while executing real core business decisions does not isolate the service's responsibility. Required DAO, scope, transaction and external-resource calls made by the service itself also use controlled dependencies.
+Service tests execute production dependency assembly, cross-module orchestration, transaction coordination and shared-resource lifetime. Retain inexpensive deterministic Core collaborators where useful; control the narrow operation, DAO, scope, transaction or external resource needed to supply precise results, refusals, failures or blocking. Do not copy lower business decisions into a fixture or treat a mock as persisted state.
 
 Verify exact propagation of principal, resource IDs, inputs, context and transaction-bound capabilities, including call counts and required order. Control an earlier operation's failure or refusal and verify required subsequent calls or their absence, the returned result and retained error chain. Service tests own the coordination decision; the invoked core operation owns its business-rule matrix.
 
-Transaction coordination tests execute the service's actual callback through DAO, scope and transaction mocks. Verify that the callback supplies the correct capabilities and context to mocked lower operations. Configure operation results, transaction completion and cleanup errors independently, and verify completion precedence, result suppression and retained error chains. A mock must not infer transaction completion from callback execution or proposed writes.
+Transaction coordination tests execute the service's actual callback through DAO, scope and transaction mocks. Verify that the callback supplies the correct capabilities and context to mocked lower operations. When controlled, configure operation results, transaction completion and cleanup errors independently, and verify completion precedence, result suppression and retained error chains. A mock must not infer transaction completion from callback execution or proposed writes.
 
 Assembly and lifecycle tests execute the production construction and wiring under test with controlled collaborators and external-resource boundaries. Verify dependency identity, readiness, cleanup after partial startup, background-operation exit, resource retention and that dependency users stop before their resources close. Runtime, transport and resource-lifetime proofs retain the real resources needed to observe those mechanisms. Constructing a replacement application can hide production wiring defects; running lower business workflows to obtain fixed domain data goes beyond the assembly responsibility.
 
@@ -69,7 +69,7 @@ Shared models, domain errors and directly constructed values remain normal data.
 
 Mocks implement only the capabilities needed by the current test. Unconfigured or extra calls must fail the test, including independently reported background calls followed by cancellation and drain. Callback execution, proposed write arguments and `committed`, `not_committed` or `unknown` outcomes remain separate. A recorded write is not persistence, and an unknown outcome cannot be interpreted as rollback. Do not mock SQL strings or build a complete in-memory PostgreSQL substitute.
 
-These unit tests must not connect to a real database or start PostgreSQL to obtain fixed domain data. Selected core, service and server units must actually execute with `DAYNIGHT_TEST_DATABASE_URL` unset; skipped tests and default empty results do not establish isolation. Database isolation alone does not establish the direct operation boundary. Ordinary Task HTTP and MCP `TestMain` entries clear database and UniAuth fixture variables before running their complete suites, so full Go validation cannot lend these protocol packages infrastructure intended for other owners. The separate Task HTTP stress entry does not use its ordinary `TestMain`. Pure logic without data-access dependencies needs no DAO mock.
+Do not start PostgreSQL or a complete application merely to obtain fixed domain data when a simpler deterministic fixture suffices. Tests of real database mechanisms use an isolated PostgreSQL instance. Scenarios designed to avoid a database must actually execute with `DAYNIGHT_TEST_DATABASE_URL` unset; skipped tests and default empty results do not establish isolation. Ordinary Task HTTP and MCP `TestMain` entries clear database and UniAuth fixture variables before running their complete suites, so full Go validation cannot lend these protocol packages infrastructure intended for other owners. The separate Task HTTP stress entry does not use its ordinary `TestMain`. Pure logic without data-access dependencies needs no DAO mock.
 
 ### Go store and process mechanisms
 
@@ -107,7 +107,7 @@ Evaluate scenarios and assertions individually, not by filename, database use or
 - Normal Task status progression and basic successful Step, discussion and attachment reads and writes.
 - A small normal dataset for filtering, pagination or dependency reads verifies the fully assembled request path.
 
-Split tests mixing normal flows with boundaries, refusals, conflicts, races, faults, cancellation or response loss by proof responsibility. Normal flows may move to API integration; protocol assertions use server mocks, business rules remain in core/service, actual SQL, transactions, locks and persistence faults remain in store, and process faults remain with their runtime owner. Stress and capacity workloads use independent entries.
+Split tests mixing normal flows with boundaries, refusals, conflicts, races, faults, cancellation or response loss by proof responsibility. Normal flows may move to API integration; protocol assertions remain with their server owner, business rules remain in core/service, actual SQL, transactions, locks and persistence faults remain in store, and process faults remain with their runtime owner. Stress and capacity workloads use independent entries.
 
 Before migration, identify the final owner of every unique guarantee and preserve valuable input, assertions and fault detection. Similar test names or passing coverage do not establish equivalent proof. Do not expand every normal branch into an integration matrix or duplicate the same rule matrix in API integration and product E2E.
 
@@ -147,8 +147,8 @@ Do not expand these flows into boundary, refusal, expiry, conflict, race, fault-
 | Guarantee | Owner |
 |---|---|
 | CLI sends the correct version and reports a conflict accurately | CLI module test with controlled HTTP responses |
-| Server encodes a service version conflict as HTTP 409 | Go server unit test with a mocked service result and real error mapping |
-| Server rejects an invalid body without invoking business work | Go server unit test with real parsing and mock-call assertions |
+| Server encodes a service version conflict as HTTP 409 | Go server test with a controlled service result and real error mapping |
+| Server rejects an invalid body without invoking business work | Go server test with real parsing and a call assertion |
 | Core rejects a version mismatch or unauthorized operation | Go core unit test with DAO-controlled data and results |
 | Service preserves a core error chain and completes its scope correctly | Go service unit test with a mocked core operation and independently controlled scope/transaction outcomes |
 | Service binds the same dependency to users and closes it after they stop | Go service assembly/lifecycle test executing production wiring with controlled collaborator and resource boundaries |
@@ -179,4 +179,4 @@ Use observable conditions, controlled clocks or synchronization barriers suited 
 
 Stress, capacity and performance workloads use separate local commands. Ordinary CI unit, integration and product E2E suites do not execute stress cases; bounded deterministic concurrency tests remain module validation.
 
-Choose validation from affected behavior and dependencies. Mocked server, service and core units cannot prove database mechanisms or complete API connectivity. Store tests cannot replace upper rules or protocols; normal API flows cannot replace module/store boundaries and concurrency; product normal flows cannot replace these layered guarantees.
+Choose validation from affected behavior and dependencies. Controlled server, service and core tests cannot prove database mechanisms or complete API connectivity. Store tests cannot replace upper rules or protocols; normal API flows cannot replace module/store boundaries and concurrency; product normal flows cannot replace these layered guarantees.

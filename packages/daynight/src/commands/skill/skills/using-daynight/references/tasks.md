@@ -16,10 +16,16 @@ daynight task ready --limit 20 --json
 daynight task show <task-id> --json
 ```
 
-Creation accepts only `--status proposed|todo`: default proposed is an unconfirmed
+Ordinary Task creation accepts only `--status proposed|todo`: default proposed is an unconfirmed
 suggestion; todo is confirmed work, including internal multi-step Tasks. Defaults
 are the signed-in assignee and automatic execution disabled; override assignment
 with `--assigned-to <user-uuid>`. Creation returns text, not `--json`.
+
+Task resources require `type` (`task` or `goal`) and nullable `parentId`.
+Ordinary creation produces `type=task` with no parent; public creation/update
+options expose neither field. Full Goal reads include
+`progress:{total,done,cancelled,unfinished}`; counts are nonnegative integers and
+done+cancelled+unfinished=total. Ordinary Tasks have no progress object.
 
 | Read | Scope/output |
 | --- | --- |
@@ -57,7 +63,9 @@ Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents` and
 `--compatible-platform`, not `--all`; it traverses all pages in server relevance
 order. Matches/chain
 context are compact, not full Tasks. Text/JSON omit assignee and update time;
-JSON fields are id, projectId, title, status, cancelledAt, context and match.
+JSON fields are id, type, parentId, projectId, title, status, cancelledAt, context
+and match. Search text also displays Type and Parent; context still describes
+the independent task chain.
 Any failure, including `search_changed`, leaves stdout empty; search again after
 changes.
 
@@ -93,6 +101,19 @@ assignedTo as UUID/null; text shows UUID/unassigned.
 daynight task set-status <task-id> in_progress --if-version <observed-version>
 daynight task set-status <task-id> done --if-version <observed-version>
 ```
+
+Goals support todo, in_progress, done and cancelled and can be reopened. They
+have no parent, platform restriction or prerequisites; automatic execution is
+disabled and they are never ready.
+
+Without `--force`, before a Goal is set to done/cancelled, the CLI warns on stderr that child Task
+states remain, new automatic claims are excluded and existing claims continue.
+Goal terminal-status changes and deletion require interactive confirmation or
+`--force`; noninteractive calls without force do not submit. Force skips only
+the Goal prompt, preserving service business/version checks. Ordinary Tasks and
+nonterminal Goal status changes do not prompt.
+
+The following lifecycle and timing rules describe ordinary Tasks.
 
 | Status | Meaning |
 | --- | --- |
@@ -161,11 +182,13 @@ unique across options, including equivalent UUID forms. Omit both to preserve;
 dependency options for unrelated metadata changes; direct API partial-patch
 semantics do not establish CLI preservation.
 
+Graph nodes are ordinary Tasks, retaining parentId; Goal resources are not nodes.
 Graph includes every status in the full bidirectional ordinary component plus
 one layer of members' external prerequisites; external Tasks are not expanded.
 Nodes omit full descriptions, PR properties and exact versions. Limits fail,
 never truncate. `--depends-only --json` preserves that Task set but returns only
-id, dependsOn and externalDependsOn; references may point outside it. After edits,
+id, dependsOn and externalDependsOn; references may point outside it. Unavailable
+prerequisites remain IDs without invented nodes or exposed details. After edits,
 read relevant graphs/outside paths to verify full D/E and classification. An
 absent graph node does not prove a missing dependency.
 
@@ -198,9 +221,15 @@ daynight task delete <task-id> --if-version <observed-version>
 daynight task delete <task-id> --remove-depends --if-version <observed-version>
 ```
 
-Soft deletion hides the Task from ordinary lists, graphs, ready and detail reads,
-retaining stored data, its own prerequisites and attachment bytes. It is status-
-independent, not completion. Active Worker claims always block it; use authorized
+Goal deletion uses the [Goal impact confirmation](#status-and-timing) above. Its
+confirmation warns that the Goal and all its Tasks become invisible, membership remains,
+and running Tasks stop through the existing process after a subsequent successful
+observation. `--remove-depends` applies only to ordinary Tasks.
+
+For ordinary Tasks, soft deletion hides the Task from ordinary lists, graphs,
+ready and detail reads, retaining stored data, its own prerequisites and
+attachment bytes. It is status-independent, not completion. Active Worker claims
+always block it; use authorized
 release, not a status change.
 
 Any undeleted dependent blocks default deletion. Explicitly authorized

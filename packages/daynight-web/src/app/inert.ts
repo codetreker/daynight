@@ -8,7 +8,10 @@ export const acquireInert = (element: HTMLElement): (() => void) => {
   }
   ownership.count++;
   element.setAttribute('inert', '');
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     ownership.count--;
     if (ownership.count === 0) {
       if (!ownership.original) element.removeAttribute('inert');

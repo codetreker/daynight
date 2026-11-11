@@ -5,6 +5,8 @@ import (
 )
 
 type TaskWrite struct {
+	Type              model.TaskType
+	ParentID          *string
 	AssignedTo        *string
 	RequiredPlatform  *model.TaskPlatform
 	AllowAgents       bool

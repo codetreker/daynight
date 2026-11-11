@@ -37,7 +37,7 @@ func workerHTTPProperties(t *testing.T, before model.TaskProperties, worker *mod
 }
 
 func workerHTTPWriteValues(task model.Task) store.TaskWrite {
-	return copyTaskHTTPWrite(store.TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status,
+	return copyTaskHTTPWrite(store.TaskWrite{Type: task.Type, ParentID: task.ParentID, Title: task.Title, Description: task.Description, Status: task.Status,
 		AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform, AllowAgents: task.AllowAgents,
 		Properties: task.Properties, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn})
 }
