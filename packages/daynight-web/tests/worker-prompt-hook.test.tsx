@@ -5,14 +5,17 @@ import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/
 import * as promptApi from '../src/api/worker-prompts';
 import { PROMPT_REQUEST_BYTES, promptSubmissionBytes } from '../src/api/worker-prompts';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
+import { ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { useWorkerPrompt } from '../src/features/worker-prompts/useWorkerPrompt';
+import { directAccessFixture } from './helpers/taskSync';
 
 const project = vi.hoisted(() => ({ current: null as null | {
   snapshot: () => { status: string; refreshing: boolean };
   subscribe: (listener: () => void) => () => void;
   waitForFreshAccess: (signal: AbortSignal) => Promise<object | null>;
 } }));
-vi.mock('../src/features/projects/ProjectAccess', () => ({ useProjectAccessSession: () => project.current }));
+vi.mock('../src/features/projects/ProjectAccess', async importOriginal => ({ ...await importOriginal<typeof import('../src/features/projects/ProjectAccess')>(), useProjectAccessSession: () => project.current }));
 
 const userId = '11111111-1111-4111-8111-111111111111';
 const projectId = '22222222-2222-4222-8222-222222222222';
@@ -167,6 +170,23 @@ describe('prompt editor lifecycle', () => {
     resume(); await flush();
     expect(result.current.write).toBe('idle'); expect(result.current.resource?.text).toBe('submitted');
     expect(result.current.draft).toBe('newer'); expect(result.current.dirty).toBe(true); expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it('retries a nested project access lifecycle interruption for the confirmed receipt', async () => {
+    const instance = scope(), session = new ProjectAccessSession(projectId, instance);
+    session.publishMutation(directAccessFixture(projectId, userId)); const cleanup = session.start(false);
+    project.current = session;
+    const ready = instance.ready.bind(instance); let calls = 0, resume!: () => void;
+    vi.spyOn(instance, 'ready').mockImplementation(async signal => {
+      if (++calls === 8) { resume = pauseAuthRequests(); throw new TaskCacheLifecycleChanged(); }
+      await ready(signal);
+    });
+    const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old', 'project'))).mockResolvedValueOnce(response(value('2', 'saved', 'project'))); vi.stubGlobal('fetch', fetch);
+    const { result, unmount } = renderHook(() => useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: true }), { wrapper: wrapper(instance) });
+    await flush(); act(() => result.current.edit('saved')); await act(async () => result.current.save()); await flush();
+    expect(calls).toBeGreaterThanOrEqual(8); expect(result.current.write).toBe('confirmed'); expect(result.current.pending).toBe(false); expect(result.current.resource?.text).toBe('old');
+    act(() => result.current.edit('newer')); resume(); await flush();
+    expect(result.current.write).toBe('idle'); expect(result.current.resource?.text).toBe('saved'); expect(result.current.draft).toBe('newer'); expect(fetch).toHaveBeenCalledTimes(2);
+    unmount(); cleanup();
   });
   it('retains a receipt when pause interrupts its delivery to the save caller', async () => {
     const fetch = vi.fn().mockResolvedValue(response(value('1', 'old'))); vi.stubGlobal('fetch', fetch);

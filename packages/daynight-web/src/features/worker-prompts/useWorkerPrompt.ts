@@ -57,7 +57,12 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
           throw error;
         }
         if (access !== null) {
-          const allowed = await abortable(access.waitForFreshAccess(signal, requireActive), signal);
+          let allowed;
+          try { allowed = await abortable(access.waitForFreshAccess(signal, requireActive), signal); }
+          catch (error) {
+            if (error instanceof TaskCacheLifecycleChanged && alive() && !signal.aborted) continue;
+            throw error;
+          }
           if (allowed === null) {
             const snapshot = access.snapshot();
             if (snapshot.status === 'unavailable') throw new ApiError('server', 404, 'not_found');
