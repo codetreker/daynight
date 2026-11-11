@@ -324,6 +324,47 @@ absence of a short-lived process or identify a signal sender by itself. The
 [termination diagnostics decision](../.agents/notes/implemented/testing/2026-11-05-native-test-termination-diagnostics.md)
 describes the evidence limits and collection cost.
 
+The macOS observer enables `--signal-intents` for its command subtree. This
+prepends `scripts/signal-intents.cjs` to `NODE_OPTIONS`, retaining the existing
+options and their preload order. Loading first captures native diagnostic I/O
+before test isolation or other preloads wrap it; test code continues to use the
+normal isolation guards. The observer and its native probes are not instrumented.
+Each Node process or worker thread that loads the preload writes a separate
+JSONL file under `signals/` in the same artifact. A bootstrap records PID, PPID,
+thread ID, a random startup token, executable basename, Node version and installed
+hooks. These records establish coverage; absence of a bootstrap does not prove
+that a process made no signal requests.
+
+Before `process.kill` or `ChildProcess.prototype.kill` executes, the preload
+synchronously records its API, sender identity, target, supplied signal and bounded
+call sites. The original receiver and arguments are forwarded exactly once, with
+the original return or exception. Numeric targets and signals and recognized
+signal names retain their values; other argument values retain only their type.
+Child targets are read only from a non-Proxy receiver's own data property.
+Call sites use Node's public `util.getCallSites` with source maps disabled,
+without invoking `Error.prepareStackTrace`. No signal handlers, process-group
+changes, retries or termination guards are installed. An intent records a request,
+not delivery or target termination; self-SIGKILL can prevent any later output.
+
+Each process/thread file admits at most 1,024 normal events and 256 KiB including
+one reserved truncation event. An event is at most 16 KiB; each encoded call-site
+file or function field is at most 512 bytes, with a visible truncation suffix.
+Up to ten call sites remain after removing two instrumentation frames; a full
+capture marks its frame limit. Budget exhaustion explicitly stops further
+diagnostic records while signal calls continue. A file-write failure emits one
+bounded stderr notice and disables that file; if stderr is also unavailable,
+no diagnostic sink remains. Total artifact size depends on the number of covered
+processes and threads, rather than a shared cross-process byte quota.
+
+Explicitly removed preload/environment, replaced hooks, non-Node programs,
+native signal calls, external processes and kernel termination remain outside
+this coverage. The absence of a matching intent cannot establish an external
+sender or OOM.
+Synchronous recording adds execution time and does not preserve exact scheduling.
+The [signal intent decision](../.agents/notes/implemented/testing/2026-11-11-node-signal-intents.md)
+owns these trade-offs. A later successful CI run does not explain an earlier
+unattributed SIGKILL.
+
 Ordinary CLI Vitest runs retain Vitest's default reporter selection, including
 GitHub Actions annotations, and add `scripts/vitest-failure-reporter.ts`.
 Failed tests, suite hooks and module

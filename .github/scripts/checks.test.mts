@@ -131,7 +131,7 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
   assert.match(failures, /^          retention-days: 30$/m);
 });
 
-const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
+const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
 const stepsOf = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
 
 const selectsPlatform = (step: string, platform: string): boolean => {

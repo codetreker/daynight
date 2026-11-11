@@ -26,8 +26,11 @@ cannot prove that the run is still active before its final summary.
 The macOS ARM64 entry in the ordinary `verify` matrix executes its unchanged
 test command under
 [`observe-native-validation.mjs`](../../../../packages/daynight/scripts/observe-native-validation.mjs).
-The observer inherits the command's stdio and environment, records its PID and
-exit code or signal, and propagates failure. It does not change suite selection,
+The observer inherits the command's stdio, preserves its existing environment,
+records its PID and exit code or signal, and propagates failure. The
+[Node signal intent decision](2026-11-11-node-signal-intents.md) adds an opt-in
+preload to the macOS command subtree while retaining the existing Node options.
+It does not change suite selection,
 Vitest concurrency or test deadlines. The
 [independent macOS validation decision](2026-11-07-independent-macos-cli-validation.md)
 owns the shared native matrices and their ten-minute job limit. Conditional
@@ -96,7 +99,10 @@ introduction, inherited preloads and broad lifecycle instrumentation could not
 identify native or kernel signals. Passive OS observations and termination
 logs supplied the first missing evidence with less intrusion. The added
 reporter consumes already delivered framework errors only; it complements
-those observations without claiming signal attribution.
+those observations without claiming signal attribution. Repeated unattributed
+termination after successful passive collection motivates the later bounded
+[public-API signal recorder](2026-11-11-node-signal-intents.md); native and kernel
+sources remain outside its coverage.
 
 **Rely on the final Vitest summary or JSON report.** These outputs can disappear
 when a later test or the entire job remains active until cancellation. Appending
