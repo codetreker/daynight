@@ -12,8 +12,10 @@ errors would hide a persistent holder and abandon owned resources.
 
 ## Decision
 
-`tool-executables.test.ts` owns a local root-removal function. Each attempt calls
-`rm` with `recursive: true`, `force: true`, and `maxRetries: 0`. Only `EBUSY`
+`test/helpers/tool-fixture-cleanup.ts` owns the root-removal function shared by
+`tool-executables.test.ts` and `tool-launchers.test.ts`. Both suites execute
+copied native tools and await this cleanup after disposing their operations.
+Each attempt calls `rm` with `recursive: true`, `force: true`, and `maxRetries: 0`. Only `EBUSY`
 permits another attempt: at most three retries wait 100, 200, and 300 milliseconds.
 Other failures and the last exhausted error are thrown unchanged. The 600
 milliseconds bounds scheduled waiting per root, not filesystem execution or
@@ -30,6 +32,7 @@ return before pending filesystem cleanup completes and remains a failure.
 The [tool-resolution decision](../architecture/2026-11-11-worker-tool-path-resolution.md)
 owns the production selection and identity rules.
 
+The cleanup tests in `tool-executables.test.ts` exercise the shared helper.
 Controlled filesystem failures verify the root retry limit, delay sequence,
 unchanged final error, and immediate propagation of other errors. Windows-only
 controls copy the current Node executable into an isolated fixture and use a
