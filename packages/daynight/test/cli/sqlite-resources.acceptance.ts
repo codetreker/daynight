@@ -62,7 +62,7 @@ const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 3, ["executions", "orchestration_blockers"]],
-  ["commands/controller/journal-format.js", "controllerJournalFormat", 8, ["content_index", "execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox"]],
+  ["commands/controller/journal-format.js", "controllerJournalFormat", 9, ["content_index", "execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
 const versions = [];
@@ -79,5 +79,5 @@ for (const [module, name, version, tables] of owners) {
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 3, 8, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 3, 9, 1]);
 });
