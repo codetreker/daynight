@@ -310,6 +310,7 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     return () => lifetime.abort();
   }, [active, pending, hasHeldInvitation, access.session]);
   const heldRouteChecked = useRef(false);
+  const [heldGrantReady, setHeldGrantReady] = useState(false);
   const refreshAfterGrant = () => {
     if (controller.current === null) return;
     grantPublicationController.current?.abort();
@@ -322,45 +323,53 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     })();
   };
   const releaseHeldGrant = (current: ReturnType<typeof access.session.snapshot>['access']) => {
-    if (!activeRef.current || authRequestsPaused() || access.session.scope.isInvalidated) return;
-    if (hasHeldGrant && current !== null && heldGrant.current !== null) {
+    if (!activeRef.current || !route.current.onRoute || authRequestsPaused() || access.session.scope.isInvalidated) return;
+    if (hasHeldGrant && heldGrant.current !== null && (current !== null || heldGrant.current.selfLoss)) {
       const held = heldGrant.current; heldGrant.current = null; setHasHeldGrant(false);
+      setHeldGrantReady(false);
       if (ownsDialog(held.owner)) setDialog(null);
       setReceipt(held.receipt); callbacks.current.onMembershipChange?.();
-      refreshAfterGrant();
+      if (held.selfLoss) {
+        publishMembers(null); publishInvitations(null); setUnavailable(true);
+        if (current !== null) { setUnavailable(false); refreshAfterGrant(); }
+      } else refreshAfterGrant();
     }
   };
   useEffect(() => {
     heldRouteChecked.current = false;
-    if (!active || pending || !hasHeldGrant) return;
+    if (!hasHeldGrant) return;
     const lifetime = new AbortController();
     const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
     void (async () => {
       try {
-        await access.session.scope.ready(signal);
+        do { await access.session.scope.ready(signal); signal.throwIfAborted(); } while (authRequestsPaused());
         const held = heldGrant.current;
-        if (held === null) return;
+        if (signal.aborted || held === null) return;
         if (held.receipt.lostAccess) access.session.scope.suspendProject(projectId);
         await abortable(checkAccessAfterMutation(), signal);
-        const current = await abortable(access.session.waitForFreshAccess(signal), signal);
-        if (signal.aborted || !activeRef.current) return;
-        if (held.selfLoss) {
-          heldGrant.current = null; setHasHeldGrant(false);
-          if (ownsDialog(held.owner)) setDialog(null);
-          setReceipt(held.receipt); callbacks.current.onMembershipChange?.();
-          publishMembers(null); publishInvitations(null); setUnavailable(true);
-          if (current !== null && controller.current !== null) { setUnavailable(false); refreshAfterGrant(); }
-          return;
-        }
-        heldRouteChecked.current = true; releaseHeldGrant(current);
+        await abortable(access.session.waitForFreshAccess(signal), signal);
+        if (signal.aborted || heldGrant.current !== held) return;
+        heldRouteChecked.current = true; setHeldGrantReady(true);
       } catch (failure) { if (!signal.aborted && !isAbortError(failure)) setError(failure); }
     })();
     return () => { lifetime.abort(); heldRouteChecked.current = false; };
-  }, [active, pending, hasHeldGrant, access.session]);
+  }, [hasHeldGrant, access.session]);
   useEffect(() => {
-    if (!active || pending || !heldRouteChecked.current || !access.ready) return;
-    releaseHeldGrant(access.access);
-  }, [active, pending, access.ready, hasHeldGrant]);
+    if (!active || !onRoute || pending || !heldGrantReady || !heldRouteChecked.current || !access.ready && heldGrant.current?.selfLoss !== true) return;
+    const lifetime = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
+    const held = heldGrant.current;
+    void (async () => {
+      try {
+        do { await access.session.scope.ready(signal); signal.throwIfAborted(); } while (authRequestsPaused());
+        if (!activeRef.current || !route.current.onRoute || heldGrant.current !== held || !heldRouteChecked.current) return;
+        const current = access.session.snapshot();
+        if (held?.selfLoss !== true && (current.status !== 'ready' || current.refreshing)) return;
+        releaseHeldGrant(current.status === 'ready' && !current.refreshing ? current.access : null);
+      } catch (failure) { if (!signal.aborted && !isAbortError(failure)) setError(failure); }
+    })();
+    return () => lifetime.abort();
+  }, [active, onRoute, pending, access.ready, heldGrantReady, hasHeldGrant]);
   const grantBlocked = grantIssue !== null && !grantIssue.observed;
   const participantIdentity = (member: ProjectParticipant) => ({ ...member.profile, userId: member.userId });
   const open = (next: MemberDialog) => { if ((next.kind === 'role' || next.kind === 'remove') && grantIssueRef.current !== null && !grantIssueRef.current.observed) return; setDialogError(null); setDialog(next); void access.session.revalidate(); };

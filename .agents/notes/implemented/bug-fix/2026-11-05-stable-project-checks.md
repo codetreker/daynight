@@ -30,7 +30,10 @@ revision prevents an old receipt from clearing a newer edit. Project membership
 operations record actual dispatch and trusted receipts separately from publication.
 Their local pending state ends without waiting for presentation admission; the
 panel owns cancellable publication and checks the original dialog and navigation
-context before destructive effects.
+context before destructive effects. A confirmed loss of the actor's Project
+access withdraws shared admission and starts access revalidation after scope
+admission even when the member page is inactive; presentation still waits for
+the owning page.
 Confirmed revocation and real failures retain their existing handling. The
 [transfer decision](../feature/2026-11-05-web-project-transfer.md) owns the
 receipt and unknown-result semantics.
