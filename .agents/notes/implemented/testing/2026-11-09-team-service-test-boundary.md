@@ -63,7 +63,7 @@ Each independent proof remains with its implementation owner:
 |---|---|
 | [Team service](../../../../packages/daynight-server/internal/service/team/) | Admission/scope order, exact operation inputs and capabilities, snapshot/write completion, result contracts and eligibility orchestration |
 | [Core Team lifecycle](../../../../packages/daynight-server/internal/core/team/lifecycle_test.go), [read pages](../../../../packages/daynight-server/internal/core/team/read_page_test.go) and [invitation pages](../../../../packages/daynight-server/internal/core/team/invitation_page_test.go) | Permission, personal/nonempty deletion, version/name priority, complete no-op results and int64 limits, last-admin removal, page scope, invitation state and clock sampling after the invitation lock; forbidden downstream calls fail |
-| [Identity personal-Team lookup](../../../../packages/daynight-server/internal/service/identity/personal_team_id_test.go) and [core personal Team](../../../../packages/daynight-server/internal/core/team/personal_test.go) | `PersonalTeamID` ownership facts and personal-Team bootstrap/integrity, separate from Team service orchestration |
+| [Identity personal-Team lookup](../../../../packages/daynight-server/internal/service/identity/operations_test.go) and [core personal Team](../../../../packages/daynight-server/internal/core/team/personal_test.go) | `PersonalTeamID` ownership facts and personal-Team bootstrap/integrity, separate from Team service orchestration |
 | [Core Webhook eligibility](../../../../packages/daynight-server/internal/core/webhook/eligibility_test.go) | Orphaned subscribed-Project eligibility errors abort refresh, preserve the cause and do not revoke authorization |
 | [PostgreSQL Team scopes](../../../../packages/daynight-server/internal/core/store/postgres/team_test.go), [members](../../../../packages/daynight-server/internal/core/store/postgres/team_members_test.go) and [invitations](../../../../packages/daynight-server/internal/core/store/postgres/team_invitations_test.go) | Actual waiting transactions read current actor/AdminCount and invitation consume/revoke facts; member addition and failed consume roll back together, with a subsequent same-token write and fresh readback; orphan eligibility failure rolls back Team-member removal with fresh membership and subscription state/epoch readback |
 | [PostgreSQL Team query contracts](../../../../packages/daynight-server/internal/core/store/postgres/team/query_contract_test.go), [invitation contracts](../../../../packages/daynight-server/internal/core/store/postgres/team/invitation_contract_test.go) and [eligibility](../../../../packages/daynight-server/internal/core/store/postgres/eligibility/eligibility_test.go) | Exact raw Unicode metadata and joined page facts, invitation metadata and the current expiry field after an invitation lock wait, orphan selection and real SQL error causes |
@@ -76,8 +76,8 @@ representative normal flows through the assembled server. Team rule and storage
 matrices remain with their module owners. Public behavior, supported inputs,
 production time defaults and validation gates retain their existing contracts.
 
-The [Go dependency decision](2026-11-08-go-test-dependency-boundaries.md) owns the
-common direct-operation policy. The [service guide](../../../../packages/daynight-server/README.md#team-service-tests)
+The [component test ownership decision](2026-11-11-go-component-test-ownership.md)
+owns the common boundary selection rule. The [service guide](../../../../packages/daynight-server/README.md#team-service-tests)
 owns the focused command and environment requirements.
 
 ## Alternatives

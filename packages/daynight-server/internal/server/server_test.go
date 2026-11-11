@@ -3,15 +3,78 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
+
+type Dependencies struct {
+	Store store.Transactions
+	Ready func(context.Context) error
+	Files filestorage.Storage
+}
+
+func newTestHandler(d Dependencies, c config.Config, logger *slog.Logger) (http.Handler, error) {
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	client, err := service.NewIdentityClient(c)
+	if err != nil {
+		return nil, err
+	}
+	return New(service.NewModules(c, d.Store, d.Ready, d.Files, client), c, logger)
+}
+
+type resourceTestHandler struct {
+	http.Handler
+	token     string
+	principal model.Principal
+}
+
+func resourceTestServer(t *testing.T, database store.Transactions, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+	return resourceTestServerForPrincipal(t, database, files, output, defaultHTTPPrincipal())
+}
+
+func resourceTestServerForPrincipal(t *testing.T, database store.Transactions, files filestorage.Storage, output io.Writer, principal model.Principal) *resourceTestHandler {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, configuredTestConfig(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := handler.(Handler)
+	t.Cleanup(func() {
+		application.BeginShutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := application.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return &resourceTestHandler{Handler: httpx.RequestLogging(logger, handler), token: httpTestToken(principal.Kind), principal: principal}
+}
+
+func authorizeResourceRequest(handler http.Handler, request *http.Request) {
+	if resource, ok := handler.(*resourceTestHandler); ok {
+		request.Header.Set("Authorization", "Bearer "+resource.token)
+	}
+}
 
 // Each callback supplies independent facts; writes never determine later reads.
 type httpTestStore struct {
@@ -489,4 +552,144 @@ func (s *httpTestSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 		unexpectedHTTPCall(s.t, "SnapshotScope.ObservedAt")
 	}
 	return s.ObservedAtCall(ctx)
+}
+
+func TestReadinessUsesResourceAndReportsFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	var failure error
+	calls := 0
+	healthRoutes(mux, func(ctx context.Context) error {
+		calls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("readiness has no deadline")
+		}
+		return failure
+	}, testLogger())
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		if status != http.StatusOK {
+			failure = errors.New("private database failure")
+		}
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if response.Code != status || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("readiness status=%d headers=%v", response.Code, response.Header())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("readiness called %d times", calls)
+	}
+}
+
+const uiTestScriptPath = "/assets/app-12345678.js"
+
+func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.(Handler).Shutdown(context.Background()) })
+	return httpx.RequestLogging(logger, handler)
+}
+
+func TestUIWiringAndUnknownRoutes(t *testing.T) {
+	var logs bytes.Buffer
+	handler := uiTestHandler(t, &logs)
+	root := projectRequest(handler, http.MethodGet, "/", "")
+	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != "<html><body>server test shell</body></html>\n" {
+		t.Fatalf("root UI response: %d %+v", root.Code, root.Header())
+	}
+	var entries []map[string]any
+	decoder := json.NewDecoder(&logs)
+	for decoder.More() {
+		var entry map[string]any
+		if err := decoder.Decode(&entry); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
+		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
+	}
+	device := projectRequest(handler, http.MethodGet, "/device?user_code=BCDFG-HJKLM", "")
+	if device.Code != http.StatusOK || !bytes.Equal(device.Body.Bytes(), root.Body.Bytes()) || device.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("device shell wiring: %d %+v", device.Code, device.Header())
+	}
+	asset := projectRequest(handler, http.MethodGet, uiTestScriptPath, "")
+	if asset.Code != http.StatusOK || asset.Body.String() != "console.log(\"server test asset\");\n" || asset.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("asset wiring: %d %+v", asset.Code, asset.Header())
+	}
+	for _, target := range []string{
+		"/unknown-private-page", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
+		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
+		"/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
+		"/teams/", "/teams/id/extra", "/teams/id/settings/extra", "/teams/id/members/extra", "/shared-projects/extra",
+		"/test-sessions/id/extra", "/test-sessions/id/assets/missing.js", "/assets/missing-test-session.js",
+		"/bots/", "/bots-list", "/bots/id/extra", "/bots/id/assets/missing.js",
+		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
+		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
+	} {
+		response := projectRequest(handler, http.MethodGet, target, "")
+		assertProjectError(t, response, http.StatusNotFound, "not_found")
+		if strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("unknown path returned SPA HTML: %s", target)
+		}
+	}
+	if strings.Contains(logs.String(), "private") || strings.Contains(logs.String(), "BCDFG-HJKLM") {
+		t.Fatalf("UI request leaked to logs: %s", &logs)
+	}
+}
+
+func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
+	f := newTaskHTTPFixture(t)
+	path := taskCollection(f.project.ID) + "/" + f.target.ID
+	graph := graphPath(f.project.ID, f.target.ID)
+	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + f.project.ID, "/api/v1/projects/" + f.project.ID + "/members", taskCollection(f.project.ID), path, graph} {
+		switch target {
+		case "/api/v1/projects":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "list", nil, nil)
+		case "/api/v1/projects/" + f.project.ID:
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "project", nil, nil)
+		case "/api/v1/projects/" + f.project.ID + "/members":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
+		case taskCollection(f.project.ID):
+			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{f.target}}})
+		case path:
+			f.expectRead(f.target)
+		case graph:
+			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}})
+		}
+		response := projectRequest(f.handler, http.MethodGet, target, "")
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("UI registration changed API response: %s %d %+v", target, response.Code, response.Header())
+		}
+		if (target == path || target == graph) && response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("latest task read may be cached: %s %+v", target, response.Header())
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project.ID+"/members", nil)
+	request.Header.Set("X-Request-ID", "project-test")
+	response := httptest.NewRecorder()
+	f.handler.ServeHTTP(response, request)
+	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+	if response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
+		t.Fatal("member API must retain authenticated JSON behavior")
+	}
+}
+
+func TestUIRegistrationKeepsDataRoutesProtected(t *testing.T) {
+	handler := uiTestHandler(t, io.Discard)
+	for _, path := range []string{
+		"/api/v1/test-sessions",
+		"/api/v1/test-sessions/10000000-0000-0000-0000-000000000001",
+		"/api/v1/me/bots",
+		"/api/v1/me/bots/10000000-0000-0000-0000-000000000001",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusUnauthorized || response.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("UI registration changed protected API: %s %d %+v", path, response.Code, response.Header())
+		}
+	}
 }

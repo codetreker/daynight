@@ -12,7 +12,7 @@ const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@example.com:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task = { id: taskId, projectId, title: "Race", description: "Preserved", properties: {}, status: "in_progress", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_994n, startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
+const task = { type: "task", parentId: null, id: taskId, projectId, title: "Race", description: "Preserved", properties: {}, status: "in_progress", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_994n, startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
 const respond = (response: ServerResponse, body: unknown, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(stringifyApiJson(body)); };
 type Request = { method: string; path: string; body: unknown };
 
@@ -30,6 +30,7 @@ const fixture = async (handler: (request: Request, response: ServerResponse) => 
       const captured = { method: request.method!, path: request.url!, body };
       requests.push(captured);
       if (captured.method === "GET" && captured.path === `/api/v1/projects/${projectId}`) respond(response, project);
+      else if (captured.method === "GET" && captured.path === `/api/v1/projects/${projectId}/tasks/${taskId}`) respond(response, task);
       else handler(captured, response);
     });
   });
@@ -112,11 +113,11 @@ it.each([false, true])("keeps parallel status results with same-state=%s attache
       expect(second.stderr).toContain("requestId=conflict-id");
       expect(second.stderr).not.toContain("winner-id");
     }
-    expect(f.requests.filter(({ method }) => method === "GET")).toHaveLength(2);
+    expect(f.requests.filter(({ method }) => method === "GET")).toHaveLength(4);
     const writes = f.requests.filter(({ method }) => method === "PUT");
     expect(writes).toHaveLength(2);
     expect(writes.map(({ body }) => body)).toEqual(expect.arrayContaining([{ version: 9_007_199_254_740_993n, status: "in_progress" }, { version: 9_007_199_254_740_993n, status: sameState ? "in_progress" : "done" }]));
-    expect(f.requests).toHaveLength(4);
+    expect(f.requests).toHaveLength(6);
   } finally { await f.close(); }
 }, 60_000);
 
@@ -134,6 +135,7 @@ it("keeps returned external classification in a successful status response", asy
     for (const value of [`Depends on: ${prerequisite}\n`, `External dependencies (1): ${prerequisite}\n`, "Status: in_progress\n", "Version: 9007199254740994\n"]) expect(result.stdout).toContain(value);
     expect(f.requests).toEqual([
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
+      { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null },
       { method: "PUT", path: `/api/v1/projects/${projectId}/tasks/${taskId}/status`, body: { version: 9_007_199_254_740_993n, status: "in_progress" } },
     ]);
   } finally { await f.close(); }
@@ -153,6 +155,7 @@ it("keeps a blocked todo resource returned by a same-status confirmation", async
     for (const value of ["Status: todo\n", "Ready: false\n", `Depends on: ${prerequisite}\n`, `Blocked by: ${prerequisite}\n`, "Version: 9007199254740993\n"]) expect(result.stdout).toContain(value);
     expect(f.requests).toEqual([
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
+      { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null },
       { method: "PUT", path: `/api/v1/projects/${projectId}/tasks/${taskId}/status`, body: { version: 9_007_199_254_740_993n, status: "todo" } },
     ]);
   } finally { await f.close(); }
@@ -214,7 +217,7 @@ it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and
         ? { method: "PATCH", path: resourcePath, body: { version: original.version, description: "Updated metadata" } }
         : { method: "PUT", path: `${resourcePath}/status`, body: { version: original.version, status: "done" } };
     expect(f.requests).toEqual([
-      ...(action === "property" ? [] : [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }]), write,
+      ...(action === "property" ? [] : [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }]), ...(action === "status" ? [{ method: "GET", path: resourcePath, body: null }] : []), write,
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
       { method: "GET", path: `${resourcePath}?include=session`, body: null },
     ]);
@@ -259,6 +262,7 @@ it.each([
     for (const value of [code, taskId, prerequisite, "requestId=external-refusal-id"]) expect(result.stderr).toContain(value);
     expect(f.requests).toEqual([
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
+      ...(method === "PUT" ? [{ method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null }] : []),
       { method, path: `/api/v1/projects/${projectId}/tasks/${taskId}${suffix}`, body },
     ]);
   } finally { await f.close(); }

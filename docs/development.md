@@ -711,12 +711,12 @@ owns focused commands and the separate domain and Store proof owners.
 The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
 tests mock the directly called service/use-case operations while exercising real
 routing, credential middleware, parsing, responses and request lifecycle. Core
-rules use domain facts and required DAO, scope and transaction mocks. Service
-tests execute their own assembly, orchestration, transaction coordination and
-shared-resource lifetime with mocks of directly invoked core and other lower
-operations, plus required scope and transaction results. DAO mocks beneath real lower
-business decisions do not isolate service or server units. These unit selections
-execute without PostgreSQL. Store tests retain actual SQL, locking, transaction,
+rules use domain facts and required controlled DAO, scope and transaction
+dependencies. Service tests execute their own assembly, orchestration, transaction
+coordination and shared-resource lifetime. Tests may retain inexpensive,
+deterministic real collaborators and control narrow capabilities when cost or
+precise outcomes require it. Selections designed without PostgreSQL execute
+without it. Store tests retain actual SQL, locking, transaction,
 persistence and database recheck mechanisms. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns focused commands and failure expectations. The complete

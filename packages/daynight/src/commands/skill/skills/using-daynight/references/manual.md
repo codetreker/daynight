@@ -168,8 +168,10 @@ Use uppercase `AND`, `OR`, `NOT`, parentheses, quoted phrases, and `title:` or
 with ASCII case folding. Search accepts the list filters `--status`, `--assigned-to`,
 `--ready`, `--allow-agents`, and `--compatible-platform`, but not `--all`.
 Its text and JSON omit assignee and update time; JSON entries contain only
-`id`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. A failure, including
+`id`, `type`, `parentId`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. A failure, including
 `search_changed`, leaves stdout empty; rerun the search after a change.
+
+Task resources require `type` (`task` or `goal`) and nullable `parentId`. Goal full reads include progress and a `not_applicable` Session observation. Graph nodes are ordinary Tasks; references to unavailable prerequisites remain IDs without exposing their details.
 
 Human-readable ordinary lists are summaries; their JSON entries omit only `description`.
 Ordinary list and show results include Session observations. Ready results and
@@ -304,6 +306,8 @@ After writing, read the relevant graphs and verify the resulting relationships.
 
 Partial updates through direct API patches differ from CLI semantics; do not infer that the CLI preserves undeclared relationships.
 Omit all dependency options when updating only other metadata.
+
+Goal `done` and `cancelled` status writes prompt on stderr: child Task states remain and future automatic claims are excluded. Goal deletion prompts that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or use `--force`; noninteractive calls without it do not submit. Both commands read the target type and identity even with `--if-version`, while retaining the caller’s exact version. Force skips only the Goal prompt, not service business or version checks.
 
 ### Task deletion
 

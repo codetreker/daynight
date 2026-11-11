@@ -30,7 +30,7 @@
 
 ## CLI 与 Web 操作
 
-CLI 的共享命令定义提供 `delete`、可选 `--remove-depends`、project 和精确版本选项。命令层按现有写操作规则处理显式版本与一次预读；不传开关保持严格模式，传入时明确携带 removeDepends=true。API client 发送带 JSON 版本和可选严格布尔 removeDepends 的 DELETE 并要求 `204`，不解析 Task 正文。错误沿现有链路传递，网络失败保留未知结果语义，不重试。
+CLI 的共享命令定义提供 `delete`、可选 `--remove-depends`、`--force`、project 和精确版本选项。命令层预读目标类型和身份，显式版本保持原值；Goal 删除提示不可见范围、保留归属与后续观察停止，并要求交互确认或 force；不传开关保持严格模式，传入时明确携带 removeDepends=true。API client 发送带 JSON 版本和可选严格布尔 removeDepends 的 DELETE 并要求 `204`，不解析 Task 正文。错误沿现有链路传递，网络失败保留未知结果语义，不重试。
 
 `TaskDetailSurface` 在共享标题栏提供删除操作，并复用 `TaskConfirmation` 的 alertdialog、取消初始焦点、Escape、Tab、遮罩和 inert 生命周期。确认绑定当前任务、业务版本、明确的 removeDepends=true 组合意图和已准入的 cacheGeneration；任务切换、历史替换或实质新观察使旧确认失效。文案解释清除执行时所有其他任务对目标的普通/外部引用，并提示可能改变 ready，不以当时数量限定授权。会话捕获该 true 意图并传入 API，传输层不推断删除模式；删除文案和危险操作样式在两种详情容器及两种语言保持一致。
 

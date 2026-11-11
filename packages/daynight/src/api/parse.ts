@@ -24,6 +24,12 @@ const cancellationTime = (taskStatus: TaskStatus, value: unknown): string | null
   return parsed;
 };
 const requiredPlatform = (value: unknown): TaskPlatform | null => value === null || value === "windows" || value === "linux" || value === "macos" ? value : malformed();
+const resourceType = (data: Record<string, unknown>): { type: "task" | "goal"; parentId: string | null } => {
+  const type = data.type === "task" || data.type === "goal" ? data.type : malformed();
+  const parentId = data.parentId === null ? null : id(data.parentId);
+  if (type === "goal" && parentId !== null) return malformed();
+  return { type, parentId };
+};
 
 const validAttachmentPath = (value: string): boolean => isText(value) && !/^[A-Za-z]:\//.test(value) && !/[\\\p{Cc}]/u.test(value) && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 export const validateAttachmentPath = (value: string): string => {
@@ -112,9 +118,12 @@ export const parseProject = (value: unknown, expectedId?: string): Project => {
 
 const dependencyState = (data: Record<string, unknown>) => {
   const parsedStatus = status(data.status);
-  const parsed = { id: id(data.id), status: parsedStatus, allowAgents: bool(data.allowAgents), requiredPlatform: requiredPlatform(data.requiredPlatform), assignedTo: data.assignedTo === null ? null : id(data.assignedTo), startedAt: nullableTimestamp(data.startedAt), completedAt: nullableTimestamp(data.completedAt), cancelledAt: cancellationTime(parsedStatus, data.cancelledAt), dependsOn: dependencyIds(data.dependsOn), externalDependsOn: dependencyIds(data.externalDependsOn), blockedBy: ids(data.blockedBy), ready: bool(data.ready), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  const parsed = { id: id(data.id), ...resourceType(data), status: parsedStatus, allowAgents: bool(data.allowAgents), requiredPlatform: requiredPlatform(data.requiredPlatform), assignedTo: data.assignedTo === null ? null : id(data.assignedTo), startedAt: nullableTimestamp(data.startedAt), completedAt: nullableTimestamp(data.completedAt), cancelledAt: cancellationTime(parsedStatus, data.cancelledAt), dependsOn: dependencyIds(data.dependsOn), externalDependsOn: dependencyIds(data.externalDependsOn), blockedBy: ids(data.blockedBy), ready: bool(data.ready), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
   const dependencies = new Set(parsed.dependsOn);
-  if (dependencies.has(parsed.id) || parsed.externalDependsOn.some((item) => !dependencies.has(item)) || parsed.blockedBy.some((item) => !dependencies.has(item)) || parsed.ready !== (parsed.status === "todo" && parsed.blockedBy.length === 0)) return malformed();
+  if (dependencies.has(parsed.id) || parsed.externalDependsOn.some((item) => !dependencies.has(item)) || parsed.blockedBy.some((item) => !dependencies.has(item))) return malformed();
+  if (parsed.type === "goal") {
+    if (parsed.status === "proposed" || parsed.ready || parsed.allowAgents || parsed.requiredPlatform !== null || parsed.dependsOn.length || parsed.blockedBy.length) return malformed();
+  } else if (parsed.ready !== (parsed.status === "todo" && parsed.blockedBy.length === 0)) return malformed();
   if (requiresSatisfiedPrerequisites(parsed.status) && parsed.blockedBy.length > 0) return malformed();
   return parsed;
 };
@@ -271,7 +280,15 @@ export const parseProjectParticipants = (value: unknown, projectId: string, acto
 export const parseTask = (value: unknown, projectId: string, taskId?: string): Task => {
   const data = record(value);
   const version = resourceVersion(data.version);
-  const parsed = { ...dependencyState(data), projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), properties: parseTaskProperties(data.properties), version };
+  const base = dependencyState(data);
+  const progress = base.type === "goal" ? (() => {
+    const raw = record(data.progress);
+    const result = { total: count(raw.total), done: count(raw.done), cancelled: count(raw.cancelled), unfinished: count(raw.unfinished) };
+    if (result.done + result.cancelled + result.unfinished !== result.total) return malformed();
+    return result;
+  })() : undefined;
+  if (base.type === "task" && Object.hasOwn(data, "progress")) return malformed();
+  const parsed = { ...base, projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), properties: parseTaskProperties(data.properties), version, ...(progress === undefined ? {} : { progress }) };
   if (parsed.projectId !== projectId || (taskId !== undefined && parsed.id !== taskId)) return malformed();
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
@@ -303,8 +320,9 @@ export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSear
     timestamp(item.updatedAt);
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    const parsedStatus = status(item.status);
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
+    const parsedStatus = status(item.status), typed = resourceType(item);
+    if (typed.type === "goal" && parsedStatus === "proposed") return malformed();
+    return { id: id(item.id), ...typed, projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -327,9 +345,10 @@ export const parsePage = <T>(value: unknown, parse: (item: unknown) => T, identi
 const graphTask = (value: unknown): GraphTask => {
   const data = record(value);
   const parsed = { ...dependencyState(data), titlePreview: text(data.titlePreview), titleTruncated: bool(data.titleTruncated) };
+  if (parsed.type !== "task") return malformed();
   const characters = Array.from(parsed.titlePreview).length;
   if (characters === 0 || characters > 160 || (parsed.titleTruncated && characters !== 160)) return malformed();
-  return parsed;
+  return { ...parsed, type: "task" };
 };
 const summary = (value: unknown): TaskGraphSummary => {
   const data = record(value);
@@ -365,8 +384,7 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
   const selected = new Set(members);
   for (const member of members) {
     const task = byId.get(member)!;
-    if (task.dependsOn.some((dependency) => !byId.has(dependency))) return malformed();
-    task.externalDependsOn.forEach((dependency) => selected.add(dependency));
+    task.externalDependsOn.forEach((dependency) => { if (byId.has(dependency)) selected.add(dependency); });
   }
   if (selected.size !== byId.size || Array.from(selected).some((id) => !byId.has(id))) return malformed();
   const expected = { total: parsed.tasks.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
