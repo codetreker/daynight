@@ -1,18 +1,20 @@
 # Session messages
 
-Read [write safety](write-safety.md) before sending. Establish the exact Project,
-Task, Session and execution identity with [Session reads](session-reads.md) when
-needed; observing eligibility does not authorize input.
+Read [write safety](write-safety.md) before sending. Use
+[Session reads](session-reads.md) to establish Project, Task, Session and execution
+identity as needed; eligibility grants no input authority.
 
 ## Send an authorized ordinary message
 
-Ordinary messages are available for Web Sessions. Herdr remains a terminal
-recording and does not accept messages through this command. Idle allows a new
-message when authorized; working permits steer only when the actual Provider
-supports it and the original turn still matches. Waiting input can be an
-approval and must not be answered through ordinary text as a substitute.
+Only Web Sessions accept ordinary messages; Herdr remains a terminal recording.
 
-Choose exactly one input source:
+| State | Eligibility |
+| --- | --- |
+| Idle | New message when authorized. |
+| Working | Steer only if the actual Provider supports it and the original turn still matches. |
+| Waiting input | May be an approval; ordinary text cannot substitute for or answer approval. |
+
+Choose exactly one source:
 
 ```bash
 daynight task session send TASK SESSION --project PROJECT --text 'Please check the failing test.' --json
@@ -20,25 +22,21 @@ daynight task session send TASK SESSION --project PROJECT --file ./message.txt -
 daynight task session send TASK SESSION --project PROJECT --stdin --json < ./message.txt
 ```
 
-Files must be regular files. Text preserves Unicode, BOM, line endings and
-trailing newlines; it is not trimmed or executed. NUL, malformed Unicode,
-whitespace-only input, more than 1 MiB of UTF-8 text or more than 2 MiB of encoded
-command is rejected before recording or submitting. Slash-prefixed text stays
-ordinary text, not a management command. The command does not cancel a turn,
-queue a future send, create a Session or answer an approval.
+Files must be regular. The CLI preserves Unicode, BOM, line endings and trailing
+newlines without trimming or execution. Slash-prefixed text stays ordinary input,
+never a management command. Before recording/submitting, it rejects NUL, malformed
+Unicode, whitespace-only input, UTF-8 text >1 MiB or encoded commands >2 MiB.
+Sending cannot cancel a turn, queue a future send or create a Session.
 
-The default wait is 30 seconds; `--wait-seconds` accepts 0 through 60. Waiting
-only queries the original operation, not completion of the Agent's requested
-work. Keep the emitted operationId and original target even if the command times
-out, is interrupted or cannot finish output.
+`--wait-seconds`: 0–60, default 30; queries the original operation, not completion
+of requested Agent work. Retain emitted operationId and original target through
+timeout, interruption or output failure.
 
-The CLI normally generates a new operationId. Use `--operation-id NEW_UUID` only
-when deliberately choosing the identity of a first submission. With no local
-record, the command first checks that original ID. An existing receipt cannot
-prove that this new body was accepted, so it only returns the original identity
-and directs a query. A missing receipt alone does not establish that an earlier
-request was never sent. Do not use this first-submission entry for a previously
-unknown result or cross-machine recovery.
+The CLI normally generates a new operationId; `--operation-id NEW_UUID` selects a
+first-submission ID. Without a local record, it first queries that ID. An existing
+receipt makes the command return original identity/query guidance, without
+confirming this body. Receipt absence does not prove nothing was sent. This
+first-submission entry cannot recover unknown results or cross-machine operations.
 
 ## Recover the original operation
 
@@ -47,59 +45,53 @@ daynight task session operation TASK SESSION OPERATION --project PROJECT --json
 daynight task session operation --operation-id OPERATION --json
 ```
 
-The second form uses the current account and service's local recovery record.
-Another machine must use the explicit original project, Task, Session and
-operation IDs. A new claim does not redirect a historical receipt query.
-Permission is checked again; losing access is not a reason to bypass the service
-or read another account's records.
+The second form resolves the current account/service's local recovery record.
+Cross-machine queries need explicit original Project/Task/Session/operation IDs;
+new claims never redirect historical queries. Permission is rechecked: lost
+access permits neither service bypass nor reading another account's records.
 
-Before a first POST, the CLI durably saves a private record without text or
-credentials and marks dispatch_unknown. Any retained record, including prepared,
-makes a repeated send verify the original target and body hash and then **only
-query**. A mismatch fails. It never refreshes current to reconstruct the old turn.
-If the process stopped after recording but before POST, the conservative result
-can remain unknown even though nothing was sent.
+Before first POST, the CLI durably saves a private record without text/credentials
+and marks dispatch_unknown. Any retained record, including prepared, makes repeated
+send verify original target/body hash, then **only query**; mismatch fails.
+Never refresh current to reconstruct the old turn. Stopping between record and
+POST can leave unknown despite no submission.
 
-Follow [uncertain results](write-safety.md#uncertain-results): timeout, disconnect,
-interruption and not_found never authorize an automatic replacement ID or
-resubmission. Local save or output failure does not undo a server receipt. Keep
-the original identity and query it; do not delete recovery evidence to make the
-same operation send again.
+[Uncertain results](write-safety.md#uncertain-results): timeout, disconnect,
+interruption and not_found never permit automatic replacement IDs/resubmission.
+Query the original identity; never erase recovery evidence to resend. Local
+save/output failures cannot undo server receipts.
 
 ## Interpret results
 
-| State or condition | Meaning | Exit code |
+| State or condition | Meaning | Exit |
 | --- | --- | --- |
-| accepted, offered, dispatching | Service operation is pending; not Provider confirmation | 3 |
-| provider_accepted | Provider accepted input; requested work is not thereby complete | 0 |
-| confirmed | Original input operation is confirmed; requested work can still continue | 0 |
+| accepted, offered, dispatching | Pending service operation; no Provider confirmation | 3 |
+| provider_accepted | Provider accepted input; requested work need not be complete | 0 |
+| confirmed | Original input operation confirmed; requested work may continue | 0 |
 | rejected, failed, expired | Definite original operation failure | 1 |
-| unknown, not_found, wait expiry | Original outcome remains unresolved; query original ID | 3 |
-| Protocol, authentication or output failure | The command could not complete its contract; retain any known original ID | 1 |
-| Invalid arguments | Correct the invocation before a first submission | 2 |
-| User interruption | Original identity is printed when available; query it | 130 |
+| unknown, not_found, wait expiry | Unresolved; query original ID | 3 |
+| Protocol, authentication or output failure | Command contract failed; retain any known original ID | 1 |
+| Invalid arguments | Correct invocation before a first submission | 2 |
+| User interruption | Original identity printed when available; query it | 130 |
 
-JSON goes to stdout and diagnostics to stderr. Text output escapes terminal
-control characters. Use the actual receipt state, not the presence of output or
-HTTP 202, to assess native acceptance. Reobserve Task and Session activity when
-the authorized work calls for checking progress; acceptance is not Task completion.
+JSON uses stdout, diagnostics stderr; readable text escapes terminal controls.
+Assess native acceptance from receipt state; output/HTTP 202 is insufficient.
+For authorized progress checks, reobserve Task and Session activity; acceptance
+is not Task completion.
 
 ## MCP equivalents
 
-Use task_session_send for a first ordinary send and task_session_operation for
-the original result. Send requires caller-owned operationId, projectId, taskId,
-sessionId, claimId, executionGeneration, expectedTurnId and text. expectedTurnId
-must be present, including null for idle. The caller must hold these identities
-before submission; the MCP transport request ID is not the operationId. The
-execution fence excludes the inspection connectionEpoch observation.
+`task_session_send` submits first ordinary input; `task_session_operation` queries
+its original result. Before sending, hold `operationId` (caller-owned), `projectId`,
+`taskId`, `sessionId`, `claimId`, `executionGeneration`, `expectedTurnId` and `text`.
+Include `expectedTurnId`, null when idle. Transport request ID is not operationId;
+the execution fence excludes inspection connectionEpoch.
 
-MCP has no local file/stdin input. It uses the same Submit intent and owner
-checks as HTTP. A repeated identical intent returns the original receipt;
-unknown results must be queried, never automatically submitted again. Keep
-WriteOutcome and Phase as service-write facts, data.operation.state as native
-operation facts, and refs as the original resource identity. In particular,
-WriteOutcome=confirmed with state=accepted does not prove Provider acceptance.
-The operation tool's not_found error retains refs and means the original send
-outcome is unknown, not that retry is safe. PAT/OAuth retain their real scope,
-expiry and revocation constraints; the service reauthorizes the original actor
-before dispatch.
+MCP has no file/stdin input; HTTP Submit intent and owner checks apply. Identical
+intent returns its original receipt; unknown results require queries, never
+automatic resubmission. Keep `WriteOutcome`/`Phase` (service write),
+`data.operation.state` (native operation) and `refs` (original resource identity)
+separate. WriteOutcome=confirmed with state=accepted does not prove Provider
+acceptance. Operation-tool not_found retains refs: unknown outcome, not safe
+retry. PAT/OAuth scope/expiry/revocation still apply; the service reauthorizes
+the original actor before dispatch.

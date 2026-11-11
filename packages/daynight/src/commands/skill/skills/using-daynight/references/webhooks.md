@@ -1,8 +1,7 @@
 # Webhooks
 
-Use this to configure outbound Webhooks, inspect delivery history or recover an
-original configuration operation. For writes, also read
-[write safety](write-safety.md).
+Configure outbound Webhooks, inspect delivery history or recover an original
+configuration operation. Writes also require [write safety](write-safety.md).
 
 ## Owners and versions
 
@@ -15,28 +14,26 @@ daynight webhook update <endpoint-id> --team <team-id> --if-version <version> --
 daynight webhook subscription reconfirm <endpoint-id> --personal --if-version <version> --project <project-id> --confirm
 ```
 
-Every leaf except catalog requires exactly one explicit owner: `--personal` for
-the authenticated User or `--team <team-id>` for a Team UUID. Git and the default
-Team do not select an owner; `--team personal` is not a personal Webhook owner.
-Use each leaf's `--help` for complete options. Catalog supplies registered events
-and service limits.
+Except catalog, every leaf requires exactly one explicit owner: `--personal`
+for the authenticated User or `--team <team-id>` for a Team UUID. Neither Git nor
+the default Team selects it; `--team personal` is invalid here. Catalog supplies
+registered events/service limits; leaf help lists complete options.
 
-IDs are canonical UUIDs. Except create, writes require the endpoint configuration
-version through [`--if-version`](write-safety.md#decisions-and-versions);
+IDs are canonical UUIDs. All writes except create require the endpoint
+configuration version through [`--if-version`](write-safety.md#decisions-and-versions);
 redelivery also requires its delivery generation through `--if-generation`.
-The CLI has no implicit latest-version read.
+There is no implicit latest-version read.
 
 ## JSON input
 
-Create, update and subscription replacement take exactly one `--file` or
-`--stdin`. Input must be strict UTF-8 JSON with no duplicate/unknown keys, no more
-than 32 nesting levels and at most 256 KiB; the final request also has a 256 KiB
-limit. Supply URLs and adapter configuration in this input. Use `--confirm` for
-noninteractive and stdin writes; interactive confirmation shows safe scope and
-version details without printing the input or secrets.
+Create/update/subscription replacement require exactly one `--file` or `--stdin`.
+Use strict UTF-8 JSON with no duplicate/unknown keys, at most 32 nesting levels
+and 256 KiB; the final request also has a 256 KiB limit. Put URLs and adapter
+configuration in JSON. Noninteractive/stdin writes require `--confirm`;
+interactive confirmation shows safe scope/version details, never input/secrets.
 
-For `endpoint.json`, replace the example Project UUID and receiver URL with the
-intended authorized targets:
+For `endpoint.json`, replace the Project UUID and receiver URL with authorized
+targets:
 
 ```json
 {
@@ -59,26 +56,18 @@ intended authorized targets:
 }
 ```
 
-Create requires all four top-level fields. The supported destination is HTTP
-adapter version `"1"` with an HTTPS URL; kind is `"http"`, and configuration
-contains only url. Subscriptions explicitly choose Projects and events. Allowed
-events are task.created, task.status_changed, task.paused, task.deleted,
-task.step_updated and task.thread_posted; each subscription needs a nonempty
-array without duplicates. Do not infer an all-Projects subscription.
+| Input | Rules |
+| --- | --- |
+| Create | All four top-level fields are required. Destination requires kind `"http"`, adapterVersion `"1"`, and configuration with only an HTTPS `url`. |
+| Events | Each subscription explicitly selects a Project and a nonempty, duplicate-free event array: task.created, task.status_changed, task.paused, task.deleted, task.step_updated or task.thread_posted. Never infer all-Projects scope. |
+| Update | Nonempty partial object using the same top-level keys; omitted fields stay unchanged. `{"enabled":false}` disables the endpoint. Supplied destination must include complete kind/adapterVersion/configuration; supplied subscriptions replace the entire array. |
+| Subscription replace | Reads the array directly, without an object wrapper. Each item requires id, projectId and eventTypes. |
 
-Update accepts a nonempty partial object using the same top-level keys; omitted
-fields stay unchanged. For example, `{"enabled":false}` disables the endpoint.
-If destination is supplied, provide its complete kind/adapterVersion/configuration
-object. A supplied subscriptions value replaces the entire array.
-
-`webhook subscription replace` reads the subscription array itself, not an object
-wrapping it. Each item requires id, projectId and eventTypes. Use id:null for a
-new subscription. To retain a subscription, read its real ID and keep that ID
-with the same Project; IDs must be unique. Changing Project requires a new
-id:null item. Omitted subscriptions are removed; deletion followed by re-addition
-creates a new identity. An empty array removes all subscriptions. Read and keep
-every entry that should survive replacement. Use explicit subscription reconfirm
-for renewed Project eligibility; restored access alone does not reconfirm scope.
+New subscriptions use id:null. Retained IDs must be read, unique and kept with
+the same Project; changing Project requires a new id:null item. Omitted entries
+are removed; an empty array removes all. Deleting/re-adding creates a new
+identity. Read and retain every intended entry. Renewed Project eligibility
+requires explicit subscription reconfirm; restored access alone is insufficient.
 
 ## Operation identity and recovery
 
@@ -86,28 +75,26 @@ for renewed Project eligibility; restored access alone does not reconfirm scope.
 daynight webhook operation show <operation-id> --personal --json
 ```
 
-Writes use one operation ID and original issued time. Supply both
-`--operation-id` and `--issued-at`, or let the CLI generate them after confirmation.
+A write uses one operation ID and original issued time: supply both
+`--operation-id`/`--issued-at`, or let the CLI generate them after confirmation.
 `--operation-out <path>` exclusively creates a private prepared record before
-sending. It holds identity, scope, versions and request hash, without body or
-secrets. Private prepared-file creation is unavailable on Windows and fails
-before sending. Retain the original identity for an unknown result and inspect
-it with operation show; missing receipts or matching current values do not
-establish rollback or success.
+sending: identity, scope, versions and request hash, never body/secrets. This
+private-file creation is unavailable on Windows and fails before sending.
+Unknown outcomes retain the original identity for operation show; missing
+receipts or matching current values prove neither rollback nor success.
 
-Explicitly resume with `--resume-operation <path>` on the original write leaf,
-retaining owner, targets, versions, mode and input. This conflicts with explicit
-operation-id/issued-at and operation-out. The CLI verifies the record and exact
-request hash before reading the receipt. A receipt at or past its expiry by the
-local clock cannot confirm the operation. A matching receipt confirms the
-original operation without another write.
+Resume explicitly with `--resume-operation <path>` on the original write leaf,
+keeping owner, targets, versions, mode and input. It conflicts with explicit
+operation-id/issued-at and operation-out. The CLI verifies the record/exact
+request hash before reading the receipt. A matching receipt confirms the
+original operation without another write only while unexpired by the local clock.
 
-If the receipt is missing, complete original input, explicit `--confirm` and an
-issued time within the admission window (five minutes past, sixty seconds future)
-permit at most one identical submission. Inaccessible receipts or an expired
-window leave the result unknown. The prepared record cannot reconstruct the
-body. A confirmed operation remains confirmed across local render/output/cleanup
-failure. This explicit resume procedure is separate from automatic retry.
+A missing receipt permits at most one identical submission only with complete original
+input, explicit `--confirm`, and issued time at most five minutes past or sixty
+seconds future. Inaccessible receipts or expired admission windows remain
+unknown. Prepared records cannot reconstruct the body. Confirmed operations
+survive local rendering, output or cleanup failure; explicit resume is not
+automatic retry.
 
 ## Read deliveries and payloads
 
@@ -118,14 +105,13 @@ daynight webhook delivery payload <endpoint-id> <delivery-id> --personal --outpu
 daynight webhook delivery redeliver <endpoint-id> <delivery-id> --personal --if-version <version> --if-generation <generation> --confirm
 ```
 
-Endpoint list validates all pages before output. Delivery and attempt history
-return one page, with `--limit` 1–100 (default 50); pass returned cursors explicitly
-with `--cursor`. Retention can leave history incomplete. Secret show returns
-metadata unless `--reveal` is explicit; rotation does not reveal the new secret.
-Successful redelivery confirms registration, not completed delivery.
+Endpoint list validates all pages before output. Delivery/attempt history returns
+one page, `--limit` 1–100 (default 50); pass returned cursors explicitly with
+`--cursor`. Retention can leave history incomplete. Secret show exposes metadata
+unless `--reveal` is explicit; rotation never reveals the new secret. Redelivery
+success confirms registration, not delivery.
 
-Payload output defaults to exact original bytes without an added LF. `--json`
-returns the validated Base64 wrapper; `--output` publishes a private new file
-without overwriting an existing target. Those options conflict. File publication
-requires Linux with procfs and glibc. The service independently enforces payload
-authorization and retention.
+Payload defaults to exact original bytes without added LF. `--json` returns the validated
+Base64 wrapper; `--output` publishes a new private file without overwriting.
+These options conflict. File publication requires Linux with procfs/glibc;
+the service separately enforces payload authorization and retention.

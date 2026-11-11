@@ -1,67 +1,59 @@
 # Write safety
 
-Read this alongside the topic for every operation that creates, changes or
-deletes a resource. That topic owns its confirmation, identity and recovery
-exceptions. Command help supplies the installed version's exact syntax.
+Read this for every create, change or delete operation, alongside its resource
+rules for confirmation, identity and recovery. Installed command help gives exact syntax.
 
 ## Authorization and scope
 
-Task `assignedTo`, `status`, readiness, `allowAgents` and a claim ID describe
-different facts. None creates missing authority to register, execute, publish,
-modify access, communicate externally or deliver. A successful request or status
-change does not establish process control, stop a running Agent or prove delivery.
-Host and native Session capabilities differ from Task metadata; inspect the
-actual capability and current authorization before acting.
+Task `assignedTo`, status, readiness, `allowAgents` and claim IDs describe
+separate facts and grant no missing authority to register, execute, publish, change access, communicate externally or
+deliver. Success or a status change does not establish process control, stop a
+running Agent or prove delivery. Host and native Session capabilities differ
+from Task metadata; check the actual capability and current authorization.
 
-An inaccessible service, Project or resource is not proof that it does not exist.
-Explicit `--project` selects a Project without granting access. Registration,
-observations and documentation reads do not start execution. `in_progress` is not
-an executor lock or renewable lease and does not establish ownership.
+Inaccessibility is not proof that a service, Project or resource does not exist.
+`--project` selects without granting access. Registration and documentation or
+observation reads do not start execution. `in_progress` grants no executor lock,
+renewable lease or ownership.
 
 ## Decisions and versions
 
-`--if-version` makes a write conditional on the resource's current version
-matching the supplied version. Use the version from the observation on which the
-decision was based. A mismatch rejects the write even when the requested value
-already equals the current value. Version tokens and delivery generations are
-positive decimal int64 values; preserve every digit without floating-point rounding.
+`--if-version` binds a write to the version read for its decision: the resource
+must still have that version, even for same-value writes. Version tokens and
+delivery generations are positive decimal int64 values: preserve every digit
+without floating-point rounding.
 
-Before a Task metadata, status, property or deletion decision, read
-`task show <task-id> --json` and retain its `version`. Other topics identify the
-resource and read that supply their version. Pass the observed version through
-`--if-version` and reread before the next change.
+Before Task metadata, status, property or deletion decisions, read
+`task show <task-id> --json` and retain `version`. Other topics identify their
+version source. Submit it with `--if-version`; reread before the next change.
 
-When the option is omitted, commands that support a pre-submission read obtain
-the latest version immediately before writing. That read cannot protect an
-earlier decision. A failed pre-submission read prevents the write. Commands that
-require an explicit version have no such default. On conflict, reread and
-reassess current content, dependencies and authorization before deciding again;
-do not substitute a newer version and replay the old decision.
+Where omission supports a pre-submission read, it fetches the latest version
+immediately before writing; failure prevents the write. It cannot protect an earlier decision;
+commands requiring an explicit version have no default. On conflict, reread and
+reassess content, dependencies and authorization. Never substitute a newer
+version to replay the old decision.
 
 ## Uncertain results
 
-A timeout, cancellation, lost response or malformed response may follow a
-committed write. Cancellation does not prove rollback. Preserve original IDs,
-request or operation identity and known receipts. Do not automatically retry a
-mutation. Follow the resource's recovery procedure before deciding on another
-write; explicit Webhook resume has its own admission rules.
+Timeout, cancellation, lost or malformed responses may follow a committed write;
+cancellation does not prove rollback. Retain original IDs, request/operation
+identity and known receipts. Never automatically retry a mutation. Follow the
+resource's recovery rules before deciding on another write; explicit Webhook
+resume has its own admission rules.
 
-Read the relevant fields, Thread pages or file bytes to establish current facts.
-Matching current values do not prove which historical operation caused them.
-For uncertain creation, use complete fields, resource identity and operation
-context: a matching title or one empty query cannot establish the result.
-Keep confirmed IDs and finish missing operations on those resources.
+Read fields, Thread pages or file bytes for current facts. Matching values do
+not identify which operation caused them. Uncertain creation needs complete fields, resource
+identity and operation context, not a matching title or one empty query. Keep
+confirmed IDs and finish missing operations on those resources.
 
-A confirmed receipt remains confirmed if later local rendering, output or
-cleanup fails; the command may still exit nonzero and leave partial stdout.
-If verification fails, report the actual error and unresolved items. A failed
-read is never an empty result or proof of absence.
+Confirmed receipts survive later rendering, output or cleanup failure, even
+with nonzero exit or partial stdout. Report verification errors and unresolved
+items; failed reads are neither empty results nor proof of absence.
 
 ## Independent resources and operations
 
-Creation, uploads, description changes and status changes are independent
-writes, with no cross-operation rollback. Multiple files can succeed partially;
-verify their bytes and metadata separately. Attachment writes do not change Task
-version, status or update time. A Task version cannot freeze mutable attachment
-bytes or cross-task references: reread actual content when it affects a decision,
-and reassess affected decisions when sources change.
+Creation, uploads, description and status are independent writes without shared rollback;
+multiple files can succeed partially. Verify bytes and metadata separately.
+Attachment writes leave Task version, status and update time unchanged. Task
+versions cannot freeze attachment bytes or cross-task references: reread content
+when decisions depend on it, and reassess when sources change.

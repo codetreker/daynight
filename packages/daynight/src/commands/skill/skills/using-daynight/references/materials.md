@@ -1,23 +1,21 @@
 # Materials
 
-Descriptions and attachments hold Task material; Threads hold durable discussion;
-Sessions hold execution content and activity. A Step is a separate ordered work
-record. These resources have independent reads and do not replace each other.
-For writes, also read [write safety](write-safety.md).
+Descriptions and attachments hold Task material, Threads durable discussion,
+Sessions execution content and activity, and Steps ordered Task records. Read each resource
+independently; none substitutes for another. Writes also require
+[write safety](write-safety.md).
 
 ## Descriptions and references
 
-Task descriptions contain Markdown. Web renders CommonMark/GFM and displays raw
-HTML as text; CLI and API preserve the original string and have no format field.
-Task details contain neither attachment listing/bytes nor Thread messages.
-Read required resources separately.
+Descriptions are Markdown: Web renders CommonMark/GFM and displays raw HTML as
+text; CLI/API preserve the string without a format field. Task details omit
+attachment listings/bytes and Thread messages; read them separately.
 
-Relative links and images in a description resolve from that Task's attachment
-root; references inside an attachment resolve from its directory. Paths preserve
-case and stay within the Task root. Cross-task references must name the actual
-owning Task and resource; an ordinary relative link cannot cross Task roots.
-Use [Task metadata](tasks.md#metadata) to replace a description, preserving its
-required complete content.
+Description links/images resolve from the Task's attachment root; attachment
+references resolve from their directory. Case-sensitive paths must stay inside
+the Task root. Cross-task references identify the owning Task and resource;
+relative links cannot cross roots. Description updates replace the full text:
+preserve required content under [Task metadata](tasks.md#metadata).
 
 ## Attachments
 
@@ -29,16 +27,15 @@ daynight task attachment read <task-id> docs/design.md > ./downloaded-design.md
 daynight task attachment remove <task-id> docs/design.md
 ```
 
-Put uploads one regular file, replacing the same target path; the default is
-the source basename. Paths are case-sensitive, use `/`, preserve Unicode and
-remain relative to the attachment root. Empty, dot or parent segments,
-backslashes and control characters are invalid. `--tree` and `--json` conflict.
+| Operation | Rules |
+| --- | --- |
+| Put | One regular file; replaces its target path, defaulting to the source basename. |
+| Paths | Case-sensitive, Unicode-preserving, `/`-separated and relative to the Task attachment root. Reject empty/dot/parent segments, backslashes and controls. |
+| List | `--tree` and `--json` conflict. |
+| Read | Exact original bytes, no labels or added newline. Failure can leave a partial redirected file; check exit status. |
+| All commands | Accept `--project`, not `--if-version`. Writes leave Task version/status/update time unchanged. |
 
-Read writes only original bytes, without labels or an added newline. A failed
-read can leave a partial redirected file; check its exit code. All attachment
-commands accept `--project`; none accepts `--if-version`. Writes do not change
-Task version, status or update time. Reconcile an unknown upload/removal with
-list/read before another decision, under
+For unknown uploads/removals, list/read before another decision; apply
 [independent-resource rules](write-safety.md#independent-resources-and-operations).
 
 ## Threads
@@ -53,47 +50,44 @@ daynight task thread post <task-id> --body 'Use an explicit retry decision.' --r
 daynight task thread post <task-id> --body 'The check passed.' --claim-id <active-claim-id>
 ```
 
-Threads remain readable and writable before execution, while its original
-environment is offline, and after completion. Messages are immutable; replies
-name a message in the same Task. Posting changes no Task status, version,
-timestamps, properties or dependencies and does not wake an Agent. Descriptions
-and attachments remain the owners of effective requirements, solutions and
-formal results.
+Thread reads and posts remain available before execution, while its original
+environment is offline, and after completion. Messages are immutable; replies stay within the Task. Posting
+neither wakes an Agent nor changes Task status, version, timestamps, properties
+or dependencies. Effective requirements, solutions and formal results remain in
+descriptions/attachments. All Thread commands accept `--project`; explicit
+selection avoids a hidden Task/Project read. Thread commands print readable text;
+none accepts `--json`.
 
-Read returns one page, defaulting to the latest messages. `--count` accepts
-1–100, default 20. `--before-id` and `--after-id` conflict. A page displays oldest
-to newest with full Id, Author and account Id, millisecond UTC CreatedAt,
-optional ReplyTo and complete Message. Agent authors show `Agent: True`;
-`--details` expands verified claim, Worker and Provider attribution. Thread
-commands print readable text and do not accept `--json`.
+Read returns one page: latest by default, oldest to newest within the page.
+`--count` is 1–100 (default 20); `--before-id` and `--after-id` conflict. Readable
+text includes full Id, Author/account Id, millisecond UTC CreatedAt, optional
+ReplyTo and complete Message. Agent authors show `Agent: True`; `--details`
+adds verified claim, Worker and Provider attribution.
 
-`... Has more messages before` appears above a page with older content;
-`Has more messages after...` appears below one with newer content. Read older
-history with the first displayed Id; continue forward from the last fully
-consumed Id. The 256 KiB output budget can reduce page size, but complete
-messages remain contiguous and bodies are never truncated. An empty forward
-read preserves its input position. A post receipt cannot advance reading past
-unseen messages: after reading A, another person's B and local post C must still
-be read from A.
+| Pagination | Rule |
+| --- | --- |
+| Older content | `... Has more messages before` appears above the page; continue with its first displayed Id. |
+| Newer content | `Has more messages after...` appears below; continue from the last fully consumed Id. Empty forward reads retain that position. |
+| Output budget | 256 KiB may reduce page size; messages remain complete, contiguous and untruncated. |
+| Local posts | After reading A, unseen B followed by local post C must still be read from A; a receipt cannot skip B. |
 
-Post requires nonblank `--body`, preserving its original whitespace; use
-`--body=-example` for text starting with a dash. The service generates the message
-Id and authenticates the author. Omit claim for an ordinary account post; provide
-a current `--claim-id` explicitly for verified Agent attribution. The CLI infers
-no claim and accepts no client message Id, version or submission token.
+Post requires nonblank `--body`, preserving whitespace; use `--body=-example`
+for a leading dash. The service generates Id and authenticates authors. Ordinary
+posts omit claim; verified Agent attribution requires explicit current
+`--claim-id`. The CLI infers no claim and accepts no client message Id, version
+or submission token.
 
-Readable text escapes dangerous terminal controls. Multiline Message lines are
-indented, preserve LF/TAB and encode literal backslashes before visible control
-escapes: DEL is `\x7f`, CR `\r` and other unsafe controls `\uXXXX`. These escapes
-preserve the full body without executing it. Confirmed success prints
-`Message posted.`, the complete Id and optional ReplyTo without repeating the
-body. A validated 201 confirms a post. A validated refusal such as
-`503 clock_not_advanced` is definite; lost/dispatched transport responses,
-malformed success, `503 message_outcome_unknown` and generic server failures
-leave the result unknown. The CLI reports that uncertainty and never repeats
-POST automatically. Read normal Thread pages before a new decision; equal text
-cannot recover the original receipt.
+Readable text escapes dangerous terminal controls. Multiline Message is indented,
+retains LF/TAB and encodes literal backslashes before control escapes: DEL is
+`\x7f`, CR `\r`, other unsafe controls `\uXXXX`. This preserves the full body
+without executing it. Confirmed success prints `Message posted.`, full Id and optional
+ReplyTo, not the body.
 
-All Thread commands accept `--project`; an explicit Project avoids a hidden
-Task/Project read. Local output or cleanup failure does not undo a confirmed
-post. Apply [uncertain results](write-safety.md#uncertain-results).
+A validated 201 confirms a post. A validated refusal such as
+`503 clock_not_advanced` is definite;
+lost responses, dispatched transport failures, malformed success,
+`503 message_outcome_unknown` and generic server failures leave outcome unknown.
+The CLI reports uncertainty without automatically repeating POST. Read normal
+Thread pages before deciding again: equal text cannot recover the original
+receipt. Apply [uncertain results](write-safety.md#uncertain-results), including
+preservation of confirmed posts after local output or cleanup failure.
