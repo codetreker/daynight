@@ -22,6 +22,10 @@ unknown operation results retain their existing handling and are not replayed.
 When a state read and channel observation disagree, bounded read-only
 reconciliation keeps input fenced until they agree. It does not close the
 channel, which would release the browser's lease.
+Account refresh has a separate terminal stop entry that works after admission
+has already closed. It retains the presentation and local operation identity,
+but permanently fences this client from restarting; ordinary visibility pauses
+remain recoverable. Pending commands settle as unknown when stopped.
 The [Herdr Session design](../../../../docs/design/herdr-session-web.md) owns
 the resulting page and admission behavior.
 
@@ -35,10 +39,16 @@ the read alone does not establish a fresh channel's ownership.
 transport progress but changes layout and obscures confirmed content during an
 ordinary background check.
 
+**Use the ordinary visibility pause for an account change.** Its admission and
+recovery lifecycle is temporary; the account stop must close the transport even
+after admission is lost and must not reopen it when visibility changes.
+
 ## Consequences
 
 Readers retain their place through a same-data check while control remains
 fenced. Recovery can take longer than the state GET, and real failures remain
-visible. This preserves the channel and ownership rules of the
+visible. Account refresh preserves the displayed state without allowing the old
+client to reconnect; the caller must create a new page lifecycle to resume.
+This preserves the channel and ownership rules of the
 [original Herdr Session decision](../architecture/2026-11-05-herdr-session-web.md)
 without changing the server lease or input protocol.
