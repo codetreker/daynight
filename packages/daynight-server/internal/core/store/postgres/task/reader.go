@@ -78,6 +78,12 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}
+	candidateFilter := ""
+	if query.AutomaticCandidate {
+		candidateFilter = ` AND t.type = 'task' AND (t.parent_id IS NULL OR EXISTS (
+			SELECT 1 FROM tasks parent WHERE parent.id=t.parent_id AND parent.project_id=t.project_id
+			AND parent.type='goal' AND parent.deleted_at IS NULL AND parent.status NOT IN ('done', 'cancelled')))`
+	}
 	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM task_resource_rows t`+join+`
   WHERE t.project_id = $1 AND t.effective_deleted_at IS NULL
   AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
@@ -86,7 +92,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
   AND ($6::boolean IS NULL OR t.allow_agents = $6)
   AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
   AND ($9::boolean IS NULL OR (t.required_platform IS NOT NULL) = $9)
-  `+assignmentCondition+resourceFilter+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
+  `+assignmentCondition+resourceFilter+candidateFilter+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}

@@ -348,6 +348,8 @@ func (mock *taskReaderMock) TaskSyncDependencyStates(ctx context.Context, id str
 var _ store.TaskReader = (*taskReaderMock)(nil)
 
 type taskWriterMock struct {
+	ParentTaskFn     func(context.Context, string) (model.Task, error)
+	GoalProgressesFn func(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	taskMockBase
 	TaskFn               func(context.Context, string) (model.Task, error)
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
@@ -366,6 +368,16 @@ type taskWriterMock struct {
 	UpdateTaskStepFn     func(context.Context, string, model.TaskStep) error
 	MoveTaskStepFn       func(context.Context, string, string, int64, int64) error
 	DeleteTaskStepFn     func(context.Context, string, string, int64, int64) error
+}
+
+func (mock *taskWriterMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
+	mock.need("GoalProgresses", mock.GoalProgressesFn != nil)
+	return mock.GoalProgressesFn(ctx, project, ids)
+}
+
+func (mock *taskWriterMock) ParentTask(ctx context.Context, id string) (model.Task, error) {
+	mock.need("ParentTask", mock.ParentTaskFn != nil)
+	return mock.ParentTaskFn(ctx, id)
 }
 
 func (mock *taskWriterMock) Task(p0 context.Context, p1 string) (model.Task, error) {

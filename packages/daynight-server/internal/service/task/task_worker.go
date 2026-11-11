@@ -21,6 +21,9 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 		if err := taskcore.ClaimAdmission(current, principal.UserID, descriptor); err != nil {
 			return taskcore.Mutation{}, err
 		}
+		if err := taskcore.ClaimParentAdmission(ctx, tx.TaskDAO(), current); err != nil {
+			return taskcore.Mutation{}, err
+		}
 		return acquireWorker(ctx, tx, current, principal.UserID, descriptor)
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -42,7 +43,8 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 
-	task, err := h.tasks.SetStatus(workerProtocolContext(request), principal, projectID, id, taskcore.SetTaskStatus{Version: input.Version, Status: model.TaskStatus(input.Status), ClaimID: input.ClaimID})
+	var metadata service.TaskWriteMetadata
+	task, err := h.tasks.SetStatus(service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata), principal, projectID, id, taskcore.SetTaskStatus{Version: input.Version, Status: model.TaskStatus(input.Status), ClaimID: input.ClaimID})
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "set_status", err)
 		return
@@ -51,6 +53,7 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 	if task.Version != input.Version {
 		outcome = "changed"
 	}
+	logger = taskWriteLogger(logger, metadata)
 	logger.InfoContext(request.Context(), "task status set", "type", "resource", "component", "task", "phase", "set_status", "outcome", outcome, "request_id", httpx.RequestID(request.Context()))
 	writeTaskMutation(w, request, logger, "task", http.StatusOK, "", task)
 }

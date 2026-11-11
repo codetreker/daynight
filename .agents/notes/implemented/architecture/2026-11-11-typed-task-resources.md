@@ -15,8 +15,8 @@ read it would make ordinary operation unsafe.
 Task rows carry a type and nullable parent ID. Existing rows acquire `task` and
 null through structural defaults; their business data is not converted. Full
 and summary resource projections carry both fields, while narrow receipts and
-references retain their own projections. Ordinary creation explicitly supplies
-`task` and no parent, and public writes do not expose either field. The shared
+references retain their own projections. Public creation selects the type and optional Parent; updates can change Parent
+but never type. The shared
 MCP output schemas describe the typed resource and Goal progress shape.
 
 The CLI strictly reads the type and parent fields, accepts Goal progress and a
@@ -24,12 +24,11 @@ not-applicable Session observation, and confines graph nodes to ordinary Tasks.
 Existing status and deletion commands read the target identity before writing;
 Goal terminal transitions and deletion require an impact confirmation or an
 explicit force flag. The preflight does not replace a caller's version or retry
-an unknown write. This prepares existing ID-based commands before public Goal
-creation is enabled.
+an unknown write. These ID-based commands use the same resource identity as public Goal creation.
 
 The [server design](../../../../docs/design/daynight-server.md) owns the deployed
-storage and API mechanics. Type-specific server operations and public creation
-remain separate capabilities. The [resource read decision](2026-11-11-typed-task-resource-reads.md)
+storage and API mechanics. Core type policy and Project-scoped writes enforce the Goal capability and
+parent rules. The [resource read decision](2026-11-11-typed-task-resource-reads.md)
 owns typed selection, effective visibility and derived Goal progress.
 
 ## Alternatives
@@ -48,5 +47,5 @@ Existing ordinary data keeps its identity and behavior, and consumers can learn
 the added fields before new resource types are publicly created. The database
 does not enforce cross-row parent semantics; business operations own those checks.
 Typed reads supply visibility and derived progress; Goal lifecycle and parent
-mutation remain separate capabilities. CLI preflight adds a read even when the
+mutation use the Project write scope. CLI preflight adds a read even when the
 caller supplies a version; the server remains authoritative for writes.

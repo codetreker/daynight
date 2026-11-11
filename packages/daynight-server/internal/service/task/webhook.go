@@ -36,6 +36,9 @@ func pausedProperty(properties model.TaskProperties) (bool, error) {
 }
 
 func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fact, error) {
+	if current.Type == model.TaskTypeGoal {
+		return nil, nil
+	}
 	currentPaused, err := pausedProperty(current.Properties)
 	if err != nil {
 		return nil, fmt.Errorf("decode current paused property: %w", err)

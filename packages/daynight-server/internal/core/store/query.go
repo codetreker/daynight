@@ -36,6 +36,7 @@ type TaskQuery struct {
 	AllowAgents        *bool
 	CompatiblePlatform *model.TaskPlatform
 	PlatformSpecific   *bool
+	AutomaticCandidate bool
 	Worker             *WorkerQuery
 }
 

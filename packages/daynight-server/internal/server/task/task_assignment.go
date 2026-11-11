@@ -17,3 +17,15 @@ func optionalAssignedTo(fields map[string]json.RawMessage) (**string, error) {
 	}
 	return &value, nil
 }
+
+func optionalParentID(fields map[string]json.RawMessage) (**string, error) {
+	raw, exists := fields["parentId"]
+	if !exists {
+		return nil, nil
+	}
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, httpx.InvalidInput("parentId must be a UUID or null")
+	}
+	return &value, nil
+}

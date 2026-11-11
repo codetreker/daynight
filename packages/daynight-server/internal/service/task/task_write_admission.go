@@ -38,6 +38,9 @@ func taskWriteHeader(ctx context.Context, tx store.ProjectWriteScope, taskID str
 	if header.DeletedAt != nil {
 		return model.TaskHeader{}, taskcore.NotFound(model.ErrTaskDeleted)
 	}
+	if err := taskcore.CheckStepsForType(header.Type); err != nil {
+		return model.TaskHeader{}, err
+	}
 	return header, taskcore.RequireVersion(header.Version, version)
 }
 
