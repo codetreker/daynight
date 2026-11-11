@@ -11,15 +11,111 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+type entryOAuthAdmission struct {
+	t                  *testing.T
+	oldToken, newToken string
+	principal          model.Principal
+	newAccess, grantID string
+	refused            atomic.Bool
+	calls              atomic.Int32
+}
+
+func (a *entryOAuthAdmission) AuthenticateAccess(_ context.Context, token, resource string) (store.OAuthAccessIdentity, error) {
+	a.calls.Add(1)
+	if resource != "https://daynight.test/mcp" || (token != a.oldToken && token != a.newToken) {
+		a.t.Errorf("OAuth admission token=%q resource=%q", token, resource)
+		return store.OAuthAccessIdentity{}, model.Unauthenticated(nil)
+	}
+	if a.refused.Load() {
+		return store.OAuthAccessIdentity{}, model.Unauthenticated(nil)
+	}
+	p := a.principal
+	if token == a.newToken {
+		p.CredentialID = a.newAccess
+	}
+	return store.OAuthAccessIdentity{Principal: p, GrantID: a.grantID}, nil
+}
+
+type entryRefreshPAT struct {
+	token string
+	calls atomic.Int32
+}
+
+func (a *entryRefreshPAT) Authenticate(_ context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+	if kind == model.PATCredential && token == a.token {
+		a.calls.Add(1)
+	}
+	return model.Principal{}, model.Unauthenticated(nil)
+}
+
+func TestMCPHTTPAccessAuthorityAndRefreshRejection(t *testing.T) {
+	f := newEntryFixture(t)
+	p := model.Principal{Kind: model.OAuthCredential, UserID: "user", CredentialID: "old-access"}
+	auth := &entryOAuthAdmission{t: t, oldToken: secret.Random(model.OAuthAccessPrefix), newToken: secret.Random(model.OAuthAccessPrefix), principal: p, newAccess: "new-access", grantID: "grant"}
+	refresh := secret.Random(oauthcore.RefreshPrefix)
+	pat := &entryRefreshPAT{token: refresh}
+	f.entry.oauth, f.entry.auth = auth, pat
+	err := f.entry.RegisterTool(&sdk.Tool{Name: "actor", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"}}, BudgetControl, func(_ context.Context, actor RequestActor, _ json.RawMessage) (ToolResult, error) {
+		return ToolResult{Data: map[string]any{"user": actor.Principal.UserID, "access": actor.Principal.CredentialID, "authority": actor.AuthorityRef.ID, "kind": actor.AuthorityRef.Kind}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := f.client(t, "2026-07-28", auth.oldToken)
+	renewed := f.client(t, "2026-07-28", auth.newToken)
+	for _, tc := range []struct {
+		session *sdk.ClientSession
+		access  string
+	}{{old, p.CredentialID}, {renewed, auth.newAccess}} {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		result, callErr := tc.session.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}})
+		cancel()
+		if callErr != nil || result.IsError {
+			t.Fatalf("actor call: %v", callErr)
+		}
+		data := object(t, structured(t, result)["data"])
+		if data["user"] != p.UserID || data["access"] != tc.access || data["authority"] != auth.grantID || data["kind"] != "oauth" {
+			t.Fatalf("OAuth actor = %#v", data)
+		}
+	}
+	before := auth.calls.Load()
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	r.Header.Set("Authorization", "Bearer "+refresh)
+	w := httptest.NewRecorder()
+	f.entry.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized || pat.calls.Load() != 1 || auth.calls.Load() != before {
+		t.Fatalf("refresh status=%d PAT calls=%d OAuth calls=%d before=%d", w.Code, pat.calls.Load(), auth.calls.Load(), before)
+	}
+	f.entry.auth = identityservice.New(nil, nil, "")
+	w = httptest.NewRecorder()
+	f.entry.ServeHTTP(w, r.Clone(t.Context()))
+	if w.Code != http.StatusUnauthorized || auth.calls.Load() != before {
+		t.Fatalf("refresh with Identity status=%d OAuth calls=%d before=%d", w.Code, auth.calls.Load(), before)
+	}
+	auth.refused.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := old.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}}); err == nil {
+		t.Fatal("entry accepted refused access")
+	}
+	if auth.calls.Load() <= before {
+		t.Fatal("entry did not reauthenticate the access token")
+	}
+}
 
 type testAuthenticator struct{}
 

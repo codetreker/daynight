@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -15,6 +16,63 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
+
+type accessAdmissionDAO struct {
+	store.CredentialFamilyDAO
+	t        *testing.T
+	token    string
+	resource string
+	identity store.OAuthAccessIdentity
+	refused  bool
+	calls    int
+}
+
+func (d *accessAdmissionDAO) AuthenticateAccess(_ context.Context, hash []byte, resource, scope string, now time.Time) (store.OAuthAccessIdentity, error) {
+	d.calls++
+	if !bytes.Equal(hash, secret.Hash(d.token)) || resource != d.resource || scope != core.Scope || now.IsZero() || now.Location() != time.UTC {
+		d.t.Errorf("access DAO arguments: hash=%x resource=%q scope=%q time=%v", hash, resource, scope, now)
+	}
+	if d.refused {
+		return store.OAuthAccessIdentity{}, model.ErrNotFound
+	}
+	return d.identity, nil
+}
+
+type accessAdmissionWriter struct{ dao *accessAdmissionDAO }
+
+func (w accessAdmissionWriter) WriteCredentialFamily(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
+	err := fn(accessAdmissionScope{dao: w.dao})
+	if err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+
+type accessAdmissionScope struct{ dao *accessAdmissionDAO }
+
+func (s accessAdmissionScope) CredentialFamilyDAO() store.CredentialFamilyDAO { return s.dao }
+
+func TestAuthenticatorAccessCredentialAdmission(t *testing.T) {
+	token := secret.Random(model.OAuthAccessPrefix)
+	identity := accessIdentity()
+	const resource = "https://daynight.test/mcp"
+	dao := &accessAdmissionDAO{t: t, token: token, resource: resource, identity: identity}
+	auth := NewAuthenticator(accessAdmissionWriter{dao: dao})
+	got, err := auth.AuthenticateAccess(t.Context(), token, resource)
+	if err != nil || got != identity || dao.calls != 1 {
+		t.Fatalf("access identity = %+v, %v; DAO calls=%d", got, err, dao.calls)
+	}
+	dao.resource, dao.refused = "https://other.test/mcp", true
+	got, err = auth.AuthenticateAccess(t.Context(), token, dao.resource)
+	if err == nil || got != (store.OAuthAccessIdentity{}) || dao.calls != 2 {
+		t.Fatalf("wrong resource identity = %+v, %v; DAO calls=%d", got, err, dao.calls)
+	}
+	dao.resource = resource
+	got, err = auth.AuthenticateAccess(t.Context(), token, resource)
+	if err == nil || got != (store.OAuthAccessIdentity{}) || dao.calls != 3 {
+		t.Fatalf("refused identity = %+v, %v; DAO calls=%d", got, err, dao.calls)
+	}
+}
 
 type authenticationCapability struct {
 	store.CredentialFamilyDAO

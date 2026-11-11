@@ -16,6 +16,7 @@ import (
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
@@ -683,5 +684,176 @@ func TestThreadResponseClassificationPreservesUnknownAndCleanupPriority(t *testi
 		if ok && !errors.Is(fault, test.err) {
 			t.Fatal("classification discarded original error chain")
 		}
+	}
+}
+
+func TestThreadOAuthCredentialAdmission(t *testing.T) {
+	f := newThreadFailureFixture(t)
+	f.principal.Kind = model.OAuthCredential
+	f.principal.CredentialID = "f6666666-6666-4666-8666-666666666666"
+	const body = "OAuth author"
+	const messageID = "d7777777-7777-4777-8777-777777777777"
+	expires := f.task.UpdatedAt.Add(time.Hour)
+	credential := store.ThreadCredential{ExpiresAt: &expires}
+	var stages []string
+	f.call = func(ctx context.Context, stage string) error {
+		stages = append(stages, stage)
+		return ctx.Err()
+	}
+	f.credential.CredentialFn = func(ctx context.Context, actual model.Principal) (store.ThreadCredential, error) {
+		if actual != f.principal {
+			t.Errorf("OAuth credential principal: %+v", actual)
+		}
+		return credential, f.call(ctx, "credential")
+	}
+	f.credential.CredentialValidFn = func(ctx context.Context, actual store.ThreadCredential) (bool, error) {
+		if actual.ExpiresAt == nil || !actual.ExpiresAt.Equal(expires) {
+			t.Errorf("OAuth credential recheck: %+v", actual)
+		}
+		return true, f.call(ctx, "final-credential")
+	}
+	f.credential.AuthorNameFn = func(ctx context.Context, user string) (*string, error) {
+		if user != f.principal.UserID {
+			t.Errorf("OAuth author user: %s", user)
+		}
+		name := "OAuth author"
+		return &name, f.call(ctx, "author")
+	}
+	f.thread.LockHeadFn = func(ctx context.Context, taskID string) (*model.ThreadPosition, error) {
+		if taskID != f.task.ID {
+			t.Errorf("head task: %s", taskID)
+		}
+		return nil, f.call(ctx, "head")
+	}
+	f.thread.InsertMessageFn = func(ctx context.Context, actual model.ThreadMessage) (model.ThreadMessage, error) {
+		name := "OAuth author"
+		want := model.ThreadMessage{TaskID: f.task.ID, Author: model.ThreadAuthor{UserID: f.principal.UserID, DisplayName: &name}, Body: body}
+		if !reflect.DeepEqual(actual, want) {
+			t.Errorf("OAuth message candidate: %+v", actual)
+		}
+		actual.ID = messageID
+		return actual, f.call(ctx, "insert")
+	}
+	f.thread.PrepareTimestampFn = func(ctx context.Context, message *model.ThreadMessage, head *model.ThreadPosition) error {
+		if message.ID != messageID || head != nil {
+			t.Errorf("timestamp candidate/head: %+v %+v", message, head)
+		}
+		message.CreatedAt = f.task.UpdatedAt
+		return f.call(ctx, "timestamp")
+	}
+	f.thread.AdvanceHeadFn = func(ctx context.Context, taskID string, position model.ThreadPosition) error {
+		if taskID != f.task.ID || position.ID != messageID || !position.CreatedAt.Equal(f.task.UpdatedAt) {
+			t.Errorf("advanced head: %s %+v", taskID, position)
+		}
+		return f.call(ctx, "advance")
+	}
+	capture := taskDeletionCapture(func(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+		if dao != f.capture || len(facts) != 1 || facts[0].Type != protocol.ThreadPosted || facts[0].ProjectID != f.project.ID || facts[0].TaskID != f.task.ID || facts[0].MessageID != messageID {
+			t.Errorf("OAuth capture: %+v", facts)
+		}
+		return f.call(ctx, "capture")
+	})
+	f.service = taskservice.NewTaskThreads(f.database, capture)
+	commitThreadCallback(f.database, f.scope)
+	result, err := f.service.Post(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: body})
+	if err != nil || result.Message.ID != messageID || result.Message.Body != body {
+		t.Fatalf("OAuth thread post: %+v %v", result, err)
+	}
+	want := []string{"presence", "credential", "authorization", "author", "head", "insert", "timestamp", "final-credential", "advance", "capture"}
+	if !slices.Equal(stages, want) {
+		t.Fatalf("OAuth thread stages: %v, want %v", stages, want)
+	}
+}
+
+func TestThreadOAuthCredentialRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		forged  bool
+		barrier bool
+		calls   int
+	}{
+		{name: "forged", forged: true, calls: 1},
+		{name: "after-task-presence-barrier", barrier: true, calls: 1},
+		{name: "revoked", calls: 1},
+		{name: "concurrent-initial-refusals", calls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newThreadFailureFixture(t)
+			f.principal.Kind = model.OAuthCredential
+			f.principal.CredentialID = "f6666666-6666-4666-8666-666666666666"
+			if tc.forged {
+				f.principal.CredentialID = "f3333333-3333-4333-8333-333333333333"
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			entered, release := make(chan struct{}, tc.calls), make(chan struct{})
+			f.taskWrite.LockTaskPresenceFn = func(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
+				if projectID != f.project.ID || taskID != f.task.ID {
+					t.Errorf("task presence scope: %s %s", projectID, taskID)
+				}
+				entered <- struct{}{}
+				if tc.barrier {
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return store.TaskPresence{}, ctx.Err()
+					}
+				}
+				return store.TaskPresence{Found: true}, nil
+			}
+			f.credential.CredentialFn = func(_ context.Context, actual model.Principal) (store.ThreadCredential, error) {
+				if actual != f.principal {
+					t.Errorf("OAuth refused principal: %+v", actual)
+				}
+				return store.ThreadCredential{}, model.ErrNotFound
+			}
+			results := make(chan error, tc.calls)
+			for range tc.calls {
+				go func() {
+					_, err := f.service.Post(ctx, f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "OAuth refusal"})
+					results <- err
+				}()
+			}
+			for range tc.calls {
+				select {
+				case <-entered:
+				case <-ctx.Done():
+					t.Fatal("task presence was not reached")
+				}
+			}
+			if tc.barrier {
+				for _, call := range f.base.trace.snapshot() {
+					if call == "write-credential.Credential" {
+						t.Error("credential read before task presence barrier released")
+					}
+				}
+				close(release)
+			}
+			for range tc.calls {
+				select {
+				case err := <-results:
+					if !errors.Is(err, model.ErrNotFound) {
+						t.Errorf("credential refusal lost: %v", err)
+					}
+					requireThreadFault(t, err, "unauthenticated")
+				case <-ctx.Done():
+					t.Fatal("thread post did not finish")
+				}
+			}
+			var presence, credentials int
+			for _, call := range f.base.trace.snapshot() {
+				switch call {
+				case "write-task.LockTaskPresence":
+					presence++
+				case "write-credential.Credential":
+					credentials++
+				case "write-project.LockProjectAuthorization", "thread-dao.InsertMessage", "write-credential.CredentialValid", "write-scope.CaptureDAO":
+					t.Errorf("unexpected call after credential refusal: %s", call)
+				}
+			}
+			if presence != tc.calls || credentials != tc.calls {
+				t.Fatalf("presence/credential calls: %d/%d, want %d/%d", presence, credentials, tc.calls, tc.calls)
+			}
+		})
 	}
 }

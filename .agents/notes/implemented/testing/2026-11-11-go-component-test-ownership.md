@@ -51,7 +51,13 @@ capabilities for precise outcomes; HTTP fault classification belongs to httpx.
 Public OAuth authorization and token HTTP lifecycle scenarios live with their
 adapters, using real local Service and Core components, sockets and narrowly
 controlled DAO facts. Root retains the public profile and error-page assembly
-proofs and the fixture capabilities still used by its OAuth consumers.
+proofs and the fixture capabilities still used by its OAuth consumers. OAuth
+access admission follows its Authenticator, MCP Entry, Task Thread and Bot
+service owners. Controlled credential refusals preserve the Task presence
+barrier and the Bot deletion recheck after mutation; they do not simulate a
+database lock, elapsed expiry or revocation during a wait. Root retains default
+OAuth admission, Team wiring, REST exclusion and concurrent cross-service
+refusal.
 Project and Team HTTP organization scenarios use their real registrars and
 Service/Core with controlled DAO facts. Project, Team and Invitation MCP
 scenarios use a focused Entry host with those real collaborators and the SDK;
