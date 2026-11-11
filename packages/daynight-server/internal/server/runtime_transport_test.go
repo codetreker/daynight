@@ -457,8 +457,8 @@ func TestTransportStartupFailures(t *testing.T) {
 	}
 }
 
-// blockedCompletionWriter controls the request completion record after the
-// hijacked handler returns; lifecycle records remain writable.
+// blockedCompletionWriter stalls the request completion record after the
+// hijacked handler returns, retaining the shared handler and output locks.
 type blockedCompletionWriter struct {
 	entered chan struct{}
 	release chan struct{}
@@ -470,6 +470,19 @@ func (w *blockedCompletionWriter) Write(value []byte) (int, error) {
 		<-w.release
 	}
 	return len(value), nil
+}
+
+type startupLogObserver struct {
+	slog.Handler
+	completed chan error
+}
+
+func (h *startupLogObserver) Handle(ctx context.Context, record slog.Record) error {
+	err := h.Handler.Handle(ctx, record)
+	if record.Message == "server started" {
+		h.completed <- err
+	}
+	return err
 }
 
 func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
@@ -486,7 +499,8 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			logger := slog.New(slog.NewJSONHandler(output, nil))
+			startupLogged := make(chan error, 1)
+			logger := slog.New(&startupLogObserver{Handler: slog.NewJSONHandler(output, nil), completed: startupLogged})
 			hijacked := make(chan error, 1)
 			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				connection, buffer, err := http.NewResponseController(w).Hijack()
@@ -540,6 +554,11 @@ func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
 					t.Error(err)
 				}
 			})
+			// Run logs startup after starting Serve. Finish that synchronous write
+			// before request completion can block the same handler and output locks.
+			if err := await(t, startupLogged); err != nil {
+				t.Fatalf("startup log: %v", err)
+			}
 			connection, err := net.DialTimeout("tcp", runtime.Address(), time.Second)
 			if err != nil {
 				t.Fatal(err)
