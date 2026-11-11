@@ -26,7 +26,8 @@ the last. Failure stops reuse. No case enters parallel scheduling.
 The reset truncates all 65 mutable tables together without cascading, including
 both sides of the nine foreign keys. It retains and compares the full migration
 ledger and four snapshot seed tables, and explicitly restores and reads back
-all four sequences, including their `is_called` state. Sequence changes are not
+all four sequences, including their `is_called` state. At measurement, the ledger
+contained all 62 migrations in the then-current snapshot. Sequence changes are not
 transactional, so any reset or verification error ends the group. Child cleanup
 finishes before the parent observes resources with its still-live context.
 Rollback cleanup uses an independent deadline and reports unexpected errors.
@@ -61,5 +62,9 @@ observations. Five preserved tables must match their captured contents and all
 sequences must match their captured state before reuse. An unfinished owner,
 failed cleanup or drift prevents subsequent cases from running. Schema and seed
 changes require the fixture's table and sequence inventory to be reconsidered.
-The realized package cost includes reset, checks and final cleanup; fixture counts
-alone do not establish a performance improvement or a hosted CI improvement.
+In three fresh PostgreSQL 18.6 comparisons with warm Go 1.27.2 binaries, a
+2-CPU/4-GiB Go runner and a 2-CPU/2-GiB database, full package medians were
+34.84 seconds before and 19.72 seconds after, including reset, checks and final
+cleanup. Both used atomic coverage and no race instrumentation. The first
+baseline took 59.71 seconds amid concurrent local work, so these samples do not
+establish a hosted CI improvement; fixture counts alone cannot establish one.
