@@ -25,10 +25,18 @@ export type WindowsOwnedJobKernel = WindowsJobKernel & {
   closeProcess(process: unknown): void;
 };
 
-export const loadWindowsJobKernel = async (): Promise<WindowsOwnedJobKernel> => {
+export type WindowsCommandJobKernel = WindowsOwnedJobKernel & {
+  createAnonymousJob(): unknown;
+  sealAdmissions(handle: unknown): void;
+  clearKillOnClose(handle: unknown): void;
+  restoreKillOnClose(handle: unknown): void;
+};
+
+export const loadWindowsJobKernel = async (): Promise<WindowsCommandJobKernel> => {
   const koffi = await import("koffi");
   const library = koffi.load("kernel32.dll");
   const create = library.func("void * __stdcall CreateJobObjectW(void *attributes, str16 name)");
+  const createAnonymous = library.func("void * __stdcall CreateJobObjectW(void *attributes, void *name)");
   const lastError = library.func("uint32_t __stdcall GetLastError()");
   const setLastError = library.func("void __stdcall SetLastError(uint32_t code)");
   const openProcess = library.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
@@ -52,7 +60,33 @@ export const loadWindowsJobKernel = async (): Promise<WindowsOwnedJobKernel> => 
   const pointerSize = koffi.sizeof("uintptr_t");
   if (pointerSize !== 4 && pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
   const failure = (stage: string) => new WindowsJobError(stage, lastError() as number);
+  const flagOffset = koffi.offsetof(extended, "BasicLimitInformation") + koffi.offsetof(basic, "LimitFlags");
+  const processLimitOffset = koffi.offsetof(extended, "BasicLimitInformation") + koffi.offsetof(basic, "ActiveProcessLimit");
+  const limits = (handle: unknown): Buffer => {
+    const data = Buffer.alloc(koffi.sizeof(extended)), returned = Buffer.alloc(4);
+    if (query(handle, 9, data, data.length, returned) === 0) throw failure("query-limits");
+    if (returned.readUInt32LE() !== data.length) throw new Error("Invalid Windows Job extended limits.");
+    return data;
+  };
+  const updateLimits = (handle: unknown, mutate: (data: Buffer) => void, verify: (data: Buffer) => boolean, stage: string): void => {
+    const data = limits(handle); mutate(data);
+    if (set(handle, 9, data, data.length) === 0) throw failure(stage);
+    if (!verify(limits(handle))) throw new Error(`Windows Job Object ${stage} readback did not confirm the requested limits.`);
+  };
   return {
+    createAnonymousJob: () => {
+      const handle: unknown = createAnonymous(null, null);
+      if (handle === null) throw failure("create-anonymous");
+      return handle;
+    },
+    sealAdmissions: handle => updateLimits(handle, data => {
+      data.writeUInt32LE((data.readUInt32LE(flagOffset) | 0x8) >>> 0, flagOffset);
+      data.writeUInt32LE(0, processLimitOffset);
+    }, data => (data.readUInt32LE(flagOffset) & 0x8) !== 0 && data.readUInt32LE(processLimitOffset) === 0, "seal-admissions"),
+    clearKillOnClose: handle => updateLimits(handle, data => data.writeUInt32LE((data.readUInt32LE(flagOffset) & ~0x2000) >>> 0, flagOffset),
+      data => (data.readUInt32LE(flagOffset) & 0x2000) === 0, "clear-kill-on-close"),
+    restoreKillOnClose: handle => updateLimits(handle, data => data.writeUInt32LE((data.readUInt32LE(flagOffset) | 0x2000) >>> 0, flagOffset),
+      data => (data.readUInt32LE(flagOffset) & 0x2000) !== 0, "restore-kill-on-close"),
     open: pid => {
       const handle: unknown = openProcess(0x00101101, 0, pid); // SYNCHRONIZE | QUERY_LIMITED_INFORMATION | SET_QUOTA | TERMINATE
       if (handle === null) {

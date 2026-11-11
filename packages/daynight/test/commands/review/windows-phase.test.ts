@@ -1,12 +1,13 @@
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { Readable } from "node:stream";
+import { runInNewContext } from "node:vm";
 import { pipeline } from "node:stream/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { spawnWindowsReviewPhase } from "../../../src/commands/review/windows-phase.js";
+import { spawnWindowsReviewPhase, windowsReviewGuardianSource } from "../../../src/commands/review/windows-phase.js";
 import { WindowsReviewJobSetupError } from "../../../src/commands/review/windows-job-scope.js";
 import type { WindowsReviewJobScope } from "../../../src/commands/review/windows-job-scope.js";
 
@@ -18,6 +19,38 @@ const options = (args: string[]) => ({ file: process.execPath, args, cwd: direct
 const text = async (stream: NodeJS.ReadableStream): Promise<string> => { let value = ""; for await (const chunk of stream) value += String(chunk); return value; };
 
 describe("review guardian protocol with controlled Job admission", () => {
+  it("exits an already disconnected bootstrap before loading a resolver or admitting a target", () => {
+    const exited = new Error("bootstrap exited"), events: string[] = [], require = vi.fn();
+    const disconnected = {
+      connected: false,
+      on: vi.fn((name: string) => { events.push(name); }),
+      exit: vi.fn(() => { throw exited; }),
+    };
+    expect(() => runInNewContext(windowsReviewGuardianSource, { process: disconnected, require })).toThrow(exited);
+    expect(events).toEqual(["disconnect"]); expect(disconnected.exit).toHaveBeenCalledWith(1);
+    expect(require).not.toHaveBeenCalled();
+  });
+
+  it("joins a real forcibly stopped helper without requiring an unreceived target result", async () => {
+    const marker = path.join(directory, "forced-target-pid"), lease = scope();
+    let target: number | undefined;
+    const phase = spawnWindowsReviewPhase(options(["-e", `const fs=require('node:fs'),marker=${JSON.stringify(marker)};fs.writeFileSync(marker+'.tmp',String(process.pid));fs.renameSync(marker+'.tmp',marker);setInterval(()=>{if(fs.existsSync(marker+'.exit'))process.exit(0)},5);setTimeout(()=>process.exit(0),10000).unref()`]), { createScope: async () => lease });
+    phase.child.stdout!.resume(); phase.child.stderr!.resume(); phase.child.stdin!.end();
+    lease.stop = vi.fn(async () => {
+      if (phase.child.exitCode === null && phase.child.signalCode === null) { const exited = once(phase.child, "exit"); phase.child.kill("SIGKILL"); await exited; }
+      await writeFile(marker + ".exit", "release");
+    });
+    try {
+      await phase.start(); await expect.poll(() => existsSync(marker), { timeout: 4000, interval: 10 }).toBe(true);
+      target = Number(await readFile(marker, "utf8")); expect(process.kill(target, 0)).toBe(true);
+      await phase.stop(); await phase.closed;
+      expect(phase.result).toBeUndefined(); expect(lease.stop).toHaveBeenCalledOnce();
+    } finally {
+      await writeFile(marker + ".exit", "release");
+      await phase.stop();
+    }
+  });
+
   it("streams prompt and both outputs without the capability probe's output limit", async () => {
     const lease = scope();
     const phase = spawnWindowsReviewPhase(options(["-e", "process.stdin.pipe(process.stdout);process.stderr.write('independent');process.exitCode=7"]), { createScope: async () => lease });

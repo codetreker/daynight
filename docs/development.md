@@ -214,6 +214,25 @@ recovery and deletion scenarios. A test-owned handle keeps a controlled Job name
 available for direct membership and termination checks. The
 [native Job API decision](../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)
 owns the preserved handle lifetime and measurement boundaries.
+Repository Git uses the shared Windows owned-command platform with its own
+completion policy. Native regressions keep a live Job member across root and
+intermediate exit, seal new admissions before stopping, distinguish actual target
+results from transport state, and preserve normal background work on release.
+The real fetch-timeout fixture writes an uploadpack execution marker and checks
+it after rejection, so pre-target startup alone cannot satisfy that test. Its
+1,500 ms command deadline and original branch/registration assertions remain.
+Portable controls retain real root closure, advancing descendant heartbeats,
+native error identity and the original cause; they do not qualify Windows Job
+behavior. The PR Windows CLI job runs the native controls and complete suite.
+Its Git/platform heartbeat witnesses append bytes and observe file size; a
+controlled reader that denies delete sharing verifies progress without hot-file
+replacement. Historical file holders remain outside that controlled proof.
+Native release controls also compare direct Git with the owned runner after
+their short-lived CLI owners exit, without an extra Job handle masking the
+result. Pre-admission owner-loss controls keep the ambient Job open and require
+the suspended native target to terminate without executing the payload marker.
+The [Git ownership decision](../.agents/notes/implemented/bug-fix/2026-11-10-repository-git-windows-job-ownership.md)
+owns the stop/release trade-offs and cleanup uncertainty contract.
 The native fsmonitor regression uses a real hook's invocation marker to qualify
 ordinary Git and verify protected-query suppression. Its
 [fixture decision](../.agents/notes/archived/testing/2026-11-04-fsmonitor-fixture-marker.md)

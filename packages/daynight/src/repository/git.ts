@@ -1,6 +1,8 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import type { Operation } from "../api/operation.js";
+import { restoreWindowsSpawnError, spawnWindowsOwnedCommand, WindowsCommandCleanupError } from "../platform/windows-owned-command.js";
 import { repositoryIdentity } from "./identity.js";
 
 const maxOutputBytes = 1_048_576;
@@ -50,11 +52,129 @@ export class RepositoryGitError extends Error {
 
 export type RepositoryGitOptions = {
   readonly allowExitOne?: boolean;
-  /** Inherited groups require an outer supervisor to terminate descendants after this operation exits. */
+  /** POSIX inherited groups require an outer descendant supervisor; Windows keeps an inner command Job in either mode. */
   readonly processGroup?: "own" | "inherit";
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
 };
+
+const runWindowsRepositoryGit = (
+  cwd: string,
+  args: readonly string[],
+  operation: Operation,
+  options: RepositoryGitOptions,
+  deadline: number,
+): Promise<RepositoryGitResult> => new Promise((resolve, reject) => {
+  const stdout: Buffer[] = [], stderr: Buffer[] = [];
+  let stdoutBytes = 0, stderrBytes = 0;
+  let failure: unknown;
+  let failureMessage: string | undefined;
+  const cleanupErrors: unknown[] = [];
+  let stopping = false, releasing = false, settled = false, committed = false;
+  let timer: NodeJS.Timeout | undefined;
+  const detach = (): void => {
+    clearTimeout(timer);
+    operation.signal.removeEventListener("abort", abort);
+  };
+  const command = spawnWindowsOwnedCommand({
+    file: "git", args: ["--no-pager", "-c", "core.fsmonitor=false", ...args], cwd: path.resolve(cwd),
+    environment: gitEnvironment(options.environment), stdin: "ignore", resolver: "node", deadline,
+    graceMs: cleanupMs, pipeCloseMs: cleanupMs, normalDisposition: "release", stopAdmission: "seal", failureDisposition: "last-close",
+    onReleased: () => { committed = true; detach(); },
+  });
+  const appendCleanup = (error: unknown): void => {
+    for (const cause of error instanceof WindowsCommandCleanupError ? error.errors : [error]) {
+      if (!cleanupErrors.includes(cause)) cleanupErrors.push(cause);
+    }
+  };
+  const complete = (): void => {
+    if (settled) return;
+    settled = true;
+    detach();
+    const receipt = command.result;
+    const exitCode = receipt?.kind === "exit" ? receipt.code : null;
+    const signal = receipt?.kind === "exit" ? receipt.signal : null;
+    let operationFailure: unknown;
+    if (!committed) {
+      try { operation.check(); }
+      catch (error) { operationFailure = error; }
+    }
+    const errorOutput = diagnostic(Buffer.concat(stderr).toString("utf8"));
+    const primary = operationFailure ?? (failure !== undefined || failureMessage !== undefined
+      ? new RepositoryGitError(failureMessage ?? "Cannot execute repository Git command", exitCode, signal, errorOutput,
+        failure === undefined ? undefined : { cause: failure })
+      : exitCode !== 0 && !(exitCode === 1 && options.allowExitOne === true)
+        ? new RepositoryGitError("Repository Git command failed", exitCode, signal, errorOutput)
+        : undefined);
+    if (cleanupErrors.length !== 0) {
+      reject(new AggregateError(cleanupErrors, "Repository Git process-tree cleanup failed; process termination is unconfirmed.",
+        primary === undefined ? undefined : { cause: primary }));
+    } else if (primary !== undefined) reject(primary);
+    else resolve({ stdout: Buffer.concat(stdout).toString("utf8"), stderr: errorOutput, exitCode: exitCode! });
+  };
+  const stop = (): void => {
+    if (stopping || releasing || settled || committed) return;
+    stopping = true;
+    void command.stop().catch(appendCleanup).finally(complete);
+  };
+  function abort(): void {
+    if (committed || settled) return;
+    try { operation.check(); }
+    catch (error) { failure = error; }
+    stop();
+  }
+  const expired = (): void => {
+    if (committed || settled) return;
+    try { operation.check(); }
+    catch (error) { failure = error; }
+    if (failure === undefined) failureMessage = "Repository Git command deadline exceeded";
+    stop();
+  };
+  const executionFailed = (error: unknown): void => {
+    // Cleanup uncertainty survives an abort that already started STOP.
+    if (error instanceof WindowsCommandCleanupError) appendCleanup(error);
+    if (stopping || settled || committed) return;
+    failure = error;
+    // Synchronous native admission can cross the deadline before the timer dispatches.
+    if (performance.now() >= deadline) failureMessage = "Repository Git command deadline exceeded";
+    stop();
+  };
+  const collect = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+    if (failure !== undefined || failureMessage !== undefined) return;
+    const size = stream === "stdout" ? stdoutBytes : stderrBytes;
+    if (size + chunk.length > maxOutputBytes) {
+      failureMessage = `Repository Git ${stream} exceeded its ${maxOutputBytes}-byte limit`;
+      stop();
+    } else if (stream === "stdout") { stdoutBytes += chunk.length; stdout.push(chunk); }
+    else { stderrBytes += chunk.length; stderr.push(chunk); }
+  };
+  command.stdout.on("data", (chunk: Buffer) => { collect("stdout", chunk); });
+  command.stderr.on("data", (chunk: Buffer) => { collect("stderr", chunk); });
+  const streamError = (error: Error): void => { failure = error; stop(); };
+  command.stdout.once("error", streamError);
+  command.stderr.once("error", streamError);
+  operation.signal.addEventListener("abort", abort, { once: true });
+  timer = setTimeout(expired, Math.max(1, Math.ceil(deadline - performance.now())));
+  timer.unref();
+  void command.closed.then(async () => {
+    if (stopping || settled) return;
+    try { operation.check(); }
+    catch (error) { failure = error; stop(); return; }
+    if (performance.now() >= deadline) { expired(); return; }
+    const receipt = command.result;
+    if (receipt === undefined) { failure = new Error("The owned Git command closed without a target receipt."); stop(); return; }
+    if (receipt.kind === "not-started") failure = restoreWindowsSpawnError(receipt.error);
+    else if (receipt.failure !== null) failure = restoreWindowsSpawnError(receipt.failure);
+    // RELEASE commits OFF synchronously or finalizes its own failed mutation;
+    // a timer must not start a second STOP while that finalization is joining.
+    releasing = true;
+    try { await command.release(); }
+    catch (error) { appendCleanup(error); }
+    complete();
+  }, executionFailed);
+  if (operation.signal.aborted) abort();
+  if (!stopping) void command.start().catch(executionFailed);
+});
 
 export const runRepositoryGit = async (
   cwd: string,
@@ -66,6 +186,7 @@ export const runRepositoryGit = async (
   const commandMs = options.timeoutMs === undefined ? maxGitMs : options.timeoutMs;
   if (!Number.isSafeInteger(commandMs) || commandMs <= 0 || commandMs > 2_147_483_647) throw new RangeError("Git command timeout must be a positive supported integer.");
   const timeoutMs = Math.max(1, Math.ceil(Math.min(commandMs, operation.remainingMs())));
+  if (process.platform === "win32") return runWindowsRepositoryGit(cwd, args, operation, options, performance.now() + timeoutMs);
   return new Promise((resolve, reject) => {
     // Index reads do not need an external fsmonitor; its inherited pipes can outlive Git.
     const child = spawn("git", ["--no-pager", "-c", "core.fsmonitor=false", ...args], {
@@ -115,13 +236,7 @@ export const runRepositoryGit = async (
       if (stopped || child.pid === undefined) return;
       stopped = true;
       try {
-        if (process.platform === "win32") {
-          const systemRoot = process.env.SystemRoot;
-          if (systemRoot === undefined || !path.win32.isAbsolute(systemRoot)) throw new Error("SystemRoot must identify an absolute Windows directory to terminate the owned Git process tree.");
-          execFileSync(path.win32.join(systemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], {
-            windowsHide: true, timeout: cleanupMs, maxBuffer: 64 * 1024, stdio: "pipe",
-          });
-        } else if (options.processGroup === "inherit") child.kill("SIGKILL");
+        if (options.processGroup === "inherit") child.kill("SIGKILL");
         else process.kill(-child.pid, "SIGKILL");
       } catch (error) {
         if (!(process.platform !== "win32" && error instanceof Error && "code" in error && error.code === "ESRCH")) cleanupErrors.push(error);
