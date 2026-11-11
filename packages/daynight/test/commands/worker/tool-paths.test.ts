@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { stringify } from "yaml";
+import { projectWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import { parseWorkerCloudBootstrap, parseWorkerLocalConfiguration } from "../../../src/commands/worker/configuration-source.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -60,11 +61,16 @@ describe.each([
   });
 });
 
-it("keeps local choices outside the existing cloud bootstrap protocol", async () => {
-  const source = stringify({ worker: { toolPaths: { codex: path.resolve("/tools/codex") } } });
+it("imports local choices while preserving the legacy cloud report projection", async () => {
+  const codex = path.resolve("/tools/codex");
+  const source = stringify({ worker: { toolPaths: { codex } } });
   const bootstrap = await parseWorkerCloudBootstrap(source, paths, async () => { throw new Error("No Projects configured."); }, new AbortController().signal);
-  expect(bootstrap).toEqual({
+  const legacy = {
     agentControlMode: "herdr", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
     preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [],
+  };
+  expect(bootstrap).toEqual({ ...legacy, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
+  expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false })).toEqual({
+    bootstrap: legacy, observation: null, controlModeBootstrap: null,
   });
 });
