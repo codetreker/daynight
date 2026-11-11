@@ -14,8 +14,11 @@ import type { LocalTask as WebTask } from "../../../src/commands/worker/backends
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
+  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), backend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));

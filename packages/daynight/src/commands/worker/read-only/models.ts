@@ -77,7 +77,7 @@ type Configuration = { native: WorkerCloudNative; report: WorkerRuntimeNative };
 type Snapshot = { result: Omit<WorkerModelResult, "nextCursor">; configuration: string; query: string; expires: number };
 type Verifier = { discover(options: { native: WorkerCloudNative; cwd: string; environment: NodeJS.ProcessEnv }, operation: Operation): Promise<NativeModelObservation> };
 /** A catalog is read on demand. Only bounded pagination snapshots survive a request; no existing Session is consulted. */
-export const createWorkerModelDiscovery = (options: { configuration(): Configuration; defaultCwd: string; environment: NodeJS.ProcessEnv; verifier: Verifier }) => {
+export const createWorkerModelDiscovery = (options: { configuration(): Configuration; defaultCwd: string; environment: NodeJS.ProcessEnv; verifier: Verifier; prepare?: (provider: WorkerAgent, operation: Operation) => Promise<void> }) => {
   const snapshots = new Map<string, Snapshot>(), secret = randomBytes(32), environment = { ...options.environment };
   let closed = false, occupied = 0, epoch = 0;
   const signature = (): string => JSON.stringify(options.configuration());
@@ -112,6 +112,7 @@ export const createWorkerModelDiscovery = (options: { configuration(): Configura
       const operation = createOperation({ signal, limits: { totalMs: 25_000, requestMs: 25_000, responseBytes: 65_536, totalBytes: 65_536 } });
       let directory: Promise<string> | undefined;
       try {
+        if (input.cursor === undefined) await options.prepare?.(input.provider, operation);
         const configurationSignature = signature(), configuration = JSON.parse(configurationSignature) as Configuration;
         const requestedPath = input.cwd ?? options.defaultCwd;
         if (!absolute(requestedPath)) throw new WorkerModelDiscoveryError("invalid_path");

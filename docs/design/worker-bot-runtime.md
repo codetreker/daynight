@@ -8,6 +8,8 @@
 
 执行行按服务、账号、Worker、Bot 隔离。首次 `registration` 保持不变，`intent.controllerInstanceId` 表示当前代 Controller；换代只改变当前 generation、launchId、Controller instance 和对应 ticket 路径。Session、testExecutionId、initialOperationId、已知 native ID、角色及冻结配置延续原身份。
 
+Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `toolObservation`；Worker SQLite 格式 14 与 Web 库格式 4 阻止旧进程丢弃这些字段。启动、原身份恢复与 never-submitted 侧文件规则由[工具冻结设计](daynight-worker.md#本地工具路径选择)拥有。观察和停止原活 Controller 不因当前工具文件变化而失效。
+
 执行写入在即时事务中重新核对库存中的当前 intent。未知提交不能回退为未提交；同代已知 native ID 与进程出生证明不能更换或丢弃。`beginRecovery` 同时更新库存意图与执行证据，避免崩溃后出现新 intent 配旧代提交状态。它要求原代完整 stopped snapshot、native ID、Controller process proof 与允许的恢复预算，保存前代停证及原 launch/别名路径后，产生一个未提交的新目标。普通 patch 不能修改恢复计数或关停来源。
 
 删除进度保存在既有 `bots.record` JSON 的可选 `cleanup` 中，固定原 `deletionId`、请求版本、stopProof、清理目标和完成状态；缺省表示尚未准备清理。`011-bot-deletion.sql` 将 Worker 格式升为 11，不新增表，但阻止旧 Worker 打开或继续使用数据库：旧版 observe 会重写 JSON 并丢弃不认识的清理字段，仅依赖 deletion marker 拒绝启动无法保住 journal 删除后的唯一回执。本地清理完成时，在同一事务中清空定义和 intent、删除 `bot_executions` 行并裁剪目标列表，保留原停证与完成回执身份。

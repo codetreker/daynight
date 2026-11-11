@@ -14,9 +14,18 @@ const fixture = () => {
   controlled.spawn.mockReset().mockImplementation(() => { queueMicrotask(() => { child.emit("spawn"); child.stdout.write("Listening on port 23456\n"); }); return child; });
   const shutdown = vi.fn(async () => ({})), stop = vi.fn(async () => []), forceStop = vi.fn(async () => {}), closeBridge = vi.fn(async () => {});
   controlled.bridge.mockReset().mockReturnValue({ ready: Promise.resolve({ rpc: { runtime: { shutdown } }, stop, forceStop }), close: closeBridge });
-  const runtime = startCopilotRuntime({ cwd: process.cwd(), model: null, args: [], executable: "/controlled/copilot", resumeNativeSessionId: null, onSpawn() {}, onState() {}, onTimeline() {} }, () => {});
-  return { runtime, child, shutdown, stop, forceStop, closeBridge, exit };
+  const lost = vi.fn();
+  const runtime = startCopilotRuntime({ cwd: process.cwd(), model: null, args: [], executable: "/controlled/copilot", resumeNativeSessionId: null, onSpawn() {}, onState() {}, onTimeline() {} }, lost);
+  return { runtime, child, shutdown, stop, forceStop, closeBridge, exit, lost };
 };
+
+test("an exit during the acknowledged SDK shutdown does not report unexpected native loss", async () => {
+  const f = fixture(); await f.runtime.ready;
+  f.shutdown.mockImplementation(async () => { f.exit(); return {}; });
+  await f.runtime.close();
+  expect(f.lost).not.toHaveBeenCalled(); expect(f.child.kill).not.toHaveBeenCalled();
+  expect(f.shutdown).toHaveBeenCalledOnce(); expect(f.closeBridge).toHaveBeenCalledOnce();
+});
 
 test("runtime cleanup retries a failed bridge release after joining native without repeating the native stop request", async () => {
   const f = fixture(), failure = new Error("Fixture bridge spool removal failed"); await f.runtime.ready; vi.useFakeTimers();

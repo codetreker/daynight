@@ -17,8 +17,11 @@ import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
+  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), persist: vi.fn() }));

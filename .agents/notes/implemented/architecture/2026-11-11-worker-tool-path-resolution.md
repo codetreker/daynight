@@ -142,9 +142,10 @@ and cleanup. Script imports, OS libraries and native user configuration are not
 part of the artifact set. Known loader/template registration requires explicit
 updates as supported upstream formats change.
 
-Worker Task/Bot launches, Herdr instances and version/capability probes do not
-consume these choices yet. Cloud configuration exchanges negotiated choices but
-does not apply them. A successful parse does not
-prove that a file exists, that a tool can run, that its protocol is compatible,
-or that the Worker has applied the selection. Runtime integration must preserve
-those distinctions when it begins consuming the shared choice contract.
+The [runtime integration decision](2026-11-12-worker-frozen-tool-runtime.md)
+adds Web Task/Bot launch consumers, shared probes and a bounded Copilot authority
+profile. That profile freezes its known preload closure and a complete private
+distribution manifest in addition to the plain resolver dependencies. Herdr
+instance mapping remains separate. A successful parse alone still does not prove
+that a file exists, that a tool can run, that its protocol is compatible, or that
+the Worker has applied the selection.

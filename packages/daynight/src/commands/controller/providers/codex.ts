@@ -1,3 +1,5 @@
+import { createOperation } from "../../../api/operation.js";
+import { toolCommand, verifyToolLaunch } from "../../../platform/tool-executables.js";
 import { nativeInputText, textNativeInput, validateNativeInput, verifyNativeImageFiles } from "./native-input.js";
 import type { NativeInput } from "./types.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
@@ -26,11 +28,18 @@ import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } 
 type Pending = { nativeId: unknown; interaction: SessionInteraction; result(response: InteractionResponse): unknown; settled?: () => void; rejected?: (error: Error) => void };
 export const openCodexProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
   const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
+  if (options.toolLaunch) {
+    if (options.toolLaunch.tool !== "codex" || options.toolLaunch.context !== "web" || options.executable) throw new Error("Conflicting Codex tool launch options.");
+    const operation = createOperation({ limits: { totalMs: 15_000 } });
+    try { await verifyToolLaunch(options.toolLaunch, operation); } finally { operation.dispose(); }
+  }
   const executable = options.executable ?? "codex";
+  const command = options.toolLaunch ? toolCommand(options.toolLaunch, ["app-server", "--stdio"])
+    : { file: /\.[cm]?js$/i.test(executable) ? process.execPath : executable, args: [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"] };
   const childEnvironment = { ...(options.env ?? process.env) };
   if (options.onNativeReadPolicy) childEnvironment.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const nativeHome = codexNativeHome(childEnvironment, options.cwd);
-  const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
+  const child: ChildProcessWithoutNullStreams = spawn(command.file, command.args, { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
   let projection: CodexProjection;
