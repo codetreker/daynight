@@ -45,6 +45,43 @@ const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
 describe('Goal task lists', () => {
+  it('keeps a cross-scope chain but shows only the current scope and counts its representative once', () => {
+    const items = [
+      { ...task('Outside', 'done'), parentId: 'goal-a' },
+      { ...task('Inside', 'todo', ['Outside']), parentId: null },
+    ];
+    const index = indexOf(items);
+    const onOpenTask = vi.fn();
+    render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Outside']} allRepresentativeIds={['Outside']}
+      scopedMembers={new Map([['Outside', ['Inside']]])} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
+    const header = document.getElementById('task-root-Outside')!;
+    expect(header).toHaveTextContent('Outside');
+    expect(header).toHaveTextContent('0/1');
+    expect(header.parentElement).toHaveAttribute('data-task-status', 'todo');
+    expect(header.querySelector('.task-assignee-identity')).toBeNull();
+    fireEvent.click(header);
+    const rows = document.querySelectorAll('.goal-task-main');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('Inside');
+    fireEvent.click(rows[0]!);
+    expect(onOpenTask).toHaveBeenCalledWith('Inside', rows[0]);
+  });
+
+  it('reveals and focuses a scoped witness without resetting another expanded chain', () => {
+    const index = indexOf([task('First', 'done'), task('Second', 'todo', ['First']), task('Other', 'done'), task('Last', 'todo', ['Other'])]);
+    const scopedMembers = new Map([['First', ['First', 'Second']], ['Other', ['Other', 'Last']]]);
+    const onRevealed = vi.fn();
+    const tree = (revealTaskId: string | null) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['First', 'Other']} allRepresentativeIds={['First', 'Other']}
+      scopedMembers={scopedMembers} revealTaskId={revealTaskId} onRevealed={onRevealed} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
+    const view = render(tree(null));
+    fireEvent.click(document.getElementById('task-root-Other')!);
+    view.rerender(tree('First'));
+    expect(document.getElementById('task-root-First')).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('task-root-Other')).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('chain-task-First-First')).toHaveFocus();
+    expect(onRevealed).toHaveBeenCalledOnce();
+    expect(onRevealed).toHaveBeenCalledWith('First');
+  });
   it('lists every member once across merged roots, with task statuses and no external or standalone context', () => {
     render(list(indexOf()));
     expect(disclosure()).toHaveAttribute('aria-expanded', 'false');

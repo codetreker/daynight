@@ -399,10 +399,9 @@ describe("project dashboard", () => {
     fireEvent.click(await findNodeButton("节点 后续任务"));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
-    await screen.findByRole("heading", { name: "还没有任务" });
-    await waitFor(() => expect(document.activeElement).toBe(sectionTabs().getByRole("tab", { name: "任务列表" })));
-    expect(number("任务总数")).toBe("0");
-    expect(screen.queryByTestId("root-list")).toBeNull();
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
+    await waitFor(() => expect(document.activeElement).toBe(taskTabs().getByRole("tab", { name: "任务链" })));
+    expect(screen.getByTestId("root-list")).toBeEmptyDOMElement();
   });
 
   it("clears project-specific display immediately when the project prop changes", async () => {
@@ -420,7 +419,8 @@ describe("project dashboard", () => {
   it("renders an empty project as zero statistics and an explicit empty state", async () => {
     graphRequest.mockResolvedValue(graph([]));
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "还没有任务" });
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
+    expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
     expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
     expect(screen.getByText("完成比例 0%")).toBeTruthy();
   });
@@ -591,7 +591,7 @@ describe("transient task chain dialogs", () => {
   it("does not auto-open a chain when an empty project gains tasks", async () => {
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "还没有任务" });
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);

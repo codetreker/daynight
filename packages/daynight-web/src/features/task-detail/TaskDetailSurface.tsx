@@ -7,7 +7,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { navigate, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { browserNavigation } from '../../app/navigation';
-import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRetireTaskDraft } from './TaskDraftNavigation';
+import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRequestTaskDraftAction, useRetireTaskDraft } from './TaskDraftNavigation';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
 import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import type { AttachmentApi } from './attachments/useAttachments';
@@ -52,6 +52,7 @@ type TaskDetailCommonProps = {
   readonly detailUrl?: (taskId: string, navigation: TaskDetailNavigation) => string;
   readonly projectId: string;
   readonly taskId: string;
+  readonly parentGoalId?: string;
   readonly snapshot?: GraphSnapshot | null;
   readonly observation?: TaskObservationInput;
   readonly graphError?: unknown;
@@ -95,10 +96,13 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
   </>;
 };
 
-const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
+type TaskDetailState = ReturnType<typeof useTaskDetail>;
+
+const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen, task, parentGoalId }: TaskDetailSurfaceProps & { readonly task: TaskDetailState }) => {
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
-  const requestClose = () => { if (onClose !== undefined) browserNavigation().requestAction(onClose); };
+  const requestTaskAction = useRequestTaskDraftAction();
+  const requestClose = () => { if (onClose !== undefined) { if (parentGoalId === undefined) browserNavigation().requestAction(onClose); else requestTaskAction(onClose); } };
   const scope = `${projectId}/${taskId}`;
   const [localNavigation, setLocalNavigation] = useState<{ readonly scope: string; readonly value: TaskDetailNavigation }>({ scope, value: { tab: 'overview', path: null } });
   const selection = navigation === undefined ? localNavigation.scope === scope ? localNavigation.value : { tab: 'overview', path: null } as const : navigation;
@@ -107,7 +111,6 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const { messages, format } = useI18n();
   const m = messages.inspection.detail;
   const input: TaskObservationInput = observation ?? (snapshot === null ? { kind: 'direct' } : { kind: 'project-summary', revision: snapshot.revision, task: snapshot.index.nodes.get(taskId) });
-  const task = useTaskDetail(projectId, taskId, input);
   const direct = input.kind === 'direct';
   const relations = useTaskRelations(projectId, taskId, task.historyGeneration, direct && task.detail !== null && !task.displayRequiresFreshRead && task.mutation.phase !== 'pending');
   const nodes = direct ? relations.relations?.nodes : snapshot?.index.nodes;
@@ -212,7 +215,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
     const kind = external ? m.externalDependency : m.ordinaryDependency;
     return (
       <li key={id}>
-        <button className="task-detail-relation" type="button" aria-label={m.relationLabel({ title, kind })} onClick={() => browserNavigation().requestAction(() => onSelectTask(id))}>
+        <button className="task-detail-relation" type="button" aria-label={m.relationLabel({ title, kind })} onClick={() => { const action = () => onSelectTask(id); if (parentGoalId !== undefined && snapshot?.index.nodes.get(id)?.parentId === parentGoalId) requestTaskAction(action); else browserNavigation().requestAction(action); }}>
           <span className={`task-detail-relation-dot${node === undefined ? '' : ` task-detail-dot-${node.status}`}`} aria-hidden="true" />
           <span>{title}</span>
           <span className={`task-detail-relation-kind${external ? ' task-detail-relation-external' : ''}`}>{kind}</span>
@@ -352,4 +355,10 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && dialogRef.current !== null && isTopOverlay(dialogRef.current) && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null) requestClose(); }}>{content}</div> : content;
 };
 
-export const TaskDetailSurface = (props: TaskDetailSurfaceProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDraftBoundary projectId={props.projectId} taskId={props.taskId} page={props.presentation === 'page'}><TaskDetailContent {...props} /></TaskDraftBoundary></ProjectAccessBoundary>;
+const ObservedTaskDetailContent = (props: TaskDetailSurfaceProps) => {
+  const input: TaskObservationInput = props.observation ?? (props.snapshot == null ? { kind: 'direct' } : { kind: 'project-summary', revision: props.snapshot.revision, task: props.snapshot.index.nodes.get(props.taskId) });
+  const task = useTaskDetail(props.projectId, props.taskId, input);
+  return <TaskDetailContent {...props} task={task} />;
+};
+
+export const TaskDetailSurface = (props: TaskDetailSurfaceProps & { readonly resourceState?: TaskDetailState }) => <ProjectAccessBoundary projectId={props.projectId}><TaskDraftBoundary projectId={props.projectId} taskId={props.taskId} page={props.presentation === 'page'}>{props.resourceState === undefined ? <ObservedTaskDetailContent {...props} /> : <TaskDetailContent {...props} task={props.resourceState} />}</TaskDraftBoundary></ProjectAccessBoundary>;

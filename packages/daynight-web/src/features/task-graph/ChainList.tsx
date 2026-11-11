@@ -4,10 +4,10 @@ import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds, useTaskPaused } from
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
-import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { GraphTask, WorkerClaim } from '../../api/types';
+import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import type { GraphTask, TaskSummary, WorkerClaim } from '../../api/types';
 import { compareTaskStatus } from '../projects/task-order';
-import { isTerminalStatus, taskEndedAt } from '../../api/task-status';
+import { isTerminalStatus, taskEndedAt, taskProgressStatus } from '../../api/task-status';
 import { timestampNanoseconds } from '../projects/task-visibility';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
@@ -25,6 +25,12 @@ type ChainListProps = {
   readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
   readonly representativeIds: readonly string[];
   readonly allRepresentativeIds: readonly string[];
+  readonly scopedMembers?: ReadonlyMap<string, readonly string[]>;
+  readonly revealTaskId?: string | null;
+  readonly onRevealed?: (id: string) => void;
+  readonly renderNested?: (owner: RefObject<HTMLElement | null>) => ReactNode;
+  readonly onGraphRootChange?: (element: HTMLElement | null) => void;
+  readonly summaries?: ReadonlyMap<string, TaskSummary>;
   readonly openChainId: string | null;
   readonly onOpenChain: (id: string, trigger: HTMLElement) => void;
   readonly onCloseChain: () => void;
@@ -37,6 +43,8 @@ type ChainListProps = {
 type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'workerMachines' | 'onOpenChain' | 'onOpenTask' | 'onOpenSession'> & {
   readonly rootId: string;
   readonly open: boolean;
+  readonly revealTaskId?: string | null;
+  readonly onRevealed?: (id: string) => void;
 };
 
 type GoalTaskRowProps = {
@@ -69,7 +77,19 @@ const GoalTaskRow = memo(({ projectId, task, rootId, workerMachine, onOpenTask, 
   </li>;
 });
 
-const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
+const compareMembers = (left: GraphTask, right: GraphTask) => {
+  const status = compareTaskStatus(left.status, right.status);
+  if (status !== 0 || !isTerminalStatus(left.status)) return status;
+  const leftEndedAt = taskEndedAt(left);
+  const rightEndedAt = taskEndedAt(right);
+  if (leftEndedAt === null) return rightEndedAt === null ? 0 : 1;
+  if (rightEndedAt === null) return -1;
+  const leftTime = timestampNanoseconds(leftEndedAt);
+  const rightTime = timestampNanoseconds(rightEndedAt);
+  return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
+};
+
+const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
   const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const task = index.nodes.get(rootId)!;
@@ -81,20 +101,18 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenC
   const pausedCount = pausedSummaryTaskIds([...component.memberIds].map((id) => index.nodes.get(id)!), pausedTaskIds).size;
   const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
+  const revealed = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (revealTaskId == null) { revealed.current = null; return; }
+    if (revealed.current === revealTaskId || !component.memberIds.has(revealTaskId)) return;
+    if (!expanded) { setExpanded(true); return; }
+    const row = document.getElementById(`chain-task-${rootId}-${revealTaskId}`);
+    if (row !== null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
+  }, [expanded, component, revealTaskId, rootId, onRevealed]);
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
     return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
-      .toSorted((left, right) => {
-        const status = compareTaskStatus(left.status, right.status);
-        if (status !== 0 || !isTerminalStatus(left.status)) return status;
-        const leftEndedAt = taskEndedAt(left);
-        const rightEndedAt = taskEndedAt(right);
-        if (leftEndedAt === null) return rightEndedAt === null ? 0 : 1;
-        if (rightEndedAt === null) return -1;
-        const leftTime = timestampNanoseconds(leftEndedAt);
-        const rightTime = timestampNanoseconds(rightEndedAt);
-        return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
-      });
+      .toSorted(compareMembers);
   }, [index, rootId]);
   return <li ref={observeVisibility} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>
@@ -117,10 +135,45 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenC
     </div>
     <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children">
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
-        <button className="goal-detail-link" type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
+        <button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
       </div>
       <ul className="goal-task-list">{members.map((member) => <GoalTaskRow key={member.id} projectId={projectId} task={member} rootId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
+  </li>;
+});
+
+const ScopedChainRow = memo(({ projectId, index, workerMachines, rootId, members, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps & { readonly members: readonly string[] }) => {
+  const { messages: { graph: m } } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const label = index.nodes.get(rootId)!;
+  const title = `${label.titlePreview}${label.titleTruncated ? '…' : ''}`;
+  const tasks = members.map((id) => index.nodes.get(id)!).toSorted(compareMembers);
+  const done = tasks.filter((task) => task.status === 'done').length;
+  const cancelled = tasks.filter((task) => task.status === 'cancelled').length;
+  const inProgress = tasks.filter((task) => task.status === 'in_progress').length;
+  const status = taskProgressStatus(done, cancelled, tasks.length, inProgress > 0, tasks.filter((task) => task.status === 'proposed').length);
+  const memberSet = useMemo(() => new Set(members), [members]);
+  const sessionIndicator = useChainSessionSummary(memberSet);
+  const observeVisibility = useSessionChainVisibility(rootId, memberSet);
+  const revealed = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (revealTaskId == null) { revealed.current = null; return; }
+    if (revealed.current === revealTaskId || !members.includes(revealTaskId)) return;
+    if (!expanded) { setExpanded(true); return; }
+    const row = document.getElementById(`chain-task-${rootId}-${revealTaskId}`);
+    if (row !== null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
+  }, [expanded, members, revealTaskId, rootId, onRevealed]);
+  return <li ref={observeVisibility} className="root-row goal-row" data-chain-id={rootId} data-task-status={status}>
+    <div className="goal-header task-status-surface" data-task-status={status}>
+      <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded} aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
+        <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        <span className="root-heading"><span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgress })}</span></span><span className="root-meta">{m.childTasks({ count: members.length })}</span></span>
+        <span className="root-progress"><span className="root-progress-label">{m.progress({ done, cancelled, total: members.length })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${(done + cancelled) / members.length * 100}%` }} /></span></span>
+      </button>
+      <SessionStatus title={title} status={status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`} {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
+      <button className="button goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined} onClick={(event) => onOpenChain(rootId, event.currentTarget)}>{m.viewDependencies}</button>
+    </div>
+    <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children"><ul className="goal-task-list">{tasks.map((task) => <GoalTaskRow key={task.id} projectId={projectId} task={task} rootId={rootId} workerMachine={workerMachines.get(task.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul></div>
   </li>;
 });
 
@@ -130,7 +183,7 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
-export const ChainList = ({ projectId, index, workerMachines, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
+export const ChainList = ({ projectId, index, summaries, workerMachines, representativeIds, allRepresentativeIds, scopedMembers, revealTaskId, onRevealed, renderNested, onGraphRootChange, openChainId, onOpenChain, onCloseChain, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
   const { messages: { graph: m, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
@@ -181,8 +234,10 @@ export const ChainList = ({ projectId, index, workerMachines, representativeIds,
     </div>
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
       : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
-        : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+        : <ul className="root-list">{representativeIds.map((rootId) => scopedMembers === undefined || scopedMembers.get(rootId)?.length === index.components.get(rootId)!.memberIds.size
+          ? <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />
+          : <ScopedChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} members={scopedMembers.get(rootId)!} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
-    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} rootId={openChainId} onOpenTask={onOpenTask} onNavigateExternalTask={navigateExternalTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
+    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={openChainId} onOpenTask={onOpenTask} onNavigateExternalTask={navigateExternalTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} {...(renderNested === undefined ? {} : { renderNested })} {...(onGraphRootChange === undefined ? {} : { onRootChange: onGraphRootChange })} />}
   </section>;
 };

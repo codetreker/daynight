@@ -1,9 +1,10 @@
 import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { registerOverlay } from '../src/app/overlay';
 import { browserNavigation } from '../src/app/navigation';
 import { navigate } from '../src/app/router';
-import { DraftNavigationConfirmation, TaskDraftBoundary, useDirtyTaskDraft, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
+import { DraftNavigationConfirmation, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -19,6 +20,7 @@ const Consumer = ({ discard, retired }: { readonly discard: () => void; readonly
   const editor = useRef<HTMLTextAreaElement>(null);
   useDirtyTaskDraft({ isDirty: () => value !== '', discard: () => { discard(); setValue(''); } });
   useRetireTaskDraft(retired);
+  useLayoutEffect(() => registerOverlay(owner.current!, null), []);
   return <><section ref={owner}><textarea aria-label="Draft" ref={editor} value={value} onChange={(event) => setValue(event.target.value)} /></section>
     <DraftNavigationConfirmation owner={owner} fallbackFocus={editor} taskTitle="Task title" /></>;
 };
@@ -92,4 +94,49 @@ describe('task draft lifecycle and confirmation', () => {
     act(() => navigate('/account'));
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
+});
+
+
+const NestedDraft = ({ owner, name, onClose }: { readonly owner: RefObject<HTMLElement | null>; readonly name: string; readonly onClose: () => void }) => {
+  const [value, setValue] = useState('');
+  const editor = useRef<HTMLTextAreaElement>(null);
+  useDirtyTaskDraft({ isDirty: () => value !== '', discard: () => setValue('') });
+  const scoped = useRequestTaskDraftAction();
+  return <><section ref={owner}><textarea ref={editor} aria-label={name} value={value} onChange={(event) => setValue(event.target.value)} />
+    <button type="button" onClick={() => scoped(onClose)}>Close child</button>
+    <button type="button" onClick={() => browserNavigation().requestAction(onClose)}>Leave both</button></section>
+    <DraftNavigationConfirmation owner={owner} fallbackFocus={editor} taskTitle={name} /></>;
+};
+
+it('guards only the closing child and uses one confirmation at the nearest active owner', () => {
+  const close = vi.fn();
+  const scope = createTaskCacheScope({ userId: 'c0000000-0000-0000-0000-000000000001', onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  const Harness = () => {
+    const goal = useRef<HTMLElement>(null), graph = useRef<HTMLElement>(null), child = useRef<HTMLElement>(null);
+    useLayoutEffect(() => {
+      const a = registerOverlay(goal.current!, null), b = registerOverlay(graph.current!, goal.current!), c = registerOverlay(child.current!, graph.current!);
+      return () => { c(); b(); a(); };
+    }, []);
+    return <TaskCacheProvider scope={scope}><TaskDraftBoundary projectId={projectId} taskId={taskId} page={false}>
+      <NestedDraft name="Goal" owner={goal} onClose={close} /></TaskDraftBoundary><section ref={graph} />
+      <TaskDraftBoundary projectId={projectId} taskId="b0000000-0000-0000-0000-000000000002" page={false}>
+      <NestedDraft name="Child" owner={child} onClose={close} /></TaskDraftBoundary></TaskCacheProvider>;
+  };
+  renderWithLocale(<Harness />, { locale: 'en' });
+  fireEvent.change(screen.getByLabelText('Goal', { selector: 'textarea' }), { target: { value: 'goal draft' } });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Close child', hidden: true })[1]!);
+  expect(close).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  fireEvent.change(screen.getByLabelText('Child', { selector: 'textarea' }), { target: { value: 'child draft' } });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Leave both', hidden: true })[1]!);
+  expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('Child');
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Close child', hidden: true })[1]!);
+  expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+  expect(screen.getByLabelText('Goal', { selector: 'textarea' })).toHaveValue('goal draft');
+  expect(screen.getByLabelText('Child', { selector: 'textarea' })).toHaveValue('');
+  expect(close).toHaveBeenCalledTimes(2);
 });

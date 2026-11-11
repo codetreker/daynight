@@ -22,8 +22,7 @@ export const registerOverlay = (root: HTMLElement, parent: HTMLElement | null): 
 };
 
 /** Resolve the active leaf from explicit ownership, independent of portal DOM order. */
-export const isTopOverlay = (root: HTMLElement): boolean => {
-  if (!layers.has(root)) return false;
+const topOverlay = (): Layer | undefined => {
   const children = (parent: HTMLElement | null): Layer[] => [...layers.values()].filter(layer =>
     parent === null ? layer.parent === null || !layers.has(layer.parent) : layer.parent === parent);
   const latest = (layer: Layer): number => Math.max(layer.sequence, ...children(layer.root).map(latest));
@@ -33,5 +32,17 @@ export const isTopOverlay = (root: HTMLElement): boolean => {
     current = candidates.reduce((a, b) => latest(a) > latest(b) ? a : b);
     candidates = children(current.root);
   }
-  return current?.root === root;
+  return current;
+};
+
+export const isTopOverlay = (root: HTMLElement): boolean => topOverlay()?.root === root;
+
+/** Find the nearest registered owner of the active overlay, including itself. */
+export const nearestOverlayOwner = (owners: ReadonlySet<HTMLElement>): HTMLElement | null => {
+  let layer = topOverlay();
+  while (layer !== undefined) {
+    if (owners.has(layer.root)) return layer.root;
+    layer = layer.parent === null ? undefined : layers.get(layer.parent);
+  }
+  return null;
 };

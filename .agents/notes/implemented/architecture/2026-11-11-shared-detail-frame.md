@@ -30,9 +30,11 @@ inert and keyboard handlers can compete when a child opens above a parent.
 
 ## Consequences
 
-The ordinary Task exercises the shared frame without mounting Goal data or
-execution controllers. New nested consumers must supply their actual parent
-through the overlay context and preserve their own content identity. Native PDF
+Ordinary Task and Goal surfaces use the shared frame while retaining separate
+content and execution ownership. Nested consumers supply their actual parent
+through the overlay context and preserve their own content identity. The
+[Goal browsing decision](../feature/2026-11-11-goal-browsing.md) records scope
+projection and typed dispatch. Native PDF
 keyboard handling remains subject to the browser reader. The earlier
 [fullscreen decision](../../archived/feature/2026-10-25-task-detail-fullscreen.md)
 records the original layout and continuity trade-offs.

@@ -4,7 +4,7 @@ import { saveDetail } from '../src/features/task-detail/detail-cache';
 import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskSessionWorld } from './helpers/taskSessions';
-import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, fixtureTaskEpoch, viewerHeaders } from "./helpers/taskSync";
+import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, fixtureTaskEpoch, rememberTaskEpoch, viewerHeaders } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
@@ -470,5 +470,224 @@ describe('standalone full task details', () => {
     fireEvent.click(await screen.findByRole('button', { name: '使用 GitHub 登录' }));
     const parameters = new URL(login.mock.calls[0]![0], window.location.origin).searchParams;
     expect(parameters.get('returnPath')).toBe(address('overview', 'docs/guide.md'));
+  });
+});
+
+describe('typed Goal routes', () => {
+  it('restores focus inside the Goal when the child moves and its opener disappears', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
+    const child = detailFixture(projectId, otherId, { title: 'Goal child', parentId: taskId });
+    const fixture = installed(goal); fixture.tasks.set(otherId, child);
+    const graph = graphFixture([goal, child]);
+    const sync = taskSyncFromGraph(graph, { versionForTask: () => 1n, propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties });
+    const { [taskId]: _goalState, ...dependencyStates } = sync.dependencyStates;
+    vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...sync, mode: query.epoch === sync.epoch ? 'delta' : 'snapshot', dependencyStates }));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    try {
+      const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
+      const moved = { ...child, parentId: null, version: 2n, updatedAt: '2026-10-23T10:00:00Z' };
+      fixture.tasks.set(otherId, moved);
+      const update = taskSyncFromGraph(graphFixture([goal, moved]), { query: { epoch: sync.epoch }, epoch: sync.epoch, versionForTask: (task) => task.id === otherId ? 2n : 1n, propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties });
+      const { [taskId]: _goalUpdate, ...updatedStates } = update.dependencyStates;
+      const ticket = await scope.beginSync(projectId, scope.signal);
+      await act(async () => { await scope.applySync(ticket, { ...update, dependencyStates: updatedStates }, scope.signal); });
+      await waitFor(() => expect(opener.isConnected).toBe(false), { timeout: 10000 });
+      fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
+      await waitFor(() => expect(screen.getByRole('heading', { name: goal.title })).toHaveFocus(), { timeout: 10000 });
+    } finally { view.unmount(); scope.dispose(); }
+  }, 20000);
+
+  it('starts a new Goal with fullscreen off', async () => {
+    const first = detailFixture(projectId, taskId, { type: 'goal', title: 'First Goal', ready: false });
+    const second = detailFixture(projectId, otherId, { type: 'goal', title: 'Second Goal', ready: false });
+    const fixture = installed(first); fixture.tasks.set(otherId, second);
+    const graph = graphFixture([first, second]);
+    const sync = taskSyncFromGraph(graph, { versionForTask: () => 1n, propertiesForTask: () => first.properties });
+    vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...sync, mode: query.epoch === sync.epoch ? 'delta' : 'snapshot', dependencyStates: {} }));
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />);
+    try {
+      await screen.findByRole('heading', { name: first.title }, { timeout: 10000 });
+      fireEvent.click(screen.getByRole('button', { name: '进入全屏' }));
+      expect(screen.getByRole('button', { name: '退出全屏' })).toHaveAttribute('aria-pressed', 'true');
+      view.rerender(<TaskDetailPage projectId={projectId} taskId={otherId} navigation={{ tab: 'overview', path: null }} />);
+      await screen.findByRole('heading', { name: second.title }, { timeout: 10000 });
+      expect(screen.getByRole('button', { name: '进入全屏' })).toHaveAttribute('aria-pressed', 'false');
+    } finally { view.unmount(); }
+  }, 20000);
+
+  it('does not start a Task controller when a Goal summary disappears', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
+    const child = detailFixture(projectId, otherId);
+    const fixture = installed(goal);
+    const initial = snapshotFixture([child]);
+    const summary = taskSyncFromGraph(graphFixture([goal]), { versionForTask: () => goal.version, propertiesForTask: () => goal.properties }).tasks[0]!;
+    const withGoal = { ...initial, summaries: new Map([...initial.summaries, [taskId, summary]]) };
+    const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+    const onRestoreFocus = vi.fn();
+    const props = { projectId, taskId, snapshot: withGoal, observation: { kind: 'project-summary' as const, revision: 1, task: undefined }, onClose: vi.fn(), onRestoreFocus, onRefreshGraph: vi.fn(), onSelectTask: vi.fn() };
+    const view = render(<TaskDetailDialog {...props} />, { container: rootElement });
+    try {
+      await screen.findByRole('dialog', { name: goal.title }, { timeout: 10000 });
+      view.rerender(<TaskDetailDialog {...props} snapshot={initial} observation={{ kind: 'project-summary', revision: initial.revision, task: undefined }} />);
+      expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
+      expect(onRestoreFocus).not.toHaveBeenCalled();
+      expect(fixture.fetcher.mock.calls.some(([url]) => /\/(sessions|steps)(?:\?|$)/.test(url))).toBe(false);
+      view.unmount();
+      expect(onRestoreFocus).toHaveBeenCalledOnce();
+    } finally { view.unmount(); rootElement.remove(); }
+  }, 20000);
+
+  it('restores focus on final close after a loaded Goal history is retired', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
+    installed(goal);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+    const restore = vi.fn();
+    const view = render(<TaskDetailDialog projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} onClose={vi.fn()} onRestoreFocus={restore} onRefreshGraph={vi.fn()} onSelectTask={vi.fn()} />, { container: rootElement, taskCache: { scope } });
+    try {
+      await screen.findByRole('dialog', { name: goal.title }, { timeout: 10000 });
+      const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
+      await act(async () => { expect(await scope.observeHistory(fence, '40000000-0000-4000-8000-000000000001', scope.signal)).toBe('retired'); });
+      expect(screen.queryByRole('dialog', { name: goal.title })).toBeNull();
+      expect(restore).not.toHaveBeenCalled();
+      view.unmount();
+      expect(restore).toHaveBeenCalledOnce();
+    } finally { view.unmount(); scope.dispose(); rootElement.remove(); }
+  }, 20000);
+
+  it('retains a discussion draft on a detail refresh failure and retires it on scope loss', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
+    const fixture = installed(goal);
+    const graph = graphFixture([goal]);
+    const sync = taskSyncFromGraph(graph, { versionForTask: () => goal.version, propertiesForTask: () => goal.properties });
+    vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...sync, mode: query.epoch === sync.epoch ? 'delta' : 'snapshot', dependencyStates: {} }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => url.includes('/thread/messages?')
+      ? resourceResponse({ items: [], hasMoreBefore: false, hasMoreAfter: false }, TEST_VIEWER_ID) : fixture.handler(url, options)));
+    const deniedRetry = Promise.withResolvers<client.TaskObservation>();
+    const acceptedRetry = Promise.withResolvers<client.TaskObservation>();
+    const read = vi.spyOn(client, 'getTaskObservation').mockResolvedValueOnce({ epoch: fixtureTaskEpoch(projectId), detail: goal })
+      .mockRejectedValueOnce(new client.ApiError('network')).mockRejectedValueOnce(new client.ApiError('server', 403, 'forbidden'))
+      .mockReturnValueOnce(deniedRetry.promise).mockReturnValueOnce(acceptedRetry.promise);
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'discussion', path: null }} />);
+    try {
+      const draft = await screen.findByRole('textbox', { name: '讨论消息' }, { timeout: 10000 });
+      await waitFor(() => expect(draft).toBeEnabled(), { timeout: 10000 });
+      fireEvent.change(draft, { target: { value: 'preserved draft' } });
+      fireEvent(document, new Event('visibilitychange'));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(2), { timeout: 10000 });
+      expect(await screen.findByRole('alert')).toHaveTextContent('任务详情更新失败');
+      expect(draft).toHaveValue('preserved draft');
+      fireEvent(document, new Event('visibilitychange'));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(3), { timeout: 10000 });
+      await waitFor(() => expect(screen.queryByRole('heading', { name: goal.title })).toBeNull(), { timeout: 10000 });
+      expect(screen.queryByRole('textbox', { name: '讨论消息' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: '重试详情' }));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(4), { timeout: 10000 });
+      expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+      expect(screen.queryByRole('textbox', { name: '讨论消息' })).toBeNull();
+      await act(async () => { deniedRetry.reject(new client.ApiError('server', 403, 'forbidden')); await deniedRetry.promise.catch(() => {}); });
+      await waitFor(() => expect(screen.getByRole('button', { name: '重试详情' })).toBeEnabled(), { timeout: 10000 });
+      expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: '重试详情' }));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(5), { timeout: 10000 });
+      expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+      await act(async () => { acceptedRetry.resolve({ epoch: fixtureTaskEpoch(projectId), detail: goal }); await acceptedRetry.promise; });
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      expect(await screen.findByRole('textbox', { name: '讨论消息' }, { timeout: 10000 })).toHaveValue('');
+    } finally { view.unmount(); }
+  }, 20000);
+
+  it('does not reopen a child Task when the Goal returns in a new epoch', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
+    const child = detailFixture(projectId, otherId, { title: 'Goal child', parentId: taskId });
+    const fixture = installed(goal);
+    fixture.tasks.set(otherId, child);
+    const graph = graphFixture([goal, child]);
+    const original = taskSyncFromGraph(graph, { versionForTask: () => 1n, propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties });
+    const { [taskId]: _goalState, ...dependencyStates } = original.dependencyStates;
+    const replacement = '40000000-0000-4000-8000-000000000001';
+    let epoch = original.epoch;
+    vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...original, epoch,
+      mode: query.epoch === epoch ? 'delta' : 'snapshot', dependencyStates }));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    try {
+      const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
+      fireEvent.click(opener);
+      await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
+      const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
+      epoch = replacement;
+      rememberTaskEpoch(projectId, replacement);
+      await act(async () => { expect(await scope.observeHistory(fence, replacement, scope.signal)).toBe('retired'); });
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
+      expect(screen.queryByRole('dialog', { name: child.title })).toBeNull();
+    } finally { view.unmount(); scope.dispose(); }
+  }, 20000);
+
+  it('does not render a delayed Goal detail after its epoch is retired', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Obsolete Goal', ready: false });
+    const fixture = installed(goal);
+    const graph = graphFixture([goal]);
+    const sync = taskSyncFromGraph(graph, { versionForTask: () => goal.version, propertiesForTask: () => goal.properties });
+    vi.spyOn(client, 'getTaskSync').mockResolvedValue(taskSyncReadFixture({ ...sync, dependencyStates: {} }));
+    const delayed = Promise.withResolvers<client.TaskObservation>();
+    const read = vi.spyOn(client, 'getTaskObservation').mockReturnValueOnce(delayed.promise).mockRejectedValue(new client.ApiError('network'));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    try {
+      await waitFor(() => expect(read).toHaveBeenCalled(), { timeout: 10000 });
+      await waitFor(() => expect(scope.getAuthorizedProject(projectId)).not.toBeNull(), { timeout: 10000 });
+      const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
+      await act(async () => { expect(await scope.observeHistory(fence, '40000000-0000-4000-8000-000000000001', scope.signal)).toBe('retired'); });
+      await act(async () => { delayed.resolve({ epoch: fixtureTaskEpoch(projectId), detail: goal }); await delayed.promise; });
+      expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+      expect(fixture.fetcher.mock.calls.some(([url]) => url.includes('/attachments?'))).toBe(false);
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it('retires the Goal and ignores late attachment and discussion responses after a new epoch', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Private old Goal', ready: false });
+    const fixture = installed(goal);
+    const graph = graphFixture([goal]);
+    const sync = taskSyncFromGraph(graph, { versionForTask: () => goal.version, propertiesForTask: () => goal.properties });
+    vi.spyOn(client, 'getTaskSync').mockResolvedValue(taskSyncReadFixture({ ...sync, dependencyStates: {} }));
+    const pending = Promise.withResolvers<Response>();
+    const pendingThread = Promise.withResolvers<Response>();
+    const fetcher = vi.fn(async (url: string, options?: RequestInit) => url.includes('/attachments?') ? pending.promise : url.includes('/thread/messages?') ? pendingThread.promise : fixture.handler(url, options));
+    vi.stubGlobal('fetch', fetcher);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'discussion', path: null }} />, { taskCache: { scope } });
+    try {
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes('/attachments?'))).toBe(true), { timeout: 10000 });
+      await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes('/thread/messages?'))).toBe(true), { timeout: 10000 });
+      const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
+      await act(async () => { expect(await scope.observeHistory(fence, '40000000-0000-4000-8000-000000000001', scope.signal)).toBe('retired'); });
+      expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+      await act(async () => { pending.resolve(resourceResponse({ items: [{ path: 'old-private.txt', contentType: 'text/plain', sizeBytes: 1, createdAt: goal.createdAt, updatedAt: goal.updatedAt }], nextCursor: null })); await pending.promise; });
+      await act(async () => { pendingThread.resolve(resourceResponse({ items: [{ id: otherId, author: { userId: TEST_VIEWER_ID, displayName: 'Alice', Agent: false }, body: 'old-private-discussion', createdAt: goal.createdAt }], hasMoreBefore: false, hasMoreAfter: false }, TEST_VIEWER_ID)); await pendingThread.promise; });
+      expect(screen.queryByText('old-private.txt')).toBeNull();
+      expect(screen.queryByText('old-private-discussion')).toBeNull();
+      expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it('opens a direct Goal without starting Task session or Steps requests', async () => {
+    const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
+    const fixture = installed(goal);
+    const graph = graphFixture([goal]);
+    const sync = taskSyncFromGraph(graph, { versionForTask: () => goal.version, propertiesForTask: () => goal.properties });
+    vi.spyOn(client, 'getTaskSync').mockResolvedValue(taskSyncReadFixture({ ...sync, dependencyStates: {} }));
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />);
+    try {
+      await screen.findByRole('heading', { name: goal.title });
+      expect(screen.getByRole('tab', { name: 'Task' })).toBeVisible();
+      expect(fixture.fetcher.mock.calls.some(([url]) => /\/(sessions|steps)(?:\?|$)/.test(url))).toBe(false);
+    } finally { view.unmount(); }
   });
 });

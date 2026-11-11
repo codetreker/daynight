@@ -73,7 +73,7 @@ export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, assigneeVersi
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
   const selectedIds = new Set(tasks.map((task) => task.id));
-  const dependencyStates = Object.fromEntries(graph.tasks.filter((task) => selectedIds.has(task.id) || task.dependsOn.some((id) => selectedIds.has(id))).map((task) => [task.id,
+  const dependencyStates = Object.fromEntries(graph.tasks.filter((task) => task.type === 'task' && (selectedIds.has(task.id) || task.dependsOn.some((id) => selectedIds.has(id)))).map((task) => [task.id,
     { taskVersion: versionForTask(task).toString(), blockedBy: task.blockedBy, ready: task.ready }]));
   return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks, dependencyStates, sessions };
 };

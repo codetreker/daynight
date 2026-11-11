@@ -88,7 +88,8 @@ describe('task chain status filtering', () => {
     expect(root('00000000-0000-4000-8000-000000000003')).toBeVisible();
     expect(screen.queryByText(/显示所有.*偏好/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    await screen.findByRole('heading', { name: '还没有任务' });
+    await screen.findByRole('heading', { name: '暂无任务链' });
+    expect(screen.getByRole('tab', { name: 'Goal' })).toBeVisible();
   });
 
   it('retains the selected filter and snapshot after a failed refresh', async () => {
