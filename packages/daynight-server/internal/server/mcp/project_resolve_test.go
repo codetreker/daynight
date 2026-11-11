@@ -294,3 +294,372 @@ func TestMCPOutputConstructionFailureLog(t *testing.T) {
 		}
 	}
 }
+
+type mcpOrgProjectReader struct {
+	t *testing.T
+	store.ProjectReader
+	ScopedProjectsCall func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error)
+	ProjectCall        func(ctx context.Context, id string) (model.Project, error)
+	ProjectAccessCall  func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error)
+	TransferTeamCall   func(ctx context.Context, id string) (store.TransferTeam, error)
+	TransferRoleCall   func(ctx context.Context, user, project, team string) (*model.ProjectRole, error)
+	InvitationCall     func(ctx context.Context, hash []byte) (model.ProjectInvitation, error)
+}
+
+func (d mcpOrgProjectReader) ScopedProjects(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+	return requireCallback(d.t, "MCP DAO ScopedProjectsCall", d.ScopedProjectsCall)(ctx, actor, scope, page)
+}
+func (d mcpOrgProjectReader) Project(ctx context.Context, id string) (model.Project, error) {
+	return requireCallback(d.t, "MCP DAO ProjectCall", d.ProjectCall)(ctx, id)
+}
+func (d mcpOrgProjectReader) ProjectAccess(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+	return requireCallback(d.t, "MCP DAO ProjectAccessCall", d.ProjectAccessCall)(ctx, actor, id)
+}
+func (d mcpOrgProjectReader) TransferTeam(ctx context.Context, id string) (store.TransferTeam, error) {
+	return requireCallback(d.t, "MCP DAO TransferTeamCall", d.TransferTeamCall)(ctx, id)
+}
+func (d mcpOrgProjectReader) TransferRole(ctx context.Context, user, project, team string) (*model.ProjectRole, error) {
+	return requireCallback(d.t, "MCP DAO TransferRoleCall", d.TransferRoleCall)(ctx, user, project, team)
+}
+func (d mcpOrgProjectReader) Invitation(ctx context.Context, hash []byte) (model.ProjectInvitation, error) {
+	return requireCallback(d.t, "MCP DAO InvitationCall", d.InvitationCall)(ctx, hash)
+}
+
+type mcpOrgTeamReader struct {
+	t                   *testing.T
+	TeamAccessCall      func(ctx context.Context, user, id string) error
+	TeamMembersPageCall func(ctx context.Context, id string, page store.Page) (store.TeamMemberPage, error)
+
+	store.TeamReader
+	TeamCall                 func(ctx context.Context, user, id string) (model.Team, error)
+	TeamInvitationCall       func(ctx context.Context, hash []byte) (model.TeamInvitation, error)
+	TeamInvitationPageCall   func(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error)
+	InvitationTeamCall       func(ctx context.Context, id string) (model.TeamRef, error)
+	InvitationTeamMemberCall func(ctx context.Context, id, user string) (model.TeamMember, error)
+}
+
+func (d mcpOrgTeamReader) Team(ctx context.Context, user, id string) (model.Team, error) {
+	return requireCallback(d.t, "MCP DAO TeamCall", d.TeamCall)(ctx, user, id)
+}
+func (d mcpOrgTeamReader) TeamInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
+	return requireCallback(d.t, "MCP DAO TeamInvitationCall", d.TeamInvitationCall)(ctx, hash)
+}
+func (d mcpOrgTeamReader) TeamInvitationPage(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error) {
+	return requireCallback(d.t, "MCP DAO TeamInvitationPageCall", d.TeamInvitationPageCall)(ctx, id, now, page)
+}
+func (d mcpOrgTeamReader) InvitationTeam(ctx context.Context, id string) (model.TeamRef, error) {
+	return requireCallback(d.t, "MCP DAO InvitationTeamCall", d.InvitationTeamCall)(ctx, id)
+}
+func (d mcpOrgTeamReader) InvitationTeamMember(ctx context.Context, id, user string) (model.TeamMember, error) {
+	return requireCallback(d.t, "MCP DAO InvitationTeamMemberCall", d.InvitationTeamMemberCall)(ctx, id, user)
+}
+
+type mcpOrgTeamWriter struct {
+	t                 *testing.T
+	RenameCall        func(ctx context.Context, user, name string) (model.Team, error)
+	HasProjectsCall   func(ctx context.Context) (bool, error)
+	MemberCall        func(ctx context.Context, user string) (model.TeamMember, error)
+	AdminCountCall    func(ctx context.Context) (int64, error)
+	SetMemberRoleCall func(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error)
+	RemoveMemberCall  func(ctx context.Context, user string) error
+
+	store.TeamWriteDAO
+	TeamCall              func(ctx context.Context, user string) (model.Team, error)
+	CreateInvitationCall  func(ctx context.Context, invitation model.TeamInvitation) error
+	LockInvitationCall    func(ctx context.Context, hash []byte) (model.TeamInvitation, error)
+	InvitationTeamCall    func(ctx context.Context) (model.TeamRef, error)
+	InvitationMemberCall  func(ctx context.Context, user string) (model.TeamMember, error)
+	AddInvitedMemberCall  func(ctx context.Context, user string) (model.TeamMember, error)
+	ConsumeInvitationCall func(ctx context.Context, id, user string, now time.Time) error
+	RevokeInvitationCall  func(ctx context.Context, id string, now time.Time) (bool, error)
+}
+
+func (d mcpOrgTeamWriter) Team(ctx context.Context, user string) (model.Team, error) {
+	return requireCallback(d.t, "MCP DAO TeamCall", d.TeamCall)(ctx, user)
+}
+func (d mcpOrgTeamWriter) CreateInvitation(ctx context.Context, invitation model.TeamInvitation) error {
+	return requireCallback(d.t, "MCP DAO CreateInvitationCall", d.CreateInvitationCall)(ctx, invitation)
+}
+func (d mcpOrgTeamWriter) LockInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
+	return requireCallback(d.t, "MCP DAO LockInvitationCall", d.LockInvitationCall)(ctx, hash)
+}
+func (d mcpOrgTeamWriter) InvitationTeam(ctx context.Context) (model.TeamRef, error) {
+	return requireCallback(d.t, "MCP DAO InvitationTeamCall", d.InvitationTeamCall)(ctx)
+}
+func (d mcpOrgTeamWriter) InvitationMember(ctx context.Context, user string) (model.TeamMember, error) {
+	return requireCallback(d.t, "MCP DAO InvitationMemberCall", d.InvitationMemberCall)(ctx, user)
+}
+func (d mcpOrgTeamWriter) AddInvitedMember(ctx context.Context, user string) (model.TeamMember, error) {
+	return requireCallback(d.t, "MCP DAO AddInvitedMemberCall", d.AddInvitedMemberCall)(ctx, user)
+}
+func (d mcpOrgTeamWriter) ConsumeInvitation(ctx context.Context, id, user string, now time.Time) error {
+	return requireCallback(d.t, "MCP DAO ConsumeInvitationCall", d.ConsumeInvitationCall)(ctx, id, user, now)
+}
+func (d mcpOrgTeamWriter) RevokeInvitation(ctx context.Context, id string, now time.Time) (bool, error) {
+	return requireCallback(d.t, "MCP DAO RevokeInvitationCall", d.RevokeInvitationCall)(ctx, id, now)
+}
+
+type mcpOrgProjectWriter struct {
+	t *testing.T
+	store.ProjectWriteDAO
+	ProjectAccessCall         func(ctx context.Context, actor model.Principal) (model.ProjectAccess, error)
+	LockTransferOwnershipCall func(ctx context.Context) (model.ProjectOwnership, error)
+	LockTransferTeamsCall     func(ctx context.Context, source, target string) (store.TransferTeam, store.TransferTeam, error)
+	MoveOwnershipCall         func(ctx context.Context, target string) (model.ProjectOwnership, error)
+	LockInvitationCall        func(ctx context.Context, hash []byte) (model.ProjectInvitation, error)
+	DirectProjectMemberCall   func(ctx context.Context, user string) (model.ProjectMember, error)
+	AddInvitedMemberCall      func(ctx context.Context, user string) (model.ProjectMember, error)
+	ConsumeInvitationCall     func(ctx context.Context, id, user string, now time.Time) error
+}
+
+func (d mcpOrgProjectWriter) ProjectAccess(ctx context.Context, actor model.Principal) (model.ProjectAccess, error) {
+	return requireCallback(d.t, "MCP DAO ProjectAccessCall", d.ProjectAccessCall)(ctx, actor)
+}
+func (d mcpOrgProjectWriter) LockTransferOwnership(ctx context.Context) (model.ProjectOwnership, error) {
+	return requireCallback(d.t, "MCP DAO LockTransferOwnershipCall", d.LockTransferOwnershipCall)(ctx)
+}
+func (d mcpOrgProjectWriter) LockTransferTeams(ctx context.Context, source, target string) (store.TransferTeam, store.TransferTeam, error) {
+	return requireCallback(d.t, "MCP DAO LockTransferTeamsCall", d.LockTransferTeamsCall)(ctx, source, target)
+}
+func (d mcpOrgProjectWriter) MoveOwnership(ctx context.Context, target string) (model.ProjectOwnership, error) {
+	return requireCallback(d.t, "MCP DAO MoveOwnershipCall", d.MoveOwnershipCall)(ctx, target)
+}
+func (d mcpOrgProjectWriter) LockInvitation(ctx context.Context, hash []byte) (model.ProjectInvitation, error) {
+	return requireCallback(d.t, "MCP DAO LockInvitationCall", d.LockInvitationCall)(ctx, hash)
+}
+func (d mcpOrgProjectWriter) DirectProjectMember(ctx context.Context, user string) (model.ProjectMember, error) {
+	return requireCallback(d.t, "MCP DAO DirectProjectMemberCall", d.DirectProjectMemberCall)(ctx, user)
+}
+func (d mcpOrgProjectWriter) AddInvitedMember(ctx context.Context, user string) (model.ProjectMember, error) {
+	return requireCallback(d.t, "MCP DAO AddInvitedMemberCall", d.AddInvitedMemberCall)(ctx, user)
+}
+func (d mcpOrgProjectWriter) ConsumeInvitation(ctx context.Context, id, user string, now time.Time) error {
+	return requireCallback(d.t, "MCP DAO ConsumeInvitationCall", d.ConsumeInvitationCall)(ctx, id, user, now)
+}
+
+type mcpOrgTeamScope struct {
+	t *testing.T
+	store.TeamWriteScope
+	team        store.TeamWriteDAO
+	eligibility store.WebhookEligibilityDAO
+}
+
+func (s mcpOrgTeamScope) TeamDAO() store.TeamWriteDAO {
+	if s.team == nil {
+		unexpectedHTTPCall(s.t, "MCP Scope.TeamDAO")
+	}
+	return s.team
+}
+func (s mcpOrgTeamScope) EligibilityDAO() store.WebhookEligibilityDAO {
+	if s.eligibility == nil {
+		unexpectedHTTPCall(s.t, "MCP Scope.EligibilityDAO")
+	}
+	return s.eligibility
+}
+
+type mcpOrgProjectScope struct {
+	t *testing.T
+	store.ProjectWriteScope
+	project     store.ProjectWriteDAO
+	eligibility store.WebhookEligibilityDAO
+}
+
+func (s mcpOrgProjectScope) ProjectDAO() store.ProjectWriteDAO {
+	if s.project == nil {
+		unexpectedHTTPCall(s.t, "MCP Scope.ProjectDAO")
+	}
+	return s.project
+}
+func (s mcpOrgProjectScope) EligibilityDAO() store.WebhookEligibilityDAO {
+	if s.eligibility == nil {
+		unexpectedHTTPCall(s.t, "MCP Scope.EligibilityDAO")
+	}
+	return s.eligibility
+}
+func mcpOrgRead(t *testing.T, tx *httpTestStore, n int, project store.ProjectReader, team store.TeamReader) {
+	switch d := project.(type) {
+	case mcpOrgProjectReader:
+		d.t = t
+		project = d
+	}
+	switch d := team.(type) {
+	case mcpOrgTeamReader:
+		d.t = t
+		team = d
+	}
+	called := mcpOrgCount(t, n)
+	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+		called()
+		scope := newHTTPTestSnapshot(t)
+		scope.Projects = project
+		scope.Teams = team
+		return op(scope)
+	}
+}
+
+// Each scope callback has its own transaction count and checks the target ID.
+func mcpOrgWrite[S any](t *testing.T, id string, scope S) func(context.Context, string, func(S) error) (store.Completion, error) {
+	called := mcpOrgCount(t, 1)
+	return func(_ context.Context, got string, op func(S) error) (store.Completion, error) {
+		called()
+		projectHTTPCheck(t, got, id)
+		if err := op(scope); err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}
+}
+func mcpOrgWriteTeam(t *testing.T, tx *httpTestStore, id string, dao store.TeamWriteDAO, eligibility store.WebhookEligibilityDAO) {
+	if d, ok := dao.(mcpOrgTeamWriter); ok {
+		d.t = t
+		dao = d
+	}
+	tx.WriteTeamCall = mcpOrgWrite[store.TeamWriteScope](t, id, mcpOrgTeamScope{t: t, team: dao, eligibility: eligibility})
+}
+func mcpOrgWriteProject(t *testing.T, tx *httpTestStore, id string, dao store.ProjectWriteDAO, eligibility store.WebhookEligibilityDAO) {
+	if d, ok := dao.(mcpOrgProjectWriter); ok {
+		d.t = t
+		dao = d
+	}
+	tx.WriteProjectCall = mcpOrgWrite[store.ProjectWriteScope](t, id, mcpOrgProjectScope{t: t, project: dao, eligibility: eligibility})
+}
+
+type httpTestStore struct {
+	t                        *testing.T
+	ReadSnapshotCall         func(context.Context, func(store.SnapshotScope) error) error
+	WriteIdentityCall        func(context.Context, func(store.IdentityScope) error) (store.Completion, error)
+	WriteProjectCall         func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error)
+	WriteProjectCreationCall func(context.Context, string, func(store.ProjectCreationDAO) error) (store.Completion, error)
+	CreateTeamCall           func(context.Context, string, func(store.TeamCreationDAO) error) (store.Completion, error)
+	WriteTeamCall            func(context.Context, string, func(store.TeamWriteScope) error) (store.Completion, error)
+}
+
+func newHTTPTestStore(t *testing.T) *httpTestStore { return &httpTestStore{t: t} }
+func (s *httpTestStore) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
+	if s.ReadSnapshotCall == nil {
+		unexpectedHTTPCall(s.t, "ReadSnapshot")
+	}
+	return s.ReadSnapshotCall(ctx, fn)
+}
+func (s *httpTestStore) WriteIdentity(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error) {
+	if s.WriteIdentityCall == nil {
+		unexpectedHTTPCall(s.t, "WriteIdentity")
+	}
+	return s.WriteIdentityCall(ctx, fn)
+}
+func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {
+	if s.WriteProjectCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProject")
+	}
+	return s.WriteProjectCall(ctx, id, fn)
+}
+func (s *httpTestStore) WriteProjectCreation(ctx context.Context, id string, fn func(store.ProjectCreationDAO) error) (store.Completion, error) {
+	if s.WriteProjectCreationCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProjectCreation")
+	}
+	return s.WriteProjectCreationCall(ctx, id, fn)
+}
+func (s *httpTestStore) CreateTeam(ctx context.Context, id string, fn func(store.TeamCreationDAO) error) (store.Completion, error) {
+	if s.CreateTeamCall == nil {
+		unexpectedHTTPCall(s.t, "CreateTeam")
+	}
+	return s.CreateTeamCall(ctx, id, fn)
+}
+func (s *httpTestStore) WriteTeam(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error) {
+	if s.WriteTeamCall == nil {
+		unexpectedHTTPCall(s.t, "WriteTeam")
+	}
+	return s.WriteTeamCall(ctx, id, fn)
+}
+
+type httpTestSnapshot struct {
+	store.SnapshotScope
+	t        *testing.T
+	Projects store.ProjectReader
+	Teams    store.TeamReader
+}
+
+func newHTTPTestSnapshot(t *testing.T) *httpTestSnapshot { return &httpTestSnapshot{t: t} }
+func (s *httpTestSnapshot) ProjectDAO() store.ProjectReader {
+	if s.Projects == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.ProjectDAO")
+	}
+	return s.Projects
+}
+func (s *httpTestSnapshot) TeamDAO() store.TeamReader {
+	if s.Teams == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.TeamDAO")
+	}
+	return s.Teams
+}
+
+type httpAuthenticationScope struct {
+	store.IdentityScope
+	t   *testing.T
+	dao store.IdentityDAO
+}
+
+func (s httpAuthenticationScope) IdentityDAO() store.IdentityDAO { return s.dao }
+func (s httpAuthenticationScope) PersonalTeamDAO() store.PersonalTeamDAO {
+	unexpectedHTTPCall(s.t, "IdentityScope.PersonalTeamDAO")
+	return nil
+}
+func unexpectedHTTPCall(t *testing.T, name string) {
+	t.Helper()
+	t.Errorf("unconfigured or extra DAO call: %s", name)
+	panic("unconfigured or extra DAO call: " + name)
+}
+func defaultHTTPPrincipal() model.Principal {
+	return model.Principal{UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222", Kind: model.PATCredential}
+}
+func defaultHTTPToken() string { return "dnpat_" + strings.Repeat("A", 43) }
+
+type projectHTTPCreateDAO struct {
+	t *testing.T
+	store.ProjectCreationDAO
+	TeamCall   func(context.Context, string) (store.ProjectCreationTeam, error)
+	MemberCall func(context.Context, string) (bool, error)
+	InsertCall func(context.Context, string, string, string, string) (model.Project, model.ProjectAccess, error)
+}
+
+func (d projectHTTPCreateDAO) LockCreationTeam(ctx context.Context, id string) (store.ProjectCreationTeam, error) {
+	return requireCallback(d.t, "ProjectCreation.LockCreationTeam", d.TeamCall)(ctx, id)
+}
+func (d projectHTTPCreateDAO) CreationTeamMember(ctx context.Context, id string) (bool, error) {
+	return requireCallback(d.t, "ProjectCreation.CreationTeamMember", d.MemberCall)(ctx, id)
+}
+func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, team string) (model.Project, model.ProjectAccess, error) {
+	return requireCallback(d.t, "ProjectCreation.InsertProject", d.InsertCall)(ctx, id, name, repo, team)
+}
+func projectHTTPCheck(t *testing.T, got, want any) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unexpected DAO argument/result: got %#v, want %#v", got, want)
+		panic("DAO contract violated")
+	}
+}
+func projectHTTPCount(t *testing.T, want int) func() { return mcpOrgCount(t, want) }
+func projectHTTPRecord(id, name, repo, team string) model.Project {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return model.Project{ID: id, Name: name, RepoURL: repo, CreatedAt: at, UpdatedAt: at, Settings: model.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}, Ownership: model.ProjectOwnership{TeamID: team, Version: 1, UpdatedAt: at}}
+}
+func projectHTTPAccess(p model.Principal, v model.Project) model.ProjectAccess {
+	role := model.ProjectAdmin
+	grant := model.ProjectGrant{ProjectID: v.ID, UserID: p.UserID, Role: role, Version: 1, CreatedAt: v.CreatedAt, UpdatedAt: v.CreatedAt}
+	return model.ProjectAccess{ProjectID: v.ID, UserID: p.UserID, Role: role, DirectGrant: &grant, OwnerTeam: model.TeamRef{ID: v.Ownership.TeamID, Kind: "personal"}, Ownership: v.Ownership, TeamRole: &role, CanTransfer: true}
+}
+
+func (d projectHTTPCreateDAO) CreationPersonalTeam(context.Context, bool) (store.PersonalTeamFacts, error) {
+	unexpectedHTTPCall(d.t, "ProjectCreation.CreationPersonalTeam")
+	return store.PersonalTeamFacts{}, nil
+}
+
+// requireCallback makes an unconfigured DAO capability fail its owning test,
+// including when the MCP server handles the call on another goroutine.
+func requireCallback[T any](t *testing.T, name string, callback T) T {
+	t.Helper()
+	if reflect.ValueOf(callback).IsNil() {
+		unexpectedHTTPCall(t, name)
+	}
+	return callback
+}

@@ -22,6 +22,11 @@ authentication protocol and lifecycle mechanisms remain real when they are the
 subject. Mocks do not establish persistence or replace parsing, encoding or the
 mechanism under test.
 
+Task HTTP reads, writes and sync run with their real Task components and
+narrowly controlled snapshot and project-write capabilities. Task deletion
+retains a Root cross-route tombstone proof. The Task assignee stress sample
+retains the real application, SQL capture and query plans at the Task adapter.
+
 Go tests live in the package and directory of the tested object, normally in
 `xxx_test.go` for `xxx.go`. Files over about 1000 lines may be split by cohesive
 responsibility, and small related helpers are consolidated. Before removing a
@@ -30,19 +35,19 @@ including tags, errors and cleanup. Matched cost comparisons include the Root
 and receiving packages and their preparation and cleanup; moving time between
 packages is not itself a saving.
 
-The Root fixture retains its shared names and semantics for remaining ordinary
+The Root fixture retains its existing shared names and semantics for ordinary
 and tagged consumers. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
-and protected API proofs. Task HTTP reads, writes and sync run with their real
-Task components and narrowly controlled snapshot and project-write capabilities;
-Task deletion retains a Root cross-route tombstone proof. The Task assignee
-stress sample retains the real application, SQL capture and query plans at the
-Task adapter. Worker HTTP protocol matrices live with their Worker registrar,
-with real Service and Core where appropriate and narrow controlled capabilities
-for precise outcomes; HTTP fault classification belongs to httpx. The Webhook
-Runner process-recovery and takeover witnesses live with the Runner and retain
-real PostgreSQL, TLS, subprocess and lease fencing mechanisms under their
-existing explicit tags. The [takeover fixture decision](2026-11-08-webhook-takeover-fixture.md)
+and protected API proofs. Worker HTTP protocol matrices live with their Worker
+registrar, with real Service and Core where appropriate and narrow controlled
+capabilities for precise outcomes; HTTP fault classification belongs to httpx.
+Project and Team HTTP organization scenarios use their real registrars and
+Service/Core with controlled DAO facts. Project, Team and Invitation MCP
+scenarios use a focused Entry host with those real collaborators and the SDK;
+Root retains full catalog, default authentication and cross-route proofs.
+The Webhook Runner process-recovery and takeover witnesses live with the Runner
+and retain real PostgreSQL, TLS, subprocess and lease fencing mechanisms under
+their existing explicit tags. The [takeover fixture decision](2026-11-08-webhook-takeover-fixture.md)
 records its timing constraints. The [test-writing rules](../../../../docs/writing_tests.md)
 own the current requirements.
 

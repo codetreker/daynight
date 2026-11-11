@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
 
@@ -43,5 +45,14 @@ func TestConfigurationErrorCause(t *testing.T) {
 	err := &configvalue.ConfigurationError{Field: "field", Rule: "is invalid", Cause: cause}
 	if err.Error() != "field is invalid" || !errors.Is(err, cause) {
 		t.Fatalf("configuration error lost its diagnostic or cause: %v", err)
+	}
+}
+
+func TestTeamHTTPReservedIdentityCallbackPaths(t *testing.T) {
+	for _, path := range []string{"/api/v1/teams", "/api/v1/teams/" + uuid.NewString(), "/teams", "/teams/" + uuid.NewString()} {
+		_, _, err := ValidateAuthSettings(AuthSettings{PublicOrigin: "https://example.com"}, "https://example.com"+path)
+		if err == nil {
+			t.Fatalf("identity callback captured Team path %s", path)
+		}
 	}
 }
