@@ -248,6 +248,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate('/account'));
+    expect(screen.getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'user', scopeId: owner, revision: '1', text: 'account instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);

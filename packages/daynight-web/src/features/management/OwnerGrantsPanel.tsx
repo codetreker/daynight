@@ -22,16 +22,18 @@ const writeMarker = (userId: string, grantId: string | null): boolean => {
   } catch { return false; }
 };
 
-export const OwnerGrantsPanel = ({ user, onIdentityMismatch, transport = api }: {
+export const OwnerGrantsPanel = ({ user, onIdentityMismatch, transport = api, visible = true }: {
   readonly user: CurrentUser;
   readonly onIdentityMismatch: () => void;
   readonly transport?: GrantApi;
-}) => <OwnerGrantsContent key={user.id} user={user} onIdentityMismatch={onIdentityMismatch} transport={transport} />;
+  readonly visible?: boolean;
+}) => <OwnerGrantsContent key={user.id} user={user} onIdentityMismatch={onIdentityMismatch} transport={transport} visible={visible} />;
 
-const OwnerGrantsContent = ({ user, onIdentityMismatch, transport }: {
+const OwnerGrantsContent = ({ user, onIdentityMismatch, transport, visible }: {
   readonly user: CurrentUser;
   readonly onIdentityMismatch: () => void;
   readonly transport: GrantApi;
+  readonly visible: boolean;
 }) => {
   const { messages: { auth: { management: { account: m, common } } } } = useI18n();
   const [grants, setGrants] = useState<readonly OwnerGrant[] | null>(null);
@@ -129,7 +131,7 @@ const OwnerGrantsContent = ({ user, onIdentityMismatch, transport }: {
       }))}
       {recovery !== null && selected === null && <div className="notice warning grant-status-notice" role="alert"><p>{uncertain ? m.grantUnknown : m.grantReadCurrent} · {recovery.name}</p><button className="button" type="button" disabled={loading || pending} onClick={refresh}>{m.grantReadCurrent}</button></div>}
     </section><div className="notice">{m.grantsNotice}</div>
-    {selected !== null && <ManagementDialog title={m.grantRevokeTitle} busy={pending || loading} onClose={closeDialog} footer={<><button className="button" type="button" disabled={pending || loading} onClick={closeDialog}>{common.cancel}</button>{recovery !== null ? <button className="button primary" type="button" disabled={pending || loading} onClick={refresh}>{m.grantReadCurrent}</button> : <button className="button danger" type="button" disabled={loading || pending || recovery !== null || error !== null} onClick={() => { void revoke(selected); }}>{pending ? m.revoking : m.grantRevokeConfirm}</button>}</>}>
+    {selected !== null && <ManagementDialog title={m.grantRevokeTitle} busy={pending || loading} suspended={!visible} onClose={closeDialog} footer={<><button className="button" type="button" disabled={pending || loading} onClick={closeDialog}>{common.cancel}</button>{recovery !== null ? <button className="button primary" type="button" disabled={pending || loading} onClick={refresh}>{m.grantReadCurrent}</button> : <button className="button danger" type="button" disabled={loading || pending || recovery !== null || error !== null} onClick={() => { void revoke(selected); }}>{pending ? m.revoking : m.grantRevokeConfirm}</button>}</>}>
       <div className="grant-dialog-client"><strong>{selected.clientName || selected.clientId}</strong><p>{m.grantClient}: {selected.clientId}</p><p>{m.grantResource}: {selected.resource}</p><p>{m.grantScope}: {selected.scope}</p></div>
       <p>{m.grantRevokeEffect}</p><div className="grant-dialog-account"><Identity user={user} /></div>
       {dialogError !== null && <ManagementError error={dialogError} />}

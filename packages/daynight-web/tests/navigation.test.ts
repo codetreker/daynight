@@ -29,11 +29,11 @@ describe('window navigation admission', () => {
   it('keeps URL validation in memory and replaces a consumed fragment without losing its index', () => {
     owner.navigate('/invitations#synthetic-invitation');
     const marker = history.state.__daynightNavigation;
-    expect(Object.keys(marker).sort()).toEqual(['index', 'session']);
+    expect(Object.keys(marker).sort()).toEqual(['entryId', 'index', 'session']);
     const length = history.length;
     owner.clearFragment();
     expect(location.hash).toBe('');
-    expect(owner.snapshot()).toEqual({ pathname: '/invitations', search: '', hash: '' });
+    expect(owner.snapshot()).toEqual({ pathname: '/invitations', search: '', hash: '', entryId: marker.entryId, view: undefined });
     expect(history.state.__daynightNavigation).toEqual(marker);
     expect(history.length).toBe(length);
     const replace = vi.spyOn(history, 'replaceState');
@@ -143,6 +143,24 @@ describe('window navigation admission', () => {
     expect(owner.decision()).not.toBeNull();
   });
 
+  it('runs the keep-editing continuation only after history restoration, while its draft remains live', () => {
+    const start = history.state;
+    owner.navigate('/account'); const original = history.state;
+    const unregister = owner.register(draft());
+    vi.spyOn(history, 'go').mockImplementation(() => {});
+    const continuation = vi.fn(() => owner.navigate('/account?editing=1'));
+    arrival(start, '/projects'); owner.cancelAndRestore(continuation);
+    expect(continuation).not.toHaveBeenCalled();
+    arrival(original, '/account');
+    expect(continuation).toHaveBeenCalledOnce();
+    expect(owner.decision()).not.toBeNull();
+    owner.cancel();
+    arrival(start, '/projects'); owner.cancelAndRestore(continuation);
+    unregister();
+    arrival(original, '/account');
+    expect(continuation).toHaveBeenCalledOnce();
+  });
+
   it('dismisses the choice without discard when traversal returns to the surviving scope', () => {
     const start = history.state;
     owner.navigate('/account'); const original = history.state;
@@ -159,7 +177,7 @@ describe('window navigation admission', () => {
     const registration = draft(); owner.register(registration);
     arrival(null, '/account#native');
     expect(history.state).toBeNull();
-    expect(owner.snapshot()).toEqual({ pathname: '/account', search: '', hash: '#native' });
+    expect(owner.snapshot()).toEqual({ pathname: '/account', search: '', hash: '#native', entryId: null, view: undefined });
     owner.navigate('/invitations'); owner.confirm();
     expect(history.state.__daynightNavigation.session).not.toBe(old.__daynightNavigation.session);
     expect(history.state.__daynightNavigation.index).toBe(0);
@@ -179,6 +197,90 @@ describe('window navigation admission', () => {
     arrival({ __daynightNavigation: { ...initial.__daynightNavigation, index: 99 } }, '/projects');
     expect(owner.decision()).toBeNull();
     expect(owner.snapshot().pathname).toBe('/projects');
+  });
+
+  it('publishes same-URL reading entries, preserves their identity on replacement and deduplicates choices', () => {
+    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
+    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    owner.navigate('/account');
+    const length = history.length;
+    const initialId = owner.snapshot().entryId;
+    const notify = vi.fn(), commit = vi.fn(); owner.subscribe(notify);
+    owner.setView(profile, { replace: true });
+    const source = history.state;
+    expect(history.length).toBe(length);
+    expect(owner.snapshot()).toMatchObject({ entryId: initialId, view: profile });
+    owner.setView(tokens, { onCommit: commit });
+    const destination = history.state;
+    expect(history.length).toBe(length + 1);
+    expect(owner.snapshot().entryId).not.toBe(initialId);
+    expect(owner.snapshot().view).toEqual(tokens);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledTimes(2);
+    owner.setView({ ...tokens, selection: { ...tokens.selection } }, { onCommit: commit });
+    owner.navigate('/account');
+    expect(history.length).toBe(length + 1);
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledOnce();
+    arrival(source, '/account');
+    expect(owner.snapshot().view).toEqual(profile);
+    arrival(destination, '/account');
+    expect(owner.snapshot().view).toEqual(tokens);
+    expect(notify).toHaveBeenCalledTimes(4);
+  });
+
+  it('admits reading targets through draft protection and does not commit on cancel', () => {
+    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
+    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    owner.navigate('/account'); owner.setView(profile, { replace: true });
+    const current = owner.snapshot();
+    const survives = vi.fn((_url: URL, view?: unknown) => view === profile);
+    const registration = draft({ survives }); owner.register(registration);
+    const commit = vi.fn();
+    owner.setView(tokens, { onCommit: commit });
+    expect(survives).toHaveBeenCalledWith(expect.any(URL), tokens);
+    expect(owner.snapshot()).toBe(current);
+    expect(commit).not.toHaveBeenCalled();
+    owner.cancel();
+    expect(owner.snapshot()).toBe(current);
+    owner.setView(tokens, { onCommit: commit }); owner.confirm();
+    expect(registration.discard).toHaveBeenCalledOnce();
+    expect(owner.snapshot().view).toEqual(tokens);
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
+  it('passes the destination payload to guards during traversal and optional routed navigation', () => {
+    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
+    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    owner.navigate('/account'); owner.setView(profile, { replace: true });
+    const source = history.state;
+    owner.setView(tokens);
+    const registration = draft({ survives: vi.fn((_url, view) => view === tokens) }); owner.register(registration);
+    arrival(source, '/account');
+    expect(registration.survives).toHaveBeenCalledWith(expect.any(URL), profile);
+    expect(owner.snapshot().view).toEqual(tokens);
+    expect(owner.decision()).not.toBeNull();
+    owner.confirm();
+    expect(owner.snapshot().view).toEqual(profile);
+    owner.navigate('/projects', false, tokens);
+    expect(registration.survives).toHaveBeenLastCalledWith(expect.any(URL), tokens);
+    expect(owner.snapshot().view).toEqual(tokens);
+    owner.navigate('/invitations');
+    owner.confirm();
+    expect(owner.snapshot().view).toBeUndefined();
+  });
+
+  it('exposes malformed recognized payloads and preserves them during fragment cleanup', () => {
+    owner.navigate('/account#fragment');
+    const marker = history.state.__daynightNavigation;
+    const bad = { ...history.state, __daynightNavigation: { ...marker, view: { version: 1, selection: 'bad' } } };
+    const notify = vi.fn(); owner.subscribe(notify);
+    arrival(bad, '/account#fragment');
+    expect(owner.snapshot().view).toEqual(bad.__daynightNavigation.view);
+    expect(notify).toHaveBeenCalledOnce();
+    owner.clearFragment();
+    expect(history.state.__daynightNavigation.view).toEqual(bad.__daynightNavigation.view);
+    expect(owner.snapshot().entryId).toBe(marker.entryId);
   });
 
   it('unregisters without discarding, revokes the precise identity and never executes a retired action', () => {
