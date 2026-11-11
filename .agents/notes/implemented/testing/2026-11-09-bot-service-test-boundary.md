@@ -66,8 +66,8 @@ Each independent proof has an implementation owner:
 | [PostgreSQL Session scopes](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go) and [Bot scopes](../../../../packages/daynight-server/internal/core/store/postgres/bot_scope_test.go) | Shared transaction capabilities, credential/Session association, revocation, committed complete receipt/digest/version readback, rollback, retry and redaction readback |
 | [Core Session deletion](../../../../packages/daynight-server/internal/core/session/bot_barrier_test.go) | Actual live-cache eviction, pending-reader cancellation and refusal of further access after observed Bot deletion |
 
-The [dependency policy](2026-11-08-go-test-dependency-boundaries.md) owns the common
-layering rule. The [runtime boundary](2026-11-09-bot-runtime-service-test-boundary.md)
+The [component test ownership decision](2026-11-11-go-component-test-ownership.md)
+owns the common boundary selection rule. The [runtime boundary](2026-11-09-bot-runtime-service-test-boundary.md)
 remains independent. API integration owns representative normal flows through
 the assembled server.
 
