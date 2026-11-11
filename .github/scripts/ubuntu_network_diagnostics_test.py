@@ -234,12 +234,14 @@ class CollectorTests(unittest.TestCase):
             result = DIAGNOSTICS.collect()
         self.assertTrue(result['collectionComplete'])
         self.assertFalse(result['allProbesSuccessful'])
-        self.assertEqual(result['probeCount'], 24)
-        self.assertEqual(result['failedProbeCount'], 24)
+        self.assertEqual(result['probeCount'], 48)
+        self.assertEqual(result['failedProbeCount'], 48)
         self.assertTrue(result['proxyPresence']['https_proxy'])
         self.assertNotIn(SECRET, json.dumps(result))
         self.assertEqual({probe['host'] for probe in result['probes'] if probe['host']}, set(DIAGNOSTICS.HOSTS))
         self.assertEqual(sum(probe['kind'].startswith('getaddrinfo-') for probe in result['probes']), 12)
+        self.assertEqual(sum(probe['kind'].startswith('public-dns-') for probe in result['probes']), 18)
+        self.assertEqual(sum(probe['kind'].startswith('inrelease-via-') for probe in result['probes']), 6)
 
     def test_apt_transport_is_bounded_and_removes_its_only_download(self):
         workspace = self.directory / 'apt-workspace'
@@ -293,7 +295,7 @@ class CollectorTests(unittest.TestCase):
                 mock.patch.object(DIAGNOSTICS.pwd, 'getpwnam', return_value=mock.Mock(pw_uid=42)):
             result = DIAGNOSTICS.collect()
         self.assertLess(time.monotonic() - started, 2)
-        self.assertEqual(result['probeCount'], 24)
+        self.assertEqual(result['probeCount'], 48)
         self.assertTrue(any(probe['status'] == 'timeout' for probe in result['probes']))
         self.assertTrue(any(probe['status'] == 'budget_exhausted' for probe in result['probes']))
         self.assertFalse(result['allProbesSuccessful'])
@@ -312,6 +314,136 @@ class CollectorTests(unittest.TestCase):
             result = DIAGNOSTICS.decode_worker({'status': 'ok', 'stdout': data, 'stderr': b'', 'exitCode': 0})
             self.assertEqual(result['status'], 'invalid_output')
             self.assertNotIn(SECRET, json.dumps(result))
+
+    def dns_answer(self):
+        return {'Status': 0, 'TC': False,
+                'Question': [{'name': 'archive.ubuntu.com.', 'type': 1}],
+                'Answer': [{'name': 'archive.ubuntu.com.', 'type': 5, 'TTL': 60,
+                            'data': 'archive.example.net.'},
+                           {'name': 'archive.example.net.', 'type': 1, 'TTL': 30,
+                            'data': '185.125.190.82'}]}
+
+    def test_public_dns_requires_the_question_chain_public_ipv4_and_positive_ttl(self):
+        self.assertTrue(callable(getattr(DIAGNOSTICS, 'validate_public_answer', None)))
+        result = DIAGNOSTICS.validate_public_answer('archive.ubuntu.com', self.dns_answer())
+        self.assertEqual(result['addresses'], ['185.125.190.82'])
+        self.assertEqual(result['ttlSeconds'], 30)
+        self.assertEqual(result['canonicalName'], 'archive.example.net')
+        cases = []
+        for field, value in (('Status', 2), ('TC', True), ('Question', [{'name': 'wrong.example', 'type': 1}])):
+            data = self.dns_answer(); data[field] = value; cases.append(data)
+        for field, value in (('TTL', 0), ('TTL', True), ('type', 28), ('data', '127.0.0.1'),
+                             ('data', '224.0.0.1'), ('name', 'unrelated.example')):
+            data = self.dns_answer(); data['Answer'][1][field] = value; cases.append(data)
+        data = self.dns_answer(); data['Answer'][0]['data'] = 'archive.ubuntu.com.'; cases.append(data)
+        data = self.dns_answer(); data['Answer'].append({**data['Answer'][0], 'data': 'different.example'}); cases.append(data)
+        for data in cases:
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                DIAGNOSTICS.validate_public_answer('archive.ubuntu.com', data)
+
+    def test_public_dns_uses_distinct_udp_tcp_and_strict_doh_commands(self):
+        self.assertTrue(callable(getattr(DIAGNOSTICS, 'public_dns_probe', None)))
+        dns = (b';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\n'
+               b';; flags: qr rd ra; QUERY: 1, ANSWER: 1\n'
+               b';; QUESTION SECTION:\n;archive.ubuntu.com. IN A\n'
+               b';; ANSWER SECTION:\narchive.ubuntu.com. 30 IN A 185.125.190.82\n')
+        process = {'status': 'ok', 'exitCode': 0, 'stdout': dns, 'stderr': b'', 'cleanup': 'exited'}
+        for transport in ('udp', 'tcp', 'doh'):
+            body = json.dumps(self.dns_answer()).encode() + b'\n200 0' if transport == 'doh' else dns
+            with self.subTest(transport=transport), mock.patch.object(DIAGNOSTICS, 'run_process', return_value={**process, 'stdout': body}) as run:
+                result = DIAGNOSTICS.public_dns_probe('cloudflare', transport, 'archive.ubuntu.com', 4)
+            argv = run.call_args.args[0]
+            self.assertEqual(result['status'], 'ok')
+            self.assertEqual(result['queryType'], 'A')
+            if transport == 'doh':
+                self.assertEqual(argv[:2], ['curl', '-q'])
+                self.assertIn('--noproxy', argv)
+                self.assertIn('--ipv4', argv)
+                self.assertNotIn('--location', argv)
+                self.assertNotIn('--insecure', argv)
+                self.assertTrue(argv[-1].startswith('https://cloudflare-dns.com/dns-query?'))
+                self.assertTrue(result['authenticatedTransport'])
+            else:
+                self.assertIn('@1.1.1.1', argv)
+                self.assertIn('archive.ubuntu.com.', argv)
+                self.assertIn('+tcp' if transport == 'tcp' else '+notcp', argv)
+                if transport == 'udp': self.assertIn('+ignore', argv)
+                self.assertFalse(result['authenticatedTransport'])
+        for body in (json.dumps(self.dns_answer()).encode() + b'\n302 0',
+                     json.dumps(self.dns_answer()).encode() + b'\n200 60',
+                     b'{"private":"' + SECRET.encode() + b'"}\n200 0'):
+            with mock.patch.object(DIAGNOSTICS, 'run_process', return_value={**process, 'stdout': body}):
+                result = DIAGNOSTICS.public_dns_probe('google', 'doh', 'archive.ubuntu.com', 4)
+            self.assertNotEqual(result['status'], 'ok')
+            self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_public_dns_retains_rcode_and_never_uses_truncated_or_missing_results(self):
+        process = {'status': 'ok', 'exitCode': 0, 'stdout': b'', 'stderr': b'', 'cleanup': 'exited'}
+        for transport in ('udp', 'tcp', 'doh'):
+            data = self.dns_answer(); data['Status'] = 2
+            body = (json.dumps(data).encode() + b'\n200 0' if transport == 'doh' else
+                    b';; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 1\n;; flags: qr rd ra;\n')
+            with self.subTest(transport=transport), mock.patch.object(DIAGNOSTICS, 'run_process', return_value={**process, 'stdout': body}):
+                result = DIAGNOSTICS.public_dns_probe('google', transport, 'archive.ubuntu.com', 4)
+            self.assertNotEqual(result['status'], 'ok')
+            self.assertEqual(result.get('dnsResponseCode'), 2)
+            self.assertNotIn('expiresMonotonic', result)
+        with mock.patch.object(DIAGNOSTICS, 'run_process', return_value={**process, 'status': 'unavailable'}):
+            result = DIAGNOSTICS.public_dns_probe('google', 'udp', 'archive.ubuntu.com', 4)
+        self.assertEqual(result['status'], 'unavailable')
+        data = self.dns_answer(); data['TC'] = True
+        with mock.patch.object(DIAGNOSTICS, 'run_process', return_value={**process, 'stdout': json.dumps(data).encode() + b'\n200 0'}):
+            self.assertNotEqual(DIAGNOSTICS.public_dns_probe('google', 'doh', 'archive.ubuntu.com', 4)['status'], 'ok')
+
+    def test_inrelease_requires_fresh_authenticated_answer_and_keeps_hostname_tls(self):
+        self.assertTrue(callable(getattr(DIAGNOSTICS, 'inrelease_probe', None)))
+        answer = {'status': 'ok', 'provider': 'google', 'transport': 'doh', 'host': 'archive.ubuntu.com',
+                  'authenticatedTransport': True, 'dnsResponse': self.dns_answer(),
+                  'expiresMonotonic': time.monotonic() + 30}
+        process = {'status': 'ok', 'exitCode': 0, 'stdout': b'200 0 185.125.190.82 128',
+                   'stderr': b'', 'cleanup': 'exited'}
+        with mock.patch.object(DIAGNOSTICS, 'run_process', return_value=process) as run:
+            result = DIAGNOSTICS.inrelease_probe('archive.ubuntu.com', 'noble', answer, 4)
+        argv = run.call_args.args[0]
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn('archive.ubuntu.com:443:185.125.190.82', argv)
+        self.assertEqual(argv[-1], 'https://archive.ubuntu.com/ubuntu/dists/noble/InRelease')
+        self.assertIn('/dev/null', argv)
+        self.assertFalse(result['redirectFollowed'])
+        self.assertFalse(result['signatureVerified'])
+        for change in ({'expiresMonotonic': 0}, {'transport': 'udp'}, {'status': 'timeout'},
+                       {'authenticatedTransport': False}, {'host': 'security.ubuntu.com'}):
+            with self.subTest(change=change), mock.patch.object(DIAGNOSTICS, 'run_process') as run:
+                result = DIAGNOSTICS.inrelease_probe('archive.ubuntu.com', 'noble', {**answer, **change}, 4)
+            self.assertNotEqual(result['status'], 'ok')
+            run.assert_not_called()
+        for output in (b'302 0 185.125.190.82 10', b'200 1 185.125.190.82 10',
+                       b'200 0 1.1.1.1 10', b'200 0 185.125.190.82 0'):
+            with mock.patch.object(DIAGNOSTICS, 'run_process', return_value={**process, 'stdout': output}):
+                self.assertNotEqual(DIAGNOSTICS.inrelease_probe('archive.ubuntu.com', 'noble', answer, 4)['status'], 'ok')
+
+    def test_uid_supervisor_runs_fixed_code_without_reading_the_checkout(self):
+        self.assertTrue(callable(getattr(DIAGNOSTICS, 'dns_program', None)))
+        program = DIAGNOSTICS.dns_program(True)
+        worker = 'import json,os; print(json.dumps({"status":"ok","uid":os.geteuid(),"addresses":["1.1.1.1"]}))'
+        result = DIAGNOSTICS.decode_worker(DIAGNOSTICS.run_process(
+            [sys.executable, '-I', '-c', program, 'archive.ubuntu.com', worker], 4))
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['observation']['observation']['uid'], os.geteuid())
+        self.assertNotIn(str(SCRIPT), program)
+        self.assertNotIn('__file__', program)
+
+    def test_uid_supervisor_owns_deadline_and_kills_its_code_worker(self):
+        self.assertTrue(callable(getattr(DIAGNOSTICS, 'dns_program', None)))
+        marker = self.directory / 'worker-pid'
+        worker = f'import os,pathlib,time; pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(20)'
+        with mock.patch.object(DIAGNOSTICS, 'DNS_WORKER_SECONDS', 0.3):
+            program = DIAGNOSTICS.dns_program(True)
+        result = DIAGNOSTICS.decode_worker(DIAGNOSTICS.run_process(
+            [sys.executable, '-I', '-c', program, 'archive.ubuntu.com', worker], 2))
+        self.assertEqual(result['status'], 'timeout')
+        self.assertEqual(result['observation']['cleanup'], 'group_killed')
+        self.assert_stopped(int(marker.read_text()))
 
 
 if __name__ == '__main__':

@@ -25,6 +25,18 @@ These temporary downloads do not update system lists, install packages, verify
 repository signatures, or establish that package installation succeeds. Their
 contents are discarded after the observation.
 
+When the system resolver cannot answer for Ubuntu hosts while the comparison
+host remains reachable, observations of the documented
+[Cloudflare](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) and
+[Google](https://developers.google.com/speed/public-dns/docs/using) public
+resolvers distinguish UDP, TCP, and DNS over HTTPS paths. These observations request A records only;
+they do not diagnose IPv6. A validated HTTPS resolver answer can supply a
+short-lived address for a separate, process-local HTTPS connection to the
+original Ubuntu hostname. That connection retains hostname and certificate
+verification and does not change the system resolver. Successful alternate
+resolution and transport are evidence for a later repair, not permission to
+declare the original installation healthy.
+
 Only selected host resolver information, bounded APT settings, and proxy-presence
 flags are recorded; credentials and environment values are excluded. Individual
 probe failures are observations, not successful package preparation. Collector

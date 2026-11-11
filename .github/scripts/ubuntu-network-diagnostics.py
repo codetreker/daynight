@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import datetime
 import http.client
+import inspect
 import ipaddress
 import json
 import os
@@ -32,6 +33,8 @@ UBUNTU_CODENAMES = ('noble', 'resolute')
 OUTPUT_LIMIT = 16384
 SAFE_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C',
             'SYSTEMD_COLORS': '0', 'SYSTEMD_PAGER': 'cat'}
+RESOLVERS = {'cloudflare': ('1.1.1.1', 'https://cloudflare-dns.com/dns-query'),
+             'google': ('8.8.8.8', 'https://dns.google/resolve')}
 
 
 def now():
@@ -193,18 +196,35 @@ def decode_worker(result):
         return {**public, 'status': 'invalid_output'}
 
 
-def dns_supervisor(host):
+def dns_program(supervised):
+    # Copy only fixed diagnostic functions into -c. The target UID must not need
+    # directory traversal permission for the runner's checkout or home directory.
+    functions = ['require_host', 'error_record']
+    if supervised:
+        functions += ['now', 'stderr_record', 'run_process', 'public_process', 'decode_worker', 'dns_supervisor']
+    else:
+        functions += ['dns_worker']
+    constants = {'HOSTS': HOSTS, 'SAFE_ENV': SAFE_ENV, 'OUTPUT_LIMIT': OUTPUT_LIMIT,
+                 'DNS_WORKER_SECONDS': DNS_WORKER_SECONDS}
+    return ('import datetime,ipaddress,json,os,selectors,signal,socket,subprocess,sys,time\n'
+            + ''.join(f'{key} = {value!r}\n' for key, value in constants.items())
+            + '\n'.join(DNS_SOURCE[function] for function in functions)
+            + '\nprint(json.dumps(' + ('dns_supervisor(sys.argv[1], sys.argv[2])' if supervised
+                                        else 'dns_worker(sys.argv[1])') + '))\n')
+
+
+def dns_supervisor(host, worker_code=None):
     require_host(host)
     # This layer runs under the target UID, so it can kill its own DNS worker
     # even when the unprivileged collector cannot signal a sudo descendant.
-    return decode_worker(run_process([sys.executable, '-I', str(pathlib.Path(__file__).resolve()),
-                                      '--worker', 'dns', host], DNS_WORKER_SECONDS))
+    return decode_worker(run_process([sys.executable, '-I', '-c', worker_code if worker_code is not None
+                                      else dns_program(False), host], DNS_WORKER_SECONDS))
 
 
 def dns_probe(identity, host, timeout):
     require_host(host)
     expected_uid = os.geteuid() if identity == 'current' else pwd.getpwnam(identity).pw_uid
-    command = [sys.executable, '-I', str(pathlib.Path(__file__).resolve()), '--supervise', host]
+    command = [sys.executable, '-I', '-c', dns_program(True), host, dns_program(False)]
     if expected_uid != os.geteuid():
         command = ['sudo', '-n', '-u', identity, '--', *command]
     result = decode_worker(run_process(command, timeout))
@@ -212,6 +232,11 @@ def dns_probe(identity, host, timeout):
     if result['status'] == 'ok' and nested.get('uid') != expected_uid:
         result['status'] = 'identity_mismatch'
     return {**result, 'identity': identity, 'expectedUid': expected_uid}
+
+
+DNS_SOURCE = {function.__name__: inspect.getsource(function) for function in (
+    require_host, error_record, now, stderr_record, run_process, public_process,
+    decode_worker, dns_supervisor, dns_worker)}
 
 
 def ip_tokens(value):
@@ -393,6 +418,160 @@ def proxy_presence():
             for key in ('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')}
 
 
+def dns_name(value):
+    label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    if not isinstance(value, str) or not re.fullmatch(rf'(?=.{{1,253}}\.?$)(?:{label}\.)*{label}\.?', value):
+        raise ValueError('invalid_dns_name')
+    return value.rstrip('.').lower()
+
+
+def validate_public_answer(host, response):
+    require_host(host)
+    if (host not in HOSTS[:3] or not isinstance(response, dict) or type(response.get('Status')) is not int
+            or response['Status'] != 0 or response.get('TC', False) is not False):
+        raise ValueError('dns_response_failed')
+    questions, answers = response.get('Question'), response.get('Answer')
+    if (not isinstance(questions, list) or len(questions) != 1 or not isinstance(questions[0], dict)
+            or type(questions[0].get('type')) is not int or questions[0]['type'] != 1
+            or dns_name(questions[0].get('name')) != host):
+        raise ValueError('dns_question_mismatch')
+    if not isinstance(answers, list) or not 1 <= len(answers) <= 64:
+        raise ValueError('dns_answers_invalid')
+    records = {}
+    for answer in answers:
+        if (not isinstance(answer, dict) or type(answer.get('type')) is not int or answer['type'] not in (1, 5)
+                or type(answer.get('TTL')) is not int or not 0 < answer['TTL'] <= 2147483647):
+            raise ValueError('dns_record_invalid')
+        owner = dns_name(answer.get('name'))
+        if answer['type'] == 5:
+            value = dns_name(answer.get('data'))
+        else:
+            if not isinstance(answer.get('data'), str):
+                raise ValueError('dns_address_invalid')
+            value = ipaddress.IPv4Address(answer.get('data'))
+            if not value.is_global or value.is_multicast:
+                raise ValueError('dns_address_not_public_ipv4')
+            value = str(value)
+        records.setdefault(owner, []).append((answer['type'], value, answer['TTL']))
+    name, seen, ttl = host, set(), 2147483647
+    while name not in seen and len(seen) < 9:
+        seen.add(name)
+        rows = records.get(name, [])
+        if not rows:
+            break
+        ttl = min(ttl, *(row[2] for row in rows))
+        aliases = {row[1] for row in rows if row[0] == 5}
+        addresses = sorted({row[1] for row in rows if row[0] == 1})
+        if addresses and not aliases and seen == set(records):
+            return {'addresses': addresses, 'canonicalName': name, 'ttlSeconds': ttl}
+        if len(aliases) != 1 or addresses:
+            break
+        name = aliases.pop()
+    raise ValueError('dns_chain_invalid')
+
+
+def dig_response(output):
+    text = output.decode('ascii')
+    header = re.search(r'HEADER<<- opcode: QUERY, status: ([A-Z]+),', text)
+    codes = {'NOERROR': 0, 'FORMERR': 1, 'SERVFAIL': 2, 'NXDOMAIN': 3, 'NOTIMP': 4, 'REFUSED': 5,
+             'YXDOMAIN': 6, 'YXRRSET': 7, 'NXRRSET': 8, 'NOTAUTH': 9, 'NOTZONE': 10}
+    if not header or header[1] not in codes:
+        raise ValueError('dns_response_failed')
+    questions = re.findall(r'^;([^;\s]+)\s+IN\s+A\s*$', text, re.MULTILINE)
+    answers = []
+    for line in text.splitlines():
+        if not line or line.startswith(';'):
+            continue
+        fields = line.split()
+        if len(fields) != 5 or fields[2] != 'IN' or fields[3] not in ('A', 'CNAME'):
+            raise ValueError('dns_record_invalid')
+        answers.append({'name': fields[0], 'TTL': int(fields[1]),
+                        'type': 1 if fields[3] == 'A' else 5, 'data': fields[4]})
+    return {'Status': codes[header[1]], 'TC': bool(re.search(r';; flags: [^;]*\btc\b', text)),
+            'Question': [{'name': name, 'type': 1} for name in questions], 'Answer': answers}
+
+
+def curl_command(timeout):
+    return ['curl', '-q', '--silent', '--show-error', '--ipv4', '--noproxy', '*', '--proto', '=https',
+            '--connect-timeout', str(min(2, timeout)), '--max-time', str(min(4, timeout))]
+
+
+def public_dns_probe(provider, transport, host, timeout):
+    if host not in HOSTS[:3] or provider not in RESOLVERS or transport not in ('udp', 'tcp', 'doh'):
+        raise ValueError('public_dns_probe_not_allowed')
+    started = time.monotonic()
+    resolver, endpoint = RESOLVERS[provider]
+    if transport == 'doh':
+        argv = curl_command(timeout) + ['--header', 'Accept: application/dns-json', '--max-filesize', str(OUTPUT_LIMIT),
+                                       '--write-out', '\n%{http_code} %{ssl_verify_result}',
+                                       f'{endpoint}?name={host}.&type=A']
+    else:
+        argv = ['dig', '-r', f'@{resolver}', f'{host}.', 'A', '+time=2', '+tries=1', '+nosearch',
+                '+noall', '+comments', '+question', '+answer', '+tcp' if transport == 'tcp' else '+notcp']
+        if transport == 'udp':
+            argv.append('+ignore')
+    result = run_process(argv, min(4, timeout))
+    public = {**public_process(result), 'provider': provider, 'transport': transport, 'host': host,
+              'queryType': 'A', 'resolverAddress': resolver, 'authenticatedTransport': False,
+              'bootstrap': 'system_hostname_resolution_and_https' if transport == 'doh' else 'literal_resolver_ipv4'}
+    if result['status'] != 'ok':
+        return public
+    try:
+        if transport == 'doh':
+            body, metadata = result['stdout'].rsplit(b'\n', 1)
+            code, verify = metadata.split()
+            public.update({'httpStatus': int(code), 'tlsVerifyResult': int(verify)})
+            if code != b'200' or verify != b'0':
+                return {**public, 'status': 'http_or_tls_error'}
+            response = json.loads(body)
+        else:
+            response = dig_response(result['stdout'])
+        if isinstance(response, dict) and type(response.get('Status')) is int and 0 <= response['Status'] <= 65535:
+            public['dnsResponseCode'] = response['Status']
+        answer = validate_public_answer(host, response)
+        # Retain only validated DNS fields, never arbitrary DoH response content.
+        safe_response = {'Status': 0, 'TC': False, 'Question': [{'name': host, 'type': 1}],
+                         'Answer': [{key: row[key] for key in ('name', 'type', 'TTL', 'data')} for row in response['Answer']]}
+        return {**public, **answer, 'authenticatedTransport': transport == 'doh', 'dnsResponse': safe_response,
+                'expiresMonotonic': started + answer['ttlSeconds'], 'ttlClock': 'this_collection_monotonic_only'}
+    except (ValueError, TypeError, UnicodeError, KeyError):
+        return {**public, 'status': 'invalid_dns_response'}
+
+
+def inrelease_probe(host, codename, answer, timeout):
+    if host not in HOSTS[:3]:
+        raise ValueError('host_not_allowed')
+    if codename not in UBUNTU_CODENAMES:
+        return {'status': 'unavailable', 'error': {'type': 'UnsupportedUbuntuCodename'}}
+    if (not answer or answer.get('status') != 'ok' or answer.get('provider') not in RESOLVERS
+            or answer.get('transport') != 'doh' or answer.get('host') != host
+            or answer.get('authenticatedTransport') is not True
+            or answer.get('expiresMonotonic', 0) <= time.monotonic()):
+        return {'status': 'unavailable', 'error': {'type': 'FreshAuthenticatedDnsAnswerRequired'}}
+    try:
+        address = validate_public_answer(host, answer['dnsResponse'])['addresses'][0]
+    except (ValueError, TypeError, KeyError):
+        return {'status': 'invalid_dns_response'}
+    path = f'/ubuntu/dists/{codename}/InRelease'
+    result = run_process(curl_command(timeout) + ['--resolve', f'{host}:443:{address}', '--output', '/dev/null',
+                         '--max-filesize', '1048576', '--write-out', '%{http_code} %{ssl_verify_result} %{remote_ip} %{size_download}',
+                         f'https://{host}{path}'], min(4, timeout))
+    public = {**public_process(result), 'provider': answer['provider'], 'resolvedAddress': address,
+              'method': 'GET', 'path': path, 'redirectFollowed': False, 'signatureVerified': False,
+              'boundary': 'IPv4 transport only; process-local address override retains hostname TLS. No APT signature verification or configuration change.'}
+    if result['status'] != 'ok':
+        return public
+    try:
+        code, verify, remote, downloaded = result['stdout'].decode('ascii').split()
+        public.update({'httpStatus': int(code), 'tlsVerifyResult': int(verify),
+                       'remoteAddress': str(ipaddress.IPv4Address(remote)), 'downloadedBytes': int(downloaded)})
+        if code != '200' or verify != '0' or remote != address or int(downloaded) <= 0:
+            public['status'] = 'http_or_tls_error'
+        return public
+    except (ValueError, UnicodeError):
+        return {**public, 'status': 'invalid_output'}
+
+
 def collect():
     started = time.monotonic()
     deadline = started + COLLECTION_SECONDS
@@ -410,6 +589,12 @@ def collect():
     for identity in ('current', 'root'):
         jobs.append((f'apt-transport-{identity}', 'archive.ubuntu.com',
                      lambda timeout, identity=identity: apt_transport_probe(identity, codename, timeout)))
+    for host in HOSTS[:3]:
+        for provider in RESOLVERS:
+            for transport in ('udp', 'tcp', 'doh'):
+                jobs.append((f'public-dns-{provider}-{transport}', host,
+                             lambda timeout, host=host, provider=provider, transport=transport:
+                             public_dns_probe(provider, transport, host, timeout)))
 
     def execute(entry):
         kind, host, operation = entry
@@ -430,6 +615,12 @@ def collect():
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         probes = list(pool.map(execute, jobs))
+        answers = {(probe['host'], probe.get('provider')): probe for probe in probes if probe.get('transport') == 'doh'}
+        tls_jobs = [(f'inrelease-via-{provider}', host,
+                     lambda timeout, host=host, provider=provider:
+                     inrelease_probe(host, codename, answers.get((host, provider)), timeout))
+                    for host in HOSTS[:3] for provider in RESOLVERS]
+        probes.extend(pool.map(execute, tls_jobs))
     failed = sum(probe['status'] != 'ok' for probe in probes)
     return {'schemaVersion': 1, 'collectionComplete': True, 'observedAt': now(),
             'durationSeconds': time.monotonic() - started, 'budgetSeconds': COLLECTION_SECONDS,
@@ -437,7 +628,13 @@ def collect():
             'probeCount': len(probes), 'failedProbeCount': failed,
             'allProbesSuccessful': failed == 0,
             'proxyPresence': proxy_presence(),
-            'boundary': 'Collection completion is not a network-health verdict. HTTPS uses direct standard-library connections, ignores proxy environment/configuration, follows no redirects and records no headers/body. Its HEAD path differs from the APT InRelease GET path. DNS search domains and arbitrary stderr are redacted. APT proxy presence/classification does not reveal the auto-detection result or credentials. No network configuration is changed.'}
+            'boundary': 'Collection completion is not a network-health verdict. Public resolver probes query A only, '
+                        'use absolute names and do not assess AAAA/IPv6 or the system search path. '
+                        'DoH hostname bootstrap uses the system resolver. Fresh authenticated public A answers '
+                        'may be used for process-local InRelease GET with original hostname TLS, without redirects '
+                        'or signature verification. Direct HEAD ignores proxy configuration; its path differs from '
+                        'APT InRelease GET. DNS search domains and arbitrary stderr are redacted. APT proxy '
+                        'classification does not reveal auto-detection results or credentials. No network configuration is changed.'}
 
 
 def open_output(root, relative):
