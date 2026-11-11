@@ -12,7 +12,9 @@ export type DraftOwner = DraftHandle & {
   readonly storeVersion: number;
   readonly editableDraftId: string | null;
   readonly unresolvedSubmissionId: string | null;
-  readonly blocked: 'revoked' | 'account_changed' | 'deleted' | null;
+  /** Historical recovery never becomes editable again, including after another revocation. */
+  readonly recoveryOnly?: true;
+  readonly blocked: 'revoked' | 'account_changed' | 'deleted' | 'recovery_only' | null;
   readonly cleanupPending: boolean;
   readonly allocatedBytes: number;
   readonly legacyImported: boolean;

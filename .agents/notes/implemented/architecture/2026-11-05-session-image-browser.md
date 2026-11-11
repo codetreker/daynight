@@ -29,7 +29,10 @@ a local persistence queue through their version readback, including readback
 triggered by network receipts. Queue ownership follows the current draft owner
 and authorization generation. Detached reads cannot block a new owner; captured
 old-owner writes retain their original identity until they finish. Captured
-unsaved content remains visible even when the new owner has no saved draft.
+unsaved content includes unresolved local CAS conflicts, with their original
+write baseline and complete attachment bytes. It remains visible even when the
+new owner has no saved draft. Changing targets neither chooses the other tab's
+saved version nor grants that version to the conflicting local content.
 Failed saves can retry under the original identity; competing saved content
 requires a choice bound to both the captured write and displayed source version.
 Neither choice changes the current input. Each queued allocation
@@ -84,10 +87,29 @@ all images keeps the persistent draft and its submission barrier.
 
 Account cleanup first commits an access tombstone, then removes sensitive draft
 content. Unknown operations retain only the original identity needed for later
-authorized observation. A renewed account cannot read content before unfinished
-cleanup completes; a deleted Session cannot be reopened through this mechanism.
-Cleanup failures remain visible and retryable. Local adapters have no fabricated
+authorized observation. Renewed access discovers those tombstones across execution
+generations no newer than the verified execution, within the same actor, origin,
+resolver, actual Session and original claim or test execution. Storage enforces
+`recovery_only` access: dispatched or unknown intent permits original-operation
+observation and settlement; prepared intent permits only explicit cancellation.
+Neither path creates an old owner's editable draft or grants content, upload or
+dispatch access. This historical access classification survives terminal
+settlement and subsequent revocation; replacing a revocation reason cannot
+restore an old identity's editing rights. Recovery retains the original fence
+and operation identity; it neither restores erased private content nor grants
+an old generation permission to send. A renewed account cannot read content
+before unfinished cleanup completes; a deleted
+Session cannot be reopened through this mechanism. Cleanup failures remain
+visible and retryable. Local adapters have no fabricated
 service resource and use the shared preview store and decoder budgets.
+
+IndexedDB schema version 2 preserves version 1 records while excluding old
+clients from the new recovery access model. Earlier code can treat any renewable
+blocked owner as eligible for a new editable draft, including during local
+offline editing. A truthy recovery marker alone cannot prevent that old
+reauthorization path. Version change closes older connections; reopening with
+version 1 fails instead of granting writes. Blocked upgrades and unknown future
+versions remain visible storage failures without destructive reconstruction.
 
 Saved-image scopes bind origin, actor, authorization generation and the actual
 Session fence/native identity or record namespace/revision. Cache previews retain
@@ -124,6 +146,17 @@ steal a suspended tab's ownership, and persistent dispatch facts survive closure
 failure resolution can remove the last recovery entry while later edits still
 exist on disk. Independent discovery plus an explicit, version-bound move keeps
 those edits usable without automatically importing old-target content.
+
+**Use send identity for historical query authorization.** An exact execution
+generation is necessary for new commands, but restricting recovery to that
+generation strands earlier unresolved operations after account cleanup. Verified
+recovery scope permits observation of the original intent without restoring its
+private content or widening current command admission.
+
+**Add a recovery marker without changing the database version.** Older bundles
+can ignore a new flag or reinterpret a blocked marker through their existing
+reauthorization path. The database version barrier prevents those clients from
+rewriting an owner under obsolete access rules while preserving stored content.
 
 **Retain local bytes until remote upload release completes.** A detached target
 may no longer have release permission, pinning accepted images against the browser

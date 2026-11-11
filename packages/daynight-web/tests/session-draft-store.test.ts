@@ -194,6 +194,7 @@ it('deletes original operation correlations for an explicitly deleted Session an
 
 it('restores only minimal original-operation queries after an account is authorized for the same execution again', async () => {
   const db = store(); let state = await db.openOwner(identity()); state = await db.saveDraft(state.owner, write(state.editable!, 'private')); state = await freeze(db, state);
+  expect(await db.claimDispatch(state.owner, state.submission!.operationId)).not.toBeNull();
   await db.blockAccount(target.serverOrigin, target.actorUserId);
   const fresh = await db.reauthorizeOwner(identity('native'));
   const originals = await db.readExecutionSubmissions(identity('native'));
@@ -338,12 +339,19 @@ it('does not expose a newer generation to an older generation context', async ()
   expect(await db.readRecoverableSubmissions(identity())).toEqual([]);
 });
 
-it.each(['revoked', 'account_changed', 'deleted'] as const)('does not renew %s historical authorization while opening a new generation', async reason => {
+it.each(['revoked', 'account_changed', 'deleted'] as const)('does not restore %s historical prepared content or dispatch authority in a new generation', async reason => {
   const db = store(); let state = await db.openOwner(identity());
   state = await db.saveDraft(state.owner, write(state.editable!, 'revoked original')); state = await freeze(db, state);
   await db.blockOwner(state.owner, reason);
   const next = { ...identity(), target: { ...target, fence: { ...target.fence, executionGeneration: '2' } } };
   await db.reauthorizeOwner(next);
-  expect(await db.readRecoverableSubmissions(next)).toEqual([]);
+  const recoveries = await db.readRecoverableSubmissions(next);
+  if (reason === 'deleted') expect(recoveries).toEqual([]);
+  else {
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]).toMatchObject({ editable: null, frozen: null, submission: { state: 'prepared', command: null, sensitiveCleared: true } });
+    await expect(db.read(recoveries[0]!.owner)).rejects.toMatchObject({ code: 'blocked' });
+    await expect(db.claimDispatch(recoveries[0]!.owner, state.submission!.operationId)).rejects.toMatchObject({ code: 'blocked' });
+  }
   expect((await db.readExisting(next))?.editable?.text).toBe('');
 });

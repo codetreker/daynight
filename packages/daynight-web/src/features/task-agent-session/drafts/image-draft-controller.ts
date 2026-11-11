@@ -67,7 +67,7 @@ const message = (error: unknown): string => {
 const recoveryKey = (ref: Pick<ImageDraftRecoveryRef, 'ownerKey' | 'operationId'>): string => JSON.stringify([ref.ownerKey, ref.operationId]);
 const itemKey = (item: Pick<DraftImageItem, 'draftImageId' | 'byteRevision'>): string => JSON.stringify([item.draftImageId, item.byteRevision]);
 const sameProfile = (a: ImageCapabilities | null, b: ImageCapabilities | null): boolean => !!a && !!b && a.expectedNativeSessionId === b.expectedNativeSessionId && a.modelId === b.modelId && a.controlsRevision === b.controlsRevision;
-type PendingDraftWrite = { readonly writeId: string; readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly DraftBlobInput[]; readonly preceding: Promise<void>; observed: DraftSnapshot };
+type PendingDraftWrite = { readonly writeId: string; readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly DraftBlobInput[]; readonly preceding: Promise<void>; readonly conflicted: boolean; observed: DraftSnapshot };
 
 /** One durable image draft owner inside the existing Session client. */
 export class ImageDraftController {
@@ -283,8 +283,8 @@ export class ImageDraftController {
   /** Capture only content whose local write admission was already established. */
   private capturePendingWrite(): PendingDraftWrite | null {
     const context = this.options.getContext(), base = this.saved?.editable;
-    if (!this.dirty || this.conflict || !base || !this.local || this.local.draftId !== base.draftId || !context?.canEdit || context.target.actorUserId !== this.saved!.owner.identity.target.actorUserId || context.target.serverOrigin !== this.saved!.owner.identity.target.serverOrigin) return null;
-    return { writeId: crypto.randomUUID(), owner: this.saved!.owner, base, draft: this.local, blobs: this.local.items.flatMap(item => item.blobId && this.blobs.has(item.blobId) ? [this.blobs.get(item.blobId)!] : []), preceding: this.writes, observed: this.saved! };
+    if (!this.dirty || !base || !this.local || this.local.draftId !== base.draftId || !context?.canEdit || context.target.actorUserId !== this.saved!.owner.identity.target.actorUserId || context.target.serverOrigin !== this.saved!.owner.identity.target.serverOrigin) return null;
+    return { writeId: crypto.randomUUID(), owner: this.saved!.owner, base, draft: this.local, blobs: this.local.items.flatMap(item => item.blobId && this.blobs.has(item.blobId) ? [this.blobs.get(item.blobId)!] : []), preceding: this.writes, conflicted: this.conflict, observed: this.saved! };
   }
   private retireWrite(captured: PendingDraftWrite | null, action?: { readonly context: ImageDraftContext; readonly epoch: number }): Promise<void> {
     if (!captured) return Promise.resolve();
@@ -301,6 +301,8 @@ export class ImageDraftController {
       const saved = await this.store.read(captured.owner), current = saved.editable;
       admitted();
       captured.observed = saved;
+      // Changing owners cannot decide between the user's unresolved local and saved versions.
+      if (captured.conflicted) throw new DraftStoreError('conflict', 'Choose the saved or retained original draft before saving.');
       const committed = this.contentCommits.get(captured.owner.ownerKey), known = committed?.draftId === captured.draft.draftId && BigInt(committed.revision) >= BigInt(captured.base.revision) ? committed : captured.base;
       if (!current || current.draftId !== captured.draft.draftId || current.revision !== known.revision) throw new DraftStoreError('conflict', 'The saved draft changed before the final local write.');
       const items = captured.draft.items.map(item => {

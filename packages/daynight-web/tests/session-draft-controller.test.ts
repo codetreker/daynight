@@ -604,6 +604,33 @@ describe('durable Session image coordination', () => {
     await controller.restoreDetached(controller.getSnapshot().detachedDrafts[0]!.ref);
     expect(controller.getSnapshot().text).toBe('unsaved original owner text'); expect(f.commands).toHaveLength(0);
   });
+  it.each(['saved', 'local'] as const)('retains the conflicted old-native content and missing persisted Blob until explicit %s choice', async choice => {
+    const f = fixture(null), controller = f.create();
+    await controller.addFiles([file('local-original.png')], 'original shared baseline');
+    const baseline = (await f.store.readExisting(identity))!;
+    const blobId = baseline.editable!.items[0]!.blobId!;
+    controller.setText('unresolved private local text');
+    const peer = new SessionDraftStore(); stores.push(peer);
+    const remote = await peer.saveDraft(baseline.owner, { draftId: baseline.editable!.draftId, expectedStoreVersion: baseline.editable!.storeVersion, text: 'other tab saved text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    expect(await peer.readBlob(remote.owner, blobId)).toBeNull();
+    await controller.flush().catch(() => {});
+    expect(controller.getSnapshot()).toMatchObject({ conflict: true, text: 'unresolved private local text' });
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native-new' }, nativeIdentity = { ...identity, target: nativeTarget };
+    await f.store.openOwner(nativeIdentity); f.setContext({ ...f.context(), identity: nativeIdentity, target: nativeTarget }); await controller.sync();
+    await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]).toMatchObject({ draft: { text: 'unresolved private local text', items: [{ label: 'local-original.png' }] }, savedDraft: { text: 'other tab saved text', items: [] }, canResolveConflict: true, canRestore: false }));
+    expect((await peer.readExisting(identity))!.editable).toEqual(remote.editable);
+    const ref = controller.getSnapshot().detachedDrafts[0]!.ref;
+    await controller.resolveDetachedConflict(ref, choice);
+    const resolved = (await peer.readExisting(identity))!;
+    expect(resolved.editable?.text).toBe(choice === 'local' ? 'unresolved private local text' : 'other tab saved text');
+    if (choice === 'local') {
+      expect(resolved.editable!.items[0]!.label).toBe('local-original.png');
+      expect(await (await peer.readBlob(resolved.owner, resolved.editable!.items[0]!.blobId!))!.blob.text()).toBe('image');
+    } else expect(resolved.editable?.items).toEqual([]);
+    expect(controller.getSnapshot().text).toBe('');
+    expect((await peer.readExisting(nativeIdentity))!.editable?.text).toBe('');
+    expect(f.commands).toEqual([]);
+  });
   it.each(['saved', 'local'] as const)('explicitly keeps the %s original-owner draft after a retiring write conflicts', async choice => {
     const f = fixture(null), controller = f.create(); const original = await f.store.openOwner(identity); await controller.sync();
     controller.setText('local original text');

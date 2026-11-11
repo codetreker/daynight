@@ -4,7 +4,9 @@ import { canonicalDraftOrigin, draftAccountKey, draftExecutionKey, draftOwnerKey
 import type { DraftBlob, DraftDetachedRef, DraftDetachedSnapshot, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
 export { draftExecutionKey, draftOwnerKey } from './draft-store-identity';
 export const SESSION_DRAFT_DATABASE = 'daynight-session-drafts';
-export const SESSION_DRAFT_SCHEMA = 1;
+// Version 1 clients may automatically restore write access to a recovery-only owner.
+// Upgrading closes their connections and makes their version-1 reopen fail closed.
+export const SESSION_DRAFT_SCHEMA = 2;
 export const DRAFT_ACCOUNT_BYTE_LIMIT = 256 * 1024 * 1024;
 export const DRAFT_TOTAL_BYTE_LIMIT = 512 * 1024 * 1024;
 const MAX_REVISION = 9_223_372_036_854_775_807n;
@@ -60,7 +62,8 @@ export class SessionDraftStore {
     const opening = new Promise<IDBPDatabase<SessionDraftSchema>>((resolve, reject) => {
       let abandoned = false;
       void openDB<SessionDraftSchema>(this.options.databaseName ?? SESSION_DRAFT_DATABASE, SESSION_DRAFT_SCHEMA, {
-        upgrade(db) {
+        upgrade(db, oldVersion) {
+          if (oldVersion >= 1) return;
           const owners = db.createObjectStore('owners', { keyPath: 'ownerKey' }); owners.createIndex('execution', 'executionKey'); owners.createIndex('account', 'accountKey');
           for (const [name, id] of [['drafts', 'draftId'], ['blobs', 'blobId'], ['uploads', 'uploadId'], ['submissions', 'operationId']] as const) {
             const object = db.createObjectStore(name, { keyPath: ['ownerKey', id] }); object.createIndex('owner', 'ownerKey');
@@ -95,8 +98,19 @@ export class SessionDraftStore {
   }
   private async owner(tx: Tx, handle: DraftHandle): Promise<DraftOwner> {
     const owner = await this.readOwner(tx, handle.ownerKey);
-    if (!owner || owner.accessEpoch !== handle.accessEpoch || owner.blocked || this.revoked.has(handle.ownerKey)) return fail('blocked', 'Draft access is no longer current.');
+    if (!owner || owner.accessEpoch !== handle.accessEpoch || owner.blocked || owner.recoveryOnly || this.revoked.has(handle.ownerKey)) return fail('blocked', 'Draft access is no longer current.');
     await this.assertIdentityAvailable(tx, owner.identity);
+    return owner;
+  }
+  private async recoveryOwner(tx: Tx, handle: DraftHandle, action: 'list' | 'observe' | 'cancel', operationId?: string): Promise<DraftOwner> {
+    const owner = await this.readOwner(tx, handle.ownerKey);
+    if (owner?.blocked !== 'recovery_only') return this.owner(tx, handle);
+    if (owner.accessEpoch !== handle.accessEpoch || owner.cleanupPending || this.revoked.has(owner.ownerKey)) return fail('blocked', 'Original-operation recovery is no longer authorized.');
+    await this.assertIdentityAvailable(tx, owner.identity);
+    const submission = owner.unresolvedSubmissionId ? await tx.objectStore('submissions').get([owner.ownerKey, owner.unresolvedSubmissionId]) : undefined;
+    if (!submission || !submission.sensitiveCleared || submission.command || submission.snapshot || submission.blobIds.length || submission.uploadIds.length || !['prepared', 'dispatch_claimed', 'unknown'].includes(submission.state)) return fail('blocked', 'Only a cleared original operation can be recovered.');
+    if (operationId !== undefined && operationId !== submission.operationId) return fail('invalid', 'The operation does not match the retained original submission.');
+    if (action === 'observe' && submission.state === 'prepared' || action === 'cancel' && submission.state !== 'prepared') return fail('blocked', 'This recovery action is not permitted for the original operation.');
     return owner;
   }
   private async snapshot(tx: Tx, owner: DraftOwner): Promise<DraftSnapshot> {
@@ -113,7 +127,8 @@ export class SessionDraftStore {
       })); return { ...draft, items };
     };
     const executionOwners = (await tx.objectStore('owners').index('execution').getAll(owner.executionKey)).filter(isOwner);
-    return { owner, editable: await load(owner.editableDraftId), frozen: await load(submission?.draftId ?? null), submission, uploads: await tx.objectStore('uploads').index('owner').getAll(owner.ownerKey), executionBlocked: executionOwners.some((item) => item.unresolvedSubmissionId !== null) };
+    const recoveryOnly = owner.recoveryOnly || owner.blocked === 'recovery_only';
+    return { owner, editable: recoveryOnly ? null : await load(owner.editableDraftId), frozen: recoveryOnly ? null : await load(submission?.draftId ?? null), submission, uploads: recoveryOnly ? [] : await tx.objectStore('uploads').index('owner').getAll(owner.ownerKey), executionBlocked: executionOwners.some((item) => item.unresolvedSubmissionId !== null) };
   }
   async readExisting(identity: DraftOwnerIdentity): Promise<DraftSnapshot | null> {
     const key = draftOwnerKey(identity);
@@ -135,7 +150,8 @@ export class SessionDraftStore {
       await this.assertIdentityAvailable(tx, identity);
       const results: { owner: DraftOwner; submission: DraftSubmission }[] = [];
       for (const owner of (await tx.objectStore('owners').index('execution').getAll(draftExecutionKey(identity))).filter(isOwner)) {
-        if (owner.blocked || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !owner.unresolvedSubmissionId) continue;
+        if (owner.blocked && owner.blocked !== 'recovery_only' || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !owner.unresolvedSubmissionId || !sameDraftRecoveryScope(owner.identity, identity)) continue;
+        await this.recoveryOwner(tx, owner, 'list');
         const submission = await tx.objectStore('submissions').get([owner.ownerKey, owner.unresolvedSubmissionId]);
         if (submission) results.push({ owner, submission });
       }
@@ -149,8 +165,8 @@ export class SessionDraftStore {
       if (current) await this.owner(tx, current);
       const results: DraftRecoverySnapshot[] = [];
       for (const owner of (await tx.objectStore('owners').index('account').getAll(draftAccountKey(identity))).filter(isOwner)) {
-        if (owner.blocked || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !owner.unresolvedSubmissionId || !sameDraftRecoveryScope(owner.identity, identity)) continue;
-        const snapshot = await this.snapshot(tx, await this.owner(tx, owner));
+        if (owner.blocked && owner.blocked !== 'recovery_only' || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !owner.unresolvedSubmissionId || !sameDraftRecoveryScope(owner.identity, identity)) continue;
+        const snapshot = await this.snapshot(tx, await this.recoveryOwner(tx, owner, 'list'));
         if (snapshot.submission) results.push({ ...snapshot, submission: snapshot.submission });
       }
       return results;
@@ -412,7 +428,7 @@ export class SessionDraftStore {
   }
   async refusePrepared(handle: DraftHandle, operationId: string): Promise<DraftSnapshot> {
     return this.transaction('readwrite', async (tx) => {
-      const owner = await this.owner(tx, handle); const submission = await tx.objectStore('submissions').get([owner.ownerKey, operationId]);
+      const owner = await this.recoveryOwner(tx, handle, 'cancel', operationId); const submission = await tx.objectStore('submissions').get([owner.ownerKey, operationId]);
       if (!submission || owner.unresolvedSubmissionId !== operationId || submission.state !== 'prepared') return this.snapshot(tx, owner);
       return this.settleInTransaction(tx, owner, submission, 'local_not_dispatched');
     }, true);
@@ -437,7 +453,7 @@ export class SessionDraftStore {
   }
   async settleSubmission(handle: DraftHandle, settlement: DraftSettlement): Promise<DraftSnapshot> {
     return this.transaction('readwrite', async (tx) => {
-      const owner = await this.owner(tx, handle); const current = await tx.objectStore('submissions').get([owner.ownerKey, settlement.operationId]);
+      const owner = await this.recoveryOwner(tx, handle, 'observe', settlement.operationId); const current = await tx.objectStore('submissions').get([owner.ownerKey, settlement.operationId]);
       if (!current) return fail('invalid', 'The original submission is missing.');
       const operation = settlement.operation;
       if (!operation || operation.operationId !== current.operationId || !sameDraftFence(operation, current.fence) || operation.kind !== current.kind) return fail('invalid', 'The operation does not match the original submission.');
@@ -456,7 +472,7 @@ export class SessionDraftStore {
     if (outcome === 'accepted') {
       if (draft) { await this.releaseRemoved(tx, owner.ownerKey, draft, null); await tx.objectStore('drafts').delete([owner.ownerKey, draft.draftId]); }
       owner = { ...owner, unresolvedSubmissionId: null, storeVersion: increment(owner.storeVersion) };
-      if (!owner.editableDraftId) { const next = newDraft(owner.ownerKey); await tx.objectStore('drafts').add(next); owner = { ...owner, editableDraftId: next.draftId }; }
+      if (!owner.editableDraftId && !owner.recoveryOnly && owner.blocked !== 'recovery_only') { const next = newDraft(owner.ownerKey); await tx.objectStore('drafts').add(next); owner = { ...owner, editableDraftId: next.draftId }; }
     } else if (draft && !owner.editableDraftId) {
       await tx.objectStore('drafts').put({ ...draft, state: 'editable', storeVersion: increment(draft.storeVersion) }); owner = { ...owner, editableDraftId: draft.draftId, unresolvedSubmissionId: null, storeVersion: increment(owner.storeVersion) };
     } else if (draft) await tx.objectStore('drafts').put({ ...draft, state: 'detached', storeVersion: increment(draft.storeVersion) });
@@ -465,7 +481,7 @@ export class SessionDraftStore {
   }
   async observeSubmission(handle: DraftHandle, operationId: string, operation: SessionOperation): Promise<DraftSnapshot> {
     return this.transaction('readwrite', async (tx) => {
-      const owner = await this.owner(tx, handle); const submission = await tx.objectStore('submissions').get([owner.ownerKey, operationId]);
+      const owner = await this.recoveryOwner(tx, handle, 'observe', operationId); const submission = await tx.objectStore('submissions').get([owner.ownerKey, operationId]);
       if (!submission || operation.operationId !== operationId || !sameDraftFence(submission.fence, operation) || operation.kind !== submission.kind) return fail('invalid', 'The operation does not match the original submission.');
       if (pending(submission)) await tx.objectStore('submissions').put({ ...submission, state: submission.state === 'prepared' ? 'prepared' : 'unknown', lastOperation: operation });
       return this.snapshot(tx, owner);
@@ -496,7 +512,7 @@ export class SessionDraftStore {
     const next: DraftOwner = { ...owner, editableDraftId: null, unresolvedSubmissionId, allocatedBytes: 0, cleanupPending: false };
     await tx.objectStore('owners').put(next); return next;
   }
-  async blockOwner(handle: DraftHandle, reason: NonNullable<DraftOwner['blocked']>): Promise<void> {
+  async blockOwner(handle: DraftHandle, reason: CleanupScope['reason']): Promise<void> {
     this.revoked.add(handle.ownerKey);
     // The durable tombstone survives a later cleanup failure and prevents reopening private rows.
     const blocked = await this.transaction('readwrite', async (tx) => {
@@ -558,13 +574,15 @@ export class SessionDraftStore {
       if (marker && !isOwner(marker) && marker.reason === 'deleted') return fail('blocked', 'The original Session was deleted.');
       if (marker) await tx.objectStore('owners').delete(markerKey);
       let owner = await this.readOwner(tx, key);
-      if (owner?.blocked === 'deleted') return fail('blocked', 'The original draft owner is unavailable.');
+      if (owner?.blocked === 'deleted' || owner?.blocked === 'recovery_only' || owner?.recoveryOnly) return fail('blocked', 'The original draft owner cannot regain editable access.');
       await tx.objectStore('owners').delete(accountMarkerKey(target.serverOrigin, target.actorUserId));
-      // Authorization for this exact execution also permits querying its old native target.
-      for (let peer of (await tx.objectStore('owners').index('execution').getAll(draftExecutionKey(normalized))).filter(isOwner)) {
-        if (peer.ownerKey === key || !peer.blocked || peer.blocked === 'deleted') continue;
+      // Current authorization permits only original-operation recovery for older owners.
+      for (let peer of (await tx.objectStore('owners').index('account').getAll(draftAccountKey(normalized))).filter(isOwner)) {
+        if (peer.ownerKey === key || !peer.blocked || peer.blocked === 'deleted' || !sameDraftRecoveryScope(peer.identity, normalized)) continue;
         if (peer.cleanupPending) peer = await this.clearPrivateOwner(tx, peer);
-        await tx.objectStore('owners').put({ ...peer, blocked: null, accessEpoch: increment(peer.accessEpoch), storeVersion: increment(peer.storeVersion) }); renewed.add(peer.ownerKey);
+        const submission = peer.unresolvedSubmissionId ? await tx.objectStore('submissions').get([peer.ownerKey, peer.unresolvedSubmissionId]) : undefined;
+        if (!submission?.sensitiveCleared || !['prepared', 'dispatch_claimed', 'unknown'].includes(submission.state)) continue;
+        await tx.objectStore('owners').put({ ...peer, recoveryOnly: true, blocked: 'recovery_only', accessEpoch: increment(peer.accessEpoch), storeVersion: increment(peer.storeVersion) }); renewed.add(peer.ownerKey);
       }
       if (owner && !owner.blocked) return this.snapshot(tx, owner);
       if (owner?.cleanupPending) owner = await this.clearPrivateOwner(tx, owner);
