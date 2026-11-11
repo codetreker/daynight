@@ -69,6 +69,8 @@ for (const width of [1360, 390]) {
       await install(page); await open(page);
       const args = page.locator('#config-native-args'); await args.fill('[invalid');
       await page.locator('#worker-tab-overview').click(); await expect(dialog(page)).toHaveCount(0);
+      await page.goBack(); await expect(args).toBeVisible(); await expect(dialog(page)).toHaveCount(0);
+      await page.goBack(); await expect(page.locator('#worker-tab-overview')).toHaveAttribute('aria-selected', 'true');
       await page.goBack(); await expect(dialog(page)).toBeVisible();
       await keep(page).click(); await expect(page).toHaveURL(workerPath); await expect(args).toBeVisible();
       await expect(args).toHaveValue('[invalid'); await expect(args).toBeFocused();
@@ -160,4 +162,44 @@ test('desktop sidebar navigation protects edits', async ({ page }) => {
   await page.locator('#config-maxConcurrent').fill('6');
   await page.getByRole('navigation').getByRole('link', { name: '我的项目', exact: true }).click();
   await expect(dialog(page)).toBeVisible(); await page.keyboard.press('Escape'); await expect(page.locator('#config-maxConcurrent')).toBeFocused();
+});
+
+for (const width of [1360, 320]) {
+  test(`Worker tabs traverse while preserving the configuration owner at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state = await install(page); await open(page);
+    const args = page.locator('#config-native-args'); await args.fill('[private draft');
+    await args.evaluate(element => { (window as unknown as { workerDraftNode: Element }).workerDraftNode = element; });
+    const configuration = page.locator('#worker-tab-configuration'), overview = page.locator('#worker-tab-overview');
+    const length = await page.evaluate(() => history.length);
+    await configuration.click(); expect(await page.evaluate(() => history.length)).toBe(length);
+    await configuration.focus(); await page.keyboard.press('Home');
+    await expect(overview).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#worker-panel-configuration')).toHaveAttribute('inert', '');
+    await page.goBack(); await expect(configuration).toHaveAttribute('aria-selected', 'true');
+    await expect(args).toHaveValue('[private draft');
+    expect(await args.evaluate(element => element === (window as unknown as { workerDraftNode: Element }).workerDraftNode)).toBe(true);
+    expect(await page.evaluate(() => JSON.stringify(history.state))).not.toContain('[private draft');
+    await page.goBack(); await expect(overview).toHaveAttribute('aria-selected', 'true');
+    await page.goForward(); await expect(configuration).toHaveAttribute('aria-selected', 'true');
+    await page.goForward(); await expect(overview).toHaveAttribute('aria-selected', 'true');
+    expect(state.writes).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  });
+}
+
+test('invalid Worker history exposes an error without destroying the retained owner', async ({ page }) => {
+  await install(page); await open(page);
+  const args = page.locator('#config-native-args'); await args.fill('[private');
+  await args.evaluate(element => { (window as unknown as { workerErrorNode: Element }).workerErrorNode = element; });
+  await page.evaluate(() => {
+    const state = history.state as { __daynightNavigation: { view: Record<string, unknown> } };
+    history.replaceState({ ...state, __daynightNavigation: { ...state.__daynightNavigation, view: { ...state.__daynightNavigation.view, selection: { workerId: '00000000-0000-4000-8000-000000000001', section: 'invalid' } } } }, '');
+  });
+  await page.goBack(); await page.goForward();
+  await expect(page.getByRole('alert')).toHaveText('页面导航状态无效。');
+  await expect(args).toBeHidden();
+  await page.goBack(); await page.locator('#worker-tab-configuration').click();
+  await expect(args).toHaveValue('[private');
+  expect(await args.evaluate(element => element === (window as unknown as { workerErrorNode: Element }).workerErrorNode)).toBe(true);
 });

@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
-import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, resourceHistory, type ResourcePageReading } from '../src/app/page-history';
-import { useAccountHistory, useResourceHistory } from '../src/app/use-page-history';
+import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type ResourcePageReading } from '../src/app/page-history';
+import { useAccountHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 
 const user = '00000000-0000-4000-8000-000000000001';
@@ -200,5 +200,54 @@ describe('account reading history', () => {
     act(() => result.current.select('prompt'));
     expect(navigation.snapshot().view).toEqual(state.__daynightNavigation.view);
     expect(history.state).toEqual(state);
+  });
+});
+
+
+describe('Worker reading history', () => {
+  const worker = '00000000-0000-4000-8000-000000000011';
+  const otherWorker = '00000000-0000-4000-8000-000000000012';
+  const path = `/workers/${worker}`;
+  it('validates the current Worker selection and isolates identity and resource', () => {
+    expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
+    expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
+    expect(readWorkerHistory(workerHistory(user, otherWorker, 'configuration'), user, worker)).toBeNull();
+    for (const selection of [{ workerId: otherWorker, section: 'overview' }, { workerId: worker, section: 'bad' }, { workerId: worker, section: 'overview', draft: 'secret' }]) {
+      expect(() => readWorkerHistory({ ...workerHistory(user, worker, 'overview'), selection }, user, worker)).toThrow();
+    }
+  });
+  it('initializes, traverses and deduplicates while inactive owners cannot overwrite another page', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation(), length = history.length;
+    const { result, rerender } = renderHook(({ identity, active }) => useWorkerHistory(identity, worker, active), { initialProps: { identity: user, active: true } });
+    expect(navigation.snapshot().view).toEqual(workerHistory(user, worker, 'overview'));
+    const overview = history.state;
+    act(() => result.current.select('configuration'));
+    const configuration = history.state;
+    expect(result.current.section).toBe('configuration');
+    act(() => result.current.select('configuration'));
+    expect(history.length).toBe(length + 1);
+    arrival(overview, path); expect(result.current.section).toBe('overview');
+    arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    rerender({ identity: user, active: false });
+    act(() => navigation.navigate('/account', false, accountHistory(user, 'tokens')));
+    act(() => result.current.select('overview'));
+    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'tokens'));
+    rerender({ identity: other, active: true });
+    act(() => navigation.navigate(path, false, workerHistory(user, worker, 'configuration')));
+    expect(result.current.section).toBe('overview');
+    expect(navigation.snapshot().view).toEqual(workerHistory(other, worker, 'overview'));
+  });
+  it('retains a native selection without writing and exposes invalid current state', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation();
+    const { result } = renderHook(() => useWorkerHistory(user, worker, true));
+    act(() => result.current.select('configuration'));
+    const state = history.state;
+    act(() => { history.pushState({ foreign: true }, '', `${path}#native`); dispatchEvent(new PopStateEvent('popstate')); });
+    expect(result.current.section).toBe('configuration'); expect(history.state).toEqual({ foreign: true });
+    const bad = { ...state, __daynightNavigation: { ...state.__daynightNavigation, view: { ...workerHistory(user, worker, 'configuration'), selection: { workerId: worker, section: 'invalid' } } } };
+    arrival(bad, path); expect(result.current.error).toBe(true);
+    act(() => result.current.select('overview')); expect(navigation.snapshot().view).toEqual(bad.__daynightNavigation.view);
   });
 });

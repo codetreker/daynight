@@ -1,8 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { useBrowserLocation } from './browser-location';
 import { browserNavigation } from './navigation';
-import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, resourceHistory, type AccountTab, type ResourcePageReading } from './page-history';
-import { parseRoute } from './router';
+import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type ResourcePageReading, type WorkerSection } from './page-history';
+import { parseAuthRoute, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
 type ResourceFence = { generation: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
@@ -99,4 +99,32 @@ export function useResourceHistory(userId: string, projectId: string, taskId: st
     navigation.setView(resourceHistory(userId, projectId, taskId, next), { replace, onCommit: record });
   };
   return { selection, select, error };
+}
+
+/** Only the active Worker consumes its identity- and resource-bound selection. */
+export function useWorkerHistory(userId: string, workerId: string, active: boolean) {
+  const location = useBrowserLocation();
+  const navigation = browserNavigation();
+  const retained = useRef<{ userId: string; workerId: string; section: WorkerSection }>({ userId, workerId, section: 'overview' });
+  if (retained.current.userId !== userId || retained.current.workerId !== workerId) retained.current = { userId, workerId, section: 'overview' };
+  const route = parseAuthRoute(location.pathname, location.search);
+  const onPage = active && route.kind === 'worker' && route.workerId === workerId;
+  let selected: WorkerSection | null = null;
+  let error = false;
+  if (onPage) {
+    try { selected = readWorkerHistory(location.view, userId, workerId); }
+    catch { error = true; }
+  }
+  const section = !onPage || location.entryId === null ? retained.current.section : selected ?? 'overview';
+  useLayoutEffect(() => {
+    if (!onPage || error) return;
+    retained.current.section = section;
+    if (location.entryId !== null && selected === null) navigation.setView(workerHistory(userId, workerId, section), { replace: true });
+  }, [onPage, error, section, selected, location.entryId, navigation, userId, workerId]);
+  const select = (next: WorkerSection, replace = false) => {
+    if (!onPage || error) return;
+    if (location.entryId !== null && selected === null) navigation.setView(workerHistory(userId, workerId, section), { replace: true });
+    if (next !== section) navigation.setView(workerHistory(userId, workerId, next), { replace });
+  };
+  return { section, select, error };
 }

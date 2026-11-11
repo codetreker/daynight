@@ -3,6 +3,7 @@ import { isAttachmentPath } from '../api/parse';
 import type { TaskDetailNavigation } from './router';
 
 export type AccountTab = 'profile' | 'tokens' | 'prompt';
+export type WorkerSection = 'overview' | 'configuration';
 export type ResourceReading = { readonly id: string; readonly navigation: TaskDetailNavigation };
 export type GoalChildren = { readonly graphRootId: string | null; readonly task: ResourceReading | null };
 export type ResourcePageReading = {
@@ -16,6 +17,7 @@ type HistoryEnvelope<Key extends string, Selection> = {
   readonly selection: Selection;
 };
 export type PageHistoryState = HistoryEnvelope<'account', { readonly tab: AccountTab }>
+  | HistoryEnvelope<`worker:${string}`, { readonly workerId: string; readonly section: WorkerSection }>
   | HistoryEnvelope<`resource:${string}/${string}`, ResourcePageReading>;
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -61,3 +63,14 @@ export function readResourceHistory(value: unknown, userId: string, projectId: s
 
 export const resourceHistory = (userId: string, projectId: string, taskId: string, selection: ResourcePageReading): PageHistoryState =>
   ({ version: 1, userId, pageKey: resourceKey(projectId, taskId), selection });
+
+export function readWorkerHistory(value: unknown, userId: string, workerId: string): WorkerSection | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== `worker:${workerId}`) return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration')) throw new Error('Invalid worker navigation state.');
+  return selection.section;
+}
+
+export const workerHistory = (userId: string, workerId: string, section: WorkerSection): PageHistoryState => ({ version: 1, userId, pageKey: `worker:${workerId}`, selection: { workerId, section } });

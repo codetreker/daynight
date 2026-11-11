@@ -769,6 +769,106 @@ describe("worker runtime configuration reporting", () => {
 });
 
 
+it("continues polling during one historical upload and joins its finalizer before stopping", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), cancelled = deferred<void>(), releaseFinalizer = deferred<void>();
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  const order: string[] = [];
+  let ticks = 0;
+  let options!: WorkerCoordinatorOptions;
+  let storeClose!: ReturnType<typeof vi.spyOn>;
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+    entered.resolve();
+    try {
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => { order.push("upload-aborted"); cancelled.resolve(); resolve(); }, { once: true }));
+      signal.throwIfAborted();
+    } finally {
+      await releaseFinalizer.promise;
+      order.push("upload-finalized");
+    }
+  });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const poll = deferred<void>(); polls.push({ gate: poll, signal });
+    await Promise.race([poll.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
+    options = value;
+    storeClose = vi.spyOn(options.store, "close");
+    return { tick: async () => { ticks++; }, updateConfiguration: update, shutdown: async () => { order.push("coordinator-stopped"); return true; } };
+  });
+  mocks.webClose.mockImplementation(() => { order.push("web-store-closed"); });
+  const running = start(f);
+  await entered.promise;
+  for (let i = 0; i < 2; i++) {
+    await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+    const poll = polls.findLast(poll => !poll.signal.aborted)!;
+    const before = ticks;
+    poll.gate.resolve();
+    await eventually(() => expect(ticks).toBeGreaterThan(before));
+    await eventually(() => expect(polls.some(next => next !== poll && !next.signal.aborted)).toBe(true));
+  }
+  expect(ticks).toBeGreaterThanOrEqual(3);
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  f.signal.abort();
+  await cancelled.promise;
+  await eventually(() => expect(order).toContain("coordinator-stopped"));
+  expect(options.monitoring!.capture("1").lifecycle).toBe("stopping");
+  expect(mocks.webClose).not.toHaveBeenCalled();
+  expect(storeClose).not.toHaveBeenCalled();
+  releaseFinalizer.resolve();
+  await running;
+  expect(order.indexOf("upload-finalized")).toBeLessThan(order.indexOf("web-store-closed"));
+  expect(storeClose).toHaveBeenCalledOnce();
+  expect(options.monitoring!.capture("1").lifecycle).toBe("stopped");
+  expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+});
+
+it("reports an inventory failure against worker archive maintenance and recovers on a later poll", async () => {
+  const f = await fixture(), failure = new Error("completed inventory unavailable");
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  let options!: WorkerCoordinatorOptions;
+  mocks.completed.mockImplementation(() => { throw failure; });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const gate = deferred<void>(); polls.push({ gate, signal });
+    await Promise.race([gate.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
+    options = value;
+    return { tick: async () => {}, updateConfiguration: update, shutdown };
+  });
+  const running = start(f);
+  await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure })));
+  const current = options.monitoring!.capture("1").currentFailures;
+  expect(current).toContainEqual(expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: { kind: "worker" } }));
+  mocks.completed.mockReturnValue([]);
+  await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+  polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
+  await eventually(() => expect(options.monitoring!.capture("1").currentFailures.some(item => item.phase === "archive-backfill")).toBe(false));
+  f.signal.abort(); await running;
+});
+
+it("retains a non-cancellation failure from the upload finalizer during shutdown", async () => {
+  const f = await fixture(), entered = deferred<void>(), failure = new Error("upload finalizer failed");
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+    entered.resolve();
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    throw failure;
+  });
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, updateConfiguration: update, shutdown }));
+  const running = start(f), rejected = expect(running).rejects.toBe(failure);
+  await entered.promise;
+  f.signal.abort(); await rejected;
+  expect(mocks.webClose).toHaveBeenCalledOnce();
+  expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure }));
+});
+
 it("reports historical Web archive failures against the original frozen checkout", async () => {
   const f = await fixture();
   const originalRoot = path.join(f.homeDirectory, "original-checkout");
@@ -799,7 +899,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   const probes: number[] = [];
   mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
     probes.push(now - startTime);
-    if (outcome === "cancelled") { f.signal.abort(); throw new Error("probe cancelled"); }
+    if (outcome === "cancelled") { f.signal.abort(); f.signal.signal.throwIfAborted(); }
     if (probes.length > 1 && outcome === "probe-error") throw new Error("metadata unavailable");
     return probes.length > 1 && outcome === "receipt" ? { kind: "attempt" } : { kind: "blocked", code: "archive_incomplete" };
   });

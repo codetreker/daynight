@@ -314,7 +314,7 @@ outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.
 Account profile, credentials and user prompt tabs participate in browser Back and
 Forward. Their history state contains only an account-bound tab selection; the
-existing credential and prompt owners retain their drafts and operation results.
+existing credential and prompt owners retain their drafts and operation results. Worker monitoring and configuration tabs also participate in Back and Forward, scoped to the current user and Worker; the configuration owner retains its draft and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
