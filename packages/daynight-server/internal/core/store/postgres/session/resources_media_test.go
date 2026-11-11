@@ -12,13 +12,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func TestFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	fence := sp.ControllerFence{Fence: sp.Fence{SessionID: id, ClaimID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "1"}
 	spec := sp.ImageUploadSpec{UploadID: uuid.NewString(), ImageID: uuid.NewString(), Target: sp.ImageTarget{ServerOrigin: "https://daynight.cc", ActorUserID: actor.UserID, Fence: fence.Fence}, Name: "original.png", MediaType: "image/png", ByteLength: "8", SHA256: archiveHashOf("original")}
 	encode := func(value any) json.RawMessage {
@@ -118,8 +119,8 @@ func TestFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlemen
 	assertReserved(0)
 }
 
-func TestPendingMediaOffersRejectCorruptCandidateWithoutPartialResults(t *testing.T) {
-	db, sessionID, _ := imageLedgerSession(t)
+func testPendingMediaOffersRejectCorruptCandidateWithoutPartialResults(t *testing.T, db *postgres.Store) {
+	sessionID, _ := prepareImageSession(t, db)
 	ctx := t.Context()
 	current := sp.Fence{SessionID: sessionID, ClaimID: uuid.NewString(), ExecutionGeneration: "1"}
 	validID := "00000000-0000-4000-8000-000000000001"
@@ -158,72 +159,68 @@ func TestPendingMediaOffersRejectCorruptCandidateWithoutPartialResults(t *testin
 	}
 }
 
-func TestPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t *testing.T) {
-	for _, kind := range []string{"task", "test execution"} {
-		t.Run(kind, func(t *testing.T) {
-			db, sessionID, _ := imageLedgerSession(t)
-			current := sp.Fence{SessionID: sessionID, ExecutionGeneration: "2"}
-			if kind == "task" {
-				current.ClaimID = uuid.NewString()
-			} else {
-				current.TestExecutionID = uuid.NewString()
-			}
-			rows := make([]store.SessionMediaRequest, 7)
-			for i := range rows {
-				rows[i] = store.SessionMediaRequest{SessionID: sessionID, RequestID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), Action: "prepare", Fence: sp.ControllerFence{Fence: current, ConnectionEpoch: "1"}, Body: []byte(`{}`)}
-			}
-			rows[0].Fence.ExecutionGeneration = "1"
-			rows[1].Fence.ExecutionGeneration = "1"
-			if kind == "task" {
-				rows[2].Fence.ClaimID = uuid.NewString()
-				rows[3].Fence.TestExecutionID = uuid.NewString()
-			} else {
-				rows[2].Fence.TestExecutionID = uuid.NewString()
-				rows[3].Fence.ClaimID = uuid.NewString()
-			}
-			rows[5].Fence.ConnectionEpoch = "2"
-			rows[6].Fence.ConnectionEpoch = "3"
-			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
-				media := base.(store.SessionMediaDAO)
-				for _, row := range rows {
-					if err := media.SaveSessionMediaRequest(t.Context(), row); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
-				media := base.(store.SessionMediaDAO)
-				pending, err := media.PendingSessionMediaRequests(t.Context(), current)
-				if err != nil {
-					return err
-				}
-				if len(pending) != 2 || pending[0].RequestID != rows[4].RequestID || pending[1].RequestID != rows[5].RequestID {
-					t.Fatalf("current media requests were starved by stale fences before the offer limit: %+v", pending)
-				}
-				if pending[0].Fence.ConnectionEpoch != "1" || pending[1].Fence.ConnectionEpoch != "2" {
-					t.Fatal("same-generation reconnect candidates lost their original connection epochs", pending)
-				}
-				return nil
-			})
-			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
-				for _, original := range rows {
-					loaded, err := base.(store.SessionMediaDAO).SessionMediaRequest(t.Context(), sessionID, original.RequestID)
-					if err != nil {
-						return err
-					}
-					if loaded.Fence != original.Fence || loaded.Complete || loaded.Error != nil || loaded.Result != nil || !bytes.Equal(loaded.Body, original.Body) {
-						t.Fatal("offer selection changed an original unknown request", loaded)
-					}
-				}
-				return nil
-			})
-		})
+func testPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t *testing.T, db *postgres.Store, kind string) {
+	sessionID, _ := prepareImageSession(t, db)
+	current := sp.Fence{SessionID: sessionID, ExecutionGeneration: "2"}
+	if kind == "task" {
+		current.ClaimID = uuid.NewString()
+	} else {
+		current.TestExecutionID = uuid.NewString()
 	}
+	rows := make([]store.SessionMediaRequest, 7)
+	for i := range rows {
+		rows[i] = store.SessionMediaRequest{SessionID: sessionID, RequestID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), Action: "prepare", Fence: sp.ControllerFence{Fence: current, ConnectionEpoch: "1"}, Body: []byte(`{}`)}
+	}
+	rows[0].Fence.ExecutionGeneration = "1"
+	rows[1].Fence.ExecutionGeneration = "1"
+	if kind == "task" {
+		rows[2].Fence.ClaimID = uuid.NewString()
+		rows[3].Fence.TestExecutionID = uuid.NewString()
+	} else {
+		rows[2].Fence.TestExecutionID = uuid.NewString()
+		rows[3].Fence.ClaimID = uuid.NewString()
+	}
+	rows[5].Fence.ConnectionEpoch = "2"
+	rows[6].Fence.ConnectionEpoch = "3"
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		media := base.(store.SessionMediaDAO)
+		for _, row := range rows {
+			if err := media.SaveSessionMediaRequest(t.Context(), row); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		media := base.(store.SessionMediaDAO)
+		pending, err := media.PendingSessionMediaRequests(t.Context(), current)
+		if err != nil {
+			return err
+		}
+		if len(pending) != 2 || pending[0].RequestID != rows[4].RequestID || pending[1].RequestID != rows[5].RequestID {
+			t.Fatalf("current media requests were starved by stale fences before the offer limit: %+v", pending)
+		}
+		if pending[0].Fence.ConnectionEpoch != "1" || pending[1].Fence.ConnectionEpoch != "2" {
+			t.Fatal("same-generation reconnect candidates lost their original connection epochs", pending)
+		}
+		return nil
+	})
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		for _, original := range rows {
+			loaded, err := base.(store.SessionMediaDAO).SessionMediaRequest(t.Context(), sessionID, original.RequestID)
+			if err != nil {
+				return err
+			}
+			if loaded.Fence != original.Fence || loaded.Complete || loaded.Error != nil || loaded.Result != nil || !bytes.Equal(loaded.Body, original.Body) {
+				t.Fatal("offer selection changed an original unknown request", loaded)
+			}
+		}
+		return nil
+	})
 }
 
-func TestMediaPayloadRepresentationRewriteUsesExactObservedState(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testMediaPayloadRepresentationRewriteUsesExactObservedState(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	upload, resource := uuid.NewString(), uuid.NewString()
 	row := store.SessionMediaRequest{SessionID: id, RequestID: uuid.NewString(), Action: "write", Fence: sp.ControllerFence{Fence: sp.Fence{SessionID: id, ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, Body: []byte(`{"uploadId":"` + upload + `","data":"b3JpZ2luYWw=","offset":"0","sha256":"digest"}`)}
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
@@ -297,8 +294,8 @@ func TestMediaPayloadRepresentationRewriteUsesExactObservedState(t *testing.T) {
 	})
 }
 
-func TestCompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResult(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testCompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResult(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	row := store.SessionMediaRequest{SessionID: id, RequestID: uuid.NewString(), Action: "read_capture", Fence: sp.ControllerFence{Fence: sp.Fence{SessionID: id, ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, Body: []byte(`{"attemptId":"` + uuid.NewString() + `"}`), Complete: true, Result: []byte(`{"data":"b3JpZ2luYWw=","offset":"0"}`)}
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
 		return base.(store.SessionMediaDAO).SaveSessionMediaRequest(t.Context(), row)
@@ -360,8 +357,8 @@ func TestCompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResul
 	}
 }
 
-func TestUnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func testUnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	upload := store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: uuid.NewString(), Spec: sp.ImageUploadSpec{UploadID: uuid.NewString(), ImageID: uuid.NewString(), ByteLength: "8"}, Receipt: sp.ImageUploadReceipt{State: "verifying", AcceptedOffset: "8"}, ExpiresAt: time.Now().Add(time.Hour)}
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
 		d := base.(store.SessionResourceDAO)
@@ -403,8 +400,8 @@ func TestUnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists(t *testing.T
 	})
 }
 
-func TestMediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testMediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	tx, err := db.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -427,8 +424,8 @@ func TestMediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors(t *testi
 	}
 }
 
-func TestUnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func testUnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	seq := int64(0)
 	for _, kind := range []string{"refresh_controls", "update_setting", "send_message", "interaction_response", "execute_command", "cancel"} {
 		for _, state := range []string{"accepted", "offered", "dispatching", "unknown"} {

@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
@@ -16,8 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestTaskOAuthCredentialRechecksGrantAndToken(t *testing.T) {
-	db := isolatedStore(t)
+func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Store) {
 	_, owner, _ := testAuthRecords(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, now.Add(-10*time.Minute))
@@ -314,8 +314,7 @@ func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
 	}
 }
 
-func TestSessionOperationRetainsOriginalOAuthActorAfterRevocation(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t *testing.T, db *postgres.Store) {
 	_, owner, _ := testAuthRecords(t, db)
 	grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
 	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}

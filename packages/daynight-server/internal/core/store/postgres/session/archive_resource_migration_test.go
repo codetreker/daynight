@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,7 +20,8 @@ import (
 func TestArchiveResourceMigrationRetainsDatabaseFailuresAndInlineOriginal(t *testing.T) {
 	for _, kind := range []string{"update failure", "canceled query", "closed transaction"} {
 		t.Run(kind, func(t *testing.T) {
-			database, previous, next := archiveResourceMigrationBoundaryFixture(t, "")
+			database := isolatedStore(t)
+			previous, next := prepareInlineMigration(t, database, "")
 			ctx := t.Context()
 			var operationError error
 			if kind == "closed transaction" {
@@ -79,38 +81,36 @@ func TestArchiveResourceMigrationRetainsDatabaseFailuresAndInlineOriginal(t *tes
 	}
 }
 
-func TestArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity(t *testing.T) {
-	for _, migration := range []string{"", uuid.NewString()} {
-		t.Run(map[bool]string{true: "null migration", false: "existing migration"}[migration == ""], func(t *testing.T) {
-			database, previous, next := archiveResourceMigrationBoundaryFixture(t, migration)
-			sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-				saved, err := base.(store.SessionResourceDAO).SavedSessionResource(t.Context(), previous.SessionID, previous.Resource.ResourceID)
-				if err != nil || saved.MigrationID != previous.MigrationID || saved.BlobID != "" || saved.BlobPath != "" {
-					t.Fatal("original optional storage identity mapping changed", saved, err)
-				}
-				return base.(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(t.Context(), saved, next)
-			})
-			var raw, content []byte
-			var blob, path, observedMigration string
-			err := database.Pool.QueryRow(t.Context(), `SELECT descriptor,content,blob_id::text,blob_path,migration_id::text FROM session_resources WHERE session_id=$1 AND resource_id=$2`, previous.SessionID, previous.Resource.ResourceID).Scan(&raw, &content, &blob, &path, &observedMigration)
-			var saved sp.Resource
-			if err != nil || json.Unmarshal(raw, &saved) != nil || !reflect.DeepEqual(saved, previous.Resource) || content != nil || blob != next.BlobID || path != next.BlobPath || observedMigration != next.MigrationID {
-				t.Fatal("conversion did not atomically replace only the storage identity", string(raw), content, blob, path, observedMigration, err)
-			}
-			sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-				err := base.(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(t.Context(), previous, next)
-				var fault *model.Fault
-				if !errors.As(err, &fault) || fault.Code != "archive_conflict" {
-					t.Fatal("old conversion identity replaced the committed external original", err)
-				}
-				return nil
-			})
-		})
+func testArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity(t *testing.T, db *postgres.Store, migration string) {
+	database := db
+	previous, next := prepareInlineMigration(t, database, migration)
+	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+		saved, err := base.(store.SessionResourceDAO).SavedSessionResource(t.Context(), previous.SessionID, previous.Resource.ResourceID)
+		if err != nil || saved.MigrationID != previous.MigrationID || saved.BlobID != "" || saved.BlobPath != "" {
+			t.Fatal("original optional storage identity mapping changed", saved, err)
+		}
+		return base.(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(t.Context(), saved, next)
+	})
+	var raw, content []byte
+	var blob, path, observedMigration string
+	err := database.Pool.QueryRow(t.Context(), `SELECT descriptor,content,blob_id::text,blob_path,migration_id::text FROM session_resources WHERE session_id=$1 AND resource_id=$2`, previous.SessionID, previous.Resource.ResourceID).Scan(&raw, &content, &blob, &path, &observedMigration)
+	var saved sp.Resource
+	if err != nil || json.Unmarshal(raw, &saved) != nil || !reflect.DeepEqual(saved, previous.Resource) || content != nil || blob != next.BlobID || path != next.BlobPath || observedMigration != next.MigrationID {
+		t.Fatal("conversion did not atomically replace only the storage identity", string(raw), content, blob, path, observedMigration, err)
 	}
+	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+		err := base.(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(t.Context(), previous, next)
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != "archive_conflict" {
+			t.Fatal("old conversion identity replaced the committed external original", err)
+		}
+		return nil
+	})
 }
 
-func TestArchiveInlineMigrationComparesOriginalAndRemovesInlineCopy(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testArchiveInlineMigrationComparesOriginalAndRemovesInlineCopy(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	length, hash, mime := "8", archiveHashOf("original"), "text/plain"
 	previous := store.SessionResourceRecord{SessionID: id, Resource: sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "original", ByteLength: &length, SHA256: &hash, MediaType: &mime}}
