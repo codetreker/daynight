@@ -399,7 +399,7 @@ for (const fault of ['abort', 'quota'] as const) test(`preserves committed nativ
   const before = await saved(page), originals = await page.evaluate(() => window.sessionDraftHarness.originals()), counts = await page.evaluate(() => window.sessionDraftHarness.storage.counts());
   await page.evaluate(kind => window.sessionDraftHarness.storage.armFault(kind), fault);
   await page.getByRole('textbox').fill('unsaved local edit'); await page.locator('input[type=file]').setInputFiles(second);
-  await expect.poll(async () => { const view = await current(page); return { error: view.error, images: view.items.filter(item => item.validation === 'valid').length }; }).toEqual({ error: fault === 'quota' ? 'image_draft_quota' : 'image_draft_unavailable', images: 2 });
+  await expect.poll(async () => { const view = await current(page); return { error: view.error, images: view.items.map(item => ({ label: item.label, validation: item.validation })) }; }).toEqual({ error: fault === 'quota' ? 'image_draft_quota' : 'image_draft_unavailable', images: [{ label: 'Committed.png', validation: 'valid' }, { label: 'Unsaved.png', validation: 'pending' }] });
   await expect(page.getByRole('alert').filter({ hasText: fault === 'quota' ? 'Local image storage is full.' : 'The draft could not be saved.' })).toBeVisible();
   await expect(page.getByRole('textbox')).toHaveValue('unsaved local edit'); await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
   expect(await saved(page)).toEqual(before); expect(await page.evaluate(() => window.sessionDraftHarness.originals())).toEqual(originals);
@@ -488,24 +488,25 @@ test('keeps concurrent selections ordered while an earlier original read is dela
   const encoded = pngImage(3, 2).toString('base64');
   await page.evaluate(bytes => {
     const first = new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'Slow.png', { type: 'image/png' });
-    const read = first.arrayBuffer.bind(first), held = Promise.withResolvers<void>();
-    const probe: Window['draftSelectionProbe'] = { firstReadStarted: false, secondReadStarted: false, release: () => held.resolve(), first: Promise.resolve(), second: null };
-    window.draftSelectionProbe = probe;
-    first.arrayBuffer = async () => { probe.firstReadStarted = true; await held.promise; return read(); };
-    probe.first = window.sessionDraftHarness.controller.addFiles([first], 'ordered concurrent selection');
+    window.sessionDraftHarness.holdOriginalRead();
+    window.draftSelectionProbe = { first: window.sessionDraftHarness.controller.addFiles([first], 'ordered concurrent selection'), second: null };
   }, encoded);
-  await expect.poll(() => page.evaluate(() => window.draftSelectionProbe.firstReadStarted)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.originalReads().length)).toBe(1);
+  const pending = (await saved(page))!.editable!.items[0]!;
+  expect(pending).toMatchObject({ label: 'Slow.png', validation: 'pending' });
+  expect(pending.blobId).not.toBeNull();
+  expect((await page.evaluate(() => window.sessionDraftHarness.originals()))[0]!.sha256).toBe(sha256(pngImage(3, 2)));
   await page.evaluate(bytes => {
     const second = new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'Later.png', { type: 'image/png' });
-    const read = second.arrayBuffer.bind(second), probe = window.draftSelectionProbe;
-    second.arrayBuffer = async () => { probe.secondReadStarted = true; return read(); };
+    const probe = window.draftSelectionProbe;
     probe.second = window.sessionDraftHarness.controller.addFiles([second], 'ordered concurrent selection');
   }, encoded);
   // Activation waits for earlier validation before admitting another selection.
   expect((await current(page)).items.map(item => item.label)).toEqual(['Slow.png']);
-  expect(await page.evaluate(() => window.draftSelectionProbe.secondReadStarted)).toBe(false); expect(api.observations.prepares).toEqual([]);
-  await page.evaluate(async () => { const probe = window.draftSelectionProbe; probe.release(); await Promise.all([probe.first, probe.second]); });
-  await ready(page, 2); expect(await page.evaluate(() => window.draftSelectionProbe.secondReadStarted)).toBe(true);
+  expect(await page.evaluate(() => window.sessionDraftHarness.originalReads())).toEqual([pending.draftImageId]); expect(api.observations.prepares).toEqual([]);
+  await page.evaluate(async () => { const probe = window.draftSelectionProbe; window.sessionDraftHarness.releaseOriginalRead(); await Promise.all([probe.first, probe.second]); });
+  await ready(page, 2);
+  expect(await page.evaluate(() => window.sessionDraftHarness.originalReads())).toEqual((await current(page)).items.map(item => item.draftImageId));
   const ordered = (await current(page)).items.map(item => ({ label: item.label, imageId: item.imageId }));
   expect(ordered.map(item => item.label)).toEqual(['Slow.png', 'Later.png']);
   await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
@@ -513,7 +514,7 @@ test('keeps concurrent selections ordered while an earlier original read is dela
   expect(command.payload.content.filter(part => part.type === 'image').map(part => part.imageId)).toEqual(ordered.map(item => item.imageId));
   expect(api.observations.completes.map(id => api.uploads.get(id)!.spec.name)).toEqual(['Slow.png', 'Later.png']);
   expect(await page.evaluate(() => window.sessionDraftHarness.pageErrors)).toEqual([]);
-  await info.attach('concurrent-selection-order', { body: JSON.stringify({ boundary: `${boundary} The first File.arrayBuffer is delayed without changing its bytes; production validation and upload serialize the later selection.`, ordered, observations: api.observations }), contentType: 'application/json' });
+  await info.attach('concurrent-selection-order', { body: JSON.stringify({ boundary: `${boundary} The first persisted Blob.arrayBuffer passed to production createLocalAsset is delayed without changing its bytes or metadata; native IndexedDB holds that pending original, and production validation, decoding and upload serialize the later selection.`, ordered, observations: api.observations }), contentType: 'application/json' });
 });
 
 test('preserves picker, clipboard and drop order while respecting IME and slash commands', async ({ page, context }) => {
@@ -685,4 +686,4 @@ test('keeps a smaller model profile authoritative before any upload', async ({ p
   expect(api.observations.prepares).toHaveLength(1);
 });
 
-declare global { interface Window { draftSelectionProbe: { firstReadStarted: boolean; secondReadStarted: boolean; release: () => void; first: Promise<void>; second: Promise<void> | null } } }
+declare global { interface Window { draftSelectionProbe: { first: Promise<void>; second: Promise<void> | null } } }

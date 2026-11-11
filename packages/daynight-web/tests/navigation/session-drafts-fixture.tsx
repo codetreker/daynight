@@ -23,8 +23,18 @@ let live = true;
 const scope = pageImageStore.createScope({ identity: { serverOrigin: location.origin, actorUserId: draftBrowserUser, authorizationGeneration: '1', owner: { kind: 'session', fence: target.fence, nativeSessionId: target.expectedNativeSessionId } }, canRead: () => live, canDownload: () => live, read: async () => { throw new Error('Local originals do not use saved resource reads.'); } });
 const resources = createSessionResourceClient({ scope: { serverOrigin: location.origin, actorUserId: draftBrowserUser, fence: target.fence, authorizationGeneration: '1' }, baseUrl: `${location.origin}/draft-fixture-api/session`, isCurrent: () => live, transport: (url, signal, init) => fetch(url, { ...init, signal }) });
 let context: ImageDraftContext = { identity, target, resources, capabilities, active: true, canEdit: true, canSend: true, mode: 'send', expectedTurnId: null, authorizationGeneration: '1' };
+let originalReadBarrier: { readonly reads: string[]; readonly held: Promise<void>; readonly release: () => void } | null = null;
 const controller = new ImageDraftController({ store, getContext: () => context,
-  createAsset: (blob, id, revision, metadata) => pageImageStore.createLocalAsset(scope, { key: JSON.stringify([id, revision]), blob, ...(metadata ? { metadata } : {}) }),
+  createAsset: (blob, id, revision, metadata) => {
+    const barrier = originalReadBarrier;
+    if (barrier) {
+      // Delay the persisted original actually consumed by production validation.
+      // IndexedDB does not retain methods attached to the initially selected File.
+      const read = blob.arrayBuffer.bind(blob);
+      blob.arrayBuffer = async () => { barrier.reads.push(id); if (barrier.reads.length === 1) await barrier.held; return read(); };
+    }
+    return pageImageStore.createLocalAsset(scope, { key: JSON.stringify([id, revision]), blob, ...(metadata ? { metadata } : {}) });
+  },
   dispatch: async command => { const response = await fetch('/draft-fixture-api/dispatch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) }); if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<SessionOperation>; },
   query: async (fence, operationId) => { const response = await fetch(`/draft-fixture-api/operation/${operationId}`); if (!response.ok) return { protocol: snapshot.protocol, ...fence, operationId, kind: 'send_message', state: 'unknown', providerResult: null, error: null }; return response.json() as Promise<SessionOperation>; },
 });
@@ -47,6 +57,9 @@ window.sessionDraftHarness = {
       return { id: item.draftImageId, label: item.label, size: original?.blob.size ?? null, mediaType: original?.blob.type ?? null, sha256: original ? [...new Uint8Array(await crypto.subtle.digest('SHA-256', await original.blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, '0')).join('') : null };
     }));
   },
+  holdOriginalRead: () => { if (originalReadBarrier) throw new Error('The original read barrier is already armed.'); const held = Promise.withResolvers<void>(); originalReadBarrier = { reads: [], held: held.promise, release: () => held.resolve() }; },
+  originalReads: () => [...originalReadBarrier?.reads ?? []],
+  releaseOriginalRead: () => { originalReadBarrier?.release(); },
   setCapabilities: async value => { context = { ...context, capabilities: { ...capabilities, ...value } }; await controller.sync(); },
   holdWrites: () => { writesHeld = true; writesArrived = 0; }, writesArrived: () => writesArrived,
   releaseWrites: () => { writesHeld = false; writeReleases.splice(0).forEach(resolve => resolve()); },
@@ -82,6 +95,7 @@ declare global {
     sessionDraftHarness: {
       controller: ImageDraftController; ownerKey: string; storage: ReturnType<typeof createDraftStorageProbe>; read(): ReturnType<SessionDraftStore['readExisting']>;
       originals(): Promise<{ id: string; label: string; size: number | null; mediaType: string | null; sha256: string | null }[]>;
+      holdOriginalRead(): void; originalReads(): string[]; releaseOriginalRead(): void;
       setCapabilities(value: Partial<ImageCapabilities>): Promise<void>; holdWrites(): void; writesArrived(): number; releaseWrites(): void;
       holdLock(purpose: string): Promise<void>; releaseLock(): void; lockName(purpose: string): Promise<string>;
       pageErrors: string[]; plainCommands: string[]; plainMessages: string[]; usage(): ReturnType<typeof pageImageStore.usage>;
