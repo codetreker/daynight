@@ -1568,7 +1568,7 @@ until snapshot completion, whose failures suppress partial pages and refusals.
 Pure `SelectList` planning and `ProjectList` encoding execute normally, including
 actual cursor encoding errors. Core owns the original three assignment functions,
 with all 360 combinations, complete returned Task data, pagination, Worker
-inventory, historical assignment and version-2 cursor scope. Shared platform and
+inventory, historical assignment and version-3 cursor scope. Shared platform and
 agent-permission service fixtures retain their DAO-based List scope.
 
 The Create, Update and SetStatus preparation-failure witnesses control project
@@ -2641,7 +2641,7 @@ remain significant. Readiness changes do not advance dependent task revisions.
 
 Expected refusals are returned only after the lock-only transaction succeeds;
 transaction/cleanup failures preserve operational errors. Reads use an RR snapshot.
-Task cursors use version 2 and bind project, the resolved
+Task cursors use version 3 and bind project, type, parent, the resolved
 all/unassigned/user:UUID assignee selection and optional
 status/ready/allowAgents/compatiblePlatform filters, retaining absent/false and
 absent/each-enum distinctions. Optional UUID
@@ -2652,7 +2652,7 @@ before collecting the final limit+1 matches; complete properties are batch-loade
 for selected tasks. Assignee equality/IS NULL applies before this worker
 matching and final pagination. No bounded output page hides later matches, and
 opaque PR strings are not converted through PostgreSQL JSON types. Account-Worker
-cursors stay at version 1; old version-1 task cursors are refused.
+cursors stay at version 1; older task cursor versions are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task observation
@@ -3124,13 +3124,13 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
-Task cursor version 2 includes the resolved assignee scope; me and its concrete
+Task cursor version 3 includes type, parent and the resolved assignee scope; me and its concrete
 UUID may share that scope, but another account's me cannot. Account-owned Worker
 list cursors remain version 1.
 
 The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
 as non-null arrays. With no query it enumerates current members and assignees
-retained by undeleted tasks. Repeated `userId` query arguments select a bounded
+retained by effectively visible tasks. Repeated `userId` query arguments select a bounded
 resolution mode: 1–100 distinct canonical UUIDs, with no empty, duplicate,
 malformed or unknown parameters. Both arrays are sorted; in resolution mode
 they are disjoint and cover the requested IDs exactly. The complete catalogue
