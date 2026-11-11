@@ -164,6 +164,34 @@ test('history protects a summary task draft before restoring its earlier direct 
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
+test('summary detail waits for a snapshot and retains its real editor through snapshot loss', async ({ page }) => {
+  const writes = await install(page);
+  await page.goto('/summary-detail-fixture');
+  await page.waitForFunction(() => 'summaryDetailFixture' in window);
+  const directReads = () => page.evaluate(() => (window as unknown as { summaryDetailFixture: { directReads(): number } }).summaryDetailFixture.directReads());
+  const setRevision = (value: number | null) => page.evaluate(revision => (window as unknown as { summaryDetailFixture: { setRevision(value: number | null): void } }).summaryDetailFixture.setRevision(revision), value);
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
+  expect(await directReads()).toBe(0);
+  await setRevision(0);
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('0');
+  await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
+  expect(await directReads()).toBe(0);
+  await setRevision(1);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Retained after snapshot loss');
+  const original = await draft.elementHandle();
+  await setRevision(null);
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('none');
+  await expect(draft).toHaveValue('Retained after snapshot loss');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  expect(await directReads()).toBe(0);
+  expect(writes).toEqual([]);
+});
+
 test('Step status and position menus stay in a short viewport and return keyboard focus', async ({ page }) => {
   const writes = await install(page);
   const dialog = await openDialog(page);

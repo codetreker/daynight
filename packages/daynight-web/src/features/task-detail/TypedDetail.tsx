@@ -26,10 +26,17 @@ type Props = TaskDetailSurfaceProps & {
 // detail session's read fence also retires a delayed response across epochs.
 export const TypedDetail = (props: Props) => {
   const summary = props.snapshot?.summaries.get(props.taskId);
-  const summaryInput = props.snapshot != null && props.observation?.kind !== 'direct' && summary?.type !== 'goal';
-  const waitingForSummary = summaryInput && summary === undefined;
+  const identity = `${props.projectId}/${props.taskId}`;
+  const known = useRef<{ identity: string; type: 'task' | 'goal' | undefined }>({ identity, type: undefined });
+  if (known.current.identity !== identity || props.observation?.kind === 'direct') known.current = { identity, type: undefined };
+  if (summary !== undefined && props.observation?.kind !== 'direct') known.current.type = summary.type;
+  const type = props.snapshot == null ? known.current.type : summary?.type;
+  const summaryInput = props.observation?.kind !== 'direct' && (props.snapshot != null || props.observation?.kind === 'project-summary') && type !== 'goal';
+  const waitingForSummary = summaryInput && type === undefined;
   const task = useTaskDetail(props.projectId, props.taskId, summaryInput
-    ? { kind: 'project-summary', revision: props.snapshot!.revision, task: props.snapshot!.index.nodes.get(props.taskId) } : { kind: 'direct' });
+    ? props.snapshot == null && props.observation?.kind === 'project-summary' ? props.observation
+      : { kind: 'project-summary', revision: props.snapshot?.revision ?? 0, task: props.snapshot?.index.nodes.get(props.taskId) }
+    : { kind: 'direct' });
   const restoreLoading = useRef(true);
   const activeGoal = useRef<string | null>(null);
   const parentAdmitted = useRef(false);

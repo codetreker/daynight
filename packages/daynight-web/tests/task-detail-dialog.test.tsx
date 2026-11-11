@@ -99,6 +99,76 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('waits for a summary receipt when restoring a Task before the graph and keeps its reader through a missing snapshot', async () => {
+    const reviewed = detail();
+    await world.sync([reviewed]);
+    const directRead = vi.spyOn(world.scope, 'beginTaskRead');
+    const fetcher = vi.fn().mockResolvedValue(response(reviewed));
+    vi.stubGlobal('fetch', fetcher);
+    const loading = props({ snapshot: null, observation: { kind: 'project-summary', revision: 0, task: undefined } });
+    const view = renderWithLocale(<TaskDetailDialog {...loading} />, { locale: 'zh-CN', container: host, taskCache: { scope: world.scope } });
+    expect(screen.getByRole('dialog')).toHaveTextContent('正在加载任务详情');
+    expect(directRead).not.toHaveBeenCalled();
+    const preview = snapshot([reviewed], 0);
+    view.rerender(<TaskDetailDialog {...loading} snapshot={preview} observation={{ kind: 'project-summary', revision: 0, task: preview.index.nodes.get(reviewed.id) }} />);
+    expect(directRead).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toHaveTextContent('正在加载任务详情');
+    const current = snapshot([reviewed], 1);
+    view.rerender(<TaskDetailDialog {...loading} snapshot={current} observation={{ kind: 'project-summary', revision: 1, task: current.index.nodes.get(reviewed.id) }} />);
+    await screen.findByRole('heading', { name: reviewed.title });
+    fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    const reader = screen.getByRole('textbox', { name: '附件草稿' });
+    fireEvent.change(reader, { target: { value: 'retained' } });
+    view.rerender(<TaskDetailDialog {...loading} />);
+    expect(screen.getByRole('textbox', { name: '附件草稿' })).toBe(reader);
+    expect(reader).toHaveValue('retained');
+    expect(directRead).not.toHaveBeenCalled();
+  });
+
+  it('keeps an already admitted summary Task reader when the Project snapshot is temporarily unavailable', async () => {
+    const reviewed = detail();
+    await world.sync([reviewed]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));
+    const current = snapshot([reviewed], 1);
+    const options = props({ snapshot: current, observation: { kind: 'project-summary', revision: 1, task: current.index.nodes.get(reviewed.id) } });
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'zh-CN', container: host, taskCache: { scope: world.scope } });
+    await screen.findByRole('heading', { name: reviewed.title });
+    fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    const reader = screen.getByRole('textbox', { name: '附件草稿' });
+    fireEvent.change(reader, { target: { value: 'keep existing reader' } });
+    view.rerender(<TaskDetailDialog {...options} snapshot={null} observation={{ kind: 'project-summary', revision: 0, task: undefined }} />);
+    expect(screen.getByRole('textbox', { name: '附件草稿' })).toBe(reader);
+    expect(reader).toHaveValue('keep existing reader');
+  });
+
+  it('continues a direct Task read when there is no Project graph', async () => {
+    const reviewed = detail();
+    await world.sync([reviewed]);
+    const directRead = vi.spyOn(world.scope, 'beginTaskRead');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));
+    renderWithLocale(<TaskDetailDialog {...props({ snapshot: null, observation: { kind: 'direct' } })} />, { locale: 'zh-CN', container: host, taskCache: { scope: world.scope } });
+    await screen.findByRole('heading', { name: reviewed.title });
+    expect(directRead).toHaveBeenCalled();
+  });
+
+  it('admits a summary Goal through the typed reader after its graph identifies the Goal', async () => {
+    const reviewed = detail(1, { type: 'goal', title: 'Goal preview', ready: false });
+    await world.sync([reviewed]);
+    const directRead = vi.spyOn(world.scope, 'beginTaskRead');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));
+    const loading = props({ snapshot: null, observation: { kind: 'project-summary', revision: 0, task: undefined } });
+    const view = renderWithLocale(<TaskDetailDialog {...loading} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    expect(directRead).not.toHaveBeenCalled();
+    const project = world.scope.getAuthorizedProject(projectId)!;
+    const preview = { ...snapshot([detail()], 0), graph: project.graph, index: project.index, summaries: project.summaries };
+    view.rerender(<TaskDetailDialog {...loading} snapshot={preview} observation={{ kind: 'project-summary', revision: 0, task: preview.index.nodes.get(reviewed.id) }} />);
+    const heading = await screen.findByRole('heading', { name: reviewed.title });
+    expect(directRead).toHaveBeenCalled();
+    const dialog = heading.closest('[role="dialog"]');
+    view.rerender(<TaskDetailDialog {...loading} />);
+    expect(screen.getByRole('heading', { name: reviewed.title }).closest('[role="dialog"]')).toBe(dialog);
+  });
+
   it('gives a nested task portal keyboard ownership and restores its parent focus and scroll lock', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
     await world.sync([detail()]);
