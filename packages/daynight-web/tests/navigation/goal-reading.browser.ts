@@ -238,6 +238,18 @@ test('Task opened from its Goal dependency graph follows the parent link', async
   await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
 });
 
+test('Task parent link returns a Goal URL with a different query to overview', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=overview`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
+  const task = page.getByRole('dialog', { name: 'Standalone task' });
+  await task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' }).click();
+  await expect(task).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await expect(goalPage.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
 test('Goal write errors identify refusals without exposing internal diagnostics', async ({ page }) => {
   const fixture = await install(page); fixture.rejectWrites();
   await page.goto(`/projects/${projectId}`);
