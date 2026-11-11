@@ -107,6 +107,7 @@ export const createNativeSelectionVerifier = () => {
     if (errors.length) throw new AggregateError(errors, "Native selection probe cleanup remains unconfirmed.");
   };
   return {
+    reconcile: (options: NativeProbeOptions, operation: Operation): Promise<void> => enqueue(options, operation, async () => {}),
     verify: async (options: NativeProbeOptions, operation: Operation): Promise<void> => { await enqueue(options, operation, () => runNativeProbe(options, operation, "verify")); },
     discover: (options: NativeProbeOptions, operation: Operation): Promise<NativeModelObservation> => enqueue(options, operation, () => runNativeProbe(options, operation, "discover")),
     status: (options: NativeProbeOptions, operation: Operation): Promise<string> => enqueue(options, operation, async () => {
@@ -134,6 +135,9 @@ export const createWorkerToolInspector = (options: { cwd: string; environment: N
   const invocation = (launch: ResolvedToolLaunch, scope = options) => ({ file: launch.command.file, toolLaunch: launch, environment: scope.environment, workingDirectory: scope.cwd });
   const modelProbe = <T>(input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation, run: () => Promise<T>): Promise<T> => codex.observe(invocation(input.toolLaunch, input), operation, run);
   return {
+    reconcile: (launch: ResolvedToolLaunch, operation: Operation): Promise<void> => withinOperation(codex.observe(invocation(launch), operation, async () => {
+      if (launch.tool !== "herdr") await verifier.reconcile(request(launch), operation);
+    }), operation),
     discover: (input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation): Promise<NativeModelObservation> => modelProbe(input, operation, () => verifier.discover(input, operation)),
     verify: (input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation): Promise<void> => modelProbe(input, operation, () => verifier.verify(input, operation)),
     check: async (launch: ResolvedToolLaunch, operation: Operation): Promise<{ version: string; checkedAt: string }> => {

@@ -6,6 +6,7 @@ import { withinOperation } from "../../platform/tool-io.js";
 
 export type ToolSelectionTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: ToolPaths };
 export type ToolSelectionProbe = {
+  reconcile?(launch: ResolvedToolLaunch, operation: Operation): Promise<void>;
   check(launch: ResolvedToolLaunch, operation: Operation): Promise<{ version: string; checkedAt?: string }>;
   assertAvailable?(launch: ResolvedToolLaunch): void;
   cacheToken?(launch: ResolvedToolLaunch): unknown;
@@ -106,6 +107,10 @@ export class ToolSelectionManager {
         this.checkOpen(slot, operation);
         if (this.options.prepareLaunch) launch = await this.options.prepareLaunch(launch, operation);
         await (this.options.verify ?? verifyToolLaunch)(launch, operation); this.checkOpen(slot, operation);
+        // Recovery must reach the original process owner before the read-only
+        // admission gate, and its result precedes the new inspection generation.
+        if (this.options.probe.reconcile) await withinOperation(this.options.probe.reconcile(launch, operation), operation);
+        this.checkOpen(slot, operation);
         this.options.probe.assertAvailable?.(launch); const token = this.options.probe.cacheToken?.(launch);
         const result = await this.options.probe.check(launch, operation); operation.check();
         if (!validVersion(result.version)) throw new ToolSelectionError(tool, context, "probe", "unrecognized_output");

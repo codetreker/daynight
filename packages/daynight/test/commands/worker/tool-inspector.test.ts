@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { createWorkerToolInspector } from "../../../src/commands/worker/native-selection.js";
+import { ToolSelectionManager } from "../../../src/commands/worker/tool-selection.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 const controlled = vi.hoisted(() => ({ create: vi.fn(), command: vi.fn() }));
 vi.mock("../../../src/commands/worker/bots/cli-probe.js", async original => ({ ...await original<object>(), createBotCliProbe: controlled.create }));
@@ -61,6 +62,66 @@ test("symlink aliases share cleanup barriers and a completed cleanup cannot reus
     expect(controlled.create).toHaveBeenCalledTimes(2);
     expect(inspector.revision(f.alias)).toBeGreaterThan(before);
   } finally { retry.mockResolvedValue(undefined); await inspector.close(); op.dispose(); }
+});
+
+test("manager recovers the original Copilot probe owner before admitting a fresh observation", async () => {
+  const f = await fixture("copilot"), op = operation();
+  let stopped = false;
+  const retry = vi.fn(async () => { if (!stopped) throw cleanup; });
+  const cleanup = new BotCliProbeCleanupError({ launchId: "manager-recovery", pid: 123, process: null, jobObjectName: null, targetStarted: true }, retry);
+  controlled.create.mockResolvedValueOnce({ run: async () => ({ stdout: '{"ok":true,"version":"1.0.105"}' }), close: async () => { throw cleanup; } })
+    .mockResolvedValue({ run: async () => ({ stdout: '{"ok":true,"version":"1.0.106"}' }), close: async () => {} });
+  const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
+  const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: { ...inspector, cacheToken: inspector.revision } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "path", path: f.launch.entryPath }, herdr: { kind: "auto" } } });
+  let release: (() => void) | undefined, short: ReturnType<typeof operation> | undefined;
+  try {
+    await expect(manager.prepare("copilot", "web", op)).rejects.toMatchObject({ code: "cleanup_unknown" });
+    expect(manager.currentSelection("copilot", "web")).toBeUndefined();
+    expect(manager.observationFor(f.launch)).toBeUndefined();
+    await expect(manager.prepare("copilot", "web", op)).rejects.toThrow("cleanup");
+    expect(controlled.create).toHaveBeenCalledOnce();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }), blocked = new Promise<void>(resolve => { release = resolve; });
+    retry.mockImplementation(async () => { entered(); await blocked; });
+    vi.useFakeTimers(); short = createOperation({ limits: { totalMs: 100 } });
+    const preparing = manager.prepare("copilot", "web", short), failed = expect(preparing).rejects.toMatchObject({ code: "probe_timeout" });
+    await started; await vi.advanceTimersByTimeAsync(100); await failed;
+    expect(controlled.create).toHaveBeenCalledOnce(); expect(manager.currentSelection("copilot", "web")).toBeUndefined();
+    expect(() => inspector.assertAvailable(f.launch)).toThrow("cleanup");
+    const recoveredPromise = manager.selectForNewExecution("copilot", "web", op);
+    await Promise.resolve(); expect(controlled.create).toHaveBeenCalledOnce();
+    stopped = true; release!(); const recovered = await recoveredPromise;
+    expect(recovered.selectionKey).toBe(f.launch.selectionKey);
+    expect(retry).toHaveBeenCalled(); expect(controlled.create).toHaveBeenCalledTimes(2);
+    expect(manager.observationFor(recovered)).toMatchObject({ version: "1.0.106" });
+    await manager.prepare("copilot", "web", op); expect(controlled.create).toHaveBeenCalledTimes(2);
+  } finally { stopped = true; release?.(); short?.dispose(); vi.useRealTimers(); await manager.close(op); op.dispose(); }
+});
+
+test("manager bounds reconciliation queued behind an original live probe without starting a replacement", async () => {
+  const f = await fixture("copilot"), op = operation();
+  let release!: () => void, entered!: () => void, queued!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; }), reconciled = new Promise<void>(resolve => { queued = resolve; });
+  controlled.create.mockResolvedValueOnce({ run: async () => { entered(); await blocked; return { stdout: '{"ok":true,"version":"1.0.105"}' }; }, close: async () => {} })
+    .mockResolvedValue({ run: async () => ({ stdout: '{"ok":true,"version":"1.0.106"}' }), close: async () => {} });
+  const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
+  const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: {
+    ...inspector, cacheToken: inspector.revision, reconcile: (launch, parent) => { queued(); return inspector.reconcile(launch, parent); },
+  } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "path", path: f.launch.entryPath }, herdr: { kind: "auto" } } });
+  const original = inspector.check(f.launch, op); let short: ReturnType<typeof operation> | undefined;
+  try {
+    await started; vi.useFakeTimers(); short = createOperation({ limits: { totalMs: 100 } });
+    const preparing = manager.prepare("copilot", "web", short), failed = expect(preparing).rejects.toMatchObject({ code: "probe_timeout" });
+    await reconciled; await vi.advanceTimersByTimeAsync(100); await failed;
+    expect(controlled.create).toHaveBeenCalledOnce();
+    release(); await original; await vi.advanceTimersByTimeAsync(0);
+    expect(controlled.create).toHaveBeenCalledOnce(); expect(manager.currentSelection("copilot", "web")).toBeUndefined();
+    const fresh = await manager.selectForNewExecution("copilot", "web", op);
+    expect(manager.observationFor(fresh)).toMatchObject({ version: "1.0.106" }); expect(controlled.create).toHaveBeenCalledTimes(2);
+  } finally { release(); short?.dispose(); vi.useRealTimers(); await original; await manager.close(op); op.dispose(); }
 });
 
 test("Codex model discovery and version/transport inspection serialize through the same canonical owner", async () => {

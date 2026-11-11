@@ -123,7 +123,7 @@ shim 的 target 从已登记模板的 prefix 和同一份有界字节快照提�
 
 Task 的冻结配置、Web 执行记录、Bot intent、Controller ticket 共用严格 `parseResolvedToolLaunch`，未知字段和不匹配的工具/context 拒绝。首次启动前保存 recipe 及同 selectionKey 的 `{version,checkedAt}`，恢复先读原 claim 配置，不能先被新的目标验证挡住。每次新 spawn 核验原文件；缺失或变化报告 `tool_identity_changed`，不改用 PATH 上的另一个安装。旧活执行的观察、输入、停止和归档继续原 process-proof/RPC。旧记录缺身份且已经 submitted/unknown 时禁止新 spawn；有完整 never-submitted 证明时才能创建原 ticketHash/launchId/executionId 绑定的私有 `tool-selections` 侧文件，原票字节保持不变，读回成功后继续冻结。侧文件为 create-only，symlink、错误 ticket 或冲突内容拒绝，不能重放首条输入或换 Session 绕过。
 
-原生探测按 canonical `probeResourceKey` 共享清理 owner，缓存额外绑定 context、selectionKey、model、args 和 cwd。任一关闭结果未知使成功缓存失效，路径切换不能丢弃旧 owner；shutdown 等待全部历史责任。Web Copilot 的版本与 host 查询使用与 Provider 相同的 owned headless process 和 SDK `forUri`；模型查询在 supervisor 内直接使用 SDK，保留内存 SessionFs、拒绝权限及无业务 prompt 的保证。Provider bridge 不序列化函数型 SessionFs。
+原生探测按 canonical `probeResourceKey` 共享清理 owner，缓存额外绑定 context、selectionKey、model、args 和 cwd。任一关闭结果未知使成功缓存失效，路径切换不能丢弃旧 owner；shutdown 等待全部历史责任。重新准备候选时，管理器先在本次操作预算内进入原 owner 的串行队列协调待清理责任，不启动新进程；清理确认后才检查可用性、捕获 cleanup generation 并重新探测，避免准入检查永久挡住清理重试。超时或清理仍未知时继续拒绝新探测，后续请求加入原责任。Web Copilot 的版本与 host 查询使用与 Provider 相同的 owned headless process 和 SDK `forUri`；模型查询在 supervisor 内直接使用 SDK，保留内存 SessionFs、拒绝权限及无业务 prompt 的保证。Provider bridge 不序列化函数型 SessionFs。
 
 遥测快照只读已观察事实，不启动工具。活动组来自 Web/Bot 的持久配置与实际执行状态，按 selectionKey 聚合；旧记录缺版本或检查时间时如实报告不完整，不重新探测拼接历史事实。后台候选准备具有独立预算，五秒 host 采样只消费已就绪选择。工具冻结与准入的取舍见[运行接线决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-frozen-tool-runtime.md)。
 

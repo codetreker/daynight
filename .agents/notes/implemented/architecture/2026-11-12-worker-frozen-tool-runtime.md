@@ -56,8 +56,13 @@ would require a complete reference protocol across SQLite, tickets and sidecars.
 
 Version and path telemetry describe observed recipes and preserve unknown history.
 Aliases share canonical cleanup responsibility; target changes cannot abandon
-old owners. Provider, version, host and model queries share the same Copilot process
-owner, while model queries retain in-memory SessionFs and reject permissions.
+old owners. Candidate preparation reconciles retained cleanup through the original
+serial owners within its operation budget before checking admission and capturing
+the cache generation. A fresh probe follows confirmed cleanup; unconfirmed cleanup
+continues to block spawning. This order lets later requests recover without a
+Worker restart while preserving ownership. Provider, version, host and model
+queries share the same Copilot process owner, while model queries retain in-memory
+SessionFs and reject permissions.
 
 Published trees remain with Worker state, including after ordinary shutdown. A
 2 GiB budget and durable 512 MiB extraction reservations bound retention and refuse

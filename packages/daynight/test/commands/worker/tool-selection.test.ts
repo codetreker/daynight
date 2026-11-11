@@ -46,6 +46,31 @@ test("cleanup generation invalidates prior success even when closure later succe
   expect(manager.currentSelection("codex", "web")).toBeUndefined(); expect(entry(manager)).toMatchObject({ state: "pending", reason: "cleanup_unconfirmed" }); expect(manager.observationFor(launch("A"))).toBeUndefined(); await expect(manager.selectForNewExecution("codex", "web", op())).rejects.toMatchObject({ code: "cleanup_unknown" });
   expect(checked).toHaveLength(1); pending = false; await manager.selectForNewExecution("codex", "web", op()); expect(checked).toHaveLength(2);
 });
+test("preparation reconciles original cleanup before sampling the fresh probe generation", async () => {
+  let generation = 0, pending = true;
+  const operation = op(), reconcile = vi.fn(async (_launch: ResolvedToolLaunch, parent: Operation) => { expect(parent).toBe(operation); pending = false; generation++; });
+  const { manager, checked } = create({ probe: { reconcile, cacheToken: () => generation,
+    assertAvailable: value => { if (pending) throw new ToolSelectionError(value.tool, value.context, "probe", "cleanup_unknown"); },
+  } });
+  manager.setTargets(targets("A"));
+  const selected = await manager.selectForNewExecution("codex", "web", operation);
+  expect(reconcile).toHaveBeenCalledOnce(); expect(checked).toHaveLength(1);
+  expect(manager.currentSelection("codex", "web")?.selectionKey).toBe(selected.selectionKey);
+  await manager.prepare("codex", "web", operation); expect(reconcile).toHaveBeenCalledOnce(); expect(checked).toHaveLength(1);
+});
+test("preparation bounds cleanup reconciliation and never probes after its deadline", async () => {
+  vi.useFakeTimers();
+  const entered = deferred(), release = deferred(), check = vi.fn(async () => ({ version: "1.2.3" }));
+  const { manager } = create({ probe: { reconcile: async () => { entered.resolve(); await release.promise; }, check } });
+  const short = createOperation({ limits: { totalMs: 100 } }); operations.push(short);
+  manager.setTargets(targets("A"));
+  const pending = manager.prepare("codex", "web", short), failed = expect(pending).rejects.toMatchObject({ code: "probe_timeout" });
+  try {
+    await entered.promise; await vi.advanceTimersByTimeAsync(100); await failed;
+    expect(check).not.toHaveBeenCalled(); expect(manager.currentSelection("codex", "web")).toBeUndefined();
+    release.resolve(); await vi.advanceTimersByTimeAsync(0); expect(check).not.toHaveBeenCalled();
+  } finally { release.resolve(); await manager.close(op()); }
+});
 test("selection checks the target again after identity verification", async () => {
   const entered = deferred(), release = deferred(); let calls = 0; const { manager } = create({ verify: async value => { if (value.entryPath.endsWith("A") && ++calls === 2) { entered.resolve(); await release.promise; } } });
   manager.setTargets(targets("A")); const selected = manager.selectForNewExecution("codex", "web", op()); await entered.promise;
