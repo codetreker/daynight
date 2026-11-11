@@ -214,6 +214,10 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	if _, err := profileprotocol.Encode(io.Discard, normalized, core.MaxProfileJSONBytes); err != nil {
 		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
 	}
+	user.UniAuthID, err = core.CanonicalUniAuthID(user.UniAuthID)
+	if err != nil {
+		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
+	}
 	now := s.now().UTC()
 	session, value := s.ops.newSession(now)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}

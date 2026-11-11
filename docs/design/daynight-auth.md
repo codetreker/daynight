@@ -231,8 +231,22 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 和 session 的写事务之前完成；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
 消费事实，旧资料不变。null、false 和头像 data URL 保持原值，不添加头像 scheme 限制。
 
+通过原始资料的字段与编码容量校验后，service 使用 identity 领域的 `CanonicalUniAuthID`
+统一外部身份键：`microsoft:<tid>:<oid>` 转换为 `msft:<oid>@<tid>`，标准格式保持原值，
+其他身份键继续作为不透明字符串保存。两种 Microsoft 格式中的 `oid`、`tid` 必须非空，
+且均不含 `:` 或 `@`，从而避免不同组件组合转换成同一身份键。格式错误映射为
+502 `identity_unavailable`，发生在创建本地用户、Personal Team 和 session 的事务之前。
+
+迁移 `064_microsoft_identity.sql` 先验证已有 Microsoft 身份键，再原子更新旧格式的
+`users.uniauth_id`；`users.id`、资料时间及业务关联保持原值。已有目标键冲突通过唯一约束
+使整个迁移失败，不合并或删除账号；格式错误使用 SQLSTATE `P1064` 明确拒绝迁移。
+升级时先停止旧 Daynight 实例，再迁移并启动支持双格式的新实例，随后切换 UniAuth 输出。
+新 Daynight 实例继续接收原 UniAuth 输出，避免要求两个服务同时升级。
+[Microsoft 身份键决策](../../.agents/notes/implemented/architecture/2026-11-11-canonical-microsoft-identity.md)
+记录规范化与持久迁移的取舍。
+
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
-领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
+领取响应丢失都重新登录，不能重试可能已消费的 code。用户以规范化后的完整外部身份键唯一
 upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。规范用户 UPSERT 后，
 `initializePersonalTeam` 在同一事务建立唯一 Personal Team 与真实 owner admin 成员行，
 随后写 session。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
@@ -295,7 +309,7 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 
 | 表 | 关键字段与约束 |
 |---|---|
-| users | 本地 UUID；唯一 uniauth_id；可空 email/email_verified/name/avatar_url；时间。 |
+| users | 本地 UUID；唯一 uniauth_id，Microsoft 使用 `msft:<oid>@<tid>`，其他身份键保持原值；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
 | sessions | ID、唯一 token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
 | personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at；null 永不过期，Web 创建或设备授权领取时生成，撤销删除。 |
