@@ -202,6 +202,36 @@ describe("private project and membership API", () => {
     await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { kind: "protocol", status: 200 } });
   });
 
+  it("reports only actual dispatch and preserves the unknown outcome after cancellation", async () => {
+    const fetcher = vi.fn((_url: string, options: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const input = { name: project.name, repoUrl: project.repoUrl, expectedUserId: userId };
+    const controller = new AbortController(), dispatched = vi.fn();
+    const pending = createProject(input, controller.signal, vi.fn(), dispatched);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledOnce();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { name: "AbortError" } });
+
+    const resume = pauseAuthRequests();
+    const queued = new AbortController(), queuedDispatch = vi.fn();
+    const beforeDispatch = createProject(input, queued.signal, vi.fn(), queuedDispatch);
+    queued.abort();
+    await expect(beforeDispatch).rejects.toMatchObject({ name: "AbortError" });
+    resume();
+    expect(queuedDispatch).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("retains a known refusal after dispatch", async () => {
+    const dispatched = vi.fn();
+    mock(refusal(403, "forbidden"));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn(), dispatched)).rejects.toMatchObject({ kind: "server", status: 403, code: "forbidden" });
+    expect(dispatched).toHaveBeenCalledOnce();
+  });
+
   it("sends an explicit team and validates the creation ownership and grant", async () => {
     const fetcher = mock(response(creationReceipt, 201));
     const teamId = project.ownership.teamId;
@@ -232,6 +262,18 @@ describe("private project and membership API", () => {
     const mismatch = vi.fn(), fetcher = mock(refusal(409, "identity_mismatch"));
     await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), mismatch)).rejects.toMatchObject({ kind: "server", code: "identity_mismatch" });
     expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a decoded identity refusal definite when its callback aborts the request", async () => {
+    const controller = new AbortController();
+    const mismatch = vi.fn(() => controller.abort());
+    const dispatched = vi.fn();
+    const fetcher = mock(refusal(409, "identity_mismatch"));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, controller.signal, mismatch, dispatched))
+      .rejects.toMatchObject({ name: "ApiError", kind: "server", status: 409, code: "identity_mismatch", requestId: "auth-1" });
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
