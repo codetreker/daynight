@@ -275,7 +275,7 @@ describe('Worker pages in the authenticated workspace', () => {
     });
     render(<AuthenticatedApp />);
     await screen.findByRole('heading', { name: 'Alice worker' });
-    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' }));
     const field = await screen.findByRole('textbox', { name: 'Prompt text' });
     fireEvent.change(field, { target: { value: 'instructions' } });
     fireEvent.click(within(field.closest('form')!).getByRole('button', { name: 'Save changes' }));
@@ -285,7 +285,7 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate(`/workers/${firstWorker}`));
     expect(screen.getByRole('tab', { name: 'Runtime monitoring' })).toHaveAttribute('aria-selected', 'true');
-    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'worker', scopeId: firstWorker, revision: '1', text: 'instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);

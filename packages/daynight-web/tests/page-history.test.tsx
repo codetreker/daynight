@@ -260,11 +260,19 @@ describe('Worker reading history', () => {
   const path = `/workers/${worker}`;
   it('validates the current Worker selection and isolates identity and resource', () => {
     expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
+    expect(readWorkerHistory(workerHistory(user, worker, 'prompt'), user, worker)).toBe('prompt');
     expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
     expect(readWorkerHistory(workerHistory(user, otherWorker, 'configuration'), user, worker)).toBeNull();
     for (const selection of [{ workerId: otherWorker, section: 'overview' }, { workerId: worker, section: 'bad' }, { workerId: worker, section: 'overview', draft: 'secret' }]) {
       expect(() => readWorkerHistory({ ...workerHistory(user, worker, 'overview'), selection }, user, worker)).toThrow();
     }
+  });
+  it('opens a directly restored prompt selection', () => {
+    const navigation = browserNavigation();
+    act(() => navigation.navigate(path, false, workerHistory(user, worker, 'prompt')));
+    const { result } = renderHook(() => useWorkerHistory(user, worker, true));
+    expect(result.current.section).toBe('prompt');
+    expect(result.current.error).toBe(false);
   });
   it('initializes, traverses and deduplicates while inactive owners cannot overwrite another page', () => {
     history.replaceState(null, '', path);
@@ -277,8 +285,15 @@ describe('Worker reading history', () => {
     expect(result.current.section).toBe('configuration');
     act(() => result.current.select('configuration'));
     expect(history.length).toBe(length + 1);
+    act(() => result.current.select('prompt'));
+    const prompt = history.state;
+    expect(result.current.section).toBe('prompt');
+    act(() => result.current.select('prompt'));
+    expect(history.length).toBe(length + 2);
+    arrival(configuration, path); expect(result.current.section).toBe('configuration');
     arrival(overview, path); expect(result.current.section).toBe('overview');
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    arrival(prompt, path); expect(result.current.section).toBe('prompt');
     rerender({ identity: user, active: false });
     act(() => navigation.navigate('/account', false, accountHistory(user, 'tokens')));
     act(() => result.current.select('overview'));

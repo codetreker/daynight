@@ -4,7 +4,7 @@ import type { TaskDetailNavigation } from './router';
 import type { ProjectSection, TaskView } from '../features/projects/useProjectViewPreferences';
 
 export type AccountTab = 'profile' | 'tokens' | 'prompt';
-export type WorkerSection = 'overview' | 'configuration';
+export type WorkerSection = 'overview' | 'configuration' | 'prompt';
 export type ResourceReading = { readonly id: string; readonly navigation: TaskDetailNavigation };
 export type GoalChildren = { readonly graphRootId: string | null; readonly task: ResourceReading | null };
 export type ProjectReading = {
@@ -97,7 +97,7 @@ export function readWorkerHistory(value: unknown, userId: string, workerId: stri
   if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
   if (value.userId !== userId || value.pageKey !== `worker:${workerId}`) return null;
   const selection = value.selection;
-  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration')) throw new Error('Invalid worker navigation state.');
+  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration' && selection.section !== 'prompt')) throw new Error('Invalid worker navigation state.');
   return selection.section;
 }
 

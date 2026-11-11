@@ -108,7 +108,7 @@ test('withdraws shared projections and fences late reads, then restores fresh ac
     await expect(pages.worker.getByText('Healthy worker task', { exact: true })).toBeVisible();
     const oldWorker = hold(); state.worker = oldWorker;
     await pages.worker.getByRole('button', { name: 'Refresh', exact: true }).click(); await expect.poll(() => oldWorker.started).toBe(true);
-    await pages.worker.locator('#worker-tab-configuration').click();
+    await pages.worker.locator('[data-worker-tab="configuration"]:visible').click();
     const draft = pages.worker.locator('#config-native-args'); await draft.fill('[invalid draft');
     await expect(pages.worker.getByRole('heading', { name: 'Private Project', exact: true })).toBeVisible();
     await expect(pages.worker.getByRole('heading', { name: 'Healthy Project', exact: true })).toBeVisible();
@@ -154,7 +154,7 @@ test('withdraws shared projections and fences late reads, then restores fresh ac
     await expect(pages.worker.getByRole('heading', { name: privateId, exact: true })).toHaveCount(0);
     await expect(pages.worker.getByRole('heading', { name: 'Healthy Project', exact: true })).toBeVisible();
     await expect(draft).toHaveValue('[invalid draft');
-    await pages.worker.locator('#worker-tab-overview').click();
+    await pages.worker.locator('[data-worker-tab="overview"]:visible').click();
     await expect(pages.worker.getByText('Private worker task', { exact: true })).toHaveCount(0);
     await expect(pages.worker.getByText('Healthy worker task', { exact: true })).toBeVisible();
     await expect(pages.worker.getByRole('heading', { name: 'Worker 1', exact: true })).toBeVisible();
@@ -165,7 +165,7 @@ test('withdraws shared projections and fences late reads, then restores fresh ac
     await expect(pages.directory.getByRole('heading', { name: 'Private Project', exact: true })).toBeVisible();
     await pages.worker.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(pages.worker.getByText('Private worker task', { exact: true })).toBeVisible();
-    await pages.worker.locator('#worker-tab-configuration').click();
+    await pages.worker.locator('[data-worker-tab="configuration"]:visible').click();
     await pages.worker.getByRole('button', { name: /Choose projects/ }).first().click();
     await pages.worker.getByRole('dialog').getByRole('checkbox', { name: /Private Project/ }).check();
     await pages.worker.getByRole('dialog').getByRole('button', { name: 'Done' }).click();

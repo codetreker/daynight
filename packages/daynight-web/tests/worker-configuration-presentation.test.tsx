@@ -2,12 +2,18 @@ import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkerConfigurationOutcome } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
+import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
 
-const mount = () => renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
+type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'confirming' | 'visible'>;
+const ConfigurationFixture = (props: ConfigurationFixtureProps) => {
+  const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled });
+  return <WorkerConfigurationPanel {...props} visible state={state} confirming={false} />;
+};
+const mount = () => renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const install = (response: () => Response) => {
   const fetch = vi.fn((url: string, _init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }) : url === `/api/v1/me/workers/${workerId(1)}/prompt` ? workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }) : response());
   vi.stubGlobal('fetch', fetch); return fetch;

@@ -314,7 +314,10 @@ outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.
 Account profile, credentials and user prompt tabs participate in browser Back and
 Forward. Their history state contains only an account-bound tab selection; the
-existing credential and prompt owners retain their drafts and operation results. Worker monitoring and configuration tabs also participate in Back and Forward, scoped to the current user and Worker; the configuration owner retains its draft and operation state.
+existing credential and prompt owners retain their drafts and operation results.
+Worker monitoring, configuration and prompts tabs also participate in Back and
+Forward, scoped to the current user and Worker; both editing owners retain their
+drafts and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -497,9 +500,13 @@ unavailable for editing.
 ## My Workers
 
 The account-owned `/workers` list shows Workers that have reported within the
-last 72 hours. `/workers/{workerId}` combines Runtime monitoring and Configuration
-tabs: runtime observations retain that window, while cloud configuration is an
-independent, retained resource. Both routes support direct access, reloads and
+last 72 hours. `/workers/{workerId}` presents Runtime monitoring, Configuration
+and Prompts as peer tabs, defaulting to Runtime monitoring. Arrow keys wrap
+between tabs and Home and End select the first and last; tab and panel
+accessibility associations and hidden-panel isolation remain intact. Runtime
+observations retain that window, while cloud configuration and the Worker prompt
+are independent resources. Configuration includes tool paths; Prompts contains
+the Worker prompt editor. Both routes support direct access, reloads and
 login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
@@ -627,10 +634,16 @@ cannot create the first target.
 `api/worker-configuration.ts` strictly decodes the account-owned resource.
 `features/workers/configuration/model.ts` and `useWorkerConfiguration.ts` keep
 latest resource, draft baseline, raw input and submitted snapshot separate.
-Opening Configuration mounts its state; switching tabs preserves the mounted
-editor and draft while pausing configuration reads. The active, visible,
-identity-admitted tab performs its own five-second single-flight refresh without
-using the runtime observation clock.
+Opening either editing tab mounts the page-level editing coordinator. Switching
+tabs preserves the mounted editors and drafts while pausing reads for the hidden
+resource. The active, visible, identity-admitted configuration tab performs its
+own five-second single-flight refresh without using the runtime observation
+clock. Prompt reads and writes do not depend on configuration initialization,
+validation or Worker online status, and failures in either resource do not block
+the other. One navigation guard covers both drafts: cancelling a leave returns to
+the dirty tab, or the last edited tab when both are dirty, and restores focus.
+The page owner stays retained while either resource has a pending or uncertain
+write, without aborting or replaying an already dispatched prompt PUT.
 
 Background identity checks retain the editor, dialogs, local input and unapplied
 Project selection while private requests and new saves remain gated. In-flight

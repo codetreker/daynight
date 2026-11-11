@@ -34,7 +34,7 @@ const install = async (page: Page, supported = true) => {
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'control-mode' } }, 404);
   });
   await page.goto(`/workers/${target}`);
-  await page.locator('#worker-tab-configuration').click();
+  await page.locator('[data-worker-tab="configuration"]:visible').click();
   await expect(page.getByRole('combobox', { name: '托管模式' })).toBeVisible();
   return state;
 };

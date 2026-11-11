@@ -127,9 +127,9 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 ### Worker 云端配置编辑
 
-`WorkerDetailPage` 在运行监控与配置之间切换，原运行监控继续使用单调时钟及近期窗口。配置首次打开时挂载独立 `WorkerConfigurationPanel`，切回运行监控后保留组件与草稿，但暂停配置自动读取。配置返回值没有 observedAt，不能放入 `useWorkerObservation` 或生成伪服务端时钟。Worker ID 始终来自路由；运行监控超窗、404 或首次失败不成为配置请求的前置条件。
+`WorkerDetailPage` 在运行监控、配置和提示词三个平行页签之间切换，运行监控继续使用单调时钟及近期窗口。首次进入任一编辑页签时挂载 Worker 页级编辑协调器，分别启用所选资源的读取；打开后的编辑器及草稿在同一 Worker 的页签切换中保持挂载，隐藏资源暂停读取。提示词首次读取不依赖运行配置初始化或 Worker 在线。配置返回值没有 observedAt，不能放入 `useWorkerObservation` 或生成伪服务端时钟。Worker ID 始终来自路由；运行监控超窗、404 或首次失败不成为配置请求的前置条件。
 
-配置面板在整个草稿生命周期向 `BrowserNavigation` 注册原始草稿的实时 dirty 读取器，scope 由当前认证实例和 Worker ID 组成，与任务草稿隔离。同一 Worker 路由及本地页签切换保留注册；其他应用内目标通过既有导航准入确认，原生文档离开复用 `beforeunload`。确认复用 `TaskConfirmation` 的背景隔离和键盘约束，采用配置专用文案；显示前关闭配置的管理弹窗，避免背景隔离和焦点约束冲突。取消离开切回配置并恢复最近编辑控件或首字段焦点。确认离开沿用配置已有取消修改行为，最终卸载结束草稿生命周期，不将未知保存结果重分类或重放。认证信号失效或配置已确认不可用时撤销注册与待决确认；普通身份检查和运行观测过期不撤销草稿。历史保护沿用[任务步骤导航](daynight-task-steps.md#web-呈现导航与大集合)的索引段限制，不重建原生或跨段历史。
+页级协调器在草稿生命周期向 `BrowserNavigation` 注册一个共同 scope，聚合配置和提示词的实时 dirty 与放弃操作；scope 由当前认证实例和 Worker ID 组成，与任务草稿隔离。同一 Worker 路由及本地页签切换保留注册；其他应用内目标通过既有导航准入确认，原生文档离开复用 `beforeunload`。确认复用 `TaskConfirmation` 的背景隔离和键盘约束，显示前关闭配置的管理弹窗，避免背景隔离和焦点约束冲突。取消离开时，一份 dirty 返回其所属页签，两份 dirty 返回最后编辑的页签，并恢复相应有效控件的焦点。确认离开放弃两份草稿，不将未知保存结果重分类或重放；任一资源存在待定或未知写入时保留同一个页面 owner，避免另一资源完成时提前释放。认证信号失效或资源已确认不可用时撤销相应私有状态；普通身份检查和运行观测过期不撤销草稿。历史保护沿用[任务步骤导航](daynight-task-steps.md#web-呈现导航与大集合)的索引段限制，不重建原生或跨段历史。
 
 `api/worker-configuration.ts` 复用同源客户端、no-store、取消、401、requestId 和 principal 准入，独立严格解析目标、观测与错误。每个响应在解析和资源错误处理前先核对当前账号。目标与观测版本保留规范十进制字符串，不经 Number 转换。数据含义及合法范围由[配置协议](../spec/daynight-worker-configuration.md)拥有，响应正文不增加 supported 或 Task 字段；客户端单独保存 Daynight-Worker-Control-Mode: 1 回显能力，资源合并和保存结果核对保留该元信息。无回显按旧结构严格解析且不发送新正文；扩展值的缺失与明确 null 分别表示旧合同及尚未采纳。
 
@@ -151,7 +151,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 ### 个人 Worker Prompt 编辑
 
-`features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 是运行配置表单的同级资源，读取、校验和保存互不阻塞。
+`features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 与运行配置分别位于同级页签，读取、校验和保存互不阻塞；[页签组织决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-detail-prompt-tab.md)记录其协调取舍。
 
 状态独立保存最高版本资源、草稿基线、原文、编辑代次和提交快照。GET 按版本单调接纳，PUT 只提交冻结的账号、版本和正文；继续输入不被回执覆盖。冲突保留草稿并要求明确处理最新版本。已发送请求结果未知时保留快照，以 GET 核对当前事实，不重放写入。身份准入暂停保留节点及草稿，确认失权或身份改变则撤销旧资源和请求。导航聚合 Worker 两份草稿，并在待定或未知写入期间保留对应页面 owner；放弃草稿不会撤销已发送写入。[编辑决策](../../.agents/notes/implemented/architecture/2026-11-09-web-personal-prompt-editor.md)记录取舍。
 
@@ -256,7 +256,7 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 请求脏草稿准入；同 Task 页签/附件保持注册。已编号历史恢复、身份退休和未编号条目的
 保留限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
 
-账号页通过 `useAccountHistory` 消费绑定 userId 和 pageKey 的轻量页签选择。受控条目以 replace 初始化，用户切换以 push 写入，重复选择不写入；遍历只应用已准入选择。隐藏的账号 owner 不读写其他路由的状态，原生未编号条目保留当前选择。坏载荷显示错误并保留既有 owner；prompt 和凭据组件不以历史条目标识重新挂载。`BrowserNavigation` 的条目标识及载荷使相同 URL 的不同访问也发布新快照；写入和遍历继续使用原草稿准入。Worker 详情通过 `useWorkerHistory` 使用同一入口，载荷绑定 userId、pageKey 和 Worker ID，只恢复运行监控或配置页签。配置首次打开后保持挂载；隐藏内容为 inert，取消离开后在历史恢复完成时以 replace 返回配置。隐藏的 Worker owner 不读写其他页面的选择，坏载荷隐藏内容但保留原 owner。选择只含页签，不含业务数据。项目页同样消费绑定账号及项目页面的轻量选择，保存外层和内层页签、项目图 witness、根详情及 Goal 子层的资源与导航；数据读取和准入仍由原所有者决定。用户改变选择以 push 提交，关闭经草稿准入后以 replace 保存父选择，重复选择不写入。遍历只应用选择，不重放操作或保存偏好；详情按资源和宿主保持原挂载，不以条目标识作为 key。项目根 Task 的 `summary`/`direct` 来源切换可能替换草稿宿主，须经过离开保护；Goal 与子层依据实际宿主判断。具体取舍见[账号浏览历史决策](../../.agents/notes/implemented/feature/2026-11-11-account-reading-history.md)。
+账号页通过 `useAccountHistory` 消费绑定 userId 和 pageKey 的轻量页签选择。受控条目以 replace 初始化，用户切换以 push 写入，重复选择不写入；遍历只应用已准入选择。隐藏的账号 owner 不读写其他路由的状态，原生未编号条目保留当前选择。坏载荷显示错误并保留既有 owner；prompt 和凭据组件不以历史条目标识重新挂载。`BrowserNavigation` 的条目标识及载荷使相同 URL 的不同访问也发布新快照；写入和遍历继续使用原草稿准入。Worker 详情通过 `useWorkerHistory` 使用同一入口，载荷绑定 userId、pageKey 和 Worker ID，恢复运行监控、配置或提示词页签，严格拒绝未知选择、错误账号或 Worker 及多余字段。编辑协调器首次打开任一编辑页签后保持挂载；隐藏内容为 inert，取消离开后在历史恢复完成时以 replace 返回有草稿的页签，或两份均有草稿时返回最后编辑的页签。隐藏的 Worker owner 不读写其他页面的选择，坏载荷隐藏内容但保留原 owner。选择只含页签，不含业务数据。项目页同样消费绑定账号及项目页面的轻量选择，保存外层和内层页签、项目图 witness、根详情及 Goal 子层的资源与导航；数据读取和准入仍由原所有者决定。用户改变选择以 push 提交，关闭经草稿准入后以 replace 保存父选择，重复选择不写入。遍历只应用选择，不重放操作或保存偏好；详情按资源和宿主保持原挂载，不以条目标识作为 key。项目根 Task 的 `summary`/`direct` 来源切换可能替换草稿宿主，须经过离开保护；Goal 与子层依据实际宿主判断。具体取舍见[账号浏览历史决策](../../.agents/notes/implemented/feature/2026-11-11-account-reading-history.md)。
 
 弹窗与独立页的外层阅读工作区各自持有全屏模式，Surface 标题栏统一提供双语切换
 按钮。CSS 将同一外壳铺满视口，不更换 portal、presentation、key 或阅读面板，

@@ -20,10 +20,12 @@ An uncertain write is reconciled by reading current facts without replaying it
 or attributing a matching value to that request. Explicit conflict choices
 control whether to replace a draft or continue from the latest version.
 
-Worker prompt and runtime configuration are sibling forms. Their navigation
-protection is aggregated into one confirmation; retained owners keep pending
-and unknown writes across route changes. Identity and Project access checks
-pause admission and publication without remounting an active editor. Confirmed
+Worker prompt and runtime configuration are independent resources. Their
+navigation protection is aggregated into one confirmation; retained owners keep
+pending and unknown writes across route changes. The later
+[peer-tab decision](2026-11-12-worker-detail-prompt-tab.md) places those forms
+in separate tabs while preserving this protection. Identity and Project access
+checks pause admission and publication without remounting an active editor. Confirmed
 identity changes and access withdrawal retire private state. The
 [Web design](../../../../docs/design/daynight-web.md#个人-worker-prompt-编辑)
 owns the component and request responsibilities.
