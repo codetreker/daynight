@@ -721,3 +721,41 @@ it("settles an explicitly controlled Web claim verified as unregistered", async 
     expect(f.store.getCleanupSchedule(owner)).toBeNull();
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
+
+it("uses the stopped original when cleanup finishes after the resource snapshot", async () => {
+  const f = await fixture(), wake = vi.fn();
+  const coordinator = createWorkerCoordinator({ ...f.options, requestReconcile: wake });
+  await coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const original = f.store.listTasks()[0]!;
+  f.grants.clear();
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const observerEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => {
+    removeEntered.resolve(); await finishRemoval.promise; operation.check(); await remove(project, owner, operation);
+  });
+  const observe = f.tasks.observeExecutionStop.getMockImplementation()!;
+  let holdObservation = false;
+  f.tasks.observeExecutionStop.mockImplementation(async target => {
+    const result = await observe(target);
+    if (holdObservation) { observerEntered.resolve(); await finishObservation.promise; }
+    return result;
+  });
+  try {
+    await coordinator.tick();
+    await removeEntered.promise;
+    expect(wake).toHaveBeenCalled();
+    const notifications = wake.mock.calls.length;
+    holdObservation = true;
+    const nextRound = coordinator.tick();
+    await observerEntered.promise;
+    finishRemoval.resolve();
+    await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
+    await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
+    finishObservation.resolve();
+    await nextRound;
+    await eventually(() => expect([...f.grants.values()].some(task => task.id === uuid(101))).toBe(true));
+    expect(wake).toHaveBeenCalledTimes(notifications);
+  } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
+});

@@ -966,8 +966,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const stop of pendingStops()) add(key(stop.context), "pending-stop");
     return [...roles].map(([identity, roleSet]) => {
       const target = ending.get(identity);
-      const terminalStopped = target !== undefined && hasWorktreeIdentity(target) && controllers.get(identity)?.terminal !== false && executionCapacity.stopped(target);
-      const owner = resources.owners.get(identity) ?? options.store.listTasks().find(task => key(task) === identity);
+      const observedOwner = resources.owners.get(identity);
+      const local = options.store.listTasks().find(task => key(task) === identity);
+      // Cleanup can finish after this round's inventory but before its stop read
+      // returns. Keep its exact stopped fact for that stale owner; an active
+      // reservation or a replacement worktree never inherits the exemption.
+      const completedOwner = target === undefined && (local === undefined || local.status === "done") ? observedOwner : undefined;
+      const stoppedOwner = target !== undefined && hasWorktreeIdentity(target) ? target : completedOwner;
+      const terminalStopped = stoppedOwner !== undefined && (observedOwner === undefined || observedOwner.worktreeId === stoppedOwner.worktreeId)
+        && controllers.get(identity)?.terminal !== false && executionCapacity.stopped(stoppedOwner);
+      const owner = observedOwner ?? local;
       const occupied = terminalStopped ? false : resources.quarantined.has(identity) ? true
         : stopped.has(identity) && controllers.get(identity)?.terminal !== false ? false
         : resources.owners.has(identity) && !resources.proven.has(identity) ? true
