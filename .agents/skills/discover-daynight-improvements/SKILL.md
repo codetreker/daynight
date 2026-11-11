@@ -10,8 +10,9 @@ register every independently actionable result as Daynight work. This skill is
 the contract shared by all investigation topics. A topic skill supplies what to
 examine and how to judge it. [prepare-daynight-local](../prepare-daynight-local/SKILL.md)
 supplies the local environment, browser identity, controller Test Sessions and
-observation tools. Registration and handoff use the `dispatch-small-change` and
-`development-workflow` skills.
+observation tools. Registration and handoff follow the
+[development workflow](../development-workflow/SKILL.md) and the `using-daynight`
+manual for product operations.
 
 Links that leave the skills directory refer to the Daynight repository. When
 these skills are installed outside a checkout, resolve such links against the
@@ -74,7 +75,7 @@ that run. Create it only within an authorized skill change.
 
 | Finding | Route |
 | --- | --- |
-| A bounded change with clear target behavior | One task through `dispatch-small-change`, with the package attachments |
+| A bounded change with clear target behavior | One task through the [development workflow](../development-workflow/SKILL.md), with the package attachments |
 | A clear required outcome whose cause is unknown | One task that states the investigation responsibility and observable acceptance |
 | A new capability, product direction or competitor-derived requirement | The `development-workflow` Goal protocol, starting with a requirements discussion when the user requests it |
 | A failure of the local environment, browser automation or a Provider account | Report it; repair it under prepare-daynight-local when authorized, not as a product task |

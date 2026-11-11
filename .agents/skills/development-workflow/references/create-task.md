@@ -28,7 +28,30 @@ Do not use storage mechanisms such as `localStorage`, `sessionStorage`, Cookie, 
 Reloading or reopening the prototype must restore its initial state.
 
 Select necessary direct prerequisites under [dependency classification and reduction](dependencies.md#dependency-reduction), verifying whether they belong to the same chain or another chain.
-Platform requirements must come only from confirmed task needs. Do not add dependencies for visual grouping or duplicate the full relationship list in the body.
+Do not add dependencies for visual grouping or duplicate the full relationship list in the body.
+
+## Choose the operating system
+
+Set `requiredPlatform` from the environment genuinely needed to implement or
+verify the task:
+
+| Value | Selection rule |
+| --- | --- |
+| `null` (Any platform) | No particular OS is needed to implement and verify the required result. |
+| `windows` | Native Windows behavior, tools or verification are required. |
+| `linux` | Native Linux behavior, tools or verification are required. |
+| `macos` | Native macOS behavior, tools or verification are required. |
+
+Record the reason for an OS restriction. Use task evidence, not the current
+machine or the mere mention of an OS in a report. A generic message correction
+can be unrestricted; verifying a native Windows installer failure may require
+Windows. WSL's Linux runtime is Linux. Agent provider, model and Worker identity
+are separate from this field.
+
+For verification spanning operating systems, establish how the executor can
+obtain all required evidence, including suitable existing CI where applicable.
+If no single execution environment can satisfy it, clarify the verification or
+task boundaries before handoff; one platform value cannot express an OS set.
 
 ## Register and read back
 
