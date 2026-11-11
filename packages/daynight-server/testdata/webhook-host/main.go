@@ -21,11 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
@@ -79,6 +79,7 @@ type fixture struct {
 	schemaCreated     bool
 	schemaOwner       string
 	runner            *webhook.Runner
+	engine            *sessioncore.Engine
 	beforeRunnerStart func()
 	handlerLock       sync.Mutex
 	handlers          sync.WaitGroup
@@ -220,7 +221,10 @@ func startWithAdmin(ctx context.Context, databaseURL, token, pat, memberToken, m
 	webhookhttp.NewRoutes(svc, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(f.db), auth, logger)
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(f.db), auth, logger).RegisterRoutes(mux)
-	taskhttp.TaskRoutes(mux, taskservice.NewTasks(f.db, capture), auth, logger)
+	// This host only observes Sessions and does not open Session files.
+	f.engine = sessioncore.NewEngine(nil)
+	observations := taskservice.NewObservations(f.db, f.engine)
+	taskhttp.TaskRoutes(mux, taskservice.NewTasks(f.db, capture), observations, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(f.db, capture), auth, logger)
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(f.db, capture), auth, logger)
 	mux.HandleFunc("POST /__fixture/runner/start", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -450,6 +454,11 @@ func (f *fixture) close(ctx context.Context) error {
 	}
 	if f.runner != nil {
 		if err := f.runner.Stop(cleanup); err != nil {
+			return err
+		}
+	}
+	if f.engine != nil {
+		if err := f.engine.Stop(cleanup); err != nil {
 			return err
 		}
 	}
