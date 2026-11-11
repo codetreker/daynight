@@ -5,7 +5,8 @@ project/task HTTP API, PostgreSQL and temporary Redis monitoring storage togethe
 Docker Engine 28 or newer, Linux containers and Docker Compose 2.20 or newer
 are required. Linux hosts and macOS
 with Docker Desktop using Linux containers can run this stack. The first build
-accesses Docker Hub, the npm registry and the Go module registry. No host Go,
+accesses Docker Hub, the npm registry, the Go module registry and Debian package
+repositories. No host Go,
 Node.js or PostgreSQL installation is needed. A registered UniAuth application
 and its server-side credentials are required.
 
