@@ -50,6 +50,7 @@ type MetricsEndpoint struct {
 type admissionState struct {
 	admission sync.Mutex
 	closing   bool
+	sealed    bool
 	active    int
 	drained   chan struct{}
 }
@@ -134,7 +135,9 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	}
 	r.closeLock <- struct{}{}
 	r.http = &runtimeHTTPServer{state: &r.admissionState, Server: &http.Server{
-		Handler: httpx.RequestLoggingWithMetrics(logger, httpx.LimitRequestTarget(logger, r.admit(handler)), requestMetrics), ReadHeaderTimeout: 5 * time.Second,
+		Handler: r.admitWrapped(handler, func(next http.Handler) http.Handler {
+			return httpx.RequestLoggingWithMetrics(logger, httpx.LimitRequestTarget(logger, next), requestMetrics)
+		}), ReadHeaderTimeout: 5 * time.Second,
 		// net/http adds 4096 bytes of read-ahead to MaxHeaderBytes.
 		MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
 		IdleTimeout:    60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
@@ -142,7 +145,9 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	if metricsListener != nil {
 		m := &metricsServer{listener: metricsListener, admissionState: admissionState{drained: make(chan struct{})}}
 		m.http = &runtimeHTTPServer{state: &m.admissionState, Server: &http.Server{
-			Handler: metricsRequestLogging(logger, m.admit(metricsHandler)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second,
+			Handler: m.admitWrapped(metricsHandler, func(next http.Handler) http.Handler {
+				return metricsRequestLogging(logger, next)
+			}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second,
 			WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
 			MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
 			BaseContext:    func(net.Listener) context.Context { return requests },
@@ -153,32 +158,57 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 }
 
 func (r *admissionState) admit(next http.Handler) http.Handler {
+	return r.admitWrapped(next, func(handler http.Handler) http.Handler { return handler })
+}
+
+// Track the complete wrapper for admitted work: a hijacked connection is no
+// longer tracked by net/http, but its request completion log can still run.
+// Rejected requests use the same wrapper so shutdown does not suppress their logs.
+func (r *admissionState) admitWrapped(next http.Handler, wrap func(http.Handler) http.Handler) http.Handler {
+	accepted := wrap(next)
+	rejected := wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "server is stopping", http.StatusServiceUnavailable)
+	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		r.admission.Lock()
-		if r.closing {
+		if r.sealed {
 			r.admission.Unlock()
 			http.Error(w, "server is stopping", http.StatusServiceUnavailable)
 			return
 		}
+		closing := r.closing
 		r.active++
 		r.admission.Unlock()
 		defer func() {
 			r.admission.Lock()
 			r.active--
-			if r.closing && r.active == 0 {
+			if r.sealed && r.active == 0 {
 				close(r.drained)
 			}
 			r.admission.Unlock()
 		}()
-		next.ServeHTTP(w, request)
+		if closing {
+			rejected.ServeHTTP(w, request)
+		} else {
+			accepted.ServeHTTP(w, request)
+		}
 	})
 }
 
 func (r *admissionState) stopAdmission() {
 	r.admission.Lock()
 	defer r.admission.Unlock()
-	if !r.closing {
-		r.closing = true
+	r.closing = true
+}
+
+// Seal only after HTTP shutdown has closed its listener and stopped accepting
+// requests. Any handler already running, including a rejected request's log,
+// remains counted. A handler dispatched after this barrier cannot use logger.
+func (r *admissionState) seal() {
+	r.admission.Lock()
+	defer r.admission.Unlock()
+	if !r.sealed {
+		r.sealed = true
 		if r.active == 0 {
 			close(r.drained)
 		}
@@ -303,15 +333,33 @@ func (r *Runtime) grace() error {
 		go func() { metricsShutdown <- r.metrics.http.Shutdown(ctx) }()
 	}
 	httpErr := <-serverShutdown
-	if httpErr != nil {
-		httpErr = &httpx.RuntimeError{Component: "server", Phase: "shutdown", Cause: httpErr}
-	}
-	var metricsErr, metricsDrainErr error
+	var metricsErr error
 	if r.metrics != nil {
 		metricsErr = <-metricsShutdown
-		if metricsErr != nil {
-			metricsErr = &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: metricsErr}
+	}
+	// On timeout, close live connections before sealing logging admission. A
+	// late handler must not start logging after a successful drain observation.
+	var earlyCloseErr, earlyMetricsCloseErr error
+	if httpErr != nil {
+		earlyCloseErr = r.http.Close()
+		if errors.Is(earlyCloseErr, net.ErrClosed) {
+			earlyCloseErr = nil
 		}
+		httpErr = &httpx.RuntimeError{Component: "server", Phase: "shutdown", Cause: httpErr}
+	}
+	if metricsErr != nil {
+		earlyMetricsCloseErr = r.metrics.http.Close()
+		if errors.Is(earlyMetricsCloseErr, net.ErrClosed) {
+			earlyMetricsCloseErr = nil
+		} else if earlyMetricsCloseErr != nil {
+			earlyMetricsCloseErr = &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: earlyMetricsCloseErr}
+		}
+		metricsErr = &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: metricsErr}
+	}
+	r.seal()
+	var metricsDrainErr error
+	if r.metrics != nil {
+		r.metrics.seal()
 		metricsDrainErr = waitDrained(ctx, r.metrics.drained)
 	}
 	drainErr := waitDrained(ctx, r.drained)
@@ -327,7 +375,7 @@ func (r *Runtime) grace() error {
 	if httpErr == nil && metricsErr == nil && drainErr == nil && metricsDrainErr == nil && r.relayDone && appErr == nil && r.appDrained && ctx.Err() == nil {
 		closeErr = r.finish(ctx)
 	}
-	r.graceErr = errors.Join(httpErr, metricsErr, drainErr, metricsDrainErr, relayErr, appErr, closeErr)
+	r.graceErr = errors.Join(httpErr, metricsErr, earlyCloseErr, earlyMetricsCloseErr, drainErr, metricsDrainErr, relayErr, appErr, closeErr)
 	if ctx.Err() != nil && !errors.Is(r.graceErr, context.DeadlineExceeded) {
 		r.graceErr = errors.Join(r.graceErr, ctx.Err())
 	}
@@ -336,10 +384,12 @@ func (r *Runtime) grace() error {
 			r.cancelApp()
 		}
 		r.cancelRequests()
-		if err := r.http.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			r.graceErr = errors.Join(r.graceErr, err)
+		if httpErr == nil {
+			if err := r.http.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.graceErr = errors.Join(r.graceErr, err)
+			}
 		}
-		if r.metrics != nil {
+		if r.metrics != nil && metricsErr == nil {
 			if err := r.metrics.http.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 				r.graceErr = errors.Join(r.graceErr, &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: err})
 			}

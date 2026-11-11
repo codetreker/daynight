@@ -28,6 +28,14 @@ import (
 var exit = os.Exit
 
 func main() {
+	if len(os.Args) < 2 || os.Args[1] != "verify-storage" {
+		// With Go's default SIGPIPE behavior, a broken stderr pipe exits the
+		// process before the file sink and shutdown can run. Notify makes the
+		// write return EPIPE while preserving ordinary signal handling for children.
+		brokenPipe := make(chan os.Signal, 1)
+		signal.Notify(brokenPipe, syscall.SIGPIPE)
+		defer signal.Stop(brokenPipe)
+	}
 	exit(run(context.Background(), os.Args[1:], os.LookupEnv, os.Stderr))
 }
 

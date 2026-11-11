@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +28,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func testConfig(t *testing.T) configpkg.Config {
@@ -1054,5 +1057,206 @@ func TestConcurrentCloseWaiterDeadlineDoesNotChangeOwner(t *testing.T) {
 	}
 	if relayCalls.Load() != 1 || closeCalls.Load() != 1 {
 		t.Fatalf("unexpected calls: relay=%d close=%d", relayCalls.Load(), closeCalls.Load())
+	}
+}
+
+// blockedCompletionWriter controls the request completion record after the
+// hijacked handler returns; lifecycle records remain writable.
+type blockedCompletionWriter struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *blockedCompletionWriter) Write(value []byte) (int, error) {
+	if strings.Contains(string(value), `"request_id":"hijack-completion"`) {
+		close(w.entered)
+		<-w.release
+	}
+	return len(value), nil
+}
+
+func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name := "graceful"
+		if deadline {
+			name = "deadline"
+		}
+		t.Run(name, func(t *testing.T) {
+			writer := &blockedCompletionWriter{entered: make(chan struct{}), release: make(chan struct{})}
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(writer.release) }) })
+			logger := slog.New(slog.NewJSONHandler(writer, nil))
+			hijacked := make(chan error, 1)
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				connection, buffer, err := http.NewResponseController(w).Hijack()
+				if err != nil {
+					hijacked <- err
+					return
+				}
+				_, err = buffer.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+				if err == nil {
+					err = buffer.Flush()
+				}
+				hijacked <- errors.Join(err, connection.Close())
+			})
+			shutdownStarted := make(chan struct{})
+			appClosed := make(chan struct{})
+			budget := time.Second
+			if deadline {
+				budget = 100 * time.Millisecond
+			}
+			runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, budget, logger, handler,
+				func(context.Context) error { close(shutdownStarted); return nil }, nil, nil,
+				func(context.Context) error { close(appClosed); return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- runtime.Run(ctx) }()
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(writer.release) })
+				cancel()
+			})
+			connection, err := net.DialTimeout("tcp", runtime.Address(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close()
+			_, err = io.WriteString(connection, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Request-ID: hijack-completion\r\n\r\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(connection), nil)
+			if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("hijack handshake: %v %v", response, err)
+			}
+			if err := await(t, hijacked); err != nil {
+				t.Fatal(err)
+			}
+			await(t, writer.entered)
+			cancel()
+			await(t, shutdownStarted)
+			if deadline {
+				if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("blocked completion should exhaust shutdown budget: %v", err)
+				}
+				if runtime.TransportDrained() {
+					t.Fatal("transport reported drained while completion logging remained blocked")
+				}
+			} else {
+				select {
+				case err := <-done:
+					t.Fatalf("runtime returned before completion logging: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			select {
+			case <-appClosed:
+				t.Fatal("application closed before completion logging")
+			default:
+			}
+			releaseOnce.Do(func() { close(writer.release) })
+			if !deadline {
+				if err := await(t, done); err != nil {
+					t.Fatalf("graceful shutdown: %v", err)
+				}
+				await(t, appClosed)
+				if !runtime.TransportDrained() {
+					t.Fatal("completed transport was not marked drained")
+				}
+			}
+		})
+	}
+}
+
+func TestRuntimeRetainsRejectedRequestLogAcrossCloseRetry(t *testing.T) {
+	writer := &blockedCompletionWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(writer.release) }) })
+	logger := slog.New(slog.NewJSONHandler(writer, nil))
+	appClosed := make(chan struct{})
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, 50*time.Millisecond, logger, http.NotFoundHandler(), nil, nil, nil,
+		func(context.Context) error { close(appClosed); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.stopAdmission()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Request-ID", "hijack-completion")
+	requestDone := make(chan struct{})
+	go func() {
+		runtime.http.Handler.ServeHTTP(response, request)
+		close(requestDone)
+	}()
+	await(t, writer.entered)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := runtime.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked rejected request did not exhaust shutdown: %v", err)
+	}
+	if runtime.TransportDrained() {
+		t.Fatal("transport marked drained while rejected request logging was blocked")
+	}
+	// Shutdown has returned and sealed admission. A late dispatched handler
+	// cannot re-enter the logger after its owner observes the drain.
+	late := httptest.NewRecorder()
+	runtime.http.Handler.ServeHTTP(late, request)
+	if late.Code != http.StatusServiceUnavailable {
+		t.Fatalf("sealed admission returned %d", late.Code)
+	}
+	select {
+	case <-appClosed:
+		t.Fatal("application closed while rejected request logging was blocked")
+	default:
+	}
+	retried := make(chan error, 1)
+	go func() { retried <- runtime.Close(context.Background()) }()
+	select {
+	case err := <-retried:
+		t.Fatalf("close retry finished before rejected logging: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(writer.release) })
+	await(t, requestDone)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("shutdown rejection returned %d", response.Code)
+	}
+	if err := await(t, retried); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("retry lost the original deadline: %v", err)
+	}
+	await(t, appClosed)
+	if !runtime.TransportDrained() {
+		t.Fatal("finished rejection was not drained")
+	}
+}
+
+func TestRuntimeMetricsRejectionRetainsLogging(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, time.Second, logger, http.NotFoundHandler(), nil, nil, nil, nil,
+		MetricsEndpoint{Address: "127.0.0.1:0", Registry: prometheus.NewRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := runtime.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	runtime.metrics.stopAdmission()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("X-Request-ID", "metrics-rejection")
+	runtime.metrics.http.Handler.ServeHTTP(response, request)
+	var event struct {
+		Component string `json:"component"`
+		Phase     string `json:"phase"`
+		RequestID string `json:"request_id"`
+	}
+	if response.Code != http.StatusServiceUnavailable || json.Unmarshal(output.Bytes(), &event) != nil || event.Component != "metrics" || event.Phase != "scrape" || event.RequestID != "metrics-rejection" {
+		t.Fatalf("metrics rejection lost diagnostic: status=%d log=%s", response.Code, output.String())
 	}
 }

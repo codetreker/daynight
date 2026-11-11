@@ -15,8 +15,10 @@ opening the active log. A synchronous writer sends each encoded JSON record to
 both stderr and the file, rotates at 100 MiB and retains ten numbered archives.
 The command cancels on the first output failure and checks its independent error
 latch through shutdown. It closes the file after producers stop and releases the
-lock afterward. Backup verification uses stderr only. Container deployments own
-a separate writable log volume for each server instance.
+lock afterward. The command handles a broken stderr pipe as a write failure, and
+transport draining includes request-completion logging after connection hijack.
+Backup verification uses stderr only. Container deployments own a separate
+writable log volume for each server instance.
 
 ## Alternatives
 
