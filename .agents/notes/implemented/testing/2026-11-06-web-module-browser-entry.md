@@ -43,5 +43,7 @@ A forced termination cannot prove cleanup of an arbitrary detached process that
 has neither the invocation marker nor its browser profile. Windows orphan cleanup
 is refused when identity cannot be verified.
 CI's independent Web browser job runs its configured assistant browser suite;
-the [Web validation decision](2026-11-06-web-quality-validation.md) owns its
-separation from quality validation and the required final gate.
+the [shell/browser workflow decision](2026-11-12-shell-browser-workflow.md) owns
+its `main`-push and manual-dispatch scheduling outside the ordinary PR gate.
+The [Web validation decision](2026-11-06-web-quality-validation.md) preserves
+the original rationale for independent quality and browser runners.
