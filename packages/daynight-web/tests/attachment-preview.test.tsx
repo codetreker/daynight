@@ -42,7 +42,8 @@ describe('attachment preview', () => {
     view.rerender(<AttachmentPreview {...frameProps} paused />);
     expect(screen.queryByTitle('HTML 预览：site.html')).toBeNull();
     view.rerender(<AttachmentPreview {...frameProps} />);
-    const loadedFrame = screen.getByTitle('HTML 预览：site.html');
+    const loadedFrame = screen.getByTitle('HTML 预览：site.html') as HTMLIFrameElement;
+    Object.defineProperty(loadedFrame.contentDocument!, 'URL', { configurable: true, value: 'about:blank' });
     view.rerender(<AttachmentPreview {...frameProps} paused />);
     expect(screen.getByTitle('HTML 预览：site.html')).toBe(loadedFrame);
     expect(loadedFrame).not.toHaveAttribute('src');
@@ -53,6 +54,23 @@ describe('attachment preview', () => {
     fireEvent.load(loadedFrame);
     view.rerender(<AttachmentPreview {...frameProps} paused />);
     expect(screen.getByTitle('HTML 预览：site.html')).toBe(loadedFrame);
+  });
+
+  it('retains an interactive frame document before its load event', () => {
+    const props = { attachment: attachment('site.html', 'text/html'), preview: ready, url: `${root}site.html`, previewRoot: root, onRetry: vi.fn() };
+    const view = render(<AttachmentPreview {...props} />);
+    const frame = screen.getByTitle('HTML 预览：site.html') as HTMLIFrameElement;
+    const document = frame.contentDocument!;
+    Object.defineProperty(document, 'URL', { configurable: true, value: new URL(props.url, window.location.href).href });
+    const body = document.createElement('body'); document.appendChild(document.createElement('html')).appendChild(body);
+    const input = document.createElement('input'); input.value = 'unsaved'; body.append(input);
+    view.rerender(<AttachmentPreview {...props} paused />);
+    expect(frame).toHaveAttribute('src', props.url);
+    expect(frame.contentDocument).toBe(document);
+    expect(input.value).toBe('unsaved');
+    view.rerender(<AttachmentPreview {...props} />);
+    expect(frame.contentDocument).toBe(document);
+    expect(input.value).toBe('unsaved');
   });
 
   it('removes markdown link addresses and blocks unloaded images without replacing loaded images', () => {

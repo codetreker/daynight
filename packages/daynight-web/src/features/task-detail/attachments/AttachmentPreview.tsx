@@ -89,15 +89,23 @@ const TrustedFrame = ({ url, title, keyboardOwner, paused }: { readonly url: str
 
   }, [frameDocument, ownerRoot]);
 
+  const established = () => {
+    const frame = frameRef.current;
+    if (frame === null) return false;
+    try {
+      const document = frame.contentDocument;
+      return document === null || document.URL !== 'about:blank';
+    } catch { return true; }
+  };
   const loaded = () => {
-    if (paused && !loadedFrame) return;
+    if (paused && !loadedFrame && !established()) return;
     setLoadedFrame(true);
     setFrameDocument(frameRef.current!.contentDocument);
   };
 
   return <div className="attachment-native">
     {!loadedFrame && !paused && <p className="attachment-state attachment-native-state" role="status">{m.previewLoading}</p>}
-    {started.current && <iframe className="attachment-frame" ref={frameRef} src={paused && !loadedFrame ? undefined : url} title={title} tabIndex={0} onLoad={loaded} />}
+    {started.current && <iframe className="attachment-frame" ref={frameRef} src={paused && !loadedFrame && !established() ? undefined : url} title={title} tabIndex={0} onLoad={loaded} />}
   </div>;
 };
 
