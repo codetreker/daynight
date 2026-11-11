@@ -909,3 +909,26 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
     }
   } finally { read.close(); }
 });
+
+it("runs another reconciliation while historical archive is pending and joins it before closing the Web store", async () => {
+  const f = await fixture(), archiveStarted = deferred<void>(), archiveFinalizer = deferred<void>();
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId, sessionId: launchId, claimId: uuid(3), executionGeneration: "1" }));
+  mocks.archive.mockImplementation(async () => { archiveStarted.resolve(); await archiveFinalizer.promise; });
+  const tick = vi.fn(async () => {});
+  mocks.coordinator.mockImplementation(() => ({ tick, updateConfiguration: update, shutdown }));
+  const running = start(f);
+  await archiveStarted.promise;
+  const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions & { requestReconcile: () => void };
+  const previous = tick.mock.calls.length;
+  coordinatorOptions.requestReconcile();
+  await eventually(() => expect(tick.mock.calls.length).toBeGreaterThan(previous));
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  f.signal.abort();
+  await eventually(() => expect(shutdown).toHaveBeenCalled());
+  expect(mocks.webClose).not.toHaveBeenCalled();
+  archiveFinalizer.resolve();
+  await running;
+  expect(mocks.webClose).toHaveBeenCalledOnce();
+  expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+});

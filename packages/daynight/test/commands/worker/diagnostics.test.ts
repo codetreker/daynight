@@ -36,6 +36,22 @@ it("writes ordered JSONL and foreground errors without leaking credentials throu
   expect(records.every((record) => record.workerId === "00000000-0000-4000-8000-000000000001" && record.platform === "linux")).toBe(true);
 });
 
+it("records the original owner and phase when no local task row exists", async () => {
+  const root = path.resolve("../../.tmp/worker-diagnostic-tests");
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, "d-"));
+  directories.push(home);
+  const logger = await createWorkerDiagnostics({ paths: resolveWorkerPaths(home), workerId: "worker", platform: "linux", secrets: ["private-token"] });
+  const owner = { projectId: "project", taskId: "task", claimId: "claim", worktreeId: "worktree" };
+  logger.emit({ kind: "stop-unknown", message: "Stop observation failed.", owner, phase: "observation", error: new Error("Read failed.", { cause: new Error("private-token") }) });
+  logger.emit({ kind: "cleanup-error", message: "Cleanup failed.", owner, phase: "worktree-removal", error: new Error("Removal failed.") });
+  await logger.flush();
+  const [record, cleanup] = (await readFile(logger.filename, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(record).toMatchObject({ ...owner, phase: "observation", error: { message: "Read failed.", cause: { message: "[redacted]" } } });
+  expect(record).not.toHaveProperty("status");
+  expect(cleanup).toMatchObject({ ...owner, phase: "worktree-removal", error: { message: "Removal failed." } });
+});
+
 it("abbreviates foreground GUIDs while preserving complete JSONL identities and errors", async () => {
   const root = path.resolve("../../.tmp/worker-diagnostic-tests");
   await mkdir(root, { recursive: true });

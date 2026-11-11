@@ -19,6 +19,15 @@ const identity = (index: number) => ({ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaa
 const secret = "secret /private/path prompt $(command output)";
 
 describe("worker monitoring observer", () => {
+  it("updates only the matching original worktree without upgrading stale or partial capacity", () => {
+    const observer = createMonitoringObserver({ runId });
+    const owner = { ...identity(1), worktreeId: "original-worktree" };
+    observer.setCapacity({ limit: 1, occupied: 1, partial: true, reservations: [{ identity: owner, worktreeId: owner.worktreeId, roles: ["cleanup"] }] });
+    observer.updateReservationOccupancy({ ...owner, worktreeId: "replacement-worktree" }, false);
+    expect(observer.capture("1")).toMatchObject({ capacity: { occupied: 1, quality: "stale", detailCoverage: "partial" }, reservations: [{ occupied: true }] });
+    observer.updateReservationOccupancy(owner, false);
+    expect(observer.capture("2")).toMatchObject({ capacity: { occupied: 0, quality: "stale", detailCoverage: "partial" }, reservations: [{ occupied: false }] });
+  });
   it("keeps worker and project native failures independent and suppresses stale idle evidence", () => {
     const observer = createMonitoringObserver({ runId, now: () => 1_000 }), observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
     const worker = { kind: "worker" } as const, project = { kind: "project", projectId: identity(1).projectId } as const;
@@ -91,6 +100,16 @@ describe("worker monitoring observer", () => {
     expect(observer.capture("4").capacity).toMatchObject({ quality: "stale", occupied: 2 });
     observer.setCapacity({ limit: 1, occupied: 3, reservations: [{ identity: identity(1), roles: ["cleanup"] }], partial: true });
     expect(observer.capture("5").capacity).toMatchObject({ occupied: 3, available: 0, detailCoverage: "partial" });
+  });
+
+  it.each([false, true])("does not release an old worktree reservation for the same claim (partial=%s)", partial => {
+    const observer = createMonitoringObserver({ runId, now: () => 1_000 });
+    const owner = identity(1), oldWorktree = identity(2).claimId, newWorktree = identity(3).claimId;
+    observer.setCapacity({ limit: 1, occupied: 1, partial, reservations: [{ identity: owner, worktreeId: oldWorktree, roles: ["cleanup"] }] });
+    observer.updateReservationOccupancy({ ...owner, worktreeId: newWorktree }, false);
+    const snapshot = observer.capture("1");
+    expect(snapshot.capacity).toMatchObject({ quality: "stale", occupied: 1, available: 0, detailCoverage: partial ? "partial" : "complete" });
+    expect(snapshot.reservations).toEqual([expect.objectContaining({ scope: { kind: "claim", ...owner }, occupied: true, roles: ["cleanup"] })]);
   });
 
   it("omits all colliding identities before truncation without changing capacity", () => {

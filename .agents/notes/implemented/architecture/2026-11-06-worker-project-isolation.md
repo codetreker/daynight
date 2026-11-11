@@ -14,8 +14,9 @@ ends claims and can destroy resources whose ownership remains unresolved.
 The Worker records successful inventory coverage separately from unavailable
 Project IDs. Only a successful complete Project query can establish absence for
 that Project. Candidate admission uses the target Project's inventory and
-resource observation, while retained resources and unresolved stopping
-responsibilities continue to count against global capacity. An unavailable ID
+resource observation, while unresolved stopping responsibilities continue to
+count against global capacity. An independently proven stopped execution releases
+its slot while its retained resources remain separately fenced. An unavailable ID
 alone consumes no slot. Bootstrap and native control resolve the relevant
 Project independently; an explicit ID is never replaced by another Project
 with the same repository.
@@ -24,8 +25,7 @@ When a legacy local selection cannot be fully imported because a Project is
 unavailable, the Worker applies a temporary process-local view and retries the
 complete import. It does not publish a partial cloud configuration. Existing
 cloud configuration remains authoritative. Local mappings and worktree markers
-remain capacity responsibilities even after deselection; unconfirmed scans do
-not release capacity.
+remain ownership responsibilities even after deselection; unconfirmed scans do not establish free capacity.
 
 The reporter invalidates its complete inventory when coverage fails or a
 Project is unavailable and sends the existing null inventory alongside telemetry

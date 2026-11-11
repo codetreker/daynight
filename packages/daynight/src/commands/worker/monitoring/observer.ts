@@ -4,7 +4,7 @@ import { classifyFailure } from "./diagnostics.js";
 import type { Activity, ActivityPhase, AdmissionReason, Coverage, DeliveryPhase, Failure, FailureComponent, Observation, Reservation, ReservationRole, RetryState, SchedulerPhase, Scope, WaitReason } from "./types.js";
 
 type Identity = { projectId: string; taskId: string; claimId: string };
-type ReservationInput = { identity: Identity; roles: readonly ReservationRole[]; occupied?: boolean; observedAt?: string };
+type ReservationInput = { identity: Identity; roles: readonly ReservationRole[]; occupied?: boolean; observedAt?: string; worktreeId?: string };
 type ActivityInput = ActivityPhase & { scope: Scope; status?: Activity["status"]; deadlineAt?: string | null; waitReason?: WaitReason | null; nextAttemptAt?: string | null };
 type ActivityPatch = { phase?: Activity["phase"]; status?: Activity["status"]; deadlineAt?: string | null; waitReason?: WaitReason | null; nextAttemptAt?: string | null; progress?: boolean };
 type FailureInput = { operationId: string; component: FailureComponent; phase: string; scope: Scope; error: unknown; retryState?: RetryState; nextAttemptAt?: string | null; outcomeUnconfirmed?: boolean; observedFailure?: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number } };
@@ -36,6 +36,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
   let projectPreparationUnknown = false;
   let projectPreparationIncomplete = false;
   let reservations: Reservation[] = [];
+  let reservationWorktrees = new Map<string, string>();
   let reservationPartial = false, detailsPartial = false;
   const unattributed = new Set<string>();
   const activities = new Map<string, { value: Activity; monotonicStart: number }>();
@@ -96,20 +97,39 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       for (const item of input.reservations) {
         if (!validIdentity(item.identity)) { partial = true; continue; }
         const id = identityKey(item.identity), previous = unique.get(id);
-        unique.set(id, { identity: { ...item.identity }, roles: roles.filter(role => item.roles.includes(role) || previous?.roles.includes(role)), occupied: item.occupied !== false || previous?.occupied === true, observedAt: previous?.observedAt ?? item.observedAt ?? at });
+        const worktreeId = previous === undefined ? item.worktreeId : previous.worktreeId === item.worktreeId ? item.worktreeId : undefined;
+        unique.set(id, { identity: { ...item.identity }, roles: roles.filter(role => item.roles.includes(role) || previous?.roles.includes(role)), occupied: item.occupied !== false || previous?.occupied === true, observedAt: previous?.observedAt ?? item.observedAt ?? at, ...(worktreeId === undefined ? {} : { worktreeId }) });
       }
       const hashes = new Map<string, string[]>();
       for (const [id, item] of unique) { const rid = reservationId(item.identity); hashes.set(rid, [...hashes.get(rid) ?? [], id]); }
       reservations = [];
+      reservationWorktrees = new Map();
       for (const [rid, identities] of hashes) {
         if (identities.length !== 1) { partial = true; continue; }
         const item = unique.get(identities[0]!)!;
         if (!item.roles.length) { partial = true; continue; }
         reservations.push({ reservationId: rid, scope: { kind: "claim", ...item.identity }, roles: item.roles, occupied: item.occupied !== false, observedAt: item.observedAt ?? at });
+        if (item.worktreeId !== undefined) reservationWorktrees.set(identityKey(item.identity), item.worktreeId);
       }
       if (unique.size < input.occupied) partial = true;
       reservationPartial = partial;
       capacity = { observedAt: at, quality: "current", limit: input.limit, occupied: input.occupied, available: Math.max(0, input.limit - input.occupied), detailCoverage: partial ? "partial" : "complete" }; dirty();
+    },
+    updateReservationOccupancy(identity: Identity & { worktreeId: string }, occupied: boolean): void {
+      if (capacity === null || !validIdentity(identity)) return;
+      const matches = reservations.filter(item => item.scope.kind === "claim" && identityKey(item.scope) === identityKey(identity));
+      if (matches.length !== 1) return;
+      if (reservationWorktrees.get(identityKey(identity)) !== identity.worktreeId) {
+        if (capacity.quality !== "stale") { capacity = { ...capacity, quality: "stale" }; dirty(); }
+        return;
+      }
+      if (matches[0]!.occupied === occupied) return;
+      const total = capacity.occupied + (occupied ? 1 : -1);
+      if (total < 0 || !Number.isSafeInteger(total)) return;
+      matches[0]!.occupied = occupied;
+      matches[0]!.observedAt = time();
+      capacity = { ...capacity, occupied: total, available: Math.max(0, capacity.limit - total) };
+      dirty();
     },
     staleCapacity(): void { if (capacity !== null) { capacity = { ...capacity, quality: "stale" }; dirty(); } },
     setAdmission(coverage: Coverage, reasons: readonly AdmissionReason[]): void {

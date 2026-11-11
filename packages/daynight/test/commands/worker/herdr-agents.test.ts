@@ -1,3 +1,4 @@
+import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1086,10 +1087,33 @@ describe("direct task resource management", () => {
     const f = await fixture(); const binding = await launch(f); f.closeProcesses.terminate = false;
     await expect(f.manager.stopAndClose(f.context, binding, operation(100))).rejects.toMatchObject({ kind: "deadline" });
     expect(f.workspaces).toEqual([]);
+    expect(await f.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown" });
     await expect(f.manager.stopAndClose(f.context, binding, operation(50))).rejects.toMatchObject({ kind: "deadline" });
     f.executing.delete(200);
     await f.manager.stopAndClose(f.context, binding, operation());
+    expect(await f.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "stopped", execution: { backend: "herdr-legacy", owner: expect.objectContaining({ claimId: f.context.claimId }) } });
+    f.workspaces.push({ workspace_id: binding.workspaceId, label: "human" });
+    expect(await f.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
+    f.workspaces.splice(0);
+    const restarted = await fixture();
+    expect(await restarted.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown" });
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
+  });
+
+  it("preserves the original binding through a partially completed close", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async method => {
+      if (method !== "workspace.close") return undefined;
+      f.panes.splice(0); f.agents.splice(0);
+      f.hook(undefined);
+      throw new HerdrRpcError("partial close", { method: "workspace.close", requestId: "request", submission: "unknown" });
+    });
+    await expect(f.manager.stopAndClose(f.context, binding, operation())).rejects.toThrow();
+    expect(await f.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown" });
+    await expect(f.manager.stopAndClose(f.context, { ...binding, terminalId: "replacement" }, operation())).rejects.toThrow("different original binding");
+    f.executing.delete(200);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(await f.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "stopped", execution: { backend: "herdr-legacy" } });
   });
 
   it("retains observed processes when a close response is lost after the workspace disappears", async () => {

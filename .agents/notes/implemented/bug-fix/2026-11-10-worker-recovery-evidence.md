@@ -25,7 +25,8 @@ two-file identity update transaction. Current object checks and Git attribution
 still guard every mutation. Unsupported platforms retain strict legacy checks.
 
 Complete discovery can retain a locally attributable invalid resource as a
-quarantined claim, with capacity and same-task fencing intact. Partial enumeration,
+quarantined claim, with same-task fencing intact and execution occupancy
+determined by the original stop evidence. Partial enumeration,
 unknown ownership or conflicting identities still prevent new acquisition.
 Registration uniqueness compares physical targets, including manual registrations
 and aliases. Forward, reverse and common-directory pointers require
@@ -58,7 +59,10 @@ repair classification before full archival, restoring ordinary transient retry
 policy if upload fails. Receipt presence and legacy-schema admission do not prove
 that the source was repaired. Clearing classification must succeed durably before
 its in-memory counterpart changes; neither operation releases cleanup responsibility.
-Only successful complete cleanup releases ownership or capacity. This narrows the retry policy described in the immutable
+Only successful complete cleanup releases file ownership. The later
+[execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
+releases a separately proven stopped execution before file cleanup. This narrows
+the retry policy described in the immutable
 [cleanup retry decision](../../archived/bug-fix/2026-11-04-worker-cleanup-retry.md),
 whose bounded retry and per-claim fairness remain appropriate for transient and
 unclassified failures.
@@ -97,7 +101,8 @@ volume clones can reproduce the evidence, and same-user concurrent path replacem
 is outside the controlled-writer assumption; the sidecar is not an anti-cloning
 or sandbox mechanism.
 
-Quarantine retains capacity and storage. Unknown inventories remain globally
+Quarantine retains storage and same-task fencing; execution capacity follows
+the original stop evidence. Unknown inventories remain globally
 blocking because historical counts do not prove a present upper bound. Archive
 repair probes preserve data and may wait indefinitely when complete source proof
 cannot be recovered. Reconstruction, incomplete-archive acceptance and separate

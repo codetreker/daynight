@@ -1,26 +1,27 @@
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
-import { ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import type { WorkerAgent } from "../../api/types.js";
 import { actualTaskPane, executionContext, liveAgent, observeWorkerPhase, settleWorkerStops } from "./execution.js";
 import type { ExecutionDependencies } from "./execution.js";
 import { workerCleanupPrompt } from "./prompts.js";
 import type { LocalTask, ResourceOwner, WorkerProject } from "./types.js";
+import type { CleanupRequest } from "./execution-stop.js";
 
 export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?: LocalTask };
 
 export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask">) => ({
-  advance: async (input: CleanupInput, deleteWorktree: boolean, signal?: AbortSignal): Promise<void> => {
-    const deadline = deleteWorktree ? ensureCleanupSchedule(deps.store, input.owner, deps.now()).deadline : deps.now() + 600_000;
+  advance: async (input: CleanupInput, request: CleanupRequest): Promise<void> => {
+    const { signal, deadline } = request;
+    const deleteWorktree = request.kind === "terminal";
     let stage: "agent-stop" | "worktree-removal" = "agent-stop";
     try {
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, false);
       const lifecycle = deps.herdr.lifecycle;
       if (lifecycle !== undefined) {
-        if (deleteWorktree && lifecycle.cleanup) {
-          const notified = await cleanupOperation(operation => lifecycle.cleanup!(input.owner, workerCleanupPrompt(input.owner, deadline), operation), signal);
+        if (request.kind === "terminal") {
+          const notified = await cleanupOperation(operation => lifecycle.cleanup(input.owner, workerCleanupPrompt(input.owner, deadline), operation, request.scope), signal);
           if (!notified) deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup prompt was skipped or unconfirmed because the original input surface was not safely available; controlled stopping still completed." });
         } else await cleanupOperation(operation => lifecycle.stop(input.owner, deleteWorktree ? "terminal" : "shutdown", operation), signal);
         if (!lifecycle.isStopped(input.owner)) throw new Error("The original Herdr run stop is not confirmed; its resources are retained.");
@@ -61,6 +62,11 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       }
       await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
       if (await observe() !== undefined) throw new Error("The original task pane still exists after cleanup.");
+      if (request.kind === "terminal") {
+        const observation = await cleanupOperation(operation => deps.herdr.tasks.observeExecutionStop(input.owner, operation), signal);
+        if (observation.kind !== "stopped" && observation.kind !== "not-started") throw new Error("The original Herdr execution stop remains unconfirmed.", { cause: observation.kind === "unknown" ? observation.error : undefined });
+        request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation });
+      }
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, true);
       stage = "worktree-removal";
       if (deleteWorktree) {

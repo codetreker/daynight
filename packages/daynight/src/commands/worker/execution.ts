@@ -17,7 +17,7 @@ import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { createWorkerGitManager } from "./worktrees.js";
 
-export type WorkerEvent = { kind: string; message: string; task?: LocalTask; error?: unknown };
+export type WorkerEvent = { kind: string; message: string; task?: LocalTask; owner?: ClaimIdentity & { worktreeId?: string }; phase?: string; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
 export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration };
 export type ExecutionAdvance = { kind: "observed"; observation: HerdrAgentObservation } | { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large"; observation: HerdrAgentObservation | null };

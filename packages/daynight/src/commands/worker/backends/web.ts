@@ -12,11 +12,14 @@ import { WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
+import type { CleanupRequest, CleanupTarget } from "../execution-stop.js";
+import type { Operation } from "../../../api/operation.js";
+import { assertWebTicketIdentity, observeWebExecutionStop, webExecutionRef } from "./web-stop.js";
 import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 import type { WorkerPromptSource, WorkerPromptTuple } from "../prompt-source.js";
 import { WorkerCleanupError, type WorkerCleanupStage } from "../cleanup-error.js";
-import { taskAgentControlMode, type CleanupState, type LocalTask, type RecoveryState } from "./web-types.js";
+import { taskAgentControlMode, type LocalTask, type RecoveryState } from "./web-types.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { TaskPlatform } from "../../../api/types.js";
 import type { createWebControllerLauncher } from "./web-process.js";
@@ -413,7 +416,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         throw error;
       }
     },
-    cleanup: async (input: LocalTask, kind: CleanupState["kind"], deadline: number, signal: AbortSignal = new AbortController().signal, immediateStop = false): Promise<WebCleanupOutcome> => {
+    cleanup: async (input: LocalTask, cleanupRequest: CleanupRequest): Promise<WebCleanupOutcome> => {
+      const { kind, deadline, immediateStop } = cleanupRequest;
+      const signal = cleanupRequest.signal ?? new AbortController().signal;
       let stage: WorkerCleanupStage = "observation";
       phase(input, { kind: "cleanup", phase: stage });
       try {
@@ -451,9 +456,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           launched = saved !== null || execution.launchSubmission !== "not-submitted";
           if (launched) {
             const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
-            if (ticket.executionId !== execution.executionId || ticket.claimId !== task.claimId || ticket.sessionId !== execution.sessionId
-              || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
-              || ticket.worktreeId !== task.worktreeId || ticket.workerId !== task.workerId || ticket.serverOrigin !== task.serverOrigin) throw new Error("The cleanup ticket does not identify the original execution.");
+            assertWebTicketIdentity(task, ticket);
             let response: Awaited<ReturnType<typeof request>> | undefined;
             try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); }
             catch (error) {
@@ -505,6 +508,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               stopped = await confirmControllerProcessesStopped(proof, native);
             }
             if (!stopped) throw new Error("The original controller or its native processes still exist.");
+            if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "stopped", execution: webExecutionRef(task), observedAt: options.now() } });
             if (saved !== null) await recordStoppedControllerGeneration(journal(task), ticket);
             success(task, { kind: "cleanup", phase: "agent-stop" });
             phase(task, { kind: "cleanup", phase: "agent-stop" }, true);
@@ -516,7 +520,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           }
         }
         signal.throwIfAborted();
-        if (!launched) success(task, { kind: "cleanup", phase: "agent-stop" });
+        if (!launched) {
+          if (cleanupRequest.kind === "terminal" && execution !== null) cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "not-started", owner: webExecutionRef(task).owner, observedAt: options.now() } });
+          success(task, { kind: "cleanup", phase: "agent-stop" });
+        }
         if (kind === "shutdown") return { task, complete: true };
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
         const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
@@ -545,6 +552,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   return {
     ...backend,
+    observeExecutionStop: (target: CleanupTarget, operation: Operation) => observeWebExecutionStop(target, options.store.getTask(target), options.homeDirectory, operation, options.now),
     probeArchive: async (input: LocalTask, signal: AbortSignal): Promise<ArchiveProbeResult> => {
       signal.throwIfAborted();
       const task = current(input);

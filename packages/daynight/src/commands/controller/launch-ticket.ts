@@ -10,6 +10,9 @@ import type { FrozenExecutionConfiguration } from "../worker/types.js";
 // Retain the legacy 5 MiB allowance plus room for a fully JSON-escaped 64 KiB role.
 export const MAX_TICKET_BYTES = 6 * 1024 * 1024;
 export const MAX_INITIAL_PROMPT_BYTES = 4 * 1024 * 1024;
+export class LaunchTicketIdentityError extends Error {
+  constructor(message: string) { super(message); this.name = "LaunchTicketIdentityError"; }
+}
 export class LaunchTicketLimitError extends Error {
   constructor(readonly actualBytes: number, readonly maxBytes: number, message: string) { super(message); }
 }
@@ -72,7 +75,7 @@ export const readLaunchTicket = async (home: string, launchId: string): Promise<
   const file = controllerTicketPath(home, launchId); const metadata = await lstat(file);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_TICKET_BYTES || (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)) throw new Error("Controller ticket must be a private regular file.");
   const ticket = parseLaunchTicket(JSON.parse(await readFile(file, "utf8")) as unknown);
-  if (ticket.launchId !== launchId) throw new Error("Controller launch ticket identity mismatch.");
+  if (ticket.launchId !== launchId) throw new LaunchTicketIdentityError("Controller launch ticket identity mismatch.");
   return ticket;
 };
 export const serializeLaunchTicket = (ticket: ControllerLaunchTicket): string => {

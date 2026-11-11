@@ -57,6 +57,25 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
+// The Worker poll uses timers/promises, which does not follow Vitest's fake clock.
+// Install a controlled poll and wait until it is registered before advancing time.
+const controlFallbackPoll = async (): Promise<{ started: Promise<void> }> => {
+  const started = deferred<void>();
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation((milliseconds: number, value: unknown, options?: { signal?: AbortSignal }) => {
+    if (milliseconds !== 60_000) return timers.setTimeout(milliseconds, value, options);
+    started.resolve();
+    return new Promise((resolve, reject) => {
+      const signal = options?.signal;
+      if (signal?.aborted) { reject(signal.reason); return; }
+      const timer = setTimeout(() => { signal?.removeEventListener("abort", cancel); resolve(value); }, milliseconds);
+      const cancel = (): void => { clearTimeout(timer); reject(signal?.reason); };
+      signal?.addEventListener("abort", cancel, { once: true });
+    });
+  });
+  return { started: started.promise };
+};
+
 // Retry deadlines advance only at explicit test boundaries; vi.waitFor advances fake timers while polling.
 const eventuallyWithoutAdvancingTime = async (check: () => void): Promise<void> => {
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
@@ -174,7 +193,8 @@ describe("worker runtime monitoring isolation", () => {
       expect(failed.currentFailures.some(item => item.component === "project")).toBe(false);
       expect(failed.admission.reasons).toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope: { kind: "project", projectId: uuid(1) } }));
       expect(JSON.stringify(failed)).not.toContain("private native output");
-      firstTick.resolve(); await vi.advanceTimersByTimeAsync(60_000); await retryStarted.promise;
+      const poll = await controlFallbackPoll();
+      firstTick.resolve(); await poll.started; await vi.advanceTimersByTimeAsync(60_000); await retryStarted.promise;
       expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running", occurrencesInRun: 1 }));
       retryRelease.resolve(); await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failure.operationId }));
       expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
@@ -202,6 +222,7 @@ describe("worker runtime monitoring isolation", () => {
       await eventuallyWithoutAdvancingTime(() => { expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
       expect(mocks.probe.mock.calls[0]![0]).toMatchObject({ agent: matches ? target.value.native.agent : "copilot" });
       const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
+      await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "configuration", scope: { kind: "project", projectId: uuid(1) }, error: expect.objectContaining({ code: "timeout" }) })));
       const failure = monitor.capture("1").currentFailures.find(item => item.component === "configuration" && item.scope.kind === "project")!;
       expect(failure).toMatchObject({ scope: { kind: "project", projectId: uuid(1) }, error: { code: "timeout" } });
       remoteDesired = target;
@@ -392,7 +413,8 @@ describe("worker runtime monitoring isolation", () => {
       expect(failure).toMatchObject({ phase: "project-preparation", scope: { kind: "project", projectId: uuid(1) }, error: { code: "unknown" }, occurrencesInRun: 1 });
       expect(monitor.capture("1").admission.reasons).toContainEqual(expect.objectContaining({ code: "project-preparation-failed", scope: { kind: "project", projectId: uuid(1) } }));
       expect(JSON.stringify(monitor.capture("1"))).not.toContain("private fallback preparation output");
-      firstTick.resolve(); await vi.advanceTimersByTimeAsync(60_000); await retryStarted.promise;
+      const poll = await controlFallbackPoll();
+      firstTick.resolve(); await poll.started; await vi.advanceTimersByTimeAsync(60_000); await retryStarted.promise;
       expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running", occurrencesInRun: 1 }));
       expect(monitor.capture("2").activities).toContainEqual(expect.objectContaining({ kind: "maintenance", phase: "project-preparation", scope: { kind: "project", projectId: uuid(1) } }));
       retryRelease.resolve();
@@ -462,7 +484,10 @@ describe("worker runtime monitoring isolation", () => {
       const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
       await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "project" })));
       const failure = monitor.capture("1").currentFailures.find(item => item.component === "project")!;
-      if (fallback) firstTick.resolve();
+      if (fallback) {
+        const poll = await controlFallbackPoll();
+        firstTick.resolve(); await poll.started;
+      }
       await vi.advanceTimersByTimeAsync(fallback ? 60_000 : 5_000); await retryStarted.promise;
       expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running" }));
       f.signal.abort(); retryRelease.resolve(); await running;

@@ -1,7 +1,5 @@
-import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
-import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS } from "./cleanup-schedule.js";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
-import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
+import { readLaunchTicket } from "../controller/launch-ticket.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
 import { loadServerConfiguration } from "../../config/server.js";
@@ -9,6 +7,7 @@ import path from "node:path";
 import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
 import { openWebExecutionStore } from "./backends/web-store.js";
 import { createWebExecutionBackend } from "./backends/web.js";
+import { createWebArchiveMaintenance } from "./backends/web-archive-backfill.js";
 import { createWebControllerLauncher } from "./backends/web-process.js";
 import { createWorkerSessionApi } from "./backends/session-api.js";
 import type { WorkerEvent } from "./execution.js";
@@ -20,7 +19,6 @@ import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
 import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
-import { setTimeout as delay } from "node:timers/promises";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
@@ -33,10 +31,11 @@ import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
-import type { ArchiveBackfillIdentity, WorkerProject } from "./types.js";
+import type { WorkerProject } from "./types.js";
 import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
+import { createReconcileWake } from "./reconcile-wake.js";
 import { createMonitoringObserver } from "./monitoring/observer.js";
 import { createMonitoringSender } from "./monitoring/sender.js";
 import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from "./coordinator.js";
@@ -163,7 +162,7 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>) => {
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, rootSignal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
     const api = createWorkerSessionApi(serverUrl, serverToken);
@@ -183,97 +182,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
       return probeStoppedControllerArchive({ journalPath, ticket, signal });
     };
-    const backfilled = new Set<string>();
-    const archiveRetryAt = new Map<string, number>();
-    const archiveRepairs = new Map<string, ArchiveRepairCode>();
-    const archiveFailures = new Map<string, string>();
-    const archiveObservations = new Map<string, string>();
-    const archiveActivities = new Map<string, string>();
-    const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown): void => {
-      const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
-      const next = new Date(nextAttemptAt).toISOString();
-      try {
-        const operationId = archiveFailures.get(identity.executionId) ?? randomUUID();
-        if (!archiveFailures.has(identity.executionId) || error !== undefined) {
-          monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, error: repairCode === undefined ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
-          archiveFailures.set(identity.executionId, operationId);
-        }
-        if (repairCode !== undefined) {
-          const activity = archiveActivities.get(identity.executionId);
-          if (activity === undefined) {
-            const id = monitoring?.startActivity({ kind: "maintenance", phase: "archive-backfill", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: next });
-            if (id !== undefined) archiveActivities.set(identity.executionId, id);
-          } else monitoring?.updateActivity(activity, { nextAttemptAt: next });
-          if (error !== undefined && !(error instanceof ArchiveRepairRequiredError)) {
-            const observationId = archiveObservations.get(identity.executionId) ?? randomUUID();
-            archiveObservations.set(identity.executionId, observationId);
-            monitoring?.fail({ operationId: observationId, component: "archive", phase: "archive-backfill", scope, error, retryState: "scheduled", nextAttemptAt: next });
-          }
-        } else {
-          const activity = archiveActivities.get(identity.executionId);
-          if (activity !== undefined) monitoring?.updateActivity(activity, { waitReason: "retry-backoff", nextAttemptAt: next });
-        }
-      } catch { /* Monitoring cannot change archival. */ }
-    };
-    let lastArchiveAttempt: string | null = null;
-    const backfillArchives = async (signal: AbortSignal) => {
-      const tasks = webStore.listCompletedTasks();
-      const previous = tasks.findIndex(task => task.webExecution?.executionId === lastArchiveAttempt);
-      for (let offset = 1; offset <= tasks.length; offset++) {
-        if (signal.aborted) return;
-        const task = tasks[(previous + offset) % tasks.length]!;
-        const execution = task.webExecution;
-        if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
-        // Advance on failure as well as success so a damaged source cannot monopolize catch-up.
-        lastArchiveAttempt = execution.executionId;
-        const identity = { serverOrigin: serverUrl, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
-          executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
-        try {
-          const retained = store.getArchiveBackfillSchedule(identity);
-          if (retained !== null) {
-            archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
-            archiveRetryAt.set(execution.executionId, retained.nextAttemptAt);
-            observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode);
-            if (retained.nextAttemptAt > Date.now()) continue;
-          }
-          const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
-          const admission = await probeArchive(task, journalPath, signal);
-          if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
-          if (admission.kind === "complete") {
-            // Receipt admission alone does not establish that the source was repaired.
-            store.deleteArchiveBackfillSchedule(identity);
-            archiveRepairs.delete(execution.executionId);
-          }
-          await archive(task, journalPath, signal);
-          signal.throwIfAborted();
-          store.deleteArchiveBackfillSchedule(identity);
-          backfilled.add(execution.executionId);
-          archiveRepairs.delete(execution.executionId);
-          archiveRetryAt.delete(execution.executionId);
-          const failure = archiveFailures.get(execution.executionId);
-          if (failure) { try { monitoring?.recover(failure); } catch { /* Monitoring cannot change archival. */ } archiveFailures.delete(execution.executionId); }
-          const observation = archiveObservations.get(execution.executionId), activity = archiveActivities.get(execution.executionId);
-          try { if (observation) monitoring?.recover(observation); if (activity) monitoring?.endActivity(activity); } catch { /* Monitoring cannot change archival. */ }
-          archiveObservations.delete(execution.executionId); archiveActivities.delete(execution.executionId);
-          emit({ kind: "session-archive-ready", message: `Completed session ${execution.sessionId} history is archived.` });
-        } catch (error) {
-          signal.throwIfAborted();
-          if (error instanceof ArchiveRepairRequiredError) archiveRepairs.set(execution.executionId, error.code);
-          const repairCode = archiveRepairs.get(execution.executionId);
-          const nextAttemptAt = Date.now() + (repairCode === undefined ? 60_000 : ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
-          archiveRetryAt.set(execution.executionId, nextAttemptAt);
-          let reportedError = error;
-          if (repairCode !== undefined) {
-            try { store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: repairCode, nextAttemptAt }); }
-            catch (persistenceError) { reportedError = new AggregateError([error, persistenceError], "Archive backfill schedule was not persisted; in-memory condition backoff remains active."); }
-          }
-          observeBackfill(identity, nextAttemptAt, repairCode, reportedError);
-          emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
-        }
-        // Bound historical catch-up per reconciliation round.
-        break;
-      }
-    };
+    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, webStore, store, archive, probeArchive, emit, rootSignal, ...(monitoring === undefined ? {} : { monitoring }) });
     const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive, probeArchive, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
@@ -281,7 +190,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt: buildWorkerPrompt };
+    return { webStore, webBackend, launcher, archiveMaintenance, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt: buildWorkerPrompt };
   } catch (error) {
     try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
     throw error;
@@ -314,6 +223,7 @@ export const runWorker = async (options: {
   let initialRemovalReconciliation: Promise<void> | undefined;
   let monitoring: ReturnType<typeof createMonitoringObserver> | undefined;
   let monitoringSender: ReturnType<typeof createMonitoringSender> | undefined;
+  const wake = createReconcileWake();
   const observeMonitoring = (action: (observer: NonNullable<typeof monitoring>) => void): void => {
     if (monitoring !== undefined) try { action(monitoring); } catch { /* Monitoring cannot change worker execution. */ }
   };
@@ -471,7 +381,6 @@ export const runWorker = async (options: {
     const nativeActivities = new Map<string, { operationId: string; revision: string }>();
     let monitoringTargetSignature: string | undefined;
     let effectiveSignature = "";
-    let configurationChanged = new AbortController();
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode,
@@ -560,7 +469,7 @@ export const runWorker = async (options: {
           if (getStore().getProject({ projectId: project.projectId }) === null && !confirmedNoLocalMapping.has(project.projectId)) unobservedLocalMappings.add(project.projectId);
         }
         const signature = JSON.stringify(snapshot.effective);
-        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); configurationChanged.abort(); }
+        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); wake.request(); }
         const current = view(snapshot);
         coordinator?.updateConfiguration(current ?? { repositories: [], targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false });
         scheduleInitialRemovals?.();
@@ -875,7 +784,7 @@ export const runWorker = async (options: {
       if (coordinatorJob !== undefined) return coordinatorJob;
       const job = (async () => {
         const currentStore = getStore();
-        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit, currentPromptSource, undefined, observer);
+        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit, signal, currentPromptSource, undefined, observer);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
         }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
@@ -884,6 +793,7 @@ export const runWorker = async (options: {
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
         coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
           monitoring: observer,
+          requestReconcile: () => wake.request(),
           hasHerdrJournal: await hasHerdrJournal(paths, platform),
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
           onInventory: inventory => {
@@ -961,6 +871,7 @@ export const runWorker = async (options: {
     let attachmentShown = false, started = false;
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
+      const revision = wake.snapshot();
       try {
         observeMonitoring(m => m.setPhase("configuration"));
         scheduleLocalMappingChecks();
@@ -973,8 +884,7 @@ export const runWorker = async (options: {
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
-              observeMonitoring(m => m.setPhase("archive-backfill"));
-              await web!.backfillArchives(signal);
+              web!.archiveMaintenance.request();
             }
           }
         } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });
@@ -990,16 +900,13 @@ export const runWorker = async (options: {
       if (signal.aborted) break;
       const interval = manager.current().effective.pollIntervalMs ?? (manager.current().desired === null ? fallback?.pollIntervalMs ?? null : null);
       observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
-      const changed = configurationChanged;
-      if (!changed.signal.aborted && fallback !== null && manager.current().desired === null) {
+      if (wake.snapshot() === revision && fallback !== null && manager.current().desired === null) {
         const nextAttemptAt = new Date(Date.now() + (interval ?? 1_000)).toISOString();
         for (const [projectId, failure] of fallbackPreparationFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt }); });
         for (const [projectId, failure] of fallbackNativeFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setNativeConfigurationReason({ kind: "project", projectId }, { observedAt: failure.observedAt, nextAttemptAt }); });
       }
-      try {
-        if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });
-      } catch (error) { if (!changed.signal.aborted && !isWorkerCancellation(error, signal)) throw error; }
-      finally { if (configurationChanged === changed) configurationChanged = new AbortController(); }
+      try { await wake.waitAfter(revision, interval ?? 1_000, signal); }
+      catch (error) { if (!isWorkerCancellation(error, signal)) throw error; }
       observeMonitoring(m => m.setNextPoll(null));
     }
   } catch (error) {
@@ -1007,6 +914,7 @@ export const runWorker = async (options: {
   } finally {
     observeMonitoring(m => { m.setLifecycle("stopping"); m.setPhase("stopping"); });
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
+    wake.close();
     readOnly?.close();
     modelDiscovery?.close();
     await Promise.allSettled([...localMappingJobs.values()]);
@@ -1027,6 +935,7 @@ export const runWorker = async (options: {
       } catch (error) { if (!failures.includes(error)) failures.push(error); }
     }
     await botRun;
+    try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     observeMonitoring(m => { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); });
     try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
     try { bots?.close(); } catch (error) { failures.push(error); }
@@ -1166,7 +1075,7 @@ export const runWorkerControl = async (options: {
         diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
       } finally { operation.dispose(); }
     };
-    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit, retryPromptSource, preparePromptSource);
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource);
     if (frozenRetry) coordinatorConfiguration = { repositories: [], globalConfiguration: web.webStore.getTask(sources[0]!)?.configuration ?? null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const coordinator = createWorkerCoordinator({
       store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
@@ -1183,6 +1092,7 @@ export const runWorkerControl = async (options: {
   } catch (error) { failures.push(error); }
   finally {
     controlPromptSource?.close();
+    try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     try { await configurationManager?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }

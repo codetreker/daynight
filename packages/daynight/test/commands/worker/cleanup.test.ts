@@ -1,3 +1,4 @@
+import { ensureCleanupSchedule } from "../../../src/commands/worker/cleanup-schedule.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { performance } from "node:perf_hooks";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -43,12 +44,17 @@ const fixture = () => {
   const removeWorktree = vi.fn<WorkerGitManager["removeWorktree"]>(async () => { expect(current).toEqual([]); order.push("delete"); worktree = false; });
   const findWorktree = vi.fn(async () => worktree ? { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` } : null);
   const pendingStops = vi.fn(() => []);
-  const herdr = { tasks: { pendingStops, listResources, submitPrompt, stopAndClose } } as unknown as WorkerHerdrAdapter;
+  const observeExecutionStop = vi.fn<WorkerHerdrAdapter["tasks"]["observeExecutionStop"]>(async target => stopAndClose.mock.calls.length > 0 && current.length === 0
+    ? { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: "fixture" }, observedAt: time }
+    : { kind: "unknown", target, error: new Error("Original stop receipt unavailable"), observedAt: time });
+  const herdr = { tasks: { pendingStops, listResources, submitPrompt, stopAndClose, observeExecutionStop } } as unknown as WorkerHerdrAdapter;
   const git = { removeWorktree, findWorktree } as unknown as WorkerGitManager;
   let time = 1_000;
   const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = () => createCleanupDriver(deps);
-  const advance = (deleteWorktree = true, signal?: AbortSignal) => driver().advance({ owner, project, task }, deleteWorktree, signal);
+  const advance = (deleteWorktree = true, signal?: AbortSignal) => driver().advance({ owner, project, task }, deleteWorktree
+    ? { kind: "terminal", deadline: ensureCleanupSchedule(store, owner, time).deadline, immediateStop: false, scope: { attempt: { owner, attemptId: "fixture" }, onExecutionStopped: () => {} }, ...(signal === undefined ? {} : { signal }) }
+    : { kind: "shutdown", deadline: time + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
   return { store, task, owner, herdr, deps, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
 };
 
@@ -76,7 +82,7 @@ describe("cleanup from resource observations", () => {
 
   it.each([true, false])("requires durable stop proof without a pane and retains the worktree (terminal %s)", async terminal => {
     const f = fixture(); const reasons: string[] = []; let stopped = false;
-    Object.assign(f.herdr, { lifecycle: { stop: async (_owner: ResourceOwner, reason: string, operation: Operation) => { expect(operation.limits).toMatchObject({ totalMs: 300_000, requestMs: 300_000 }); reasons.push(reason); stopped = true; }, isStopped: () => stopped } });
+    Object.assign(f.herdr, { lifecycle: { stop: async (_owner: ResourceOwner, reason: string, operation: Operation) => { expect(operation.limits).toMatchObject({ totalMs: 300_000, requestMs: 300_000 }); reasons.push(reason); stopped = true; }, cleanup: async () => { reasons.push("terminal"); stopped = true; return true; }, isStopped: () => stopped } });
     f.state(null);
     await f.advance(terminal);
     expect(reasons).toEqual([terminal ? "terminal" : "shutdown"]);
@@ -88,7 +94,7 @@ describe("cleanup from resource observations", () => {
 
   it("does not treat an unconfirmed durable stop as permission to delete or finish", async () => {
     const f = fixture();
-    Object.assign(f.herdr, { lifecycle: { stop: async () => {}, isStopped: () => false } });
+    Object.assign(f.herdr, { lifecycle: { stop: async () => {}, cleanup: async () => false, isStopped: () => false } });
     await expect(f.advance()).rejects.toThrow("not confirmed");
     expect(f.removeWorktree).not.toHaveBeenCalled();
     expect(f.events.some(event => event.kind === "agent-stopped" || event.kind === "cleaned")).toBe(false);
@@ -107,11 +113,11 @@ describe("cleanup from resource observations", () => {
     expect(f.store.getCleanupSchedule(f.owner)).not.toHaveProperty("notified");
   });
 
-  it("cleans an already absent pane without requiring a previous stop operation", async () => {
+  it("retains an absent pane without original stop evidence", async () => {
     const f = fixture(); f.state(null);
-    await f.advance();
+    await expect(f.advance()).rejects.toThrow("stop remains unconfirmed");
     expect(f.submitPrompt).not.toHaveBeenCalled(); expect(f.stopAndClose).not.toHaveBeenCalled();
-    expect(f.order).toEqual(["delete"]);
+    expect(f.removeWorktree).not.toHaveBeenCalled();
   });
 
   it("uses the observation after input when a working agent becomes idle", async () => {

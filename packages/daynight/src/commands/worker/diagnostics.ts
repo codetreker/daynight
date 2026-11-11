@@ -4,9 +4,9 @@ import type { SqliteMigrationEvent } from "../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError } from "../../platform/sqlite-error.js";
 import type { TaskPlatform } from "../../api/types.js";
 import type { WorkerPaths } from "./paths.js";
-import type { LocalTask } from "./types.js";
+import type { ClaimIdentity, LocalTask } from "./types.js";
 
-export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; error?: unknown; sqlite?: SqliteMigrationEvent };
+export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; owner?: ClaimIdentity & { worktreeId?: string }; phase?: string; error?: unknown; sqlite?: SqliteMigrationEvent };
 
 const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
   migrationId: event.migrationId, database: event.database, file: event.file,
@@ -49,14 +49,15 @@ export const createWorkerDiagnostics = async (options: {
   let failed: unknown;
   const emit = (event: WorkerDiagnostic): void => {
     const task = event.task;
+    const identity = event.owner ?? task;
     const record = {
       timestamp: new Date().toISOString(), workerId: options.workerId, platform: options.platform,
       kind: event.kind, message: redact(event.message),
       ...(event.sqlite === undefined ? {} : { sqlite: sqliteMetadata(event.sqlite) }),
-      ...(task === undefined ? {} : {
-        projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
-        status: task.status, agent: task.agent, sessionId: task.sessionId,
-      }),
+      ...(identity === undefined ? {} : { projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }),
+      ...(event.owner?.worktreeId === undefined ? {} : { worktreeId: event.owner.worktreeId }),
+      ...(event.phase === undefined ? {} : { phase: event.phase }),
+      ...(task === undefined ? {} : { status: task.status, agent: task.agent, sessionId: task.sessionId }),
       ...(event.error === undefined ? {} : { error: describeError(event.error) }),
     };
     const serialized = JSON.stringify(record, (_key, value: unknown) => typeof value === "string" ? redact(value) : value);
