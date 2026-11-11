@@ -62,9 +62,10 @@ observations. Five preserved tables must match their captured contents and all
 sequences must match their captured state before reuse. An unfinished owner,
 failed cleanup or drift prevents subsequent cases from running. Schema and seed
 changes require the fixture's table and sequence inventory to be reconsidered.
-In three fresh PostgreSQL 18.6 comparisons with warm Go 1.27.2 binaries, a
-2-CPU/4-GiB Go runner and a 2-CPU/2-GiB database, full package medians were
-34.84 seconds before and 19.72 seconds after, including reset, checks and final
-cleanup. Both used atomic coverage and no race instrumentation. The first
-baseline took 59.71 seconds amid concurrent local work, so these samples do not
-establish a hosted CI improvement; fixture counts alone cannot establish one.
+In two fresh PostgreSQL 18.6 comparisons with warm Go 1.27.2 binaries, a
+2-CPU/4-GiB Go runner and a 2-CPU/2-GiB database with swap disabled, complete
+package times were 74.27 and 116.37 seconds before, and 47.91 and 45.60 seconds
+after. Both used atomic coverage without race instrumentation and included reset,
+checks and final cleanup. Concurrent local workloads caused substantial timing
+variation; these samples do not establish a stable speedup or a hosted CI
+improvement. Fixture counts alone cannot establish one.
