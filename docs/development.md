@@ -840,7 +840,8 @@ feedback. The guide mounts outside the authenticated shell and makes no API,
 fetch or XHR requests during reading and interactions. Validate the production
 entry in a real browser across both languages, all three MCP clients, desktop,
 390px and 320px widths and long endpoints; check exact displayed and copied
-commands, stale clipboard results, keyboard access and zero-request lifecycle.
+commands and the POSIX shell guidance (including Git Bash on Windows), stale
+clipboard results, keyboard access and zero-request lifecycle.
 Static guide checks do not prove an actual OAuth authorization or MCP call.
 The [path decision](../.agents/notes/implemented/feature/2026-11-11-setup-mcp-guide.md)
 records the trade-offs; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)

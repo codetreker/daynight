@@ -132,6 +132,9 @@ describe("MCP setup guide", () => {
     ];
     for (const value of cases) {
       fireEvent.change(client, { target: { value: value.client } });
+      expect(within(list).getByText(locale === "zh-CN"
+        ? /在 POSIX shell 中运行命令.*Windows 用户请使用 Git Bash/
+        : /run these commands in a POSIX shell \(on Windows, use Git Bash\)/)).toBeVisible();
       for (const text of [endpoint, value.command, value.auth, request]) {
         const { code, button } = codeBlock(text);
         expect(code).toBeVisible();

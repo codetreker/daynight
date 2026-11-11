@@ -15,8 +15,9 @@ or depending on account and service requests.
 The public setup guide presents two always-expanded paths: MCP first, then the
 existing five CLI and Agent skill steps. MCP gives Codex, Claude Code and Copilot
 CLI user-level configuration, OAuth guidance and a read-only `team_list` request
-for verifying a connection. It links to the existing installation manual and
-account authorization management. The page derives `/mcp` from the browser's
+for verifying a connection. Commands use POSIX shell quoting, with Git Bash
+guidance for Windows. It links to the existing installation manual and account
+authorization management. The page derives `/mcp` from the browser's
 current origin without discovery or API calls; the CLI's default service remains
 independent. Client selection is page-local, and all command blocks share one
 copy lifecycle. The [Web requirements](../../../../docs/spec/daynight-web.md#日常使用引导)

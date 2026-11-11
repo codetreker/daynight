@@ -18,7 +18,7 @@ export const setup: SetupMessages = {
     endpoint: "MCP 地址",
     terminal: "在终端运行",
     configure: "配置 MCP 客户端",
-    configureDescription: "先安装所选客户端的当前版本，再添加 Daynight 远程 HTTP 服务。",
+    configureDescription: "先安装所选客户端的当前版本，再在 POSIX shell 中运行命令以添加 Daynight 远程 HTTP 服务；Windows 用户请使用 Git Bash。",
     configureSuccess: "客户端的 MCP 配置中出现 daynight；保存配置本身不能证明连接成功。",
     clientDocumentation: "客户端官方文档",
     authorize: "在浏览器中授权",

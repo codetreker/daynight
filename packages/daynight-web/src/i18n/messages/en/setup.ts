@@ -18,7 +18,7 @@ export const setup: SetupMessages = {
     endpoint: "MCP endpoint",
     terminal: "Run in your terminal",
     configure: "Configure your MCP client",
-    configureDescription: "Install the current version of your chosen client, then add the Daynight remote HTTP server.",
+    configureDescription: "Install the current version of your chosen client, then run these commands in a POSIX shell (on Windows, use Git Bash) to add the Daynight remote HTTP server.",
     configureSuccess: "daynight appears in the client’s MCP configuration. Configuration alone does not establish a connection.",
     clientDocumentation: "Official client documentation",
     authorize: "Authorize in your browser",

@@ -218,7 +218,8 @@ selector and open public `/setup` in a new tab with native link behavior and
 sections offer independent MCP and CLI with Agent skill paths. MCP covers
 configuration of Codex, Claude Code or Copilot CLI for the current user and browser
 account authorization, and provides a read-only `team_list` request to verify connection.
-The guide links to the public `/mcp` installation manual, the selected client's
+MCP shell commands use POSIX quoting and instruct Windows users to use a POSIX
+shell such as Git Bash. The guide links to the public `/mcp` installation manual, the selected client's
 official documentation and `/account`, where Tokens manages tokens and authorized
 applications. The five CLI steps cover installation with Node.js 22 or newer,
 device login, repository project discovery or creation, Agent skill installation,

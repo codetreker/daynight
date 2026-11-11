@@ -590,7 +590,8 @@ Provider、语言选择器、面包屑、标题、跳过导航和正文聚焦，
 指南，`SetupCommand.tsx` 共享可选中内容与复制按钮。`mcp-configuration.ts` 以客户端和
 endpoint 纯生成命令、远程终端变体及官方链接。地址以
 `new URL("/mcp", window.location.origin).href` 从当前浏览器 origin 得出，shell 参数
-使用单引号编码；该地址不改变 CLI 默认服务。`messages.setup` 类型化目录拥有两条路径的
+使用 POSIX 单引号编码。页面说明命令在 POSIX shell 中执行，Windows 可使用 Git Bash；
+该地址不改变 CLI 默认服务。`messages.setup` 类型化目录拥有两条路径的
 文案及可访问名称，完整文本用于显示和复制，多行保留真实换行。
 
 页面没有 API、fetch、XHR、完成度探测或凭据输入；安装手册和账户链接只在用户点击时
