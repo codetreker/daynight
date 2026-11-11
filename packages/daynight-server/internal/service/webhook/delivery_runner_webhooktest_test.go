@@ -1,6 +1,6 @@
 //go:build webhooktest
 
-package server
+package webhook_test
 
 import (
 	"bytes"

@@ -36,7 +36,10 @@ with their implementations, while Root retains real assembly, route coexistence
 and protected API proofs. Worker HTTP protocol matrices live with their Worker
 registrar, with real Service and Core where appropriate and narrow controlled
 capabilities for precise outcomes; HTTP fault classification belongs to httpx.
-The [test-writing rules](../../../../docs/writing_tests.md)
+The Webhook Runner process-recovery and takeover witnesses live with the Runner
+and retain real PostgreSQL, TLS, subprocess and lease fencing mechanisms under
+their existing explicit tags. The [takeover fixture decision](2026-11-08-webhook-takeover-fixture.md)
+records its timing constraints. The [test-writing rules](../../../../docs/writing_tests.md)
 own the current requirements.
 
 ## Alternatives
