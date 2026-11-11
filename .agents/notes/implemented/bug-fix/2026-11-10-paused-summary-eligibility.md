@@ -13,7 +13,7 @@ on the task itself, including its detail and unpause operation.
 
 Web pause summaries count unique task IDs whose raw pause property is true and
 whose current status is not `done`. A shared pure selector applies this rule to
-the complete project or ordinary chain scope. Project overview navigation uses
+the supplied ordinary task scope. Project overview navigation uses
 the same eligible set and original task order. `cancelled` retains its existing
 eligibility, and a status update recomputes the summary without a property
 change.
@@ -45,5 +45,7 @@ eligibility consistent while allowing each consumer to provide its full scope.
 Completed tasks no longer contribute to pause totals or become overview pause
 targets, but their raw pause remains visible and can still be cleared. Reopening
 a paused task restores its summary eligibility. Counts remain independent of
-pagination, filters, graph visibility and external prerequisites; other task
-statistics and worker pause behavior are unchanged.
+pagination, status filters and graph visibility; chain counts exclude external
+prerequisites. The [assignee-scoped summary decision](2026-11-12-assignee-scoped-pause-summary.md)
+partially replaces the original filter-independent project list heading scope.
+Other task statistics and worker pause behavior are unchanged.
